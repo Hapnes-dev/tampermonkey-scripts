@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.0
+// @version      7.1
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -645,7 +645,7 @@
             if (u.ip && !serverMap.has(idx)) serverMap.set(idx, u.ip);
         }
         const orderedIdx = [...serverMap.keys()].sort((a, b) => a - b);
-        const tcpServers = orderedIdx.map((idx, i) => `${i + 1};${serverMap.get(idx)};502;1000;2;1000`).join('\\r\\n') + (orderedIdx.length ? '\\r\\n' : '');
+        const tcpServers = orderedIdx.map((idx, i) => `${i + 1};${serverMap.get(idx)};502;1000;2;500`).join('\\r\\n');
 
         // 1) Replace iw_sys_plant_units block — remove from its original spot and move to the top
         if (CURRENT.units) {
