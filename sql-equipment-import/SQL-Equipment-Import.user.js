@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.1
+// @version      7.2
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -685,16 +685,19 @@
                 if (idx >= 0) rows[idx].value = q(settingsValues[k]);
             }
             if (isTcp) {
+                // tcpServers contains literal '\r\n' escape sequences that MariaDB should
+                // interpret as real CR+LF — DON'T double the backslashes (only escape quotes).
+                const qServers = (s) => "'" + String(s).replace(/'/g, "''") + "'";
                 const idx = rows.findIndex(x => unq(x.setting) === 'mb_tcp_servers');
                 if (idx >= 0) {
-                    rows[idx].value = q(tcpServers);
+                    rows[idx].value = qServers(tcpServers);
                 } else {
                     const tpl = {};
                     cols.forEach(c => tpl[c] = "''");
                     if ('row_date' in tpl) tpl.row_date = 'NOW()';
                     if ('setting' in tpl) tpl.setting = q('mb_tcp_servers');
                     if ('owner' in tpl) tpl.owner = q(owner);
-                    if ('value' in tpl) tpl.value = q(tcpServers);
+                    if ('value' in tpl) tpl.value = qServers(tcpServers);
                     if ('help_text' in tpl) tpl.help_text = q('ID;IPadr;IPport;ConnTout;ConnRetries;RequestTout');
                     rows.push(tpl);
                 }
