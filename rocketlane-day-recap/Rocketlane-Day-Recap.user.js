@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.9
+// @version      4.10
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -28,7 +28,10 @@
     const KEY_LAST_HARVEST = 'last_harvest_ts'; // ms timestamp of most recent successful harvest write
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
-    const SCRIPT_VERSION   = '4.9';
+    const SCRIPT_VERSION   = '4.10';
+    const KEY_WORKDAY_HOURS    = 'workday_hours';
+    const DEFAULT_WORKDAY_HOURS = 7.5;
+    const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
     // Time-spent estimator: cross-plant attribution.
     // Pang only logs discrete clicks, not real "active work" time, so any estimate is an
     // approximation. We build ONE chronological timeline of every action across ALL plants
@@ -515,6 +518,40 @@
         return mm ? `${h}h ${mm}m` : `${h}h`;
     }
 
+    // Normalize raw per-plant minutes so they sum to targetMinutes, rounded to roundTo (5 min).
+    // Largest plant absorbs any leftover so the sum is exact.
+    function normalizeMinutes(visits, targetMinutes, roundTo) {
+        if (!visits.length || !targetMinutes) return;
+        const totalRaw = visits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
+        if (totalRaw <= 0) {
+            // No raw signal: split target evenly across plants
+            const each = roundTo * Math.max(1, Math.round((targetMinutes / visits.length) / roundTo));
+            for (const v of visits) v.normalized_minutes = each;
+            const drift = targetMinutes - visits.length * each;
+            if (visits[0]) visits[0].normalized_minutes += drift;
+            return;
+        }
+        // Proportional scaling
+        let runningSum = 0;
+        const scaled = visits.map(v => {
+            const raw = v.estimated_minutes || 0;
+            const exact = (raw / totalRaw) * targetMinutes;
+            const rounded = roundTo * Math.max(roundTo === 0 ? 0 : 1, Math.round(exact / roundTo));
+            runningSum += rounded;
+            return rounded;
+        });
+        // Fix rounding drift by adjusting the visit with the largest raw share.
+        const drift = targetMinutes - runningSum;
+        if (drift !== 0) {
+            let maxIdx = 0;
+            for (let i = 1; i < visits.length; i++) {
+                if ((visits[i].estimated_minutes || 0) > (visits[maxIdx].estimated_minutes || 0)) maxIdx = i;
+            }
+            scaled[maxIdx] = Math.max(roundTo, scaled[maxIdx] + drift);
+        }
+        for (let i = 0; i < visits.length; i++) visits[i].normalized_minutes = scaled[i];
+    }
+
     const css = `
         #${BTN_ID} {
             position: fixed; bottom: 20px; right: 20px; z-index: 2147483640;
@@ -594,18 +631,65 @@
                 <button data-action="search">Search</button>
                 <button data-action="resync" title="Re-sync recent plant list from pang">↻</button>
             </div>
+            <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
+                    Workday total
+                    <input type="number" data-field="workday" step="0.5" min="0" max="24" value="${(GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || 0)}" style="width: 60px; padding: 4px 6px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px;">
+                    h
+                </label>
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252;" title="When on, minutes per plant are scaled so they sum to your workday total.">
+                    <input type="checkbox" data-field="normalize" ${GM_getValue('workday_normalize', true) ? 'checked' : ''}>
+                    Distribute to total
+                </label>
+            </div>
             <div class="progress"><div style="width:0%"></div></div>
             <div class="results"></div>
             <div class="total"></div>
         `;
         document.body.appendChild(panel);
 
-        const dateInput = panel.querySelector('input[type=date]');
-        const searchBtn = panel.querySelector('[data-action=search]');
-        const resyncBtn = panel.querySelector('[data-action=resync]');
-        const list      = panel.querySelector('.results');
-        const totalEl   = panel.querySelector('.total');
-        const progress  = panel.querySelector('.progress > div');
+        const dateInput     = panel.querySelector('input[type=date]');
+        const searchBtn     = panel.querySelector('[data-action=search]');
+        const resyncBtn     = panel.querySelector('[data-action=resync]');
+        const workdayInput  = panel.querySelector('[data-field=workday]');
+        const normalizeChk  = panel.querySelector('[data-field=normalize]');
+        const list          = panel.querySelector('.results');
+        const totalEl       = panel.querySelector('.total');
+        const progress      = panel.querySelector('.progress > div');
+
+        let lastVisits = null;
+        let lastIso = null;
+        let lastUsername = null;
+        let lastScanned = 0;
+
+        const applyAndRender = () => {
+            if (!lastVisits) return;
+            const useNorm = !!normalizeChk.checked;
+            const hours = parseFloat(workdayInput.value);
+            const targetMin = (useNorm && isFinite(hours) && hours > 0) ? Math.round(hours * 60) : 0;
+            // Reset any previous normalized values, then re-apply if asked
+            for (const v of lastVisits) v.normalized_minutes = null;
+            if (targetMin > 0) normalizeMinutes(lastVisits, targetMin, ROUND_TO_MIN);
+            renderVisits(list, lastVisits, lastIso, lastScanned);
+            const stillMissing = lastVisits.filter(v => !v.name).length;
+            const displayTotal = targetMin > 0
+                ? lastVisits.reduce((s, v) => s + (v.normalized_minutes || 0), 0)
+                : lastVisits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
+            const totalLabel = displayTotal ? ` · ${targetMin > 0 ? '' : '≈ '}${fmtMinutes(displayTotal)}` : '';
+            totalEl.innerHTML =
+                `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}</span>` +
+                `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
+        };
+
+        workdayInput.addEventListener('change', () => {
+            const v = parseFloat(workdayInput.value);
+            if (isFinite(v) && v >= 0) GM_setValue(KEY_WORKDAY_HOURS, v);
+            applyAndRender();
+        });
+        normalizeChk.addEventListener('change', () => {
+            GM_setValue('workday_normalize', !!normalizeChk.checked);
+            applyAndRender();
+        });
 
         const ensureKnown = async () => {
             const known = GM_getValue(KEY_KNOWN_PLANTS, []);
@@ -657,13 +741,11 @@
                     refillNames(visits);
                 }
 
-                renderVisits(list, visits, iso, scanned);
-                const stillMissing = visits.filter(v => !v.name).length;
-                const totalMinutes = visits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
-                const totalLabel   = totalMinutes ? ` · ≈ ${fmtMinutes(totalMinutes)}` : '';
-                totalEl.innerHTML =
-                    `<span>${escapeHtml(username)} · ${isoToNorwegianDate(iso)}</span>` +
-                    `<span>${visits.length} plant${visits.length === 1 ? '' : 's'} of ${scanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
+                lastVisits   = visits;
+                lastIso      = iso;
+                lastUsername = username;
+                lastScanned  = scanned;
+                applyAndRender();
             } finally {
                 searchBtn.disabled = false;
                 resyncBtn.disabled = false;
@@ -707,8 +789,13 @@
             const timeRange = v.last_ts && v.last_ts !== v.first_ts
                 ? `${tsToLocalTime(v.first_ts)}–${tsToLocalTime(v.last_ts)}`
                 : tsToLocalTime(v.first_ts);
-            const estimate = v.estimated_minutes
-                ? `<div class="estimate" title="Estimated time spent on this plant. Built from a single chronological timeline of every action across all your plants for the day — each gap (≤30 min) is credited to the plant of the action that opened it. Approximation only; pang doesn't log idle vs. active.">≈ ${fmtMinutes(v.estimated_minutes)}</div>`
+            const shown = v.normalized_minutes != null ? v.normalized_minutes : v.estimated_minutes;
+            const prefix = v.normalized_minutes != null ? '' : '≈ ';
+            const tooltip = v.normalized_minutes != null
+                ? `Distributed share of your workday total. Raw estimate from action density: ≈ ${fmtMinutes(v.estimated_minutes || 0)}.`
+                : `Estimated time spent on this plant — built from a single chronological timeline of every action across all your plants for the day; each gap (≤30 min) is credited to the plant that opened it. Approximation only; pang doesn't log idle vs. active.`;
+            const estimate = shown
+                ? `<div class="estimate" title="${escapeHtml(tooltip)}">${prefix}${fmtMinutes(shown)}</div>`
                 : '';
             div.innerHTML = `
                 <a href="${url}" target="_blank">${escapeHtml(v.plant_id)}</a>
