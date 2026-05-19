@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.7
+// @version      4.8
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -28,7 +28,15 @@
     const KEY_LAST_HARVEST = 'last_harvest_ts'; // ms timestamp of most recent successful harvest write
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
-    const SCRIPT_VERSION   = '4.7';
+    const SCRIPT_VERSION   = '4.8';
+    // Time-spent heuristic. Pang only logs discrete action events, so we can't measure
+    // actual work duration; we estimate from action density. Settings chosen to roughly
+    // match a typical service session: a one-off action is "about 5 minutes", a string
+    // of actions counts from first to last + a small tail, and a >30 min idle gap means
+    // the user walked away and started a new session on the same plant.
+    const SESSION_GAP_MS  = 30 * 60 * 1000;
+    const TAIL_BUFFER_MS  =  5 * 60 * 1000;
+    const MIN_SESSION_MS  =  5 * 60 * 1000;
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -432,12 +440,15 @@
             if (matches.length === 0) return null;
             matches.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
             const actions = [...new Set(matches.map(m => m.action))];
+            const timestamps = matches.map(m => tsFromPangDate(m.date));
             return {
                 plant_id: pid,
                 name: cachedPlantName(names, pid),
-                first_ts: tsFromPangDate(matches[0].date),
+                first_ts: timestamps[0],
+                last_ts:  timestamps[timestamps.length - 1],
                 actions,
                 count: matches.length,
+                estimated_minutes: estimateMinutes(timestamps),
             };
         }, PARALLEL, onProgress);
 
@@ -462,6 +473,33 @@
 
     function escapeHtml(s) {
         return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // Estimate minutes spent on a plant from a list of action timestamps (ms).
+    // See SESSION_GAP_MS / TAIL_BUFFER_MS / MIN_SESSION_MS at the top of the script.
+    function estimateMinutes(timestampsMs) {
+        if (!timestampsMs || timestampsMs.length === 0) return 0;
+        const sorted = [...timestampsMs].sort((a, b) => a - b);
+        let total = 0;
+        let sessionStart = sorted[0];
+        let sessionEnd   = sorted[0];
+        for (let i = 1; i < sorted.length; i++) {
+            if (sorted[i] - sessionEnd > SESSION_GAP_MS) {
+                total += Math.max(MIN_SESSION_MS, (sessionEnd - sessionStart) + TAIL_BUFFER_MS);
+                sessionStart = sorted[i];
+            }
+            sessionEnd = sorted[i];
+        }
+        total += Math.max(MIN_SESSION_MS, (sessionEnd - sessionStart) + TAIL_BUFFER_MS);
+        return Math.round(total / 60000);
+    }
+
+    function fmtMinutes(m) {
+        if (!m) return '0m';
+        if (m < 60) return `${m}m`;
+        const h = Math.floor(m / 60);
+        const mm = m % 60;
+        return mm ? `${h}h ${mm}m` : `${h}h`;
     }
 
     const css = `
@@ -510,7 +548,8 @@
         #${PANEL_ID} .row a:hover { text-decoration: underline; }
         #${PANEL_ID} .row .name { flex: 1; }
         #${PANEL_ID} .row .actions { color: #525252; font-size: 11px; }
-        #${PANEL_ID} .row .time { color: #6f6f6f; font-size: 12px; white-space: nowrap; }
+        #${PANEL_ID} .row .time { color: #6f6f6f; font-size: 12px; white-space: nowrap; text-align: right; }
+        #${PANEL_ID} .row .estimate { color: #0f62fe; font-size: 11px; font-weight: 600; margin-top: 2px; }
         #${PANEL_ID} .empty { padding: 20px; text-align: center; color: #6f6f6f; font-size: 12px; }
         #${PANEL_ID} .total {
             padding: 8px 14px; background: #f4f4f4; border-top: 1px solid #e0e0e0;
@@ -607,9 +646,11 @@
 
                 renderVisits(list, visits, iso, scanned);
                 const stillMissing = visits.filter(v => !v.name).length;
+                const totalMinutes = visits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
+                const totalLabel   = totalMinutes ? ` · ≈ ${fmtMinutes(totalMinutes)}` : '';
                 totalEl.innerHTML =
                     `<span>${escapeHtml(username)} · ${isoToNorwegianDate(iso)}</span>` +
-                    `<span>${visits.length} plant${visits.length === 1 ? '' : 's'} of ${scanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}</span>`;
+                    `<span>${visits.length} plant${visits.length === 1 ? '' : 's'} of ${scanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
             } finally {
                 searchBtn.disabled = false;
                 resyncBtn.disabled = false;
@@ -650,13 +691,22 @@
             const url = `http://tools.iwmac.local/pang.qxs?plant_id=${encodeURIComponent(v.plant_id)}`;
             const div = document.createElement('div');
             div.className = 'row';
+            const timeRange = v.last_ts && v.last_ts !== v.first_ts
+                ? `${tsToLocalTime(v.first_ts)}–${tsToLocalTime(v.last_ts)}`
+                : tsToLocalTime(v.first_ts);
+            const estimate = v.estimated_minutes
+                ? `<div class="estimate" title="Estimated time spent (heuristic — sessions split on 30 min idle, ~5 min per discrete action)">≈ ${fmtMinutes(v.estimated_minutes)}</div>`
+                : '';
             div.innerHTML = `
                 <a href="${url}" target="_blank">${escapeHtml(v.plant_id)}</a>
                 <div class="name">
                     ${escapeHtml(v.name || '(name not yet captured)')}
                     <div class="actions">${escapeHtml(v.actions.join(', '))}</div>
                 </div>
-                <div class="time">${tsToLocalTime(v.first_ts)}</div>
+                <div class="time">
+                    ${timeRange}
+                    ${estimate}
+                </div>
             `;
             list.appendChild(div);
         });
