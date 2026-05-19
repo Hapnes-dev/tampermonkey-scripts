@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.8
+// @version      4.9
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -28,15 +28,17 @@
     const KEY_LAST_HARVEST = 'last_harvest_ts'; // ms timestamp of most recent successful harvest write
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
-    const SCRIPT_VERSION   = '4.8';
-    // Time-spent heuristic. Pang only logs discrete action events, so we can't measure
-    // actual work duration; we estimate from action density. Settings chosen to roughly
-    // match a typical service session: a one-off action is "about 5 minutes", a string
-    // of actions counts from first to last + a small tail, and a >30 min idle gap means
-    // the user walked away and started a new session on the same plant.
-    const SESSION_GAP_MS  = 30 * 60 * 1000;
-    const TAIL_BUFFER_MS  =  5 * 60 * 1000;
-    const MIN_SESSION_MS  =  5 * 60 * 1000;
+    const SCRIPT_VERSION   = '4.9';
+    // Time-spent estimator: cross-plant attribution.
+    // Pang only logs discrete clicks, not real "active work" time, so any estimate is an
+    // approximation. We build ONE chronological timeline of every action across ALL plants
+    // for the day, then for each consecutive pair (a, b) we credit the gap (b.ts − a.ts)
+    // to plant_a — capped at MAX_GAP_MS so a long absence (lunch, end-of-day) isn't
+    // attributed to whichever plant you last touched. The day's last action gets a small
+    // tail buffer. Result: total estimated time ≤ wall-clock span and is split across
+    // plants in proportion to how long each plant "owned" the timeline.
+    const MAX_GAP_MS     = 30 * 60 * 1000;
+    const TAIL_BUFFER_MS =  5 * 60 * 1000;
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -448,11 +450,23 @@
                 last_ts:  timestamps[timestamps.length - 1],
                 actions,
                 count: matches.length,
-                estimated_minutes: estimateMinutes(timestamps),
+                _timestamps: timestamps,
             };
         }, PARALLEL, onProgress);
 
         const visits = all.filter(Boolean).sort((a, b) => a.first_ts - b.first_ts);
+
+        // Cross-plant time attribution: flatten every action timestamp into one timeline,
+        // then credit each gap to the plant of the action that opened it (capped at MAX_GAP_MS).
+        const allEvents = [];
+        for (const v of visits) {
+            for (const ts of v._timestamps) allEvents.push({ plant_id: v.plant_id, ts });
+        }
+        const minsByPlant = attributeTime(allEvents);
+        for (const v of visits) {
+            v.estimated_minutes = minsByPlant[v.plant_id] || 0;
+            delete v._timestamps;
+        }
 
         return { visits, username, scanned: known.length };
     }
@@ -475,23 +489,22 @@
         return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
-    // Estimate minutes spent on a plant from a list of action timestamps (ms).
-    // See SESSION_GAP_MS / TAIL_BUFFER_MS / MIN_SESSION_MS at the top of the script.
-    function estimateMinutes(timestampsMs) {
-        if (!timestampsMs || timestampsMs.length === 0) return 0;
-        const sorted = [...timestampsMs].sort((a, b) => a - b);
-        let total = 0;
-        let sessionStart = sorted[0];
-        let sessionEnd   = sorted[0];
-        for (let i = 1; i < sorted.length; i++) {
-            if (sorted[i] - sessionEnd > SESSION_GAP_MS) {
-                total += Math.max(MIN_SESSION_MS, (sessionEnd - sessionStart) + TAIL_BUFFER_MS);
-                sessionStart = sorted[i];
-            }
-            sessionEnd = sorted[i];
+    // Build a cross-plant attribution of estimated time spent.
+    // Input: array of { plant_id, ts } across ALL plants for the day.
+    // Output: { [plant_id]: minutes_estimated }
+    function attributeTime(events) {
+        const out = {};
+        if (!events || events.length === 0) return out;
+        const sorted = [...events].sort((a, b) => a.ts - b.ts);
+        for (let i = 0; i < sorted.length; i++) {
+            const cur = sorted[i];
+            const next = sorted[i + 1];
+            const gap = next ? Math.min(next.ts - cur.ts, MAX_GAP_MS) : TAIL_BUFFER_MS;
+            out[cur.plant_id] = (out[cur.plant_id] || 0) + gap;
         }
-        total += Math.max(MIN_SESSION_MS, (sessionEnd - sessionStart) + TAIL_BUFFER_MS);
-        return Math.round(total / 60000);
+        // Convert ms → rounded minutes
+        for (const id of Object.keys(out)) out[id] = Math.max(1, Math.round(out[id] / 60000));
+        return out;
     }
 
     function fmtMinutes(m) {
@@ -695,7 +708,7 @@
                 ? `${tsToLocalTime(v.first_ts)}–${tsToLocalTime(v.last_ts)}`
                 : tsToLocalTime(v.first_ts);
             const estimate = v.estimated_minutes
-                ? `<div class="estimate" title="Estimated time spent (heuristic — sessions split on 30 min idle, ~5 min per discrete action)">≈ ${fmtMinutes(v.estimated_minutes)}</div>`
+                ? `<div class="estimate" title="Estimated time spent on this plant. Built from a single chronological timeline of every action across all your plants for the day — each gap (≤30 min) is credited to the plant of the action that opened it. Approximation only; pang doesn't log idle vs. active.">≈ ${fmtMinutes(v.estimated_minutes)}</div>`
                 : '';
             div.innerHTML = `
                 <a href="${url}" target="_blank">${escapeHtml(v.plant_id)}</a>
