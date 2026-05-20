@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.4
+// @version      7.5
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -60,10 +60,17 @@
                     if (r.status >= 200 && r.status < 300) {
                         try {
                             const buf = r.response || r.responseText;
-                            const text = buf instanceof ArrayBuffer
-                                ? new TextDecoder('utf-8').decode(new Uint8Array(buf))
-                                : String(buf);
-                            resolve(text);
+                            if (!(buf instanceof ArrayBuffer)) { resolve(String(buf)); return; }
+                            const u8 = new Uint8Array(buf);
+                            // Try strict UTF-8 first. If the file is latin1 (older
+                            // phpMyAdmin exports of Norwegian text like "Grønt"),
+                            // strict decode throws on the bare 0xF8 byte; fall back
+                            // to windows-1252 (latin1 superset) so æøå render right.
+                            try {
+                                resolve(new TextDecoder('utf-8', { fatal: true }).decode(u8));
+                            } catch (_) {
+                                resolve(new TextDecoder('windows-1252').decode(u8));
+                            }
                         } catch (e) { reject(e); }
                     } else reject(new Error(`HTTP ${r.status} fetching ${url}`));
                 },
@@ -436,7 +443,14 @@
     $('seii-file').addEventListener('change', e => {
         const f = e.target.files[0]; if (!f) return;
         const fr = new FileReader();
+        // Read as bytes so we can auto-detect UTF-8 vs latin1 (Norwegian SQL
+        // exports from older phpMyAdmin are often latin1; reading them as
+        // utf-8 mangles æ ø å).
         fr.onload = () => {
+            const u8 = new Uint8Array(fr.result);
+            let txt;
+            try { txt = new TextDecoder('utf-8', { fatal: true }).decode(u8); }
+            catch (_) { txt = new TextDecoder('windows-1252').decode(u8); }
             const sel = $('seii-tpl');
             sel.querySelectorAll('option[data-local="1"]').forEach(o => o.remove());
             const opt = document.createElement('option');
@@ -444,9 +458,9 @@
             opt.textContent = f.name + ' (local file)';
             sel.insertBefore(opt, sel.firstChild);
             sel.value = '__local__';
-            loadSqlText(f.name, fr.result);
+            loadSqlText(f.name, txt);
         };
-        fr.readAsText(f);
+        fr.readAsArrayBuffer(f);
     });
 
     function parseTcpServers(value) {

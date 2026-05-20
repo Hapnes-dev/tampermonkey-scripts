@@ -347,7 +347,7 @@ REPLACE INTO `iw_set_ekc_202c` (`row_date`, `element_id`, `active`, `onl_ind`, `
 -- Watch out for duplicate unit_id!
 
 INSERT INTO `iw_sys_plant_units` (`row_date`, `active`, `blockout`, `unit_id`, `unit_name`, `grp_name`, `driver_type`, `driver_addr`, `regulator_type`, `order_no`, `view_order`, `driver_adr_extra`, `unit_extra`) VALUES
-('2026-05-20 15:42:19', '1', '0', 'P05', 'Frukt og Grønt 1', 'ekc_202c', 'AKCC250', '0_5', 'EKC202', 'ekc_202c', 0, '', '');
+('2026-05-20 15:42:19', '1', '0', 'P05', 'Frukt og GrÃ¸nt 1', 'ekc_202c', 'AKCC250', '0_5', 'EKC202', 'ekc_202c', 0, '', '');
 
 
 
