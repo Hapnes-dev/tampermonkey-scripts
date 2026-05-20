@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.3
+// @version      7.4
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -759,7 +759,16 @@
         $('seii-mcopy').textContent = 'Copied!';
         setTimeout(() => $('seii-mcopy').textContent = 'Copy', 1200);
     };
-    modal.addEventListener('click', e => { if (e.target === modal) $('seii-mclose').click(); });
+    // Close on backdrop click — but only when BOTH mousedown AND mouseup happen
+    // on the backdrop itself. Without this, a text-selection drag that starts
+    // inside the editor and ends outside it closes the modal (because the
+    // browser fires `click` on the common ancestor — modal).
+    let mdOnBackdrop = false;
+    modal.addEventListener('mousedown', e => { mdOnBackdrop = (e.target === modal); });
+    modal.addEventListener('mouseup', e => {
+        if (mdOnBackdrop && e.target === modal) $('seii-mclose').click();
+        mdOnBackdrop = false;
+    });
 
     $('seii-copy').onclick = () => {
         try {
