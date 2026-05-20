@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.2
+// @version      7.3
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -245,8 +245,8 @@
 
           <label>SQL command</label>
           <select id="seii-cmd">
-            <option value="REPLACE INTO" selected>REPLACE INTO</option>
-            <option value="INSERT INTO">INSERT INTO</option>
+            <option value="INSERT INTO" selected>INSERT INTO</option>
+            <option value="REPLACE INTO">REPLACE INTO</option>
           </select>
 
           <div class="actions">
@@ -617,7 +617,7 @@
     function buildOutput() {
         if (!CURRENT) throw new Error('Load a .sql file first.');
         if (CURRENT.passThrough) return CURRENT.sqlText;
-        const cmd = $('seii-cmd') ? $('seii-cmd').value : 'REPLACE INTO';
+        const cmd = $('seii-cmd') ? $('seii-cmd').value : 'INSERT INTO';
         let out = CURRENT.sqlText.replace(/\b(?:REPLACE|INSERT)\s+INTO\b/gi, cmd);
 
         const units = [...$('seii-units').children].map(div => ({
