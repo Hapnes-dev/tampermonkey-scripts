@@ -585,6 +585,12 @@
                           "file":  "INEPRO_Meter_PRO_380-v1.sql"
                       },
                       {
+                          "name":  "Intarcon_modbus",
+                          "display_name":  "Intarcon Modbus (chiller)",
+                          "driver_type":  "INTARCON",
+                          "file":  "Intarcon_modbus.sql"
+                      },
+                      {
                           "name":  "IntesisBox_Modbus_Mitsubishi-v1",
                           "display_name":  "IntesisBox Modbus Mitsubishi v1",
                           "driver_type":  "IntesisBox",
