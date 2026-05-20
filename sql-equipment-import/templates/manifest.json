@@ -513,6 +513,12 @@
                           "file":  "EDMK_energimÃƒÂ¥ler-v1.sql"
                       },
                       {
+                          "name":  "ekc_202c",
+                          "display_name":  "EKC 202C (Danfoss AKCC250)",
+                          "driver_type":  "AKCC250",
+                          "file":  "ekc_202c.sql"
+                      },
+                      {
                           "name":  "Eliwell_978_V3",
                           "display_name":  "Eliwell 978 V3",
                           "driver_type":  "Eliwell",
