@@ -47,6 +47,33 @@ If your Rocketlane tenant is not `kiona.rocketlane.com`:
 1. Replace `kiona` in the `@match` directives at the top of the script.
 2. Update the `TENANT_API` constant inside the script body to point at your tenant's API host.
 
+## Manual session capture (fallback)
+
+The script auto-captures your api key + userId on every visit to
+`kiona.rocketlane.com` by reading `localStorage.__api_key`. If that ever
+fails (rare — usually a privacy extension blocking storage access), you
+can grab the values manually:
+
+1. Open `https://kiona.rocketlane.com` while logged in.
+2. Open DevTools → Console.
+3. Run:
+   ```js
+   JSON.parse(localStorage.__api_key)
+   // → ["api_key", "<uuid>", <userId>, <accountId>]
+   ```
+4. Copy the `<uuid>` (second element) and `<userId>` (the integer).
+5. Open Tampermonkey dashboard → click the **Rocketlane Chat Bridge**
+   row → **Storage** tab, then set these values:
+   - `rlApiKey` → the uuid string
+   - `rlUserId` → the userId number
+   - `rlApiKeyCapturedAt` → `Date.now()` (any integer works)
+6. Refresh the tracker — chat, attachments, and notifications will work
+   without you having to keep the Rocketlane tab open.
+
+The api-key rotates occasionally. If chat suddenly errors with 401, just
+revisit `kiona.rocketlane.com` once — auto-capture will refresh both
+values transparently.
+
 ## Troubleshooting
 
 | Symptom | Fix |
