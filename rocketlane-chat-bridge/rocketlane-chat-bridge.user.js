@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.5
-// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot APIs to the local Project Progress Tracker, bypassing CORS.
+// @version      1.9.6
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -13,6 +13,9 @@
 // @match        https://app.oneflow.com/*
 // @match        https://app.hubspot.com/*
 // @match        https://app-eu1.hubspot.com/*
+// @match        https://eu.younium.com/*
+// @match        https://us.younium.com/*
+// @match        https://app.younium.com/*
 // @match        file:///*
 // @match        https://hapnes-dev.github.io/Project-Progress-Tracker/*
 // @grant        GM_xmlhttpRequest
@@ -24,6 +27,9 @@
 // @connect      app.oneflow.com
 // @connect      app.hubspot.com
 // @connect      app-eu1.hubspot.com
+// @connect      auth.eu.younium.com
+// @connect      auth.us.younium.com
+// @connect      api.younium.com
 // @connect      s3.us-east-1.amazonaws.com
 // @connect      s3.amazonaws.com
 // @connect      amazonaws.com
@@ -58,6 +64,14 @@
   // Every API call requires portalId in the query string + csrf header
   // from the `hubspotapi-csrf` cookie. CSRF + portal are captured on
   // hubspot pages and stored in GM storage.
+
+  // Younium uses Frontegg auth — no token is stored anywhere readable
+  // by JS. Instead, the bridge mints a fresh access token on demand by
+  // POSTing to /frontegg/.../token/refresh with the HttpOnly refresh
+  // cookie. The minted access token is a 24h JWT that we cache in GM
+  // storage with an expiry timestamp. On API calls, we use it as a
+  // Bearer token against api.younium.com.
+  const YOUNIUM_API = "https://api.younium.com";
 
   // ──────────────────────────────────────────────────────────────────────────
   // Side A — On Rocketlane: capture the api-key from localStorage.
@@ -172,6 +186,30 @@
   //   • hubspotapi-csrf cookie value, echoed as X-HubSpot-CSRF-hubspotapi
   // The session cookie is HttpOnly so the browser handles it.
   // ──────────────────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Side A5 — On Younium: remember the hublet region (eu / us).
+  // Younium's API host is api.younium.com (global) but the AUTH host is
+  // region-specific (auth.eu.younium.com vs auth.us.younium.com). We
+  // capture which region the user is in so the bridge can call the
+  // right refresh endpoint.
+  // No token is captured here — the bridge mints one on demand from
+  // the HttpOnly refresh cookie when it needs to call api.younium.com.
+  // ──────────────────────────────────────────────────────────────────────────
+  if (/(?:^|\.)younium\.com$/i.test(location.hostname)) {
+    try {
+      // eu.younium.com → "eu", us.younium.com → "us", app.younium.com → unknown
+      const m = location.hostname.match(/^(eu|us)\.younium\.com$/i);
+      if (m) {
+        const region = m[1].toLowerCase();
+        if (region !== GM_getValue("ynRegion", "")) {
+          GM_setValue("ynRegion", region);
+          GM_setValue("ynRegionCapturedAt", Date.now());
+        }
+      }
+    } catch (_) {}
+    return; // don't run the bridge side here
+  }
+
   if (location.hostname === "app.hubspot.com" || location.hostname === "app-eu1.hubspot.com") {
     function captureHubSpotState() {
       try {
@@ -601,6 +639,138 @@
       }
       GM_xmlhttpRequest(init);
     });
+  }
+
+  /**
+   * Mint a fresh Younium access token by calling the Frontegg refresh
+   * endpoint with the HttpOnly refresh cookie. Returns the access token
+   * string and caches it (+ expiry) in GM storage.
+   * Cooldown: max once every 30s to avoid stampeding the refresh API.
+   */
+  let ynRefreshInFlight = null;
+  let ynLastRefreshAttempt = 0;
+  function gmYouniumRefreshToken() {
+    if (ynRefreshInFlight) return ynRefreshInFlight;
+    const now = Date.now();
+    if (now - ynLastRefreshAttempt < 30 * 1000) {
+      // Recent failure — don't retry yet.
+      const cached = GM_getValue("ynAccessToken", "");
+      if (cached) return Promise.resolve(cached);
+    }
+    ynLastRefreshAttempt = now;
+    const region = GM_getValue("ynRegion", "eu"); // default to EU
+    const authHost = "https://auth." + region + ".younium.com";
+    ynRefreshInFlight = new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: authHost + "/frontegg/identity/resources/auth/v1/user/token/refresh",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        data: "{}",
+        timeout: 20000,
+        anonymous: false,
+        onload: (res) => {
+          if (res.status < 200 || res.status >= 300) {
+            reject(new Error(
+              "HTTP " + res.status +
+              ": Younium session expired or missing. Open https://" + region +
+              ".younium.com once while logged in, then try again.",
+            ));
+            return;
+          }
+          try {
+            const j = JSON.parse(res.responseText || "{}");
+            const token = String(j?.accessToken ?? "").trim();
+            if (!token) {
+              reject(new Error("Younium refresh returned no accessToken."));
+              return;
+            }
+            // Cache + record expiry. expiresIn is in seconds.
+            const ttlMs = Math.max(60_000, Number(j.expiresIn || 0) * 1000);
+            const expiresAt = Date.now() + ttlMs;
+            GM_setValue("ynAccessToken", token);
+            GM_setValue("ynAccessTokenExpiresAt", expiresAt);
+            GM_setValue("ynAccessTokenCapturedAt", Date.now());
+            resolve(token);
+          } catch (e) {
+            reject(new Error("Younium refresh parse failed: " + (e?.message ?? e)));
+          }
+        },
+        onerror: () => reject(new Error("Network error reaching Younium auth")),
+        ontimeout: () => reject(new Error("Younium auth timed out")),
+      });
+    }).finally(() => {
+      // Allow another refresh attempt later
+      setTimeout(() => { ynRefreshInFlight = null; }, 0);
+    });
+    return ynRefreshInFlight;
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the Younium API.
+   *
+   * Auth: ensures a fresh access token (refreshes if absent or within
+   * 60s of expiry), then sends `Authorization: Bearer <token>` against
+   * api.younium.com. On 401, refreshes once and retries.
+   *
+   *   await YouniumBridge.apiRequest("GET", "/api/user/profile");
+   *
+   * @param {string} method
+   * @param {string} path   Relative to https://api.younium.com, OR absolute.
+   * @param {object} [body] JSON body for non-GET requests.
+   */
+  async function gmYouniumRequest(method, path, body) {
+    const url = /^https?:/i.test(path) ? path : (YOUNIUM_API + (path.startsWith("/") ? path : "/" + path));
+
+    // Use cached token if it's not about to expire; otherwise refresh.
+    let token = GM_getValue("ynAccessToken", "");
+    const expiresAt = Number(GM_getValue("ynAccessTokenExpiresAt", 0));
+    const expiringSoon = !expiresAt || (Date.now() > expiresAt - 60_000);
+    if (!token || expiringSoon) {
+      token = await gmYouniumRefreshToken();
+    }
+
+    const send = (t) => new Promise((resolve, reject) => {
+      const headers = {
+        accept: "application/json",
+        Authorization: "Bearer " + t,
+      };
+      const init = {
+        method: String(method ?? "GET").toUpperCase(),
+        url,
+        headers,
+        timeout: 20000,
+        anonymous: false,
+        onload: (res) => resolve({ status: res.status, text: res.responseText || "" }),
+        onerror: () => reject(new Error("Network error reaching Younium API")),
+        ontimeout: () => reject(new Error("Younium API timed out")),
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
+    });
+
+    let res = await send(token);
+    if (res.status === 401) {
+      // Token rejected — try a one-shot refresh + retry.
+      try {
+        token = await gmYouniumRefreshToken();
+        res = await send(token);
+      } catch (_) {/* fall through to error below */}
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        "HTTP " + res.status +
+        ": Younium session expired. Open https://" + GM_getValue("ynRegion", "eu") +
+        ".younium.com once while logged in to refresh, then try again.",
+      );
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
+    }
+    if (!res.text) return null;
+    try { return JSON.parse(res.text); } catch { return null; }
   }
 
   function gmFetch(url) {
@@ -1303,12 +1473,54 @@
     },
   };
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // YouniumBridge — Frontegg JWT auth. Bridge mints fresh access
+  // tokens via /frontegg/.../token/refresh using the HttpOnly refresh
+  // cookie (no token stored on the page side; bridge holds the
+  // 24h-lived access token in GM storage with an expiry timestamp).
+  // ──────────────────────────────────────────────────────────────────────────
+  target.YouniumBridge = {
+    isAvailable: true,
+    version: "1.0.0-tampermonkey",
+    /**
+     * Generic CORS-bypassing Younium API call.
+     * @param {string} method
+     * @param {string} path   Relative to https://api.younium.com, or absolute.
+     * @param {object} [body] JSON body for non-GET requests.
+     */
+    async apiRequest(method, path, body) {
+      return await gmYouniumRequest(method, path, body);
+    },
+    /** Force a token refresh (on-demand). Returns the new access token string. */
+    async refreshToken() {
+      return await gmYouniumRefreshToken();
+    },
+    /** Currently logged-in Younium user — proof session is valid. */
+    async getCurrentUser() {
+      return await gmYouniumRequest("GET", "/api/user/profile");
+    },
+    /** Diagnostic: token cache status + region. */
+    async getTokenStatus() {
+      const token = GM_getValue("ynAccessToken", "");
+      const expiresAt = GM_getValue("ynAccessTokenExpiresAt", 0);
+      const capturedAt = GM_getValue("ynAccessTokenCapturedAt", 0);
+      return {
+        hasToken: !!token,
+        region: GM_getValue("ynRegion", "") || null,
+        capturedAt: capturedAt || null,
+        expiresAt: expiresAt || null,
+        msUntilExpiry: expiresAt ? (expiresAt - Date.now()) : null,
+      };
+    },
+  };
+
   // Notify the tracker page in case it's listening
   try {
     target.dispatchEvent(new CustomEvent("rocketlane-bridge-ready"));
     target.dispatchEvent(new CustomEvent("zendesk-bridge-ready"));
     target.dispatchEvent(new CustomEvent("oneflow-bridge-ready"));
     target.dispatchEvent(new CustomEvent("hubspot-bridge-ready"));
+    target.dispatchEvent(new CustomEvent("younium-bridge-ready"));
   } catch (_) {}
 
   // Verify the assignment actually landed on the page's real window
@@ -1561,6 +1773,61 @@
         target.dispatchEvent(new CustomEvent(hRespEvt, { detail: { id, value } }));
       } catch (err) {
         target.dispatchEvent(new CustomEvent(hRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
+      }
+    });
+
+    // Parallel forwarder for YouniumBridge.
+    const yReqEvt  = "youniumBridgeReq";
+    const yRespEvt = "youniumBridgeResp";
+    const yShim = document.createElement("script");
+    const yMethodList = Object.keys(target.YouniumBridge || {}).filter(
+      (k) => typeof target.YouniumBridge[k] === "function",
+    );
+    const yProps = {
+      version: target.YouniumBridge?.version,
+      isAvailable: !!target.YouniumBridge?.isAvailable,
+    };
+    yShim.textContent = `
+      (function () {
+        if (window.YouniumBridge) return;
+        const methods = ${JSON.stringify(yMethodList)};
+        const props   = ${JSON.stringify(yProps)};
+        const reqEvt  = ${JSON.stringify(yReqEvt)};
+        const respEvt = ${JSON.stringify(yRespEvt)};
+        const pending = new Map();
+        let seq = 0;
+        window.addEventListener(respEvt, (e) => {
+          const d = e.detail || {};
+          const p = pending.get(d.id);
+          if (!p) return;
+          pending.delete(d.id);
+          if (d.error) p.reject(new Error(d.error));
+          else p.resolve(d.value);
+        });
+        const bridge = { ...props };
+        for (const m of methods) {
+          bridge[m] = function (...args) {
+            return new Promise((resolve, reject) => {
+              const id = ++seq;
+              pending.set(id, { resolve, reject });
+              window.dispatchEvent(new CustomEvent(reqEvt, { detail: { id, method: m, args } }));
+            });
+          };
+        }
+        window.YouniumBridge = bridge;
+      })();
+    `;
+    (document.head || document.documentElement).appendChild(yShim);
+    yShim.remove();
+
+    target.addEventListener(yReqEvt, async (e) => {
+      const { id, method, args } = e.detail || {};
+      try {
+        const fn = target.YouniumBridge[method];
+        const value = typeof fn === "function" ? await fn.apply(target.YouniumBridge, args || []) : null;
+        target.dispatchEvent(new CustomEvent(yRespEvt, { detail: { id, value } }));
+      } catch (err) {
+        target.dispatchEvent(new CustomEvent(yRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
       }
     });
   });
