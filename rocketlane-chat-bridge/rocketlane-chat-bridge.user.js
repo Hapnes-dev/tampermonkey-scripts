@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.4
+// @version      1.9.5
 // @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
@@ -1246,6 +1246,48 @@
       // We don't know the userId from outside, so fall back to a generic
       // hub-user-info call that the web app uses on bootstrap.
       return await gmHubSpotRequest("GET", "/login-verify/hub-user-info?early=true");
+    },
+    /**
+     * Search HubSpot CRM for objects of a given type.
+     *
+     * objectTypeId conventions: "0-1" = Contacts, "0-2" = Companies,
+     * "0-3" = Deals, "0-5" = Tickets.
+     *
+     *   await HubSpotBridge.searchCrm("0-3", "3299", { properties: ["dealname"] });
+     *
+     * @param {string} objectTypeId
+     * @param {string} query
+     * @param {{ count?: number, offset?: number, properties?: string[] }} [opts]
+     */
+    async searchCrm(objectTypeId, query, opts) {
+      const count = opts?.count ?? 10;
+      const offset = opts?.offset ?? 0;
+      const props = opts?.properties || [];
+      return await gmHubSpotRequest("POST", "/crm-search/search", {
+        objectTypeId,
+        query: String(query ?? ""),
+        count,
+        offset,
+        requestOptions: {
+          properties: props,
+          includeAllProperties: false,
+        },
+      });
+    },
+    /**
+     * Convenience: search deals by free text. Returns the standard
+     * { results, total, hasMore, offset } shape. `requestProperties`
+     * lets the caller customize which properties come back (default:
+     * the common set used for matching + display).
+     */
+    async searchDeals(query, opts) {
+      return await this.searchCrm("0-3", query, {
+        count: opts?.count ?? 10,
+        properties: opts?.properties ?? [
+          "dealname", "dealstage", "amount", "closedate",
+          "hs_lastmodifieddate", "pipeline",
+        ],
+      });
     },
     /** Diagnostic: state-capture status. */
     async getCsrfStatus() {
