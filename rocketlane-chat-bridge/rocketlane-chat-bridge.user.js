@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.3
-// @description  Bridges Rocketlane + Zendesk + Oneflow APIs to the local Project Progress Tracker, bypassing CORS.
+// @version      1.9.4
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -11,6 +11,8 @@
 // @match        https://kiona.rocketlane.com/*
 // @match        https://iwmac.zendesk.com/*
 // @match        https://app.oneflow.com/*
+// @match        https://app.hubspot.com/*
+// @match        https://app-eu1.hubspot.com/*
 // @match        file:///*
 // @match        https://hapnes-dev.github.io/Project-Progress-Tracker/*
 // @grant        GM_xmlhttpRequest
@@ -20,6 +22,8 @@
 // @connect      kiona.api.rocketlane.com
 // @connect      iwmac.zendesk.com
 // @connect      app.oneflow.com
+// @connect      app.hubspot.com
+// @connect      app-eu1.hubspot.com
 // @connect      s3.us-east-1.amazonaws.com
 // @connect      s3.amazonaws.com
 // @connect      amazonaws.com
@@ -48,6 +52,12 @@
   // X-XSRF-Token automatically on writes.
   const ONEFLOW_HOST = "https://app.oneflow.com";
   const ONEFLOW_API  = ONEFLOW_HOST + "/api";
+  // HubSpot has two regional hublets — US (app.hubspot.com) and EU
+  // (app-eu1.hubspot.com). The captured host below tracks which one the
+  // user is logged into so the bridge calls the right region.
+  // Every API call requires portalId in the query string + csrf header
+  // from the `hubspotapi-csrf` cookie. CSRF + portal are captured on
+  // hubspot pages and stored in GM storage.
 
   // ──────────────────────────────────────────────────────────────────────────
   // Side A — On Rocketlane: capture the api-key from localStorage.
@@ -150,6 +160,51 @@
     // Refresh every 60s — Oneflow rotates the token periodically and
     // we want the bridge to have a fresh value when writes happen.
     setInterval(captureOneflowXsrf, 60 * 1000);
+    return; // don't run the bridge side here
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Side A4 — On HubSpot: capture the hublet host + portal ID + CSRF token.
+  // HubSpot has TWO regional hublets (app.hubspot.com / app-eu1.hubspot.com)
+  // and every internal API call needs:
+  //   • The right hublet host (so requests reach the user's region)
+  //   • portalId query param (extracted from the URL — most paths embed it)
+  //   • hubspotapi-csrf cookie value, echoed as X-HubSpot-CSRF-hubspotapi
+  // The session cookie is HttpOnly so the browser handles it.
+  // ──────────────────────────────────────────────────────────────────────────
+  if (location.hostname === "app.hubspot.com" || location.hostname === "app-eu1.hubspot.com") {
+    function captureHubSpotState() {
+      try {
+        // Hublet host (us vs eu) is just the page's origin.
+        const host = location.origin; // e.g. "https://app-eu1.hubspot.com"
+        if (host !== GM_getValue("hsHost", "")) GM_setValue("hsHost", host);
+
+        // Portal ID: scrape any /<digits>/ segment from the URL path.
+        // Examples: /global-home/8805657, /contacts/8805657/objects/0-1/...
+        const portalMatch = location.pathname.match(/\/(\d{6,10})(?:\/|$)/);
+        if (portalMatch) {
+          const portalId = portalMatch[1];
+          if (portalId !== GM_getValue("hsPortalId", "")) GM_setValue("hsPortalId", portalId);
+        }
+
+        // CSRF cookie — NOT HttpOnly, readable via document.cookie.
+        const raw = document.cookie || "";
+        const entry = raw.split(";").map((s) => s.trim()).find((s) => s.startsWith("hubspotapi-csrf="));
+        if (entry) {
+          const value = decodeURIComponent(entry.slice("hubspotapi-csrf=".length));
+          if (value && value !== GM_getValue("hsCsrfToken", "")) {
+            GM_setValue("hsCsrfToken", value);
+            GM_setValue("hsCsrfCapturedAt", Date.now());
+          }
+        }
+      } catch (_) {}
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", captureHubSpotState);
+    } else {
+      captureHubSpotState();
+    }
+    setInterval(captureHubSpotState, 60 * 1000);
     return; // don't run the bridge side here
   }
 
@@ -452,6 +507,93 @@
         },
         onerror: () => reject(new Error("Network error reaching Oneflow API")),
         ontimeout: () => reject(new Error("Oneflow API timed out")),
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
+    });
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the HubSpot internal API.
+   *
+   * Auth mechanics:
+   *   • Session cookie (HttpOnly) — browser auto-attaches via GM_xmlhttpRequest.
+   *   • Per-call CSRF: X-HubSpot-CSRF-hubspotapi header echoes the
+   *     `hubspotapi-csrf` cookie value.
+   *   • Every call needs portalId in the query string. The bridge auto-
+   *     injects it if not already present.
+   *
+   *   await HubSpotBridge.apiRequest("GET", "/properties/v4/groups/0-1/properties");
+   *
+   * @param {string} method
+   * @param {string} path   Relative to /api, OR an absolute URL.
+   * @param {object} [body] JSON body for non-GET requests.
+   */
+  async function gmHubSpotRequest(method, path, body) {
+    const host = GM_getValue("hsHost", "");
+    const portalId = GM_getValue("hsPortalId", "");
+    const csrf = GM_getValue("hsCsrfToken", "");
+    if (!host || !portalId) {
+      throw new Error(
+        "HubSpot state not captured yet. Open https://app.hubspot.com (or app-eu1.hubspot.com) once while logged in, then retry.",
+      );
+    }
+    // Build the full URL. Inject portalId as query param if missing.
+    let url;
+    if (/^https?:/i.test(path)) {
+      url = path;
+    } else {
+      const prefix = path.startsWith("/api") ? "" : "/api";
+      url = host + prefix + path;
+    }
+    if (!/[?&]portalId=/i.test(url)) {
+      url += (url.includes("?") ? "&" : "?") + "portalId=" + encodeURIComponent(portalId);
+    }
+
+    const upper = String(method ?? "GET").toUpperCase();
+    const extraHeaders = {};
+    if (upper !== "GET" && upper !== "HEAD") {
+      if (csrf) {
+        extraHeaders["X-HubSpot-CSRF-hubspotapi"] = csrf;
+      } else {
+        throw new Error(
+          "HubSpot CSRF token not captured. Visit any HubSpot page while logged in to refresh.",
+        );
+      }
+    }
+
+    return new Promise((resolve, reject) => {
+      const headers = Object.assign({ accept: "application/json" }, extraHeaders);
+      const init = {
+        method: upper,
+        url,
+        headers,
+        timeout: 20000,
+        anonymous: false, // include cookies
+        onload: (res) => {
+          const status = res.status;
+          const text = res.responseText || "";
+          if (status === 401 || status === 403) {
+            reject(new Error(
+              "HTTP " + status +
+              ": HubSpot session expired or missing. Open https://app" +
+              (host.includes("eu1") ? "-eu1" : "") +
+              ".hubspot.com once while logged in, then try again.",
+            ));
+            return;
+          }
+          if (status < 200 || status >= 300) {
+            reject(new Error("HTTP " + status + ": " + text.slice(0, 300)));
+            return;
+          }
+          if (!text) { resolve(null); return; }
+          try { resolve(JSON.parse(text)); } catch { resolve(null); }
+        },
+        onerror: () => reject(new Error("Network error reaching HubSpot API")),
+        ontimeout: () => reject(new Error("HubSpot API timed out")),
       };
       if (body !== undefined && body !== null) {
         headers["content-type"] = "application/json";
@@ -1072,11 +1214,59 @@
     },
   };
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // HubSpotBridge — session-cookie + per-call CSRF. Portal ID + hublet
+  // host are captured separately because HubSpot has US and EU regions
+  // and every API call needs them in the URL.
+  // ──────────────────────────────────────────────────────────────────────────
+  target.HubSpotBridge = {
+    isAvailable: true,
+    version: "1.0.0-tampermonkey",
+    /**
+     * Generic CORS-bypassing HubSpot API call.
+     * @param {string} method
+     * @param {string} path   Relative to /api, or an absolute URL.
+     * @param {object} [body] JSON body for non-GET requests.
+     */
+    async apiRequest(method, path, body) {
+      return await gmHubSpotRequest(method, path, body);
+    },
+    /**
+     * Currently logged-in HubSpot user context. The Login UI's
+     * /api/login-requirements endpoint works without portal scope so
+     * we use it here as a session-validity probe.
+     */
+    async getCurrentUser() {
+      const portalId = GM_getValue("hsPortalId", "");
+      const host = GM_getValue("hsHost", "");
+      if (!host || !portalId) {
+        throw new Error("HubSpot state not captured. Open a HubSpot page once.");
+      }
+      // The login-requirements endpoint takes user/portal in the path.
+      // We don't know the userId from outside, so fall back to a generic
+      // hub-user-info call that the web app uses on bootstrap.
+      return await gmHubSpotRequest("GET", "/login-verify/hub-user-info?early=true");
+    },
+    /** Diagnostic: state-capture status. */
+    async getCsrfStatus() {
+      const token = GM_getValue("hsCsrfToken", "");
+      const capturedAt = GM_getValue("hsCsrfCapturedAt", 0);
+      return {
+        hasToken: !!token,
+        host: GM_getValue("hsHost", "") || null,
+        portalId: GM_getValue("hsPortalId", "") || null,
+        capturedAt: capturedAt || null,
+        ageMs: capturedAt ? (Date.now() - capturedAt) : null,
+      };
+    },
+  };
+
   // Notify the tracker page in case it's listening
   try {
     target.dispatchEvent(new CustomEvent("rocketlane-bridge-ready"));
     target.dispatchEvent(new CustomEvent("zendesk-bridge-ready"));
     target.dispatchEvent(new CustomEvent("oneflow-bridge-ready"));
+    target.dispatchEvent(new CustomEvent("hubspot-bridge-ready"));
   } catch (_) {}
 
   // Verify the assignment actually landed on the page's real window
@@ -1274,6 +1464,61 @@
         target.dispatchEvent(new CustomEvent(oRespEvt, { detail: { id, value } }));
       } catch (err) {
         target.dispatchEvent(new CustomEvent(oRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
+      }
+    });
+
+    // Parallel forwarder for HubSpotBridge — same isolated-world fallback.
+    const hReqEvt  = "hubspotBridgeReq";
+    const hRespEvt = "hubspotBridgeResp";
+    const hShim = document.createElement("script");
+    const hMethodList = Object.keys(target.HubSpotBridge || {}).filter(
+      (k) => typeof target.HubSpotBridge[k] === "function",
+    );
+    const hProps = {
+      version: target.HubSpotBridge?.version,
+      isAvailable: !!target.HubSpotBridge?.isAvailable,
+    };
+    hShim.textContent = `
+      (function () {
+        if (window.HubSpotBridge) return;
+        const methods = ${JSON.stringify(hMethodList)};
+        const props   = ${JSON.stringify(hProps)};
+        const reqEvt  = ${JSON.stringify(hReqEvt)};
+        const respEvt = ${JSON.stringify(hRespEvt)};
+        const pending = new Map();
+        let seq = 0;
+        window.addEventListener(respEvt, (e) => {
+          const d = e.detail || {};
+          const p = pending.get(d.id);
+          if (!p) return;
+          pending.delete(d.id);
+          if (d.error) p.reject(new Error(d.error));
+          else p.resolve(d.value);
+        });
+        const bridge = { ...props };
+        for (const m of methods) {
+          bridge[m] = function (...args) {
+            return new Promise((resolve, reject) => {
+              const id = ++seq;
+              pending.set(id, { resolve, reject });
+              window.dispatchEvent(new CustomEvent(reqEvt, { detail: { id, method: m, args } }));
+            });
+          };
+        }
+        window.HubSpotBridge = bridge;
+      })();
+    `;
+    (document.head || document.documentElement).appendChild(hShim);
+    hShim.remove();
+
+    target.addEventListener(hReqEvt, async (e) => {
+      const { id, method, args } = e.detail || {};
+      try {
+        const fn = target.HubSpotBridge[method];
+        const value = typeof fn === "function" ? await fn.apply(target.HubSpotBridge, args || []) : null;
+        target.dispatchEvent(new CustomEvent(hRespEvt, { detail: { id, value } }));
+      } catch (err) {
+        target.dispatchEvent(new CustomEvent(hRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
       }
     });
   });
