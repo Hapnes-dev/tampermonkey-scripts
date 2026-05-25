@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.7
+// @version      1.9.8
 // @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
@@ -486,62 +486,25 @@
   }
 
   /**
-   * Generic CORS-bypassing HTTP call to the Oneflow API.
-   *
-   * Auth mechanics:
-   *   • Session cookie (HttpOnly) — browser auto-attaches via GM_xmlhttpRequest.
-   *   • For non-GET methods, X-XSRF-Token header is required. We pull the
-   *     value from GM storage (set by the Oneflow-side capture above).
-   *
-   *   await OneflowBridge.apiRequest("GET", "/positions/me");
-   *   await OneflowBridge.apiRequest("GET", "/collections/?limit=10");
-   *
-   * @param {string} method
-   * @param {string} path   Relative to /api, OR an absolute URL.
-   * @param {object} [body] JSON body for non-GET requests.
+   * Single-shot Oneflow call. Lets the caller decide retry policy.
+   * Resolves with the raw {status, text, json} envelope (does NOT throw
+   * on 4xx) so gmOneflowRequest can branch on status.
    */
-  async function gmOneflowRequest(method, path, body) {
-    const url = /^https?:/i.test(path) ? path : (ONEFLOW_API + path);
-    const upper = String(method ?? "GET").toUpperCase();
-    const extraHeaders = {};
-    if (upper !== "GET" && upper !== "HEAD") {
-      const xsrf = GM_getValue("ofXsrfToken", "");
-      if (xsrf) {
-        // Oneflow accepts both X-XSRF-Token (Spring-style) and xsrf-token
-        // header names. We send X-XSRF-Token which is the more common
-        // convention; if Oneflow ever rejects it, switch to the lowercase
-        // variant.
-        extraHeaders["X-XSRF-Token"] = xsrf;
-      } else {
-        throw new Error(
-          "Oneflow CSRF token not captured yet. Open https://app.oneflow.com once while logged in (any page), then retry.",
-        );
-      }
-    }
+  function gmOneflowSendRaw(method, url, body, extraHeaders) {
     return new Promise((resolve, reject) => {
-      const headers = Object.assign({ accept: "application/json" }, extraHeaders);
+      const headers = Object.assign({ accept: "application/json" }, extraHeaders || {});
       const init = {
-        method: upper,
+        method: String(method ?? "GET").toUpperCase(),
         url,
         headers,
         timeout: 20000,
-        anonymous: false, // include cookies
+        anonymous: false,
         onload: (res) => {
           const status = res.status;
           const text = res.responseText || "";
-          if (status === 401 || status === 403) {
-            reject(new Error(
-              "HTTP " + status +
-              ": Oneflow session expired or missing. Open https://app.oneflow.com once while logged in, then try again.",
-            ));
-            return;
-          }
-          if (status < 200 || status >= 300) {
-            reject(new Error("HTTP " + status + ": " + text.slice(0, 300)));
-            return;
-          }
-          if (!text) { resolve(null); return; }
-          try { resolve(JSON.parse(text)); } catch { resolve(null); }
+          let json = null;
+          if (text) { try { json = JSON.parse(text); } catch { /* non-JSON */ } }
+          resolve({ status, json, text });
         },
         onerror: () => reject(new Error("Network error reaching Oneflow API")),
         ontimeout: () => reject(new Error("Oneflow API timed out")),
@@ -554,8 +517,204 @@
     });
   }
 
+  // Coalesce concurrent renew attempts so a burst of N failed Oneflow
+  // calls doesn't fan out N parallel warmups.
+  /** @type {Promise<boolean> | null} */
+  let oneflowRenewInFlight = null;
+  let oneflowLastRenewAttempt = 0;
+  const ONEFLOW_RENEW_COOLDOWN_MS = 5000;
+
   /**
-   * Generic CORS-bypassing HTTP call to the HubSpot internal API.
+   * Try to nudge Oneflow into refreshing the session + CSRF cookies.
+   * Oneflow doesn't expose a dedicated renew header (unlike Zendesk),
+   * but its SPA pings /positions/me on most page loads, and that
+   * response sets a fresh xsrf-token cookie when the current one is
+   * about to rotate. The browser cookie jar (which GM_xmlhttpRequest
+   * uses) picks the new value up automatically.
+   *
+   * If the user has an app.oneflow.com tab open in the same browser,
+   * the on-site capture script picks the rotated cookie up within 60s
+   * and writes it back to GM storage. We wait briefly for that as a
+   * best-effort, but if no Oneflow tab is open we still gain the cookie
+   * refresh inside this script's GM_xmlhttpRequest cookie jar.
+   *
+   * Resolves with `true` if the warmup returned 2xx (session is alive),
+   * `false` otherwise.
+   */
+  function oneflowRenewSession() {
+    if (oneflowRenewInFlight) return oneflowRenewInFlight;
+    const now = Date.now();
+    if (now - oneflowLastRenewAttempt < ONEFLOW_RENEW_COOLDOWN_MS) {
+      // Recent attempt; don't hammer Oneflow.
+      return Promise.resolve(false);
+    }
+    oneflowLastRenewAttempt = now;
+    oneflowRenewInFlight = (async () => {
+      try {
+        const res = await gmOneflowSendRaw("GET", ONEFLOW_API + "/positions/me", null, null);
+        const ok = res.status >= 200 && res.status < 300;
+        if (ok) {
+          // Give the on-site capture script a brief chance to re-read
+          // the rotated xsrf-token cookie. 800ms is plenty for the
+          // captureOneflowXsrf interval (which runs every 60s but also
+          // synchronously on cookie-read).
+          await new Promise((r) => setTimeout(r, 800));
+        }
+        return ok;
+      } catch (_) {
+        return false;
+      } finally {
+        setTimeout(() => { oneflowRenewInFlight = null; }, 0);
+      }
+    })();
+    return oneflowRenewInFlight;
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the Oneflow API with automatic
+   * session renewal on 401.
+   *
+   * Auth mechanics:
+   *   • Session cookie (HttpOnly) — browser auto-attaches via GM_xmlhttpRequest.
+   *   • For non-GET methods, X-XSRF-Token header is required. We pull the
+   *     value from GM storage (set by the Oneflow-side capture above).
+   *
+   * Retry policy:
+   *   1. First attempt — plain request with whatever CSRF we have cached.
+   *   2. On 401, fire a warmup GET to /positions/me; if it succeeds,
+   *      re-read xsrf-token from GM storage (it may have rotated) and
+   *      retry the original call once.
+   *   3. If still 401/403, surface a clear "open Oneflow while logged in"
+   *      error.
+   *
+   *   await OneflowBridge.apiRequest("GET", "/positions/me");
+   *   await OneflowBridge.apiRequest("GET", "/collections/?limit=10");
+   *
+   * @param {string} method
+   * @param {string} path   Relative to /api, OR an absolute URL.
+   * @param {object} [body] JSON body for non-GET requests.
+   */
+  async function gmOneflowRequest(method, path, body) {
+    const url = /^https?:/i.test(path) ? path : (ONEFLOW_API + path);
+    const upper = String(method ?? "GET").toUpperCase();
+    const buildHeaders = () => {
+      const headers = {};
+      if (upper !== "GET" && upper !== "HEAD") {
+        const xsrf = GM_getValue("ofXsrfToken", "");
+        if (xsrf) {
+          // Oneflow accepts both X-XSRF-Token (Spring-style) and xsrf-token
+          // header names. X-XSRF-Token is the more common convention.
+          headers["X-XSRF-Token"] = xsrf;
+        }
+      }
+      return headers;
+    };
+
+    // First attempt
+    let res = await gmOneflowSendRaw(upper, url, body, buildHeaders());
+    if (res.status === 401 || res.status === 403) {
+      const renewed = await oneflowRenewSession();
+      if (renewed) {
+        // Re-read CSRF in case the on-site capture script just rotated it.
+        res = await gmOneflowSendRaw(upper, url, body, buildHeaders());
+      }
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        "HTTP " + res.status +
+        ": Oneflow session expired or missing. Open https://app.oneflow.com once while logged in, then try again.",
+      );
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
+    }
+    return res.json;
+  }
+
+  /**
+   * Single-shot HubSpot call. Lets the caller decide retry policy.
+   * Resolves with the raw {status, text, json} envelope (does NOT throw
+   * on 4xx) so gmHubSpotRequest can branch on status.
+   */
+  function gmHubSpotSendRaw(method, url, body, extraHeaders) {
+    return new Promise((resolve, reject) => {
+      const headers = Object.assign({ accept: "application/json" }, extraHeaders || {});
+      const init = {
+        method: String(method ?? "GET").toUpperCase(),
+        url,
+        headers,
+        timeout: 20000,
+        anonymous: false,
+        onload: (res) => {
+          const status = res.status;
+          const text = res.responseText || "";
+          let json = null;
+          if (text) { try { json = JSON.parse(text); } catch { /* non-JSON */ } }
+          resolve({ status, json, text });
+        },
+        onerror: () => reject(new Error("Network error reaching HubSpot API")),
+        ontimeout: () => reject(new Error("HubSpot API timed out")),
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
+    });
+  }
+
+  // Coalesce concurrent HubSpot renew attempts.
+  /** @type {Promise<boolean> | null} */
+  let hubspotRenewInFlight = null;
+  let hubspotLastRenewAttempt = 0;
+  const HUBSPOT_RENEW_COOLDOWN_MS = 5000;
+
+  /**
+   * Try to refresh the HubSpot session + CSRF cookie by pinging the
+   * lightweight login-information endpoint. The response sets fresh
+   * Set-Cookie headers if the underlying session is still valid (e.g.
+   * SSO-backed session). The on-site capture script then picks the
+   * rotated hubspotapi-csrf cookie up within 60s and writes it back to
+   * GM storage; we wait briefly to give it a chance.
+   *
+   * Resolves with `true` if the warmup returned 2xx (session is alive),
+   * `false` otherwise.
+   */
+  function hubspotRenewSession() {
+    if (hubspotRenewInFlight) return hubspotRenewInFlight;
+    const now = Date.now();
+    if (now - hubspotLastRenewAttempt < HUBSPOT_RENEW_COOLDOWN_MS) {
+      return Promise.resolve(false);
+    }
+    hubspotLastRenewAttempt = now;
+    hubspotRenewInFlight = (async () => {
+      try {
+        const host = GM_getValue("hsHost", "");
+        const portalId = GM_getValue("hsPortalId", "");
+        if (!host || !portalId) return false;
+        // login-information is cheap, always available, and doesn't
+        // require CSRF (it's a GET). HubSpot's SPA hits it on every page
+        // load, so it's a safe warmup target.
+        const url = host + "/api/login-verify/v1/info?portalId=" + encodeURIComponent(portalId);
+        const res = await gmHubSpotSendRaw("GET", url, null, null);
+        const ok = res.status >= 200 && res.status < 300;
+        if (ok) {
+          // Give the on-site capture a moment to re-read rotated CSRF.
+          await new Promise((r) => setTimeout(r, 800));
+        }
+        return ok;
+      } catch (_) {
+        return false;
+      } finally {
+        setTimeout(() => { hubspotRenewInFlight = null; }, 0);
+      }
+    })();
+    return hubspotRenewInFlight;
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the HubSpot internal API with
+   * automatic session renewal on 401.
    *
    * Auth mechanics:
    *   • Session cookie (HttpOnly) — browser auto-attaches via GM_xmlhttpRequest.
@@ -563,6 +722,14 @@
    *     `hubspotapi-csrf` cookie value.
    *   • Every call needs portalId in the query string. The bridge auto-
    *     injects it if not already present.
+   *
+   * Retry policy:
+   *   1. First attempt with cached host/portalId/csrf.
+   *   2. On 401/403, fire a warmup GET to /api/login-verify/v1/info; if
+   *      it succeeds, re-read CSRF from GM storage (may have rotated)
+   *      and retry once.
+   *   3. If still 401/403, surface a clear error pointing at the right
+   *      regional hublet.
    *
    *   await HubSpotBridge.apiRequest("GET", "/properties/v4/groups/0-1/properties");
    *
@@ -573,7 +740,6 @@
   async function gmHubSpotRequest(method, path, body) {
     const host = GM_getValue("hsHost", "");
     const portalId = GM_getValue("hsPortalId", "");
-    const csrf = GM_getValue("hsCsrfToken", "");
     if (!host || !portalId) {
       throw new Error(
         "HubSpot state not captured yet. Open https://app.hubspot.com (or app-eu1.hubspot.com) once while logged in, then retry.",
@@ -592,68 +758,56 @@
     }
 
     const upper = String(method ?? "GET").toUpperCase();
-    const extraHeaders = {};
-    if (upper !== "GET" && upper !== "HEAD") {
-      if (csrf) {
-        extraHeaders["X-HubSpot-CSRF-hubspotapi"] = csrf;
-      } else {
-        throw new Error(
-          "HubSpot CSRF token not captured. Visit any HubSpot page while logged in to refresh.",
-        );
+    const buildHeaders = () => {
+      const headers = {};
+      if (upper !== "GET" && upper !== "HEAD") {
+        const csrf = GM_getValue("hsCsrfToken", "");
+        if (csrf) headers["X-HubSpot-CSRF-hubspotapi"] = csrf;
+      }
+      return headers;
+    };
+
+    // First attempt
+    let res = await gmHubSpotSendRaw(upper, url, body, buildHeaders());
+    if (res.status === 401 || res.status === 403) {
+      const renewed = await hubspotRenewSession();
+      if (renewed) {
+        res = await gmHubSpotSendRaw(upper, url, body, buildHeaders());
       }
     }
-
-    return new Promise((resolve, reject) => {
-      const headers = Object.assign({ accept: "application/json" }, extraHeaders);
-      const init = {
-        method: upper,
-        url,
-        headers,
-        timeout: 20000,
-        anonymous: false, // include cookies
-        onload: (res) => {
-          const status = res.status;
-          const text = res.responseText || "";
-          if (status === 401 || status === 403) {
-            reject(new Error(
-              "HTTP " + status +
-              ": HubSpot session expired or missing. Open https://app" +
-              (host.includes("eu1") ? "-eu1" : "") +
-              ".hubspot.com once while logged in, then try again.",
-            ));
-            return;
-          }
-          if (status < 200 || status >= 300) {
-            reject(new Error("HTTP " + status + ": " + text.slice(0, 300)));
-            return;
-          }
-          if (!text) { resolve(null); return; }
-          try { resolve(JSON.parse(text)); } catch { resolve(null); }
-        },
-        onerror: () => reject(new Error("Network error reaching HubSpot API")),
-        ontimeout: () => reject(new Error("HubSpot API timed out")),
-      };
-      if (body !== undefined && body !== null) {
-        headers["content-type"] = "application/json";
-        init.data = typeof body === "string" ? body : JSON.stringify(body);
-      }
-      GM_xmlhttpRequest(init);
-    });
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        "HTTP " + res.status +
+        ": HubSpot session expired or missing. Open https://app" +
+        (host.includes("eu1") ? "-eu1" : "") +
+        ".hubspot.com once while logged in, then try again.",
+      );
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
+    }
+    return res.json;
   }
 
   /**
    * Mint a fresh Younium access token by calling the Frontegg refresh
    * endpoint with the HttpOnly refresh cookie. Returns the access token
    * string and caches it (+ expiry) in GM storage.
-   * Cooldown: max once every 30s to avoid stampeding the refresh API.
+   *
+   * Cooldown: passive refreshes (token "expiring soon" pre-flight check)
+   * skip if a recent refresh happened, to avoid stampeding the API.
+   * Active refreshes (forceRefresh=true after a 401) ALWAYS run — the
+   * cached token was just rejected, so handing it back would loop.
    */
   let ynRefreshInFlight = null;
   let ynLastRefreshAttempt = 0;
-  function gmYouniumRefreshToken() {
+  function gmYouniumRefreshToken(forceRefresh) {
     if (ynRefreshInFlight) return ynRefreshInFlight;
     const now = Date.now();
-    if (now - ynLastRefreshAttempt < 30 * 1000) {
-      // Recent failure — don't retry yet.
+    if (!forceRefresh && now - ynLastRefreshAttempt < 30 * 1000) {
+      // Recent passive refresh — reuse the cached token rather than
+      // hammering Frontegg. (forceRefresh callers from 401 retry skip
+      // this branch so a stale cache can't trap us in a loop.)
       const cached = GM_getValue("ynAccessToken", "");
       if (cached) return Promise.resolve(cached);
     }
@@ -757,9 +911,12 @@
 
     let res = await send(token);
     if (res.status === 401) {
-      // Token rejected — try a one-shot refresh + retry.
+      // Token rejected — force a fresh refresh (bypassing the 30s
+      // cooldown) and retry once. The cooldown is meant to prevent
+      // stampedes on passive expiry-soon refreshes; a 401 means the
+      // cached token is actually dead, so we must mint a new one.
       try {
-        token = await gmYouniumRefreshToken();
+        token = await gmYouniumRefreshToken(true);
         res = await send(token);
       } catch (_) {/* fall through to error below */}
     }
