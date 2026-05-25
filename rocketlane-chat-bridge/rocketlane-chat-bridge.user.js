@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.0
-// @description  Bridges Rocketlane + Zendesk APIs to the local Project Progress Tracker, bypassing CORS.
+// @version      1.9.1
+// @description  Bridges Rocketlane + Zendesk APIs to the local Project Progress Tracker, bypassing CORS. Auto-renews Zendesk session on 401.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -168,49 +168,32 @@
   }
 
   /**
-   * Generic CORS-bypassing HTTP call to the Zendesk API.
-   * Uses the SAME session cookie the user already has from being logged
-   * in at https://iwmac.zendesk.com — GM_xmlhttpRequest auto-attaches it.
-   * No tokens captured, no storage; if the user logs out of Zendesk in
-   * their browser, the bridge stops working until they log back in.
-   *
-   *   await ZendeskBridge.apiRequest("GET", "/tickets/196389.json");
-   *   await ZendeskBridge.apiRequest("PUT", "/tickets/196389.json", { ticket: { status: "solved" } });
+   * Single-shot Zendesk API call. Does NOT auto-retry on 401; the
+   * caller (gmZendeskRequest) handles the retry policy so we can layer
+   * a renew-session warm-up before the second attempt.
    *
    * @param {string} method
-   * @param {string} path   Relative to /api/v2, OR an absolute URL.
-   * @param {object} [body] JSON body for non-GET requests.
-   * @returns {Promise<any>}
+   * @param {string} url      Fully-resolved URL.
+   * @param {object|string|null} [body]
+   * @param {Record<string,string>} [extraHeaders]
+   * @returns {Promise<{status:number, json:any, text:string}>}
    */
-  function gmZendeskRequest(method, path, body) {
+  function gmZendeskSendRaw(method, url, body, extraHeaders) {
     return new Promise((resolve, reject) => {
-      const url = /^https?:/i.test(path) ? path : (ZENDESK_API + path);
-      const headers = { accept: "application/json" };
-      // X-CSRF-Token is required for non-GET methods on Zendesk. The
-      // session itself authenticates the request via cookies. The tracker
-      // can pass the CSRF token through from a Zendesk meta tag, OR the
-      // bridge could capture and forward it — but for read-only GETs we
-      // don't need it at all.
+      const headers = Object.assign({ accept: "application/json" }, extraHeaders || {});
       const init = {
         method,
         url,
         headers,
         timeout: 20000,
         // anonymous: false → include cookies for the target origin.
-        // (default behavior, but documenting it explicitly here)
         anonymous: false,
         onload: (res) => {
-          if (res.status === 401 || res.status === 403) {
-            reject(new Error("HTTP " + res.status + ": Zendesk session expired or missing. Open https://iwmac.zendesk.com once while logged in."));
-            return;
-          }
-          if (res.status < 200 || res.status >= 300) {
-            reject(new Error("HTTP " + res.status + ": " + (res.responseText || "").slice(0, 300)));
-            return;
-          }
-          if (!res.responseText) { resolve(null); return; }
-          try { resolve(JSON.parse(res.responseText)); }
-          catch { resolve(null); }
+          const status = res.status;
+          const text = res.responseText || "";
+          let json = null;
+          if (text) { try { json = JSON.parse(text); } catch { /* non-JSON */ } }
+          resolve({ status, json, text });
         },
         onerror: () => reject(new Error("Network error reaching Zendesk API")),
         ontimeout: () => reject(new Error("Zendesk API timed out")),
@@ -221,6 +204,98 @@
       }
       GM_xmlhttpRequest(init);
     });
+  }
+
+  // Coalesce concurrent renew attempts so a burst of N failed API calls
+  // doesn't trigger N parallel /users/me.json renews.
+  /** @type {Promise<boolean> | null} */
+  let zendeskRenewInFlight = null;
+  let zendeskLastRenewAttempt = 0;
+  const ZENDESK_RENEW_COOLDOWN_MS = 5000; // don't renew more than once per 5s
+
+  /**
+   * Force-refresh the Zendesk session cookie by hitting /users/me.json
+   * with the documented X-Zendesk-Renew-Session: true header. Zendesk
+   * responds with refreshed session/CSRF cookies if the underlying
+   * authentication is still valid (e.g. SAML session still active even
+   * though the cookie expired). Resolves with `true` if renew worked,
+   * `false` otherwise.
+   */
+  function zendeskRenewSession() {
+    if (zendeskRenewInFlight) return zendeskRenewInFlight;
+    const now = Date.now();
+    if (now - zendeskLastRenewAttempt < ZENDESK_RENEW_COOLDOWN_MS) {
+      // Recent renew failed; don't hammer.
+      return Promise.resolve(false);
+    }
+    zendeskLastRenewAttempt = now;
+    zendeskRenewInFlight = (async () => {
+      try {
+        const res = await gmZendeskSendRaw(
+          "GET",
+          ZENDESK_API + "/users/me.json",
+          null,
+          { "X-Zendesk-Renew-Session": "true" },
+        );
+        return res.status >= 200 && res.status < 300;
+      } catch (_) {
+        return false;
+      } finally {
+        // Allow another renew attempt later (after cooldown).
+        setTimeout(() => { zendeskRenewInFlight = null; }, 0);
+      }
+    })();
+    return zendeskRenewInFlight;
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the Zendesk API with automatic
+   * session renewal on 401. Uses the SAME session cookie the user
+   * already has from being logged in at https://iwmac.zendesk.com.
+   * No tokens captured, no storage.
+   *
+   * Retry policy:
+   *  1. First attempt — plain request, cookies attached.
+   *  2. If response is 401 (and this isn't already a retry), fire a
+   *     renew-session warm-up request, then retry the original call
+   *     once with `X-Zendesk-Renew-Session: true` on the actual call
+   *     as well. This handles SAML / SSO sessions where the underlying
+   *     identity is valid but the session cookie expired.
+   *  3. If still 401 after retry, surface a clear "open Zendesk while
+   *     logged in" error message.
+   *
+   *   await ZendeskBridge.apiRequest("GET", "/tickets/196389.json");
+   *   await ZendeskBridge.apiRequest("PUT", "/tickets/196389.json", { ticket: { status: "solved" } });
+   *
+   * @param {string} method
+   * @param {string} path   Relative to /api/v2, OR an absolute URL.
+   * @param {object} [body] JSON body for non-GET requests.
+   * @returns {Promise<any>}
+   */
+  async function gmZendeskRequest(method, path, body) {
+    const url = /^https?:/i.test(path) ? path : (ZENDESK_API + path);
+    // First attempt
+    let res = await gmZendeskSendRaw(method, url, body);
+    if (res.status === 401) {
+      // Try to renew; this hits /users/me.json with renew-session header.
+      const renewed = await zendeskRenewSession();
+      if (renewed) {
+        // Retry the original call with renew-session header for good
+        // measure (Zendesk sometimes ignores fresh cookies on the very
+        // next call without the explicit header).
+        res = await gmZendeskSendRaw(method, url, body, { "X-Zendesk-Renew-Session": "true" });
+      }
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        "HTTP " + res.status +
+        ": Zendesk session expired or missing. Open https://iwmac.zendesk.com once while logged in to refresh, then try again.",
+      );
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
+    }
+    return res.json; // may be null for empty bodies
   }
 
   function gmFetch(url) {
