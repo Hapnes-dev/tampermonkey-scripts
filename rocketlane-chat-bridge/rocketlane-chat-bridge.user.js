@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.2
-// @description  Bridges Rocketlane + Zendesk APIs to the local Project Progress Tracker, bypassing CORS. Auto-renews Zendesk session + CSRF capture for replies.
+// @version      1.9.3
+// @description  Bridges Rocketlane + Zendesk + Oneflow APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -10,6 +10,7 @@
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-chat-bridge/rocketlane-chat-bridge.user.js
 // @match        https://kiona.rocketlane.com/*
 // @match        https://iwmac.zendesk.com/*
+// @match        https://app.oneflow.com/*
 // @match        file:///*
 // @match        https://hapnes-dev.github.io/Project-Progress-Tracker/*
 // @grant        GM_xmlhttpRequest
@@ -18,6 +19,7 @@
 // @grant        unsafeWindow
 // @connect      kiona.api.rocketlane.com
 // @connect      iwmac.zendesk.com
+// @connect      app.oneflow.com
 // @connect      s3.us-east-1.amazonaws.com
 // @connect      s3.amazonaws.com
 // @connect      amazonaws.com
@@ -39,6 +41,13 @@
   // the user already has is reused for tracker calls.
   const ZENDESK_HOST = "https://iwmac.zendesk.com";
   const ZENDESK_API  = ZENDESK_HOST + "/api/v2";
+  // Oneflow uses session cookies (HttpOnly) for auth and a NON-HttpOnly
+  // `xsrf-token` cookie for CSRF on non-GET requests (Spring/Laravel
+  // double-submit pattern). The userscript on app.oneflow.com pages
+  // reads the cookie value into GM storage; the bridge attaches it as
+  // X-XSRF-Token automatically on writes.
+  const ONEFLOW_HOST = "https://app.oneflow.com";
+  const ONEFLOW_API  = ONEFLOW_HOST + "/api";
 
   // ──────────────────────────────────────────────────────────────────────────
   // Side A — On Rocketlane: capture the api-key from localStorage.
@@ -108,6 +117,40 @@
     // the session. Cheap to read a meta tag.
     setInterval(captureZendeskCsrf, 60 * 1000);
     return; // don't run the bridge side here either
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Side A3 — On Oneflow: capture the xsrf-token cookie value.
+  // The session cookie is HttpOnly (browser handles it) but Oneflow uses
+  // the double-submit-cookie CSRF pattern: a NON-HttpOnly `xsrf-token`
+  // cookie whose value must be echoed as the `X-XSRF-Token` header on
+  // POST/PUT/PATCH/DELETE. We read the value via document.cookie and
+  // stash it for the bridge to attach.
+  // ──────────────────────────────────────────────────────────────────────────
+  if (location.hostname === "app.oneflow.com") {
+    function captureOneflowXsrf() {
+      try {
+        const raw = document.cookie || "";
+        const entry = raw.split(";").map((s) => s.trim()).find((s) => s.startsWith("xsrf-token="));
+        if (!entry) return false;
+        const value = decodeURIComponent(entry.slice("xsrf-token=".length));
+        if (value && value !== GM_getValue("ofXsrfToken", "")) {
+          GM_setValue("ofXsrfToken", value);
+          GM_setValue("ofXsrfCapturedAt", Date.now());
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", captureOneflowXsrf);
+    } else {
+      captureOneflowXsrf();
+    }
+    // Refresh every 60s — Oneflow rotates the token periodically and
+    // we want the bridge to have a fresh value when writes happen.
+    setInterval(captureOneflowXsrf, 60 * 1000);
+    return; // don't run the bridge side here
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -347,6 +390,75 @@
       throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
     }
     return res.json; // may be null for empty bodies
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the Oneflow API.
+   *
+   * Auth mechanics:
+   *   • Session cookie (HttpOnly) — browser auto-attaches via GM_xmlhttpRequest.
+   *   • For non-GET methods, X-XSRF-Token header is required. We pull the
+   *     value from GM storage (set by the Oneflow-side capture above).
+   *
+   *   await OneflowBridge.apiRequest("GET", "/positions/me");
+   *   await OneflowBridge.apiRequest("GET", "/collections/?limit=10");
+   *
+   * @param {string} method
+   * @param {string} path   Relative to /api, OR an absolute URL.
+   * @param {object} [body] JSON body for non-GET requests.
+   */
+  async function gmOneflowRequest(method, path, body) {
+    const url = /^https?:/i.test(path) ? path : (ONEFLOW_API + path);
+    const upper = String(method ?? "GET").toUpperCase();
+    const extraHeaders = {};
+    if (upper !== "GET" && upper !== "HEAD") {
+      const xsrf = GM_getValue("ofXsrfToken", "");
+      if (xsrf) {
+        // Oneflow accepts both X-XSRF-Token (Spring-style) and xsrf-token
+        // header names. We send X-XSRF-Token which is the more common
+        // convention; if Oneflow ever rejects it, switch to the lowercase
+        // variant.
+        extraHeaders["X-XSRF-Token"] = xsrf;
+      } else {
+        throw new Error(
+          "Oneflow CSRF token not captured yet. Open https://app.oneflow.com once while logged in (any page), then retry.",
+        );
+      }
+    }
+    return new Promise((resolve, reject) => {
+      const headers = Object.assign({ accept: "application/json" }, extraHeaders);
+      const init = {
+        method: upper,
+        url,
+        headers,
+        timeout: 20000,
+        anonymous: false, // include cookies
+        onload: (res) => {
+          const status = res.status;
+          const text = res.responseText || "";
+          if (status === 401 || status === 403) {
+            reject(new Error(
+              "HTTP " + status +
+              ": Oneflow session expired or missing. Open https://app.oneflow.com once while logged in, then try again.",
+            ));
+            return;
+          }
+          if (status < 200 || status >= 300) {
+            reject(new Error("HTTP " + status + ": " + text.slice(0, 300)));
+            return;
+          }
+          if (!text) { resolve(null); return; }
+          try { resolve(JSON.parse(text)); } catch { resolve(null); }
+        },
+        onerror: () => reject(new Error("Network error reaching Oneflow API")),
+        ontimeout: () => reject(new Error("Oneflow API timed out")),
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
+    });
   }
 
   function gmFetch(url) {
@@ -923,10 +1035,48 @@
     },
   };
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // OneflowBridge — parallel to RocketlaneBridge / ZendeskBridge.
+  // Session-cookie auth + xsrf-token CSRF; no API key captured here, just
+  // routes calls through GM_xmlhttpRequest so the user's existing Oneflow
+  // session works from the tracker's github.io / file:// origin.
+  // ──────────────────────────────────────────────────────────────────────────
+  target.OneflowBridge = {
+    isAvailable: true,
+    version: "1.0.0-tampermonkey",
+    /**
+     * Generic CORS-bypassing Oneflow API call.
+     * @param {string} method
+     * @param {string} path   Relative to /api, or an absolute URL.
+     * @param {object} [body] JSON body for non-GET requests.
+     */
+    async apiRequest(method, path, body) {
+      return await gmOneflowRequest(method, path, body);
+    },
+    /**
+     * Currently logged-in Oneflow user — useful for confirming session
+     * is valid before showing Oneflow-dependent UI in the tracker.
+     */
+    async getCurrentUser() {
+      return await gmOneflowRequest("GET", "/positions/me");
+    },
+    /** Diagnostic: whether an xsrf-token was captured + how old it is. */
+    async getCsrfStatus() {
+      const token = GM_getValue("ofXsrfToken", "");
+      const capturedAt = GM_getValue("ofXsrfCapturedAt", 0);
+      return {
+        hasToken: !!token,
+        capturedAt: capturedAt || null,
+        ageMs: capturedAt ? (Date.now() - capturedAt) : null,
+      };
+    },
+  };
+
   // Notify the tracker page in case it's listening
   try {
     target.dispatchEvent(new CustomEvent("rocketlane-bridge-ready"));
     target.dispatchEvent(new CustomEvent("zendesk-bridge-ready"));
+    target.dispatchEvent(new CustomEvent("oneflow-bridge-ready"));
   } catch (_) {}
 
   // Verify the assignment actually landed on the page's real window
@@ -1069,6 +1219,61 @@
         target.dispatchEvent(new CustomEvent(zRespEvt, { detail: { id, value } }));
       } catch (err) {
         target.dispatchEvent(new CustomEvent(zRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
+      }
+    });
+
+    // Parallel forwarder for OneflowBridge — same isolated-world fallback.
+    const oReqEvt  = "oneflowBridgeReq";
+    const oRespEvt = "oneflowBridgeResp";
+    const oShim = document.createElement("script");
+    const oMethodList = Object.keys(target.OneflowBridge || {}).filter(
+      (k) => typeof target.OneflowBridge[k] === "function",
+    );
+    const oProps = {
+      version: target.OneflowBridge?.version,
+      isAvailable: !!target.OneflowBridge?.isAvailable,
+    };
+    oShim.textContent = `
+      (function () {
+        if (window.OneflowBridge) return;
+        const methods = ${JSON.stringify(oMethodList)};
+        const props   = ${JSON.stringify(oProps)};
+        const reqEvt  = ${JSON.stringify(oReqEvt)};
+        const respEvt = ${JSON.stringify(oRespEvt)};
+        const pending = new Map();
+        let seq = 0;
+        window.addEventListener(respEvt, (e) => {
+          const d = e.detail || {};
+          const p = pending.get(d.id);
+          if (!p) return;
+          pending.delete(d.id);
+          if (d.error) p.reject(new Error(d.error));
+          else p.resolve(d.value);
+        });
+        const bridge = { ...props };
+        for (const m of methods) {
+          bridge[m] = function (...args) {
+            return new Promise((resolve, reject) => {
+              const id = ++seq;
+              pending.set(id, { resolve, reject });
+              window.dispatchEvent(new CustomEvent(reqEvt, { detail: { id, method: m, args } }));
+            });
+          };
+        }
+        window.OneflowBridge = bridge;
+      })();
+    `;
+    (document.head || document.documentElement).appendChild(oShim);
+    oShim.remove();
+
+    target.addEventListener(oReqEvt, async (e) => {
+      const { id, method, args } = e.detail || {};
+      try {
+        const fn = target.OneflowBridge[method];
+        const value = typeof fn === "function" ? await fn.apply(target.OneflowBridge, args || []) : null;
+        target.dispatchEvent(new CustomEvent(oRespEvt, { detail: { id, value } }));
+      } catch (err) {
+        target.dispatchEvent(new CustomEvent(oRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
       }
     });
   });
