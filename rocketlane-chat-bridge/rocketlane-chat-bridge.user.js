@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.8.1
-// @description  Bridges Rocketlane chat API to the local Project Progress Tracker, bypassing CORS.
+// @version      1.9.0
+// @description  Bridges Rocketlane + Zendesk APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-chat-bridge/rocketlane-chat-bridge.user.js
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-chat-bridge/rocketlane-chat-bridge.user.js
 // @match        https://kiona.rocketlane.com/*
+// @match        https://iwmac.zendesk.com/*
 // @match        file:///*
 // @match        https://hapnes-dev.github.io/Project-Progress-Tracker/*
 // @grant        GM_xmlhttpRequest
@@ -16,6 +17,7 @@
 // @grant        GM_getValue
 // @grant        unsafeWindow
 // @connect      kiona.api.rocketlane.com
+// @connect      iwmac.zendesk.com
 // @connect      s3.us-east-1.amazonaws.com
 // @connect      s3.amazonaws.com
 // @connect      amazonaws.com
@@ -29,6 +31,14 @@
   "use strict";
 
   const TENANT_API = "https://kiona.api.rocketlane.com/api/v1";
+  // Zendesk lives at the subdomain root; the API is mounted at /api/v2
+  // and authenticates via the user's session cookie (set when they're
+  // logged into iwmac.zendesk.com in a normal browser tab). We don't
+  // capture or store any token — GM_xmlhttpRequest automatically
+  // includes cookies for the request URL's origin, so the same session
+  // the user already has is reused for tracker calls.
+  const ZENDESK_HOST = "https://iwmac.zendesk.com";
+  const ZENDESK_API  = ZENDESK_HOST + "/api/v2";
 
   // ──────────────────────────────────────────────────────────────────────────
   // Side A — On Rocketlane: capture the api-key from localStorage.
@@ -148,6 +158,62 @@
         },
         onerror: () => reject(new Error("Network error reaching Rocketlane API")),
         ontimeout: () => reject(new Error("Rocketlane API timed out")),
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
+    });
+  }
+
+  /**
+   * Generic CORS-bypassing HTTP call to the Zendesk API.
+   * Uses the SAME session cookie the user already has from being logged
+   * in at https://iwmac.zendesk.com — GM_xmlhttpRequest auto-attaches it.
+   * No tokens captured, no storage; if the user logs out of Zendesk in
+   * their browser, the bridge stops working until they log back in.
+   *
+   *   await ZendeskBridge.apiRequest("GET", "/tickets/196389.json");
+   *   await ZendeskBridge.apiRequest("PUT", "/tickets/196389.json", { ticket: { status: "solved" } });
+   *
+   * @param {string} method
+   * @param {string} path   Relative to /api/v2, OR an absolute URL.
+   * @param {object} [body] JSON body for non-GET requests.
+   * @returns {Promise<any>}
+   */
+  function gmZendeskRequest(method, path, body) {
+    return new Promise((resolve, reject) => {
+      const url = /^https?:/i.test(path) ? path : (ZENDESK_API + path);
+      const headers = { accept: "application/json" };
+      // X-CSRF-Token is required for non-GET methods on Zendesk. The
+      // session itself authenticates the request via cookies. The tracker
+      // can pass the CSRF token through from a Zendesk meta tag, OR the
+      // bridge could capture and forward it — but for read-only GETs we
+      // don't need it at all.
+      const init = {
+        method,
+        url,
+        headers,
+        timeout: 20000,
+        // anonymous: false → include cookies for the target origin.
+        // (default behavior, but documenting it explicitly here)
+        anonymous: false,
+        onload: (res) => {
+          if (res.status === 401 || res.status === 403) {
+            reject(new Error("HTTP " + res.status + ": Zendesk session expired or missing. Open https://iwmac.zendesk.com once while logged in."));
+            return;
+          }
+          if (res.status < 200 || res.status >= 300) {
+            reject(new Error("HTTP " + res.status + ": " + (res.responseText || "").slice(0, 300)));
+            return;
+          }
+          if (!res.responseText) { resolve(null); return; }
+          try { resolve(JSON.parse(res.responseText)); }
+          catch { resolve(null); }
+        },
+        onerror: () => reject(new Error("Network error reaching Zendesk API")),
+        ontimeout: () => reject(new Error("Zendesk API timed out")),
       };
       if (body !== undefined && body !== null) {
         headers["content-type"] = "application/json";
@@ -643,9 +709,57 @@
     },
   };
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // ZendeskBridge — separate object, separate API surface. Lives next to
+  // RocketlaneBridge so existing tracker code doesn't see breaking changes.
+  //
+  // No token storage: GM_xmlhttpRequest re-uses the user's existing
+  // iwmac.zendesk.com session cookie. If the user is logged out, calls
+  // fail with HTTP 401 and the bridge surfaces a clear error message.
+  // ──────────────────────────────────────────────────────────────────────────
+  target.ZendeskBridge = {
+    isAvailable: true,
+    version: "1.0.0-tampermonkey",
+    /**
+     * Generic CORS-bypassing Zendesk API call.
+     * @param {string} method
+     * @param {string} path   Relative to /api/v2, or an absolute URL.
+     * @param {object} [body] JSON body for non-GET requests.
+     */
+    async apiRequest(method, path, body) {
+      return await gmZendeskRequest(method, path, body);
+    },
+    /**
+     * Convenience: fetch one ticket by ID. Returns the parsed ticket
+     * object, or null on 404.
+     * @param {number|string} ticketId
+     */
+    async getTicket(ticketId) {
+      const id = String(ticketId ?? "").trim();
+      if (!id) throw new Error("getTicket requires a ticketId");
+      try {
+        const json = await gmZendeskRequest("GET", "/tickets/" + encodeURIComponent(id) + ".json");
+        return json?.ticket ?? null;
+      } catch (e) {
+        if (String(e?.message ?? "").includes("HTTP 404")) return null;
+        throw e;
+      }
+    },
+    /**
+     * Convenience: return the currently-logged-in Zendesk user.
+     * Useful for the tracker to confirm session is valid before
+     * showing Zendesk-dependent UI.
+     */
+    async getCurrentUser() {
+      const json = await gmZendeskRequest("GET", "/users/me.json");
+      return json?.user ?? null;
+    },
+  };
+
   // Notify the tracker page in case it's listening
   try {
     target.dispatchEvent(new CustomEvent("rocketlane-bridge-ready"));
+    target.dispatchEvent(new CustomEvent("zendesk-bridge-ready"));
   } catch (_) {}
 
   // Verify the assignment actually landed on the page's real window
@@ -733,6 +847,61 @@
         target.dispatchEvent(new CustomEvent(respEvt, { detail: { id, value } }));
       } catch (err) {
         target.dispatchEvent(new CustomEvent(respEvt, { detail: { id, error: String(err?.message ?? err) } }));
+      }
+    });
+
+    // Parallel forwarder for ZendeskBridge — same isolated-world fallback.
+    const zReqEvt  = "zendeskBridgeReq";
+    const zRespEvt = "zendeskBridgeResp";
+    const zShim = document.createElement("script");
+    const zMethodList = Object.keys(target.ZendeskBridge || {}).filter(
+      (k) => typeof target.ZendeskBridge[k] === "function",
+    );
+    const zProps = {
+      version: target.ZendeskBridge?.version,
+      isAvailable: !!target.ZendeskBridge?.isAvailable,
+    };
+    zShim.textContent = `
+      (function () {
+        if (window.ZendeskBridge) return;
+        const methods = ${JSON.stringify(zMethodList)};
+        const props   = ${JSON.stringify(zProps)};
+        const reqEvt  = ${JSON.stringify(zReqEvt)};
+        const respEvt = ${JSON.stringify(zRespEvt)};
+        const pending = new Map();
+        let seq = 0;
+        window.addEventListener(respEvt, (e) => {
+          const d = e.detail || {};
+          const p = pending.get(d.id);
+          if (!p) return;
+          pending.delete(d.id);
+          if (d.error) p.reject(new Error(d.error));
+          else p.resolve(d.value);
+        });
+        const bridge = { ...props };
+        for (const m of methods) {
+          bridge[m] = function (...args) {
+            return new Promise((resolve, reject) => {
+              const id = ++seq;
+              pending.set(id, { resolve, reject });
+              window.dispatchEvent(new CustomEvent(reqEvt, { detail: { id, method: m, args } }));
+            });
+          };
+        }
+        window.ZendeskBridge = bridge;
+      })();
+    `;
+    (document.head || document.documentElement).appendChild(zShim);
+    zShim.remove();
+
+    target.addEventListener(zReqEvt, async (e) => {
+      const { id, method, args } = e.detail || {};
+      try {
+        const fn = target.ZendeskBridge[method];
+        const value = typeof fn === "function" ? await fn.apply(target.ZendeskBridge, args || []) : null;
+        target.dispatchEvent(new CustomEvent(zRespEvt, { detail: { id, value } }));
+      } catch (err) {
+        target.dispatchEvent(new CustomEvent(zRespEvt, { detail: { id, error: String(err?.message ?? err) } }));
       }
     });
   });
