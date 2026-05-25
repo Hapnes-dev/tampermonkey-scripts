@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.1
-// @description  Bridges Rocketlane + Zendesk APIs to the local Project Progress Tracker, bypassing CORS. Auto-renews Zendesk session on 401.
+// @version      1.9.2
+// @description  Bridges Rocketlane + Zendesk APIs to the local Project Progress Tracker, bypassing CORS. Auto-renews Zendesk session + CSRF capture for replies.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -77,6 +77,37 @@
     // Refresh every 5 minutes in case the api-key rotates while the tab is open.
     setInterval(captureNow, 5 * 60 * 1000);
     return; // don't run the bridge side
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Side A2 — On Zendesk: capture the CSRF token from the meta tag.
+  // The session cookie is sent automatically by the browser, but state-
+  // changing requests (POST/PUT/PATCH/DELETE) also require the CSRF token
+  // in the X-CSRF-Token header. We grab it from the meta tag and store it
+  // in GM storage so the bridge can attach it on the tracker side.
+  // ──────────────────────────────────────────────────────────────────────────
+  if (location.hostname.endsWith("iwmac.zendesk.com")) {
+    function captureZendeskCsrf() {
+      try {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        const token = meta && meta.getAttribute("content");
+        if (token && token !== GM_getValue("zdCsrfToken", "")) {
+          GM_setValue("zdCsrfToken", token);
+          GM_setValue("zdCsrfCapturedAt", Date.now());
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", captureZendeskCsrf);
+    } else {
+      captureZendeskCsrf();
+    }
+    // Refresh every minute — the token can rotate when Zendesk renews
+    // the session. Cheap to read a meta tag.
+    setInterval(captureZendeskCsrf, 60 * 1000);
+    return; // don't run the bridge side here either
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -274,16 +305,36 @@
    */
   async function gmZendeskRequest(method, path, body) {
     const url = /^https?:/i.test(path) ? path : (ZENDESK_API + path);
+    // For state-changing requests, Zendesk requires the CSRF token. We
+    // get it from GM storage where the Zendesk-side capture wrote it.
+    // GET requests don't need CSRF — only the session cookie.
+    const upper = String(method ?? "GET").toUpperCase();
+    const extraHeaders = {};
+    if (upper !== "GET" && upper !== "HEAD") {
+      const csrf = GM_getValue("zdCsrfToken", "");
+      if (csrf) {
+        extraHeaders["X-CSRF-Token"] = csrf;
+      } else {
+        throw new Error(
+          "Zendesk CSRF token not captured yet. Open https://iwmac.zendesk.com once while logged in (any page), then retry."
+        );
+      }
+    }
     // First attempt
-    let res = await gmZendeskSendRaw(method, url, body);
+    let res = await gmZendeskSendRaw(method, url, body, extraHeaders);
     if (res.status === 401) {
       // Try to renew; this hits /users/me.json with renew-session header.
       const renewed = await zendeskRenewSession();
       if (renewed) {
         // Retry the original call with renew-session header for good
         // measure (Zendesk sometimes ignores fresh cookies on the very
-        // next call without the explicit header).
-        res = await gmZendeskSendRaw(method, url, body, { "X-Zendesk-Renew-Session": "true" });
+        // next call without the explicit header). CSRF token is included
+        // again — if the renew rotated it, the next non-GET will fail
+        // and the user re-loads the Zendesk tab once.
+        res = await gmZendeskSendRaw(method, url, body, {
+          ...extraHeaders,
+          "X-Zendesk-Renew-Session": "true",
+        });
       }
     }
     if (res.status === 401 || res.status === 403) {
@@ -828,6 +879,47 @@
     async getCurrentUser() {
       const json = await gmZendeskRequest("GET", "/users/me.json");
       return json?.user ?? null;
+    },
+    /**
+     * Get all comments for a ticket with author user data sideloaded.
+     * Returns { comments: [...], users: [...] } so the tracker can show
+     * author names without an extra round-trip per comment.
+     */
+    async getTicketComments(ticketId) {
+      const id = String(ticketId ?? "").trim();
+      if (!id) throw new Error("getTicketComments requires a ticketId");
+      return await gmZendeskRequest(
+        "GET",
+        "/tickets/" + encodeURIComponent(id) + "/comments.json?include=users&sort_order=asc",
+      );
+    },
+    /**
+     * Post a reply to a ticket. `body` is plain text. `isPublic=true`
+     * → customer-visible; false → internal note (agents only).
+     * Requires CSRF token captured from an iwmac.zendesk.com session.
+     * Returns the updated ticket object.
+     */
+    async postTicketReply(ticketId, body, isPublic) {
+      const id = String(ticketId ?? "").trim();
+      if (!id) throw new Error("postTicketReply requires a ticketId");
+      const trimmed = String(body ?? "").trim();
+      if (!trimmed) throw new Error("Reply body cannot be empty");
+      const json = await gmZendeskRequest(
+        "PUT",
+        "/tickets/" + encodeURIComponent(id) + ".json",
+        { ticket: { comment: { body: trimmed, public: !!isPublic } } },
+      );
+      return json?.ticket ?? null;
+    },
+    /** Diagnostic: returns whether a CSRF token has been captured + age. */
+    async getCsrfStatus() {
+      const token = GM_getValue("zdCsrfToken", "");
+      const capturedAt = GM_getValue("zdCsrfCapturedAt", 0);
+      return {
+        hasToken: !!token,
+        capturedAt: capturedAt || null,
+        ageMs: capturedAt ? (Date.now() - capturedAt) : null,
+      };
     },
   };
 
