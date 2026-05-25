@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.6
+// @version      1.9.7
 // @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
@@ -730,9 +730,13 @@
     }
 
     const send = (t) => new Promise((resolve, reject) => {
+      // `X-Younium-Origin: frontend` is required by some endpoints
+      // (notably /api/data/query/order). Cheap to send on every call;
+      // adding it unconditionally avoids per-endpoint header juggling.
       const headers = {
         accept: "application/json",
         Authorization: "Bearer " + t,
+        "X-Younium-Origin": "frontend",
       };
       const init = {
         method: String(method ?? "GET").toUpperCase(),
@@ -1498,6 +1502,38 @@
     /** Currently logged-in Younium user — proof session is valid. */
     async getCurrentUser() {
       return await gmYouniumRequest("GET", "/api/user/profile");
+    },
+    /**
+     * Search Younium orders by free text. Mirrors the body shape the
+     * Younium UI sends (verified via Playwright):
+     *
+     *   POST /api/data/query/order
+     *   { entity, filter, pageNumber, pageSize, sortField, sortDirection,
+     *     displayFields, conditions, conditionLogic }
+     *
+     * Response: { totalCount, result: [...] } with flat fields incl.
+     * plant_id (native field — exact-match friendly), plant_name,
+     * orderNumber, accountname, status, effectiveStartDate, id.
+     */
+    async searchOrders(query, opts) {
+      const body = {
+        entity: "order",
+        filter: String(query ?? ""),
+        pageNumber: 0,
+        pageSize: opts?.pageSize ?? 20,
+        sortField: opts?.sortField ?? "effectiveStartDate",
+        sortDirection: opts?.sortDirection ?? "desc",
+        displayFields: opts?.displayFields ?? [
+          "orderNumber", "plant_id", "plant_name",
+          "accountname", "status", "orderType",
+          "effectiveStartDate", "id",
+        ],
+        conditions: opts?.conditions ?? [
+          { fieldName: "isLastVersion", value: true, operator: 0 },
+        ],
+        conditionLogic: opts?.conditionLogic ?? "",
+      };
+      return await gmYouniumRequest("POST", "/api/data/query/order", body);
     },
     /** Diagnostic: token cache status + region. */
     async getTokenStatus() {
