@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.9
+// @version      1.9.10
 // @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
@@ -1725,6 +1725,60 @@
         conditionLogic: opts?.conditionLogic ?? "",
       };
       return await gmYouniumRequest("POST", "/api/data/query/quote", body);
+    },
+    /**
+     * Fetch a single order's full payload by UUID.
+     *   GET https://api.younium.com/api/order/{id}
+     * Used by the Younium status chip to inspect lifecycle dates,
+     * cancellation, bookings, and the order's enum status field.
+     */
+    async getOrderById(id) {
+      const safe = encodeURIComponent(String(id || "").trim());
+      if (!safe) throw new Error("getOrderById: id is required");
+      return await gmYouniumRequest("GET", "/api/order/" + safe, null);
+    },
+    /**
+     * Fetch invoice history for an order by its public order number
+     * (e.g. "O-011102"). The Younium UI uses this exact endpoint when
+     * rendering the "Invoices" panel on the order detail page.
+     *   POST /api/order/invoicesForHistory  { orderNumber }
+     * Each invoice entry has `status` (3 = posted/paid in our samples),
+     * `invoiceNumber`, `posted`, `paymentDate`, `dueDate`, `totalAmount`.
+     */
+    async getInvoicesForOrder(orderNumber) {
+      const n = String(orderNumber || "").trim();
+      if (!n) return [];
+      const result = await gmYouniumRequest(
+        "POST", "/api/order/invoicesForHistory", { orderNumber: n },
+      );
+      return Array.isArray(result) ? result : (result?.result ?? []);
+    },
+    /**
+     * Fetch a single quote's row from /api/data/query/quote filtered
+     * by id. Younium doesn't expose a GET /api/quote/{id} endpoint
+     * (verified — the orders detail endpoint pattern doesn't apply to
+     * quotes), so we use the query-filter shape with conditions.
+     */
+    async getQuoteById(id) {
+      const safe = String(id || "").trim();
+      if (!safe) return null;
+      const body = {
+        entity: "quote",
+        filter: "",
+        pageNumber: 0,
+        pageSize: 1,
+        sortField: "number",
+        sortDirection: "desc",
+        displayFields: [
+          "number", "accountName", "description", "status", "currencyCode",
+          "remarks", "ownerUserDisplayName", "plant_name", "plant_id",
+          "accountid", "changeOrderid", "convertedToOrderid", "id",
+        ],
+        conditions: [{ fieldName: "id", value: safe, operator: 0 }],
+        conditionLogic: "",
+      };
+      const j = await gmYouniumRequest("POST", "/api/data/query/quote", body);
+      return j?.result?.[0] || null;
     },
     /** Diagnostic: token cache status + region. */
     async getTokenStatus() {
