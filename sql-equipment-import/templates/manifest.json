@@ -719,7 +719,7 @@
         {
             "name": "OJ_Novagg_air2_v610",
             "display_name": "OJ Novagg air2 v610",
-            "driver_type": "MODBUS2",
+            "driver_type": "OJEXHAUST",
             "file": "OJ_Novagg_air2_v610.sql"
         },
         {
