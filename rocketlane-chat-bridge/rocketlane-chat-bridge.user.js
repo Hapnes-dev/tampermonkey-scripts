@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.8
+// @version      1.9.9
 // @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
@@ -1691,6 +1691,40 @@
         conditionLogic: opts?.conditionLogic ?? "",
       };
       return await gmYouniumRequest("POST", "/api/data/query/order", body);
+    },
+    /**
+     * Free-text search Younium quotes. Mirrors searchOrders but hits
+     * /api/data/query/quote with entity: "quote". Verified via
+     * Playwright — the response carries flat fields including
+     * plant_id (often empty for unfinished quotes), plant_name,
+     * accountName, description, number ("Draft" until published, then
+     * "Q-NNNNNN"), status (numeric), currencyCode, ownerUserDisplayName,
+     * remarks, and the UUID `id` used in the /quotes/<id> URL.
+     *
+     * The user spec showed a plant 11102 quote that searchOrders
+     * missed entirely because it was a quote not promoted to an order.
+     */
+    async searchQuotes(query, opts) {
+      const body = {
+        entity: "quote",
+        filter: String(query ?? ""),
+        pageNumber: 0,
+        pageSize: opts?.pageSize ?? 20,
+        sortField: opts?.sortField ?? "number",
+        sortDirection: opts?.sortDirection ?? "desc",
+        // Pull every field useful for matching — same set the Younium
+        // UI itself requests, plus a few extras (orderType analog).
+        displayFields: opts?.displayFields ?? [
+          "number", "accountName", "description", "status",
+          "currencyCode", "remarks", "ownerUserDisplayName",
+          "plant_name", "plant_id",
+          "accountid", "changeOrderid", "convertedToOrderid", "id",
+          "ownerid", "currencyid",
+        ],
+        conditions: opts?.conditions ?? [],
+        conditionLogic: opts?.conditionLogic ?? "",
+      };
+      return await gmYouniumRequest("POST", "/api/data/query/quote", body);
     },
     /** Diagnostic: token cache status + region. */
     async getTokenStatus() {
