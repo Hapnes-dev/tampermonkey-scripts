@@ -3077,7 +3077,7 @@ REPLACE INTO `iw_set_exhausto_oj_v610` (`row_date`, `element_id`, `active`, `onl
 -- Watch out for duplicate unit_id!
 
 INSERT INTO `iw_sys_plant_units` (`row_date`, `active`, `blockout`, `unit_id`, `unit_name`, `grp_name`, `driver_type`, `driver_addr`, `regulator_type`, `order_no`, `view_order`, `driver_adr_extra`, `unit_extra`) VALUES
-('2026-05-26 11:47:54', '1', '0', 'V01', '360.001Ventilasjon', 'exhausto_OJ_v610', 'OJEXHAUST', '1_1', 'OJ', 'exhausto_OJ_v610', 0, '', '');
+('2026-05-26 11:47:54', '1', '0', 'V01', '360.001 Ventilasjon', 'exhausto_OJ_v610', 'OJEXHAUST', '1_1', 'OJ', 'exhausto_OJ_v610', 0, '', '');
 
 
 
