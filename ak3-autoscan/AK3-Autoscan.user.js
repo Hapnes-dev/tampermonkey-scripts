@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      8.5
+// @version      8.6
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -796,6 +796,14 @@
                 }
             }
         } catch (e) {
+            log('Workflow failed: ' + e.message + ' — attempting to revert AK3 to StandardMode');
+            try {
+                await setAk3Mode(plantId, 'StandardMode');
+                log('Revert to StandardMode OK after failure');
+            } catch (revertErr) {
+                log('WARNING: failed to revert to StandardMode: ' + revertErr.message +
+                    ' — packet_timeout/packet_interval may still be at ScannerMode values!');
+            }
             fail(e.message);
         }
     }
