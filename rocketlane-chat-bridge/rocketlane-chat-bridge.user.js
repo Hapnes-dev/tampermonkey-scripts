@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.9.10
+// @version      1.9.11
 // @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS.
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
@@ -1779,6 +1779,25 @@
       };
       const j = await gmYouniumRequest("POST", "/api/data/query/quote", body);
       return j?.result?.[0] || null;
+    },
+    /**
+     * Fetch the audit/timeline event log for an order. Verified via
+     * Chrome devtools-MCP: Younium's UI calls
+     *   GET https://api.younium.com/api/eventlog/order/id/{id}
+     * when the user clicks the clock-icon "Order timeline" button.
+     *
+     * Response: array of event entries (or { result: [...] } depending
+     * on tenant). Each entry typically has timestamp + user email /
+     * display name + a description of what changed. We return the
+     * raw array so the caller can extract the latest event.
+     */
+    async getOrderEventLog(id) {
+      const safe = encodeURIComponent(String(id || "").trim());
+      if (!safe) throw new Error("getOrderEventLog: id is required");
+      const result = await gmYouniumRequest(
+        "GET", "/api/eventlog/order/id/" + safe, null,
+      );
+      return Array.isArray(result) ? result : (result?.result ?? []);
     },
     /** Diagnostic: token cache status + region. */
     async getTokenStatus() {

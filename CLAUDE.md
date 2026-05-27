@@ -44,6 +44,8 @@ https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/<folder>/
 
 **IMPORTANT:** NEVER edit old local copies (e.g. `Ak3.js.txt`). ALWAYS edit files inside their subfolder (e.g. `ak3-autoscan/AK3-Autoscan.user.js`).
 
+**IMPORTANT:** Before editing OR committing a `.user.js`, scan `C:\Users\ThomasKvalvåg\Downloads\` for a Tampermonkey export of that script (filename pattern: `<Script Name>-<version>.txt`). If the export's `@version` is HIGHER than the repo's, sync that file into the repo FIRST — convert LF → CRLF to match the repo's existing line endings — otherwise editing/pushing the repo version will downgrade the user's installed script on Tampermonkey auto-update.
+
 ### 1. Edit the script
 Make changes to the `.user.js` file in the correct subfolder.
 
