@@ -2,7 +2,7 @@
 // @name         Oneflow + HubSpot Copy Products
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      2.3.7
+// @version      2.3.8
 // @description  Adds a copy button on Oneflow (copies product description + quantity from the tilbud PDF) and on HubSpot deal pages (copies the Line items card) as rich HTML with bold headers + bullet list.
 // @author       hapnes-dev
 // @match        https://app.oneflow.com/*
@@ -353,6 +353,44 @@
             return items;
         }
 
+        // Fallback for documents that render as native Oneflow content
+        // instead of a react-pdf preview (no .react-pdf__Page__textContent).
+        function extractFromNativeContent() {
+            const wrappers = document.querySelectorAll('[class*="_ProductTableWrapper_"]');
+            const items = [];
+            for (const wrapper of wrappers) {
+                const rows = wrapper.querySelectorAll('[class*="_TableRow_"]');
+                for (const row of rows) {
+                    if (/_HeaderRow_/.test(row.className)) continue;
+                    const nameCell = row.querySelector('[class*="_ProductNameCell_"]');
+                    if (!nameCell) continue;
+                    const desc = (nameCell.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!desc) continue;
+
+                    const qtyCell = row.querySelector('[class*="_ProductQuantityCell_"]');
+                    let antall = '';
+                    if (qtyCell) {
+                        const numInput = qtyCell.querySelector('input[type="number"]');
+                        const radio = qtyCell.querySelector('input[type="radio"]');
+                        const checkbox = qtyCell.querySelector('input[type="checkbox"]');
+                        if (numInput && numInput.value) {
+                            const m = numInput.value.match(/^\s*(\d+)/);
+                            if (m) antall = m[1] + ' pcs';
+                        } else if (radio && radio.checked) {
+                            antall = '1 pcs';
+                        } else if (checkbox && checkbox.checked) {
+                            antall = '1 pcs';
+                        } else {
+                            const m = (qtyCell.textContent || '').match(/(\d+)\s*pcs/i);
+                            if (m) antall = m[1] + ' pcs';
+                        }
+                    }
+                    items.push({ type: 'bullet', desc, antall });
+                }
+            }
+            return items;
+        }
+
         function itemsToHtml(items) {
             let html = '<p><strong>Oneflow document info:</strong></p>';
             let inList = false;
@@ -464,7 +502,8 @@
                 btn.disabled = true;
                 try {
                     await ensureAllPagesRendered();
-                    const items = extractItems();
+                    let items = extractItems();
+                    if (!items.length) items = extractFromNativeContent();
                     if (!items.length) {
                         flashButton(btn, false);
                         return;
