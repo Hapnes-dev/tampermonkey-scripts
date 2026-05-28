@@ -2,7 +2,7 @@
 // @name         Oneflow + HubSpot Copy Products
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      2.3.9
+// @version      2.4.0
 // @description  Adds a copy button on Oneflow (copies product description + quantity from the tilbud PDF) and on HubSpot deal pages (copies the Line items card) as rich HTML with bold headers + bullet list.
 // @author       hapnes-dev
 // @match        https://app.oneflow.com/*
@@ -541,11 +541,13 @@
             btn.addEventListener('click', async () => {
                 btn.disabled = true;
                 try {
-                    let items = (await fetchProductsViaApi()) || [];
-                    if (!items.length) {
-                        await ensureAllPagesRendered();
-                        items = extractItems();
-                    }
+                    // PDF is the canonical signed document and carries
+                    // section headers ("IWMAC Modul: ..."), so prefer it when
+                    // present.  API + native DOM are fallbacks for docs that
+                    // have no PDF render (newer "native content" Oneflow docs).
+                    await ensureAllPagesRendered();
+                    let items = extractItems();
+                    if (!items.length) items = (await fetchProductsViaApi()) || [];
                     if (!items.length) items = extractFromNativeContent();
                     if (!items.length) {
                         flashButton(btn, false);
