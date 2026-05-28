@@ -2,7 +2,7 @@
 // @name         Oneflow + HubSpot Copy Products
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      2.4.0
+// @version      2.4.1
 // @description  Adds a copy button on Oneflow (copies product description + quantity from the tilbud PDF) and on HubSpot deal pages (copies the Line items card) as rich HTML with bold headers + bullet list.
 // @author       hapnes-dev
 // @match        https://app.oneflow.com/*
@@ -431,23 +431,50 @@
             return items;
         }
 
+        // A "sub" bullet is a description line without its own quantity and
+        // that doesn't start with one of the main product prefixes.  We attach
+        // it to the previous main bullet so output reads
+        //   • Main product — 2 pcs
+        //       - sub description
+        function nestItems(items) {
+            const MAIN = /^(IWMAC|Integration|Per|Freight)\b/i;
+            const out = [];
+            for (const it of items) {
+                if (it.type === 'header') {
+                    out.push(it);
+                    continue;
+                }
+                const isMain = !!it.antall || MAIN.test(it.desc);
+                if (isMain) {
+                    out.push(Object.assign({ subs: [] }, it));
+                } else {
+                    const last = out[out.length - 1];
+                    if (last && last.type === 'bullet' && last.subs) {
+                        last.subs.push(it);
+                    } else {
+                        out.push(Object.assign({ subs: [] }, it));
+                    }
+                }
+            }
+            return out;
+        }
+
+        function stripSubPrefix(s) {
+            return (s || '').replace(/^[-–—•]\s*/, '');
+        }
+
         function itemsToHtml(items) {
+            const nested = nestItems(items);
             let html = '<p><strong>Oneflow document info:</strong></p>';
             let inList = false;
             const openList = () => {
-                if (!inList) {
-                    html += '<ul>';
-                    inList = true;
-                }
+                if (!inList) { html += '<ul>'; inList = true; }
             };
             const closeList = () => {
-                if (inList) {
-                    html += '</ul>';
-                    inList = false;
-                }
+                if (inList) { html += '</ul>'; inList = false; }
             };
 
-            for (const it of items) {
+            for (const it of nested) {
                 if (it.type === 'header') {
                     closeList();
                     html += '<p><strong>' + escapeHtml(it.desc) + '</strong></p>';
@@ -456,7 +483,15 @@
                     const tail = it.antall
                         ? ' &mdash; <strong>' + escapeHtml(it.antall) + '</strong>'
                         : '';
-                    html += '<li>' + escapeHtml(it.desc) + tail + '</li>';
+                    html += '<li>' + escapeHtml(it.desc) + tail;
+                    if (it.subs && it.subs.length) {
+                        html += '<ul>';
+                        for (const sub of it.subs) {
+                            html += '<li>' + escapeHtml(stripSubPrefix(sub.desc)) + '</li>';
+                        }
+                        html += '</ul>';
+                    }
+                    html += '</li>';
                 }
             }
             closeList();
@@ -464,13 +499,19 @@
         }
 
         function itemsToPlain(items) {
+            const nested = nestItems(items);
             const lines = [];
-            items.forEach((it, idx) => {
+            nested.forEach((it, idx) => {
                 if (it.type === 'header') {
                     if (idx > 0) lines.push('');
                     lines.push(it.desc);
                 } else {
                     lines.push('• ' + it.desc + (it.antall ? ' — ' + it.antall : ''));
+                    if (it.subs) {
+                        for (const sub of it.subs) {
+                            lines.push('    - ' + stripSubPrefix(sub.desc));
+                        }
+                    }
                 }
             });
             return 'Oneflow document info:\n' + lines.join('\n');
