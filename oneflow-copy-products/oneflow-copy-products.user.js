@@ -2,7 +2,7 @@
 // @name         Oneflow + HubSpot Copy Products
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      2.3.8
+// @version      2.3.9
 // @description  Adds a copy button on Oneflow (copies product description + quantity from the tilbud PDF) and on HubSpot deal pages (copies the Line items card) as rich HTML with bold headers + bullet list.
 // @author       hapnes-dev
 // @match        https://app.oneflow.com/*
@@ -353,6 +353,46 @@
             return items;
         }
 
+        // Preferred path: hit the same session API the SPA uses.  Box type 13
+        // is the product table; each content.data entry has key="product" and
+        // a value with name + count.  count===0 means the product was not
+        // selected (e.g. unchecked freebie) so we skip it to match the PDF.
+        async function fetchProductsViaApi() {
+            const m = location.pathname.match(/\/documents\/(\d+)/);
+            if (!m) return null;
+            const id = m[1];
+            try {
+                const r = await fetch('/api/agreements/' + id, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!r.ok) return null;
+                const j = await r.json();
+                if (!j || !Array.isArray(j.boxes)) return null;
+                const items = [];
+                for (const box of j.boxes) {
+                    if (box.type !== 13) continue;
+                    const data = (box.content && box.content.data) || [];
+                    for (const d of data) {
+                        if (d.key !== 'product' || !d.value) continue;
+                        const name = (d.value.name || '').trim();
+                        const count = Number(d.value.count) || 0;
+                        if (!name) continue;
+                        if (count <= 0) continue;
+                        items.push({
+                            type: 'bullet',
+                            desc: name,
+                            antall: count + ' pcs',
+                        });
+                    }
+                }
+                return items;
+            } catch (e) {
+                try { console.debug('[oneflow-copy] api fetch failed:', e); } catch (_) {}
+                return null;
+            }
+        }
+
         // Fallback for documents that render as native Oneflow content
         // instead of a react-pdf preview (no .react-pdf__Page__textContent).
         function extractFromNativeContent() {
@@ -501,8 +541,11 @@
             btn.addEventListener('click', async () => {
                 btn.disabled = true;
                 try {
-                    await ensureAllPagesRendered();
-                    let items = extractItems();
+                    let items = (await fetchProductsViaApi()) || [];
+                    if (!items.length) {
+                        await ensureAllPagesRendered();
+                        items = extractItems();
+                    }
                     if (!items.length) items = extractFromNativeContent();
                     if (!items.length) {
                         flashButton(btn, false);
