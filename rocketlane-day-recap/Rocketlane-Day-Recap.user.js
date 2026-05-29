@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.10
+// @version      4.11
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -28,20 +28,22 @@
     const KEY_LAST_HARVEST = 'last_harvest_ts'; // ms timestamp of most recent successful harvest write
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
-    const SCRIPT_VERSION   = '4.10';
+    const SCRIPT_VERSION   = '4.11';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
     // Time-spent estimator: cross-plant attribution.
     // Pang only logs discrete clicks, not real "active work" time, so any estimate is an
     // approximation. We build ONE chronological timeline of every action across ALL plants
-    // for the day, then for each consecutive pair (a, b) we credit the gap (b.ts − a.ts)
-    // to plant_a — capped at MAX_GAP_MS so a long absence (lunch, end-of-day) isn't
-    // attributed to whichever plant you last touched. The day's last action gets a small
-    // tail buffer. Result: total estimated time ≤ wall-clock span and is split across
-    // plants in proportion to how long each plant "owned" the timeline.
-    const MAX_GAP_MS     = 30 * 60 * 1000;
-    const TAIL_BUFFER_MS =  5 * 60 * 1000;
+    // for the day. For each consecutive pair (a, b) the gap (b.ts − a.ts) is credited to
+    // plant_a only while it still looks like active work: a gap up to IDLE_CUTOFF_MS counts
+    // in full, but a longer gap means you left (lunch, meeting, end of task) — we credit just
+    // WRAP_BUFFER_MS for wrap-up and drop the rest, so a single glance right before a break
+    // isn't billed as half an hour. The day's last action also gets WRAP_BUFFER_MS. Result:
+    // total estimated time ≤ wall-clock span, weighted toward plants with sustained activity
+    // rather than whichever plant you happened to touch right before a gap.
+    const IDLE_CUTOFF_MS = 10 * 60 * 1000; // a gap longer than this = you left the plant
+    const WRAP_BUFFER_MS =  2 * 60 * 1000; // wrap-up credited on an idle gap or the day's last action
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -460,7 +462,7 @@
         const visits = all.filter(Boolean).sort((a, b) => a.first_ts - b.first_ts);
 
         // Cross-plant time attribution: flatten every action timestamp into one timeline,
-        // then credit each gap to the plant of the action that opened it (capped at MAX_GAP_MS).
+        // then credit each active gap (≤ IDLE_CUTOFF_MS) to the plant of the action that opened it.
         const allEvents = [];
         for (const v of visits) {
             for (const ts of v._timestamps) allEvents.push({ plant_id: v.plant_id, ts });
@@ -502,8 +504,9 @@
         for (let i = 0; i < sorted.length; i++) {
             const cur = sorted[i];
             const next = sorted[i + 1];
-            const gap = next ? Math.min(next.ts - cur.ts, MAX_GAP_MS) : TAIL_BUFFER_MS;
-            out[cur.plant_id] = (out[cur.plant_id] || 0) + gap;
+            const gap = next ? next.ts - cur.ts : WRAP_BUFFER_MS;
+            const credit = gap <= IDLE_CUTOFF_MS ? gap : WRAP_BUFFER_MS;
+            out[cur.plant_id] = (out[cur.plant_id] || 0) + credit;
         }
         // Convert ms → rounded minutes
         for (const id of Object.keys(out)) out[id] = Math.max(1, Math.round(out[id] / 60000));
@@ -793,7 +796,7 @@
             const prefix = v.normalized_minutes != null ? '' : '≈ ';
             const tooltip = v.normalized_minutes != null
                 ? `Distributed share of your workday total. Raw estimate from action density: ≈ ${fmtMinutes(v.estimated_minutes || 0)}.`
-                : `Estimated time spent on this plant — built from a single chronological timeline of every action across all your plants for the day; each gap (≤30 min) is credited to the plant that opened it. Approximation only; pang doesn't log idle vs. active.`;
+                : `Estimated time spent on this plant — built from a single chronological timeline of every action across all your plants for the day; each active gap (≤10 min) is credited to the plant that opened it, while longer gaps count as time away. Approximation only; pang doesn't log idle vs. active.`;
             const estimate = shown
                 ? `<div class="estimate" title="${escapeHtml(tooltip)}">${prefix}${fmtMinutes(shown)}</div>`
                 : '';
