@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.12
+// @version      4.13
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -29,7 +29,7 @@
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
     const KEY_ALL_PLANTS   = 'all_plants';     // [plant_id, ...] full pang inventory, captured during sync for scan-all mode
-    const SCRIPT_VERSION   = '4.12';
+    const SCRIPT_VERSION   = '4.13';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -266,7 +266,7 @@
     // blockers — uses the Tampermonkey extension API). The pang tab's userscript runs syncFromPang,
     // which writes KEY_HARVEST_DONE when complete. We poll that timestamp and close the tab once
     // we see it advance past our start time.
-    function autoSyncFromPang(timeoutMs = 30000, lookupIds = []) {
+    function autoSyncFromPang(timeoutMs = 30000, lookupIds = [], active = false) {
         return new Promise(resolve => {
             const beforeNames = Object.keys(GM_getValue(KEY_PLANT_NAMES, {})).length;
             const beforeKnown = GM_getValue(KEY_KNOWN_PLANTS, []).length;
@@ -279,8 +279,12 @@
             let tabHandle = null;
             try {
                 if (typeof GM_openInTab === 'function') {
-                    // active:false → don't steal focus; insert:true → open right next to current tab
-                    tabHandle = GM_openInTab('http://tools.iwmac.local/pang.qxs#rl-sync', { active: false, insert: true, setParent: true });
+                    // Name/recent syncs run in the background (active:false). The full-inventory
+                    // harvest passes active:true: background tabs get timer-throttled and the
+                    // ~7600-plant websocket stream often doesn't finish before the timeout, so we
+                    // briefly foreground pang (~6s) to let module_plants.coll.data load fully,
+                    // then it auto-closes. insert:true → open right next to the current tab.
+                    tabHandle = GM_openInTab('http://tools.iwmac.local/pang.qxs#rl-sync', { active, insert: true, setParent: true });
                 }
             } catch {}
             if (!tabHandle) {
@@ -727,8 +731,8 @@
         const ensureAllPlants = async () => {
             const all = GM_getValue(KEY_ALL_PLANTS, []);
             if (all.length >= FULL_INVENTORY_MIN) return all;
-            list.innerHTML = '<div class="empty">Loading the full plant inventory from pang…<br><small>(briefly opens pang in a background tab)</small></div>';
-            await autoSyncFromPang(30000);
+            list.innerHTML = '<div class="empty">Loading the full plant inventory from pang…<br><small>(opens pang in the foreground for a few seconds, then closes itself — one-time)</small></div>';
+            await autoSyncFromPang(45000, [], true); // foreground harvest: reliable, unlike a throttled background tab
             return GM_getValue(KEY_ALL_PLANTS, []);
         };
 

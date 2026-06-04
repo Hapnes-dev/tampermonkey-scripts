@@ -35,4 +35,5 @@ v3.x tried to mirror pang's data into Tampermonkey storage so a panel on Rocketl
 ## Limitations
 
 - Pang's API is per-plant (`get_history(plant_id)`) — there's no server-side "list everything user X did on date Y" endpoint, so the script fans out one request per plant. The default full scan does ~7,600 requests (20 in parallel, ~1 min).
+- The plant list itself only exists in a live pang tab (websocket-loaded into `module_plants.coll.data`; there's no HTTP endpoint, and IDs are sparse — they run from 203 up past 50000 — so a numeric range scan isn't viable). The first full scan therefore opens pang in the foreground for ~6 s to harvest the inventory, then caches it (`all_plants`), so the flash rarely repeats.
 - **Quick scan (recent only)** mode is fast but only covers your ~50 recent pang plants. It will miss any plant you didn't open through pang — e.g. plants you worked on via plant-admin/designer — which is exactly why the full scan is the default.
