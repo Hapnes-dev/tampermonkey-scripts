@@ -2,8 +2,8 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18
-// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or add live connection-detail columns (type/address/port/baud/parity/driver addr) straight into the page grid — all merging page tree + Toolbox SQL API.
+// @version      1.19
+// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
@@ -652,6 +652,25 @@ ${colsXml}
         });
     }
 
+    // After expandAll(), leaf rows may flatten into grid.records asynchronously (some plants
+    // only materialise a connection node's child units once the node is opened). Poll briefly
+    // until the leaf count settles, or until the time budget runs out.
+    function waitForLeaves(grid, maxMs) {
+        const step = 100, budget = maxMs || 2500;
+        return new Promise(resolve => {
+            let last = -1, stable = 0, elapsed = 0;
+            const tick = () => {
+                const count = grid.records.filter(r => r.unit_id).length;
+                stable = (count === last) ? stable + 1 : 0;
+                last = count;
+                elapsed += step;
+                if ((count > 0 && stable >= 2) || elapsed >= budget) return resolve(count);
+                setTimeout(tick, step);
+            };
+            setTimeout(tick, step);
+        });
+    }
+
     // Inject the API-derived connection columns straight into the live w2ui topology grid and
     // expand every node so the enriched rows are visible. Works on the grid's own records +
     // columns arrays and calls refresh() (never raw DOM) so the virtualized tree stays in sync.
@@ -672,6 +691,11 @@ ${colsXml}
             flash(cap, 'API failed: ' + (e && e.message ? e.message : e), false, 5000);
             return;
         }
+
+        // Expand every node FIRST: some plants only flatten a connection node's child units
+        // into grid.records once that node is open, so we must expand before populating.
+        expandAll();
+        await waitForLeaves(grid);
 
         addDetailColumns(grid);
 
@@ -695,13 +719,35 @@ ${colsXml}
         });
 
         grid.refresh();
-        expandAll();
         flash(cap, `Filled ${filled} units`, true, 2500);
+    }
+
+    // --- Auto-run "Show Details" whenever the user opens the Topology view ---
+    let pendingAutoDetails = false;
+    let autoDetailsBusy = false;
+
+    // Arm on any click landing inside the sidebar's Topology node.
+    document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t && t.closest && t.closest('#node_topology')) pendingAutoDetails = true;
+    }, true);
+
+    // Fire once the freshly-opened grid has loaded (its toolbar + first records exist).
+    // onShowDetails is idempotent and expands+repopulates, so re-opening Topology refreshes.
+    function maybeAutoDetails() {
+        if (!pendingAutoDetails || autoDetailsBusy) return;
+        const grid = getTopologyGrid();
+        const toolbar = document.getElementById('tb_grid_topology_toolbar_right');
+        if (!grid || !toolbar || !Array.isArray(grid.records) || !grid.records.length) return;
+        pendingAutoDetails = false;
+        autoDetailsBusy = true;
+        Promise.resolve(onShowDetails()).finally(() => { autoDetailsBusy = false; });
     }
 
     // Toolbar is rebuilt by w2ui when navigating between sidebar nodes — keep retrying.
     function ensureButton() {
         makeButton();
+        maybeAutoDetails();
     }
     setInterval(ensureButton, 750);
     if (document.body) ensureButton();
