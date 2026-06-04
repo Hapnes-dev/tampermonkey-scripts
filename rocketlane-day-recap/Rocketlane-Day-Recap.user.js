@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.13
+// @version      4.14
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -29,7 +29,8 @@
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
     const KEY_ALL_PLANTS   = 'all_plants';     // [plant_id, ...] full pang inventory, captured during sync for scan-all mode
-    const SCRIPT_VERSION   = '4.13';
+    const KEY_SCAN_CACHE   = 'full_scan_cache';// { username: { isoDate: { scanned_at, scanned, visits[] } } } — cached full-scan results
+    const SCRIPT_VERSION   = '4.14';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -622,6 +623,14 @@
         }
         #${PANEL_ID} .progress { height: 3px; background: #e0e0e0; }
         #${PANEL_ID} .progress > div { height: 100%; background: #0f62fe; transition: width .15s; }
+        #${PANEL_ID} .warn { padding: 14px; font-size: 12px; color: #161616; }
+        #${PANEL_ID} .warn strong { font-size: 13px; }
+        #${PANEL_ID} .warn p { margin: 8px 0; color: #525252; }
+        #${PANEL_ID} .warn ul { margin: 8px 0 12px; padding-left: 18px; color: #525252; }
+        #${PANEL_ID} .warn li { margin: 2px 0; }
+        #${PANEL_ID} .warn button { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
+        #${PANEL_ID} .warn button[data-action="fullscan-go"] { background: #0f62fe; color: #fff; }
+        #${PANEL_ID} .warn button[data-action="fullscan-cancel"] { background: #e0e0e0; color: #161616; margin-left: 6px; }
     `;
 
     function injectStyle() {
@@ -647,10 +656,8 @@
                 <button data-action="resync" title="Re-sync recent plant list from pang">↻</button>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;" title="Off (default): scans the full IWMAC inventory (~7600 plants, ~1 min) so visits made through plant-admin/designer are found too. On: scans only your ~50 recent pang plants (a few seconds, but misses plants you didn't open through pang).">
-                    <input type="checkbox" data-field="quick" ${GM_getValue('scan_quick', false) ? 'checked' : ''}>
-                    Quick scan (recent only)
-                </label>
+                <button data-action="fullscan" title="Scans ALL ~7,600 IWMAC plants so visits made via plant-admin/designer are found too. Slow (~1 min) and briefly opens pang; the result is cached per date.">🔍 Full scan</button>
+                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Search = your ~50 recent plants (fast). Full scan = all plants (~1 min, cached).</span>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
@@ -672,7 +679,7 @@
         const dateInput     = panel.querySelector('input[type=date]');
         const searchBtn     = panel.querySelector('[data-action=search]');
         const resyncBtn     = panel.querySelector('[data-action=resync]');
-        const quickChk      = panel.querySelector('[data-field=quick]');
+        const fullscanBtn   = panel.querySelector('[data-action=fullscan]');
         const workdayInput  = panel.querySelector('[data-field=workday]');
         const normalizeChk  = panel.querySelector('[data-field=normalize]');
         const list          = panel.querySelector('.results');
@@ -683,6 +690,9 @@
         let lastIso = null;
         let lastUsername = null;
         let lastScanned = 0;
+        let lastMode = 'quick';     // 'quick' | 'full' — how the shown data was gathered
+        let lastFromCache = false;  // true when the shown data came from the full-scan cache
+        let lastCacheTs = 0;
 
         const applyAndRender = () => {
             if (!lastVisits) return;
@@ -698,8 +708,12 @@
                 ? lastVisits.reduce((s, v) => s + (v.normalized_minutes || 0), 0)
                 : lastVisits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
             const totalLabel = displayTotal ? ` · ${targetMin > 0 ? '' : '≈ '}${fmtMinutes(displayTotal)}` : '';
+            // Source label so a sparse quick-scan result isn't mistaken for "visited nothing".
+            let source = ' · recent only';
+            if (lastFromCache) source = ` · cached full scan ${tsToLocalTime(lastCacheTs)}`;
+            else if (lastMode === 'full') source = ' · full scan';
             totalEl.innerHTML =
-                `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}</span>` +
+                `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}${escapeHtml(source)}</span>` +
                 `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
         };
 
@@ -711,10 +725,6 @@
         normalizeChk.addEventListener('change', () => {
             GM_setValue('workday_normalize', !!normalizeChk.checked);
             applyAndRender();
-        });
-        quickChk.addEventListener('change', () => {
-            GM_setValue('scan_quick', !!quickChk.checked);
-            run();
         });
 
         const ensureKnown = async () => {
@@ -744,27 +754,43 @@
             }
         };
 
-        let autoResyncDone = false;
+        // ----- Full-scan result cache (keyed by username + date) -----
+        // A full scan is ~7,600 requests / ~1 min, so we cache its result per date. Past dates
+        // never change; today's can go stale as you keep working, which is why the footer shows
+        // the cache time and a Full scan always re-runs and overwrites it.
+        const cacheVisit = (v) => ({
+            plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
+            actions: v.actions, count: v.count, estimated_minutes: v.estimated_minutes,
+        });
+        const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
+        const writeCache = (username, iso, visits, scanned) => {
+            const cache = GM_getValue(KEY_SCAN_CACHE, {});
+            if (!cache[username]) cache[username] = {};
+            cache[username][iso] = { scanned_at: Date.now(), scanned, visits: visits.map(cacheVisit) };
+            // Keep only the 60 most-recently-scanned dates per user so storage stays bounded.
+            const dates = Object.keys(cache[username]);
+            if (dates.length > 60) {
+                dates.map(d => [d, cache[username][d].scanned_at || 0])
+                     .sort((a, b) => a[1] - b[1])
+                     .slice(0, dates.length - 60)
+                     .forEach(([d]) => delete cache[username][d]);
+            }
+            GM_setValue(KEY_SCAN_CACHE, cache);
+        };
 
-        const run = async () => {
+        // Core scan. mode 'quick' = your ~50 recent plants (fast); 'full' = all ~7,600 (slow, cached).
+        const doScan = async (mode) => {
             searchBtn.disabled = true;
+            fullscanBtn.disabled = true;
             resyncBtn.disabled = true;
             totalEl.textContent = '';
             progress.style.width = '0%';
             try {
-                const quick = !!quickChk.checked;
                 let plantIds;
-                if (quick) {
-                    const ok = await ensureKnown();
-                    if (!ok) {
-                        list.innerHTML = '<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
-                        return;
-                    }
-                    plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
-                } else {
+                if (mode === 'full') {
                     plantIds = await ensureAllPlants();
                     if (!plantIds || plantIds.length === 0) {
-                        // Full inventory unavailable — fall back to the recent list so we still show something.
+                        // Inventory unavailable — fall back to the recent list so we still show something.
                         await ensureKnown();
                         plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
                     }
@@ -772,20 +798,24 @@
                         list.innerHTML = '<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
                         return;
                     }
+                } else {
+                    const ok = await ensureKnown();
+                    if (!ok) {
+                        list.innerHTML = '<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
+                        return;
+                    }
+                    plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
                 }
-                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${quick ? '' : '<br><small>full scan — about a minute</small>'}</div>`;
+                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute</small>' : ''}</div>`;
                 const iso = dateInput.value;
                 const { visits, username, scanned } = await loadVisitsForDate(iso, plantIds, (done, total) => {
                     progress.style.width = Math.round(done / total * 100) + '%';
                 });
                 progress.style.width = '100%';
 
-                // If any visit has no plant name AND we haven't already auto-resynced this panel,
-                // resolve them via direct admin-page fetch (fast: only the missing plants,
-                // in parallel — no pang tab and no waiting for the full 7600-plant inventory).
+                // Resolve any missing plant names via direct admin-page fetch (only the matched plants).
                 const missingIds = visits.filter(v => !v.name).map(v => v.plant_id);
-                if (missingIds.length > 0 && !autoResyncDone) {
-                    autoResyncDone = true;
+                if (missingIds.length > 0) {
                     list.innerHTML = `<div class="empty">Looking up ${missingIds.length} plant name${missingIds.length === 1 ? '' : 's'}…</div>`;
                     progress.style.width = '0%';
                     await fetchMissingPlantNames(missingIds, (done, total) => {
@@ -794,34 +824,78 @@
                     refillNames(visits);
                 }
 
-                lastVisits   = visits;
-                lastIso      = iso;
-                lastUsername = username;
-                lastScanned  = scanned;
+                lastVisits    = visits;
+                lastIso       = iso;
+                lastUsername  = username;
+                lastScanned   = scanned;
+                lastMode      = mode;
+                lastFromCache = false;
+                if (mode === 'full') writeCache(normalizeUser(username), iso, visits, scanned);
                 applyAndRender();
             } finally {
                 searchBtn.disabled = false;
+                fullscanBtn.disabled = false;
                 resyncBtn.disabled = false;
                 setTimeout(() => { progress.style.width = '0%'; }, 800);
             }
         };
 
-        const resync = async () => {
-            resyncBtn.disabled = true;
-            searchBtn.disabled = true;
-            // Manual resync = full pang harvest (refreshes the recent-plants list AND any
-            // names we don't already have). Slow path; only used when the user explicitly
-            // clicks ↻. For the in-search auto-resync we use the fast targeted fetch above.
-            list.innerHTML = '<div class="empty">Re-syncing recent plants from pang…</div>';
-            await autoSyncFromPang();
-            await run();
+        // Default view on open / date change: show cached full-scan data for that date if present
+        // (instant + complete), else a quick recent-only scan.
+        const openDefault = async () => {
+            const iso = dateInput.value;
+            const username = normalizeUser(GM_getValue(KEY_USERNAME, 'thomas.kvalvag'));
+            const cached = readCache(username, iso);
+            if (cached) {
+                lastVisits    = cached.visits.map(v => ({ ...v }));
+                lastIso       = iso;
+                lastUsername  = username;
+                lastScanned   = cached.scanned;
+                lastMode      = 'full';
+                lastFromCache = true;
+                lastCacheTs   = cached.scanned_at || 0;
+                applyAndRender();
+            } else {
+                await doScan('quick');
+            }
         };
 
-        searchBtn.addEventListener('click', run);
-        resyncBtn.addEventListener('click', resync);
-        dateInput.addEventListener('change', run);
+        // Full scan is heavy — warn and require an explicit confirm before running it.
+        const fullScanWithWarning = () => {
+            list.innerHTML = `
+                <div class="warn">
+                    <strong>⚠️ Full scan — all plants</strong>
+                    <p>Queries <b>all ~7,600 IWMAC plants</b> (one request each) to catch visits made through plant-admin/designer, not just the plants you opened in pang.</p>
+                    <ul>
+                        <li>Takes about <b>a minute</b></li>
+                        <li>Briefly opens pang in the foreground, then closes it</li>
+                        <li>The result is cached for this date</li>
+                    </ul>
+                    <div>
+                        <button data-action="fullscan-go">Run full scan</button>
+                        <button data-action="fullscan-cancel">Cancel</button>
+                    </div>
+                </div>`;
+            list.querySelector('[data-action=fullscan-go]').addEventListener('click', () => doScan('full'));
+            list.querySelector('[data-action=fullscan-cancel]').addEventListener('click', () => openDefault());
+        };
+
+        searchBtn.addEventListener('click', () => doScan('quick'));
+        fullscanBtn.addEventListener('click', fullScanWithWarning);
+        resyncBtn.addEventListener('click', async () => {
+            resyncBtn.disabled = true;
+            searchBtn.disabled = true;
+            fullscanBtn.disabled = true;
+            list.innerHTML = '<div class="empty">Re-syncing recent plants from pang…</div>';
+            await autoSyncFromPang();
+            resyncBtn.disabled = false;
+            searchBtn.disabled = false;
+            fullscanBtn.disabled = false;
+            await openDefault();
+        });
+        dateInput.addEventListener('change', openDefault);
         panel.querySelector('[data-action=close]').addEventListener('click', () => panel.remove());
-        run();
+        openDefault();
         return panel;
     }
 

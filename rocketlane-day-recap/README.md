@@ -1,8 +1,6 @@
 # Rocketlane Day Recap
 
-Adds a 🏭 **Day Recap** button on **pang.qxs** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, time of first action, and which actions you performed).
-
-Rocketlane's My Timesheet gets a small button that just opens pang with the date pre-filled — pang has the live, authoritative plant data, so the recap runs there.
+Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, first/last action time, which actions you performed, and an estimated time split).
 
 ## Install
 
@@ -10,30 +8,21 @@ Rocketlane's My Timesheet gets a small button that just opens pang with the date
 
 ## Usage
 
-### From pang
-1. Open `http://tools.iwmac.local/pang.qxs`
-2. Click 🏭 **Day Recap** (bottom-right)
-3. Pick a date → **Search**
-4. Lists every plant where you have actions logged on that date
+1. On any `https://kiona.rocketlane.com/timesheets/...` page, click 🏭 **Plants visited** (bottom-right)
+2. Pick a date
+3. **Search** lists every plant where you have actions logged that day, scanning your ~50 recent pang plants (fast)
+4. For a complete picture — including plants you reached through plant-admin/designer rather than by opening them in pang — click **🔍 Full scan**. It queries all ~7,600 plants (~1 min, after a one-time confirmation) and **caches the result per date**, so re-opening that day is instant.
 
-By default, **all ~7,600 IWMAC plants are scanned** (~1 min) so every visit shows up — including plants you reached through plant-admin/designer rather than by opening them in pang. Tick **Quick scan (recent only)** to scan just your ~50 recent pang plants instead (a few seconds), at the cost of missing those plant-admin visits.
-
-### From Rocketlane
-1. On any `https://kiona.rocketlane.com/timesheets/...` page, click 🏭 **Day Recap**
-2. Pick a date → **Open on pang ↗** opens pang in a new tab with the panel auto-populated
+Optionally set your **Workday total** and tick **Distribute to total** to split the day's hours across the plants weighted by activity.
 
 ## How it works
 
-Pang already loads `module_plants.coll.data` — the full plant inventory with names — into memory the moment `pang.qxs` opens. The script reads that directly. No SQL, no caches to maintain, no cross-origin sync issues.
+The panel runs on Rocketlane and calls pang's `actions.php` (`method:"get_history"`) once per plant in scope via `GM_xmlhttpRequest`. **Search** scopes to your recent plants; **Full scan** scopes to the whole inventory.
 
-For each plant in scope, it calls pang's existing `actions.php` with `method:"get_history"`. Same origin, your existing pang session cookie is used automatically.
-
-## Why v4 is a clean break
-
-v3.x tried to mirror pang's data into Tampermonkey storage so a panel on Rocketlane could read it. That ran into popup blockers, cross-origin localStorage walls, GM-storage sync gaps, and stale name caches. v4 sidesteps all of that by putting the panel where the data lives.
+The full inventory (plant ids + names) only exists in a live pang tab, websocket-loaded into `module_plants.coll.data` — there's no HTTP endpoint that lists plants. So the first full scan briefly opens `pang.qxs` in the foreground to harvest that list, then caches it for reuse.
 
 ## Limitations
 
-- Pang's API is per-plant (`get_history(plant_id)`) — there's no server-side "list everything user X did on date Y" endpoint, so the script fans out one request per plant. The default full scan does ~7,600 requests (20 in parallel, ~1 min).
-- The plant list itself only exists in a live pang tab (websocket-loaded into `module_plants.coll.data`; there's no HTTP endpoint, and IDs are sparse — they run from 203 up past 50000 — so a numeric range scan isn't viable). The first full scan therefore opens pang in the foreground for ~6 s to harvest the inventory, then caches it (`all_plants`), so the flash rarely repeats.
-- **Quick scan (recent only)** mode is fast but only covers your ~50 recent pang plants. It will miss any plant you didn't open through pang — e.g. plants you worked on via plant-admin/designer — which is exactly why the full scan is the default.
+- Pang's API is per-plant (`get_history(plant_id)`) — no server-side "what did user X do on date Y" endpoint — so a **Full scan** fans out ~7,600 requests (20 in parallel, ~1 min). Its result is cached per date (`full_scan_cache`), so re-opening a previously full-scanned day is instant. Today's cache can go stale as you keep working — the footer shows the scan time, and Full scan always re-runs and overwrites it.
+- The plant list itself only exists in a live pang tab (websocket-loaded into `module_plants.coll.data`; no HTTP endpoint, and IDs are sparse — 203 up past 50000 — so a numeric range scan isn't viable). The first full scan opens pang in the foreground for ~6 s to harvest the inventory, then caches it (`all_plants`), so the flash rarely repeats.
+- Plain **Search** is fast but only covers your ~50 recent pang plants — it misses any plant you didn't open through pang (e.g. plant-admin/designer visits). Use **Full scan** to catch those.
