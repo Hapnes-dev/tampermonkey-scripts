@@ -2,8 +2,8 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17
-// @description  Copy the IWMAC sys_tools topology to clipboard, or export to a real .xlsx that merges page tree + Toolbox SQL API with collapsible outline levels.
+// @version      1.18
+// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or add live connection-detail columns (type/address/port/baud/parity/driver addr) straight into the page grid — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
@@ -18,6 +18,18 @@
 
     const COPY_BTN_ID   = 'iwmac-topo-copy-btn';
     const EXPORT_BTN_ID = 'iwmac-topo-export-btn';
+    const DETAIL_BTN_ID = 'iwmac-topo-detail-btn';
+
+    // Extra columns injected into the live grid by "Show Details" (field must match the
+    // record property we set in onShowDetails).
+    const DETAIL_COLS = [
+        { field: 'conn_type',   text: 'Connection type', size: '150px' },
+        { field: 'address',     text: 'Address',         size: '180px' },
+        { field: 'comm_port',   text: 'Comm port',       size: '85px'  },
+        { field: 'baudrate',    text: 'Baudrate',        size: '85px'  },
+        { field: 'parity',      text: 'Parity',          size: '70px'  },
+        { field: 'driver_addr', text: 'Driver addr',     size: '100px' },
+    ];
 
     function buildToolbarButton(tdId, captionId, iconChar, captionText, onClick) {
         const td = document.createElement('td');
@@ -63,6 +75,24 @@
             );
             host.parentNode.insertBefore(expTd, host);
         }
+        if (!document.getElementById(DETAIL_BTN_ID)) {
+            const detTd = buildToolbarButton(
+                DETAIL_BTN_ID, DETAIL_BTN_ID + '-cap',
+                '&#128268;', 'Show Details', onShowDetails
+            );
+            host.parentNode.insertBefore(detTd, host);
+        }
+    }
+
+    // Persistent caption swap (no auto-revert) — used for the "Loading…" state while the
+    // API call is in flight. Stores the original text so a later flash() reverts correctly.
+    function setCaption(captionId, msg, color) {
+        const cap = document.getElementById(captionId);
+        if (!cap) return;
+        if (!cap.dataset.origText) cap.dataset.origText = cap.textContent;
+        cap.textContent = msg;
+        cap.style.color = color || '';
+        cap.style.fontWeight = color ? 'bold' : '';
     }
 
     function flash(captionId, msg, ok, durationMs) {
@@ -270,6 +300,54 @@
             { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     }
 
+    // Derive the connection columns for one leaf unit from its API row + its depth-1 parent
+    // tree label. Shared by the Excel export and the in-grid "Show Details" feature so both
+    // present identical values.
+    //   • Address from the parent label when the page tree carries network info:
+    //       Parent "COMx - IP" → Moxa converter (IP)   Parent "COMx" → Physical port
+    //       Parent contains an IP → use IP[:port] (covers BACnet groupings)   else api.resolved_address
+    //   • Connection type — tree position wins over driver type:
+    //       Under a COMx parent → Modbus RTU (an FX16 under a Moxa COM still speaks RTU to the
+    //       Moxa, which bridges to TCP). Otherwise known TCP-only drivers (FX16, …) → Modbus TCP.
+    //   • Comm port — prefer the API value, else the number from "COMx" in the parent.
+    function deriveConnection(api, parentLbl) {
+        api = api || {};
+        parentLbl = parentLbl || '';
+        const isSerialParent = /\bCOM\s*\d+/i.test(parentLbl);
+
+        let address = api.resolved_address || '';
+        if (isSerialParent) {
+            const ipMatch = parentLbl.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
+            address = ipMatch ? `Moxa converter (${ipMatch[1]})` : 'Physical port';
+        } else {
+            const ipPortMatch = parentLbl.match(/\b(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)\b/);
+            if (ipPortMatch) address = ipPortMatch[1];
+        }
+
+        let connectionType = api.connection_type || '';
+        const tcpOnlyDrivers = ['FX16'];
+        if (isSerialParent) {
+            connectionType = 'Modbus RTU';
+        } else if (tcpOnlyDrivers.includes((api.driver_type || '').toUpperCase())) {
+            connectionType = 'Modbus TCP';
+        }
+
+        let commPort = api.comm_port || '';
+        if (!commPort) {
+            const comMatch = parentLbl.match(/\bCOM\s*(\d+)/i);
+            if (comMatch) commPort = comMatch[1];
+        }
+
+        return {
+            connectionType,
+            address,
+            commPort,
+            baudrate: api.baudrate || '',
+            parity: api.parity || '',
+            driverAddr: api.driver_addr || '',
+        };
+    }
+
     // Real .xlsx with outlineLevel per row so Excel shows native +/- collapse buttons in the gutter.
     // apiByUnitId: optional map from UPPER(unit_id) → API row, merged onto leaf rows as extra columns.
     function buildXlsx(rows, apiByUnitId) {
@@ -298,50 +376,8 @@
             let extra = ['', '', '', '', '', ''];
             if (hasApi && !isGroup) {
                 const api = apiByUnitId[(r.tree || '').trim().toUpperCase()] || {};
-                // Decide Address from the depth-1 parent label whenever the page tree gives us
-                // network info there. Falls back to api.resolved_address otherwise.
-                //   • Parent is "COMx - IP"  → Moxa converter (IP)
-                //   • Parent is "COMx"       → Physical port
-                //   • Parent contains an IP  → use IP[:port] from the parent (covers BACnet groupings)
-                let address = api.resolved_address || '';
-                const parentLbl = r.parent || '';
-                const isSerialParent = /\bCOM\s*\d+/i.test(parentLbl);
-                if (isSerialParent) {
-                    const ipMatch = parentLbl.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
-                    address = ipMatch ? `Moxa converter (${ipMatch[1]})` : 'Physical port';
-                } else {
-                    const ipPortMatch = parentLbl.match(/\b(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)\b/);
-                    if (ipPortMatch) address = ipPortMatch[1];
-                }
-
-                // Connection-type overrides (tree position wins over driver type):
-                //  • Any device under a COMx parent (Moxa or physical) → Modbus RTU
-                //    (FX16 under a Moxa COM is still RTU — the unit speaks RTU to the Moxa,
-                //     the Moxa is what bridges to TCP.)
-                //  • If NOT under a COM parent, known TCP-only driver types (FX16, …) → Modbus TCP
-                let connectionType = api.connection_type || '';
-                const tcpOnlyDrivers = ['FX16'];
-                if (isSerialParent) {
-                    connectionType = 'Modbus RTU';
-                } else if (tcpOnlyDrivers.includes((api.driver_type || '').toUpperCase())) {
-                    connectionType = 'Modbus TCP';
-                }
-
-                // Comm port: prefer API value, otherwise extract the number from "COMx" in the parent.
-                let commPort = api.comm_port || '';
-                if (!commPort) {
-                    const comMatch = parentLbl.match(/\bCOM\s*(\d+)/i);
-                    if (comMatch) commPort = comMatch[1];
-                }
-
-                extra = [
-                    connectionType,
-                    address,
-                    commPort,
-                    api.baudrate || '',
-                    api.parity || '',
-                    api.driver_addr || '',
-                ];
+                const d = deriveConnection(api, r.parent);
+                extra = [d.connectionType, d.address, d.commPort, d.baudrate, d.parity, d.driverAddr];
             }
             const values = hasApi ? base.concat(extra) : base;
             const cells = values.map((v, i) =>
@@ -601,6 +637,66 @@ ${colsXml}
             console.error('[IWMAC Topology] Export failed', e);
             flash(cap, 'Export failed: ' + (e && e.message ? e.message : e), false, 5000);
         }
+    }
+
+    function getTopologyGrid() {
+        const w2 = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).w2ui;
+        return (w2 && w2.grid_topology) || null;
+    }
+
+    function addDetailColumns(grid) {
+        DETAIL_COLS.forEach(c => {
+            if (!grid.columns.find(x => x.field === c.field)) {
+                grid.columns.push({ field: c.field, text: c.text, size: c.size, sortable: true });
+            }
+        });
+    }
+
+    // Inject the API-derived connection columns straight into the live w2ui topology grid and
+    // expand every node so the enriched rows are visible. Works on the grid's own records +
+    // columns arrays and calls refresh() (never raw DOM) so the virtualized tree stays in sync.
+    async function onShowDetails() {
+        const cap = DETAIL_BTN_ID + '-cap';
+        const grid = getTopologyGrid();
+        if (!grid || !Array.isArray(grid.records)) { flash(cap, 'Grid not found', false); return; }
+
+        const plantId = getPlantIdFromHost();
+        if (!plantId) { flash(cap, 'No plant id in host', false); return; }
+
+        setCaption(cap, 'Loading…', '#1565c0');
+        let apiMap;
+        try {
+            apiMap = await fetchUnitsApi(plantId);
+        } catch (e) {
+            console.error('[IWMAC Topology] API fetch failed:', e);
+            flash(cap, 'API failed: ' + (e && e.message ? e.message : e), false, 5000);
+            return;
+        }
+
+        addDetailColumns(grid);
+
+        // recid → record, so each leaf can read its depth-1 parent (connection) tree label.
+        const byRecid = {};
+        grid.records.forEach(r => { byRecid[r.recid] = r; });
+
+        let filled = 0;
+        grid.records.forEach(r => {
+            if (!r.unit_id) return; // group / connection nodes have no unit of their own
+            const parent = byRecid[r.w2ui && r.w2ui.parent_recid];
+            const api = apiMap[String(r.unit_id).trim().toUpperCase()];
+            const d = deriveConnection(api, parent ? parent.tree : '');
+            r.conn_type   = d.connectionType;
+            r.address     = d.address;
+            r.comm_port   = d.commPort;
+            r.baudrate    = d.baudrate;
+            r.parity      = d.parity;
+            r.driver_addr = d.driverAddr;
+            if (api) filled++;
+        });
+
+        grid.refresh();
+        expandAll();
+        flash(cap, `Filled ${filled} units`, true, 2500);
     }
 
     // Toolbar is rebuilt by w2ui when navigating between sidebar nodes — keep retrying.
