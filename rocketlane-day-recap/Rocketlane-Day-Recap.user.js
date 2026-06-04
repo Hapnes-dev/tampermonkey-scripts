@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.14
+// @version      4.15
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8,7 +8,9 @@
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js
 // @match        https://kiona.rocketlane.com/timesheets/*
 // @match        http://*.plants.iwmac.local:8080/*
+// @match        https://*.plants.iwmac.local:8080/*
 // @match        http://tools.iwmac.local/pang.qxs*
+// @match        https://tools.iwmac.local/pang.qxs*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
@@ -30,7 +32,8 @@
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
     const KEY_ALL_PLANTS   = 'all_plants';     // [plant_id, ...] full pang inventory, captured during sync for scan-all mode
     const KEY_SCAN_CACHE   = 'full_scan_cache';// { username: { isoDate: { scanned_at, scanned, visits[] } } } — cached full-scan results
-    const SCRIPT_VERSION   = '4.14';
+    const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
+    const SCRIPT_VERSION   = '4.15';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -58,6 +61,14 @@
     };
 
     const host = location.hostname;
+
+    // pang answers on both http and https. Use whichever origin we last saw a real pang tab served
+    // from (recorded by syncFromPang); default to http for the first run before any sync. The
+    // Rocketlane panel's history lookups + harvest tab then target the user's actual protocol.
+    function pangBase() {
+        const o = String(GM_getValue(KEY_PANG_ORIGIN, '') || '');
+        return o.startsWith('http') && o.includes('tools.iwmac.local') ? o : 'http://tools.iwmac.local';
+    }
 
     // Names that v3.6 may have scraped from plant-admin error pages. None of these
     // are real IWMAC plant names, so we treat them as "no name captured yet".
@@ -145,6 +156,9 @@
     // ---------- Pang page: pull recent list + username + plant names ----------
     function syncFromPang() {
         LOG('syncFromPang() called on', location.href);
+        // Record the origin (http vs https) the user's pang is served from, so the Rocketlane
+        // panel's history lookups and harvest tab target the same protocol.
+        try { GM_setValue(KEY_PANG_ORIGIN, location.origin); } catch {}
         const isSyncTab = window.name === 'rl_pang_sync' || (location.hash && location.hash.includes('rl-sync'));
         const lookupIds = (() => {
             const raw = GM_getValue(KEY_NAME_LOOKUP_IDS, []);
@@ -285,11 +299,11 @@
                     // ~7600-plant websocket stream often doesn't finish before the timeout, so we
                     // briefly foreground pang (~6s) to let module_plants.coll.data load fully,
                     // then it auto-closes. insert:true → open right next to the current tab.
-                    tabHandle = GM_openInTab('http://tools.iwmac.local/pang.qxs#rl-sync', { active, insert: true, setParent: true });
+                    tabHandle = GM_openInTab(pangBase() + '/pang.qxs#rl-sync', { active, insert: true, setParent: true });
                 }
             } catch {}
             if (!tabHandle) {
-                tabHandle = window.open('http://tools.iwmac.local/pang.qxs', 'rl_pang_sync', 'width=420,height=300,left=0,top=0');
+                tabHandle = window.open(pangBase() + '/pang.qxs', 'rl_pang_sync', 'width=420,height=300,left=0,top=0');
             }
             if (!tabHandle) { resolve(false); return; }
 
@@ -394,7 +408,7 @@
         return new Promise(resolve => {
             GM_xmlhttpRequest({
                 method: 'POST',
-                url: 'http://tools.iwmac.local/services/pang/actions.php',
+                url: pangBase() + '/services/pang/actions.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 data: JSON.stringify([{ jsonrpc: '2.0', method: 'get_history', params: { plant_id: String(plant_id) }, id: 0 }]),
                 onload: r => {
@@ -795,13 +809,13 @@
                         plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
                     }
                     if (!plantIds || plantIds.length === 0) {
-                        list.innerHTML = '<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
+                        list.innerHTML = `<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> manually.</div>`;
                         return;
                     }
                 } else {
                     const ok = await ensureKnown();
                     if (!ok) {
-                        list.innerHTML = '<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
+                        list.innerHTML = `<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> manually.</div>`;
                         return;
                     }
                     plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
@@ -902,7 +916,7 @@
     function renderVisits(list, visits, isoDate, scanned) {
         list.innerHTML = '';
         if (scanned === 0) {
-            list.innerHTML = `<div class="empty">No plants known yet. Open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> once so the script can pick up your recent plants.</div>`;
+            list.innerHTML = `<div class="empty">No plants known yet. Open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> once so the script can pick up your recent plants.</div>`;
             return;
         }
         if (visits.length === 0) {
@@ -910,7 +924,7 @@
             return;
         }
         visits.forEach(v => {
-            const url = `http://tools.iwmac.local/pang.qxs?plant_id=${encodeURIComponent(v.plant_id)}`;
+            const url = `${pangBase()}/pang.qxs?plant_id=${encodeURIComponent(v.plant_id)}`;
             const div = document.createElement('div');
             div.className = 'row';
             const timeRange = v.last_ts && v.last_ts !== v.first_ts
