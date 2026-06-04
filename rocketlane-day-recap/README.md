@@ -16,7 +16,7 @@ Rocketlane's My Timesheet gets a small button that just opens pang with the date
 3. Pick a date → **Search**
 4. Lists every plant where you have actions logged on that date
 
-By default, only your 50 recent plants are scanned (fast, ~2-3 sec). Tick **Scan all plants** to scan the full IWMAC inventory (~7600 plants, ~30 sec) for older visits.
+By default, **all ~7,600 IWMAC plants are scanned** (~1 min) so every visit shows up — including plants you reached through plant-admin/designer rather than by opening them in pang. Tick **Quick scan (recent only)** to scan just your ~50 recent pang plants instead (a few seconds), at the cost of missing those plant-admin visits.
 
 ### From Rocketlane
 1. On any `https://kiona.rocketlane.com/timesheets/...` page, click 🏭 **Day Recap**
@@ -34,5 +34,5 @@ v3.x tried to mirror pang's data into Tampermonkey storage so a panel on Rocketl
 
 ## Limitations
 
-- "Recent plants" mode only scans your last 50 plants (pang's own recent list). Plants you haven't touched recently won't be queried unless you tick "Scan all plants".
-- Pang's API is per-plant (`get_history(plant_id)`) — there's no server-side "list everything user X did on date Y" endpoint, so the script has to fan out. The full-scan mode does ~7600 requests at 8 in parallel.
+- Pang's API is per-plant (`get_history(plant_id)`) — there's no server-side "list everything user X did on date Y" endpoint, so the script fans out one request per plant. The default full scan does ~7,600 requests (20 in parallel, ~1 min).
+- **Quick scan (recent only)** mode is fast but only covers your ~50 recent pang plants. It will miss any plant you didn't open through pang — e.g. plants you worked on via plant-admin/designer — which is exactly why the full scan is the default.

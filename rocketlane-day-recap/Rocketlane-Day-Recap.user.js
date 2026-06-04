@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.11
+// @version      4.12
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -28,7 +28,8 @@
     const KEY_LAST_HARVEST = 'last_harvest_ts'; // ms timestamp of most recent successful harvest write
     const KEY_HARVEST_DONE = 'harvest_done_ts'; // set when syncFromPang considers itself complete
     const KEY_NAME_LOOKUP_IDS = 'name_lookup_ids'; // [plant_id, ...] requested by Rocketlane for a targeted pang sync
-    const SCRIPT_VERSION   = '4.11';
+    const KEY_ALL_PLANTS   = 'all_plants';     // [plant_id, ...] full pang inventory, captured during sync for scan-all mode
+    const SCRIPT_VERSION   = '4.12';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -49,6 +50,7 @@
     const PANEL_ID = 'rl-day-recap-panel';
     const BTN_ID   = 'rl-day-recap-fab';
     const PARALLEL = 8;
+    const SCAN_PARALLEL = 20;  // history fan-out for the full-inventory scan (20 × ~135ms ≈ ~1 min for ~7600 plants)
     const FULL_INVENTORY_MIN = 7000;
     const TRUSTED_PLANT_NAMES = {
         '8179': 'COOP Extra Glommen Brygge',
@@ -189,6 +191,13 @@
             };
             if (Array.isArray(coll)) for (const p of coll) consume(p?.plant_id, p?.name);
             if (Array.isArray(bodys)) for (const r of bodys) consume(r?.user?.plant_id, r?.user?.name);
+            // Capture the full plant-id inventory so the Rocketlane panel (which has no access to
+            // module_plants) can scan every plant, not just the recent list. The collection grows
+            // as plants stream in, so keep the largest list we've seen — by finish() it's all ~7600.
+            if (Array.isArray(coll) && coll.length >= 1000) {
+                const ids = coll.map(p => String(p?.plant_id)).filter(Boolean);
+                if (ids.length > GM_getValue(KEY_ALL_PLANTS, []).length) GM_setValue(KEY_ALL_PLANTS, ids);
+            }
             // Fallback for the currently rendered pang table/window. This covers cases where
             // the full collection is still streaming but the searched plant is already visible.
             document.querySelectorAll('#comp_module_plants_plants_table tbody.qxsTable_body tr').forEach(tr => {
@@ -431,14 +440,13 @@
         return parts; // en-CA emits YYYY-MM-DD
     }
 
-    async function loadVisitsForDate(isoDate, onProgress) {
+    async function loadVisitsForDate(isoDate, plantIds, onProgress) {
         const username = normalizeUser(GM_getValue(KEY_USERNAME, 'thomas.kvalvag'));
-        const known = GM_getValue(KEY_KNOWN_PLANTS, []);
         const names = GM_getValue(KEY_PLANT_NAMES, {});
 
-        if (known.length === 0) return { visits: [], username, scanned: 0 };
+        if (!plantIds || plantIds.length === 0) return { visits: [], username, scanned: 0 };
 
-        const all = await pMap(known, async (pid) => {
+        const all = await pMap(plantIds, async (pid) => {
             const entries = await gmFetchHistory(pid);
             const matches = entries.filter(e => {
                 if (pangDateToISODate(e.date) !== isoDate) return false;
@@ -457,7 +465,7 @@
                 count: matches.length,
                 _timestamps: timestamps,
             };
-        }, PARALLEL, onProgress);
+        }, SCAN_PARALLEL, onProgress);
 
         const visits = all.filter(Boolean).sort((a, b) => a.first_ts - b.first_ts);
 
@@ -473,7 +481,7 @@
             delete v._timestamps;
         }
 
-        return { visits, username, scanned: known.length };
+        return { visits, username, scanned: plantIds.length };
     }
 
     const NO_TZ = 'Europe/Oslo';
@@ -635,6 +643,12 @@
                 <button data-action="resync" title="Re-sync recent plant list from pang">↻</button>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;" title="Off (default): scans the full IWMAC inventory (~7600 plants, ~1 min) so visits made through plant-admin/designer are found too. On: scans only your ~50 recent pang plants (a few seconds, but misses plants you didn't open through pang).">
+                    <input type="checkbox" data-field="quick" ${GM_getValue('scan_quick', false) ? 'checked' : ''}>
+                    Quick scan (recent only)
+                </label>
+            </div>
+            <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
                     Workday total
                     <input type="number" data-field="workday" step="0.5" min="0" max="24" value="${(GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || 0)}" style="width: 60px; padding: 4px 6px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px;">
@@ -654,6 +668,7 @@
         const dateInput     = panel.querySelector('input[type=date]');
         const searchBtn     = panel.querySelector('[data-action=search]');
         const resyncBtn     = panel.querySelector('[data-action=resync]');
+        const quickChk      = panel.querySelector('[data-field=quick]');
         const workdayInput  = panel.querySelector('[data-field=workday]');
         const normalizeChk  = panel.querySelector('[data-field=normalize]');
         const list          = panel.querySelector('.results');
@@ -693,6 +708,10 @@
             GM_setValue('workday_normalize', !!normalizeChk.checked);
             applyAndRender();
         });
+        quickChk.addEventListener('change', () => {
+            GM_setValue('scan_quick', !!quickChk.checked);
+            run();
+        });
 
         const ensureKnown = async () => {
             const known = GM_getValue(KEY_KNOWN_PLANTS, []);
@@ -700,6 +719,17 @@
             list.innerHTML = '<div class="empty">Fetching your recent plants from pang…<br><small>(briefly opens pang in a small window)</small></div>';
             const ok = await autoSyncFromPang();
             return ok;
+        };
+
+        // Scan-all mode needs the full plant-id inventory. It's harvested into KEY_ALL_PLANTS
+        // whenever a pang tab runs syncFromPang; if we don't have it yet (or only a partial list),
+        // open pang briefly to populate it.
+        const ensureAllPlants = async () => {
+            const all = GM_getValue(KEY_ALL_PLANTS, []);
+            if (all.length >= FULL_INVENTORY_MIN) return all;
+            list.innerHTML = '<div class="empty">Loading the full plant inventory from pang…<br><small>(briefly opens pang in a background tab)</small></div>';
+            await autoSyncFromPang(30000);
+            return GM_getValue(KEY_ALL_PLANTS, []);
         };
 
         // Refresh names on visits in-place from current cache (after a resync)
@@ -718,14 +748,30 @@
             totalEl.textContent = '';
             progress.style.width = '0%';
             try {
-                const ok = await ensureKnown();
-                if (!ok) {
-                    list.innerHTML = '<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
-                    return;
+                const quick = !!quickChk.checked;
+                let plantIds;
+                if (quick) {
+                    const ok = await ensureKnown();
+                    if (!ok) {
+                        list.innerHTML = '<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
+                        return;
+                    }
+                    plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
+                } else {
+                    plantIds = await ensureAllPlants();
+                    if (!plantIds || plantIds.length === 0) {
+                        // Full inventory unavailable — fall back to the recent list so we still show something.
+                        await ensureKnown();
+                        plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
+                    }
+                    if (!plantIds || plantIds.length === 0) {
+                        list.innerHTML = '<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="http://tools.iwmac.local/pang.qxs" target="_blank">pang</a> manually.</div>';
+                        return;
+                    }
                 }
-                list.innerHTML = '<div class="empty">Querying pang…</div>';
+                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${quick ? '' : '<br><small>full scan — about a minute</small>'}</div>`;
                 const iso = dateInput.value;
-                const { visits, username, scanned } = await loadVisitsForDate(iso, (done, total) => {
+                const { visits, username, scanned } = await loadVisitsForDate(iso, plantIds, (done, total) => {
                     progress.style.width = Math.round(done / total * 100) + '%';
                 });
                 progress.style.width = '100%';
@@ -864,6 +910,7 @@
                         version: SCRIPT_VERSION,
                         username: GM_getValue(KEY_USERNAME, '(none)'),
                         known_count: known.length,
+                        all_plants_count: GM_getValue(KEY_ALL_PLANTS, []).length,
                         names_count: Object.keys(names).length,
                         last_harvest: new Date(GM_getValue(KEY_LAST_HARVEST, 0)).toISOString(),
                         last_done: new Date(GM_getValue(KEY_HARVEST_DONE, 0)).toISOString(),
