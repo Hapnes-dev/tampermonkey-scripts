@@ -1,16 +1,16 @@
 # IWMAC Topology Copy
 
-**Version: 1.20**
+**Version: 1.21**
 
 Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
 - **Copy Topology** — expands every node and copies the hierarchy as a rich-text table (HTML for Zendesk/Gmail/Word, TSV fallback for Excel/Notepad).
 - **Export to Excel** — downloads a real `.xlsx` with native +/- collapse buttons in the row gutter, mirroring the tree levels in the browser.
-- **Show Details** — fetches the Toolbox SQL API and injects six connection columns (Connection type, Address, Comm port, Baudrate, Parity, Driver addr) straight into the live page grid, then expands every node. **Runs automatically whenever you open the Topology view**; once done the button shows `✓ Details shown` and won't re-fetch (a manual click just confirms it). See the topology *with* wiring details without leaving the page.
+- **Show Details** — fetches the Toolbox SQL API and injects six connection columns (Connection type, Address, Comm port, Baudrate, Parity, Driver addr) straight into the live page grid, then leaves the tree collapsed. **Runs automatically whenever you open the Topology view**; once done the button shows `✓ Details shown` and won't re-fetch (a manual click just confirms it). See the topology *with* wiring details without leaving the page.
 
 ## Install
 
-[Click here to install (latest, currently v1.20)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
+[Click here to install (latest, currently v1.21)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
 
 After installing, Tampermonkey auto-updates whenever a new version is pushed.
 
@@ -37,6 +37,7 @@ Built as a real OOXML package using a tiny built-in stored-zip writer (no extern
 
 1. Fetches the per-unit connection data from the Toolbox SQL API (`toolbox.iwmac.local:8505/plant-sql/`) — the same query the Excel export uses.
 2. **Expands every node first** — some plants only flatten a connection node's child units into `grid.records` once that node is open — then adds six columns to the live w2ui grid (**Connection type, Address, Comm port, Baudrate, Parity, Driver addr**) and fills them for every leaf unit.
+3. **Collapses the tree again** when done — the expansion was only needed to flatten the rows for populating; the filled values persist on each record, so they reappear the moment you expand a node.
 
 Address / Comm port are derived tree-position-aware (a unit under a `COMx - IP` node shows `Moxa converter (IP)` + that COM number; a unit under a bare IP node shows the IP), so the values match the Excel export exactly. Works on the grid's own `columns` / `records` arrays via `grid.refresh()` — it never edits the DOM directly, so the virtualized tree stays in sync.
 

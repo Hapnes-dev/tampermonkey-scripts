@@ -2,8 +2,8 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.20
-// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology (with an already-shown safety guard) — all merging page tree + Toolbox SQL API.
+// @version      1.21
+// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology (auto-collapses when done, with an already-shown safety guard) — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
@@ -133,6 +133,20 @@
             }
         } catch (e) {}
         const fallback = document.querySelector('#tb_grid_topology_toolbar_item_open_all table.w2ui-button');
+        if (fallback) { fallback.click(); return true; }
+        return false;
+    }
+
+    function collapseAll() {
+        // Mirror of expandAll using the grid's own "Close all" toolbar action.
+        try {
+            const w2 = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).w2ui;
+            if (w2 && w2.grid_topology_toolbar && typeof w2.grid_topology_toolbar.click === 'function') {
+                w2.grid_topology_toolbar.click('close_all');
+                return true;
+            }
+        } catch (e) {}
+        const fallback = document.querySelector('#tb_grid_topology_toolbar_item_close_all table.w2ui-button');
         if (fallback) { fallback.click(); return true; }
         return false;
     }
@@ -712,6 +726,7 @@ ${colsXml}
 
             // Expand every node FIRST: some plants only flatten a connection node's child units
             // into grid.records once that node is open, so we must expand before populating.
+            // (We collapse again at the end — the populated values persist on the records.)
             expandAll();
             await waitForLeaves(grid);
 
@@ -737,6 +752,7 @@ ${colsXml}
             });
 
             grid.refresh();
+            collapseAll(); // expansion was only needed to flatten + populate the leaves — tidy back up
             grid.__iwmacDetailsShown = true;
             markShown(cap, filled);
         } catch (e) {
