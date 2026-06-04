@@ -1,16 +1,16 @@
 # IWMAC Topology Copy
 
-**Version: 1.19**
+**Version: 1.20**
 
 Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
 - **Copy Topology** — expands every node and copies the hierarchy as a rich-text table (HTML for Zendesk/Gmail/Word, TSV fallback for Excel/Notepad).
 - **Export to Excel** — downloads a real `.xlsx` with native +/- collapse buttons in the row gutter, mirroring the tree levels in the browser.
-- **Show Details** — fetches the Toolbox SQL API and injects six connection columns (Connection type, Address, Comm port, Baudrate, Parity, Driver addr) straight into the live page grid, then expands every node. **Runs automatically whenever you open the Topology view** — the button is also there for an on-demand refresh. See the topology *with* wiring details without leaving the page.
+- **Show Details** — fetches the Toolbox SQL API and injects six connection columns (Connection type, Address, Comm port, Baudrate, Parity, Driver addr) straight into the live page grid, then expands every node. **Runs automatically whenever you open the Topology view**; once done the button shows `✓ Details shown` and won't re-fetch (a manual click just confirms it). See the topology *with* wiring details without leaving the page.
 
 ## Install
 
-[Click here to install (latest, currently v1.19)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
+[Click here to install (latest, currently v1.20)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
 
 After installing, Tampermonkey auto-updates whenever a new version is pushed.
 
@@ -33,12 +33,16 @@ Built as a real OOXML package using a tiny built-in stored-zip writer (no extern
 
 ## Show Details (in-grid)
 
-**Runs automatically when you open the Topology view** (and the **Show Details** button re-runs it on demand). It enriches the grid *in place* instead of copying or downloading:
+**Runs automatically when you open the Topology view.** It enriches the grid *in place* instead of copying or downloading:
 
 1. Fetches the per-unit connection data from the Toolbox SQL API (`toolbox.iwmac.local:8505/plant-sql/`) — the same query the Excel export uses.
 2. **Expands every node first** — some plants only flatten a connection node's child units into `grid.records` once that node is open — then adds six columns to the live w2ui grid (**Connection type, Address, Comm port, Baudrate, Parity, Driver addr**) and fills them for every leaf unit.
 
-Address / Comm port are derived tree-position-aware (a unit under a `COMx - IP` node shows `Moxa converter (IP)` + that COM number; a unit under a bare IP node shows the IP), so the values match the Excel export exactly. Works on the grid's own `columns` / `records` arrays via `grid.refresh()` — it never edits the DOM directly, so the virtualized tree stays in sync. Re-running refreshes the data without duplicating columns.
+Address / Comm port are derived tree-position-aware (a unit under a `COMx - IP` node shows `Moxa converter (IP)` + that COM number; a unit under a bare IP node shows the IP), so the values match the Excel export exactly. Works on the grid's own `columns` / `records` arrays via `grid.refresh()` — it never edits the DOM directly, so the virtualized tree stays in sync.
+
+### Auto-run & the "already shown" safety
+
+The auto-run fires once per freshly-loaded grid (guarded so it never re-fetches every poll tick or storms on an API error). Once the columns are populated the button caption switches to **`✓ Details shown`** and further clicks are no-ops (they just flash "Already shown") — so you can't accidentally trigger a redundant SQL fetch. Re-opening Topology clears the guard, so each fresh visit re-runs against current data.
 
 ## How it works
 
@@ -47,4 +51,4 @@ Address / Comm port are derived tree-position-aware (a unit under a `COMx - IP` 
 3. Depth is derived from the number of `span.w2ui-show-children` placeholders in the Tree cell.
 4. The buttons are injected as extra `<td>`s before `#tb_grid_topology_toolbar_right`, styled with the same `w2ui-button` markup as the built-in toolbar buttons.
 5. **Show Details** instead reads the grid model directly (`w2ui.grid_topology.records`), matching each leaf's `unit_id` to the SQL-API row and its `w2ui.parent_recid` to the parent connection node for the address/port logic, then pushes the new columns and calls `grid.refresh()`.
-6. The auto-run is armed by a capture-phase click listener on the `#node_topology` sidebar node; the existing poll fires it once the grid + toolbar have loaded, guarded so it never re-enters while busy or duplicates columns.
+6. The auto-run is driven by the existing poll: it fires Show Details once it sees a loaded-but-unenriched topology grid (per-grid `__iwmacAutoTried` / `__iwmacDetailsShown` / `__iwmacBusy` flags guard against re-entry, retry storms, and duplicate columns). A capture-phase click listener on the `#node_topology` sidebar node clears those flags so re-opening Topology re-runs against fresh data.

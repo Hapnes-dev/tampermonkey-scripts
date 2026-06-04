@@ -2,8 +2,8 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19
-// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology — all merging page tree + Toolbox SQL API.
+// @version      1.20
+// @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology (with an already-shown safety guard) — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
@@ -93,6 +93,18 @@
         cap.textContent = msg;
         cap.style.color = color || '';
         cap.style.fontWeight = color ? 'bold' : '';
+    }
+
+    // Persistent "already done" state for the Show Details button after a successful run.
+    // Also rewrites origText so any later flash() reverts back to this instead of "Show Details".
+    function markShown(captionId, filled) {
+        const cap = document.getElementById(captionId);
+        if (!cap) return;
+        const txt = '✓ Details shown' + (filled ? ` (${filled})` : '');
+        cap.textContent = txt;
+        cap.style.color = '#2e7d32';
+        cap.style.fontWeight = 'bold';
+        cap.dataset.origText = txt;
     }
 
     function flash(captionId, msg, ok, durationMs) {
@@ -671,77 +683,91 @@ ${colsXml}
         });
     }
 
+    function detailsShown(grid) {
+        return !!(grid.__iwmacDetailsShown && grid.columns.some(c => c.field === 'conn_type'));
+    }
+
     // Inject the API-derived connection columns straight into the live w2ui topology grid and
     // expand every node so the enriched rows are visible. Works on the grid's own records +
     // columns arrays and calls refresh() (never raw DOM) so the virtualized tree stays in sync.
-    async function onShowDetails() {
+    // opts.auto = true when fired by the Topology-open auto-trigger (stays quiet on skips/errors).
+    async function onShowDetails(opts) {
+        opts = opts || {};
         const cap = DETAIL_BTN_ID + '-cap';
         const grid = getTopologyGrid();
-        if (!grid || !Array.isArray(grid.records)) { flash(cap, 'Grid not found', false); return; }
+        if (!grid || !Array.isArray(grid.records)) { if (!opts.auto) flash(cap, 'Grid not found', false); return; }
+
+        // Safety: never re-run work that's already on screen. A manual click just confirms it;
+        // the auto-trigger stays silent. (Re-opening Topology resets this — see the click hook.)
+        if (detailsShown(grid)) { if (!opts.auto) flash(cap, 'Already shown', true); return; }
+        if (grid.__iwmacBusy) return; // a run is already in flight on this grid
 
         const plantId = getPlantIdFromHost();
-        if (!plantId) { flash(cap, 'No plant id in host', false); return; }
+        if (!plantId) { if (!opts.auto) flash(cap, 'No plant id in host', false); return; }
 
+        grid.__iwmacBusy = true;
         setCaption(cap, 'Loading…', '#1565c0');
-        let apiMap;
         try {
-            apiMap = await fetchUnitsApi(plantId);
+            const apiMap = await fetchUnitsApi(plantId);
+
+            // Expand every node FIRST: some plants only flatten a connection node's child units
+            // into grid.records once that node is open, so we must expand before populating.
+            expandAll();
+            await waitForLeaves(grid);
+
+            addDetailColumns(grid);
+
+            // recid → record, so each leaf can read its depth-1 parent (connection) tree label.
+            const byRecid = {};
+            grid.records.forEach(r => { byRecid[r.recid] = r; });
+
+            let filled = 0;
+            grid.records.forEach(r => {
+                if (!r.unit_id) return; // group / connection nodes have no unit of their own
+                const parent = byRecid[r.w2ui && r.w2ui.parent_recid];
+                const api = apiMap[String(r.unit_id).trim().toUpperCase()];
+                const d = deriveConnection(api, parent ? parent.tree : '');
+                r.conn_type   = d.connectionType;
+                r.address     = d.address;
+                r.comm_port   = d.commPort;
+                r.baudrate    = d.baudrate;
+                r.parity      = d.parity;
+                r.driver_addr = d.driverAddr;
+                if (api) filled++;
+            });
+
+            grid.refresh();
+            grid.__iwmacDetailsShown = true;
+            markShown(cap, filled);
         } catch (e) {
-            console.error('[IWMAC Topology] API fetch failed:', e);
+            console.error('[IWMAC Topology] Show Details failed:', e);
             flash(cap, 'API failed: ' + (e && e.message ? e.message : e), false, 5000);
-            return;
+        } finally {
+            grid.__iwmacBusy = false;
         }
-
-        // Expand every node FIRST: some plants only flatten a connection node's child units
-        // into grid.records once that node is open, so we must expand before populating.
-        expandAll();
-        await waitForLeaves(grid);
-
-        addDetailColumns(grid);
-
-        // recid → record, so each leaf can read its depth-1 parent (connection) tree label.
-        const byRecid = {};
-        grid.records.forEach(r => { byRecid[r.recid] = r; });
-
-        let filled = 0;
-        grid.records.forEach(r => {
-            if (!r.unit_id) return; // group / connection nodes have no unit of their own
-            const parent = byRecid[r.w2ui && r.w2ui.parent_recid];
-            const api = apiMap[String(r.unit_id).trim().toUpperCase()];
-            const d = deriveConnection(api, parent ? parent.tree : '');
-            r.conn_type   = d.connectionType;
-            r.address     = d.address;
-            r.comm_port   = d.commPort;
-            r.baudrate    = d.baudrate;
-            r.parity      = d.parity;
-            r.driver_addr = d.driverAddr;
-            if (api) filled++;
-        });
-
-        grid.refresh();
-        flash(cap, `Filled ${filled} units`, true, 2500);
     }
 
     // --- Auto-run "Show Details" whenever the user opens the Topology view ---
-    let pendingAutoDetails = false;
-    let autoDetailsBusy = false;
-
-    // Arm on any click landing inside the sidebar's Topology node.
+    // Clicking the Topology sidebar node clears the per-grid guards, so re-opening always does
+    // a fresh run (handles the case where w2ui reuses the same grid object across navigations).
     document.addEventListener('click', (e) => {
         const t = e.target;
-        if (t && t.closest && t.closest('#node_topology')) pendingAutoDetails = true;
+        if (t && t.closest && t.closest('#node_topology')) {
+            const g = getTopologyGrid();
+            if (g) { g.__iwmacDetailsShown = false; g.__iwmacAutoTried = false; }
+        }
     }, true);
 
-    // Fire once the freshly-opened grid has loaded (its toolbar + first records exist).
-    // onShowDetails is idempotent and expands+repopulates, so re-opening Topology refreshes.
+    // Fire once per freshly-loaded topology grid: as soon as the grid + toolbar exist and the
+    // details aren't already shown. __iwmacAutoTried guards against re-firing every poll tick
+    // (and against an API-failure retry storm); a fresh/re-opened grid clears it again.
     function maybeAutoDetails() {
-        if (!pendingAutoDetails || autoDetailsBusy) return;
         const grid = getTopologyGrid();
         const toolbar = document.getElementById('tb_grid_topology_toolbar_right');
         if (!grid || !toolbar || !Array.isArray(grid.records) || !grid.records.length) return;
-        pendingAutoDetails = false;
-        autoDetailsBusy = true;
-        Promise.resolve(onShowDetails()).finally(() => { autoDetailsBusy = false; });
+        if (grid.__iwmacAutoTried || grid.__iwmacBusy || detailsShown(grid)) return;
+        grid.__iwmacAutoTried = true;
+        onShowDetails({ auto: true });
     }
 
     // Toolbar is rebuilt by w2ui when navigating between sidebar nodes — keep retrying.
