@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.20
+// @version      4.21
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -35,7 +35,7 @@
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
-    const SCRIPT_VERSION   = '4.20';
+    const SCRIPT_VERSION   = '4.21';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -805,6 +805,7 @@
         let lastMode = 'quick';     // 'quick' | 'full' — how the shown data was gathered
         let lastFromCache = false;  // true when the shown data came from the full-scan cache
         let lastCacheTs = 0;
+        let scanSeq = 0;       // bumped on every scan / date-change; a run only renders if it's still the latest
 
         const applyAndRender = () => {
             if (!lastVisits) return;
@@ -939,6 +940,7 @@
 
         // Core scan. mode 'quick' = your ~50 recent plants (fast); 'full' = all ~7,600 (slow, cached).
         const doScan = async (mode) => {
+            const seq = ++scanSeq; // if a newer scan / date-change starts, this run stops touching the UI
             searchBtn.disabled = true;
             fullscanBtn.disabled = true;
             resyncBtn.disabled = true;
@@ -949,6 +951,7 @@
                 // can't detect you, we don't bail — the scan collects who was active that day and
                 // offers a "pick your name" chooser (handled after the scan).
                 await ensureUserAndRecent();
+                if (seq !== scanSeq) return; // superseded (e.g. you changed the date) — abandon this run
                 let plantIds;
                 if (mode === 'full') {
                     plantIds = await ensureAllPlants();
@@ -983,6 +986,7 @@
                     });
                     refillNames(visits);
                 }
+                if (seq !== scanSeq) return; // a newer scan / date-change won — don't overwrite its result
 
                 lastVisits    = visits;
                 lastIso       = iso;
@@ -1004,21 +1008,27 @@
                 } else {
                     applyAndRender();
                 }
+            } catch (e) {
+                if (seq === scanSeq) list.innerHTML = `<div class="empty">Scan error — please try again.<br><small>${escapeHtml(String((e && e.message) || e))}</small></div>`;
             } finally {
-                searchBtn.disabled = false;
-                fullscanBtn.disabled = false;
-                resyncBtn.disabled = false;
-                setTimeout(() => { progress.style.width = '0%'; }, 800);
+                if (seq === scanSeq) {
+                    searchBtn.disabled = false;
+                    fullscanBtn.disabled = false;
+                    resyncBtn.disabled = false;
+                    setTimeout(() => { if (seq === scanSeq) progress.style.width = '0%'; }, 800);
+                }
             }
         };
 
         // Default view on open / date change: show cached full-scan data for that date if present
         // (instant + complete), else a quick recent-only scan.
         const openDefault = async () => {
+            const seq = ++scanSeq;
             const iso = dateInput.value;
             const username = effectiveUsername();
             const cached = username ? readCache(username, iso) : null;
             if (cached) {
+                if (seq !== scanSeq) return;
                 lastVisits    = cached.visits.map(v => ({ ...v }));
                 lastIso       = iso;
                 lastUsername  = username;
