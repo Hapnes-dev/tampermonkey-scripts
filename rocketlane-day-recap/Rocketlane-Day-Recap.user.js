@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.22
+// @version      4.23
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -35,7 +35,8 @@
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
-    const SCRIPT_VERSION   = '4.22';
+    const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
+    const SCRIPT_VERSION   = '4.23';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -550,6 +551,17 @@
         return normalizeUser(GM_getValue(KEY_USER_OVERRIDE, '') || GM_getValue(KEY_USERNAME, ''));
     }
 
+    // Remember the plants a user has been found on, so the fast Search can include them next time —
+    // a full scan is then only needed to discover brand-new plants.
+    function rememberUserPlants(username, visits) {
+        if (!username || !visits || !visits.length) return;
+        const all = GM_getValue(KEY_USER_PLANTS, {});
+        const set = new Set((all[username] || []).map(String));
+        let added = 0;
+        for (const v of visits) { const id = String(v.plant_id); if (id && !set.has(id)) { set.add(id); added++; } }
+        if (added) { all[username] = [...set]; GM_setValue(KEY_USER_PLANTS, all); }
+    }
+
     function tsFromPangDate(s) {
         // "2026-04-27 11:46:07" — treat as local time
         return new Date(s.replace(' ', 'T')).getTime();
@@ -801,7 +813,7 @@
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <button data-action="fullscan" title="Scans ALL ~7,600 IWMAC plants so visits made via plant-admin/designer are found too. Slow (~1 min) and briefly opens pang; the result is cached per date.">🔍 Full scan</button>
-                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Search = your ~50 recent plants (fast). Full scan = all plants (~1 min, cached).</span>
+                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Search = recent + plants you've visited before (fast). Full scan = all ~7,600 plants (~1 min, cached).</span>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
@@ -951,15 +963,17 @@
         // instead of a dead-end "nothing logged". If others were active that day on your recent
         // plants, also offer the name picker (in case it's a username mismatch).
         const renderQuickEmpty = (users) => {
-            const knownN = GM_getValue(KEY_KNOWN_PLANTS, []).length;
+            const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
+            const mine = (GM_getValue(KEY_USER_PLANTS, {})[effectiveUsername()] || []).map(String);
+            const knownN = new Set([...recent, ...mine]).size;
             const sorted = [...new Set(users || [])].sort((a, b) => a.localeCompare(b));
             const pick = sorted.length
                 ? `<p style="margin-top:10px;">Wrong name? Activity that day came from:</p><div class="userpick">${sorted.map(u => `<button data-user="${escapeHtml(u)}">${escapeHtml(u)}</button>`).join('')}</div>`
                 : '';
             list.innerHTML = `
                 <div class="warn">
-                    <strong>Nothing in your recent plants</strong>
-                    <p>No visits for ${isoToNorwegianDate(dateInput.value)} among your ~${knownN} recent plants. If you worked on a plant without opening it in pang (e.g. via plant-admin/designer), it's only found by a full scan.</p>
+                    <strong>Nothing among your known plants</strong>
+                    <p>No visits for ${isoToNorwegianDate(dateInput.value)} among your ~${knownN} recent + previously-visited plants. If you worked on a brand-new plant (not opened in pang, e.g. via plant-admin/designer), it's only found by a full scan.</p>
                     <div><button data-action="run-full">🔍 Run Full scan (all plants)</button></div>
                     ${pick}
                 </div>`;
@@ -995,8 +1009,13 @@
                         return;
                     }
                 } else {
-                    plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
-                    if (!plantIds || plantIds.length === 0) {
+                    // Quick scope = recent plants ∪ every plant this user has been found on before
+                    // (accumulated from past scans) — fast, and it catches plant-admin visits you've
+                    // already made without needing a full scan.
+                    const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
+                    const mine = (GM_getValue(KEY_USER_PLANTS, {})[effectiveUsername()] || []).map(String);
+                    plantIds = [...new Set([...recent, ...mine])];
+                    if (plantIds.length === 0) {
                         list.innerHTML = `<div class="empty">No recent plants found for you. Use 🔍 Full scan, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> and visit a few plants first.</div>`;
                         return;
                     }
@@ -1026,6 +1045,7 @@
                 lastScanned   = scanned;
                 lastMode      = mode;
                 lastFromCache = false;
+                rememberUserPlants(username, visits); // grow the fast-Search footprint with whatever we found
                 // 0 matches but other people were active → likely your username didn't match the
                 // data's format. Offer the picker instead of a misleading "nothing logged", and don't
                 // cache this empty result (so re-scanning after you pick works).

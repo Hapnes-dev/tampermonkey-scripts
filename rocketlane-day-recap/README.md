@@ -10,14 +10,14 @@ Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick 
 
 1. On any `https://kiona.rocketlane.com/timesheets/...` page, click 🏭 **Plants visited** (bottom-right)
 2. Pick a date
-3. **Search** lists every plant where you have actions logged that day, scanning your ~50 recent pang plants (fast)
-4. For a complete picture — including plants you reached through plant-admin/designer rather than by opening them in pang — click **🔍 Full scan**. It queries all ~7,600 plants (~1 min, after a one-time confirmation) and **caches the result per date**, so re-opening that day is instant.
+3. **Search** lists plants you have actions logged on that day, scanning your recent pang plants **plus every plant you've been found on before** (fast). This footprint grows automatically with each scan, so over time Search covers your real working set — including plant-admin/designer plants — without a full scan.
+4. For a complete picture — to discover brand-new plants not yet in your footprint — click **🔍 Full scan**. It queries all ~7,600 plants (~1 min, after a one-time confirmation), **caches the result per date** (re-opening that day is instant), and adds anything it finds to your footprint so future Searches stay fast and complete.
 
 Optionally set your **Workday total** and tick **Distribute to total** to split the day's hours across the plants weighted by activity.
 
 ## How it works
 
-The panel runs on Rocketlane and calls pang's `actions.php` (`method:"get_history"`) once per plant in scope via `GM_xmlhttpRequest`. **Search** scopes to your recent plants; **Full scan** scopes to the whole inventory.
+The panel runs on Rocketlane and calls pang's `actions.php` (`method:"get_history"`) once per plant in scope via `GM_xmlhttpRequest` (batched, http origin — see below). **Search** scopes to your recent plants plus your accumulated footprint (`user_plants`: every plant you've been matched on); **Full scan** scopes to the whole inventory and feeds that footprint. Since pang has no server-side date filter, there's no way to shrink the per-plant response — keeping the everyday scope small (footprint) is what keeps it fast.
 
 The full inventory (plant ids + names) only exists in a live pang tab, websocket-loaded into `module_plants.coll.data` — there's no HTTP endpoint that lists plants. So the first full scan briefly opens `pang.qxs` in the foreground to harvest that list, then caches it for reuse.
 
