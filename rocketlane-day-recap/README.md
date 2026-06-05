@@ -11,7 +11,7 @@ Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick 
 1. On any `https://kiona.rocketlane.com/timesheets/...` page, click 🏭 **Plants visited** (bottom-right)
 2. Pick a date
 3. **Search** lists plants you have actions logged on that day, scanning your recent pang plants **plus every plant you've been found on before** (fast). This footprint grows automatically with each scan, so over time Search covers your real working set — including plant-admin/designer plants — without a full scan.
-4. For a complete picture — to discover brand-new plants not yet in your footprint — click **🔍 Full scan**. It queries all ~7,600 plants (~1 min, after a one-time confirmation), **caches the result per date** (re-opening that day is instant), and adds anything it finds to your footprint so future Searches stay fast and complete.
+4. For a complete picture — to discover brand-new plants not yet in your footprint — click **🔍 Full scan**. It queries all ~7,600 plants (~1 min, after a one-time confirmation). Because pang returns each plant's *entire* history, one full scan **caches every date you worked** — so browsing the rest of that month (or any past date in it) is then instant — and adds every plant found to your footprint. Use **↻** to refresh just the selected date (re-scan + update its cache) — handy for *today*, as more activity gets logged through the day.
 
 Optionally set your **Workday total** and tick **Distribute to total** to split the day's hours across the plants weighted by activity.
 

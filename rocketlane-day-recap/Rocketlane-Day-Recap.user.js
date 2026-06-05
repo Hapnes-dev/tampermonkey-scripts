@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.23
+// @version      4.24
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -36,7 +36,7 @@
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
-    const SCRIPT_VERSION   = '4.23';
+    const SCRIPT_VERSION   = '4.24';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -59,6 +59,7 @@
     const PARALLEL = 8;
     const SCAN_PARALLEL = 20;  // concurrent get_history requests — same server concurrency whether batched or not
     const HISTORY_BATCH_MAX = 30; // max plant_ids per batched get_history request (JSON-RPC batch; bounds response size)
+    const MAX_CACHED_DATES = 400; // per-user cap on cached date results (a full scan caches every date you worked)
     const FULL_INVENTORY_MIN = 7000;
     const TRUSTED_PLANT_NAMES = {
         '8179': 'COOP Extra Glommen Brygge',
@@ -641,6 +642,54 @@
         return { visits, username, scanned: plantIds.length, usersOnDate: [...usersOnDate.values()] };
     }
 
+    // Like loadVisitsForDate, but extracts the user's visits for EVERY date in one pass. A full scan
+    // already downloads every plant's complete history, so grouping all dates costs nothing extra —
+    // we then cache them all so browsing any of those dates is instant. Returns
+    // { dates: { iso: visits[] }, usersOnSelected, username, scanned }.
+    async function loadUserHistoryAllDates(plantIds, selectedIso, onProgress) {
+        const username = effectiveUsername();
+        const names = GM_getValue(KEY_PLANT_NAMES, {});
+        if (!plantIds || plantIds.length === 0) return { dates: {}, usersOnSelected: [], username, scanned: 0 };
+        const usersOnSelected = new Map();           // for the "pick your name" chooser on the selected date
+        const byDate = new Map();                    // iso -> (plant_id -> { actions:Set, ts:[] })
+        const batchSize = Math.max(1, Math.min(HISTORY_BATCH_MAX, Math.ceil(plantIds.length / SCAN_PARALLEL)));
+        const batches = [];
+        for (let i = 0; i < plantIds.length; i += batchSize) batches.push(plantIds.slice(i, i + batchSize));
+        let donePlants = 0;
+        await pMap(batches, async (batch) => {
+            const histByPlant = await gmFetchHistoryBatch(batch);
+            // (no await below — safe to mutate the shared maps directly)
+            for (const pid of batch) {
+                for (const e of (histByPlant[pid] || [])) {
+                    const iso = pangDateToISODate(e.date);
+                    const nu = normalizeUser(e.user);
+                    if (iso === selectedIso && nu && !usersOnSelected.has(nu)) usersOnSelected.set(nu, e.user);
+                    if (nu !== username) continue;
+                    let pm = byDate.get(iso); if (!pm) { pm = new Map(); byDate.set(iso, pm); }
+                    let rec = pm.get(pid); if (!rec) { rec = { actions: new Set(), ts: [] }; pm.set(pid, rec); }
+                    rec.actions.add(e.action); rec.ts.push(tsFromPangDate(e.date));
+                }
+            }
+            donePlants += batch.length;
+            onProgress?.(donePlants, plantIds.length);
+        }, SCAN_PARALLEL);
+        const dates = {};
+        for (const [iso, pm] of byDate) {
+            const visits = [];
+            const events = [];
+            for (const [pid, rec] of pm) {
+                const ts = rec.ts.sort((a, b) => a - b);
+                for (const t of ts) events.push({ plant_id: pid, ts: t });
+                visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], count: ts.length });
+            }
+            const mins = attributeTime(events);
+            for (const v of visits) v.estimated_minutes = mins[v.plant_id] || 0;
+            visits.sort((a, b) => a.first_ts - b.first_ts);
+            dates[iso] = visits;
+        }
+        return { dates, usersOnSelected: [...usersOnSelected.values()], username, scanned: plantIds.length };
+    }
+
     const NO_TZ = 'Europe/Oslo';
     const noTimeFmt = new Intl.DateTimeFormat('nb-NO', { timeZone: NO_TZ, hour: '2-digit', minute: '2-digit', hour12: false });
     const noDateFmt = new Intl.DateTimeFormat('nb-NO', { timeZone: NO_TZ, day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -809,7 +858,7 @@
             <div class="controls">
                 <input type="date" value="${todayISO()}">
                 <button data-action="search">Search</button>
-                <button data-action="resync" title="Re-sync recent plant list from pang">↻</button>
+                <button data-action="resync" title="Refresh this date — re-scan just the selected date and update its cache">↻</button>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <button data-action="fullscan" title="Scans ALL ~7,600 IWMAC plants so visits made via plant-admin/designer are found too. Slow (~1 min) and briefly opens pang; the result is cached per date.">🔍 Full scan</button>
@@ -866,9 +915,10 @@
                 : lastVisits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
             const totalLabel = displayTotal ? ` · ${targetMin > 0 ? '' : '≈ '}${fmtMinutes(displayTotal)}` : '';
             // Source label so a sparse quick-scan result isn't mistaken for "visited nothing".
-            let source = ' · recent only';
+            let source = ' · recent + your plants';
             if (lastFromCache) source = ` · cached full scan ${tsToLocalTime(lastCacheTs)}`;
             else if (lastMode === 'full') source = ' · full scan';
+            else if (lastMode === 'refresh') source = ' · refreshed';
             totalEl.innerHTML =
                 `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}${escapeHtml(source)}</span>` +
                 `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
@@ -925,18 +975,17 @@
             actions: v.actions, count: v.count, estimated_minutes: v.estimated_minutes,
         });
         const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
-        const writeCache = (username, iso, visits, scanned) => {
+        // Write one or many dates to the cache. A full scan passes every date it found (browsing any
+        // of them is then instant); ↻ passes just the one date it refreshed. Keyed by username + date.
+        const writeCacheDates = (username, datesObj, scanned) => {
+            if (!username || !datesObj) return;
             const cache = GM_getValue(KEY_SCAN_CACHE, {});
             if (!cache[username]) cache[username] = {};
-            cache[username][iso] = { scanned_at: Date.now(), scanned, visits: visits.map(cacheVisit) };
-            // Keep only the 60 most-recently-scanned dates per user so storage stays bounded.
-            const dates = Object.keys(cache[username]);
-            if (dates.length > 60) {
-                dates.map(d => [d, cache[username][d].scanned_at || 0])
-                     .sort((a, b) => a[1] - b[1])
-                     .slice(0, dates.length - 60)
-                     .forEach(([d]) => delete cache[username][d]);
-            }
+            const now = Date.now();
+            for (const iso in datesObj) cache[username][iso] = { scanned_at: now, scanned, visits: (datesObj[iso] || []).map(cacheVisit) };
+            // Keep the most-recent MAX_CACHED_DATES dates per user (by date) so storage stays bounded.
+            const keys = Object.keys(cache[username]).sort();
+            if (keys.length > MAX_CACHED_DATES) keys.slice(0, keys.length - MAX_CACHED_DATES).forEach(d => delete cache[username][d]);
             GM_setValue(KEY_SCAN_CACHE, cache);
         };
 
@@ -1020,11 +1069,31 @@
                         return;
                     }
                 }
-                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute</small>' : ''}</div>`;
+                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}</div>`;
                 const iso = dateInput.value;
-                const { visits, username, scanned, usersOnDate } = await loadVisitsForDate(iso, plantIds, (done, total) => {
-                    progress.style.width = Math.round(done / total * 100) + '%';
-                });
+                const onProg = (done, total) => { progress.style.width = Math.round(done / total * 100) + '%'; };
+                let visits, username, scanned, usersOnDate;
+                if (mode === 'full') {
+                    // A full scan already pulls every plant's complete history, so extract the user's
+                    // visits for EVERY date in one pass and cache them all — browsing any of those dates
+                    // (e.g. the rest of the month) is then instant. Then display the selected date.
+                    const all = await loadUserHistoryAllDates(plantIds, iso, onProg);
+                    if (seq !== scanSeq) return;
+                    username = all.username; scanned = all.scanned; usersOnDate = all.usersOnSelected;
+                    visits = all.dates[iso] || [];
+                    if (username) {
+                        writeCacheDates(username, all.dates, scanned); // cache every date this scan found
+                        const fp = new Set();
+                        for (const d in all.dates) for (const v of all.dates[d]) fp.add(v.plant_id);
+                        rememberUserPlants(username, [...fp].map(id => ({ plant_id: id })));
+                    }
+                } else {
+                    const r = await loadVisitsForDate(iso, plantIds, onProg);
+                    if (seq !== scanSeq) return;
+                    visits = r.visits; username = r.username; scanned = r.scanned; usersOnDate = r.usersOnDate;
+                    rememberUserPlants(username, visits);
+                    if (mode === 'refresh' && username) writeCacheDates(username, { [iso]: visits }, scanned); // ↻ updates only this date
+                }
                 progress.style.width = '100%';
 
                 // Resolve any missing plant names via direct admin-page fetch (only the matched plants).
@@ -1032,9 +1101,7 @@
                 if (missingIds.length > 0) {
                     list.innerHTML = `<div class="empty">Looking up ${missingIds.length} plant name${missingIds.length === 1 ? '' : 's'}…</div>`;
                     progress.style.width = '0%';
-                    await fetchMissingPlantNames(missingIds, (done, total) => {
-                        progress.style.width = Math.round(done / total * 100) + '%';
-                    });
+                    await fetchMissingPlantNames(missingIds, onProg);
                     refillNames(visits);
                 }
                 if (seq !== scanSeq) return; // a newer scan / date-change won — don't overwrite its result
@@ -1045,15 +1112,12 @@
                 lastScanned   = scanned;
                 lastMode      = mode;
                 lastFromCache = false;
-                rememberUserPlants(username, visits); // grow the fast-Search footprint with whatever we found
                 // 0 matches but other people were active → likely your username didn't match the
-                // data's format. Offer the picker instead of a misleading "nothing logged", and don't
-                // cache this empty result (so re-scanning after you pick works).
+                // data's format. Offer the picker instead of a misleading "nothing logged".
                 const ambiguousEmpty = visits.length === 0 && (usersOnDate || []).length > 0;
-                if (mode === 'full' && !ambiguousEmpty) writeCache(username, iso, visits, scanned);
                 if (mode === 'quick' && visits.length === 0) {
-                    // Recent-only came up empty → nudge toward Full scan (your work is likely on a
-                    // non-recent plant), plus a name picker if others were active that day.
+                    // Quick scope came up empty → nudge toward Full scan (your visit may be on a
+                    // brand-new plant), plus a name picker if others were active that day.
                     renderQuickEmpty(usersOnDate);
                 } else if (ambiguousEmpty) {
                     renderUserPicker(usersOnDate, mode, username);
@@ -1116,17 +1180,7 @@
 
         searchBtn.addEventListener('click', () => doScan('quick'));
         fullscanBtn.addEventListener('click', fullScanWithWarning);
-        resyncBtn.addEventListener('click', async () => {
-            resyncBtn.disabled = true;
-            searchBtn.disabled = true;
-            fullscanBtn.disabled = true;
-            list.innerHTML = '<div class="empty">Re-syncing recent plants from pang (http + https)…</div>';
-            await syncRecentBothOrigins();
-            resyncBtn.disabled = false;
-            searchBtn.disabled = false;
-            fullscanBtn.disabled = false;
-            await openDefault();
-        });
+        resyncBtn.addEventListener('click', () => doScan('refresh')); // re-scan just the selected date (your plants) and update its cache
         dateInput.addEventListener('change', openDefault);
         panel.querySelector('[data-action=close]').addEventListener('click', () => panel.remove());
         openDefault();
