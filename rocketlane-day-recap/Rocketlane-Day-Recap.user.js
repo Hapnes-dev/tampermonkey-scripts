@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.19
+// @version      4.20
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -35,7 +35,7 @@
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
-    const SCRIPT_VERSION   = '4.19';
+    const SCRIPT_VERSION   = '4.20';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -64,6 +64,13 @@
     };
 
     const host = location.hostname;
+
+    // Tampermonkey runs this script sandboxed (it uses @grant GM_*), so `window` is NOT the page's
+    // window — page JS globals like `module_plants` live on unsafeWindow. Always read page state via
+    // PAGE. (This was the long-standing Full-scan bug: harvestNow read window.module_plants, which is
+    // undefined in the sandbox, so coll.data was never harvested, all_plants stayed empty, and Full
+    // scan silently fell back to the recent list. localStorage/document are shared, so recent worked.)
+    const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
 
     // pang answers on both http and https. Use whichever origin we last saw a real pang tab served
     // from (recorded by syncFromPang); default to http for the first run before any sync. The
@@ -207,8 +214,8 @@
         // before declaring sync done. The previous version exited on first sight which often
         // captured only the initial 50 rendered rows.
         const harvestNow = () => {
-            const coll = window.module_plants?.coll?.data;
-            const bodys = window.module_plants?.plants_table?.tableData?.bodys;
+            const coll = PAGE.module_plants?.coll?.data;
+            const bodys = PAGE.module_plants?.plants_table?.tableData?.bodys;
             const names = GM_getValue(KEY_PLANT_NAMES, {});
             let added = 0;
             const consume = (id, name) => {
@@ -251,7 +258,7 @@
             (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__rlRecap = {
                 version: SCRIPT_VERSION,
                 harvest: () => harvestNow(),
-                pangColl: () => ({ len: window.module_plants?.coll?.data?.length, sample: window.module_plants?.coll?.data?.[0]?.name }),
+                pangColl: () => ({ len: PAGE.module_plants?.coll?.data?.length, sample: PAGE.module_plants?.coll?.data?.[0]?.name }),
             };
         } catch {}
 
@@ -261,7 +268,7 @@
         const tryHarvest = () => {
             attempts++;
             try {
-                const len = window.module_plants?.coll?.data?.length || 0;
+                const len = PAGE.module_plants?.coll?.data?.length || 0;
                 harvestNow(); // always merge whatever's there now
                 const names = GM_getValue(KEY_PLANT_NAMES, {});
 
