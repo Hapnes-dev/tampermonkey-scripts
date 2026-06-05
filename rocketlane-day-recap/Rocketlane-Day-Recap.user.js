@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.15
+// @version      4.16
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -33,7 +33,8 @@
     const KEY_ALL_PLANTS   = 'all_plants';     // [plant_id, ...] full pang inventory, captured during sync for scan-all mode
     const KEY_SCAN_CACHE   = 'full_scan_cache';// { username: { isoDate: { scanned_at, scanned, visits[] } } } — cached full-scan results
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
-    const SCRIPT_VERSION   = '4.15';
+    const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
+    const SCRIPT_VERSION   = '4.16';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -184,6 +185,9 @@
             const u = localStorage.getItem('pang.login.username');
             if (u) GM_setValue(KEY_USERNAME, JSON.parse(u));
         } catch (e) { console.warn('Day Recap: sync failed', e); }
+        // Signal that recent + username are captured (early — before the slow inventory harvest),
+        // so a lightweight cross-origin recent sync can close this tab without waiting for coll.data.
+        try { GM_setValue(KEY_RECENT_DONE, Date.now()); } catch {}
 
         // Harvest plant_id → name from pang.
         // module_plants.coll.data holds the authoritative full plant inventory (~7600 plants),
@@ -281,6 +285,38 @@
     // blockers — uses the Tampermonkey extension API). The pang tab's userscript runs syncFromPang,
     // which writes KEY_HARVEST_DONE when complete. We poll that timestamp and close the tab once
     // we see it advance past our start time.
+    // Lightweight cross-protocol recent/login harvest. pang's recent list + login live in
+    // per-origin localStorage, so a colleague on http vs https has separate lists; syncFromPang
+    // copies them into shared GM storage (known_plants unions, username is set if present). We open
+    // BOTH origins (background) and close each as soon as it signals the recent read is done — no
+    // waiting for the full ~7600-plant inventory stream. Unreachable origins just hit the timeout.
+    function syncRecentBothOrigins(timeoutPerOrigin = 8000) {
+        const origins = ['http://tools.iwmac.local', 'https://tools.iwmac.local'];
+        const harvestOne = (origin) => new Promise(resolve => {
+            const start = Date.now();
+            let tab = null;
+            try {
+                if (typeof GM_openInTab === 'function') {
+                    tab = GM_openInTab(origin + '/pang.qxs#rl-sync', { active: false, insert: true, setParent: true });
+                }
+            } catch {}
+            if (!tab) { resolve(false); return; }
+            const tick = setInterval(() => {
+                const done = GM_getValue(KEY_RECENT_DONE, 0) > start;
+                const timedOut = Date.now() - start > timeoutPerOrigin;
+                if (done || timedOut) {
+                    clearInterval(tick);
+                    setTimeout(() => { try { tab.close(); } catch {} resolve(done); }, 200);
+                }
+            }, 200);
+        });
+        return (async () => {
+            let any = false;
+            for (const o of origins) { if (await harvestOne(o)) any = true; }
+            return any;
+        })();
+    }
+
     function autoSyncFromPang(timeoutMs = 30000, lookupIds = [], active = false) {
         return new Promise(resolve => {
             const beforeNames = Object.keys(GM_getValue(KEY_PLANT_NAMES, {})).length;
@@ -460,7 +496,7 @@
     }
 
     async function loadVisitsForDate(isoDate, plantIds, onProgress) {
-        const username = normalizeUser(GM_getValue(KEY_USERNAME, 'thomas.kvalvag'));
+        const username = normalizeUser(GM_getValue(KEY_USERNAME, ''));
         const names = GM_getValue(KEY_PLANT_NAMES, {});
 
         if (!plantIds || plantIds.length === 0) return { visits: [], username, scanned: 0 };
@@ -741,12 +777,17 @@
             applyAndRender();
         });
 
-        const ensureKnown = async () => {
-            const known = GM_getValue(KEY_KNOWN_PLANTS, []);
-            if (known.length > 0) return true;
-            list.innerHTML = '<div class="empty">Fetching your recent plants from pang…<br><small>(briefly opens pang in a small window)</small></div>';
-            const ok = await autoSyncFromPang();
-            return ok;
+        // Ensure we know who you are + have your recent list. Both live in pang's per-origin
+        // localStorage but get copied into shared GM storage; on first use we may have neither, so
+        // harvest from BOTH http and https so it works whichever protocol your pang is on. Once
+        // cached (and kept fresh as you use pang), this is a no-op.
+        const ensureUserAndRecent = async () => {
+            const haveUser = !!GM_getValue(KEY_USERNAME, '');
+            const haveRecent = GM_getValue(KEY_KNOWN_PLANTS, []).length > 0;
+            if (haveUser && haveRecent) return true;
+            list.innerHTML = '<div class="empty">Syncing your recent plants &amp; pang login…<br><small>(briefly opens pang; covers both http and https)</small></div>';
+            await syncRecentBothOrigins();
+            return !!GM_getValue(KEY_USERNAME, '');
         };
 
         // Scan-all mode needs the full plant-id inventory. It's harvested into KEY_ALL_PLANTS
@@ -800,25 +841,28 @@
             totalEl.textContent = '';
             progress.style.width = '0%';
             try {
+                // Always make sure we have your login (and recent list), harvested cross-protocol.
+                await ensureUserAndRecent();
+                if (!GM_getValue(KEY_USERNAME, '')) {
+                    list.innerHTML = `<div class="empty">Couldn't determine your pang login. Open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a>, sign in, then try again.</div>`;
+                    return;
+                }
                 let plantIds;
                 if (mode === 'full') {
                     plantIds = await ensureAllPlants();
                     if (!plantIds || plantIds.length === 0) {
-                        // Inventory unavailable — fall back to the recent list so we still show something.
-                        await ensureKnown();
-                        plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
+                        plantIds = GM_getValue(KEY_KNOWN_PLANTS, []); // inventory unavailable — fall back to recent
                     }
                     if (!plantIds || plantIds.length === 0) {
                         list.innerHTML = `<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> manually.</div>`;
                         return;
                     }
                 } else {
-                    const ok = await ensureKnown();
-                    if (!ok) {
-                        list.innerHTML = `<div class="empty">Could not fetch plant list. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> manually.</div>`;
+                    plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
+                    if (!plantIds || plantIds.length === 0) {
+                        list.innerHTML = `<div class="empty">No recent plants found for you. Use 🔍 Full scan, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> and visit a few plants first.</div>`;
                         return;
                     }
-                    plantIds = GM_getValue(KEY_KNOWN_PLANTS, []);
                 }
                 list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute</small>' : ''}</div>`;
                 const iso = dateInput.value;
@@ -858,8 +902,8 @@
         // (instant + complete), else a quick recent-only scan.
         const openDefault = async () => {
             const iso = dateInput.value;
-            const username = normalizeUser(GM_getValue(KEY_USERNAME, 'thomas.kvalvag'));
-            const cached = readCache(username, iso);
+            const username = normalizeUser(GM_getValue(KEY_USERNAME, ''));
+            const cached = username ? readCache(username, iso) : null;
             if (cached) {
                 lastVisits    = cached.visits.map(v => ({ ...v }));
                 lastIso       = iso;
@@ -900,8 +944,8 @@
             resyncBtn.disabled = true;
             searchBtn.disabled = true;
             fullscanBtn.disabled = true;
-            list.innerHTML = '<div class="empty">Re-syncing recent plants from pang…</div>';
-            await autoSyncFromPang();
+            list.innerHTML = '<div class="empty">Re-syncing recent plants from pang (http + https)…</div>';
+            await syncRecentBothOrigins();
             resyncBtn.disabled = false;
             searchBtn.disabled = false;
             fullscanBtn.disabled = false;
