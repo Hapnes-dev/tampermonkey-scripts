@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.16
+// @version      4.17
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,8 @@
     const KEY_SCAN_CACHE   = 'full_scan_cache';// { username: { isoDate: { scanned_at, scanned, visits[] } } } — cached full-scan results
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
-    const SCRIPT_VERSION   = '4.16';
+    const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
+    const SCRIPT_VERSION   = '4.17';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -182,8 +183,15 @@
                 for (const id of recent) known.add(String(id));
                 GM_setValue(KEY_KNOWN_PLANTS, [...known]);
             }
-            const u = localStorage.getItem('pang.login.username');
-            if (u) GM_setValue(KEY_USERNAME, JSON.parse(u));
+            // Identity: prefer the auth cookie iw_security[username] — that's the server-side login
+            // pang stamps into get_history's `user` field (e.g. "eivind.slordal@kiona.com"), so it
+            // matches by construction. Fall back to the SPA's pang.login.username if unreadable.
+            // (Only sets when non-empty, so a logged-out tab never clobbers a good value.)
+            let user = '';
+            const ck = document.cookie.match(/iw_security\[username\]=([^;]+)/);
+            if (ck && ck[1]) { try { user = decodeURIComponent(ck[1]).trim(); } catch { user = ck[1].trim(); } }
+            if (!user) { const u = localStorage.getItem('pang.login.username'); if (u) { try { user = JSON.parse(u); } catch { user = u; } } }
+            if (user) GM_setValue(KEY_USERNAME, user);
         } catch (e) { console.warn('Day Recap: sync failed', e); }
         // Signal that recent + username are captured (early — before the slow inventory harvest),
         // so a lightweight cross-origin recent sync can close this tab without waiting for coll.data.
@@ -480,6 +488,13 @@
         return String(u || '').toLowerCase().split('@')[0].trim();
     }
 
+    // The username we filter history by: a manual override (if the user picked their name) wins over
+    // the auto-detected login. Normalized (lowercased, @domain stripped) to match get_history's
+    // `user` field whether it's stored bare ("thomas.kvalvag") or as an email ("x@kiona.com").
+    function effectiveUsername() {
+        return normalizeUser(GM_getValue(KEY_USER_OVERRIDE, '') || GM_getValue(KEY_USERNAME, ''));
+    }
+
     function tsFromPangDate(s) {
         // "2026-04-27 11:46:07" — treat as local time
         return new Date(s.replace(' ', 'T')).getTime();
@@ -496,17 +511,22 @@
     }
 
     async function loadVisitsForDate(isoDate, plantIds, onProgress) {
-        const username = normalizeUser(GM_getValue(KEY_USERNAME, ''));
+        const username = effectiveUsername();
         const names = GM_getValue(KEY_PLANT_NAMES, {});
 
-        if (!plantIds || plantIds.length === 0) return { visits: [], username, scanned: 0 };
+        if (!plantIds || plantIds.length === 0) return { visits: [], username, scanned: 0, usersOnDate: [] };
 
+        // Collect the distinct raw `user` values active on this date (any user) — used to offer a
+        // "pick your name" chooser if the current username matched nothing (a format mismatch).
+        const usersOnDate = new Map(); // normalized -> raw (first seen)
         const all = await pMap(plantIds, async (pid) => {
             const entries = await gmFetchHistory(pid);
-            const matches = entries.filter(e => {
-                if (pangDateToISODate(e.date) !== isoDate) return false;
-                return normalizeUser(e.user) === username;
-            });
+            const onDate = entries.filter(e => pangDateToISODate(e.date) === isoDate);
+            for (const e of onDate) {
+                const nu = normalizeUser(e.user);
+                if (nu && !usersOnDate.has(nu)) usersOnDate.set(nu, e.user);
+            }
+            const matches = onDate.filter(e => normalizeUser(e.user) === username);
             if (matches.length === 0) return null;
             matches.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
             const actions = [...new Set(matches.map(m => m.action))];
@@ -536,7 +556,7 @@
             delete v._timestamps;
         }
 
-        return { visits, username, scanned: plantIds.length };
+        return { visits, username, scanned: plantIds.length, usersOnDate: [...usersOnDate.values()] };
     }
 
     const NO_TZ = 'Europe/Oslo';
@@ -681,6 +701,9 @@
         #${PANEL_ID} .warn button { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
         #${PANEL_ID} .warn button[data-action="fullscan-go"] { background: #0f62fe; color: #fff; }
         #${PANEL_ID} .warn button[data-action="fullscan-cancel"] { background: #e0e0e0; color: #161616; margin-left: 6px; }
+        #${PANEL_ID} .warn .userpick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        #${PANEL_ID} .warn .userpick button { background: #e8e8e8; color: #161616; font-weight: 500; }
+        #${PANEL_ID} .warn .userpick button:hover { background: #0f62fe; color: #fff; }
     `;
 
     function injectStyle() {
@@ -833,6 +856,24 @@
             GM_setValue(KEY_SCAN_CACHE, cache);
         };
 
+        // When the scan matched nothing but other people were active that day, the auto-detected
+        // username is probably wrong (login stored differently than get_history logs it). Let the
+        // user pick their real identity straight from the data; the choice is remembered.
+        const renderUserPicker = (users, mode, currentNorm) => {
+            const sorted = [...new Set(users)].sort((a, b) => a.localeCompare(b));
+            const cur = currentNorm ? escapeHtml(currentNorm) : '(not detected)';
+            list.innerHTML = `
+                <div class="warn">
+                    <strong>No plants matched you</strong>
+                    <p>Filtering as <b>${cur}</b>, but nothing on ${isoToNorwegianDate(dateInput.value)} matched that name. If it's wrong, pick yourself from everyone active that day:</p>
+                    <div class="userpick">${sorted.map(u => `<button data-user="${escapeHtml(u)}">${escapeHtml(u)}</button>`).join('')}</div>
+                </div>`;
+            list.querySelectorAll('.userpick button').forEach(b => b.addEventListener('click', () => {
+                GM_setValue(KEY_USER_OVERRIDE, b.dataset.user);
+                doScan(mode);
+            }));
+        };
+
         // Core scan. mode 'quick' = your ~50 recent plants (fast); 'full' = all ~7,600 (slow, cached).
         const doScan = async (mode) => {
             searchBtn.disabled = true;
@@ -841,12 +882,10 @@
             totalEl.textContent = '';
             progress.style.width = '0%';
             try {
-                // Always make sure we have your login (and recent list), harvested cross-protocol.
+                // Make sure we have your login + recent list, harvested cross-protocol. If we still
+                // can't detect you, we don't bail — the scan collects who was active that day and
+                // offers a "pick your name" chooser (handled after the scan).
                 await ensureUserAndRecent();
-                if (!GM_getValue(KEY_USERNAME, '')) {
-                    list.innerHTML = `<div class="empty">Couldn't determine your pang login. Open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a>, sign in, then try again.</div>`;
-                    return;
-                }
                 let plantIds;
                 if (mode === 'full') {
                     plantIds = await ensureAllPlants();
@@ -866,7 +905,7 @@
                 }
                 list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute</small>' : ''}</div>`;
                 const iso = dateInput.value;
-                const { visits, username, scanned } = await loadVisitsForDate(iso, plantIds, (done, total) => {
+                const { visits, username, scanned, usersOnDate } = await loadVisitsForDate(iso, plantIds, (done, total) => {
                     progress.style.width = Math.round(done / total * 100) + '%';
                 });
                 progress.style.width = '100%';
@@ -888,8 +927,13 @@
                 lastScanned   = scanned;
                 lastMode      = mode;
                 lastFromCache = false;
-                if (mode === 'full') writeCache(normalizeUser(username), iso, visits, scanned);
-                applyAndRender();
+                // 0 matches but other people were active → likely your username didn't match the
+                // data's format. Offer the picker instead of a misleading "nothing logged", and don't
+                // cache this empty result (so re-scanning after you pick works).
+                const ambiguousEmpty = visits.length === 0 && (usersOnDate || []).length > 0;
+                if (mode === 'full' && !ambiguousEmpty) writeCache(username, iso, visits, scanned);
+                if (ambiguousEmpty) renderUserPicker(usersOnDate, mode, username);
+                else applyAndRender();
             } finally {
                 searchBtn.disabled = false;
                 fullscanBtn.disabled = false;
@@ -902,7 +946,7 @@
         // (instant + complete), else a quick recent-only scan.
         const openDefault = async () => {
             const iso = dateInput.value;
-            const username = normalizeUser(GM_getValue(KEY_USERNAME, ''));
+            const username = effectiveUsername();
             const cached = username ? readCache(username, iso) : null;
             if (cached) {
                 lastVisits    = cached.visits.map(v => ({ ...v }));
