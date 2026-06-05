@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.21
+// @version      4.22
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -35,7 +35,7 @@
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
-    const SCRIPT_VERSION   = '4.21';
+    const SCRIPT_VERSION   = '4.22';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -78,6 +78,37 @@
     function pangBase() {
         const o = String(GM_getValue(KEY_PANG_ORIGIN, '') || '');
         return o.startsWith('http') && o.includes('tools.iwmac.local') ? o : 'http://tools.iwmac.local';
+    }
+
+    // GM_xmlhttpRequest can silently fail against the internal HTTPS cert (Tampermonkey validates it
+    // even though the browser accepts it for page loads) — so a https origin makes get_history return
+    // NOTHING and Search/Full scan come up empty. Probe for an origin that actually works for
+    // GM_xmlhttpRequest (try http first — reliable, serves identical data); cached per page session.
+    let _apiOriginP = null;
+    function gmProbeOrigin(origin) {
+        return new Promise(resolve => {
+            try {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: origin + '/services/pang/actions.php',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    data: JSON.stringify([{ jsonrpc: '2.0', method: 'get_history', params: { plant_id: '203' }, id: 0 }]),
+                    timeout: 8000,
+                    onload: r => { try { const d = JSON.parse(r.responseText); resolve(Array.isArray(d) ? !!(d[0] && Array.isArray(d[0].result)) : Array.isArray(d && d.result)); } catch { resolve(false); } },
+                    onerror: () => resolve(false),
+                    ontimeout: () => resolve(false),
+                });
+            } catch { resolve(false); }
+        });
+    }
+    function apiOrigin() {
+        if (!_apiOriginP) _apiOriginP = (async () => {
+            for (const o of ['http://tools.iwmac.local', 'https://tools.iwmac.local']) {
+                if (await gmProbeOrigin(o)) return o;
+            }
+            return pangBase(); // both probes failed — fall back to last-seen origin
+        })();
+        return _apiOriginP;
     }
 
     // Names that v3.6 may have scraped from plant-admin error pages. None of these
@@ -460,12 +491,13 @@
     // sub-requests sequentially server-side (same concurrency as a single call) but we save a
     // round-trip per plant. Returns { plant_id: entries[] }. There's no server-side date/user
     // filter, so each plant still returns its full history — we filter client-side.
-    function gmFetchHistoryBatch(plantIds) {
+    async function gmFetchHistoryBatch(plantIds) {
+        const base = await apiOrigin();
         return new Promise(resolve => {
             const reqs = plantIds.map((pid, i) => ({ jsonrpc: '2.0', method: 'get_history', params: { plant_id: String(pid) }, id: i }));
             GM_xmlhttpRequest({
                 method: 'POST',
-                url: pangBase() + '/services/pang/actions.php',
+                url: base + '/services/pang/actions.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 data: JSON.stringify(reqs),
                 timeout: 60000,
