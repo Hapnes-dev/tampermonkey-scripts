@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.18
+// @version      4.19
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -35,7 +35,7 @@
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
-    const SCRIPT_VERSION   = '4.18';
+    const SCRIPT_VERSION   = '4.19';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -732,6 +732,7 @@
         #${PANEL_ID} .warn button { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
         #${PANEL_ID} .warn button[data-action="fullscan-go"] { background: #0f62fe; color: #fff; }
         #${PANEL_ID} .warn button[data-action="fullscan-cancel"] { background: #e0e0e0; color: #161616; margin-left: 6px; }
+        #${PANEL_ID} .warn button[data-action="run-full"] { background: #0f62fe; color: #fff; }
         #${PANEL_ID} .warn .userpick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
         #${PANEL_ID} .warn .userpick button { background: #e8e8e8; color: #161616; font-weight: 500; }
         #${PANEL_ID} .warn .userpick button:hover { background: #0f62fe; color: #fff; }
@@ -905,6 +906,30 @@
             }));
         };
 
+        // Quick (recent-only) scan found nothing. The visit is very likely on a plant you didn't open
+        // in pang (plant-admin/designer), which only a Full scan covers — so offer that prominently
+        // instead of a dead-end "nothing logged". If others were active that day on your recent
+        // plants, also offer the name picker (in case it's a username mismatch).
+        const renderQuickEmpty = (users) => {
+            const knownN = GM_getValue(KEY_KNOWN_PLANTS, []).length;
+            const sorted = [...new Set(users || [])].sort((a, b) => a.localeCompare(b));
+            const pick = sorted.length
+                ? `<p style="margin-top:10px;">Wrong name? Activity that day came from:</p><div class="userpick">${sorted.map(u => `<button data-user="${escapeHtml(u)}">${escapeHtml(u)}</button>`).join('')}</div>`
+                : '';
+            list.innerHTML = `
+                <div class="warn">
+                    <strong>Nothing in your recent plants</strong>
+                    <p>No visits for ${isoToNorwegianDate(dateInput.value)} among your ~${knownN} recent plants. If you worked on a plant without opening it in pang (e.g. via plant-admin/designer), it's only found by a full scan.</p>
+                    <div><button data-action="run-full">🔍 Run Full scan (all plants)</button></div>
+                    ${pick}
+                </div>`;
+            list.querySelector('[data-action=run-full]').addEventListener('click', () => doScan('full'));
+            list.querySelectorAll('.userpick button').forEach(b => b.addEventListener('click', () => {
+                GM_setValue(KEY_USER_OVERRIDE, b.dataset.user);
+                doScan('quick');
+            }));
+        };
+
         // Core scan. mode 'quick' = your ~50 recent plants (fast); 'full' = all ~7,600 (slow, cached).
         const doScan = async (mode) => {
             searchBtn.disabled = true;
@@ -963,8 +988,15 @@
                 // cache this empty result (so re-scanning after you pick works).
                 const ambiguousEmpty = visits.length === 0 && (usersOnDate || []).length > 0;
                 if (mode === 'full' && !ambiguousEmpty) writeCache(username, iso, visits, scanned);
-                if (ambiguousEmpty) renderUserPicker(usersOnDate, mode, username);
-                else applyAndRender();
+                if (mode === 'quick' && visits.length === 0) {
+                    // Recent-only came up empty → nudge toward Full scan (your work is likely on a
+                    // non-recent plant), plus a name picker if others were active that day.
+                    renderQuickEmpty(usersOnDate);
+                } else if (ambiguousEmpty) {
+                    renderUserPicker(usersOnDate, mode, username);
+                } else {
+                    applyAndRender();
+                }
             } finally {
                 searchBtn.disabled = false;
                 fullscanBtn.disabled = false;
