@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.17
+// @version      4.18
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -35,7 +35,7 @@
     const KEY_PANG_ORIGIN  = 'pang_origin';    // last-seen pang origin (http or https) so lookups match the user's setup
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
-    const SCRIPT_VERSION   = '4.17';
+    const SCRIPT_VERSION   = '4.18';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -56,7 +56,8 @@
     const PANEL_ID = 'rl-day-recap-panel';
     const BTN_ID   = 'rl-day-recap-fab';
     const PARALLEL = 8;
-    const SCAN_PARALLEL = 20;  // history fan-out for the full-inventory scan (20 × ~135ms ≈ ~1 min for ~7600 plants)
+    const SCAN_PARALLEL = 20;  // concurrent get_history requests — same server concurrency whether batched or not
+    const HISTORY_BATCH_MAX = 30; // max plant_ids per batched get_history request (JSON-RPC batch; bounds response size)
     const FULL_INVENTORY_MIN = 7000;
     const TRUSTED_PLANT_NAMES = {
         '8179': 'COOP Extra Glommen Brygge',
@@ -448,22 +449,37 @@
         return added;
     }
 
-    function gmFetchHistory(plant_id) {
+    // Fetch get_history for many plants in ONE request via JSON-RPC batching. pang processes the
+    // sub-requests sequentially server-side (same concurrency as a single call) but we save a
+    // round-trip per plant. Returns { plant_id: entries[] }. There's no server-side date/user
+    // filter, so each plant still returns its full history — we filter client-side.
+    function gmFetchHistoryBatch(plantIds) {
         return new Promise(resolve => {
+            const reqs = plantIds.map((pid, i) => ({ jsonrpc: '2.0', method: 'get_history', params: { plant_id: String(pid) }, id: i }));
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: pangBase() + '/services/pang/actions.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                data: JSON.stringify([{ jsonrpc: '2.0', method: 'get_history', params: { plant_id: String(plant_id) }, id: 0 }]),
+                data: JSON.stringify(reqs),
+                timeout: 60000,
                 onload: r => {
+                    const out = {};
                     try {
-                        const d = JSON.parse(r.responseText);
-                        resolve(Array.isArray(d.result) ? d.result : []);
-                    } catch { resolve([]); }
+                        const parsed = JSON.parse(r.responseText);
+                        // pang returns an array for multi-request batches, but a single object for a
+                        // 1-request batch — normalise to a list and map by echoed id (positional fallback).
+                        const list = Array.isArray(parsed) ? parsed : [parsed];
+                        for (let k = 0; k < list.length; k++) {
+                            const item = list[k];
+                            const idx = (typeof item?.id === 'number') ? item.id : k;
+                            const pid = plantIds[idx];
+                            if (pid != null) out[pid] = Array.isArray(item?.result) ? item.result : [];
+                        }
+                    } catch {}
+                    resolve(out);
                 },
-                onerror: () => resolve([]),
-                ontimeout: () => resolve([]),
-                timeout: 15000,
+                onerror:   () => resolve({}),
+                ontimeout: () => resolve({}),
             });
         });
     }
@@ -519,30 +535,45 @@
         // Collect the distinct raw `user` values active on this date (any user) — used to offer a
         // "pick your name" chooser if the current username matched nothing (a format mismatch).
         const usersOnDate = new Map(); // normalized -> raw (first seen)
-        const all = await pMap(plantIds, async (pid) => {
-            const entries = await gmFetchHistory(pid);
-            const onDate = entries.filter(e => pangDateToISODate(e.date) === isoDate);
-            for (const e of onDate) {
-                const nu = normalizeUser(e.user);
-                if (nu && !usersOnDate.has(nu)) usersOnDate.set(nu, e.user);
-            }
-            const matches = onDate.filter(e => normalizeUser(e.user) === username);
-            if (matches.length === 0) return null;
-            matches.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
-            const actions = [...new Set(matches.map(m => m.action))];
-            const timestamps = matches.map(m => tsFromPangDate(m.date));
-            return {
-                plant_id: pid,
-                name: cachedPlantName(names, pid),
-                first_ts: timestamps[0],
-                last_ts:  timestamps[timestamps.length - 1],
-                actions,
-                count: matches.length,
-                _timestamps: timestamps,
-            };
-        }, SCAN_PARALLEL, onProgress);
+        // Batch get_history to cut round-trips. Size batches so small (recent) scans still fan out
+        // ~SCAN_PARALLEL ways for parallel transfer, while big (full) scans use larger batches
+        // (capped) to minimise request count. Server concurrency is the same either way.
+        const batchSize = Math.max(1, Math.min(HISTORY_BATCH_MAX, Math.ceil(plantIds.length / SCAN_PARALLEL)));
+        const batches = [];
+        for (let i = 0; i < plantIds.length; i += batchSize) batches.push(plantIds.slice(i, i + batchSize));
 
-        const visits = all.filter(Boolean).sort((a, b) => a.first_ts - b.first_ts);
+        let donePlants = 0;
+        const perBatch = await pMap(batches, async (batch) => {
+            const histByPlant = await gmFetchHistoryBatch(batch);
+            const found = [];
+            for (const pid of batch) {
+                const entries = histByPlant[pid] || [];
+                const onDate = entries.filter(e => pangDateToISODate(e.date) === isoDate);
+                for (const e of onDate) {
+                    const nu = normalizeUser(e.user);
+                    if (nu && !usersOnDate.has(nu)) usersOnDate.set(nu, e.user);
+                }
+                const matches = onDate.filter(e => normalizeUser(e.user) === username);
+                if (matches.length === 0) continue;
+                matches.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
+                const actions = [...new Set(matches.map(m => m.action))];
+                const timestamps = matches.map(m => tsFromPangDate(m.date));
+                found.push({
+                    plant_id: pid,
+                    name: cachedPlantName(names, pid),
+                    first_ts: timestamps[0],
+                    last_ts:  timestamps[timestamps.length - 1],
+                    actions,
+                    count: matches.length,
+                    _timestamps: timestamps,
+                });
+            }
+            donePlants += batch.length;
+            onProgress?.(donePlants, plantIds.length);
+            return found;
+        }, SCAN_PARALLEL);
+
+        const visits = perBatch.flat().sort((a, b) => a.first_ts - b.first_ts);
 
         // Cross-plant time attribution: flatten every action timestamp into one timeline,
         // then credit each active gap (≤ IDLE_CUTOFF_MS) to the plant of the action that opened it.
