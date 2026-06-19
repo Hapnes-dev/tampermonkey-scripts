@@ -15,7 +15,7 @@ Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick 
 
 Optionally set your **Workday total** and tick **Distribute to total** to split the day's hours across the plants weighted by activity.
 
-Each plant row also shows a 🔧 **changes** badge when IWMAC recorded config commits *during your active window* on that plant — a fast way to tell plants you actually configured from ones you only opened. **Click the badge** to expand a drawer showing *what* changed: parameter values (e.g. `packet_interval (AK3): 400 → 4000`), added/removed devices, and graphic edits, read live from pang's config-commit history. Commits are automatic `:system:` snapshots with no author recorded, so this shows what the config changed to *around* your visit — not necessarily changes you personally made; snapshots outside your window (e.g. nightly ones) are ignored.
+Each plant row also shows a 🔧 **changes** badge when IWMAC recorded config commits *during your active window* on that plant — a fast way to tell plants you actually configured from ones you only opened. **Click the badge** to expand a drawer showing *what* changed: parameter values (e.g. `packet_interval (AK3): 400 → 4000`), added/removed devices and units (named by their `unit_id`, e.g. `ING_EXT_05`), and graphic edits, read live from pang's config-commit history. Commits are automatic `:system:` snapshots with no author recorded, so this shows what the config changed to *around* your visit — not necessarily changes you personally made; snapshots outside your window (e.g. nightly ones) are ignored.
 
 ## How it works
 

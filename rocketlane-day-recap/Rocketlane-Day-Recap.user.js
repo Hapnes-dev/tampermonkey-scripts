@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.28
+// @version      4.29
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -739,6 +739,24 @@
             head.push(`${ft}: ${rows} ${rows === 1 ? 'row' : 'rows'} changed`);
         }
     }
+    // iw_sys_plant_units rows are identified by unit_id (e.g. "ING_EXT_05"), with unit_name for context.
+    function chgUnitLabel(e) {
+        const f = e.fields || [];
+        const ui = f.indexOf('unit_id'), un = f.indexOf('unit_name');
+        const id = ui >= 0 ? e.cols[ui] : chgRowLabel(e);
+        const nm = un >= 0 ? e.cols[un] : '';
+        return nm ? `${id} (${nm})` : id;
+    }
+    function chgPushUnits(head, d) {
+        for (const a of d.added) head.push('+ Unit ' + chgUnitLabel(a));
+        for (const r of d.removed) head.push('- Unit ' + chgUnitLabel(r));
+        const byUnit = new Map(); // group a unit's field changes onto one line
+        for (const m of d.modified) { if (!byUnit.has(m.key)) byUnit.set(m.key, { ref: m, changes: [] }); byUnit.get(m.key).changes.push(m); }
+        for (const u of byUnit.values()) {
+            const flds = u.changes.map(c => `${chgColLabel(c.col)}: ${chgClip(c.from)} → ${chgClip(c.to)}`).join(', ');
+            head.push(`⚙ Unit ${chgUnitLabel(u.ref)} — ${flds}`);
+        }
+    }
     function chgBuildCommit(commit, classes, diffGet, droppedTables) {
         const head = [], foot = [], devAdd = new Set(), devDel = new Set();
         const hadDevice = classes.some(x => (x.cls.kind === 'add' || x.cls.kind === 'del') && x.cls.token);
@@ -747,11 +765,12 @@
             if (cls.kind === 'add') { if (cls.token) devAdd.add(cls.token); else head.push('+ New table: ' + chgHumanizeTable(table)); continue; }
             if (cls.kind === 'del') { if (cls.token) devDel.add(cls.token); else head.push('- Removed table: ' + chgHumanizeTable(table)); continue; }
             if (cls.kind === 'noise') { if (!hadDevice) foot.push('driver-ID relink'); continue; }
-            if (hadDevice && (table === 'iw_sys_order_no' || table === 'iw_sys_plant_units')) continue; // folded into the device line
+            if (hadDevice && table === 'iw_sys_order_no') continue; // device token already shown in the device line
             const d = diffGet(table);
             if (!d) continue;
             if (d.unreadable) { foot.push('unreadable change in ' + chgHumanizeTable(table)); continue; }
             if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; }
+            if (table === 'iw_sys_plant_units') { chgPushUnits(head, d); continue; } // name units by unit_id
             if (chgIsParamTable(table)) {
                 for (const m of d.modified) head.push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`);
                 for (const a of d.added) head.push('+ ' + chgRowLabel(a));
