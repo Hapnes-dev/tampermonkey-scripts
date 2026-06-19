@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.37**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.38**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -113,6 +113,13 @@ active window, stashed by `ensureChangesEnriched`):
    the first `CHG_CHUNK` (10) lines plus a **clickable `.chg-more-link`** "+N more changes" that appends the next chunk per
    click (DOM nodes created lazily, only as revealed). A line with `more` gets a nested `.chg-showall` ("show all"/"hide")
    sub-list. If every group is empty, an inline `Snapshot recorded` line is shown instead.
+
+**Drawer UI state survives a re-render (v4.38).** `applyAndRender` rebuilds the whole list (`innerHTML=''`), so a
+normalize/workday toggle used to wipe an open drawer and reset every expanded section back to its first chunk. Now the
+drawer's open flag + per-section `{expanded, revealed}` live on **`v._chgUI`** (keyed `commit#:group`), which persists on
+the visit object across re-renders. `renderChangeDetail(detail, model, ui)` restores from it; `renderCollapse`/`renderChunked`
+read+write it; the badge `openDrawer`/`closeDrawer` set `v._chgUI.open`, and `renderVisits` re-opens (`if (v._chgUI.open)
+openDrawer()`) after a rebuild — so the drawer comes back exactly where you left it.
 
 **Staleness**: the drawer toggle checks `document.contains(detail)` after the await — a re-render
 discards the old node, so a late result is harmless. `loadChangeDetail` memoises its in-flight promise
@@ -319,3 +326,8 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   `SPARSE_CLICK_MAX` constants. Designed via a 4-lens workflow (the full interval-union model was rejected as
   over-engineered); the synthesis's save-lag tail was dropped because the click model already credits the
   post-last-click gap (would double-count).
+- **4.38** **the 🔧 drawer keeps its place across re-renders** (`v._chgUI`). A normalize/workday toggle calls
+  `applyAndRender` → full list rebuild, which used to close every open drawer and reset expanded sections back to
+  their first chunk ("+45 more changes" again). Now the open flag + per-section `{expanded, revealed}` persist on
+  the visit; `renderChangeDetail` takes a `ui` arg and restores them, and `renderVisits` re-opens the drawer after
+  a rebuild — so it comes back exactly where you left it.

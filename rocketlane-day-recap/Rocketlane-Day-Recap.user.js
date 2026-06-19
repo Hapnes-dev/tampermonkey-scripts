@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.37
+// @version      4.38
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -935,8 +935,12 @@
 
     // Render a resolved change-detail model into the drawer. All text via textContent — values are raw
     // plant config (XML/JSON/names) and must never reach innerHTML.
-    function renderChangeDetail(detailEl, model) {
+    function renderChangeDetail(detailEl, model, ui) {
         detailEl.textContent = '';
+        // Per-drawer UI state, persisted on the visit so it survives a re-render (applyAndRender rebuilds the
+        // whole list): which sections are expanded and how many lines each has revealed. Keyed (commit#:group).
+        ui = ui || {}; ui.sec = ui.sec || {};
+        const secState = key => (ui.sec[key] = ui.sec[key] || { expanded: false, revealed: CHG_CHUNK });
         // One line → a div; if the line carries `more`, append a "show all" toggle that reveals a sub-list.
         const mkLine = line => {
             const d = document.createElement('div'); d.className = 'chg-line chg-' + (line.k || 'plain'); d.textContent = line.t;
@@ -955,27 +959,28 @@
         // Reveal `lines` into `container` CHG_CHUNK at a time. The "+N more changes" line is itself clickable
         // and appends the next chunk on each click (so a big section isn't dumped at once); it removes itself
         // when nothing's left. Lines become DOM nodes only as they're revealed.
-        const renderChunked = (container, lines) => {
+        const renderChunked = (container, lines, st) => {
             let shown = 0;
             const more = document.createElement('div'); more.className = 'chg-line chg-more-link'; more.setAttribute('role', 'button'); more.tabIndex = 0;
-            const reveal = () => {
-                lines.slice(shown, shown + CHG_CHUNK).forEach(line => container.insertBefore(mkLine(line), more));
-                shown = Math.min(shown + CHG_CHUNK, lines.length);
+            container.appendChild(more);
+            const draw = () => { // show up to st.revealed lines (restores the reveal count after a re-render)
+                const target = Math.min(st.revealed || CHG_CHUNK, lines.length);
+                for (; shown < target; shown++) container.insertBefore(mkLine(lines[shown]), more);
                 const rem = lines.length - shown;
                 if (rem > 0) more.textContent = '+' + rem + ' more changes'; else more.remove();
             };
-            more.addEventListener('click', reveal);
-            more.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reveal(); } });
-            container.appendChild(more);
-            reveal();
+            const revealMore = () => { st.revealed = Math.min((st.revealed || CHG_CHUNK) + CHG_CHUNK, lines.length); draw(); };
+            more.addEventListener('click', revealMore);
+            more.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); revealMore(); } });
+            draw();
         };
-        // A titled collapsible section ("▸ Title (N)"), collapsed by default; its body reveals in chunks.
-        const renderCollapse = (title, lines) => {
-            const body = document.createElement('div'); body.className = 'chg-more-body'; body.hidden = true;
-            renderChunked(body, lines);
+        // A titled collapsible section ("▸ Title (N)"); its expand + reveal state is restored from `st`.
+        const renderCollapse = (title, lines, st) => {
+            const body = document.createElement('div'); body.className = 'chg-more-body'; body.hidden = !st.expanded;
+            renderChunked(body, lines, st);
             const tog = document.createElement('div'); tog.className = 'chg-more-toggle'; tog.setAttribute('role', 'button'); tog.tabIndex = 0;
             const setLabel = () => { tog.textContent = (body.hidden ? '▸ ' : '▾ ') + title + ' (' + lines.length + ')'; };
-            const flip = () => { body.hidden = !body.hidden; setLabel(); };
+            const flip = () => { body.hidden = !body.hidden; st.expanded = !body.hidden; setLabel(); };
             setLabel();
             tog.addEventListener('click', flip);
             tog.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
@@ -986,13 +991,15 @@
         hdr.textContent = 'Config snapshot during your visit · automatic, no author recorded';
         detailEl.appendChild(hdr);
         const multi = model.commits.length > 1;
+        let ci = 0;
         for (const c of model.commits) {
+            const pre = (ci++) + ':'; // key sections per commit so a multi-commit drawer doesn't share state
             if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
-            // Everything starts collapsed: each non-empty group is its own "▸ Title (N)" toggle, in order.
-            if (c.units.length) renderCollapse('Plant units', c.units);                          // 1. units
-            if (c.graphic.length) renderCollapse('Graphic', c.graphic);                          // 2. graphic
-            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings);   // 3. settings
-            if (c.oth.length) renderCollapse('More changes', c.oth);                             // 4. the rest
+            // Each non-empty group is its own "▸ Title (N)" collapse; expand + reveal state restored from `ui`.
+            if (c.units.length) renderCollapse('Plant units', c.units, secState(pre + 'units'));                           // 1. units
+            if (c.graphic.length) renderCollapse('Graphic', c.graphic, secState(pre + 'graphic'));                        // 2. graphic
+            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings, secState(pre + 'settings')); // 3. settings
+            if (c.oth.length) renderCollapse('More changes', c.oth, secState(pre + 'oth'));                               // 4. the rest
             const anyContent = c.units.length || c.graphic.length || (c.settings && c.settings.length) || c.oth.length;
             if (!anyContent && !c.foot.length) detailEl.appendChild(mkLine({ t: 'Snapshot recorded — no parameter changes', k: 'plain' }));
             if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (anyContent ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
@@ -1830,23 +1837,26 @@
                 const badge = div.querySelector('.chg');
                 const detail = div.querySelector('.chg-detail');
                 const car = badge && badge.querySelector('.chg-car');
-                const toggle = async () => {
-                    const open = badge.getAttribute('aria-expanded') === 'true';
-                    if (open) { detail.hidden = true; badge.setAttribute('aria-expanded', 'false'); if (car) car.textContent = '▸'; return; }
+                v._chgUI = v._chgUI || { open: false, sec: {} }; // persisted on the visit → survives applyAndRender
+                const openDrawer = async () => {
                     detail.hidden = false; badge.setAttribute('aria-expanded', 'true'); if (car) car.textContent = '▾';
+                    v._chgUI.open = true;
                     if (detail.dataset.loaded) return;                       // rendered once; re-expand is instant
                     detail.textContent = 'Reading config snapshots…';
                     let model = null;
                     try { model = await loadChangeDetail(v); } catch (e) { model = null; }
                     if (!document.contains(detail)) return;                  // row was re-rendered while loading — stale
                     if (!model) { detail.textContent = ''; const er = document.createElement('div'); er.className = 'chg-foot'; er.textContent = "Couldn't load details — open the plant in pang"; detail.appendChild(er); return; }
-                    renderChangeDetail(detail, model);
+                    renderChangeDetail(detail, model, v._chgUI);             // pass UI state so sections restore expand/reveal
                     detail.dataset.loaded = '1';
                 };
+                const closeDrawer = () => { detail.hidden = true; badge.setAttribute('aria-expanded', 'false'); if (car) car.textContent = '▸'; v._chgUI.open = false; };
+                const toggle = () => { (badge.getAttribute('aria-expanded') === 'true') ? closeDrawer() : openDrawer(); };
                 if (badge) {
                     badge.addEventListener('click', toggle);
                     badge.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
                 }
+                if (v._chgUI.open) openDrawer(); // re-render (normalize/workday toggle…) → restore the drawer to where you left it
             }
         });
     }
