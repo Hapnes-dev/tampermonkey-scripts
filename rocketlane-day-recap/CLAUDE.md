@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.33**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.34**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -80,13 +80,13 @@ active window, stashed by `ensureChangesEnriched`):
    NAME** (NOT position — a `mod:struct:content` reorder/insert otherwise produces phantom `X→Y` lines).
    Returns `{added, removed, modified:[{key,col,from,to}], unreadable}`. `row_date` column is ignored.
 5. **`chgBuildCommit`** turns each diff into human lines (`{t, k, more?}` where `k` = `add|del|mod|plain` → colour;
-   `more` = a list rendered behind a per-line "show all" toggle). Buckets, rendered top-to-bottom in this order (v4.33):
-   - **`units`** (1st, always visible, never capped) — `iw_sys_plant_units` → `chgPushUnits`: named by **unit** via
-     `chgUnitLabel` = `unit_name (unit_id)`, e.g. `Belimo Energimåler (1)`, or just `ING_EXT_05` when no name. Add/remove
-     beyond `CHG_UNIT_LIST_CAP` (6) collapses to a count (`- 102 units removed`) **with `more` = the full list**, so the
-     drawer offers "show all". A device (§4) backed by a freshly-added **unit** is named by that unit and pushed here too
-     (it *is* a plant_units add).
-   - **`graphic`** (2nd, always visible) — `iw_sys_graphic_designer` → `chgPushGraphic`: a real line
+   `more` = a list rendered behind a per-line "show all" toggle). Buckets — each rendered as its own collapsible
+   section, **all collapsed by default** (v4.34), top-to-bottom in this order:
+   - **`units`** (1st) — `iw_sys_plant_units` → `chgPushUnits`: named by **unit** via `chgUnitLabel` = `unit_name (unit_id)`,
+     e.g. `Belimo Energimåler (1)`, or just `ING_EXT_05` when no name. Add/remove beyond `CHG_UNIT_LIST_CAP` (6) collapses to
+     a count (`- 102 units removed`) **with `more` = the full list**, so the drawer offers a nested "show all". A device (§4)
+     backed by a freshly-added **unit** is named by that unit and pushed here too (it *is* a plant_units add).
+   - **`graphic`** (2nd) — `iw_sys_graphic_designer` → `chgPushGraphic`: a real line
      `Graphic <panel>: rev a → b · layout / background image edited` (the xml/json/png blobs are never shown as text).
    - **`sett`** (3rd) — `iw_sys_plant_settings` only → `chgPushParams(…, Infinity)` (`⚙ <rowLabel> <col>: <from> → <to>`, `rowLabel`
      prefers a name column `name/setting/par_name/key/tag/alias_text` + composite-PK rest in parens, e.g. `packet_interval (AK3)`).
@@ -95,16 +95,18 @@ active window, stashed by `ensureChangesEnriched`):
    - **`oth`** (4th) — "More changes": pure-driver devices, `iw_set_*`/`*_param` tables, virtual values, etc.; collapsed, capped at
      `CHANGE_HEADLINE_CAP` (8) + `+N more changes`. Param tables here use the default `CHG_PARAM_LIST_CAP` (12).
    - `foot` = terse footnotes (relinks, unreadable, dropped tables), capped at 4.
-   - If a commit changed tables but yields zero human-meaningful lines → `Snapshot recorded — no parameter changes` (the drawer never renders blank under a non-zero badge).
+   - If a commit changed tables but yields zero human-meaningful lines → `renderChangeDetail` shows an inline
+     `Snapshot recorded — no parameter changes` (the drawer never renders blank under a non-zero badge).
    - **`loadChangeDetail` fetches all three `CHG_PRIORITY` tables first** (`fetchKind.sort`) so a 100+-table snapshot can't
      drop settings/units/graphic before the `MAX_TABLES_PER_COMMIT` (14) fetch cap. (`CHG_PRIORITY` = fetch-first set; the
-     *display* order is units (1st) → graphic (2nd) → settings collapse (3rd) → more collapse (4th).)
+     *display* order is units (1st) → graphic (2nd) → settings (3rd) → more (4th).)
 6. **`renderChangeDetail`** writes the model into the drawer — **everything via `textContent`** (decoded
    config is untrusted; never `innerHTML`). Line colour from `k` (`.chg-add` green, `.chg-del` red,
-   `.chg-mod` blue, `.chg-plain` default). `units` lines render first, then `graphic` lines (both always visible); a
-   line with `more` gets a `.chg-showall` ("show all"/"hide") span toggling a hidden sub-list. `sett` then `oth` each
-   render via the shared `renderCollapse(title, lines, overflow)` helper → a `.chg-more-toggle` ("▸ Plant settings (N)" /
-   "▸ More changes (N)") that flips a hidden `.chg-more-body` on click/Enter/Space.
+   `.chg-mod` blue, `.chg-plain` default). **All four groups render as collapsed sections** via the shared
+   `renderCollapse(title, lines, overflow)` helper — "▸ Plant units (N)", "▸ Graphic (N)", "▸ Plant settings (N)",
+   "▸ More changes (N)" — each a `.chg-more-toggle` flipping a hidden `.chg-more-body` on click/Enter/Space. A line with
+   `more` gets a nested `.chg-showall` ("show all"/"hide") sub-list. If every group is empty, an inline
+   `Snapshot recorded` line is shown instead (so it isn't mislabelled inside a "Plant units (1)" collapse).
 
 **Staleness**: the drawer toggle checks `document.contains(detail)` after the await — a re-render
 discards the old node, so a late result is harmless. `loadChangeDetail` memoises its in-flight promise
@@ -273,3 +275,6 @@ empty/footnote-only branches.
 - **4.33** fixed always-visible **order**: `units` (`iw_sys_plant_units`) renders first, `graphic`
   (`iw_sys_graphic_designer`) second, then the Plant-settings and More-changes collapses. `chgBuildCommit` now
   returns separate `units` / `graphic` arrays (was one `pri`).
+- **4.34** **all four groups now start collapsed** — units and graphic became their own
+  `▸ Plant units (N)` / `▸ Graphic (N)` collapses too (was always-visible). Opening the badge shows four collapsed
+  section headers; the empty-commit fallback renders inline (not inside a phantom "Plant units (1)").

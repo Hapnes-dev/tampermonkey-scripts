@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.33
+// @version      4.34
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -889,7 +889,8 @@
         const othShown = oth.slice(0, CHANGE_HEADLINE_CAP);
         const footOverflow = Math.max(0, foot.length - CHANGE_FOOT_CAP);
         const footShown = foot.slice(0, CHANGE_FOOT_CAP);
-        if (!units.length && !graphic.length && !sett.length && !othShown.length && !footShown.length) units.push({ t: 'Snapshot recorded — no parameter changes', k: 'plain' });
+        // (The "nothing meaningful changed" fallback is rendered inline by renderChangeDetail when every
+        // group is empty — so it isn't mislabelled inside a "Plant units (1)" collapse.)
         return { time: tsToLocalTime(tsFromPangDate(commit.date)), units, graphic, settings: sett, oth: othShown, othOverflow, foot: footShown, footOverflow };
     }
 
@@ -967,12 +968,14 @@
         const multi = model.commits.length > 1;
         for (const c of model.commits) {
             if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
-            for (const line of c.units) detailEl.appendChild(mkLine(line));   // 1. units — top
-            for (const line of c.graphic) detailEl.appendChild(mkLine(line)); // 2. graphic — second
-            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings, 0); // 3. the rest…
-            if (c.oth.length) renderCollapse('More changes', c.oth, c.othOverflow);
-            const anyVisible = c.units.length || c.graphic.length || (c.settings && c.settings.length) || c.oth.length;
-            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (anyVisible ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
+            // Everything starts collapsed: each non-empty group is its own "▸ Title (N)" toggle, in order.
+            if (c.units.length) renderCollapse('Plant units', c.units, 0);                          // 1. units
+            if (c.graphic.length) renderCollapse('Graphic', c.graphic, 0);                          // 2. graphic
+            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings, 0);   // 3. settings
+            if (c.oth.length) renderCollapse('More changes', c.oth, c.othOverflow);                 // 4. the rest
+            const anyContent = c.units.length || c.graphic.length || (c.settings && c.settings.length) || c.oth.length;
+            if (!anyContent && !c.foot.length) detailEl.appendChild(mkLine({ t: 'Snapshot recorded — no parameter changes', k: 'plain' }));
+            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (anyContent ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
         }
         if (model.olderCount) { const o = document.createElement('div'); o.className = 'chg-foot'; o.textContent = `+${model.olderCount} earlier commits not detailed`; detailEl.appendChild(o); }
     }
