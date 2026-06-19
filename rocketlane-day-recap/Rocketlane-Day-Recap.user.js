@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.36
+// @version      4.37
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -56,12 +56,27 @@
     // ---- Config-change ("commits") overlay: changes.qxs / services/changes/commits.php ----
     // A plant's config snapshots are logged as commits {date, username:":system:", ...} — ALL
     // automatic (no human author), so we can't say WHO changed a plant. But a commit landing inside
-    // your active window on a plant is strong evidence YOU did real config work there (vs a plant you
-    // only clicked through). Pad the window a touch (saves often commit a few min after the last
-    // click) and ignore commits outside it (e.g. nightly auto-snapshots). Display-only — never feeds
-    // the time estimate.
+    // your active window on a plant is strong evidence real config work happened there (vs a plant you
+    // only clicked through). Pad the window a touch (saves often commit a few min after the last click)
+    // and ignore commits outside it (e.g. nightly auto-snapshots).
     const CHANGE_PAD_LEAD_MS = 2 * 60 * 1000; // count commits from 2 min before your first action…
     const CHANGE_PAD_TAIL_MS = 6 * 60 * 1000; // …through 6 min after your last (catches save-triggered commits)
+    // Commits split into SCHEDULED snapshots (automatic, regular — hourly at :00/:01, nightly ~00:03,
+    // daily ~08:31) vs CHANGE-TRIGGERED (off-the-hour) = real config work. Plant-2701 data: 95/173 commits
+    // sit at :00/:01. Only change-triggered commits drive the 🔧 badge and feed the time estimate; the
+    // scheduled snapshots are filtered out as noise (see isScheduledCommit). Bands are tunable constants.
+    const SCHED_MINUTE_MAX  = 1;   // minute ≤1 (:00/:01) → scheduled hourly snapshot
+    const SCHED_NIGHTLY_MAX = 5;   // hour 00, minute ≤5 → nightly ~00:03 cron
+    const SCHED_DAILY_MIN   = 30;  // hour 08, …
+    const SCHED_DAILY_MAX   = 32;  // …minute 30-32 → daily ~08:31 snapshot (narrow; overlaps shift start)
+    // Commit → time fusion: a sub-tool config session (phpMyAdmin / Designer / Direct / VNC) logs very few
+    // pang clicks and the save commits a while AFTER your last click, so the click-only estimate misses it.
+    // When a sparse-click visit (≤ SPARSE_CLICK_MAX) that opened a config surface (an edit/access/vnc action)
+    // has a real change-triggered commit, credit the span from your first click to that commit, clamped.
+    // Purely ADDITIVE over the click baseline (base_minutes) — click-heavy plants are untouched (no regression).
+    const SPARSE_CLICK_MAX      = 2;              // a sub-tool config session logs ≤2 pang clicks
+    const COMMIT_SESSION_MIN_MS = 5 * 60 * 1000;  // min credit for such a session (even a near-instant save)
+    const COMMIT_SESSION_MAX_MS = 20 * 60 * 1000; // max credit, and how far past your last click to look for the session-ending commit
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -1028,6 +1043,21 @@
         return new Date(s.replace(' ', 'T')).getTime();
     }
 
+    // A config commit's date is "YYYY-MM-DD HH:MM:SS" in Europe/Oslo wall-clock. Tell SCHEDULED snapshots
+    // (hourly :00/:01, nightly ~00:03, daily ~08:31) from CHANGE-TRIGGERED (off-the-hour) ones by reading
+    // minute/hour from the RAW STRING — not a parsed Date, which would shift on a non-Oslo machine. A
+    // genuine save that happens to land at :00/:01 is misread as scheduled (only loses its badge — the
+    // click baseline still credits the minute); accepted, since 95/173 commits really are scheduled.
+    function isScheduledCommit(commit) {
+        const s = commit && commit.date;
+        if (typeof s !== 'string' || s.length < 16) return false; // unclassifiable → treat as real (don't hide it)
+        const hh = +s.slice(11, 13), mm = +s.slice(14, 16);
+        if (mm <= SCHED_MINUTE_MAX) return true;                                     // hourly :00/:01
+        if (hh === 0 && mm <= SCHED_NIGHTLY_MAX) return true;                        // nightly ~00:03
+        if (hh === 8 && mm >= SCHED_DAILY_MIN && mm <= SCHED_DAILY_MAX) return true; // daily ~08:31
+        return false;                                                               // off-the-hour = change-triggered
+    }
+
     function pangDateToISODate(s) {
         return s.slice(0, 10);
     }
@@ -1096,6 +1126,7 @@
         const minsByPlant = attributeTime(allEvents);
         for (const v of visits) {
             v.estimated_minutes = minsByPlant[v.plant_id] || 0;
+            v.base_minutes = v.estimated_minutes; // immutable click-only floor; commit fusion adds on top in ensureChangesEnriched
             delete v._timestamps;
         }
 
@@ -1143,7 +1174,7 @@
                 visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], count: ts.length });
             }
             const mins = attributeTime(events);
-            for (const v of visits) v.estimated_minutes = mins[v.plant_id] || 0;
+            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; }
             visits.sort((a, b) => a.first_ts - b.first_ts);
             dates[iso] = visits;
         }
@@ -1430,17 +1461,40 @@
             if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
             let any = false;
             for (const v of visits) {
+                // A sparse-click visit that opened a CONFIG SURFACE (edit/access/vnc action) is a sub-tool
+                // config session: the work happens in a tool that logs almost no pang clicks and the save
+                // commits a while after your last click. For those, widen the window tail so the session-
+                // ending commit is caught (for BOTH the badge and the time credit); else keep the tight window.
+                const hasConfigAction = (v.actions || []).some(a => { const m = ACTION_META[a]; return m && (m.cat === 'edit' || m.cat === 'access' || m.cat === 'vnc'); });
+                const sparseConfig = (v.count || 0) <= SPARSE_CLICK_MAX && hasConfigAction;
                 const start = v.first_ts - CHANGE_PAD_LEAD_MS;
-                const end   = (v.last_ts || v.first_ts) + CHANGE_PAD_TAIL_MS;
+                const end   = (v.last_ts || v.first_ts) + (sparseConfig ? COMMIT_SESSION_MAX_MS : CHANGE_PAD_TAIL_MS);
                 const inWin = (commits[v.plant_id] || [])
                     .filter(c => { const t = tsFromPangDate(c.date); return t >= start && t <= end; })
                     .sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
-                v.window_commits = inWin;                                   // commit objects, for the drawer
-                v.changes_in_window = inWin.length;
-                v.change_times = inWin.map(c => tsToLocalTime(tsFromPangDate(c.date)));
-                if (inWin.length) any = true;
+                // Badge + time use only CHANGE-TRIGGERED commits; scheduled snapshots (hourly/nightly/daily)
+                // are noise that would otherwise inflate a long visit's 🔧 count and its time.
+                const triggered = inWin.filter(c => !isScheduledCommit(c));
+                v.window_commits = triggered;                              // commit objects, for the drawer
+                v.changes_in_window = triggered.length;
+                v.change_times = triggered.map(c => tsToLocalTime(tsFromPangDate(c.date)));
+                v.scheduled_in_window = inWin.length - triggered.length;   // counted, not shown as a change
+                // Time fusion — additive, bounded, idempotent (always recomputed from the click baseline, so
+                // repeated re-renders never compound). For a sparse config session, credit the real active
+                // span [first click → last triggered commit], clamped to [MIN, MAX], and lift estimated_minutes
+                // to it when the click-only base is lower. Click-heavy plants never qualify, so addMs stays 0.
+                const base = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                let addMs = 0;
+                if (sparseConfig && triggered.length) {
+                    const lastC = tsFromPangDate(triggered[triggered.length - 1].date);
+                    const sessionMs = Math.min(Math.max(lastC - v.first_ts, COMMIT_SESSION_MIN_MS), COMMIT_SESSION_MAX_MS);
+                    addMs = Math.max(0, sessionMs - base * 60000);
+                }
+                v.estimated_minutes = base + Math.round(addMs / 60000);
+                v.commit_added_minutes = v.estimated_minutes - base;      // for the tooltip / verification dump
+                if (triggered.length || v.commit_added_minutes) any = true;
             }
-            if (any) applyAndRender(); // repaint with badges
+            if (any) applyAndRender(); // repaint with badges + fused time
         };
 
         workdayInput.addEventListener('change', () => {
@@ -1492,6 +1546,7 @@
         const cacheVisit = (v) => ({
             plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
             actions: v.actions, count: v.count, estimated_minutes: v.estimated_minutes,
+            base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
         });
         const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
         // Write one or many dates to the cache. A full scan passes every date it found (browsing any
@@ -1742,9 +1797,12 @@
                 : tsToLocalTime(v.first_ts);
             const shown = v.normalized_minutes != null ? v.normalized_minutes : v.estimated_minutes;
             const prefix = v.normalized_minutes != null ? '' : '≈ ';
+            const configNote = v.commit_added_minutes > 0
+                ? ` Includes +${fmtMinutes(v.commit_added_minutes)} credited from config work — few clicks logged but a real config change was committed in this window.`
+                : '';
             const tooltip = v.normalized_minutes != null
-                ? `Distributed share of your workday total. Raw estimate ≈ ${fmtMinutes(v.estimated_minutes || 0)}.`
-                : `Estimated from your clicks: time on each plant counts until you click elsewhere, and any pause over 30 min counts as a break, not work. Approximation only — pang logs clicks, not active time.`;
+                ? `Distributed share of your workday total. Raw estimate ≈ ${fmtMinutes(v.estimated_minutes || 0)}.${configNote}`
+                : `Estimated from your clicks: time on each plant counts until you click elsewhere, and any pause over 30 min counts as a break, not work. Approximation only — pang logs clicks, not active time.${configNote}`;
             const estimate = shown
                 ? `<div class="estimate" title="${escapeHtml(tooltip)}">${prefix}${fmtMinutes(shown)}</div>`
                 : '';

@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.36**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.37**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -47,7 +47,11 @@ a 1-element batch returns a single object — handle both), and have **no server
   pang tool code (see §5).
 - **`get_commits`** `username` is **always `:system:`** — commits are *automatic* config snapshots
   (partly scheduled, e.g. nightly ~03:00 / daily ~08:31; partly change-triggered). **No human author
-  is ever recorded** — you cannot say *who* changed a plant.
+  is ever recorded** — you cannot say *who* changed a plant. `isScheduledCommit(c)` (reads minute/hour
+  from the **raw date string**, so it's timezone-stable) splits them: **scheduled** = hourly `:00/:01`
+  (95/173 commits on plant 2701), nightly `00:00–00:05`, daily `08:30–08:32`; everything off-the-hour =
+  **change-triggered** = real config work. Only change-triggered commits drive the 🔧 badge and the time
+  estimate; scheduled snapshots are filtered out as noise.
 - **`get_tables_patch`** `mode`: `""` = unchanged (≈95–100 of ~101 tables), `"mod:content"`,
   `"mod:struct:content"`, `"add"` (old absent), `"del"` (new absent). This is the **cheap pre-filter** —
   only fetch `get_two_versions` for tables where `mode !== ""`.
@@ -159,9 +163,24 @@ Non-obvious: **`pma_local` = "phpMyAdmin"** (DB access, not plant-management); *
 pang logs **clicks, not active time**, so any estimate is inferred. Build ONE chronological timeline of
 all clicks across all plants for the day; the gap between each click and the next is credited to the
 plant that was open across it, **capped at `ACTIVE_CAP_MS` (30 min)** (normal sparse-clicking work counts
-in full; a real break is capped, not inflated). The last click gets a `TAIL_MS` (10 min) wrap-up.
+in full; a real break is capped, not inflated). The last click gets a `TAIL_MS` (10 min) wrap-up. This
+click-only result is frozen on each visit as **`base_minutes`** (and cached) — the immutable floor.
+
+**Commit fusion (v4.37, in `ensureChangesEnriched`).** The click model can't see **sub-tool config work**:
+phpMyAdmin / Designer / Direct / VNC sessions log almost no pang clicks, and the save commits a while
+*after* your last click — so a real config session collapses to ~1 min of click time. Fix: when a visit
+is **sparse** (`count ≤ SPARSE_CLICK_MAX` = 2) **and** opened a **config surface** (an `edit`/`access`/`vnc`
+action per `ACTION_META`), widen its window tail to `COMMIT_SESSION_MAX_MS` (20 min) and, if a
+**change-triggered** commit lands in it, credit the real span `[first click → that commit]` clamped to
+`[COMMIT_SESSION_MIN_MS` (5), `COMMIT_SESSION_MAX_MS` (20)] min. `estimated_minutes = base_minutes +
+addMs` — **purely additive, idempotent (always recomputed from `base_minutes`), never reduces a higher
+click estimate, and a no-op on click-heavy plants** (they never qualify), so there is zero regression. The
+top-up is exposed as `v.commit_added_minutes` (drives a tooltip note). Only change-triggered commits count
+(see §2 / `isScheduledCommit`); scheduled snapshots feed neither time nor badge.
+
 `normalizeMinutes` optionally rescales the per-plant minutes to a "Workday total" (default 7.5 h, rounded
-to 5 min) when "Distribute to total" is ticked.
+to 5 min) when "Distribute to total" is ticked — now over the fused `estimated_minutes`, so a floored
+config session gets a fair share of the workday instead of rounding to ~0%.
 
 ---
 
@@ -209,8 +228,9 @@ to 5 min) when "Distribute to total" is ticked.
 
 `pangBase()` / `apiOrigin()` / `gmProbeOrigin()` (origin selection) · `gmFetchHistoryBatch` (get_history) ·
 `gmFetchCommitsBatch` / `gmFetchTablesPatchBatch` / `gmFetchTwoVersionsBatch` (changes APIs) ·
-`loadVisitsForDate` / `loadUserHistoryAllDates` (build a date's visits) · `attributeTime` /
-`normalizeMinutes` (time split) · `ensureChangesEnriched` (🔧 badge counts + `window_commits`) ·
+`loadVisitsForDate` / `loadUserHistoryAllDates` (build a date's visits; freeze `base_minutes`) · `attributeTime` /
+`normalizeMinutes` (time split) · `isScheduledCommit` (scheduled vs change-triggered) · `ensureChangesEnriched`
+(🔧 badge counts from change-triggered `window_commits` + commit→time fusion → `estimated_minutes`/`commit_added_minutes`) ·
 `loadChangeDetail` + `chgDecodeSide` / `chgDiff` / `chgRowLabel` / `chgClassify` / `chgDeviceToken` /
 `chgUnitLabel` / `chgPushUnits` (adds `more` for "show all") / `chgPushParams` (takes a `cap`) / `chgPushGraphic` /
 `chgPushOrdinary` / `chgBlobToken` / `chgBuildCommit` (returns `{units, graphic, settings, oth, othOverflow, foot, footOverflow}`) /
@@ -246,7 +266,9 @@ empty/footnote-only branches.
 ## 11. GM storage keys
 
 `known_plants` (footprint ids) · `plant_names` (id→name) · `all_plants` (full inventory ids) ·
-`name_lookup_ids` · `full_scan_cache` (`{username:{isoDate:{scanned_at,scanned,visits[]}}}`) ·
+`name_lookup_ids` · `full_scan_cache` (`{username:{isoDate:{scanned_at,scanned,visits[]}}}`; each cached
+visit now also carries `base_minutes` = the click-only floor, so commit fusion re-runs identically on a
+cached date — legacy entries without it fall back to `estimated_minutes`) ·
 `user_plants` (`{username:[ids]}` footprint) · `pang_origin` (last-seen http/https) ·
 `pang.recent` / `pang.login.username` (mirrored from both origins) · `workday_hours` · `user_override` ·
 `last_harvest_ts` / `harvest_done`.
@@ -287,3 +309,13 @@ empty/footnote-only branches.
 - **4.36** **removed the "pick your name" chooser** (`renderUserPicker` + the `Wrong name?` block + `.userpick` CSS).
   A date with no activity for you now just shows **"No data for &lt;date&gt;"** (`renderVisits` empty state; a Quick
   scan still nudges Full scan). `user_override` is still read by `effectiveUsername` but nothing sets it anymore.
+- **4.37** **fused config commits into the time estimate + cleaned the badge** (`isScheduledCommit` + new
+  `ensureChangesEnriched` body). (1) Classify scheduled (`:00/:01` hourly, nightly, daily) vs change-triggered
+  commits; the 🔧 badge + drawer now show only change-triggered ones (on plant-2701/2026-06-19 the badge drops
+  4→2). (2) A sparse-click visit (≤2 clicks) that opened a config surface (`edit`/`access`/`vnc` action) with a
+  change-triggered commit is credited the real session span `[first click → commit]`, clamped 5-20 min, added
+  over the frozen click-only `base_minutes`. Bounded, idempotent, additive — click-heavy plants are untouched
+  (verified: thomas 06-19 stays 135 min). Adds `base_minutes` to the cache and `SCHED_*` / `COMMIT_SESSION_*` /
+  `SPARSE_CLICK_MAX` constants. Designed via a 4-lens workflow (the full interval-union model was rejected as
+  over-engineered); the synthesis's save-lag tail was dropped because the click model already credits the
+  post-last-click gap (would double-count).
