@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.30
+// @version      4.31
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -586,6 +586,12 @@
     const CHG_BLOB_TABLE_RE = /graphic_designer/i;  // multi-KB xml/json/png — summarised, never diffed as text
     const CHG_DEV_TOKEN_RE = /(?:da3_)?(mc\d{6}_\d{4}|sm\d+)/i; // device token inside a driver table name
     const CHG_NAME_COLS = ['name', 'setting', 'par_name', 'key', 'tag', 'alias_text'];
+    // The three tables that carry the config info worth reading at a glance. Their changes are shown in
+    // full in a top "key changes" section (never dropped by the headline cap), and they're fetched first
+    // so a big snapshot can't starve them; everything else is folded into a collapsible "More changes".
+    const CHG_PRIORITY = new Set(['iw_sys_plant_settings', 'iw_sys_plant_units', 'iw_sys_graphic_designer']);
+    const CHG_UNIT_LIST_CAP = 6;   // list ≤N unit add/removes/edits individually; beyond that show a count (guards full-rebuild snapshots, e.g. units 104→2)
+    const CHG_PARAM_LIST_CAP = 12; // list ≤N setting/param lines per table; beyond that "+N more …" (guards full snapshots)
     const CHG_SEP = String.fromCharCode(1); // row-key delimiter — won't appear in config values
     const CHG_TABLE_FRIENDLY = {
         iw_sys_plant_settings: 'Plant settings', iw_sys_graphic_designer: 'Graphic panel',
@@ -755,18 +761,61 @@
         return nm || id || chgRowLabel(e);
     }
     function chgPushUnits(push, d, consumed) {
-        for (const a of d.added) { if (consumed && consumed.has(a.key)) continue; push('+ Unit ' + chgUnitLabel(a), 'add'); }
-        for (const r of d.removed) push('- Unit ' + chgUnitLabel(r), 'del');
+        const adds = d.added.filter(a => !(consumed && consumed.has(a.key)));
+        // Coalesce bulk add/remove into a count. A "rebuild" snapshot can show the unit table going
+        // 104 → 2 rows (units cleared in one commit, re-added in the next — see CLAUDE.md §4); listing
+        // 100 "- Unit" lines is noise, so past CHG_UNIT_LIST_CAP we summarise.
+        if (adds.length > CHG_UNIT_LIST_CAP) push(`+ ${adds.length} units added`, 'add');
+        else for (const a of adds) push('+ Unit ' + chgUnitLabel(a), 'add');
+        if (d.removed.length > CHG_UNIT_LIST_CAP) push(`- ${d.removed.length} units removed`, 'del');
+        else for (const r of d.removed) push('- Unit ' + chgUnitLabel(r), 'del');
         const byUnit = new Map(); // group a unit's field changes onto one line
         for (const m of d.modified) { if (!byUnit.has(m.key)) byUnit.set(m.key, { ref: m, changes: [] }); byUnit.get(m.key).changes.push(m); }
+        if (byUnit.size > CHG_UNIT_LIST_CAP) { push(`⚙ ${byUnit.size} units changed`, 'mod'); return; }
         for (const u of byUnit.values()) {
             const flds = u.changes.map(c => `${chgColLabel(c.col)}: ${chgClip(c.from)} → ${chgClip(c.to)}`).join(', ');
             push(`⚙ Unit ${chgUnitLabel(u.ref)} — ${flds}`, 'mod');
         }
     }
+    // Settings / parameter tables → "⚙ <row> <col>: a → b" lines, with added/removed rows. Beyond
+    // CHG_PARAM_LIST_CAP lines (a full snapshot) the tail is summarised so the section stays readable.
+    function chgPushParams(push, d) {
+        const lines = [];
+        for (const m of d.modified) lines.push({ t: `⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`, k: 'mod' });
+        for (const a of d.added) lines.push({ t: '+ ' + chgRowLabel(a), k: 'add' });
+        for (const r of d.removed) lines.push({ t: '- ' + chgRowLabel(r), k: 'del' });
+        if (lines.length > CHG_PARAM_LIST_CAP) {
+            lines.slice(0, CHG_PARAM_LIST_CAP).forEach(l => push(l.t, l.k));
+            push(`+${lines.length - CHG_PARAM_LIST_CAP} more changes`, 'plain');
+        } else lines.forEach(l => push(l.t, l.k));
+    }
+    // iw_sys_graphic_designer (PK = panel name). Promote graphic edits from a footnote to real lines:
+    // which panel, its revision bump, and a hint of what changed (layout / background image) read from
+    // which blob columns differ. The xml/json/png blobs themselves are never shown as text.
+    function chgPushGraphic(push, d) {
+        for (const a of d.added) push('+ Graphic panel ' + chgRowLabel(a), 'add');
+        for (const r of d.removed) push('- Graphic panel ' + chgRowLabel(r), 'del');
+        const byPanel = new Map();
+        for (const m of d.modified) { if (!byPanel.has(m.key)) byPanel.set(m.key, []); byPanel.get(m.key).push(m); }
+        for (const [key, mods] of byPanel) {
+            const panel = String(key).split(CHG_SEP).filter(Boolean).join(' / ') || '(panel)';
+            const rev = mods.find(m => m.col === 'revision');
+            const what = [];
+            if (mods.some(m => m.col === 'xml' || m.col === 'json')) what.push('layout');
+            if (mods.some(m => /picture|image|thumb|icon/i.test(m.col || ''))) what.push('background image');
+            let txt = 'Graphic ' + panel;
+            if (rev) txt += `: rev ${chgClip(rev.from)} → ${chgClip(rev.to)}`;
+            if (what.length) txt += (rev ? ' · ' : ': ') + what.join(' + ') + ' edited';
+            push(txt, 'mod');
+        }
+    }
     function chgBuildCommit(commit, classes, diffGet, droppedTables) {
-        const head = [], foot = [];
-        const push = (t, k) => head.push({ t, k: k || 'plain' }); // k: add | del | mod | plain → colour
+        // Two buckets: pri = the priority tables (plant_settings/units/graphic), shown in full up top;
+        // oth = everything else (devices, driver params, virtual values…), folded into a capped,
+        // collapsible "More changes" section. foot = terse footnotes (relinks, unreadable, dropped).
+        const pri = [], oth = [], foot = [];
+        const pPush = (t, k) => pri.push({ t, k: k || 'plain' }); // k: add | del | mod | plain → colour
+        const oPush = (t, k) => oth.push({ t, k: k || 'plain' });
 
         // Coalesce device add/del tables by token. A device creates iw_set_<tok> + iw_par_<tok>_groups/_param,
         // so a token with ≥2 add-tables (or one matching a freshly-added unit) is treated as a device.
@@ -793,10 +842,12 @@
         const consumed = new Set();
         for (const tok of devTokenSet) {
             const u = matchUnit(tok);
-            if (u) { push('+ Device added: ' + u.label, 'add'); consumed.add(u.key); } // named by the added unit (e.g. "Belimo Energimåler")
-            else push('+ Device added: ' + tok, 'add');
+            // A device backed by a freshly-added unit IS a plant_units change → priority; the unit is
+            // consumed so chgPushUnits won't re-list it. A pure driver token (no unit row) → "More changes".
+            if (u) { pPush('+ Device added: ' + u.label, 'add'); consumed.add(u.key); } // named by the added unit (e.g. "Belimo Energimåler")
+            else oPush('+ Device added: ' + tok, 'add');
         }
-        for (const tok of Object.keys(delCount)) { if (delCount[tok] >= 2) push('- Device removed: ' + tok, 'del'); }
+        for (const tok of Object.keys(delCount)) { if (delCount[tok] >= 2) oPush('- Device removed: ' + tok, 'del'); }
         const hadDevice = devTokenSet.size > 0;
 
         for (const x of classes) {
@@ -804,13 +855,13 @@
             if (cls.kind === 'add') {
                 const tok = chgDeviceToken(table);
                 if (tok && devTokenSet.has(tok)) continue; // folded into the device line
-                push('+ New table: ' + chgHumanizeTable(table), 'add');
+                oPush('+ New table: ' + chgHumanizeTable(table), 'add');
                 continue;
             }
             if (cls.kind === 'del') {
                 const tok = chgDeviceToken(table);
                 if (tok && delCount[tok] >= 2) continue;
-                push('- Removed table: ' + chgHumanizeTable(table), 'del');
+                oPush('- Removed table: ' + chgHumanizeTable(table), 'del');
                 continue;
             }
             if (cls.kind === 'noise') { if (!hadDevice) foot.push('driver-ID relink'); continue; }
@@ -818,25 +869,23 @@
             const d = diffGet(table);
             if (!d) continue;
             if (d.unreadable) { foot.push('unreadable change in ' + chgHumanizeTable(table)); continue; }
-            if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; }
-            if (table === 'iw_sys_plant_units') { chgPushUnits(push, d, consumed); continue; } // name units by unit_id + unit_name
-            if (chgIsParamTable(table)) {
-                for (const m of d.modified) push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`, 'mod');
-                for (const a of d.added) push('+ ' + chgRowLabel(a), 'add');
-                for (const r of d.removed) push('- ' + chgRowLabel(r), 'del');
-                continue;
-            }
-            chgPushOrdinary(push, table, d);
+            // Priority tables first (graphic before the generic blob branch so it gets real lines, not a footnote).
+            if (table === 'iw_sys_graphic_designer') { chgPushGraphic(pPush, d); continue; }
+            if (table === 'iw_sys_plant_units') { chgPushUnits(pPush, d, consumed); continue; } // name units by unit_id + unit_name
+            if (table === 'iw_sys_plant_settings') { chgPushParams(pPush, d); continue; }
+            if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; } // any other blob table → footnote
+            if (chgIsParamTable(table)) { chgPushParams(oPush, d); continue; }
+            chgPushOrdinary(oPush, table, d);
         }
         if (droppedTables > 0) foot.push(`${droppedTables} more table${droppedTables === 1 ? '' : 's'} not detailed`);
 
-        const headOverflow = Math.max(0, head.length - CHANGE_HEADLINE_CAP);
-        const headShown = head.slice(0, CHANGE_HEADLINE_CAP);
-        if (headOverflow) headShown.push({ t: '+' + headOverflow + ' more changes', k: 'plain' });
+        // Priority lines are never capped (the whole point — they shouldn't be dropped for the cap).
+        const othOverflow = Math.max(0, oth.length - CHANGE_HEADLINE_CAP);
+        const othShown = oth.slice(0, CHANGE_HEADLINE_CAP);
         const footOverflow = Math.max(0, foot.length - CHANGE_FOOT_CAP);
         const footShown = foot.slice(0, CHANGE_FOOT_CAP);
-        if (!headShown.length && !footShown.length) headShown.push({ t: 'Snapshot recorded — no parameter changes', k: 'plain' });
-        return { time: tsToLocalTime(tsFromPangDate(commit.date)), head: headShown, foot: footShown, footOverflow };
+        if (!pri.length && !othShown.length && !footShown.length) pri.push({ t: 'Snapshot recorded — no parameter changes', k: 'plain' });
+        return { time: tsToLocalTime(tsFromPangDate(commit.date)), pri, oth: othShown, othOverflow, foot: footShown, footOverflow };
     }
 
     // Lazily fetch + diff the config changes for ONE visit's in-window commits. Result is cached on
@@ -853,7 +902,10 @@
             const plan = commits.map(c => {
                 const patch = _patchCache.get(c.id) || {};
                 const classes = Object.keys(patch).filter(t => patch[t] && patch[t].mode).map(t => ({ table: t, mode: patch[t].mode, cls: chgClassify(t, patch[t].mode) }));
-                const fetchKind = classes.filter(x => x.cls.kind === 'fetch');
+                // Fetch the priority tables first: with MAX_TABLES_PER_COMMIT (14), a full snapshot that
+                // touches 100+ tables would otherwise drop plant_settings/units/graphic before they're read.
+                const fetchKind = classes.filter(x => x.cls.kind === 'fetch')
+                    .sort((a, b) => (CHG_PRIORITY.has(b.table) ? 1 : 0) - (CHG_PRIORITY.has(a.table) ? 1 : 0));
                 const fetchTables = fetchKind.slice(0, MAX_TABLES_PER_COMMIT);
                 return { commit: c, classes, fetchTables, dropped: fetchKind.length - fetchTables.length };
             });
@@ -874,6 +926,7 @@
     // plant config (XML/JSON/names) and must never reach innerHTML.
     function renderChangeDetail(detailEl, model) {
         detailEl.textContent = '';
+        const mkLine = line => { const d = document.createElement('div'); d.className = 'chg-line chg-' + (line.k || 'plain'); d.textContent = line.t; return d; };
         const hdr = document.createElement('div');
         hdr.className = 'chg-hdr';
         hdr.textContent = 'Config snapshot during your visit · automatic, no author recorded';
@@ -881,8 +934,29 @@
         const multi = model.commits.length > 1;
         for (const c of model.commits) {
             if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
-            for (const line of c.head) { const d = document.createElement('div'); d.className = 'chg-line chg-' + (line.k || 'plain'); d.textContent = line.t; detailEl.appendChild(d); }
-            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (c.head.length ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
+            for (const line of c.pri) detailEl.appendChild(mkLine(line)); // priority tables — always shown in full
+            if (c.oth.length) {
+                const overflowLine = () => { if (c.othOverflow) detailEl.appendChild(mkLine({ t: '+' + c.othOverflow + ' more changes', k: 'plain' })); };
+                if (c.pri.length) {
+                    // Fold the lower-priority changes behind a collapsible toggle.
+                    const otherCount = c.oth.length + c.othOverflow;
+                    const body = document.createElement('div'); body.className = 'chg-more-body'; body.hidden = true;
+                    for (const line of c.oth) body.appendChild(mkLine(line));
+                    if (c.othOverflow) body.appendChild(mkLine({ t: '+' + c.othOverflow + ' more changes', k: 'plain' }));
+                    const tog = document.createElement('div'); tog.className = 'chg-more-toggle'; tog.setAttribute('role', 'button'); tog.tabIndex = 0;
+                    const setLabel = () => { tog.textContent = (body.hidden ? '▸' : '▾') + ' More changes (' + otherCount + ')'; };
+                    const flip = () => { body.hidden = !body.hidden; setLabel(); };
+                    setLabel();
+                    tog.addEventListener('click', flip);
+                    tog.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+                    detailEl.appendChild(tog); detailEl.appendChild(body);
+                } else {
+                    // Nothing prioritized to hide behind — show the other changes inline rather than bury them.
+                    for (const line of c.oth) detailEl.appendChild(mkLine(line));
+                    overflowLine();
+                }
+            }
+            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = ((c.pri.length || c.oth.length) ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
         }
         if (model.olderCount) { const o = document.createElement('div'); o.className = 'chg-foot'; o.textContent = `+${model.olderCount} earlier commits not detailed`; detailEl.appendChild(o); }
     }
@@ -1194,6 +1268,9 @@
         #${PANEL_ID} .row .chg-line.chg-add { color: #0e6027; }
         #${PANEL_ID} .row .chg-line.chg-del { color: #a2191f; }
         #${PANEL_ID} .row .chg-line.chg-mod { color: #0043ce; }
+        #${PANEL_ID} .row .chg-more-toggle { font-size: 11px; font-weight: 600; color: #0f62fe; cursor: pointer; margin-top: 5px; user-select: none; }
+        #${PANEL_ID} .row .chg-more-toggle:hover { text-decoration: underline; }
+        #${PANEL_ID} .row .chg-more-body { margin-top: 2px; padding-left: 8px; border-left: 2px solid #e0e0e0; }
         #${PANEL_ID} .row .chg-foot { font-size: 11px; color: #8d8d8d; margin-top: 4px; line-height: 1.4; word-break: break-word; }
         #${PANEL_ID} .row .act { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #525252; white-space: nowrap; }
         #${PANEL_ID} .row .act .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #a8a8a8; }
