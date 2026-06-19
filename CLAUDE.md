@@ -12,15 +12,19 @@ A collection of Tampermonkey userscripts with auto-update support. Each script l
 
 ```
 tampermonkey-scripts/
-├── README.md                        # Root index — table of all scripts with install links
-├── CLAUDE.md                        # This file
-├── ak3-autoscan/
-│   ├── AK3-Autoscan.user.js        # The userscript (installed in Tampermonkey)
-│   └── README.md                   # AI reference docs for this script
-└── <future-script>/
-    ├── <script>.user.js
-    └── README.md
+├── README.md                     # Root index — table of all scripts with install links
+├── CLAUDE.md                     # This file
+├── ak3-autoscan/                 # Automates the AK3 scanner setup workflow on IWMAC plant servers
+├── iwmac-topology-copy/          # Copy/export topology + inject live driver columns on sys_tools
+├── oneflow-copy-products/        # Copy product lists on Oneflow (tilbud PDF) + HubSpot (deal line items)
+├── rocketlane-chat-bridge/       # Bridges Rocketlane's API to the local Project Progress Tracker (CORS bypass)
+├── rocketlane-day-recap/         # My Timesheet: plants visited per day, hours, action chips, config-change drawer
+├── rocketlane-enhancer/          # Hides the Gantt calendar + adds a floating chat panel on Rocketlane
+├── rocketlane-project-notes/     # Writable Note column on the Rocketlane Projects list (SQL-persisted)
+└── sql-equipment-import/         # phpMyAdmin panel: load a driver-template .sql, edit units/Modbus, emit SQL
 ```
+
+Each folder holds `<script>.user.js` (the userscript installed in Tampermonkey) and a `README.md` (AI reference docs for that script).
 
 ## How Tampermonkey auto-update works
 
