@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.34**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.35**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -88,12 +88,13 @@ active window, stashed by `ensureChangesEnriched`):
      backed by a freshly-added **unit** is named by that unit and pushed here too (it *is* a plant_units add).
    - **`graphic`** (2nd) — `iw_sys_graphic_designer` → `chgPushGraphic`: a real line
      `Graphic <panel>: rev a → b · layout / background image edited` (the xml/json/png blobs are never shown as text).
-   - **`sett`** (3rd) — `iw_sys_plant_settings` only → `chgPushParams(…, Infinity)` (`⚙ <rowLabel> <col>: <from> → <to>`, `rowLabel`
+   - **`sett`** (3rd) — `iw_sys_plant_settings` only → `chgPushParams` (`⚙ <rowLabel> <col>: <from> → <to>`, `rowLabel`
      prefers a name column `name/setting/par_name/key/tag/alias_text` + composite-PK rest in parens, e.g. `packet_interval (AK3)`).
-     It changes on almost every commit, so it gets its **own collapsible "Plant settings (N)" section** — uncapped so every
-     changed setting is readable when expanded.
-   - **`oth`** (4th) — "More changes": pure-driver devices, `iw_set_*`/`*_param` tables, virtual values, etc.; collapsed, capped at
-     `CHANGE_HEADLINE_CAP` (8) + `+N more changes`. Param tables here use the default `CHG_PARAM_LIST_CAP` (12).
+     It changes on almost every commit, so it gets its **own collapsible "Plant settings (N)" section**.
+   - **`oth`** (4th) — "More changes": pure-driver devices, `iw_set_*`/`*_param` tables, virtual values, etc.
+   - **No section is truncated in the model.** Long sections are revealed in the drawer `CHG_CHUNK` (10) lines at a time via a
+     **clickable** `+N more changes` line (`renderChunked`) — each click appends the next chunk and updates the count, so nothing
+     is dumped at once and nothing is lost. (Unit add/remove still pre-coalesce to a count + nested "show all" via `more`.)
    - `foot` = terse footnotes (relinks, unreadable, dropped tables), capped at 4.
    - If a commit changed tables but yields zero human-meaningful lines → `renderChangeDetail` shows an inline
      `Snapshot recorded — no parameter changes` (the drawer never renders blank under a non-zero badge).
@@ -103,10 +104,11 @@ active window, stashed by `ensureChangesEnriched`):
 6. **`renderChangeDetail`** writes the model into the drawer — **everything via `textContent`** (decoded
    config is untrusted; never `innerHTML`). Line colour from `k` (`.chg-add` green, `.chg-del` red,
    `.chg-mod` blue, `.chg-plain` default). **All four groups render as collapsed sections** via the shared
-   `renderCollapse(title, lines, overflow)` helper — "▸ Plant units (N)", "▸ Graphic (N)", "▸ Plant settings (N)",
-   "▸ More changes (N)" — each a `.chg-more-toggle` flipping a hidden `.chg-more-body` on click/Enter/Space. A line with
-   `more` gets a nested `.chg-showall` ("show all"/"hide") sub-list. If every group is empty, an inline
-   `Snapshot recorded` line is shown instead (so it isn't mislabelled inside a "Plant units (1)" collapse).
+   `renderCollapse(title, lines)` helper — "▸ Plant units (N)", "▸ Graphic (N)", "▸ Plant settings (N)", "▸ More changes (N)"
+   — each a `.chg-more-toggle` flipping a hidden `.chg-more-body` on click/Enter/Space. The body is filled by `renderChunked`:
+   the first `CHG_CHUNK` (10) lines plus a **clickable `.chg-more-link`** "+N more changes" that appends the next chunk per
+   click (DOM nodes created lazily, only as revealed). A line with `more` gets a nested `.chg-showall` ("show all"/"hide")
+   sub-list. If every group is empty, an inline `Snapshot recorded` line is shown instead.
 
 **Staleness**: the drawer toggle checks `document.contains(detail)` after the await — a re-render
 discards the old node, so a late result is harmless. `loadChangeDetail` memoises its in-flight promise
@@ -278,3 +280,6 @@ empty/footnote-only branches.
 - **4.34** **all four groups now start collapsed** — units and graphic became their own
   `▸ Plant units (N)` / `▸ Graphic (N)` collapses too (was always-visible). Opening the badge shows four collapsed
   section headers; the empty-commit fallback renders inline (not inside a phantom "Plant units (1)").
+- **4.35** **`+N more changes` is now clickable** (`renderChunked` + `.chg-more-link`): a long section reveals `CHG_CHUNK`
+  (10) lines per click instead of dumping or truncating. Removed the model-level caps (`CHANGE_HEADLINE_CAP`,
+  `CHG_PARAM_LIST_CAP`) — every changed line is kept and reachable, created lazily as revealed.

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.34
+// @version      4.35
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -579,7 +579,7 @@
     // relink tables and graphic blobs are summarised without ever being downloaded.
     const MAX_COMMITS_DETAILED = 3;   // newest-first; older window commits are noted, not detailed
     const MAX_TABLES_PER_COMMIT = 14; // cap fetched (param/settings) tables per commit
-    const CHANGE_HEADLINE_CAP = 8;    // max headline lines per commit
+    const CHG_CHUNK = 10;             // a collapsed section reveals this many lines per "+N more changes" click
     const CHANGE_FOOT_CAP = 4;        // max footnote tokens per commit
     const CHANGE_VAL_CLIP = 80;       // clip a from/to value to this many chars (AFTER comparing)
     const CHG_NOISE_RE = /^iw_lnk_|_id_to_/i;       // mechanical relink/index tables — never fetched
@@ -592,7 +592,6 @@
     // its own collapsible "Plant settings" section (it changes on almost every commit); the rest → "More changes".
     const CHG_PRIORITY = new Set(['iw_sys_plant_settings', 'iw_sys_plant_units', 'iw_sys_graphic_designer']);
     const CHG_UNIT_LIST_CAP = 6;   // list ≤N unit add/removes/edits inline; beyond that → a count + a "show all" expander (guards full-rebuild snapshots, e.g. units 104→2)
-    const CHG_PARAM_LIST_CAP = 12; // default line cap for a "More changes" param table; the Plant-settings section passes Infinity (uncapped)
     const CHG_SEP = String.fromCharCode(1); // row-key delimiter — won't appear in config values
     const CHG_TABLE_FRIENDLY = {
         iw_sys_plant_settings: 'Plant settings', iw_sys_graphic_designer: 'Graphic panel',
@@ -776,19 +775,12 @@
         if (byUnit.size > CHG_UNIT_LIST_CAP) { push(`⚙ ${byUnit.size} units changed`, 'mod', [...byUnit.values()].map(unitLine)); return; }
         for (const u of byUnit.values()) push(unitLine(u), 'mod');
     }
-    // Settings / parameter tables → "⚙ <row> <col>: a → b" lines, with added/removed rows. `cap` bounds
-    // how many lines are emitted (default CHG_PARAM_LIST_CAP for the capped "More changes" bucket; the
-    // collapsible Plant-settings section passes Infinity so every changed setting is readable when expanded).
-    function chgPushParams(push, d, cap) {
-        cap = cap || CHG_PARAM_LIST_CAP;
-        const lines = [];
-        for (const m of d.modified) lines.push({ t: `⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`, k: 'mod' });
-        for (const a of d.added) lines.push({ t: '+ ' + chgRowLabel(a), k: 'add' });
-        for (const r of d.removed) lines.push({ t: '- ' + chgRowLabel(r), k: 'del' });
-        if (lines.length > cap) {
-            lines.slice(0, cap).forEach(l => push(l.t, l.k));
-            push(`+${lines.length - cap} more changes`, 'plain');
-        } else lines.forEach(l => push(l.t, l.k));
+    // Settings / parameter tables → "⚙ <row> <col>: a → b" lines, with added/removed rows. No cap here —
+    // the drawer reveals long sections in chunks (renderChunked), so every changed line stays reachable.
+    function chgPushParams(push, d) {
+        for (const m of d.modified) push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`, 'mod');
+        for (const a of d.added) push('+ ' + chgRowLabel(a), 'add');
+        for (const r of d.removed) push('- ' + chgRowLabel(r), 'del');
     }
     // iw_sys_graphic_designer (PK = panel name). Promote graphic edits from a footnote to real lines:
     // which panel, its revision bump, and a hint of what changed (layout / background image) read from
@@ -877,21 +869,19 @@
             // Priority tables first (graphic before the generic blob branch so it gets real lines, not a footnote).
             if (table === 'iw_sys_plant_units') { chgPushUnits(uPush, d, consumed); continue; } // (1) units group — top
             if (table === 'iw_sys_graphic_designer') { chgPushGraphic(gPush, d); continue; }      // (2) graphic group — second
-            if (table === 'iw_sys_plant_settings') { chgPushParams(sPush, d, Infinity); continue; } // (3) own collapsible "Plant settings" section, uncapped
+            if (table === 'iw_sys_plant_settings') { chgPushParams(sPush, d); continue; } // (3) own collapsible "Plant settings" section
             if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; } // any other blob table → footnote
             if (chgIsParamTable(table)) { chgPushParams(oPush, d); continue; }
             chgPushOrdinary(oPush, table, d);
         }
         if (droppedTables > 0) foot.push(`${droppedTables} more table${droppedTables === 1 ? '' : 's'} not detailed`);
 
-        // Always-visible (pri) and the Plant-settings section are never truncated; only "More changes" is capped.
-        const othOverflow = Math.max(0, oth.length - CHANGE_HEADLINE_CAP);
-        const othShown = oth.slice(0, CHANGE_HEADLINE_CAP);
+        // No section is truncated in the model — the drawer reveals long sections in chunks ("+N more changes").
         const footOverflow = Math.max(0, foot.length - CHANGE_FOOT_CAP);
         const footShown = foot.slice(0, CHANGE_FOOT_CAP);
         // (The "nothing meaningful changed" fallback is rendered inline by renderChangeDetail when every
         // group is empty — so it isn't mislabelled inside a "Plant units (1)" collapse.)
-        return { time: tsToLocalTime(tsFromPangDate(commit.date)), units, graphic, settings: sett, oth: othShown, othOverflow, foot: footShown, footOverflow };
+        return { time: tsToLocalTime(tsFromPangDate(commit.date)), units, graphic, settings: sett, oth, foot: footShown, footOverflow };
     }
 
     // Lazily fetch + diff the config changes for ONE visit's in-window commits. Result is cached on
@@ -947,14 +937,29 @@
             d.appendChild(tog);
             const frag = document.createDocumentFragment(); frag.appendChild(d); frag.appendChild(body); return frag;
         };
-        // A titled collapsible section ("▸ Title (N)"), collapsed by default.
-        const renderCollapse = (title, lines, overflow) => {
-            const count = lines.length + (overflow || 0);
+        // Reveal `lines` into `container` CHG_CHUNK at a time. The "+N more changes" line is itself clickable
+        // and appends the next chunk on each click (so a big section isn't dumped at once); it removes itself
+        // when nothing's left. Lines become DOM nodes only as they're revealed.
+        const renderChunked = (container, lines) => {
+            let shown = 0;
+            const more = document.createElement('div'); more.className = 'chg-line chg-more-link'; more.setAttribute('role', 'button'); more.tabIndex = 0;
+            const reveal = () => {
+                lines.slice(shown, shown + CHG_CHUNK).forEach(line => container.insertBefore(mkLine(line), more));
+                shown = Math.min(shown + CHG_CHUNK, lines.length);
+                const rem = lines.length - shown;
+                if (rem > 0) more.textContent = '+' + rem + ' more changes'; else more.remove();
+            };
+            more.addEventListener('click', reveal);
+            more.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reveal(); } });
+            container.appendChild(more);
+            reveal();
+        };
+        // A titled collapsible section ("▸ Title (N)"), collapsed by default; its body reveals in chunks.
+        const renderCollapse = (title, lines) => {
             const body = document.createElement('div'); body.className = 'chg-more-body'; body.hidden = true;
-            for (const line of lines) body.appendChild(mkLine(line));
-            if (overflow) body.appendChild(mkLine({ t: '+' + overflow + ' more changes', k: 'plain' }));
+            renderChunked(body, lines);
             const tog = document.createElement('div'); tog.className = 'chg-more-toggle'; tog.setAttribute('role', 'button'); tog.tabIndex = 0;
-            const setLabel = () => { tog.textContent = (body.hidden ? '▸ ' : '▾ ') + title + ' (' + count + ')'; };
+            const setLabel = () => { tog.textContent = (body.hidden ? '▸ ' : '▾ ') + title + ' (' + lines.length + ')'; };
             const flip = () => { body.hidden = !body.hidden; setLabel(); };
             setLabel();
             tog.addEventListener('click', flip);
@@ -969,10 +974,10 @@
         for (const c of model.commits) {
             if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
             // Everything starts collapsed: each non-empty group is its own "▸ Title (N)" toggle, in order.
-            if (c.units.length) renderCollapse('Plant units', c.units, 0);                          // 1. units
-            if (c.graphic.length) renderCollapse('Graphic', c.graphic, 0);                          // 2. graphic
-            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings, 0);   // 3. settings
-            if (c.oth.length) renderCollapse('More changes', c.oth, c.othOverflow);                 // 4. the rest
+            if (c.units.length) renderCollapse('Plant units', c.units);                          // 1. units
+            if (c.graphic.length) renderCollapse('Graphic', c.graphic);                          // 2. graphic
+            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings);   // 3. settings
+            if (c.oth.length) renderCollapse('More changes', c.oth);                             // 4. the rest
             const anyContent = c.units.length || c.graphic.length || (c.settings && c.settings.length) || c.oth.length;
             if (!anyContent && !c.foot.length) detailEl.appendChild(mkLine({ t: 'Snapshot recorded — no parameter changes', k: 'plain' }));
             if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (anyContent ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
@@ -1292,6 +1297,8 @@
         #${PANEL_ID} .row .chg-more-body { margin-top: 2px; padding-left: 8px; border-left: 2px solid #e0e0e0; }
         #${PANEL_ID} .row .chg-showall { margin-left: 8px; font-size: 11px; font-weight: 600; color: #0f62fe; cursor: pointer; user-select: none; white-space: nowrap; }
         #${PANEL_ID} .row .chg-showall:hover { text-decoration: underline; }
+        #${PANEL_ID} .row .chg-more-link { color: #0f62fe; font-weight: 600; cursor: pointer; user-select: none; }
+        #${PANEL_ID} .row .chg-more-link:hover { text-decoration: underline; }
         #${PANEL_ID} .row .chg-foot { font-size: 11px; color: #8d8d8d; margin-top: 4px; line-height: 1.4; word-break: break-word; }
         #${PANEL_ID} .row .act { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #525252; white-space: nowrap; }
         #${PANEL_ID} .row .act .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #a8a8a8; }
