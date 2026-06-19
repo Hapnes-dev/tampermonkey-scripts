@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.27
+// @version      4.28
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -571,6 +571,255 @@
         });
     }
 
+    // ===== "What changed" detail (config-commit diff drill-down) =====================
+    // Backed by two more changes.qxs services (same JSON-RPC / batching / http-origin rules as
+    // gmFetchCommitsBatch): tables.php/get_tables_patch says which tables a commit touched (via a
+    // `mode` flag), and data.php/get_two_versions returns a table's old+new content (base64 TSV).
+    // We classify noise/blobs/added-devices from the table NAME+mode BEFORE fetching, so the huge
+    // relink tables and graphic blobs are summarised without ever being downloaded.
+    const MAX_COMMITS_DETAILED = 3;   // newest-first; older window commits are noted, not detailed
+    const MAX_TABLES_PER_COMMIT = 14; // cap fetched (param/settings) tables per commit
+    const CHANGE_HEADLINE_CAP = 8;    // max headline lines per commit
+    const CHANGE_FOOT_CAP = 4;        // max footnote tokens per commit
+    const CHANGE_VAL_CLIP = 80;       // clip a from/to value to this many chars (AFTER comparing)
+    const CHG_NOISE_RE = /^iw_lnk_|_id_to_/i;       // mechanical relink/index tables — never fetched
+    const CHG_BLOB_TABLE_RE = /graphic_designer/i;  // multi-KB xml/json/png — summarised, never diffed as text
+    const CHG_DEV_TOKEN_RE = /(?:da3_)?(mc\d{6}_\d{4}|sm\d+)/i; // device token inside a driver table name
+    const CHG_NAME_COLS = ['name', 'setting', 'par_name', 'key', 'tag', 'alias_text'];
+    const CHG_SEP = String.fromCharCode(1); // row-key delimiter — won't appear in config values
+    const CHG_TABLE_FRIENDLY = {
+        iw_sys_plant_settings: 'Plant settings', iw_sys_graphic_designer: 'Graphic panel',
+        iw_sys_order_no: 'Device list', iw_sys_plant_units: 'Plant units',
+        iw_sys_virtual_values: 'Virtual values', iw_lnk_driver_id_to_no: 'Driver-ID links',
+    };
+    const CHG_COL_LABELS = { grp: 'group', val: 'value', value: 'value', revision: 'revision', xml: 'layout', json: 'layout', picture: 'background image' };
+    const _patchCache = new Map(); // commitId -> { table: {mode, struct, content} }
+    const _diffCache  = new Map(); // 'commitId|table' -> { unreadable, added[], removed[], modified[] }
+
+    async function gmFetchTablesPatchBatch(commitIds) {
+        const base = await apiOrigin();
+        return new Promise(resolve => {
+            const reqs = commitIds.map((cid, i) => ({ jsonrpc: '2.0', method: 'get_tables_patch', params: { commit: String(cid) }, id: i }));
+            GM_xmlhttpRequest({
+                method: 'POST', url: base + '/services/changes/tables.php',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: JSON.stringify(reqs), timeout: 60000,
+                onload: r => {
+                    const out = {};
+                    try {
+                        const parsed = JSON.parse(r.responseText);
+                        const list = Array.isArray(parsed) ? parsed : [parsed];
+                        for (let k = 0; k < list.length; k++) {
+                            const item = list[k];
+                            const idx = (typeof item?.id === 'number') ? item.id : k;
+                            const cid = commitIds[idx];
+                            if (cid != null) out[cid] = (item && item.result && typeof item.result === 'object') ? item.result : {};
+                        }
+                    } catch {}
+                    resolve(out);
+                },
+                onerror: () => resolve({}), ontimeout: () => resolve({}),
+            });
+        });
+    }
+
+    async function gmFetchTwoVersionsBatch(jobs) {
+        const base = await apiOrigin();
+        return new Promise(resolve => {
+            const reqs = jobs.map((j, i) => ({ jsonrpc: '2.0', method: 'get_two_versions', params: { table_name: j.table_name, commit: String(j.commit) }, id: i }));
+            GM_xmlhttpRequest({
+                method: 'POST', url: base + '/services/changes/data.php',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: JSON.stringify(reqs), timeout: 60000,
+                onload: r => {
+                    const out = new Array(jobs.length).fill(null);
+                    try {
+                        const parsed = JSON.parse(r.responseText);
+                        const list = Array.isArray(parsed) ? parsed : [parsed];
+                        for (let k = 0; k < list.length; k++) {
+                            const item = list[k];
+                            const idx = (typeof item?.id === 'number') ? item.id : k;
+                            if (idx >= 0 && idx < out.length) out[idx] = (item && item.result) ? item.result : null;
+                        }
+                    } catch {}
+                    resolve(out);
+                },
+                onerror: () => resolve(jobs.map(() => null)), ontimeout: () => resolve(jobs.map(() => null)),
+            });
+        });
+    }
+
+    function chgTokenOf(t) { const m = String(t).match(CHG_DEV_TOKEN_RE); return m ? m[1].toUpperCase() : null; }
+    function chgHumanizeTable(name) {
+        if (CHG_TABLE_FRIENDLY[name]) return CHG_TABLE_FRIENDLY[name];
+        const tok = chgTokenOf(name);
+        if (/^iw_par_/.test(name) && tok) return 'Parameters: ' + tok;
+        if (/^iw_set_/.test(name) && tok) return 'Setup: ' + tok;
+        let s = String(name).replace(/^iw_/, '')
+            .replace(/^sys_/, 'System ').replace(/^par_/, 'Parameters ').replace(/^set_/, 'Setup ')
+            .replace(/^lnk_/, 'Link ').replace(/^gen_/, 'General ');
+        s = s.replace(/da3_/g, '').replace(/_/g, ' ').trim();
+        return s ? s.charAt(0).toUpperCase() + s.slice(1) : String(name);
+    }
+    function chgColLabel(c) { return CHG_COL_LABELS[c] || String(c).replace(/_/g, ' '); }
+    function chgClip(s) { s = String(s == null ? '' : s); return s.length > CHANGE_VAL_CLIP ? s.slice(0, CHANGE_VAL_CLIP) + '…' : s; }
+    function chgIsParamTable(t) { return /^iw_sys_plant_settings$|_param$|^iw_set_|_settings$/.test(t); }
+
+    function chgDecodeSide(side) {
+        if (!side || !side.data) return null;
+        let text;
+        try { const bin = atob(side.data); const b = Uint8Array.from(bin, c => c.charCodeAt(0)); text = new TextDecoder('utf-8').decode(b); }
+        catch (e) { return 'UNREADABLE'; }
+        const fields = side.fields || [];
+        const pkIdx = (side.pk && Array.isArray(side.pk.indexes) && side.pk.indexes.length) ? side.pk.indexes : null;
+        const rdIdx = fields.indexOf('row_date');
+        const rows = new Map();
+        for (const line of text.split('\n')) {
+            if (line === '') continue;
+            const cols = line.split('\t');
+            const key = pkIdx ? pkIdx.map(i => cols[i]).join(CHG_SEP) : cols.join(CHG_SEP); // no PK → full row (incl. row_date) so distinct rows never collapse
+            rows.set(key, cols);
+        }
+        return { fields, pkIdx, rdIdx, rows };
+    }
+    function chgDiff(ver) {
+        const o = chgDecodeSide(ver && ver.old), n = chgDecodeSide(ver && ver.new);
+        if (o === 'UNREADABLE' || n === 'UNREADABLE') return { unreadable: true, added: [], removed: [], modified: [] };
+        const oldRows = o ? o.rows : new Map(), newRows = n ? n.rows : new Map();
+        const oldFields = (o && o.fields) || [], newFields = (n && n.fields) || [];
+        const oldIdxByName = {}; oldFields.forEach((f, i) => { if (!(f in oldIdxByName)) oldIdxByName[f] = i; });
+        const added = [], removed = [], modified = [];
+        // Compare values by column NAME, not position — so a struct change (a column inserted/reordered
+        // in a mod:struct:content commit) can't produce phantom "X → Y" lines against the wrong column.
+        for (const [k, nc] of newRows) {
+            const oc = oldRows.get(k);
+            if (!oc) { added.push({ key: k, cols: nc, fields: newFields }); continue; }
+            for (let i = 0; i < newFields.length; i++) {
+                const name = newFields[i];
+                if (name === 'row_date') continue;
+                const oi = oldIdxByName[name];
+                if (oi === undefined) continue; // column only on the new side (structural) — not a value edit
+                if ((nc[i] || '') !== (oc[oi] || '')) modified.push({ key: k, col: name, from: oc[oi], to: nc[i], fields: newFields, cols: nc });
+            }
+        }
+        for (const [k, oc] of oldRows) { if (!newRows.has(k)) removed.push({ key: k, cols: oc, fields: oldFields }); }
+        return { unreadable: false, added, removed, modified };
+    }
+    function chgRowLabel(entry) {
+        const f = entry.fields || [];
+        const nameCol = CHG_NAME_COLS.find(c => f.includes(c) && entry.cols[f.indexOf(c)]);
+        const pkParts = String(entry.key).split(CHG_SEP).filter(p => p !== '');
+        if (nameCol) {
+            const nameVal = entry.cols[f.indexOf(nameCol)];
+            const extras = pkParts.filter(p => p !== nameVal);
+            return extras.length ? `${nameVal} (${extras.join(', ')})` : nameVal;
+        }
+        return pkParts.length ? pkParts.join(' / ') : '(row)';
+    }
+    function chgClassify(table, mode) {
+        if (mode === 'add') return { kind: 'add', token: chgTokenOf(table) };
+        if (mode === 'del') return { kind: 'del', token: chgTokenOf(table) };
+        if (CHG_NOISE_RE.test(table)) return { kind: 'noise' };
+        return { kind: 'fetch' };
+    }
+    function chgBlobToken(table, d) {
+        let extra = '';
+        const rev = d.modified.find(m => m.col === 'revision');
+        if (rev) extra += ` rev ${chgClip(rev.from)}→${chgClip(rev.to)}`;
+        const pic = d.modified.find(m => /picture|image|filename/i.test(m.col || ''));
+        if (pic) extra += ' · background image swapped';
+        const any = d.modified[0] || d.added[0] || d.removed[0];
+        const label = any ? chgRowLabel(any) : chgHumanizeTable(table);
+        return `Graphic '${label}' edited${extra}`;
+    }
+    function chgPushOrdinary(head, table, d) {
+        const ft = chgHumanizeTable(table);
+        if (d.added.length) { if (d.added.length <= 3) d.added.forEach(a => head.push('+ ' + chgRowLabel(a))); else head.push(`+ ${d.added.length} rows added to ${ft}`); }
+        if (d.removed.length) { if (d.removed.length <= 3) d.removed.forEach(r => head.push('- ' + chgRowLabel(r))); else head.push(`- ${d.removed.length} rows removed from ${ft}`); }
+        if (d.modified.length && !d.added.length && !d.removed.length) {
+            const rows = new Set(d.modified.map(m => m.key)).size;
+            head.push(`${ft}: ${rows} ${rows === 1 ? 'row' : 'rows'} changed`);
+        }
+    }
+    function chgBuildCommit(commit, classes, diffGet, droppedTables) {
+        const head = [], foot = [], devAdd = new Set(), devDel = new Set();
+        const hadDevice = classes.some(x => (x.cls.kind === 'add' || x.cls.kind === 'del') && x.cls.token);
+        for (const x of classes) {
+            const { table, cls } = x;
+            if (cls.kind === 'add') { if (cls.token) devAdd.add(cls.token); else head.push('+ New table: ' + chgHumanizeTable(table)); continue; }
+            if (cls.kind === 'del') { if (cls.token) devDel.add(cls.token); else head.push('- Removed table: ' + chgHumanizeTable(table)); continue; }
+            if (cls.kind === 'noise') { if (!hadDevice) foot.push('driver-ID relink'); continue; }
+            if (hadDevice && (table === 'iw_sys_order_no' || table === 'iw_sys_plant_units')) continue; // folded into the device line
+            const d = diffGet(table);
+            if (!d) continue;
+            if (d.unreadable) { foot.push('unreadable change in ' + chgHumanizeTable(table)); continue; }
+            if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; }
+            if (chgIsParamTable(table)) {
+                for (const m of d.modified) head.push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`);
+                for (const a of d.added) head.push('+ ' + chgRowLabel(a));
+                for (const r of d.removed) head.push('- ' + chgRowLabel(r));
+                continue;
+            }
+            chgPushOrdinary(head, table, d);
+        }
+        for (const t of devDel) head.unshift('- Device removed: ' + t);
+        for (const t of devAdd) head.unshift('+ Device added: ' + t);
+        if (droppedTables > 0) foot.push(`${droppedTables} more table${droppedTables === 1 ? '' : 's'} not detailed`);
+        const headOverflow = Math.max(0, head.length - CHANGE_HEADLINE_CAP);
+        const headShown = head.slice(0, CHANGE_HEADLINE_CAP);
+        if (headOverflow) headShown.push('+' + headOverflow + ' more changes');
+        const footOverflow = Math.max(0, foot.length - CHANGE_FOOT_CAP);
+        const footShown = foot.slice(0, CHANGE_FOOT_CAP);
+        if (!headShown.length && !footShown.length) headShown.push('Snapshot recorded — no parameter changes');
+        return { time: tsToLocalTime(tsFromPangDate(commit.date)), head: headShown, foot: footShown, footOverflow };
+    }
+
+    // Lazily fetch + diff the config changes for ONE visit's in-window commits. Result is cached on
+    // the visit and in module-scope maps keyed by immutable commit id (re-expand / shared commits free).
+    function loadChangeDetail(v) {
+        if (v._changeDetail) return Promise.resolve(v._changeDetail);
+        if (v._changeDetailPromise) return v._changeDetailPromise; // coalesce overlapping expands → one fetch
+        const p = (async () => {
+            const all = v.window_commits || [];
+            const commits = all.slice().sort((a, b) => tsFromPangDate(b.date) - tsFromPangDate(a.date)).slice(0, MAX_COMMITS_DETAILED);
+            const olderCount = Math.max(0, all.length - commits.length);
+            const needIds = commits.map(c => c.id).filter(id => !_patchCache.has(id));
+            if (needIds.length) { const pm = await gmFetchTablesPatchBatch(needIds); needIds.forEach(id => _patchCache.set(id, pm[id] || {})); }
+            const plan = commits.map(c => {
+                const patch = _patchCache.get(c.id) || {};
+                const classes = Object.keys(patch).filter(t => patch[t] && patch[t].mode).map(t => ({ table: t, mode: patch[t].mode, cls: chgClassify(t, patch[t].mode) }));
+                const fetchKind = classes.filter(x => x.cls.kind === 'fetch');
+                const fetchTables = fetchKind.slice(0, MAX_TABLES_PER_COMMIT);
+                return { commit: c, classes, fetchTables, dropped: fetchKind.length - fetchTables.length };
+            });
+            const jobs = [];
+            plan.forEach(pl => pl.fetchTables.forEach(x => jobs.push({ table_name: x.table, commit: pl.commit.id })));
+            const toFetch = jobs.filter(j => !_diffCache.has(j.commit + '|' + j.table_name));
+            if (toFetch.length) { const res = await gmFetchTwoVersionsBatch(toFetch); toFetch.forEach((j, i) => _diffCache.set(j.commit + '|' + j.table_name, chgDiff(res[i]))); }
+            const model = plan.map(pl => chgBuildCommit(pl.commit, pl.classes, table => _diffCache.get(pl.commit.id + '|' + table), pl.dropped));
+            v._changeDetail = { commits: model, olderCount };
+            return v._changeDetail;
+        })();
+        v._changeDetailPromise = p;
+        p.catch(() => { v._changeDetailPromise = null; }); // failed load → allow a later retry
+        return p;
+    }
+
+    // Render a resolved change-detail model into the drawer. All text via textContent — values are raw
+    // plant config (XML/JSON/names) and must never reach innerHTML.
+    function renderChangeDetail(detailEl, model) {
+        detailEl.textContent = '';
+        const hdr = document.createElement('div');
+        hdr.className = 'chg-hdr';
+        hdr.textContent = 'Config snapshot during your visit · automatic, no author recorded';
+        detailEl.appendChild(hdr);
+        const multi = model.commits.length > 1;
+        for (const c of model.commits) {
+            if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
+            for (const line of c.head) { const d = document.createElement('div'); d.className = 'chg-line'; d.textContent = line; detailEl.appendChild(d); }
+            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (c.head.length ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
+        }
+        if (model.olderCount) { const o = document.createElement('div'); o.className = 'chg-foot'; o.textContent = `+${model.olderCount} earlier commits not detailed`; detailEl.appendChild(o); }
+    }
+
     // Run f(item) over items with limited parallelism. Calls onProgress(done, total).
     async function pMap(items, f, parallel, onProgress) {
         const results = new Array(items.length);
@@ -859,24 +1108,31 @@
         #${PANEL_ID} .results { overflow: auto; padding: 4px 0; flex: 1; }
         #${PANEL_ID} .row {
             padding: 8px 14px; border-bottom: 1px solid #f0f0f0;
-            display: flex; gap: 10px; align-items: baseline;
+            display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
         }
         #${PANEL_ID} .row a {
             color: #0f62fe; text-decoration: none; font-weight: 600; min-width: 56px;
         }
         #${PANEL_ID} .row a:hover { text-decoration: underline; }
         #${PANEL_ID} .row .name { flex: 1; }
-        #${PANEL_ID} .row .actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; align-items: center; }
+        #${PANEL_ID} .row .actions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; align-items: center; }
         #${PANEL_ID} .row .time { color: #6f6f6f; font-size: 12px; white-space: nowrap; text-align: right; }
         #${PANEL_ID} .row .estimate { color: #0f62fe; font-size: 11px; font-weight: 600; margin-top: 2px; }
-        #${PANEL_ID} .row .chg { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; background: #defbe6; color: #0e6027; font-weight: 600; white-space: nowrap; cursor: help; }
-        #${PANEL_ID} .row .act { font-size: 10px; line-height: 1.6; padding: 0 6px; border-radius: 10px; white-space: nowrap; cursor: default; }
-        #${PANEL_ID} .row .act-edit   { background: #d0e2ff; color: #0043ce; }
-        #${PANEL_ID} .row .act-server { background: #ffe0b3; color: #8a3800; }
-        #${PANEL_ID} .row .act-vnc    { background: #e8daff; color: #6929c4; }
-        #${PANEL_ID} .row .act-access { background: #d9fbfb; color: #005d5d; }
-        #${PANEL_ID} .row .act-diag   { background: #f2f4f8; color: #525252; }
-        #${PANEL_ID} .row .act-other  { background: #f2f4f8; color: #525252; }
+        #${PANEL_ID} .row .chg { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; background: #defbe6; color: #0e6027; font-weight: 600; white-space: nowrap; cursor: pointer; }
+        #${PANEL_ID} .row .chg-car { font-size: 9px; }
+        #${PANEL_ID} .row .chg-detail { flex-basis: 100%; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 8px 10px; background: #f4f4f4; border-radius: 6px; max-height: 220px; overflow: auto; }
+        #${PANEL_ID} .row .chg-hdr { font-size: 11px; color: #6f6f6f; margin-bottom: 5px; }
+        #${PANEL_ID} .row .chg-time { font-size: 11px; font-weight: 600; color: #525252; margin: 6px 0 2px; }
+        #${PANEL_ID} .row .chg-line { font-size: 12px; color: #161616; line-height: 1.5; word-break: break-word; }
+        #${PANEL_ID} .row .chg-foot { font-size: 11px; color: #8d8d8d; margin-top: 4px; line-height: 1.4; word-break: break-word; }
+        #${PANEL_ID} .row .act { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #525252; white-space: nowrap; }
+        #${PANEL_ID} .row .act .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #a8a8a8; }
+        #${PANEL_ID} .row .act-edit   .dot { background: #0f62fe; }
+        #${PANEL_ID} .row .act-server .dot { background: #ff832b; }
+        #${PANEL_ID} .row .act-vnc    .dot { background: #8a3ffc; }
+        #${PANEL_ID} .row .act-access .dot { background: #009d9a; }
+        #${PANEL_ID} .row .act-diag   .dot { background: #a8a8a8; }
+        #${PANEL_ID} .row .act-other  .dot { background: #a8a8a8; }
         #${PANEL_ID} .empty { padding: 20px; text-align: center; color: #6f6f6f; font-size: 12px; }
         #${PANEL_ID} .total {
             padding: 8px 14px; background: #f4f4f4; border-top: 1px solid #e0e0e0;
@@ -1004,13 +1260,13 @@
             for (const v of visits) {
                 const start = v.first_ts - CHANGE_PAD_LEAD_MS;
                 const end   = (v.last_ts || v.first_ts) + CHANGE_PAD_TAIL_MS;
-                const hits = (commits[v.plant_id] || [])
-                    .map(c => tsFromPangDate(c.date))
-                    .filter(t => t >= start && t <= end)
-                    .sort((a, b) => a - b);
-                v.changes_in_window = hits.length;
-                v.change_times = hits.map(tsToLocalTime);
-                if (hits.length) any = true;
+                const inWin = (commits[v.plant_id] || [])
+                    .filter(c => { const t = tsFromPangDate(c.date); return t >= start && t <= end; })
+                    .sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
+                v.window_commits = inWin;                                   // commit objects, for the drawer
+                v.changes_in_window = inWin.length;
+                v.change_times = inWin.map(c => tsToLocalTime(tsFromPangDate(c.date)));
+                if (inWin.length) any = true;
             }
             if (any) applyAndRender(); // repaint with badges
         };
@@ -1324,7 +1580,7 @@
             (ACTION_CAT_ORDER.indexOf(x.cat) - ACTION_CAT_ORDER.indexOf(y.cat)) ||
             x.label.localeCompare(y.label));
         return chips.map(c =>
-            `<span class="act act-${c.cat}" title="${escapeHtml(c.code)}">${escapeHtml(c.label)}</span>`
+            `<span class="act act-${c.cat}" title="${escapeHtml(c.code)}"><span class="dot"></span>${escapeHtml(c.label)}</span>`
         ).join('');
     }
 
@@ -1354,8 +1610,11 @@
                 ? `<div class="estimate" title="${escapeHtml(tooltip)}">${prefix}${fmtMinutes(shown)}</div>`
                 : '';
             const nChg = v.changes_in_window || 0;
+            const chgTip = nChg > 0
+                ? `A config snapshot was committed at ${(v.change_times || []).join(', ')} during your active window. These are automatic system snapshots with no author recorded — they show what the plant config changed to around your visit, not necessarily changes you personally made. Click to see what changed.`
+                : '';
             const chgBadge = nChg > 0
-                ? ` <span class="chg" title="${escapeHtml(`Plant config committed at ${(v.change_times || []).join(', ')} during your visit — an automatic system snapshot (no author is logged), but it lands inside your active window: a strong sign you configured this plant, not just viewed it.`)}">🔧 ${nChg} change${nChg === 1 ? '' : 's'}</span>`
+                ? ` <span class="chg" role="button" tabindex="0" aria-expanded="false" title="${escapeHtml(chgTip)}">🔧 ${nChg} change${nChg === 1 ? '' : 's'} <span class="chg-car">▸</span></span>`
                 : '';
             div.innerHTML = `
                 <a href="${url}" target="_blank">${escapeHtml(v.plant_id)}</a>
@@ -1367,8 +1626,31 @@
                     ${timeRange}
                     ${estimate}
                 </div>
+                ${nChg > 0 ? '<div class="chg-detail" hidden></div>' : ''}
             `;
             list.appendChild(div);
+            if (nChg > 0 && Array.isArray(v.window_commits) && v.window_commits.length) {
+                const badge = div.querySelector('.chg');
+                const detail = div.querySelector('.chg-detail');
+                const car = badge && badge.querySelector('.chg-car');
+                const toggle = async () => {
+                    const open = badge.getAttribute('aria-expanded') === 'true';
+                    if (open) { detail.hidden = true; badge.setAttribute('aria-expanded', 'false'); if (car) car.textContent = '▸'; return; }
+                    detail.hidden = false; badge.setAttribute('aria-expanded', 'true'); if (car) car.textContent = '▾';
+                    if (detail.dataset.loaded) return;                       // rendered once; re-expand is instant
+                    detail.textContent = 'Reading config snapshots…';
+                    let model = null;
+                    try { model = await loadChangeDetail(v); } catch (e) { model = null; }
+                    if (!document.contains(detail)) return;                  // row was re-rendered while loading — stale
+                    if (!model) { detail.textContent = ''; const er = document.createElement('div'); er.className = 'chg-foot'; er.textContent = "Couldn't load details — open the plant in pang"; detail.appendChild(er); return; }
+                    renderChangeDetail(detail, model);
+                    detail.dataset.loaded = '1';
+                };
+                if (badge) {
+                    badge.addEventListener('click', toggle);
+                    badge.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+                }
+            }
         });
     }
 
