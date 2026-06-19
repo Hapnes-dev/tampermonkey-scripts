@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.29
+// @version      4.30
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -720,6 +720,12 @@
         if (CHG_NOISE_RE.test(table)) return { kind: 'noise' };
         return { kind: 'fetch' };
     }
+    // Device id from a driver table name: iw_par_<tok>_(groups|param) / iw_set_<tok>, da3_ prefix stripped.
+    // Handles every driver family (AK3 da3_*, BACNET energy valves, modbus, …), not just the narrow CHG_DEV_TOKEN_RE.
+    function chgDeviceToken(table) {
+        const m = String(table).match(/^iw_(?:par|set)_(?:da3_)?(.+?)(?:_groups|_param)?$/);
+        return m ? m[1] : null;
+    }
     function chgBlobToken(table, d) {
         let extra = '';
         const rev = d.modified.find(m => m.col === 'revision');
@@ -730,64 +736,106 @@
         const label = any ? chgRowLabel(any) : chgHumanizeTable(table);
         return `Graphic '${label}' edited${extra}`;
     }
-    function chgPushOrdinary(head, table, d) {
+    function chgPushOrdinary(push, table, d) {
         const ft = chgHumanizeTable(table);
-        if (d.added.length) { if (d.added.length <= 3) d.added.forEach(a => head.push('+ ' + chgRowLabel(a))); else head.push(`+ ${d.added.length} rows added to ${ft}`); }
-        if (d.removed.length) { if (d.removed.length <= 3) d.removed.forEach(r => head.push('- ' + chgRowLabel(r))); else head.push(`- ${d.removed.length} rows removed from ${ft}`); }
+        if (d.added.length) { if (d.added.length <= 3) d.added.forEach(a => push('+ ' + chgRowLabel(a), 'add')); else push(`+ ${d.added.length} rows added to ${ft}`, 'add'); }
+        if (d.removed.length) { if (d.removed.length <= 3) d.removed.forEach(r => push('- ' + chgRowLabel(r), 'del')); else push(`- ${d.removed.length} rows removed from ${ft}`, 'del'); }
         if (d.modified.length && !d.added.length && !d.removed.length) {
             const rows = new Set(d.modified.map(m => m.key)).size;
-            head.push(`${ft}: ${rows} ${rows === 1 ? 'row' : 'rows'} changed`);
+            push(`${ft}: ${rows} ${rows === 1 ? 'row' : 'rows'} changed`, 'mod');
         }
     }
-    // iw_sys_plant_units rows are identified by unit_id (e.g. "ING_EXT_05"), with unit_name for context.
+    // iw_sys_plant_units rows: unit_id (e.g. "ING_EXT_05") + unit_name (e.g. "Belimo Energimåler"). Lead with
+    // the human name when present, keep the id in parens — so both the descriptive cases are covered.
     function chgUnitLabel(e) {
         const f = e.fields || [];
-        const ui = f.indexOf('unit_id'), un = f.indexOf('unit_name');
-        const id = ui >= 0 ? e.cols[ui] : chgRowLabel(e);
-        const nm = un >= 0 ? e.cols[un] : '';
-        return nm ? `${id} (${nm})` : id;
+        const id = f.indexOf('unit_id') >= 0 ? e.cols[f.indexOf('unit_id')] : '';
+        const nm = f.indexOf('unit_name') >= 0 ? e.cols[f.indexOf('unit_name')] : '';
+        if (nm && id) return `${nm} (${id})`;
+        return nm || id || chgRowLabel(e);
     }
-    function chgPushUnits(head, d) {
-        for (const a of d.added) head.push('+ Unit ' + chgUnitLabel(a));
-        for (const r of d.removed) head.push('- Unit ' + chgUnitLabel(r));
+    function chgPushUnits(push, d, consumed) {
+        for (const a of d.added) { if (consumed && consumed.has(a.key)) continue; push('+ Unit ' + chgUnitLabel(a), 'add'); }
+        for (const r of d.removed) push('- Unit ' + chgUnitLabel(r), 'del');
         const byUnit = new Map(); // group a unit's field changes onto one line
         for (const m of d.modified) { if (!byUnit.has(m.key)) byUnit.set(m.key, { ref: m, changes: [] }); byUnit.get(m.key).changes.push(m); }
         for (const u of byUnit.values()) {
             const flds = u.changes.map(c => `${chgColLabel(c.col)}: ${chgClip(c.from)} → ${chgClip(c.to)}`).join(', ');
-            head.push(`⚙ Unit ${chgUnitLabel(u.ref)} — ${flds}`);
+            push(`⚙ Unit ${chgUnitLabel(u.ref)} — ${flds}`, 'mod');
         }
     }
     function chgBuildCommit(commit, classes, diffGet, droppedTables) {
-        const head = [], foot = [], devAdd = new Set(), devDel = new Set();
-        const hadDevice = classes.some(x => (x.cls.kind === 'add' || x.cls.kind === 'del') && x.cls.token);
+        const head = [], foot = [];
+        const push = (t, k) => head.push({ t, k: k || 'plain' }); // k: add | del | mod | plain → colour
+
+        // Coalesce device add/del tables by token. A device creates iw_set_<tok> + iw_par_<tok>_groups/_param,
+        // so a token with ≥2 add-tables (or one matching a freshly-added unit) is treated as a device.
+        const addCount = {}, delCount = {};
+        for (const x of classes) {
+            const tok = (x.cls.kind === 'add' || x.cls.kind === 'del') ? chgDeviceToken(x.table) : null;
+            if (!tok) continue;
+            const bag = x.cls.kind === 'add' ? addCount : delCount;
+            bag[tok] = (bag[tok] || 0) + 1;
+        }
+
+        // iw_sys_plant_units is the source of truth for unit/device names — map token → unit label.
+        const unitsD = classes.some(x => x.table === 'iw_sys_plant_units') ? diffGet('iw_sys_plant_units') : null;
+        const unitByToken = new Map(); // lowercased grp_name/order_no/unit_id → { label, key }
+        if (unitsD && !unitsD.unreadable) {
+            for (const a of unitsD.added) {
+                const f = a.fields, info = { label: chgUnitLabel(a), key: a.key };
+                for (const tcol of ['grp_name', 'order_no', 'unit_id']) { const i = f.indexOf(tcol); const val = i >= 0 ? a.cols[i] : ''; if (val) unitByToken.set(String(val).toLowerCase(), info); }
+            }
+        }
+        const matchUnit = tok => unitByToken.get(String(tok).toLowerCase());
+
+        const devTokenSet = new Set(Object.keys(addCount).filter(tok => addCount[tok] >= 2 || matchUnit(tok)));
+        const consumed = new Set();
+        for (const tok of devTokenSet) {
+            const u = matchUnit(tok);
+            if (u) { push('+ Device added: ' + u.label, 'add'); consumed.add(u.key); } // named by the added unit (e.g. "Belimo Energimåler")
+            else push('+ Device added: ' + tok, 'add');
+        }
+        for (const tok of Object.keys(delCount)) { if (delCount[tok] >= 2) push('- Device removed: ' + tok, 'del'); }
+        const hadDevice = devTokenSet.size > 0;
+
         for (const x of classes) {
             const { table, cls } = x;
-            if (cls.kind === 'add') { if (cls.token) devAdd.add(cls.token); else head.push('+ New table: ' + chgHumanizeTable(table)); continue; }
-            if (cls.kind === 'del') { if (cls.token) devDel.add(cls.token); else head.push('- Removed table: ' + chgHumanizeTable(table)); continue; }
+            if (cls.kind === 'add') {
+                const tok = chgDeviceToken(table);
+                if (tok && devTokenSet.has(tok)) continue; // folded into the device line
+                push('+ New table: ' + chgHumanizeTable(table), 'add');
+                continue;
+            }
+            if (cls.kind === 'del') {
+                const tok = chgDeviceToken(table);
+                if (tok && delCount[tok] >= 2) continue;
+                push('- Removed table: ' + chgHumanizeTable(table), 'del');
+                continue;
+            }
             if (cls.kind === 'noise') { if (!hadDevice) foot.push('driver-ID relink'); continue; }
-            if (hadDevice && table === 'iw_sys_order_no') continue; // device token already shown in the device line
+            if (hadDevice && table === 'iw_sys_order_no') continue; // device token already in the device line
             const d = diffGet(table);
             if (!d) continue;
             if (d.unreadable) { foot.push('unreadable change in ' + chgHumanizeTable(table)); continue; }
             if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; }
-            if (table === 'iw_sys_plant_units') { chgPushUnits(head, d); continue; } // name units by unit_id
+            if (table === 'iw_sys_plant_units') { chgPushUnits(push, d, consumed); continue; } // name units by unit_id + unit_name
             if (chgIsParamTable(table)) {
-                for (const m of d.modified) head.push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`);
-                for (const a of d.added) head.push('+ ' + chgRowLabel(a));
-                for (const r of d.removed) head.push('- ' + chgRowLabel(r));
+                for (const m of d.modified) push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`, 'mod');
+                for (const a of d.added) push('+ ' + chgRowLabel(a), 'add');
+                for (const r of d.removed) push('- ' + chgRowLabel(r), 'del');
                 continue;
             }
-            chgPushOrdinary(head, table, d);
+            chgPushOrdinary(push, table, d);
         }
-        for (const t of devDel) head.unshift('- Device removed: ' + t);
-        for (const t of devAdd) head.unshift('+ Device added: ' + t);
         if (droppedTables > 0) foot.push(`${droppedTables} more table${droppedTables === 1 ? '' : 's'} not detailed`);
+
         const headOverflow = Math.max(0, head.length - CHANGE_HEADLINE_CAP);
         const headShown = head.slice(0, CHANGE_HEADLINE_CAP);
-        if (headOverflow) headShown.push('+' + headOverflow + ' more changes');
+        if (headOverflow) headShown.push({ t: '+' + headOverflow + ' more changes', k: 'plain' });
         const footOverflow = Math.max(0, foot.length - CHANGE_FOOT_CAP);
         const footShown = foot.slice(0, CHANGE_FOOT_CAP);
-        if (!headShown.length && !footShown.length) headShown.push('Snapshot recorded — no parameter changes');
+        if (!headShown.length && !footShown.length) headShown.push({ t: 'Snapshot recorded — no parameter changes', k: 'plain' });
         return { time: tsToLocalTime(tsFromPangDate(commit.date)), head: headShown, foot: footShown, footOverflow };
     }
 
@@ -833,7 +881,7 @@
         const multi = model.commits.length > 1;
         for (const c of model.commits) {
             if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
-            for (const line of c.head) { const d = document.createElement('div'); d.className = 'chg-line'; d.textContent = line; detailEl.appendChild(d); }
+            for (const line of c.head) { const d = document.createElement('div'); d.className = 'chg-line chg-' + (line.k || 'plain'); d.textContent = line.t; detailEl.appendChild(d); }
             if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (c.head.length ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
         }
         if (model.olderCount) { const o = document.createElement('div'); o.className = 'chg-foot'; o.textContent = `+${model.olderCount} earlier commits not detailed`; detailEl.appendChild(o); }
@@ -1143,6 +1191,9 @@
         #${PANEL_ID} .row .chg-hdr { font-size: 11px; color: #6f6f6f; margin-bottom: 5px; }
         #${PANEL_ID} .row .chg-time { font-size: 11px; font-weight: 600; color: #525252; margin: 6px 0 2px; }
         #${PANEL_ID} .row .chg-line { font-size: 12px; color: #161616; line-height: 1.5; word-break: break-word; }
+        #${PANEL_ID} .row .chg-line.chg-add { color: #0e6027; }
+        #${PANEL_ID} .row .chg-line.chg-del { color: #a2191f; }
+        #${PANEL_ID} .row .chg-line.chg-mod { color: #0043ce; }
         #${PANEL_ID} .row .chg-foot { font-size: 11px; color: #8d8d8d; margin-top: 4px; line-height: 1.4; word-break: break-word; }
         #${PANEL_ID} .row .act { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #525252; white-space: nowrap; }
         #${PANEL_ID} .row .act .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #a8a8a8; }

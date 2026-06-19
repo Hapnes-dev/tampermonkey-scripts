@@ -1,0 +1,249 @@
+# Rocketlane Day Recap — technical reference
+
+Deep technical notes for this one script, so work can be resumed cold on any machine. For repo-wide
+rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**. User-facing usage is
+in this folder's **`README.md`**. This file is the *how it actually works* doc.
+
+> Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
+> Current version: **4.30**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+
+---
+
+## 1. What it is / where it runs
+
+A Tampermonkey userscript that adds a 🏭 **Plants visited** panel to Rocketlane's **My Timesheet**.
+Pick a date → it lists every IWMAC plant you worked on that day, the actions you performed, an
+estimated time split, and (per plant) a 🔧 badge that expands to show *what config changed* during
+your visit.
+
+It runs on **three** kinds of page (see the dispatch at the bottom of the file, `host === …`):
+- `kiona.rocketlane.com/timesheets/*` → `initRocketlane()` — builds the button + panel (the main UI).
+- `tools.iwmac.local` (pang) → `syncFromPang()` — harvests recent plants, login, the plant inventory,
+  and records which origin (http/https) pang was served from.
+- `*.plants.iwmac.local` → `recordPlantName()` — captures plant_id→name from a plant page.
+
+All the data comes from **pang / IWMAC** on `tools.iwmac.local` (resolves to 192.168.119.2),
+reachable from the office network with **no session cookie** (network-authed). The panel calls those
+APIs cross-origin via `GM_xmlhttpRequest`.
+
+---
+
+## 2. Data sources (pang APIs)
+
+All are JSON-RPC over POST, support **array batching** (send `[{...},{...}]` → get `[{...},{...}]`;
+a 1-element batch returns a single object — handle both), and have **no server-side date filter**
+(every call returns the entity's *entire* history; filter client-side).
+
+| Endpoint | Method | Returns |
+|---|---|---|
+| `/services/pang/actions.php` | `get_history {plant_id}` | `[{date, user, action}]` — the click/visit log |
+| `/services/changes/commits.php` | `get_commits {plant_id}` | `[{id, date, username, address}]` — config snapshots |
+| `/services/changes/tables.php` | `get_tables_patch {commit}` | `{ <table>: {mode, struct, content} }` — what a commit touched |
+| `/services/changes/data.php` | `get_two_versions {table_name, commit}` | `{old, new}` table content (before/after) |
+
+- **`get_history`** `date` = `"YYYY-MM-DD HH:MM:SS"` local (Europe/Oslo). `user` format is **not uniform**:
+  SSO logins record the full email (`eivind.slordal@kiona.com`), others a bare username
+  (`thomas.kvalvag`). `normalizeUser` (lowercase + strip `@domain`) reconciles matching. `action` is a
+  pang tool code (see §5).
+- **`get_commits`** `username` is **always `:system:`** — commits are *automatic* config snapshots
+  (partly scheduled, e.g. nightly ~03:00 / daily ~08:31; partly change-triggered). **No human author
+  is ever recorded** — you cannot say *who* changed a plant.
+- **`get_tables_patch`** `mode`: `""` = unchanged (≈95–100 of ~101 tables), `"mod:content"`,
+  `"mod:struct:content"`, `"add"` (old absent), `"del"` (new absent). This is the **cheap pre-filter** —
+  only fetch `get_two_versions` for tables where `mode !== ""`.
+- **`get_two_versions`** each side = `{fields:[colNames], pk:{names,indexes(0-based)}, data:<base64>}`.
+  `data` decodes (UTF-8) to **TSV**: rows split on `\n`, columns on `\t`, aligned to `fields`.
+
+**Plant inventory** (id→name, ~7600 plants) exists **only in a live pang tab** (websocket-streamed into
+`module_plants.coll.data`); there is **no HTTP endpoint** that lists plants, and ids are sparse
+(203 … 50050) so a numeric range scan isn't viable. The first Full scan briefly opens `pang.qxs` in the
+foreground (~6 s) to harvest it, then caches it (`all_plants` GM key).
+
+---
+
+## 3. The "what changed" pipeline (the meat — §`chg*` / `loadChangeDetail`)
+
+Lazy, on first expand of the 🔧 badge only. Per visit (`v.window_commits` = the commits inside the
+active window, stashed by `ensureChangesEnriched`):
+
+1. **`gmFetchTablesPatchBatch(commitIds)`** — one batched call for the newest `MAX_COMMITS_DETAILED` (3)
+   commits' patches. Cached in module-scope `_patchCache` by commit id (immutable → never invalidated).
+2. **Classify each changed table by NAME + mode `before` fetching** (`chgClassify` + `chgDeviceToken`):
+   - `iw_lnk_*` / `*_id_to_*` → **noise** (relink side-effect) — never fetched, shown as a footnote
+     `driver-ID relink` (suppressed entirely if a device was added).
+   - `mode: add`/`del` on `iw_par_<tok>`/`iw_set_<tok>` → **device** — never fetched (see §4).
+   - everything else → **fetch**.
+3. **`gmFetchTwoVersionsBatch(jobs)`** — one batched call for the fetch-kind tables (capped at
+   `MAX_TABLES_PER_COMMIT` = 14; overflow surfaced as a footnote). Cached in `_diffCache` by
+   `commitId|table`.
+4. **`chgDiff(ver)`** — decode both sides, **diff rows keyed by `pk.indexes`, compare values by column
+   NAME** (NOT position — a `mod:struct:content` reorder/insert otherwise produces phantom `X→Y` lines).
+   Returns `{added, removed, modified:[{key,col,from,to}], unreadable}`. `row_date` column is ignored.
+5. **`chgBuildCommit`** turns each diff into human lines (`{t, k}` where `k` = `add|del|mod|plain` → colour):
+   - Param/settings tables (`iw_sys_plant_settings`, `*_param`, `iw_set_*`, `*_settings`) →
+     `⚙ <rowLabel> <col>: <from> → <to>`. `rowLabel` prefers a name column (`name/setting/par_name/key/tag/alias_text`) + the rest of a composite PK in parens, e.g. `packet_interval (AK3)`.
+   - `iw_sys_plant_units` → named by **unit** via `chgUnitLabel` = `unit_name (unit_id)`, e.g.
+     `Belimo Energimåler (1)`, `AC Isvann (000:102)`, or just `ING_EXT_05` when no name.
+   - Blob tables (`graphic_designer`: xml/json/png) → **never diffed as text**; one footnote
+     `Graphic '<panel>' edited rev a→b · background image swapped`.
+   - Devices (see §4) → one coalesced `+ Device added: <name>` line.
+   - Caps: `CHANGE_HEADLINE_CAP` (8) headline lines + `+N more changes`; footnotes capped at 4.
+   - If a commit changed tables but yields zero human-meaningful lines → `Snapshot recorded — no parameter changes` (the drawer never renders blank under a non-zero badge).
+6. **`renderChangeDetail`** writes the model into the drawer — **everything via `textContent`** (decoded
+   config is untrusted; never `innerHTML`). Line colour from `k` (`.chg-add` green, `.chg-del` red,
+   `.chg-mod` blue, `.chg-plain` default).
+
+**Staleness**: the drawer toggle checks `document.contains(detail)` after the await — a re-render
+discards the old node, so a late result is harmless. `loadChangeDetail` memoises its in-flight promise
+(`v._changeDetailPromise`) so rapid expand/collapse can't double-fetch; the resolved model is cached on
+`v._changeDetail`.
+
+---
+
+## 4. Device add/remove detection (§`chgDeviceToken` + the coalescing in `chgBuildCommit`)
+
+A device creates a *set* of tables: `iw_set_<token>` + `iw_par_<token>_groups` + `iw_par_<token>_param`,
+plus a row in `iw_sys_order_no` and `iw_sys_plant_units`, plus a relink in `iw_lnk_driver_id_to_no`.
+
+- `chgDeviceToken(table)` = `/^iw_(?:par|set)_(?:da3_)?(.+?)(?:_groups|_param)?$/` → the device id
+  (`da3_` prefix stripped). Handles **every** driver family (AK3 `da3_mc370002_0207`, BACNET
+  `10111_energy_valve_1_1`, modbus `cc_210b_modbus`, …) — NOT just the old narrow `CHG_DEV_TOKEN_RE`.
+- A token is treated as a real device if it has **≥2 add-tables** OR it **matches a freshly-added unit**.
+- **Naming**: `iw_sys_plant_units` is the source of truth. Build `token → unitLabel` from added units'
+  lowercased `grp_name`/`order_no`/`unit_id`; if a device token matches, the line is
+  `+ Device added: Belimo Energimåler (1)` and that unit is *consumed* (not shown twice). No match →
+  `+ Device added: <token>`.
+- The device's `iw_par_/iw_set_` add-tables, the matching `iw_sys_order_no` row, and the relink are all
+  **folded into / suppressed** under the one device line.
+- ⚠️ A device's tables and its `iw_sys_plant_units` row are sometimes committed **in different commits**
+  (validated on 10111: tables in one commit, the unit row added/reconfigured in another). So a device
+  may surface as `+ Device added: <token>` in one commit and as a modified unit in another — both correct.
+
+---
+
+## 5. Action chips (§`ACTION_META` / `actionChips`)
+
+The `action` field from `get_history` is a pang tool code. The panel renders each as a **colour-dot +
+friendly label** (dot colour = category; raw code in the chip's `title`). Labels were read straight from
+the pang UI (`comp_module_plants_wp_btn_*` ids + tools submenu) — **don't guess them**.
+
+Categories (`cat` → dot colour): `edit` (blue) = Designer V4/V3, VV designer, AK3 setup, **Backup** (=`upload`),
+File upload · `server` (orange) = Restart/Start/Stop plant, Restart PC · `vnc` (purple) = Start/Stop VNC,
+next ping/upload · `access` (teal) = Direct, Direct V3, Proxy, **phpMyAdmin** (=`pma_local`), Client admin ·
+`diag` (grey) = System tools, Get status, Screen dump.
+
+Non-obvious: **`pma_local` = "phpMyAdmin"** (DB access, not plant-management); **`upload` = "Backup"**;
+`designer` = "VV designer"; `restart` = "Restart PC" vs `restart_plant_server` = "Restart plant".
+
+---
+
+## 6. Time attribution (§`attributeTime` / `normalizeMinutes`)
+
+pang logs **clicks, not active time**, so any estimate is inferred. Build ONE chronological timeline of
+all clicks across all plants for the day; the gap between each click and the next is credited to the
+plant that was open across it, **capped at `ACTIVE_CAP_MS` (30 min)** (normal sparse-clicking work counts
+in full; a real break is capped, not inflated). The last click gets a `TAIL_MS` (10 min) wrap-up.
+`normalizeMinutes` optionally rescales the per-plant minutes to a "Workday total" (default 7.5 h, rounded
+to 5 min) when "Distribute to total" is ticked.
+
+---
+
+## 7. Scope, scanning & caching
+
+- **Search** (fast, default) = your recent pang plants ∪ your **footprint** (`user_plants` GM key: every
+  plant you've ever been matched on — grows automatically each scan). Covers your real working set
+  without a full scan, including plant-admin/designer plants once seen.
+- **Full scan** = all ~7600 plants (after a one-time confirm, ~1 min). Because `get_history` returns each
+  plant's *entire* history, ONE full scan **caches every date you worked** (`full_scan_cache`, capped
+  `MAX_CACHED_DATES` = 400 dates/user) — browsing any other date that month is then instant.
+- **↻** re-scans just the selected date (footprint + recent) and updates that date's cache. Handy for
+  *today* as more activity is logged.
+- Scans **batch** `get_history` (`HISTORY_BATCH_MAX` = 30 plants/request, `SCAN_PARALLEL` = 20 concurrent).
+  Server load = same as single calls (processed sequentially) but far fewer round-trips. The hard limit
+  on big scans is **total data volume**, not round-trips — so keeping the everyday scope small (footprint)
+  is what keeps it fast.
+
+---
+
+## 8. Critical gotchas (these caused real, hard-to-find bugs)
+
+1. **Sandbox / `unsafeWindow`** — `@grant GM_*` sandboxes the script; its `window` is **not** the page
+   window. Page globals (`module_plants`, pang's `coll.data` inventory) live on **`unsafeWindow`**. Read
+   page state via `PAGE = (unsafeWindow || window)`. (`localStorage`/`document` *are* shared.) This silently
+   broke Full scan for everyone until v4.20 — a Playwright/page-context eval does NOT see what the
+   sandboxed script sees.
+2. **`GM_xmlhttpRequest` rejects the internal HTTPS cert** — the browser accepts `tools.iwmac.local`'s
+   https cert for page loads, but `GM_xmlhttpRequest` validates it and silently returns empty. **All API
+   calls must go to the HTTP origin.** `apiOrigin()` probes `get_history` (http first) and uses whichever
+   origin actually returns data; reuse it for the changes endpoints too. (Broke Search on https until v4.22.)
+3. **Per-origin `localStorage`** — http and https keep *separate* `pang.recent` / `pang.favorites` /
+   `pang.login.username`. The backend (`coll.data`, history, commits) is identical, but recent/login differ.
+   The script harvests recent + login from **both** origins (`syncRecentBothOrigins`).
+4. **Identity = the auth cookie `iw_security[username]`** (readable via `document.cookie` on a pang tab),
+   NOT the SPA's `pang.login.username` (missing/mis-formatted for SSO logins — this was the eivind bug).
+   Fallback: a "pick your name" chooser built from the date's distinct `user` values (`user_override`).
+5. **`pang.recent` is hard-capped at 50** and misses plant-admin/designer visits (`designer4`/`direct_plant`
+   etc. don't enter it). A "0 on Search" usually means the work was on non-recent plants — run Full scan.
+
+---
+
+## 9. Key functions — where to find things
+
+`pangBase()` / `apiOrigin()` / `gmProbeOrigin()` (origin selection) · `gmFetchHistoryBatch` (get_history) ·
+`gmFetchCommitsBatch` / `gmFetchTablesPatchBatch` / `gmFetchTwoVersionsBatch` (changes APIs) ·
+`loadVisitsForDate` / `loadUserHistoryAllDates` (build a date's visits) · `attributeTime` /
+`normalizeMinutes` (time split) · `ensureChangesEnriched` (🔧 badge counts + `window_commits`) ·
+`loadChangeDetail` + `chgDecodeSide` / `chgDiff` / `chgRowLabel` / `chgClassify` / `chgDeviceToken` /
+`chgUnitLabel` / `chgPushUnits` / `chgPushOrdinary` / `chgBlobToken` / `chgBuildCommit` / `renderChangeDetail`
+(the "what changed" drawer) · `ACTION_META` / `actionChips` (chips) · `renderVisits` (the per-plant rows +
+badge/drawer wiring) · `escapeHtml` (encodes `& < > " '`) · `tsFromPangDate` / `tsToLocalTime`.
+
+Debug helper (DevTools console on Rocketlane): `window.__rlRecap.dump('<plant_id>')` — shows captured
+username, known/all-plants counts, harvest timestamps. `all_plants_count` is the tell for a broken harvest.
+
+---
+
+## 10. Testing live (no install needed)
+
+The cleanest way to validate diff/label logic without waiting for a Tampermonkey update: open
+`http://tools.iwmac.local/pang.qxs` in a browser and run the pipeline in the page console / via the
+Claude-in-Chrome MCP (same-origin `fetch` to the APIs works there). Replicate `chgDecodeSide`/`chgDiff`/
+`chgBuildCommit` and call them on a real commit, e.g.:
+
+```js
+// find a real config-change commit, then diff it
+const patch = await getTablesPatch(commitId);          // mode != "" tables
+const vers  = await getTwoVersions(table, commitId);   // {old,new}
+// decode base64 → TSV, key by pk.indexes, diff by column NAME → human lines
+```
+
+Known good fixtures: plant **2511** commit `13199608` (AK3 device add + SM850 regroup + graphic),
+plant **10111** commit `13191667` (Belimo BACNET device add), plant **3694** commit `13271966`
+(graphic-only). These exercise device coalescing, param diffs, unit naming, blob summarising, and the
+empty/footnote-only branches.
+
+---
+
+## 11. GM storage keys
+
+`known_plants` (footprint ids) · `plant_names` (id→name) · `all_plants` (full inventory ids) ·
+`name_lookup_ids` · `full_scan_cache` (`{username:{isoDate:{scanned_at,scanned,visits[]}}}`) ·
+`user_plants` (`{username:[ids]}` footprint) · `pang_origin` (last-seen http/https) ·
+`pang.recent` / `pang.login.username` (mirrored from both origins) · `workday_hours` · `user_override` ·
+`last_harvest_ts` / `harvest_done`.
+
+---
+
+## 12. Version history (highlights)
+
+- **4.17** identity = `iw_security[username]` cookie + "pick your name" fallback.
+- **4.20** `unsafeWindow` fix — Full scan had silently never worked (sandbox).
+- **4.22** http-first `apiOrigin()` — fixes Search on https (GM_xmlhttpRequest cert).
+- **4.23** per-user footprint (`user_plants`); **4.24** one Full scan caches every date that month.
+- **4.25** time estimate retune: 30-min active cap (was a 10-min cutoff that scored a 7 h day as ~1.6 h).
+- **4.26** 🔧 changes-in-visit badge (commits inside your active window).
+- **4.27** action codes → friendly chips; **(v4.29 →)** colour dot + name.
+- **4.28** click the 🔧 badge → drawer showing *what changed* (tables.php/data.php diff).
+- **4.29** name `iw_sys_plant_units` changes by unit; stop hiding units on device-add.
+- **4.30** generalised device detection (BACNET/energy-valve/modbus, not just AK3); name a device by its
+  added unit ("Belimo Energimåler"); colour-code drawer lines (green added / red removed / blue changed).
