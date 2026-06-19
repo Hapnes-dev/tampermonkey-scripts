@@ -108,7 +108,7 @@ active window, stashed by `ensureChangesEnriched`):
 6. **`renderChangeDetail`** writes the model into the drawer — **everything via `textContent`** (decoded
    config is untrusted; never `innerHTML`). Line colour from `k` (`.chg-add` green, `.chg-del` red,
    `.chg-mod` blue, `.chg-plain` default). **All four groups render as collapsed sections** via the shared
-   `renderCollapse(title, lines)` helper — "▸ Plant units (N)", "▸ Graphic (N)", "▸ Plant settings (N)", "▸ More changes (N)"
+   `renderCollapse(title, lines, st)` helper — "▸ Plant units (N)", "▸ Graphic (N)", "▸ Plant settings (N)", "▸ More changes (N)"
    — each a `.chg-more-toggle` flipping a hidden `.chg-more-body` on click/Enter/Space. The body is filled by `renderChunked`:
    the first `CHG_CHUNK` (10) lines plus a **clickable `.chg-more-link`** "+N more changes" that appends the next chunk per
    click (DOM nodes created lazily, only as revealed). A line with `more` gets a nested `.chg-showall` ("show all"/"hide")
