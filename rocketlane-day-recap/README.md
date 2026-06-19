@@ -1,6 +1,6 @@
 # Rocketlane Day Recap
 
-Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, first/last action time, which actions you performed, and an estimated time split).
+Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, first/last action time, which actions you performed — shown as friendly, colour-coded chips (e.g. `direct_plant` → "Direct", `pma_local` → "phpMyAdmin", `upload` → "Backup") — and an estimated time split).
 
 ## Install
 

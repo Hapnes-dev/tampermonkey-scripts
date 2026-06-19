@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.26
+// @version      4.27
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -866,10 +866,17 @@
         }
         #${PANEL_ID} .row a:hover { text-decoration: underline; }
         #${PANEL_ID} .row .name { flex: 1; }
-        #${PANEL_ID} .row .actions { color: #525252; font-size: 11px; }
+        #${PANEL_ID} .row .actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; align-items: center; }
         #${PANEL_ID} .row .time { color: #6f6f6f; font-size: 12px; white-space: nowrap; text-align: right; }
         #${PANEL_ID} .row .estimate { color: #0f62fe; font-size: 11px; font-weight: 600; margin-top: 2px; }
         #${PANEL_ID} .row .chg { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; background: #defbe6; color: #0e6027; font-weight: 600; white-space: nowrap; cursor: help; }
+        #${PANEL_ID} .row .act { font-size: 10px; line-height: 1.6; padding: 0 6px; border-radius: 10px; white-space: nowrap; cursor: default; }
+        #${PANEL_ID} .row .act-edit   { background: #d0e2ff; color: #0043ce; }
+        #${PANEL_ID} .row .act-server { background: #ffe0b3; color: #8a3800; }
+        #${PANEL_ID} .row .act-vnc    { background: #e8daff; color: #6929c4; }
+        #${PANEL_ID} .row .act-access { background: #d9fbfb; color: #005d5d; }
+        #${PANEL_ID} .row .act-diag   { background: #f2f4f8; color: #525252; }
+        #${PANEL_ID} .row .act-other  { background: #f2f4f8; color: #525252; }
         #${PANEL_ID} .empty { padding: 20px; text-align: center; color: #6f6f6f; font-size: 12px; }
         #${PANEL_ID} .total {
             padding: 8px 14px; background: #f4f4f4; border-top: 1px solid #e0e0e0;
@@ -1271,6 +1278,56 @@
         return panel;
     }
 
+    // pang action codes → friendly label + category (labels read straight from the pang UI).
+    // Category drives the chip colour so a visit's nature reads at a glance; the raw code stays in
+    // each chip's tooltip. Green is intentionally avoided here — it's reserved for the 🔧 changes badge.
+    const ACTION_META = {
+        designer4:             { label: 'Designer V4',      cat: 'edit' },
+        designer3:             { label: 'Designer V3',      cat: 'edit' },
+        designer:              { label: 'VV designer',      cat: 'edit' },
+        ak3_setup:             { label: 'AK3 setup',        cat: 'edit' },
+        upload:                { label: 'Backup',           cat: 'edit' },
+        file_upload:           { label: 'File upload',      cat: 'edit' },
+        restart_plant_server:  { label: 'Restart plant',    cat: 'server' },
+        start_plant_server:    { label: 'Start plant',      cat: 'server' },
+        stop_plant_server:     { label: 'Stop plant',       cat: 'server' },
+        restart:               { label: 'Restart PC',       cat: 'server' },
+        start_vnc:             { label: 'Start VNC',        cat: 'vnc' },
+        stop_vnc:              { label: 'Stop VNC',         cat: 'vnc' },
+        start_vnc_next_ping:   { label: 'VNC: next ping',   cat: 'vnc' },
+        start_vnc_next_upload: { label: 'VNC: next upload', cat: 'vnc' },
+        direct_plant:          { label: 'Direct',           cat: 'access' },
+        direct_v3:             { label: 'Direct V3',        cat: 'access' },
+        proxy_plant:           { label: 'Proxy',            cat: 'access' },
+        pma_local:             { label: 'phpMyAdmin',       cat: 'access' },
+        client_admin:          { label: 'Client admin',     cat: 'access' },
+        sys_tools:             { label: 'System tools',     cat: 'diag' },
+        get_status:            { label: 'Get status',       cat: 'diag' },
+        screen_dump:           { label: 'Screen dump',      cat: 'diag' },
+    };
+    // Chip order: most work-significant category first, so the row reads "what they did" at a glance.
+    const ACTION_CAT_ORDER = ['edit', 'server', 'vnc', 'access', 'diag', 'other'];
+
+    // Render a plant's action list as friendly, category-coloured chips (deduped + grouped by category).
+    function actionChips(actions) {
+        if (!actions || !actions.length) return '';
+        const seen = new Set();
+        const chips = [];
+        for (const a of actions) {
+            const code = String(a);
+            if (seen.has(code)) continue;
+            seen.add(code);
+            const meta = ACTION_META[code] || { label: code, cat: 'other' };
+            chips.push({ code, label: meta.label, cat: meta.cat });
+        }
+        chips.sort((x, y) =>
+            (ACTION_CAT_ORDER.indexOf(x.cat) - ACTION_CAT_ORDER.indexOf(y.cat)) ||
+            x.label.localeCompare(y.label));
+        return chips.map(c =>
+            `<span class="act act-${c.cat}" title="${escapeHtml(c.code)}">${escapeHtml(c.label)}</span>`
+        ).join('');
+    }
+
     function renderVisits(list, visits, isoDate, scanned) {
         list.innerHTML = '';
         if (scanned === 0) {
@@ -1304,7 +1361,7 @@
                 <a href="${url}" target="_blank">${escapeHtml(v.plant_id)}</a>
                 <div class="name">
                     ${escapeHtml(v.name || '(name not yet captured)')}
-                    <div class="actions">${escapeHtml(v.actions.join(', '))}${chgBadge}</div>
+                    <div class="actions">${actionChips(v.actions)}${chgBadge}</div>
                 </div>
                 <div class="time">
                     ${timeRange}
