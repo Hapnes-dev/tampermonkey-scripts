@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.35**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.36**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -198,7 +198,8 @@ to 5 min) when "Distribute to total" is ticked.
    The script harvests recent + login from **both** origins (`syncRecentBothOrigins`).
 4. **Identity = the auth cookie `iw_security[username]`** (readable via `document.cookie` on a pang tab),
    NOT the SPA's `pang.login.username` (missing/mis-formatted for SSO logins — this was the eivind bug).
-   Fallback: a "pick your name" chooser built from the date's distinct `user` values (`user_override`).
+   (A v4.36-removed "pick your name" chooser used to offer a manual `user_override` when a scan matched
+   nothing; the key is still *read* by `effectiveUsername` for backward compat, but nothing sets it now.)
 5. **`pang.recent` is hard-capped at 50** and misses plant-admin/designer visits (`designer4`/`direct_plant`
    etc. don't enter it). A "0 on Search" usually means the work was on non-recent plants — run Full scan.
 
@@ -283,3 +284,6 @@ empty/footnote-only branches.
 - **4.35** **`+N more changes` is now clickable** (`renderChunked` + `.chg-more-link`): a long section reveals `CHG_CHUNK`
   (10) lines per click instead of dumping or truncating. Removed the model-level caps (`CHANGE_HEADLINE_CAP`,
   `CHG_PARAM_LIST_CAP`) — every changed line is kept and reachable, created lazily as revealed.
+- **4.36** **removed the "pick your name" chooser** (`renderUserPicker` + the `Wrong name?` block + `.userpick` CSS).
+  A date with no activity for you now just shows **"No data for &lt;date&gt;"** (`renderVisits` empty state; a Quick
+  scan still nudges Full scan). `user_override` is still read by `effectiveUsername` but nothing sets it anymore.

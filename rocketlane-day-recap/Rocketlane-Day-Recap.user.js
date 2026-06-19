@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.35
+// @version      4.36
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1324,9 +1324,6 @@
         #${PANEL_ID} .warn button[data-action="fullscan-go"] { background: #0f62fe; color: #fff; }
         #${PANEL_ID} .warn button[data-action="fullscan-cancel"] { background: #e0e0e0; color: #161616; margin-left: 6px; }
         #${PANEL_ID} .warn button[data-action="run-full"] { background: #0f62fe; color: #fff; }
-        #${PANEL_ID} .warn .userpick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-        #${PANEL_ID} .warn .userpick button { background: #e8e8e8; color: #161616; font-weight: 500; }
-        #${PANEL_ID} .warn .userpick button:hover { background: #0f62fe; color: #fff; }
     `;
 
     function injectStyle() {
@@ -1511,48 +1508,20 @@
             GM_setValue(KEY_SCAN_CACHE, cache);
         };
 
-        // When the scan matched nothing but other people were active that day, the auto-detected
-        // username is probably wrong (login stored differently than get_history logs it). Let the
-        // user pick their real identity straight from the data; the choice is remembered.
-        const renderUserPicker = (users, mode, currentNorm) => {
-            const sorted = [...new Set(users)].sort((a, b) => a.localeCompare(b));
-            const cur = currentNorm ? escapeHtml(currentNorm) : '(not detected)';
-            list.innerHTML = `
-                <div class="warn">
-                    <strong>No plants matched you</strong>
-                    <p>Filtering as <b>${cur}</b>, but nothing on ${isoToNorwegianDate(dateInput.value)} matched that name. If it's wrong, pick yourself from everyone active that day:</p>
-                    <div class="userpick">${sorted.map(u => `<button data-user="${escapeHtml(u)}">${escapeHtml(u)}</button>`).join('')}</div>
-                </div>`;
-            list.querySelectorAll('.userpick button').forEach(b => b.addEventListener('click', () => {
-                GM_setValue(KEY_USER_OVERRIDE, b.dataset.user);
-                doScan(mode);
-            }));
-        };
-
         // Quick (recent-only) scan found nothing. The visit is very likely on a plant you didn't open
         // in pang (plant-admin/designer), which only a Full scan covers — so offer that prominently
-        // instead of a dead-end "nothing logged". If others were active that day on your recent
-        // plants, also offer the name picker (in case it's a username mismatch).
-        const renderQuickEmpty = (users) => {
+        // instead of a dead-end "no data".
+        const renderQuickEmpty = () => {
             const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
             const mine = (GM_getValue(KEY_USER_PLANTS, {})[effectiveUsername()] || []).map(String);
             const knownN = new Set([...recent, ...mine]).size;
-            const sorted = [...new Set(users || [])].sort((a, b) => a.localeCompare(b));
-            const pick = sorted.length
-                ? `<p style="margin-top:10px;">Wrong name? Activity that day came from:</p><div class="userpick">${sorted.map(u => `<button data-user="${escapeHtml(u)}">${escapeHtml(u)}</button>`).join('')}</div>`
-                : '';
             list.innerHTML = `
                 <div class="warn">
-                    <strong>Nothing among your known plants</strong>
-                    <p>No visits for ${isoToNorwegianDate(dateInput.value)} among your ~${knownN} recent + previously-visited plants. If you worked on a brand-new plant (not opened in pang, e.g. via plant-admin/designer), it's only found by a full scan.</p>
+                    <strong>No data for ${isoToNorwegianDate(dateInput.value)}</strong>
+                    <p>Nothing among your ~${knownN} recent + previously-visited plants. If you worked on a brand-new plant (not opened in pang, e.g. via plant-admin/designer), it's only found by a full scan.</p>
                     <div><button data-action="run-full">🔍 Run Full scan (all plants)</button></div>
-                    ${pick}
                 </div>`;
             list.querySelector('[data-action=run-full]').addEventListener('click', () => doScan('full'));
-            list.querySelectorAll('.userpick button').forEach(b => b.addEventListener('click', () => {
-                GM_setValue(KEY_USER_OVERRIDE, b.dataset.user);
-                doScan('quick');
-            }));
         };
 
         // Core scan. mode 'quick' = your ~50 recent plants (fast); 'full' = all ~7,600 (slow, cached).
@@ -1564,9 +1533,7 @@
             totalEl.textContent = '';
             progress.style.width = '0%';
             try {
-                // Make sure we have your login + recent list, harvested cross-protocol. If we still
-                // can't detect you, we don't bail — the scan collects who was active that day and
-                // offers a "pick your name" chooser (handled after the scan).
+                // Make sure we have your login + recent list, harvested cross-protocol.
                 await ensureUserAndRecent();
                 if (seq !== scanSeq) return; // superseded (e.g. you changed the date) — abandon this run
                 let plantIds;
@@ -1594,14 +1561,14 @@
                 list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}</div>`;
                 const iso = dateInput.value;
                 const onProg = (done, total) => { progress.style.width = Math.round(done / total * 100) + '%'; };
-                let visits, username, scanned, usersOnDate;
+                let visits, username, scanned;
                 if (mode === 'full') {
                     // A full scan already pulls every plant's complete history, so extract the user's
                     // visits for EVERY date in one pass and cache them all — browsing any of those dates
                     // (e.g. the rest of the month) is then instant. Then display the selected date.
                     const all = await loadUserHistoryAllDates(plantIds, iso, onProg);
                     if (seq !== scanSeq) return;
-                    username = all.username; scanned = all.scanned; usersOnDate = all.usersOnSelected;
+                    username = all.username; scanned = all.scanned;
                     visits = all.dates[iso] || [];
                     if (username) {
                         writeCacheDates(username, all.dates, scanned); // cache every date this scan found
@@ -1612,7 +1579,7 @@
                 } else {
                     const r = await loadVisitsForDate(iso, plantIds, onProg);
                     if (seq !== scanSeq) return;
-                    visits = r.visits; username = r.username; scanned = r.scanned; usersOnDate = r.usersOnDate;
+                    visits = r.visits; username = r.username; scanned = r.scanned;
                     rememberUserPlants(username, visits);
                     if (mode === 'refresh' && username) writeCacheDates(username, { [iso]: visits }, scanned); // ↻ updates only this date
                 }
@@ -1634,16 +1601,13 @@
                 lastScanned   = scanned;
                 lastMode      = mode;
                 lastFromCache = false;
-                // 0 matches but other people were active → likely your username didn't match the
-                // data's format. Offer the picker instead of a misleading "nothing logged".
-                const ambiguousEmpty = visits.length === 0 && (usersOnDate || []).length > 0;
-                if (mode === 'quick' && visits.length === 0) {
-                    // Quick scope came up empty → nudge toward Full scan (your visit may be on a
-                    // brand-new plant), plus a name picker if others were active that day.
-                    renderQuickEmpty(usersOnDate);
-                } else if (ambiguousEmpty) {
-                    renderUserPicker(usersOnDate, mode, username);
+                if (visits.length === 0 && mode === 'quick') {
+                    // Quick scope is partial (recent plants only) → nudge toward a Full scan, since your
+                    // visit may be on a brand-new plant you didn't open in pang.
+                    renderQuickEmpty();
                 } else {
+                    // Full/refresh already covered everything (or there are visits) → render normally;
+                    // an empty result shows the "No data for <date>" message in renderVisits.
                     applyAndRender();
                 }
             } catch (e) {
@@ -1766,7 +1730,7 @@
             return;
         }
         if (visits.length === 0) {
-            list.innerHTML = `<div class="empty">Nothing logged for ${isoToNorwegianDate(isoDate)} across ${scanned} known plants.</div>`;
+            list.innerHTML = `<div class="empty">No data for ${isoToNorwegianDate(isoDate)}.<br><small>Nothing logged across ${scanned} known plant${scanned === 1 ? '' : 's'}.</small></div>`;
             return;
         }
         visits.forEach(v => {
