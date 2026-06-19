@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.24
+// @version      4.25
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -36,22 +36,23 @@
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
-    const SCRIPT_VERSION   = '4.24';
+    const SCRIPT_VERSION   = '4.25';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
     // Time-spent estimator: cross-plant attribution.
     // Pang only logs discrete clicks, not real "active work" time, so any estimate is an
-    // approximation. We build ONE chronological timeline of every action across ALL plants
-    // for the day. For each consecutive pair (a, b) the gap (b.ts − a.ts) is credited to
-    // plant_a only while it still looks like active work: a gap up to IDLE_CUTOFF_MS counts
-    // in full, but a longer gap means you left (lunch, meeting, end of task) — we credit just
-    // WRAP_BUFFER_MS for wrap-up and drop the rest, so a single glance right before a break
-    // isn't billed as half an hour. The day's last action also gets WRAP_BUFFER_MS. Result:
-    // total estimated time ≤ wall-clock span, weighted toward plants with sustained activity
-    // rather than whichever plant you happened to touch right before a gap.
-    const IDLE_CUTOFF_MS = 10 * 60 * 1000; // a gap longer than this = you left the plant
-    const WRAP_BUFFER_MS =  2 * 60 * 1000; // wrap-up credited on an idle gap or the day's last action
+    // approximation. We build ONE chronological timeline of every action across ALL plants for the
+    // day. The gap between each click and the next is credited to the plant you had OPEN across it
+    // (the earlier click's plant) — but capped at ACTIVE_CAP_MS, so normal sparse-clicking work
+    // (reading logs, waiting on a restart, configuring) is billed in full, while a real break
+    // (lunch, meeting, a restart you walked away from) counts at most the cap instead of inflating
+    // the plant. The day's last click gets a TAIL_MS wrap-up. Result: time tracks active engagement
+    // per plant, robust to how often you happen to click. (A 10-min cutoff used to chop every normal
+    // pause down to 2 min, scoring a ~7h day as ~1.6h and skewing the per-plant split toward whoever
+    // clicked fastest — this 30-min cap bills genuine pauses as the work they are.)
+    const ACTIVE_CAP_MS = 30 * 60 * 1000; // each gap counts at most 30 min (normal work pauses count; real breaks are capped)
+    const TAIL_MS       = 10 * 60 * 1000; // wrap-up credited to the day's very last click
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -628,7 +629,7 @@
         const visits = perBatch.flat().sort((a, b) => a.first_ts - b.first_ts);
 
         // Cross-plant time attribution: flatten every action timestamp into one timeline,
-        // then credit each active gap (≤ IDLE_CUTOFF_MS) to the plant of the action that opened it.
+        // then credit each gap (capped at ACTIVE_CAP_MS) to the plant that was open across it.
         const allEvents = [];
         for (const v of visits) {
             for (const ts of v._timestamps) allEvents.push({ plant_id: v.plant_id, ts });
@@ -714,12 +715,18 @@
     function attributeTime(events) {
         const out = {};
         if (!events || events.length === 0) return out;
-        const sorted = [...events].sort((a, b) => a.ts - b.ts);
+        // Deterministic order: by ts, tie-broken by plant_id so two clicks in the same second
+        // never reorder run-to-run.
+        const sorted = [...events].sort((a, b) =>
+            (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
         for (let i = 0; i < sorted.length; i++) {
             const cur = sorted[i];
             const next = sorted[i + 1];
-            const gap = next ? next.ts - cur.ts : WRAP_BUFFER_MS;
-            const credit = gap <= IDLE_CUTOFF_MS ? gap : WRAP_BUFFER_MS;
+            // Gap to the next click anywhere (clamp negative jitter to 0), or the tail credit for the
+            // day's very last click. Bill it to the plant that was open across it, capped at
+            // ACTIVE_CAP_MS so a real break doesn't get billed as work on that plant.
+            const gap = next ? Math.max(0, next.ts - cur.ts) : TAIL_MS;
+            const credit = Math.min(gap, ACTIVE_CAP_MS);
             out[cur.plant_id] = (out[cur.plant_id] || 0) + credit;
         }
         // Convert ms → rounded minutes
@@ -1207,8 +1214,8 @@
             const shown = v.normalized_minutes != null ? v.normalized_minutes : v.estimated_minutes;
             const prefix = v.normalized_minutes != null ? '' : '≈ ';
             const tooltip = v.normalized_minutes != null
-                ? `Distributed share of your workday total. Raw estimate from action density: ≈ ${fmtMinutes(v.estimated_minutes || 0)}.`
-                : `Estimated time spent on this plant — built from a single chronological timeline of every action across all your plants for the day; each active gap (≤10 min) is credited to the plant that opened it, while longer gaps count as time away. Approximation only; pang doesn't log idle vs. active.`;
+                ? `Distributed share of your workday total. Raw estimate ≈ ${fmtMinutes(v.estimated_minutes || 0)}.`
+                : `Estimated from your clicks: time on each plant counts until you click elsewhere, and any pause over 30 min counts as a break, not work. Approximation only — pang logs clicks, not active time.`;
             const estimate = shown
                 ? `<div class="estimate" title="${escapeHtml(tooltip)}">${prefix}${fmtMinutes(shown)}</div>`
                 : '';
