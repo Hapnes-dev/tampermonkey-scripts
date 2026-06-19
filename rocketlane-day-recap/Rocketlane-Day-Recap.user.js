@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.25
-// @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day. Uses pang's get_history API across known plants.
+// @version      4.26
+// @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js
@@ -53,6 +53,15 @@
     // clicked fastest — this 30-min cap bills genuine pauses as the work they are.)
     const ACTIVE_CAP_MS = 30 * 60 * 1000; // each gap counts at most 30 min (normal work pauses count; real breaks are capped)
     const TAIL_MS       = 10 * 60 * 1000; // wrap-up credited to the day's very last click
+    // ---- Config-change ("commits") overlay: changes.qxs / services/changes/commits.php ----
+    // A plant's config snapshots are logged as commits {date, username:":system:", ...} — ALL
+    // automatic (no human author), so we can't say WHO changed a plant. But a commit landing inside
+    // your active window on a plant is strong evidence YOU did real config work there (vs a plant you
+    // only clicked through). Pad the window a touch (saves often commit a few min after the last
+    // click) and ignore commits outside it (e.g. nightly auto-snapshots). Display-only — never feeds
+    // the time estimate.
+    const CHANGE_PAD_LEAD_MS = 2 * 60 * 1000; // count commits from 2 min before your first action…
+    const CHANGE_PAD_TAIL_MS = 6 * 60 * 1000; // …through 6 min after your last (catches save-triggered commits)
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -526,6 +535,42 @@
         });
     }
 
+    // Same shape as gmFetchHistoryBatch, but for the config-change log behind changes.qxs:
+    // POST /services/changes/commits.php, method get_commits. Returns { plant_id: commits[] }, each
+    // commit { id, date, username, address } (username is always ":system:" — automatic snapshots).
+    // Same server as actions.php, so apiOrigin()'s http-first choice applies (GM_xmlhttpRequest can't
+    // use the internal https cert). Like get_history there's no server-side date filter — each plant
+    // returns its full commit history, which we filter to the visit window client-side.
+    async function gmFetchCommitsBatch(plantIds) {
+        const base = await apiOrigin();
+        return new Promise(resolve => {
+            const reqs = plantIds.map((pid, i) => ({ jsonrpc: '2.0', method: 'get_commits', params: { plant_id: String(pid) }, id: i }));
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: base + '/services/changes/commits.php',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                data: JSON.stringify(reqs),
+                timeout: 60000,
+                onload: r => {
+                    const out = {};
+                    try {
+                        const parsed = JSON.parse(r.responseText);
+                        const list = Array.isArray(parsed) ? parsed : [parsed];
+                        for (let k = 0; k < list.length; k++) {
+                            const item = list[k];
+                            const idx = (typeof item?.id === 'number') ? item.id : k;
+                            const pid = plantIds[idx];
+                            if (pid != null) out[pid] = Array.isArray(item?.result) ? item.result : [];
+                        }
+                    } catch {}
+                    resolve(out);
+                },
+                onerror:   () => resolve({}),
+                ontimeout: () => resolve({}),
+            });
+        });
+    }
+
     // Run f(item) over items with limited parallelism. Calls onProgress(done, total).
     async function pMap(items, f, parallel, onProgress) {
         const results = new Array(items.length);
@@ -824,6 +869,7 @@
         #${PANEL_ID} .row .actions { color: #525252; font-size: 11px; }
         #${PANEL_ID} .row .time { color: #6f6f6f; font-size: 12px; white-space: nowrap; text-align: right; }
         #${PANEL_ID} .row .estimate { color: #0f62fe; font-size: 11px; font-weight: 600; margin-top: 2px; }
+        #${PANEL_ID} .row .chg { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; background: #defbe6; color: #0e6027; font-weight: 600; white-space: nowrap; cursor: help; }
         #${PANEL_ID} .empty { padding: 20px; text-align: center; color: #6f6f6f; font-size: 12px; }
         #${PANEL_ID} .total {
             padding: 8px 14px; background: #f4f4f4; border-top: 1px solid #e0e0e0;
@@ -929,6 +975,37 @@
             totalEl.innerHTML =
                 `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}${escapeHtml(source)}</span>` +
                 `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
+            ensureChangesEnriched();
+        };
+
+        // Lazily overlay config-change ("commits") info onto the date on screen, decoupled from the
+        // scan/cache layer: fetch commits only for the plants shown, correlate each to that plant's
+        // active window, and repaint 🔧 badges. Runs once per shown set; bails if the user switches
+        // date/scan mid-fetch (scanSeq + lastVisits identity guard).
+        const ensureChangesEnriched = async () => {
+            const visits = lastVisits;
+            if (!visits || !visits.length || visits._changesDone) return;
+            visits._changesDone = true;
+            const seq = scanSeq;
+            const ids = [...new Set(visits.map(v => String(v.plant_id)))];
+            const commits = {};
+            for (let i = 0; i < ids.length; i += HISTORY_BATCH_MAX) {
+                Object.assign(commits, await gmFetchCommitsBatch(ids.slice(i, i + HISTORY_BATCH_MAX)));
+            }
+            if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
+            let any = false;
+            for (const v of visits) {
+                const start = v.first_ts - CHANGE_PAD_LEAD_MS;
+                const end   = (v.last_ts || v.first_ts) + CHANGE_PAD_TAIL_MS;
+                const hits = (commits[v.plant_id] || [])
+                    .map(c => tsFromPangDate(c.date))
+                    .filter(t => t >= start && t <= end)
+                    .sort((a, b) => a - b);
+                v.changes_in_window = hits.length;
+                v.change_times = hits.map(tsToLocalTime);
+                if (hits.length) any = true;
+            }
+            if (any) applyAndRender(); // repaint with badges
         };
 
         workdayInput.addEventListener('change', () => {
@@ -1219,11 +1296,15 @@
             const estimate = shown
                 ? `<div class="estimate" title="${escapeHtml(tooltip)}">${prefix}${fmtMinutes(shown)}</div>`
                 : '';
+            const nChg = v.changes_in_window || 0;
+            const chgBadge = nChg > 0
+                ? ` <span class="chg" title="${escapeHtml(`Plant config committed at ${(v.change_times || []).join(', ')} during your visit — an automatic system snapshot (no author is logged), but it lands inside your active window: a strong sign you configured this plant, not just viewed it.`)}">🔧 ${nChg} change${nChg === 1 ? '' : 's'}</span>`
+                : '';
             div.innerHTML = `
                 <a href="${url}" target="_blank">${escapeHtml(v.plant_id)}</a>
                 <div class="name">
                     ${escapeHtml(v.name || '(name not yet captured)')}
-                    <div class="actions">${escapeHtml(v.actions.join(', '))}</div>
+                    <div class="actions">${escapeHtml(v.actions.join(', '))}${chgBadge}</div>
                 </div>
                 <div class="time">
                     ${timeRange}
