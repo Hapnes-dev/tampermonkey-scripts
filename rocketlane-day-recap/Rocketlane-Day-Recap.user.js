@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.32
+// @version      4.33
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -811,13 +811,14 @@
         }
     }
     function chgBuildCommit(commit, classes, diffGet, droppedTables) {
-        // pri  = always-visible (iw_sys_plant_units + iw_sys_graphic_designer)
-        // sett = iw_sys_plant_settings → its own collapsible "Plant settings" section (changes constantly)
-        // oth  = everything else (devices, driver params, virtual values…) → capped, collapsible "More changes"
-        // foot = terse footnotes (relinks, unreadable, dropped). A line may carry `more: [strings]` → the
-        // drawer renders a "show all" expander under it (used for big unit add/remove lists).
-        const pri = [], sett = [], oth = [], foot = [];
-        const pPush = (t, k, more) => pri.push({ t, k: k || 'plain', more }); // k: add | del | mod | plain → colour
+        // Always-visible, in this order: (1) units = iw_sys_plant_units (incl. unit-backed device adds),
+        // (2) graphic = iw_sys_graphic_designer. Then (3) sett = iw_sys_plant_settings in its own collapsible
+        // "Plant settings" section, and (4) oth = everything else → capped, collapsible "More changes".
+        // foot = terse footnotes (relinks, unreadable, dropped). A line may carry `more: [strings]` → a
+        // per-line "show all" expander (used for big unit add/remove lists).
+        const units = [], graphic = [], sett = [], oth = [], foot = [];
+        const uPush = (t, k, more) => units.push({ t, k: k || 'plain', more }); // k: add | del | mod | plain → colour
+        const gPush = (t, k, more) => graphic.push({ t, k: k || 'plain', more });
         const sPush = (t, k, more) => sett.push({ t, k: k || 'plain', more });
         const oPush = (t, k, more) => oth.push({ t, k: k || 'plain', more });
 
@@ -846,9 +847,9 @@
         const consumed = new Set();
         for (const tok of devTokenSet) {
             const u = matchUnit(tok);
-            // A device backed by a freshly-added unit IS a plant_units change → priority; the unit is
-            // consumed so chgPushUnits won't re-list it. A pure driver token (no unit row) → "More changes".
-            if (u) { pPush('+ Device added: ' + u.label, 'add'); consumed.add(u.key); } // named by the added unit (e.g. "Belimo Energimåler")
+            // A device backed by a freshly-added unit IS a plant_units change → units group (top); the unit
+            // is consumed so chgPushUnits won't re-list it. A pure driver token (no unit row) → "More changes".
+            if (u) { uPush('+ Device added: ' + u.label, 'add'); consumed.add(u.key); } // named by the added unit (e.g. "Belimo Energimåler")
             else oPush('+ Device added: ' + tok, 'add');
         }
         for (const tok of Object.keys(delCount)) { if (delCount[tok] >= 2) oPush('- Device removed: ' + tok, 'del'); }
@@ -874,9 +875,9 @@
             if (!d) continue;
             if (d.unreadable) { foot.push('unreadable change in ' + chgHumanizeTable(table)); continue; }
             // Priority tables first (graphic before the generic blob branch so it gets real lines, not a footnote).
-            if (table === 'iw_sys_graphic_designer') { chgPushGraphic(pPush, d); continue; }
-            if (table === 'iw_sys_plant_units') { chgPushUnits(pPush, d, consumed); continue; } // name units by unit_id + unit_name
-            if (table === 'iw_sys_plant_settings') { chgPushParams(sPush, d, Infinity); continue; } // own collapsible "Plant settings" section, uncapped
+            if (table === 'iw_sys_plant_units') { chgPushUnits(uPush, d, consumed); continue; } // (1) units group — top
+            if (table === 'iw_sys_graphic_designer') { chgPushGraphic(gPush, d); continue; }      // (2) graphic group — second
+            if (table === 'iw_sys_plant_settings') { chgPushParams(sPush, d, Infinity); continue; } // (3) own collapsible "Plant settings" section, uncapped
             if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; } // any other blob table → footnote
             if (chgIsParamTable(table)) { chgPushParams(oPush, d); continue; }
             chgPushOrdinary(oPush, table, d);
@@ -888,8 +889,8 @@
         const othShown = oth.slice(0, CHANGE_HEADLINE_CAP);
         const footOverflow = Math.max(0, foot.length - CHANGE_FOOT_CAP);
         const footShown = foot.slice(0, CHANGE_FOOT_CAP);
-        if (!pri.length && !sett.length && !othShown.length && !footShown.length) pri.push({ t: 'Snapshot recorded — no parameter changes', k: 'plain' });
-        return { time: tsToLocalTime(tsFromPangDate(commit.date)), pri, settings: sett, oth: othShown, othOverflow, foot: footShown, footOverflow };
+        if (!units.length && !graphic.length && !sett.length && !othShown.length && !footShown.length) units.push({ t: 'Snapshot recorded — no parameter changes', k: 'plain' });
+        return { time: tsToLocalTime(tsFromPangDate(commit.date)), units, graphic, settings: sett, oth: othShown, othOverflow, foot: footShown, footOverflow };
     }
 
     // Lazily fetch + diff the config changes for ONE visit's in-window commits. Result is cached on
@@ -966,10 +967,12 @@
         const multi = model.commits.length > 1;
         for (const c of model.commits) {
             if (multi) { const th = document.createElement('div'); th.className = 'chg-time'; th.textContent = c.time; detailEl.appendChild(th); }
-            for (const line of c.pri) detailEl.appendChild(mkLine(line)); // units + graphic — always shown
-            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings, 0);
+            for (const line of c.units) detailEl.appendChild(mkLine(line));   // 1. units — top
+            for (const line of c.graphic) detailEl.appendChild(mkLine(line)); // 2. graphic — second
+            if (c.settings && c.settings.length) renderCollapse('Plant settings', c.settings, 0); // 3. the rest…
             if (c.oth.length) renderCollapse('More changes', c.oth, c.othOverflow);
-            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = ((c.pri.length || (c.settings && c.settings.length) || c.oth.length) ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
+            const anyVisible = c.units.length || c.graphic.length || (c.settings && c.settings.length) || c.oth.length;
+            if (c.foot.length) { const f = document.createElement('div'); f.className = 'chg-foot'; f.textContent = (anyVisible ? '+ also: ' : '') + c.foot.join(', ') + (c.footOverflow ? `, +${c.footOverflow} more` : ''); detailEl.appendChild(f); }
         }
         if (model.olderCount) { const o = document.createElement('div'); o.className = 'chg-foot'; o.textContent = `+${model.olderCount} earlier commits not detailed`; detailEl.appendChild(o); }
     }
