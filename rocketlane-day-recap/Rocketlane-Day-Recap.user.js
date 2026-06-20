@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.41
+// @version      4.42
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1397,7 +1397,7 @@
                 <button data-action="close">×</button>
             </header>
             <div class="controls">
-                <input type="date" lang="nb-NO" value="${todayISO()}">
+                <input type="date" lang="en-GB" value="${todayISO()}">
                 <button data-action="search">Search</button>
                 <button data-action="resync" title="Refresh this date — re-scan just the selected date and update its cache">↻</button>
             </div>

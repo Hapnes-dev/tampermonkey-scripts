@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.41**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.42**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -348,3 +348,5 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   picker takes its locale (first-day-of-week, day/month names, dd.mm.yyyy display) from the element's `lang`; nb-NO
   is Monday-first and matches the script's existing Norwegian date formatting. `input.value` stays ISO
   (`YYYY-MM-DD`) regardless of `lang`, so no date logic changes. (For English labels + Monday-first instead, use `en-GB`.)
+- **4.42** switched the picker `lang` to **`en-GB`** — Monday-first (UK/European week convention) but **English** day/month
+  labels (Mon, Tue, … / dd/mm/yyyy), per request. Same mechanism as 4.41; only the locale tag differs.
