@@ -14,7 +14,9 @@ in this folder's **`README.md`**. This file is the *how it actually works* doc.
 A Tampermonkey userscript that adds a 🏭 **Plants visited** panel to Rocketlane's **My Timesheet**.
 Pick a date → it lists every IWMAC plant you worked on that day, the actions you performed, an
 estimated time split, and (per plant) a 🔧 badge that expands to show *what config changed* during
-your visit.
+your visit. At the top, a 📋 **Day by category** roll-up maps the day's plant time onto your Rocketlane
+task categories (Integration / Drawing & Design / Setup / Support), copy-ready for the timesheet, and each
+plant row shows its own category split (see §6).
 
 It runs on **three** kinds of page (see the dispatch at the bottom of the file, `host === …`):
 - `kiona.rocketlane.com/timesheets/*` → `initRocketlane()` — builds the button + panel (the main UI).
@@ -168,7 +170,7 @@ Non-obvious: **`pma_local` = "phpMyAdmin"** (DB access, not plant-management); *
 
 ---
 
-## 6. Time attribution (§`attributeTime` / `normalizeMinutes`)
+## 6. Time attribution & category mapping (§`attributeTime` / `categorizeVisit`)
 
 pang logs **clicks, not active time**, so any estimate is inferred. Build ONE chronological timeline of
 all clicks across all plants for the day; the gap between each click and the next is credited to the
@@ -188,9 +190,42 @@ click estimate, and a no-op on click-heavy plants** (they never qualify), so the
 top-up is exposed as `v.commit_added_minutes` (drives a tooltip note). Only change-triggered commits count
 (see §2 / `isScheduledCommit`); scheduled snapshots feed neither time nor badge.
 
+**Isolated config-touch cap (v4.50, in `ensureChangesEnriched`).** The opposite error: a **single** pang
+click that opened a config surface (`pma_local`/`sys_tools`) but committed **nothing** is a quick check,
+yet the 30-min gap cap can credit it the full 30 min (measured over 30 real days: a lone pma click → 30 min).
+When `count === 1 && triggered.length === 0 && (pma_local||sys_tools)`, lower `base_minutes` to
+`ISOLATED_TOUCH_CAP` (8 min). Gated on **no-commit** (a commit-bearing pma touch is instead lifted by the
+fusion above) and the **config surface** (a bare Direct/VNC login glance keeps its gap credit). Strictly
+reduces; validated to leave the approved 06-19 split bit-identical.
+
 `normalizeMinutes` optionally rescales the per-plant minutes to a "Workday total" (default 7.5 h, rounded
 to 5 min) when "Distribute to total" is ticked — now over the fused `estimated_minutes`, so a floored
 config session gets a fair share of the workday instead of rounding to ~0%.
+
+### Category mapping → timesheet (v4.48–4.50, §`categorizeVisit` / `dayCategoryTotals` / `renderCategorySummary` / `categoryChips`)
+
+The 📋 **Day by category** panel (`.catsum`, above `.results`) and the per-plant `.catrow` chips map each
+visit's `estimated_minutes` onto Thomas's Rocketlane task categories. **Plant work only** — meetings, admin,
+documentation and training never touch pang and are deliberately omitted.
+
+`categorizeVisit(v) → { category: minutes }` splits ONE visit's minutes `M` (the normalized value when
+"Distribute to total" is on, else `estimated_minutes`):
+- Designer (`designer4/3/`) and AK3 (`ak3_setup`) log few clicks but cost real time, so each is credited a
+  **nominal carve**: `CAT_DESIGNER_MIN_EACH` (8) → **Drawing & Design**, `CAT_AK3_MIN_EACH` (18) → **Setup
+  - PC/Gateway**, capped at the visit's `M`.
+- The **remainder** → **Integration** when there's config evidence (`changes_in_window > 0 || pma_local ||
+  sys_tools`); → Drawing if the visit was graphic-only; → Setup if AK3-only; else a `≤ CAT_CHECK_MAX_CLICKS`
+  (2)-click no-commit visit → **Support - External**.
+- `dayCategoryTotals` rolls these up (ordered `CAT_ORDER`, coloured `CAT_COLOR`, short-labelled `CAT_SHORT`);
+  `renderCategorySummary` draws the bars + a clipboard **⧉ Copy** of `Category: H h` lines; `categoryChips`
+  draws the same split per row. Re-rendered by `applyAndRender`, so it tracks the workday/normalize toggles.
+
+**Why commit *content* is NOT used (v4.50).** A 30-day measurement found **457/457** triggered commits across
+94 plants classify as `integration` — a device-add commits the graphic table AND the device tables together,
+so commit content can never isolate Drawing/Settings. Therefore **Drawing comes from the Designer *actions***,
+and `changes_in_window > 0` is the integration-evidence signal. The v4.48 `tables.php` classification pass was
+removed as provably dead (`categorizeVisit` keeps a harmless `v.commit_classes` fallback that now always
+resolves to `changes_in_window`).
 
 ---
 
@@ -243,7 +278,9 @@ config session gets a fair share of the workday instead of rounding to ~0%.
 `loadChangeDetail` + `chgDecodeSide` / `chgDiff` / `chgRowLabel` / `chgClassify` / `chgDeviceToken` /
 `chgUnitLabel` / `chgPushUnits` (adds `more` for "show all") / `chgPushParams` (`coalesce` flag; drops the redundant `value` word) / `chgPushGraphic` /
 `chgPushOrdinary` / `chgBlobToken` / `chgBuildCommit` (returns `{units, graphic, settings, oth, othOverflow, foot, footOverflow}`) /
-`renderChangeDetail` (+ `renderCollapse` helper) (the "what changed" drawer) · `ACTION_META` / `actionChips` (chips) · `renderVisits` (the per-plant rows +
+`renderChangeDetail` (+ `renderCollapse` helper) (the "what changed" drawer) · `ACTION_META` / `actionChips` (chips) ·
+`categorizeVisit` / `dayCategoryTotals` / `renderCategorySummary` / `categoryChips` (the 📋 Day-by-category roll-up +
+per-row `.catrow` chips; constants `CAT_*` — see §6) · `renderVisits` (the per-plant rows +
 badge/drawer wiring) · `escapeHtml` (encodes `& < > " '`) · `tsFromPangDate` / `tsToLocalTime`.
 
 Debug helper (DevTools console on Rocketlane): `window.__rlRecap.dump('<plant_id>')` — shows captured
