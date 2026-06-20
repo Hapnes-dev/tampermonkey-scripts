@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.40**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.41**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -344,3 +344,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   disabled Search/Full-scan/↻ buttons) could stick when you switched to a cached date. `openDefault` now resets
   `progress` to 0% and re-enables the buttons up front, and `onProg` is `seq`-guarded so a superseded in-flight scan
   can't keep animating the bar.
+- **4.41** date picker is **Monday-first**: added `lang="nb-NO"` to the `<input type="date">`. Chromium's native
+  picker takes its locale (first-day-of-week, day/month names, dd.mm.yyyy display) from the element's `lang`; nb-NO
+  is Monday-first and matches the script's existing Norwegian date formatting. `input.value` stays ISO
+  (`YYYY-MM-DD`) regardless of `lang`, so no date logic changes. (For English labels + Monday-first instead, use `en-GB`.)
