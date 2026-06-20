@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.49**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.50**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -391,6 +391,26 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.50** time-model deep-dive (multi-agent workflow over 30 real days / 193 plant-day records / 41,833 events).
+  Two shipped changes, both validated to leave the approved 06-19 split bit-identical (Integration 4.40 / Drawing
+  1.47 / Setup 0.90 / Support 0.38 h):
+  1. **Removed the v4.48 `tables.php` commit-content classification pass** (`chgCommitClass` + the per-commit fetch in
+     `ensureChangesEnriched`). Empirically 457/457 triggered commits across 94 plants classify as `integration` — a
+     device-add commits the graphic table AND the device tables together, so commit *content* can never isolate
+     Drawing/Settings. `changes_in_window > 0` is the byte-identical signal; `categorizeVisit`'s `commit_classes`
+     fallback already uses it. Pure perf/complexity win, zero behaviour change.
+  2. **Isolated config-touch cap** (`ISOLATED_TOUCH_CAP = 8`): in `ensureChangesEnriched`, a single pang click that
+     opened a config surface (`pma_local`/`sys_tools`) with NO triggered commit has its click-only floor lowered
+     30→8 min (a lone pma click was inheriting the full 30-min gap cap — measured over-credit). Gated on
+     `count==1 && triggered.length==0 && (pma_local||sys_tools)` so Direct/VNC login glances and commit-bearing
+     touches (which fusion instead lifts) are untouched.
+  REJECTED after empirical test (kept as a guardrail note): a **density-gated gap bridge** (credit a within-plant gap
+  up to 60 min when bracketed by dense clicks) — the workflow recommended it, but re-running it on the data showed it
+  fires on COOP OBS Steinkjer's 95-min commit-less gap (06-19), inflating Integration 4.40→5.03 h on a gap that's
+  likely an evening break. Too speculative; the cap correctly protects "plant left open all day" records (gaps of
+  183/249/295 min). Also rejected: broad quick-touch floors / cross-plant reattribution (both move Support's lone
+  clicks → breach the split), and extending commit-fusion past ≤2 clicks (would double-count interleaved H6).
+  Deferred (measure-only): an AK3 per-use floor and a `Setup - Network/IT` bucket for sys-only visits.
 - **4.49** shows the category split **per plant** too: each plant row now renders a `.catrow` of `categoryChips(v)`
   (same `categorizeVisit(v)` that feeds the day roll-up) — small colour-dot chips like `Integration 53m · Drawing 24m ·
   Setup 18m` under the action chips, ordered by `CAT_ORDER`, using `CAT_SHORT` labels and `fmtMinutes`. Refines with the

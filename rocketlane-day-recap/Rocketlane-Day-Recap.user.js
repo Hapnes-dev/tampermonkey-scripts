@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.49
+// @version      4.50
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -36,7 +36,7 @@
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
-    const SCRIPT_VERSION   = '4.49';
+    const SCRIPT_VERSION   = '4.50';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -53,6 +53,7 @@
     // clicked fastest — this 30-min cap bills genuine pauses as the work they are.)
     const ACTIVE_CAP_MS = 30 * 60 * 1000; // each gap counts at most 30 min (normal work pauses count; real breaks are capped)
     const TAIL_MS       = 10 * 60 * 1000; // wrap-up credited to the day's very last click
+    const ISOLATED_TOUCH_CAP = 8;         // minutes: a single config-surface click (pma/sys) with no commit is a quick check, not 30 min of work
     // ---- Config-change ("commits") overlay: changes.qxs / services/changes/commits.php ----
     // A plant's config snapshots are logged as commits {date, username:":system:", ...} — ALL
     // automatic (no human author), so we can't say WHO changed a plant. But a commit landing inside
@@ -680,17 +681,6 @@
             .replace(/^lnk_/, 'Link ').replace(/^gen_/, 'General ');
         s = s.replace(/da3_/g, '').replace(/_/g, ' ').trim();
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : String(name);
-    }
-    // Classify a commit by the tables it touched (names only — no diff fetch) for the category summary.
-    // Adding a device commits BOTH device/driver tables AND iw_sys_graphic_designer, so a commit only
-    // counts as Drawing evidence when it touched the graphic table and NOTHING else of substance.
-    function chgCommitClass(tables) {
-        const real = (tables || []).filter(t => !CHG_NOISE_RE.test(t));
-        if (!real.length) return 'other';
-        if (real.some(t => !/graphic_designer/i.test(t) && !/^iw_sys_plant_settings$/.test(t))) return 'integration';
-        if (real.some(t => /graphic_designer/i.test(t))) return 'design';
-        if (real.some(t => /^iw_sys_plant_settings$/.test(t))) return 'settings';
-        return 'other';
     }
     function chgColLabel(c) { return CHG_COL_LABELS[c] || String(c).replace(/_/g, ' '); }
     function chgClip(s) { s = String(s == null ? '' : s); return s.length > CHANGE_VAL_CLIP ? s.slice(0, CHANGE_VAL_CLIP) + '…' : s; }
@@ -1614,6 +1604,17 @@
                 v.changes_in_window = triggered.length;
                 v.change_times = triggered.map(c => tsToLocalTime(tsFromPangDate(c.date)));
                 v.scheduled_in_window = inWin.length - triggered.length;   // counted, not shown as a change
+                // Isolated config-touch cap — a single pang click that opened a config SURFACE (phpMyAdmin or
+                // System tools) but committed NOTHING is a quick check, not sustained work; yet the global
+                // 30-min gap cap can credit it up to 30 min (verified over 30 days: a lone pma click → 30 min).
+                // Lower its click-only floor to ISOLATED_TOUCH_CAP. Gated on no-commit (a commit-bearing pma
+                // touch is instead lifted by the fusion below) and on the config surface (so a bare Direct/VNC
+                // login glance is untouched). Strictly reduces credit; provably no effect on the 06-19 split.
+                if ((v.count || 0) === 1 && triggered.length === 0 && v.action_counts &&
+                    ((v.action_counts.pma_local || 0) > 0 || (v.action_counts.sys_tools || 0) > 0)) {
+                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                    if (b0 > ISOLATED_TOUCH_CAP) v.base_minutes = ISOLATED_TOUCH_CAP;
+                }
                 // Time fusion — additive, bounded, idempotent (always recomputed from the click baseline, so
                 // repeated re-renders never compound). For a sparse config session, credit the real active
                 // span [first click → last triggered commit], clamped to [MIN, MAX], and lift estimated_minutes
@@ -1629,26 +1630,11 @@
                 v.commit_added_minutes = v.estimated_minutes - base;      // for the tooltip / verification dump
                 if (triggered.length || v.commit_added_minutes) any = true;
             }
-            // Classify each triggered commit (one tables.php pass for all of them) so the category summary can
-            // separate device/driver Integration from pure-graphic Drawing. Best-effort: on failure the summary
-            // falls back to treating any triggered commit as Integration evidence.
-            const allCids = [];
-            for (const v of visits) for (const c of (v.window_commits || [])) allCids.push(String(c.id));
-            if (allCids.length) {
-                const patches = {};
-                for (let i = 0; i < allCids.length; i += HISTORY_BATCH_MAX) {
-                    Object.assign(patches, await gmFetchTablesPatchBatch(allCids.slice(i, i + HISTORY_BATCH_MAX)));
-                }
-                if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
-                for (const v of visits) {
-                    const cc = { integration: 0, design: 0, settings: 0, other: 0 };
-                    for (const c of (v.window_commits || [])) {
-                        cc[chgCommitClass(Object.keys(patches[String(c.id)] || {}))]++;
-                    }
-                    v.commit_classes = cc;
-                }
-                any = true;
-            }
+            // NOTE: no per-commit content classification. A measurement over 30 real days (457 triggered
+            // commits across 94 plants) found 100% classify as "integration" — adding a device commits the
+            // graphic table AND the device tables together, so commit CONTENT can never isolate Drawing/Settings.
+            // `changes_in_window > 0` is therefore the identical signal; categorizeVisit's fallback uses it.
+            // (Removed the v4.48 tables.php pass — it fetched per-commit table lists that never changed routing.)
             if (any) applyAndRender(); // repaint with badges + fused time + category summary
         };
 
