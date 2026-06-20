@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.42
+// @version      4.43
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1315,9 +1315,22 @@
             padding: 10px 14px; border-bottom: 1px solid #e0e0e0;
             display: flex; gap: 8px; align-items: center;
         }
-        #${PANEL_ID} .controls input[type=date] {
-            flex: 1; padding: 6px 8px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px;
-        }
+        #${PANEL_ID} .controls .datewrap { flex: 1; position: relative; }
+        #${PANEL_ID} .controls .datebtn { width: 100%; padding: 6px 8px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px; background: #fff; color: #161616; font-weight: 400; text-align: left; cursor: pointer; }
+        #${PANEL_ID} .controls .datebtn:hover { border-color: #0f62fe; }
+        #${PANEL_ID} .datecal { position: absolute; top: calc(100% + 4px); left: 0; z-index: 2147483646; width: 232px; background: #fff; border: 1px solid #c6c6c6; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px; }
+        #${PANEL_ID} .datecal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        #${PANEL_ID} .datecal-title { font-weight: 600; font-size: 13px; color: #161616; }
+        #${PANEL_ID} .datecal .datecal-nav { background: none; border: none; color: #0f62fe; font-size: 18px; line-height: 1; padding: 0 8px; cursor: pointer; font-weight: 600; }
+        #${PANEL_ID} .datecal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+        #${PANEL_ID} .datecal-wd { text-align: center; font-size: 10px; color: #8d8d8d; padding: 2px 0; font-weight: 600; }
+        #${PANEL_ID} .datecal .datecal-day { border: none; background: none; padding: 5px 0; font-size: 12px; color: #161616; font-weight: 400; cursor: pointer; border-radius: 4px; }
+        #${PANEL_ID} .datecal .datecal-day:hover { background: #e8e8e8; }
+        #${PANEL_ID} .datecal .datecal-day.other { color: #c6c6c6; }
+        #${PANEL_ID} .datecal .datecal-day.today { outline: 1px solid #0f62fe; outline-offset: -1px; }
+        #${PANEL_ID} .datecal .datecal-day.sel { background: #0f62fe; color: #fff; }
+        #${PANEL_ID} .datecal-foot { margin-top: 6px; text-align: right; }
+        #${PANEL_ID} .datecal .datecal-today { background: none; border: none; color: #0f62fe; font-size: 12px; cursor: pointer; font-weight: 600; }
         #${PANEL_ID} .controls button {
             padding: 6px 10px; background: #0f62fe; color: #fff; border: none;
             border-radius: 4px; cursor: pointer; font-weight: 600;
@@ -1397,7 +1410,11 @@
                 <button data-action="close">×</button>
             </header>
             <div class="controls">
-                <input type="date" lang="en-GB" value="${todayISO()}">
+                <div class="datewrap">
+                    <input type="date" value="${todayISO()}" hidden>
+                    <button type="button" class="datebtn"></button>
+                    <div class="datecal" hidden></div>
+                </div>
                 <button data-action="search">Search</button>
                 <button data-action="resync" title="Refresh this date — re-scan just the selected date and update its cache">↻</button>
             </div>
@@ -1431,6 +1448,54 @@
         const list          = panel.querySelector('.results');
         const totalEl       = panel.querySelector('.total');
         const progress      = panel.querySelector('.progress > div');
+
+        // Custom Monday-first date picker. The native <input type=date> picker takes its first-day-of-week
+        // from the browser/OS locale, which a userscript can't change (it kept showing Sunday-first), so we
+        // drive a calendar we render ourselves. The hidden <input type=date> above is still the canonical ISO
+        // value store and still fires 'change' (→ openDefault), so the rest of the script is unchanged.
+        const dateBtn  = panel.querySelector('.datebtn');
+        const dateCal  = panel.querySelector('.datecal');
+        const datewrap = panel.querySelector('.datewrap');
+        const CAL_WD  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];   // Monday-first, English
+        const CAL_MON = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        const isoOfDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const fmtDate = iso => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; }; // dd/mm/yyyy
+        let calY, calM; // month currently shown in the popup
+        const setDate = iso => { dateInput.value = iso; dateBtn.textContent = fmtDate(iso); dateInput.dispatchEvent(new Event('change')); };
+        const closeCal = () => { dateCal.hidden = true; };
+        const renderCal = () => {
+            dateCal.textContent = '';
+            const mkBtn = (txt, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = txt; b.addEventListener('click', e => { e.stopPropagation(); fn(); }); return b; };
+            const head = document.createElement('div'); head.className = 'datecal-head';
+            head.appendChild(mkBtn('‹', 'datecal-nav', () => { if (--calM < 0) { calM = 11; calY--; } renderCal(); }));
+            const title = document.createElement('span'); title.className = 'datecal-title'; title.textContent = `${CAL_MON[calM]} ${calY}`;
+            head.appendChild(title);
+            head.appendChild(mkBtn('›', 'datecal-nav', () => { if (++calM > 11) { calM = 0; calY++; } renderCal(); }));
+            dateCal.appendChild(head);
+            const grid = document.createElement('div'); grid.className = 'datecal-grid';
+            for (const w of CAL_WD) { const c = document.createElement('div'); c.className = 'datecal-wd'; c.textContent = w; grid.appendChild(c); }
+            const first = new Date(calY, calM, 1);
+            const start = new Date(calY, calM, 1 - ((first.getDay() + 6) % 7)); // back up to the Monday on/before the 1st
+            const todayIso = todayISO(), selIso = dateInput.value;
+            for (let i = 0; i < 42; i++) {
+                const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+                const iso = isoOfDate(d);
+                const cell = mkBtn(String(d.getDate()), 'datecal-day', () => { setDate(iso); closeCal(); });
+                if (d.getMonth() !== calM) cell.classList.add('other');
+                if (iso === todayIso) cell.classList.add('today');
+                if (iso === selIso) cell.classList.add('sel');
+                grid.appendChild(cell);
+            }
+            dateCal.appendChild(grid);
+            const foot = document.createElement('div'); foot.className = 'datecal-foot';
+            foot.appendChild(mkBtn('Today', 'datecal-today', () => { setDate(todayISO()); closeCal(); }));
+            dateCal.appendChild(foot);
+        };
+        const openCal = () => { const iso = dateInput.value || todayISO(); calY = +iso.slice(0, 4); calM = +iso.slice(5, 7) - 1; renderCal(); dateCal.hidden = false; };
+        dateBtn.addEventListener('click', e => { e.stopPropagation(); dateCal.hidden ? openCal() : closeCal(); });
+        const onDocClick = e => { if (!document.contains(datewrap)) { document.removeEventListener('click', onDocClick); return; } if (!dateCal.hidden && !datewrap.contains(e.target)) closeCal(); };
+        document.addEventListener('click', onDocClick); // close on outside click; self-removes when the panel is gone
+        dateBtn.textContent = fmtDate(dateInput.value); // initial label
 
         let lastVisits = null;
         let lastIso = null;
