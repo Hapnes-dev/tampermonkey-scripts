@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.39
+// @version      4.40
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1637,7 +1637,7 @@
                 }
                 list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}</div>`;
                 const iso = dateInput.value;
-                const onProg = (done, total) => { progress.style.width = Math.round(done / total * 100) + '%'; };
+                const onProg = (done, total) => { if (seq === scanSeq) progress.style.width = Math.round(done / total * 100) + '%'; }; // a superseded scan must stop moving the bar
                 let visits, username, scanned;
                 if (mode === 'full') {
                     // A full scan already pulls every plant's complete history, so extract the user's
@@ -1703,6 +1703,10 @@
         // (instant + complete), else a quick recent-only scan.
         const openDefault = async () => {
             const seq = ++scanSeq;
+            // A date change supersedes any running scan. The superseded scan's finally is seq-guarded out and
+            // the cached path never scans, so reset the scan UI here or a stale bar / disabled buttons stick.
+            progress.style.width = '0%';
+            searchBtn.disabled = fullscanBtn.disabled = resyncBtn.disabled = false;
             const iso = dateInput.value;
             const username = effectiveUsername();
             const cached = username ? readCache(username, iso) : null;

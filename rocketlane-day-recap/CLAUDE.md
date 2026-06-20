@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.39**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.40**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -339,3 +339,8 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   ≥`CHG_COALESCE_MIN` (4) rows sharing col/from/to become one `⚙ group: 3 → 6 (N rows)` line (plant-2511 fixture
   13199608: a 44-row SM850 regroup collapses to 2 lines). Gated to "More changes" only — the priority Plant-settings
   section stays per-row so you always see which setting changed.
+- **4.40** **fixed stale scan UI after a superseded scan.** Changing the date supersedes any running scan, but the
+  superseded scan's `finally` is `seq`-guarded out and the cached path never scans — so a half-filled progress bar (and
+  disabled Search/Full-scan/↻ buttons) could stick when you switched to a cached date. `openDefault` now resets
+  `progress` to 0% and re-enables the buttons up front, and `onProg` is `seq`-guarded so a superseded in-flight scan
+  can't keep animating the bar.
