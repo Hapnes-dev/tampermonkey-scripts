@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.46
+// @version      4.47
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -349,7 +349,7 @@
         tryHarvest();
 
         // On the user's regular pang tab (not our hidden sync popup), keep watching for changes
-        // so newly added plants get into the cache without manual ↻ clicks.
+        // so newly added plants get into the cache without a manual Refresh.
         if (!isSyncTab) {
             setInterval(harvestNow, 30000);
         }
@@ -1418,12 +1418,11 @@
                     <button type="button" class="datebtn"></button>
                     <div class="datecal" hidden></div>
                 </div>
-                <button data-action="search">Search</button>
-                <button data-action="resync" title="Refresh this date — re-scan just the selected date and update its cache">↻</button>
+                <button data-action="search" title="Re-scan the selected date (your recent + previously-visited plants) and refresh its cache">Refresh</button>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <button data-action="fullscan" title="Scans ALL ~7,600 IWMAC plants so visits made via plant-admin/designer are found too. Slow (~1 min) and briefly opens pang; the result is cached per date.">🔍 Full scan</button>
-                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Search = recent + plants you've visited before (fast). Full scan = all ~7,600 plants (~1 min, cached).</span>
+                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Refresh = your recent + previously-visited plants (fast). Full scan = all ~7,600 plants (~1 min, cached).</span>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
@@ -1443,8 +1442,7 @@
         document.body.appendChild(panel);
 
         const dateInput     = panel.querySelector('input[type=date]');
-        const searchBtn     = panel.querySelector('[data-action=search]');
-        const resyncBtn     = panel.querySelector('[data-action=resync]');
+        const searchBtn     = panel.querySelector('[data-action=search]'); // labelled "Refresh" — re-scans the selected date
         const fullscanBtn   = panel.querySelector('[data-action=fullscan]');
         const workdayInput  = panel.querySelector('[data-field=workday]');
         const normalizeChk  = panel.querySelector('[data-field=normalize]');
@@ -1654,7 +1652,7 @@
         });
         const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
         // Write one or many dates to the cache. A full scan passes every date it found (browsing any
-        // of them is then instant); ↻ passes just the one date it refreshed. Keyed by username + date.
+        // of them is then instant); Refresh passes just the one date it refreshed. Keyed by username + date.
         const writeCacheDates = (username, datesObj, scanned) => {
             if (!username || !datesObj) return;
             const cache = GM_getValue(KEY_SCAN_CACHE, {});
@@ -1688,7 +1686,6 @@
             const seq = ++scanSeq; // if a newer scan / date-change starts, this run stops touching the UI
             searchBtn.disabled = true;
             fullscanBtn.disabled = true;
-            resyncBtn.disabled = true;
             totalEl.textContent = '';
             progress.style.width = '0%';
             try {
@@ -1740,7 +1737,7 @@
                     if (seq !== scanSeq) return;
                     visits = r.visits; username = r.username; scanned = r.scanned;
                     rememberUserPlants(username, visits);
-                    if (mode === 'refresh' && username) writeCacheDates(username, { [iso]: visits }, scanned); // ↻ updates only this date
+                    if (mode === 'refresh' && username) writeCacheDates(username, { [iso]: visits }, scanned); // Refresh updates only this date
                 }
                 progress.style.width = '100%';
 
@@ -1775,7 +1772,6 @@
                 if (seq === scanSeq) {
                     searchBtn.disabled = false;
                     fullscanBtn.disabled = false;
-                    resyncBtn.disabled = false;
                     setTimeout(() => { if (seq === scanSeq) progress.style.width = '0%'; }, 800);
                 }
             }
@@ -1788,7 +1784,7 @@
             // A date change supersedes any running scan. The superseded scan's finally is seq-guarded out and
             // the cached path never scans, so reset the scan UI here or a stale bar / disabled buttons stick.
             progress.style.width = '0%';
-            searchBtn.disabled = fullscanBtn.disabled = resyncBtn.disabled = false;
+            searchBtn.disabled = fullscanBtn.disabled = false;
             const iso = dateInput.value;
             const username = effectiveUsername();
             const cached = username ? readCache(username, iso) : null;
@@ -1827,9 +1823,8 @@
             list.querySelector('[data-action=fullscan-cancel]').addEventListener('click', () => openDefault());
         };
 
-        searchBtn.addEventListener('click', () => doScan('quick'));
+        searchBtn.addEventListener('click', () => doScan('refresh')); // "Refresh": re-scan the selected date (recent + footprint) and update its cache
         fullscanBtn.addEventListener('click', fullScanWithWarning);
-        resyncBtn.addEventListener('click', () => doScan('refresh')); // re-scan just the selected date (your plants) and update its cache
         dateInput.addEventListener('change', openDefault);
         panel.querySelector('[data-action=close]').addEventListener('click', () => panel.remove());
         openDefault();

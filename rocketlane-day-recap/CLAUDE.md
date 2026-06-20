@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.46**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.47**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -196,14 +196,13 @@ config session gets a fair share of the workday instead of rounding to ~0%.
 
 ## 7. Scope, scanning & caching
 
-- **Search** (fast, default) = your recent pang plants ∪ your **footprint** (`user_plants` GM key: every
-  plant you've ever been matched on — grows automatically each scan). Covers your real working set
-  without a full scan, including plant-admin/designer plants once seen.
+- **Fast scope** = your recent pang plants ∪ your **footprint** (`user_plants` GM key: every plant you've
+  ever been matched on — grows automatically each scan). Used by the default auto-load on date change
+  (`doScan('quick')`, when the date isn't cached) and by the **Refresh** button (`doScan('refresh')`, which
+  also writes the date's cache). Covers your real working set without a full scan, plant-admin/designer too.
 - **Full scan** = all ~7600 plants (after a one-time confirm, ~1 min). Because `get_history` returns each
   plant's *entire* history, ONE full scan **caches every date you worked** (`full_scan_cache`, capped
   `MAX_CACHED_DATES` = 400 dates/user) — browsing any other date that month is then instant.
-- **↻** re-scans just the selected date (footprint + recent) and updates that date's cache. Handy for
-  *today* as more activity is logged.
 - Scans **batch** `get_history` (`HISTORY_BATCH_MAX` = 30 plants/request, `SCAN_PARALLEL` = 20 concurrent).
   Server load = same as single calls (processed sequentially) but far fewer round-trips. The hard limit
   on big scans is **total data volume**, not round-trips — so keeping the everyday scope small (footprint)
@@ -371,3 +370,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   min-width: 0;` on `.datecal-day` and `.datecal-nav`. Verified on the real page: cells back to 30px, all 7 columns
   inside the popup. (NB: the clip was *internal grid overflow*, independent of the 4.45 panel-overflow/position:fixed
   work — that's still needed for the vertical clip when the panel is short.)
+- **4.47** consolidated the scan buttons: the **Search** button became **Refresh** (`doScan('refresh')` — re-scan the
+  selected date over the fast scope **and** update its cache), and the separate **↻** button was removed (it did the
+  same thing). Date-change still auto-loads via `doScan('quick')`; only the button label/action and the removal changed.
+  Dropped `resyncBtn` and its disable/enable/listener references.
