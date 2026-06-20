@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.47**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.48**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -374,3 +374,20 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   selected date over the fast scope **and** update its cache), and the separate **↻** button was removed (it did the
   same thing). Date-change still auto-loads via `doScan('quick')`; only the button label/action and the removal changed.
   Dropped `resyncBtn` and its disable/enable/listener references.
+- **4.48** added the 📋 **Day by category** timesheet roll-up (`.catsum` panel above `.results`). New module before
+  `renderVisits`: `categorizeVisit(v)` splits one visit's shown minutes across Thomas's Rocketlane categories
+  (`CAT_INTEGRATION`/`CAT_DRAWING`/`CAT_SETUP_PC`/`CAT_SUPPORT`), `dayCategoryTotals(visits)` rolls them up, and
+  `renderCategorySummary(catsumEl, visits)` draws bars + a clipboard **⧉ Copy**. Wired into `applyAndRender` (re-runs on
+  normalize/workday toggle). **Split model** (validated against the 2026-06-19 commissioning day — reproduces the by-hand
+  split: Integration 4.40 h, Drawing 1.47 h, Setup 0.90 h, Support 0.38 h, total 7.15 h): Designer & AK3 log few clicks
+  but cost real time, so each is credited a nominal chunk (`CAT_DESIGNER_MIN_EACH=8`, `CAT_AK3_MIN_EACH=18`) carved off
+  `M`; the remainder → Integration when there's config evidence (a non-graphic commit, `pma_local`, or `sys_tools`),
+  → Drawing if graphic-only, → Setup if AK3-only, else a `≤CAT_CHECK_MAX_CLICKS`-click access-only visit → Support.
+  Key insight: a device-add commits the graphic table **and** the device tables, so commit content can't isolate Drawing
+  (on 06-19 *all* triggered commits classified as integration) — **Drawing comes from the Designer actions**. To capture
+  action multiplicity, `loadUserHistoryAllDates` now records `action_counts` per visit (also cached via `cacheVisit`;
+  old caches without it fall back to presence=1). `ensureChangesEnriched` now also runs one `tables.php` pass over the
+  day's triggered commits → `chgCommitClass(tables)` → `v.commit_classes {integration,design,settings,other}`, so a
+  genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
+  aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
+  log prefix).

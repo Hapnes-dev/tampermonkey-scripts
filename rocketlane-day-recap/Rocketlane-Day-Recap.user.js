@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.47
-// @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
+// @version      4.48
+// @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js
@@ -36,7 +36,7 @@
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
-    const SCRIPT_VERSION   = '4.25';
+    const SCRIPT_VERSION   = '4.48';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -681,6 +681,17 @@
         s = s.replace(/da3_/g, '').replace(/_/g, ' ').trim();
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : String(name);
     }
+    // Classify a commit by the tables it touched (names only — no diff fetch) for the category summary.
+    // Adding a device commits BOTH device/driver tables AND iw_sys_graphic_designer, so a commit only
+    // counts as Drawing evidence when it touched the graphic table and NOTHING else of substance.
+    function chgCommitClass(tables) {
+        const real = (tables || []).filter(t => !CHG_NOISE_RE.test(t));
+        if (!real.length) return 'other';
+        if (real.some(t => !/graphic_designer/i.test(t) && !/^iw_sys_plant_settings$/.test(t))) return 'integration';
+        if (real.some(t => /graphic_designer/i.test(t))) return 'design';
+        if (real.some(t => /^iw_sys_plant_settings$/.test(t))) return 'settings';
+        return 'other';
+    }
     function chgColLabel(c) { return CHG_COL_LABELS[c] || String(c).replace(/_/g, ' '); }
     function chgClip(s) { s = String(s == null ? '' : s); return s.length > CHANGE_VAL_CLIP ? s.slice(0, CHANGE_VAL_CLIP) + '…' : s; }
     function chgIsParamTable(t) { return /^iw_sys_plant_settings$|_param$|^iw_set_|_settings$/.test(t); }
@@ -1179,8 +1190,8 @@
                     if (iso === selectedIso && nu && !usersOnSelected.has(nu)) usersOnSelected.set(nu, e.user);
                     if (nu !== username) continue;
                     let pm = byDate.get(iso); if (!pm) { pm = new Map(); byDate.set(iso, pm); }
-                    let rec = pm.get(pid); if (!rec) { rec = { actions: new Set(), ts: [] }; pm.set(pid, rec); }
-                    rec.actions.add(e.action); rec.ts.push(tsFromPangDate(e.date));
+                    let rec = pm.get(pid); if (!rec) { rec = { actions: new Set(), counts: {}, ts: [] }; pm.set(pid, rec); }
+                    rec.actions.add(e.action); rec.counts[e.action] = (rec.counts[e.action] || 0) + 1; rec.ts.push(tsFromPangDate(e.date));
                 }
             }
             donePlants += batch.length;
@@ -1193,7 +1204,7 @@
             for (const [pid, rec] of pm) {
                 const ts = rec.ts.sort((a, b) => a - b);
                 for (const t of ts) events.push({ plant_id: pid, ts: t });
-                visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], count: ts.length });
+                visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], action_counts: rec.counts, count: ts.length });
             }
             const mins = attributeTime(events);
             for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; }
@@ -1384,6 +1395,20 @@
         }
         #${PANEL_ID} .progress { height: 3px; background: #e0e0e0; }
         #${PANEL_ID} .progress > div { height: 100%; background: #0f62fe; transition: width .15s; }
+        #${PANEL_ID} .catsum:empty { display: none; }
+        #${PANEL_ID} .catsum { padding: 8px 14px 10px; background: #f9fbff; border-bottom: 1px solid #e8eef9; }
+        #${PANEL_ID} .catsum-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        #${PANEL_ID} .catsum-title { font-size: 12px; font-weight: 600; color: #21272a; }
+        #${PANEL_ID} .catsum-q { color: #a8a8a8; cursor: help; font-weight: 400; }
+        #${PANEL_ID} .catsum-copy { font-size: 11px; padding: 2px 8px; border: 1px solid #c6c6c6; border-radius: 5px; background: #fff; color: #0f62fe; cursor: pointer; }
+        #${PANEL_ID} .catsum-copy:hover { border-color: #0f62fe; }
+        #${PANEL_ID} .catsum-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; color: #21272a; }
+        #${PANEL_ID} .catsum-name { display: inline-flex; align-items: center; gap: 6px; width: 160px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #${PANEL_ID} .catsum-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+        #${PANEL_ID} .catsum-bar { flex: 1; height: 7px; background: #eaeef5; border-radius: 4px; overflow: hidden; }
+        #${PANEL_ID} .catsum-bar > span { display: block; height: 100%; border-radius: 4px; }
+        #${PANEL_ID} .catsum-h { width: 46px; flex: none; text-align: right; font-weight: 600; color: #161616; }
+        #${PANEL_ID} .catsum-foot { margin-top: 6px; font-size: 11px; color: #8d8d8d; }
         #${PANEL_ID} .warn { padding: 14px; font-size: 12px; color: #161616; }
         #${PANEL_ID} .warn strong { font-size: 13px; }
         #${PANEL_ID} .warn p { margin: 8px 0; color: #525252; }
@@ -1436,6 +1461,7 @@
                 </label>
             </div>
             <div class="progress"><div style="width:0%"></div></div>
+            <div class="catsum"></div>
             <div class="results"></div>
             <div class="total"></div>
         `;
@@ -1447,6 +1473,7 @@
         const workdayInput  = panel.querySelector('[data-field=workday]');
         const normalizeChk  = panel.querySelector('[data-field=normalize]');
         const list          = panel.querySelector('.results');
+        const catsumEl      = panel.querySelector('.catsum');
         const totalEl       = panel.querySelector('.total');
         const progress      = panel.querySelector('.progress > div');
 
@@ -1530,6 +1557,7 @@
             for (const v of lastVisits) v.normalized_minutes = null;
             if (targetMin > 0) normalizeMinutes(lastVisits, targetMin, ROUND_TO_MIN);
             renderVisits(list, lastVisits, lastIso, lastScanned);
+            renderCategorySummary(catsumEl, lastVisits);
             const stillMissing = lastVisits.filter(v => !v.name).length;
             const displayTotal = targetMin > 0
                 ? lastVisits.reduce((s, v) => s + (v.normalized_minutes || 0), 0)
@@ -1596,7 +1624,27 @@
                 v.commit_added_minutes = v.estimated_minutes - base;      // for the tooltip / verification dump
                 if (triggered.length || v.commit_added_minutes) any = true;
             }
-            if (any) applyAndRender(); // repaint with badges + fused time
+            // Classify each triggered commit (one tables.php pass for all of them) so the category summary can
+            // separate device/driver Integration from pure-graphic Drawing. Best-effort: on failure the summary
+            // falls back to treating any triggered commit as Integration evidence.
+            const allCids = [];
+            for (const v of visits) for (const c of (v.window_commits || [])) allCids.push(String(c.id));
+            if (allCids.length) {
+                const patches = {};
+                for (let i = 0; i < allCids.length; i += HISTORY_BATCH_MAX) {
+                    Object.assign(patches, await gmFetchTablesPatchBatch(allCids.slice(i, i + HISTORY_BATCH_MAX)));
+                }
+                if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
+                for (const v of visits) {
+                    const cc = { integration: 0, design: 0, settings: 0, other: 0 };
+                    for (const c of (v.window_commits || [])) {
+                        cc[chgCommitClass(Object.keys(patches[String(c.id)] || {}))]++;
+                    }
+                    v.commit_classes = cc;
+                }
+                any = true;
+            }
+            if (any) applyAndRender(); // repaint with badges + fused time + category summary
         };
 
         workdayInput.addEventListener('change', () => {
@@ -1647,7 +1695,7 @@
         // the cache time and a Full scan always re-runs and overwrites it.
         const cacheVisit = (v) => ({
             plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
-            actions: v.actions, count: v.count, estimated_minutes: v.estimated_minutes,
+            actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.estimated_minutes,
             base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
         });
         const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
@@ -1879,6 +1927,119 @@
         return chips.map(c =>
             `<span class="act act-${c.cat}" title="${escapeHtml(c.code)}"><span class="dot"></span>${escapeHtml(c.label)}</span>`
         ).join('');
+    }
+
+    // ===== Day-by-category summary ("timesheet roll-up") ===============================
+    // Map each plant visit's estimated minutes onto Thomas's Rocketlane time categories. pang only sees
+    // hands-on plant work, so ONLY plant-work categories are inferred — meetings, admin, planning,
+    // documentation and training never touch pang and are deliberately left out (add those yourself).
+    //
+    // Designer and AK3-scanner setup log very FEW pang clicks but take real time, so the click-based
+    // estimate under-counts them. The split fixes that: it carves a NOMINAL chunk for each Designer
+    // (CAT_DESIGNER_MIN_EACH) and AK3 (CAT_AK3_MIN_EACH) action off the visit's minutes, then routes the
+    // remainder to Integration when there's real config evidence (a non-graphic commit, phpMyAdmin, or
+    // system-tools), to Drawing if the visit was graphic-only, to Setup if AK3-only, else to a quick
+    // Support check. Validated against a known multi-site commissioning day (reproduces a by-hand split
+    // within a few %). Category labels match Thomas's Rocketlane task list verbatim for 1:1 entry.
+    const CAT_INTEGRATION = 'Project - Integration';
+    const CAT_DRAWING     = 'Project - Drawing & Design';
+    const CAT_SETUP_PC    = 'Setup - PC / Gateway';
+    const CAT_SUPPORT     = 'Support - External';
+    const CAT_ORDER = [CAT_INTEGRATION, CAT_DRAWING, CAT_SETUP_PC, CAT_SUPPORT];
+    const CAT_COLOR = { [CAT_INTEGRATION]: '#0f62fe', [CAT_DRAWING]: '#8a3ffc', [CAT_SETUP_PC]: '#007d79', [CAT_SUPPORT]: '#ff832b' };
+    const CAT_AK3_MIN_EACH      = 18; // minutes credited to Setup per ak3_setup action (click-light, time-heavy)
+    const CAT_DESIGNER_MIN_EACH = 8;  // minutes credited to Drawing per Designer action
+    const CAT_CHECK_MAX_CLICKS  = 2;  // ≤ this many clicks and no commit ⇒ a quick access check (Support), not config work
+    const CAT_DESIGNER_ACTIONS  = new Set(['designer4', 'designer3', 'designer']);
+    const CAT_AK3_ACTIONS       = new Set(['ak3_setup']);
+
+    // Split ONE visit's estimated (or distributed) minutes across categories → { category: minutes }.
+    function categorizeVisit(v) {
+        const M = (v.normalized_minutes != null ? v.normalized_minutes : v.estimated_minutes) || 0;
+        if (M <= 0) return {};
+        const counts = v.action_counts || (v.actions || []).reduce((o, a) => (o[a] = (o[a] || 0) + 1, o), {});
+        let designerN = 0, ak3N = 0;
+        for (const a in counts) { if (CAT_DESIGNER_ACTIONS.has(a)) designerN += counts[a]; if (CAT_AK3_ACTIONS.has(a)) ak3N += counts[a]; }
+        const pmaN = counts.pma_local || 0, sysN = counts.sys_tools || 0;
+        const clicks = v.count || Object.values(counts).reduce((s, n) => s + n, 0);
+        // Commit evidence: prefer the classified counts (Integration vs graphic-only); if unclassified, fall
+        // back to "any triggered commit ⇒ Integration evidence".
+        const cc = v.commit_classes;
+        const integCommits  = cc ? cc.integration : (v.changes_in_window || 0);
+        const designCommits = cc ? cc.design : 0;
+        const hasInteg   = integCommits > 0 || pmaN > 0 || sysN > 0;
+        const hasDrawing = designerN > 0 || designCommits > 0;
+        const hasSetup   = ak3N > 0;
+        if (!hasInteg && !hasDrawing && !hasSetup) {
+            // Access-only session (Direct/VNC, no config touched): a quick check if short, else Integration.
+            const quick = clicks <= CAT_CHECK_MAX_CLICKS && !(v.changes_in_window > 0);
+            return { [quick ? CAT_SUPPORT : CAT_INTEGRATION]: M };
+        }
+        const res = {};
+        let rem = M;
+        if (hasSetup) { const s = (!hasInteg && !hasDrawing) ? rem : Math.min(rem, CAT_AK3_MIN_EACH * ak3N); res[CAT_SETUP_PC] = s; rem -= s; }
+        if (hasDrawing) { const d = hasInteg ? Math.min(rem, CAT_DESIGNER_MIN_EACH * Math.max(1, designerN)) : rem; res[CAT_DRAWING] = (res[CAT_DRAWING] || 0) + d; rem -= d; }
+        if (rem > 0) {
+            const bucket = hasInteg ? CAT_INTEGRATION : hasDrawing ? CAT_DRAWING : CAT_SETUP_PC;
+            res[bucket] = (res[bucket] || 0) + rem;
+        }
+        return res;
+    }
+
+    // Roll every visit up into category totals → { rows:[{category, minutes, plants[]}], grand }.
+    function dayCategoryTotals(visits) {
+        const totals = {}, plantsBy = {};
+        for (const v of visits) {
+            const split = categorizeVisit(v);
+            for (const cat in split) {
+                totals[cat] = (totals[cat] || 0) + split[cat];
+                (plantsBy[cat] = plantsBy[cat] || new Set()).add(v.name || v.plant_id);
+            }
+        }
+        const rows = [];
+        for (const c of CAT_ORDER) if (totals[c]) rows.push({ category: c, minutes: Math.round(totals[c]), plants: [...plantsBy[c]] });
+        for (const c in totals) if (!CAT_ORDER.includes(c)) rows.push({ category: c, minutes: Math.round(totals[c]), plants: [...plantsBy[c]] });
+        return { rows, grand: rows.reduce((s, r) => s + r.minutes, 0) };
+    }
+
+    const catHours = m => (m / 60).toFixed(1).replace(/\.0$/, '');
+
+    // Render the category roll-up into its container (called from applyAndRender; refines once commit
+    // classes arrive). Includes a Copy button that yields paste-ready "Category: H h" lines for Rocketlane.
+    function renderCategorySummary(container, visits) {
+        container.innerHTML = '';
+        if (!visits || !visits.length) return;
+        const { rows, grand } = dayCategoryTotals(visits);
+        if (!rows.length || !grand) return;
+        const head = document.createElement('div');
+        head.className = 'catsum-head';
+        head.innerHTML =
+            `<span class="catsum-title">📋 Day by category <span class="catsum-q" title="Estimated timesheet split of your plant work. Designer &amp; AK3 setup are credited fixed time (they log few clicks); the rest goes to Integration when real config changed, else a quick Support check. Plant work only — meetings, admin, documentation and training aren't in pang, so add those yourself.">ⓘ</span></span>` +
+            `<button type="button" class="catsum-copy" title="Copy this breakdown to paste into your timesheet">⧉ Copy</button>`;
+        container.appendChild(head);
+        for (const r of rows) {
+            const pct = grand ? Math.round((r.minutes / grand) * 100) : 0;
+            const color = CAT_COLOR[r.category] || '#8d8d8d';
+            const row = document.createElement('div');
+            row.className = 'catsum-row';
+            row.title = `${r.plants.length} plant${r.plants.length === 1 ? '' : 's'}: ${r.plants.join(', ')}`;
+            row.innerHTML =
+                `<span class="catsum-name"><span class="catsum-dot" style="background:${color}"></span>${escapeHtml(r.category)}</span>` +
+                `<span class="catsum-bar"><span style="width:${pct}%;background:${color}"></span></span>` +
+                `<span class="catsum-h">${catHours(r.minutes)} h</span>`;
+            container.appendChild(row);
+        }
+        const foot = document.createElement('div');
+        foot.className = 'catsum-foot';
+        foot.textContent = `≈ ${catHours(grand)} h of plant work · estimate, adjust as needed`;
+        container.appendChild(foot);
+        head.querySelector('.catsum-copy').addEventListener('click', (e) => {
+            const btn = e.currentTarget;
+            const text = rows.map(r => `${r.category}: ${catHours(r.minutes)} h`).join('\n') + `\nTotal: ${catHours(grand)} h (plant work)`;
+            Promise.resolve(navigator.clipboard && navigator.clipboard.writeText(text))
+                .then(() => { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '⧉ Copy'; }, 1500); })
+                .catch(() => { btn.textContent = 'Copy failed'; });
+        });
     }
 
     function renderVisits(list, visits, isoDate, scanned) {
