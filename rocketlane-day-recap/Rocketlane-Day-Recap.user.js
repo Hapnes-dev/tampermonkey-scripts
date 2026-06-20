@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.44
+// @version      4.45
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1318,7 +1318,7 @@
         #${PANEL_ID} .controls .datewrap { flex: 1; position: relative; }
         #${PANEL_ID} .controls .datebtn { width: 100%; padding: 7px 10px; border: 1px solid #c6c6c6; border-radius: 6px; font-size: 13px; background: #fff; color: #161616; font-weight: 500; text-align: left; cursor: pointer; }
         #${PANEL_ID} .controls .datebtn:hover { border-color: #0f62fe; }
-        #${PANEL_ID} .datecal { position: absolute; top: calc(100% + 6px); left: 0; z-index: 2147483646; width: 250px; box-sizing: border-box; background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.16); padding: 10px 12px 12px; }
+        #${PANEL_ID} .datecal { position: fixed; z-index: 2147483646; width: 250px; box-sizing: border-box; background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.16); padding: 10px 12px 12px; }
         #${PANEL_ID} .datecal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         #${PANEL_ID} .datecal-title { font-weight: 600; font-size: 14px; color: #161616; }
         #${PANEL_ID} .datecal .datecal-nav { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: none; border: none; border-radius: 50%; color: #0f62fe; font-size: 18px; line-height: 1; cursor: pointer; }
@@ -1494,7 +1494,21 @@
             foot.appendChild(mkBtn('Today', 'datecal-today', () => { setDate(todayISO()); closeCal(); }));
             dateCal.appendChild(foot);
         };
-        const openCal = () => { const iso = dateInput.value || todayISO(); calY = +iso.slice(0, 4); calM = +iso.slice(5, 7) - 1; renderCal(); dateCal.hidden = false; };
+        const openCal = () => {
+            const iso = dateInput.value || todayISO();
+            calY = +iso.slice(0, 4); calM = +iso.slice(5, 7) - 1;
+            renderCal();
+            dateCal.hidden = false;
+            // Fixed popover anchored to the button — escapes the panel's overflow:hidden (which was clipping
+            // the calendar). Clamp horizontally and flip above if it would overflow the viewport bottom.
+            const r = dateBtn.getBoundingClientRect();
+            const cw = dateCal.offsetWidth, ch = dateCal.offsetHeight;
+            const left = Math.max(8, Math.min(r.left, window.innerWidth - cw - 8));
+            let top = r.bottom + 6;
+            if (top + ch > window.innerHeight - 8) top = Math.max(8, r.top - ch - 6);
+            dateCal.style.left = left + 'px';
+            dateCal.style.top = top + 'px';
+        };
         dateBtn.addEventListener('click', e => { e.stopPropagation(); dateCal.hidden ? openCal() : closeCal(); });
         const onDocClick = e => { if (!document.contains(datewrap)) { document.removeEventListener('click', onDocClick); return; } if (!dateCal.hidden && !datewrap.contains(e.target)) closeCal(); };
         document.addEventListener('click', onDocClick); // close on outside click; self-removes when the panel is gone

@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.44**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.45**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -360,3 +360,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   blue bold text, selected = filled blue circle (white), uppercase muted weekday header, circular nav buttons with hover,
   softer frame (10px radius, lighter border + shadow), footer divider. Selected-today resolves to white-on-blue (source
   order `other` → `today` → `sel`, so `sel` wins the colour — no blue-on-blue).
+- **4.45** fixed the calendar being **clipped** by the panel's `overflow: hidden` (the panel is anchored `bottom: 70px`,
+  so when it's short the popup extended past the panel box and got cut). `.datecal` is now `position: fixed`, positioned
+  in `openCal` from `dateBtn.getBoundingClientRect()` — it escapes the panel's clip, is **clamped** horizontally to the
+  viewport, and **flips above** the field if opening downward would overflow the bottom. Always fully on screen.
