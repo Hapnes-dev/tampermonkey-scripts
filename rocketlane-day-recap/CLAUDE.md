@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.38**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.39**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -92,10 +92,13 @@ active window, stashed by `ensureChangesEnriched`):
      backed by a freshly-added **unit** is named by that unit and pushed here too (it *is* a plant_units add).
    - **`graphic`** (2nd) — `iw_sys_graphic_designer` → `chgPushGraphic`: a real line
      `Graphic <panel>: rev a → b · layout / background image edited` (the xml/json/png blobs are never shown as text).
-   - **`sett`** (3rd) — `iw_sys_plant_settings` only → `chgPushParams` (`⚙ <rowLabel> <col>: <from> → <to>`, `rowLabel`
-     prefers a name column `name/setting/par_name/key/tag/alias_text` + composite-PK rest in parens, e.g. `packet_interval (AK3)`).
-     It changes on almost every commit, so it gets its **own collapsible "Plant settings (N)" section**.
-   - **`oth`** (4th) — "More changes": pure-driver devices, `iw_set_*`/`*_param` tables, virtual values, etc.
+   - **`sett`** (3rd) — `iw_sys_plant_settings` only → `chgPushParams` per-row: `⚙ <rowLabel>: <from> → <to>` (`rowLabel`
+     prefers a name column `name/setting/par_name/key/tag/alias_text` + composite-PK rest in parens, e.g. `packet_interval (AK3)`;
+     the redundant `value` column word is dropped). **Always per-row (no coalescing)** so you see exactly which setting changed.
+     Own collapsible "Plant settings (N)" section (it changes on almost every commit).
+   - **`oth`** (4th) — "More changes": pure-driver devices, `iw_set_*`/`*_param` tables, virtual values, etc. Param tables here
+     pass `coalesce=true`: ≥`CHG_COALESCE_MIN` (4) rows with the SAME col/from/to (a regroup) collapse to one
+     `⚙ group: 3 → 6 (N rows)` line instead of dozens of near-identical ones.
    - **No section is truncated in the model.** Long sections are revealed in the drawer `CHG_CHUNK` (10) lines at a time via a
      **clickable** `+N more changes` line (`renderChunked`) — each click appends the next chunk and updates the count, so nothing
      is dumped at once and nothing is lost. (Unit add/remove still pre-coalesce to a count + nested "show all" via `more`.)
@@ -239,7 +242,7 @@ config session gets a fair share of the workday instead of rounding to ~0%.
 `normalizeMinutes` (time split) · `isScheduledCommit` (scheduled vs change-triggered) · `ensureChangesEnriched`
 (🔧 badge counts from change-triggered `window_commits` + commit→time fusion → `estimated_minutes`/`commit_added_minutes`) ·
 `loadChangeDetail` + `chgDecodeSide` / `chgDiff` / `chgRowLabel` / `chgClassify` / `chgDeviceToken` /
-`chgUnitLabel` / `chgPushUnits` (adds `more` for "show all") / `chgPushParams` (takes a `cap`) / `chgPushGraphic` /
+`chgUnitLabel` / `chgPushUnits` (adds `more` for "show all") / `chgPushParams` (`coalesce` flag; drops the redundant `value` word) / `chgPushGraphic` /
 `chgPushOrdinary` / `chgBlobToken` / `chgBuildCommit` (returns `{units, graphic, settings, oth, othOverflow, foot, footOverflow}`) /
 `renderChangeDetail` (+ `renderCollapse` helper) (the "what changed" drawer) · `ACTION_META` / `actionChips` (chips) · `renderVisits` (the per-plant rows +
 badge/drawer wiring) · `escapeHtml` (encodes `& < > " '`) · `tsFromPangDate` / `tsToLocalTime`.
@@ -331,3 +334,8 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   their first chunk ("+45 more changes" again). Now the open flag + per-section `{expanded, revealed}` persist on
   the visit; `renderChangeDetail` takes a `ui` arg and restores them, and `renderVisits` re-opens the drawer after
   a rebuild — so it comes back exactly where you left it.
+- **4.39** **readability pass on change lines.** Drop the redundant `value` column word in settings/param lines
+  (`packet_interval (AK3): 400 → 4000`), and coalesce bulk-identical changes in "More changes" param tables —
+  ≥`CHG_COALESCE_MIN` (4) rows sharing col/from/to become one `⚙ group: 3 → 6 (N rows)` line (plant-2511 fixture
+  13199608: a 44-row SM850 regroup collapses to 2 lines). Gated to "More changes" only — the priority Plant-settings
+  section stays per-row so you always see which setting changed.

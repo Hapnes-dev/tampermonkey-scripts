@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.38
+// @version      4.39
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -607,6 +607,7 @@
     // its own collapsible "Plant settings" section (it changes on almost every commit); the rest → "More changes".
     const CHG_PRIORITY = new Set(['iw_sys_plant_settings', 'iw_sys_plant_units', 'iw_sys_graphic_designer']);
     const CHG_UNIT_LIST_CAP = 6;   // list ≤N unit add/removes/edits inline; beyond that → a count + a "show all" expander (guards full-rebuild snapshots, e.g. units 104→2)
+    const CHG_COALESCE_MIN  = 4;   // ≥N param rows with the SAME col/from/to (e.g. a regroup) collapse to one "⚙ <col>: a → b (N rows)" line
     const CHG_SEP = String.fromCharCode(1); // row-key delimiter — won't appear in config values
     const CHG_TABLE_FRIENDLY = {
         iw_sys_plant_settings: 'Plant settings', iw_sys_graphic_designer: 'Graphic panel',
@@ -790,10 +791,24 @@
         if (byUnit.size > CHG_UNIT_LIST_CAP) { push(`⚙ ${byUnit.size} units changed`, 'mod', [...byUnit.values()].map(unitLine)); return; }
         for (const u of byUnit.values()) push(unitLine(u), 'mod');
     }
-    // Settings / parameter tables → "⚙ <row> <col>: a → b" lines, with added/removed rows. No cap here —
-    // the drawer reveals long sections in chunks (renderChunked), so every changed line stays reachable.
-    function chgPushParams(push, d) {
-        for (const m of d.modified) push(`⚙ ${chgRowLabel(m)} ${chgColLabel(m.col)}: ${chgClip(m.from)} → ${chgClip(m.to)}`, 'mod');
+    // Settings / parameter tables → "⚙ <row> <col>: a → b" lines. Two readability touches: drop the
+    // redundant "value" word (a setting's value is what's changing anyway → "packet_interval (AK3): 400 → 4000"),
+    // and coalesce a bulk identical change — e.g. a regroup that bumps `grp` 3→6 on many rows — into ONE
+    // "⚙ group: 3 → 6 (N rows)" line instead of N near-identical lines. Distinct changes (the usual settings
+    // case) stay per-row. No cap — the drawer reveals long sections in chunks (renderChunked).
+    function chgPushParams(push, d, coalesce) {
+        const rowLine = m => { const col = (m.col === 'value' || m.col === 'val') ? '' : ' ' + chgColLabel(m.col); return `⚙ ${chgRowLabel(m)}${col}: ${chgClip(m.from)} → ${chgClip(m.to)}`; };
+        if (coalesce) {
+            // Group by (col, from, to) so a bulk identical change (e.g. a regroup bumping `grp` 3→6 on dozens
+            // of rows) collapses to one "⚙ group: 3 → 6 (N rows)" line. Only for "More changes" tables — the
+            // priority Plant-settings section is always per-row so you can see exactly which setting changed.
+            const groups = new Map();
+            for (const m of d.modified) { const k = m.col + CHG_SEP + m.from + CHG_SEP + m.to; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
+            for (const arr of groups.values()) {
+                if (arr.length >= CHG_COALESCE_MIN) { const m0 = arr[0]; push(`⚙ ${chgColLabel(m0.col)}: ${chgClip(m0.from)} → ${chgClip(m0.to)} (${arr.length} rows)`, 'mod'); }
+                else for (const m of arr) push(rowLine(m), 'mod');
+            }
+        } else for (const m of d.modified) push(rowLine(m), 'mod');
         for (const a of d.added) push('+ ' + chgRowLabel(a), 'add');
         for (const r of d.removed) push('- ' + chgRowLabel(r), 'del');
     }
@@ -886,7 +901,7 @@
             if (table === 'iw_sys_graphic_designer') { chgPushGraphic(gPush, d); continue; }      // (2) graphic group — second
             if (table === 'iw_sys_plant_settings') { chgPushParams(sPush, d); continue; } // (3) own collapsible "Plant settings" section
             if (CHG_BLOB_TABLE_RE.test(table)) { foot.push(chgBlobToken(table, d)); continue; } // any other blob table → footnote
-            if (chgIsParamTable(table)) { chgPushParams(oPush, d); continue; }
+            if (chgIsParamTable(table)) { chgPushParams(oPush, d, true); continue; } // coalesce bulk-identical changes in "More changes"
             chgPushOrdinary(oPush, table, d);
         }
         if (droppedTables > 0) foot.push(`${droppedTables} more table${droppedTables === 1 ? '' : 's'} not detailed`);
