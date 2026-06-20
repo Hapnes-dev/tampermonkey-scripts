@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.45**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.46**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -364,3 +364,10 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   so when it's short the popup extended past the panel box and got cut). `.datecal` is now `position: fixed`, positioned
   in `openCal` from `dateBtn.getBoundingClientRect()` — it escapes the panel's clip, is **clamped** horizontally to the
   viewport, and **flips above** the field if opening downward would overflow the bottom. Always fully on screen.
+- **4.46** **the real "Sunday cut off" cause** (diagnosed live on kiona.rocketlane.com): the calendar lives inside
+  `.controls`, so its day-cell `<button>`s inherited `padding: 6px 10px` from the panel's `#PANEL .controls button`
+  rule (1,2,0 `.datecal-day` overrode colour/border but not padding). That inflated cells 30→35px, so 7 columns
+  (≈245px) overflowed the 250px popup and the Sunday column spilled off the right and was clipped. Fix: `padding: 0;
+  min-width: 0;` on `.datecal-day` and `.datecal-nav`. Verified on the real page: cells back to 30px, all 7 columns
+  inside the popup. (NB: the clip was *internal grid overflow*, independent of the 4.45 panel-overflow/position:fixed
+  work — that's still needed for the vertical clip when the panel is short.)

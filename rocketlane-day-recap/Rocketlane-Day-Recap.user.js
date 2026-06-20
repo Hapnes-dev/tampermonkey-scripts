@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.45
+// @version      4.46
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1321,11 +1321,11 @@
         #${PANEL_ID} .datecal { position: fixed; z-index: 2147483646; width: 250px; box-sizing: border-box; background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.16); padding: 10px 12px 12px; }
         #${PANEL_ID} .datecal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         #${PANEL_ID} .datecal-title { font-weight: 600; font-size: 14px; color: #161616; }
-        #${PANEL_ID} .datecal .datecal-nav { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: none; border: none; border-radius: 50%; color: #0f62fe; font-size: 18px; line-height: 1; cursor: pointer; }
+        #${PANEL_ID} .datecal .datecal-nav { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; padding: 0; min-width: 0; background: none; border: none; border-radius: 50%; color: #0f62fe; font-size: 18px; line-height: 1; cursor: pointer; }
         #${PANEL_ID} .datecal .datecal-nav:hover { background: #edf2ff; }
         #${PANEL_ID} .datecal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
         #${PANEL_ID} .datecal-wd { text-align: center; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #a8a8a8; padding-bottom: 4px; }
-        #${PANEL_ID} .datecal .datecal-day { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border: none; background: none; font-size: 12.5px; color: #21272a; font-weight: 500; cursor: pointer; border-radius: 50%; transition: background .12s, color .12s; }
+        #${PANEL_ID} .datecal .datecal-day { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; padding: 0; min-width: 0; border: none; background: none; font-size: 12.5px; color: #21272a; font-weight: 500; cursor: pointer; border-radius: 50%; transition: background .12s, color .12s; }
         #${PANEL_ID} .datecal .datecal-day:hover { background: #edf2ff; }
         #${PANEL_ID} .datecal .datecal-day.other { color: #c1c7cd; font-weight: 400; }
         #${PANEL_ID} .datecal .datecal-day.today { color: #0f62fe; font-weight: 700; }
