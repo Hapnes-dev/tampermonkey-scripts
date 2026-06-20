@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.48**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.49**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -391,3 +391,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.49** shows the category split **per plant** too: each plant row now renders a `.catrow` of `categoryChips(v)`
+  (same `categorizeVisit(v)` that feeds the day roll-up) — small colour-dot chips like `Integration 53m · Drawing 24m ·
+  Setup 18m` under the action chips, ordered by `CAT_ORDER`, using `CAT_SHORT` labels and `fmtMinutes`. Refines with the
+  rest of the row once commit classes arrive; hidden (`.catrow:empty`) for visits that produce no split.

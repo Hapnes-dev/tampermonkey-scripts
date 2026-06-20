@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.48
+// @version      4.49
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -36,7 +36,7 @@
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
-    const SCRIPT_VERSION   = '4.48';
+    const SCRIPT_VERSION   = '4.49';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1409,6 +1409,11 @@
         #${PANEL_ID} .catsum-bar > span { display: block; height: 100%; border-radius: 4px; }
         #${PANEL_ID} .catsum-h { width: 46px; flex: none; text-align: right; font-weight: 600; color: #161616; }
         #${PANEL_ID} .catsum-foot { margin-top: 6px; font-size: 11px; color: #8d8d8d; }
+        #${PANEL_ID} .catrow:empty { display: none; }
+        #${PANEL_ID} .catrow { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 3px 10px; }
+        #${PANEL_ID} .catchip { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: #6f6f6f; white-space: nowrap; }
+        #${PANEL_ID} .catchip-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+        #${PANEL_ID} .catchip b { color: #21272a; font-weight: 600; }
         #${PANEL_ID} .warn { padding: 14px; font-size: 12px; color: #161616; }
         #${PANEL_ID} .warn strong { font-size: 13px; }
         #${PANEL_ID} .warn p { margin: 8px 0; color: #525252; }
@@ -1947,6 +1952,7 @@
     const CAT_SUPPORT     = 'Support - External';
     const CAT_ORDER = [CAT_INTEGRATION, CAT_DRAWING, CAT_SETUP_PC, CAT_SUPPORT];
     const CAT_COLOR = { [CAT_INTEGRATION]: '#0f62fe', [CAT_DRAWING]: '#8a3ffc', [CAT_SETUP_PC]: '#007d79', [CAT_SUPPORT]: '#ff832b' };
+    const CAT_SHORT = { [CAT_INTEGRATION]: 'Integration', [CAT_DRAWING]: 'Drawing', [CAT_SETUP_PC]: 'Setup', [CAT_SUPPORT]: 'Support' };
     const CAT_AK3_MIN_EACH      = 18; // minutes credited to Setup per ak3_setup action (click-light, time-heavy)
     const CAT_DESIGNER_MIN_EACH = 8;  // minutes credited to Drawing per Designer action
     const CAT_CHECK_MAX_CLICKS  = 2;  // ≤ this many clicks and no commit ⇒ a quick access check (Support), not config work
@@ -2003,6 +2009,19 @@
     }
 
     const catHours = m => (m / 60).toFixed(1).replace(/\.0$/, '');
+
+    // Per-plant category breakdown chips (the same split that feeds the day roll-up, shown on each row so
+    // you can see which plant produced each category's time). Refines once commit classes arrive.
+    function categoryChips(v) {
+        const split = categorizeVisit(v);
+        const cats = CAT_ORDER.filter(c => split[c]);
+        for (const c in split) if (!CAT_ORDER.includes(c)) cats.push(c);
+        if (!cats.length) return '';
+        return cats.map(c => {
+            const color = CAT_COLOR[c] || '#8d8d8d';
+            return `<span class="catchip" title="${escapeHtml(c)}"><span class="catchip-dot" style="background:${color}"></span>${escapeHtml(CAT_SHORT[c] || c)} <b>${fmtMinutes(Math.round(split[c]))}</b></span>`;
+        }).join('');
+    }
 
     // Render the category roll-up into its container (called from applyAndRender; refines once commit
     // classes arrive). Includes a Copy button that yields paste-ready "Category: H h" lines for Rocketlane.
@@ -2082,6 +2101,7 @@
                 <div class="name">
                     ${escapeHtml(v.name || '(name not yet captured)')}
                     <div class="actions">${actionChips(v.actions)}${chgBadge}</div>
+                    <div class="catrow">${categoryChips(v)}</div>
                 </div>
                 <div class="time">
                     ${timeRange}
