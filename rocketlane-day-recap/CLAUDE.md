@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.43**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.44**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -356,3 +356,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   Monday-first grid (`start = Monday on/before the 1st via (getDay()+6)%7`), English labels, prev/next month + Today, with
   selected/today highlights. A **hidden `<input type="date">`** still holds the canonical ISO value and fires `change`
   (→ `openDefault`), so the rest of the script is untouched. Fully locale-independent — Monday-first on any browser.
+- **4.44** restyled the custom calendar (CSS only): **circular day cells** (`aspect-ratio:1` + `border-radius:50%`), today =
+  blue bold text, selected = filled blue circle (white), uppercase muted weekday header, circular nav buttons with hover,
+  softer frame (10px radius, lighter border + shadow), footer divider. Selected-today resolves to white-on-blue (source
+  order `other` → `today` → `sel`, so `sel` wins the colour — no blue-on-blue).

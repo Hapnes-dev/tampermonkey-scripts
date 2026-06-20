@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.43
+// @version      4.44
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1316,21 +1316,24 @@
             display: flex; gap: 8px; align-items: center;
         }
         #${PANEL_ID} .controls .datewrap { flex: 1; position: relative; }
-        #${PANEL_ID} .controls .datebtn { width: 100%; padding: 6px 8px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px; background: #fff; color: #161616; font-weight: 400; text-align: left; cursor: pointer; }
+        #${PANEL_ID} .controls .datebtn { width: 100%; padding: 7px 10px; border: 1px solid #c6c6c6; border-radius: 6px; font-size: 13px; background: #fff; color: #161616; font-weight: 500; text-align: left; cursor: pointer; }
         #${PANEL_ID} .controls .datebtn:hover { border-color: #0f62fe; }
-        #${PANEL_ID} .datecal { position: absolute; top: calc(100% + 4px); left: 0; z-index: 2147483646; width: 232px; background: #fff; border: 1px solid #c6c6c6; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px; }
-        #${PANEL_ID} .datecal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-        #${PANEL_ID} .datecal-title { font-weight: 600; font-size: 13px; color: #161616; }
-        #${PANEL_ID} .datecal .datecal-nav { background: none; border: none; color: #0f62fe; font-size: 18px; line-height: 1; padding: 0 8px; cursor: pointer; font-weight: 600; }
-        #${PANEL_ID} .datecal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
-        #${PANEL_ID} .datecal-wd { text-align: center; font-size: 10px; color: #8d8d8d; padding: 2px 0; font-weight: 600; }
-        #${PANEL_ID} .datecal .datecal-day { border: none; background: none; padding: 5px 0; font-size: 12px; color: #161616; font-weight: 400; cursor: pointer; border-radius: 4px; }
-        #${PANEL_ID} .datecal .datecal-day:hover { background: #e8e8e8; }
-        #${PANEL_ID} .datecal .datecal-day.other { color: #c6c6c6; }
-        #${PANEL_ID} .datecal .datecal-day.today { outline: 1px solid #0f62fe; outline-offset: -1px; }
-        #${PANEL_ID} .datecal .datecal-day.sel { background: #0f62fe; color: #fff; }
-        #${PANEL_ID} .datecal-foot { margin-top: 6px; text-align: right; }
-        #${PANEL_ID} .datecal .datecal-today { background: none; border: none; color: #0f62fe; font-size: 12px; cursor: pointer; font-weight: 600; }
+        #${PANEL_ID} .datecal { position: absolute; top: calc(100% + 6px); left: 0; z-index: 2147483646; width: 250px; box-sizing: border-box; background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.16); padding: 10px 12px 12px; }
+        #${PANEL_ID} .datecal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        #${PANEL_ID} .datecal-title { font-weight: 600; font-size: 14px; color: #161616; }
+        #${PANEL_ID} .datecal .datecal-nav { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: none; border: none; border-radius: 50%; color: #0f62fe; font-size: 18px; line-height: 1; cursor: pointer; }
+        #${PANEL_ID} .datecal .datecal-nav:hover { background: #edf2ff; }
+        #${PANEL_ID} .datecal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+        #${PANEL_ID} .datecal-wd { text-align: center; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #a8a8a8; padding-bottom: 4px; }
+        #${PANEL_ID} .datecal .datecal-day { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border: none; background: none; font-size: 12.5px; color: #21272a; font-weight: 500; cursor: pointer; border-radius: 50%; transition: background .12s, color .12s; }
+        #${PANEL_ID} .datecal .datecal-day:hover { background: #edf2ff; }
+        #${PANEL_ID} .datecal .datecal-day.other { color: #c1c7cd; font-weight: 400; }
+        #${PANEL_ID} .datecal .datecal-day.today { color: #0f62fe; font-weight: 700; }
+        #${PANEL_ID} .datecal .datecal-day.sel { background: #0f62fe; color: #fff; font-weight: 600; }
+        #${PANEL_ID} .datecal .datecal-day.sel:hover { background: #0353e9; }
+        #${PANEL_ID} .datecal-foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; display: flex; justify-content: flex-end; }
+        #${PANEL_ID} .datecal .datecal-today { background: none; border: none; color: #0f62fe; font-size: 12px; font-weight: 600; cursor: pointer; padding: 3px 8px; border-radius: 6px; }
+        #${PANEL_ID} .datecal .datecal-today:hover { background: #edf2ff; }
         #${PANEL_ID} .controls button {
             padding: 6px 10px; background: #0f62fe; color: #fff; border: none;
             border-radius: 4px; cursor: pointer; font-weight: 600;
