@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.53
+// @version      4.54
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1129,8 +1129,9 @@
                     first_ts: timestamps[0],
                     last_ts:  timestamps[timestamps.length - 1],
                     actions,
+                    action_counts: matches.reduce((o, m) => (o[m.action] = (o[m.action] || 0) + 1, o), {}),
                     count: matches.length,
-                    _timestamps: timestamps,
+                    _events: matches.map(m => ({ ts: tsFromPangDate(m.date), action: m.action })),
                 });
             }
             donePlants += batch.length;
@@ -1144,13 +1145,15 @@
         // then credit each gap (capped at ACTIVE_CAP_MS) to the plant that was open across it.
         const allEvents = [];
         for (const v of visits) {
-            for (const ts of v._timestamps) allEvents.push({ plant_id: v.plant_id, ts });
+            for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action });
         }
         const minsByPlant = attributeTime(allEvents);
+        const drawByPlant = designerGapByPlant(allEvents);
         for (const v of visits) {
             v.estimated_minutes = minsByPlant[v.plant_id] || 0;
             v.base_minutes = v.estimated_minutes; // immutable click-only floor; commit fusion adds on top in ensureChangesEnriched
-            delete v._timestamps;
+            v.designer_minutes = drawByPlant[v.plant_id] || 0; // gap-after-Designer = real Drawing time (v4.54)
+            delete v._events;
         }
 
         return { visits, username, scanned: plantIds.length, usersOnDate: [...usersOnDate.values()] };
@@ -1180,8 +1183,8 @@
                     if (iso === selectedIso && nu && !usersOnSelected.has(nu)) usersOnSelected.set(nu, e.user);
                     if (nu !== username) continue;
                     let pm = byDate.get(iso); if (!pm) { pm = new Map(); byDate.set(iso, pm); }
-                    let rec = pm.get(pid); if (!rec) { rec = { actions: new Set(), counts: {}, ts: [] }; pm.set(pid, rec); }
-                    rec.actions.add(e.action); rec.counts[e.action] = (rec.counts[e.action] || 0) + 1; rec.ts.push(tsFromPangDate(e.date));
+                    let rec = pm.get(pid); if (!rec) { rec = { actions: new Set(), counts: {}, ev: [] }; pm.set(pid, rec); }
+                    rec.actions.add(e.action); rec.counts[e.action] = (rec.counts[e.action] || 0) + 1; rec.ev.push({ t: tsFromPangDate(e.date), a: e.action });
                 }
             }
             donePlants += batch.length;
@@ -1192,12 +1195,14 @@
             const visits = [];
             const events = [];
             for (const [pid, rec] of pm) {
-                const ts = rec.ts.sort((a, b) => a - b);
-                for (const t of ts) events.push({ plant_id: pid, ts: t });
-                visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], action_counts: rec.counts, count: ts.length });
+                const ev = rec.ev.sort((a, b) => a.t - b.t);
+                const ts = ev.map(e => e.t);
+                for (const e of ev) events.push({ plant_id: pid, ts: e.t, action: e.a });
+                visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], action_counts: rec.counts, count: ev.length });
             }
             const mins = attributeTime(events);
-            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; }
+            const draw = designerGapByPlant(events);
+            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; v.designer_minutes = draw[v.plant_id] || 0; }
             visits.sort((a, b) => a.first_ts - b.first_ts);
             dates[iso] = visits;
         }
@@ -1244,6 +1249,24 @@
         }
         // Convert ms → rounded minutes
         for (const id of Object.keys(out)) out[id] = Math.max(1, Math.round(out[id] / 60000));
+        return out;
+    }
+
+    // Minutes of each plant's credited time that immediately FOLLOWED a Designer click. The graphic designer
+    // logs ONE pang click then runs click-free, so the gap to your next click (capped like any gap) is the
+    // real Drawing session — far better than a flat per-click nominal. Same cross-plant timeline as attributeTime.
+    function designerGapByPlant(events) {
+        const out = {};
+        if (!events || !events.length) return out;
+        const sorted = [...events].sort((a, b) => (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
+        for (let i = 0; i < sorted.length; i++) {
+            const cur = sorted[i];
+            if (!CAT_DESIGNER_ACTIONS.has(cur.action)) continue;
+            const next = sorted[i + 1];
+            const gap = next ? Math.max(0, next.ts - cur.ts) : TAIL_MS;
+            out[cur.plant_id] = (out[cur.plant_id] || 0) + Math.min(gap, ACTIVE_CAP_MS);
+        }
+        for (const id of Object.keys(out)) out[id] = Math.round(out[id] / 60000);
         return out;
     }
 
@@ -1991,7 +2014,7 @@
         const res = {};
         let rem = M;
         if (hasSetup) { const s = (!hasInteg && !hasDrawing) ? rem : Math.min(rem, CAT_AK3_MIN_EACH * ak3N); res[CAT_SETUP_PC] = s; rem -= s; }
-        if (hasDrawing) { const d = hasInteg ? Math.min(rem, CAT_DESIGNER_MIN_EACH * Math.max(1, designerN)) : rem; res[CAT_DRAWING] = (res[CAT_DRAWING] || 0) + d; rem -= d; }
+        if (hasDrawing) { const drawNom = Math.max(CAT_DESIGNER_MIN_EACH * Math.max(1, designerN), v.designer_minutes || 0); const d = hasInteg ? Math.min(rem, drawNom) : rem; res[CAT_DRAWING] = (res[CAT_DRAWING] || 0) + d; rem -= d; }
         if (rem > 0) {
             const bucket = hasInteg ? CAT_INTEGRATION : hasDrawing ? CAT_DRAWING : CAT_SETUP_PC;
             res[bucket] = (res[bucket] || 0) + rem;
