@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.51
+// @version      4.52
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1620,14 +1620,19 @@
                 // span [first click → last triggered commit], clamped to [MIN, MAX], and lift estimated_minutes
                 // to it when the click-only base is lower. Click-heavy plants never qualify, so addMs stays 0.
                 const base = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                let addMs = 0;
                 if (sparseConfig && triggered.length) {
+                    // The triggered commit is the only hard evidence of when this sparse sub-tool session ended.
                     const lastC = tsFromPangDate(triggered[triggered.length - 1].date);
-                    const sessionMs = Math.min(Math.max(lastC - v.first_ts, COMMIT_SESSION_MIN_MS), COMMIT_SESSION_MAX_MS);
-                    addMs = Math.max(0, sessionMs - base * 60000);
+                    const sessionMin = Math.round(Math.min(Math.max(lastC - v.first_ts, COMMIT_SESSION_MIN_MS), COMMIT_SESSION_MAX_MS) / 60000);
+                    const capMin = Math.round(ACTIVE_CAP_MS / 60000);
+                    // Lift a low click-base UP to the session span; and when the base only reached its value because
+                    // a long cross-plant idle hit the 30-min gap cap (base ≥ cap — unearnable from ≤2 clicks), pull
+                    // it DOWN to the commit-defined span. Sub-cap bases stay lift-only → no regression (v4.52, R1).
+                    v.estimated_minutes = (base >= capMin) ? sessionMin : Math.max(base, sessionMin);
+                } else {
+                    v.estimated_minutes = base;
                 }
-                v.estimated_minutes = base + Math.round(addMs / 60000);
-                v.commit_added_minutes = v.estimated_minutes - base;      // for the tooltip / verification dump
+                v.commit_added_minutes = v.estimated_minutes - base;      // may be negative when the cap artifact is corrected
                 if (triggered.length || v.commit_added_minutes) any = true;
             }
             // NOTE: no per-commit content classification. A measurement over 30 real days (457 triggered
