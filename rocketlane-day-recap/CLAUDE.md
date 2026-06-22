@@ -184,23 +184,19 @@ phpMyAdmin / Designer / Direct / VNC sessions log almost no pang clicks, and the
 is **sparse** (`count ≤ SPARSE_CLICK_MAX` = 2) **and** opened a **config surface** (an `edit`/`access`/`vnc`
 action per `ACTION_META`), widen its window tail to `COMMIT_SESSION_MAX_MS` (20 min) and, if a
 **change-triggered** commit lands in it, credit the real span `[first click → that commit]` clamped to
-`[COMMIT_SESSION_MIN_MS` (5), `COMMIT_SESSION_MAX_MS` (20)] min. `estimated_minutes = base_minutes +
-addMs` — **purely additive, idempotent (always recomputed from `base_minutes`), never reduces a higher
-click estimate, and a no-op on click-heavy plants** (they never qualify), so there is zero regression. The
+`[COMMIT_SESSION_MIN_MS` (5), `COMMIT_SESSION_MAX_MS` (20)] min. `estimated_minutes` is recomputed from `base_minutes` every render (idempotent) and a no-op on click-heavy plants (they never qualify). **v4.52 (R1):** the triggered commit now *defines* the session — it lifts a low click-base UP to the span, and when the base only reached its value because a long cross-plant idle hit the 30-min gap cap (`base ≥ ACTIVE_CAP_MS`, unearnable from ≤2 clicks) it pulls the estimate DOWN to the span. Sub-cap bases stay lift-only, so legitimate click estimates are never reduced. The
 top-up is exposed as `v.commit_added_minutes` (drives a tooltip note). Only change-triggered commits count
 (see §2 / `isScheduledCommit`); scheduled snapshots feed neither time nor badge.
 
 **Isolated config-touch cap (v4.50, in `ensureChangesEnriched`).** The opposite error: a **single** pang
-click that opened a config surface (`pma_local`/`sys_tools`) but committed **nothing** is a quick check,
+click that opened an access/VNC/diagnostics surface but committed **nothing** is a quick glance,
 yet the 30-min gap cap can credit it the full 30 min (measured over 30 real days: a lone pma click → 30 min).
-When `count === 1 && triggered.length === 0 && (pma_local||sys_tools)`, lower `base_minutes` to
+When `count === 1 && triggered.length === 0` and the lone action's `ACTION_META.cat` is `access`/`vnc`/`diag`, lower `base_minutes` to
 `ISOLATED_TOUCH_CAP` (8 min). Gated on **no-commit** (a commit-bearing pma touch is instead lifted by the
-fusion above) and the **config surface** (a bare Direct/VNC login glance keeps its gap credit). Strictly
-reduces; validated to leave the approved 06-19 split bit-identical.
+fusion above) and the **config surface** a lone glance. **v4.53 (R-g)** widened this from the original `pma_local`/`sys_tools`-only check to all access/vnc/diag surfaces (so a lone Direct/Proxy/VNC glance is now capped too) and keyed it off `v.actions` so it also fires on quick/single-date scans. Edit (Designer/AK3) and server actions are deliberate work and stay uncapped. Strictly reduces credit.
 
 `normalizeMinutes` optionally rescales the per-plant minutes to a "Workday total" (default 7.5 h, rounded
-to 5 min) when "Distribute to total" is ticked — now over the fused `estimated_minutes`, so a floored
-config session gets a fair share of the workday instead of rounding to ~0%.
+to 5 min) when "Distribute to total" is ticked, over the fused `estimated_minutes`. **v4.53 (R2)** distributes over **bookable visits only** (filters out Quick-check visits via `categorizeVisit(v)[CAT_CHECK]`), so the booked total equals the configured workday instead of leaking a slice into the not-booked bucket; Quick-check visits keep their raw estimate, and quick-ness keys off the raw `estimated_minutes` so a bookable visit can't flip to Quick when normalize scales it under 15 min.
 
 ### Category mapping → timesheet (v4.48–4.50, §`categorizeVisit` / `dayCategoryTotals` / `renderCategorySummary` / `categoryChips`)
 
@@ -428,6 +424,8 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.53** time-calc R-g + R2 (from the multi-agent review). **R-g**: widen the isolated-touch cap to any lone access/vnc/diag surface (Direct/Proxy/VNC, not just pma/sys) with no commit → a single glance + long idle reads 8 min not 30 (now also fires on quick scans, keyed off `v.actions`). **R2**: distribute the workday total over **bookable** visits only (filters `categorizeVisit(v)[CAT_CHECK]`), so "to book" equals the configured hours instead of leaking into quick checks; quick-ness keys off the raw estimate so it's stable across normalize. Sim-verified: (g) 30→8, lone `restart` untouched, (i) booked 7.0→7.5 h.
+- **4.52** time-calc R1 (from the review). A sparse config session's triggered commit now *defines* the session end — lifts a low click-base up to the span, and pulls a base DOWN to the span when it hit the 30-min gap cap (a long-idle artifact, unearnable from ≤2 clicks). Fixes a lone pma/designer click + commit + long idle reading 30 min instead of ~12; sub-cap bases stay lift-only (no regression), click-heavy untouched. Sim-verified: (d) 30→12, (e) 13→13, click-heavy 35→35.
 - **4.51** short access-only visits → a separate **Quick check** bucket (`CAT_CHECK`, grey), time-based (`QUICK_CHECK_MAX_MIN=15`; the old ≤2-click test kept as a fallback for time over-credited by a long gap). Shown on the row + roll-up but in `CAT_NOT_BOOKED` → **excluded from the Copy-to-timesheet total** (foot now reads `≈ X h to book · Y h quick checks (not booked)`). These were previously folded into `Support - External`, so the booked total drops by the quick-check time (on the 06-19 fixture the former Support 0.38 h moves out of the booked 7.15 h into the not-booked line).
 - **4.50** time-model deep-dive (multi-agent workflow over 30 real days / 193 plant-day records / 41,833 events).
   Two shipped changes, both validated to leave the approved 06-19 split bit-identical (Integration 4.40 / Drawing
