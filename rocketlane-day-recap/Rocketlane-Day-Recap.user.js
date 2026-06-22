@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.50
+// @version      4.51
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1936,12 +1936,15 @@
     const CAT_DRAWING     = 'Project - Drawing & Design';
     const CAT_SETUP_PC    = 'Setup - PC / Gateway';
     const CAT_SUPPORT     = 'Support - External';
-    const CAT_ORDER = [CAT_INTEGRATION, CAT_DRAWING, CAT_SETUP_PC, CAT_SUPPORT];
-    const CAT_COLOR = { [CAT_INTEGRATION]: '#0f62fe', [CAT_DRAWING]: '#8a3ffc', [CAT_SETUP_PC]: '#007d79', [CAT_SUPPORT]: '#ff832b' };
-    const CAT_SHORT = { [CAT_INTEGRATION]: 'Integration', [CAT_DRAWING]: 'Drawing', [CAT_SETUP_PC]: 'Setup', [CAT_SUPPORT]: 'Support' };
+    const CAT_CHECK       = 'Quick check'; // short access-only visit ("just popped in") — shown for awareness, NOT booked
+    const CAT_ORDER = [CAT_INTEGRATION, CAT_DRAWING, CAT_SETUP_PC, CAT_SUPPORT, CAT_CHECK];
+    const CAT_NOT_BOOKED = new Set([CAT_CHECK]); // shown in the roll-up but excluded from the Copy-to-timesheet total
+    const CAT_COLOR = { [CAT_INTEGRATION]: '#0f62fe', [CAT_DRAWING]: '#8a3ffc', [CAT_SETUP_PC]: '#007d79', [CAT_SUPPORT]: '#ff832b', [CAT_CHECK]: '#8d8d8d' };
+    const CAT_SHORT = { [CAT_INTEGRATION]: 'Integration', [CAT_DRAWING]: 'Drawing', [CAT_SETUP_PC]: 'Setup', [CAT_SUPPORT]: 'Support', [CAT_CHECK]: 'Quick check' };
     const CAT_AK3_MIN_EACH      = 18; // minutes credited to Setup per ak3_setup action (click-light, time-heavy)
     const CAT_DESIGNER_MIN_EACH = 8;  // minutes credited to Drawing per Designer action
-    const CAT_CHECK_MAX_CLICKS  = 2;  // ≤ this many clicks and no commit ⇒ a quick access check (Support), not config work
+    const CAT_CHECK_MAX_CLICKS  = 2;  // ≤ this many clicks (no commit) ⇒ a quick check even if a long gap over-credited the time
+    const QUICK_CHECK_MAX_MIN   = 15; // access-only visit under this (no config commit) ⇒ "just popped in to check", not real work
     const CAT_DESIGNER_ACTIONS  = new Set(['designer4', 'designer3', 'designer']);
     const CAT_AK3_ACTIONS       = new Set(['ak3_setup']);
 
@@ -1963,9 +1966,10 @@
         const hasDrawing = designerN > 0 || designCommits > 0;
         const hasSetup   = ak3N > 0;
         if (!hasInteg && !hasDrawing && !hasSetup) {
-            // Access-only session (Direct/VNC, no config touched): a quick check if short, else Integration.
-            const quick = clicks <= CAT_CHECK_MAX_CLICKS && !(v.changes_in_window > 0);
-            return { [quick ? CAT_SUPPORT : CAT_INTEGRATION]: M };
+            // Access-only session (Direct/VNC, no config touched): under ~15 min you most likely just popped in to
+            // check something → a "Quick check" (shown but not booked); a sustained session ⇒ Integration.
+            const quick = (M < QUICK_CHECK_MAX_MIN || clicks <= CAT_CHECK_MAX_CLICKS) && !(v.changes_in_window > 0);
+            return { [quick ? CAT_CHECK : CAT_INTEGRATION]: M };
         }
         const res = {};
         let rem = M;
@@ -2019,7 +2023,7 @@
         const head = document.createElement('div');
         head.className = 'catsum-head';
         head.innerHTML =
-            `<span class="catsum-title">📋 Day by category <span class="catsum-q" title="Estimated timesheet split of your plant work. Designer &amp; AK3 setup are credited fixed time (they log few clicks); the rest goes to Integration when real config changed, else a quick Support check. Plant work only — meetings, admin, documentation and training aren't in pang, so add those yourself.">ⓘ</span></span>` +
+            `<span class="catsum-title">📋 Day by category <span class="catsum-q" title="Estimated timesheet split of your plant work. Designer &amp; AK3 setup are credited fixed time (they log few clicks); the rest goes to Integration when real config changed, else a short access-only visit (under ~15 min) is a Quick check — shown here but NOT added to the timesheet total. Plant work only — meetings, admin, documentation and training aren't in pang, so add those yourself.">ⓘ</span></span>` +
             `<button type="button" class="catsum-copy" title="Copy this breakdown to paste into your timesheet">⧉ Copy</button>`;
         container.appendChild(head);
         for (const r of rows) {
@@ -2036,11 +2040,14 @@
         }
         const foot = document.createElement('div');
         foot.className = 'catsum-foot';
-        foot.textContent = `≈ ${catHours(grand)} h of plant work · estimate, adjust as needed`;
+        const bookableMin = rows.filter(r => !CAT_NOT_BOOKED.has(r.category)).reduce((s, r) => s + r.minutes, 0);
+        const checkMin    = rows.filter(r =>  CAT_NOT_BOOKED.has(r.category)).reduce((s, r) => s + r.minutes, 0);
+        foot.textContent = `≈ ${catHours(bookableMin)} h to book` + (checkMin ? ` · ${catHours(checkMin)} h quick checks (not booked)` : '') + ` · estimate, adjust as needed`;
         container.appendChild(foot);
         head.querySelector('.catsum-copy').addEventListener('click', (e) => {
             const btn = e.currentTarget;
-            const text = rows.map(r => `${r.category}: ${catHours(r.minutes)} h`).join('\n') + `\nTotal: ${catHours(grand)} h (plant work)`;
+            const bookRows = rows.filter(r => !CAT_NOT_BOOKED.has(r.category)); // quick checks aren't booked
+            const text = bookRows.map(r => `${r.category}: ${catHours(r.minutes)} h`).join('\n') + `\nTotal: ${catHours(bookableMin)} h (plant work)`;
             Promise.resolve(navigator.clipboard && navigator.clipboard.writeText(text))
                 .then(() => { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '⧉ Copy'; }, 1500); })
                 .catch(() => { btn.textContent = 'Copy failed'; });

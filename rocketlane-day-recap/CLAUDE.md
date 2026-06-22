@@ -419,7 +419,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   split: Integration 4.40 h, Drawing 1.47 h, Setup 0.90 h, Support 0.38 h, total 7.15 h): Designer & AK3 log few clicks
   but cost real time, so each is credited a nominal chunk (`CAT_DESIGNER_MIN_EACH=8`, `CAT_AK3_MIN_EACH=18`) carved off
   `M`; the remainder → Integration when there's config evidence (a non-graphic commit, `pma_local`, or `sys_tools`),
-  → Drawing if graphic-only, → Setup if AK3-only, else a `≤CAT_CHECK_MAX_CLICKS`-click access-only visit → Support.
+  → Drawing if graphic-only, → Setup if AK3-only, else a short access-only visit (`< QUICK_CHECK_MAX_MIN` min, or ≤`CAT_CHECK_MAX_CLICKS` clicks, no commit) → **Quick check** (`CAT_CHECK`) — in `CAT_NOT_BOOKED`, so shown but excluded from the Copy total (v4.51).
   Key insight: a device-add commits the graphic table **and** the device tables, so commit content can't isolate Drawing
   (on 06-19 *all* triggered commits classified as integration) — **Drawing comes from the Designer actions**. To capture
   action multiplicity, `loadUserHistoryAllDates` now records `action_counts` per visit (also cached via `cacheVisit`;
@@ -428,6 +428,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.51** short access-only visits → a separate **Quick check** bucket (`CAT_CHECK`, grey), time-based (`QUICK_CHECK_MAX_MIN=15`; the old ≤2-click test kept as a fallback for time over-credited by a long gap). Shown on the row + roll-up but in `CAT_NOT_BOOKED` → **excluded from the Copy-to-timesheet total** (foot now reads `≈ X h to book · Y h quick checks (not booked)`). These were previously folded into `Support - External`, so the booked total drops by the quick-check time (on the 06-19 fixture the former Support 0.38 h moves out of the booked 7.15 h into the not-booked line).
 - **4.50** time-model deep-dive (multi-agent workflow over 30 real days / 193 plant-day records / 41,833 events).
   Two shipped changes, both validated to leave the approved 06-19 split bit-identical (Integration 4.40 / Drawing
   1.47 / Setup 0.90 / Support 0.38 h):
