@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.52
+// @version      4.53
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1550,7 +1550,10 @@
             const targetMin = (useNorm && isFinite(hours) && hours > 0) ? Math.round(hours * 60) : 0;
             // Reset any previous normalized values, then re-apply if asked
             for (const v of lastVisits) v.normalized_minutes = null;
-            if (targetMin > 0) normalizeMinutes(lastVisits, targetMin, ROUND_TO_MIN);
+            // Distribute the workday total over BOOKABLE visits only — Quick-check visits are excluded from the
+            // timesheet, so they must not absorb a slice of the target and carry it into the not-booked bucket
+            // (which left "to book" below the configured hours). Quick visits keep their raw estimate. (v4.53, R2)
+            if (targetMin > 0) normalizeMinutes(lastVisits.filter(v => categorizeVisit(v)[CAT_CHECK] == null), targetMin, ROUND_TO_MIN);
             renderVisits(list, lastVisits, lastIso, lastScanned);
             renderCategorySummary(catsumEl, lastVisits);
             const stillMissing = lastVisits.filter(v => !v.name).length;
@@ -1610,10 +1613,17 @@
                 // Lower its click-only floor to ISOLATED_TOUCH_CAP. Gated on no-commit (a commit-bearing pma
                 // touch is instead lifted by the fusion below) and on the config surface (so a bare Direct/VNC
                 // login glance is untouched). Strictly reduces credit; provably no effect on the 06-19 split.
-                if ((v.count || 0) === 1 && triggered.length === 0 && v.action_counts &&
-                    ((v.action_counts.pma_local || 0) > 0 || (v.action_counts.sys_tools || 0) > 0)) {
-                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                    if (b0 > ISOLATED_TOUCH_CAP) v.base_minutes = ISOLATED_TOUCH_CAP;
+                // A single click that opened an ACCESS / VNC / diagnostics surface (phpMyAdmin, System tools,
+                // Direct, Proxy, VNC, …) and committed NOTHING is a quick glance, not sustained work — yet the
+                // 30-min gap cap can credit it up to 30 min. Cap its click-only floor to ISOLATED_TOUCH_CAP.
+                // Edit surfaces (Designer/AK3) and server actions are deliberate work and are NOT capped. Uses
+                // v.actions (set on both scan paths), so the cap now also applies on quick/single-date scans. (v4.53, R-g)
+                if ((v.count || 0) === 1 && triggered.length === 0 && (v.actions || []).length === 1) {
+                    const cat0 = (ACTION_META[v.actions[0]] || {}).cat;
+                    if (cat0 === 'access' || cat0 === 'vnc' || cat0 === 'diag') {
+                        const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                        if (b0 > ISOLATED_TOUCH_CAP) v.base_minutes = ISOLATED_TOUCH_CAP;
+                    }
                 }
                 // Time fusion — additive, bounded, idempotent (always recomputed from the click baseline, so
                 // repeated re-renders never compound). For a sparse config session, credit the real active
@@ -1973,7 +1983,9 @@
         if (!hasInteg && !hasDrawing && !hasSetup) {
             // Access-only session (Direct/VNC, no config touched): under ~15 min you most likely just popped in to
             // check something → a "Quick check" (shown but not booked); a sustained session ⇒ Integration.
-            const quick = (M < QUICK_CHECK_MAX_MIN || clicks <= CAT_CHECK_MAX_CLICKS) && !(v.changes_in_window > 0);
+            // Quick-ness keys off the RAW click estimate, not M — so a bookable visit can't flip to "quick"
+            // just because normalize scaled its share below 15 min (keeps the bookable set stable). (v4.53, R2)
+            const quick = ((v.estimated_minutes || 0) < QUICK_CHECK_MAX_MIN || clicks <= CAT_CHECK_MAX_CLICKS) && !(v.changes_in_window > 0);
             return { [quick ? CAT_CHECK : CAT_INTEGRATION]: M };
         }
         const res = {};
