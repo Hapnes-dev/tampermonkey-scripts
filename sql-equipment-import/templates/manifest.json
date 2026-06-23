@@ -525,6 +525,12 @@
             "file": "ekc_202c.sql"
         },
         {
+            "name": "ekc_202d",
+            "display_name": "EKC 202D (Danfoss)",
+            "driver_type": "EKC202D1",
+            "file": "ekc_202d.sql"
+        },
+        {
             "name": "Eliwell_978_V3",
             "display_name": "Eliwell 978 V3",
             "driver_type": "Eliwell",
