@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.54
+// @version      4.55
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1252,19 +1252,30 @@
         return out;
     }
 
-    // Minutes of each plant's credited time that immediately FOLLOWED a Designer click. The graphic designer
-    // logs ONE pang click then runs click-free, so the gap to your next click (capped like any gap) is the
-    // real Drawing session — far better than a flat per-click nominal. Same cross-plant timeline as attributeTime.
+    const DESIGNER_BURST_MS = 2 * 60 * 1000; // a same-plant click reached within this of the previous = a momentary
+                                             // pop-out inside a designer session (glance at pma/VNC, back to drawing)
+    // Drawing minutes per plant = the graphic-designer SESSION each Designer click opens. The designer logs one
+    // pang click then runs click-free, so the session runs from the Designer click until you LEAVE the plant —
+    // BRIDGING a tight burst of quick same-plant clicks (a momentary pop-out), but STOPPING at a sustained pause
+    // (gap > DESIGNER_BURST_MS between same-plant clicks = you moved to other work) or a plant switch. Capped at
+    // ACTIVE_CAP_MS per session. Same cross-plant timeline as attributeTime. (v4.55; v4.54 was the immediate gap only.)
     function designerGapByPlant(events) {
         const out = {};
         if (!events || !events.length) return out;
         const sorted = [...events].sort((a, b) => (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
         for (let i = 0; i < sorted.length; i++) {
-            const cur = sorted[i];
-            if (!CAT_DESIGNER_ACTIONS.has(cur.action)) continue;
-            const next = sorted[i + 1];
-            const gap = next ? Math.max(0, next.ts - cur.ts) : TAIL_MS;
-            out[cur.plant_id] = (out[cur.plant_id] || 0) + Math.min(gap, ACTIVE_CAP_MS);
+            if (!CAT_DESIGNER_ACTIONS.has(sorted[i].action)) continue;
+            const plant = sorted[i].plant_id, start = sorted[i].ts;
+            let j = i, endTs;
+            while (true) {
+                const next = sorted[j + 1];
+                if (!next) { endTs = sorted[j].ts + TAIL_MS; break; }                                         // day ended on this plant
+                if (next.plant_id !== plant) { endTs = next.ts; break; }                                      // left the plant → drawing until you left
+                if (j > i && (next.ts - sorted[j].ts) > DESIGNER_BURST_MS) { endTs = sorted[j].ts; break; }    // sustained pause → moved to other work
+                j++;                                                                                          // designer's own gap, or a quick pop-out → bridge
+            }
+            out[plant] = (out[plant] || 0) + Math.min(Math.max(0, endTs - start), ACTIVE_CAP_MS);
+            if (j > i) i = j; // skip the rest of this session so overlapping designer clicks aren't double-counted
         }
         for (const id of Object.keys(out)) out[id] = Math.round(out[id] / 60000);
         return out;
