@@ -208,9 +208,9 @@ documentation and training never touch pang and are deliberately omitted.
 "Distribute to total" is on, else `estimated_minutes`):
 - Designer (`designer4/3/`) and AK3 (`ak3_setup`) log few clicks but cost real time. **AK3** → **Setup -
   PC/Gateway** via a `CAT_AK3_MIN_EACH` (18) per-use nominal. **Drawing & Design** (v4.54) is credited
-  `max(CAT_DESIGNER_MIN_EACH × designerN, v.designer_minutes)` — the flat 8-min/click nominal OR the **actual
-  gap after each Designer click** (`designerGapByPlant`: the click-free designer session, gap-capped),
-  whichever is larger. Both capped at the visit's `M`.
+  `max(CAT_DESIGNER_MIN_EACH × designerN, v.designer_minutes)` — the flat 8-min/click nominal OR the **designer
+  session** (`designerGapByPlant`: from each Designer click until you leave the plant, bridging a brief burst
+  of quick same-plant pop-outs but stopping at a sustained > 2 min pause; gap-capped), whichever is larger. Both capped at the visit's `M`.
 - The **remainder** → **Integration** when there's config evidence (`changes_in_window > 0 || pma_local ||
   sys_tools`); → Drawing if the visit was graphic-only; → Setup if AK3-only; else a `≤ CAT_CHECK_MAX_CLICKS`
   (2)-click no-commit visit → **Support - External**.
@@ -426,6 +426,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.55** `designerGapByPlant` credits the whole designer **session**, not just the immediate gap: it bridges a tight burst of quick same-plant clicks (a momentary pop-out to pma/VNC and back, each gap ≤ `DESIGNER_BURST_MS` = 2 min) and runs until you leave the plant or hit a sustained > 2 min same-plant pause (capped 30). Fixes the "designer → quick check → resume designing" pattern (12/06 plant 10230: 9→30 min) while leaving spread-out designer clicks untouched (26/05 2511 stays 36 min — its clicks are 6 and 31 min apart, not a burst). Residual risk (bounded): a designer click + quick burst + then a long *break* before leaving credits the break as drawing (capped 30); rare.
 - **4.54** better **Drawing** time. The graphic designer logs one pang click then runs click-free, so the flat 8-min/click nominal collapsed long sessions. New `designerGapByPlant(events)` sums the gap AFTER each Designer click (gap-capped) → `v.designer_minutes`; `categorizeVisit` credits Drawing `max(CAT_DESIGNER_MIN_EACH × designerN, v.designer_minutes)` (lift-only over the old nominal). Both build paths now retain per-click action (`_events` in `loadVisitsForDate`, `rec.ev` in `loadUserHistoryAllDates`) to feed it. Validated on the real 26/05 timeline: 2511's 30-min designer session 16→36 min, day Drawing 0.5→0.85 h. Old caches lacking `designer_minutes` fall back to the nominal.
 - **4.53** time-calc R-g + R2 (from the multi-agent review). **R-g**: widen the isolated-touch cap to any lone access/vnc/diag surface (Direct/Proxy/VNC, not just pma/sys) with no commit → a single glance + long idle reads 8 min not 30 (now also fires on quick scans, keyed off `v.actions`). **R2**: distribute the workday total over **bookable** visits only (filters `categorizeVisit(v)[CAT_CHECK]`), so "to book" equals the configured hours instead of leaking into quick checks; quick-ness keys off the raw estimate so it's stable across normalize. Sim-verified: (g) 30→8, lone `restart` untouched, (i) booked 7.0→7.5 h.
 - **4.52** time-calc R1 (from the review). A sparse config session's triggered commit now *defines* the session end — lifts a low click-base up to the span, and pulls a base DOWN to the span when it hit the 30-min gap cap (a long-idle artifact, unearnable from ≤2 clicks). Fixes a lone pma/designer click + commit + long idle reading 30 min instead of ~12; sub-cap bases stay lift-only (no regression), click-heavy untouched. Sim-verified: (d) 30→12, (e) 13→13, click-heavy 35→35.
