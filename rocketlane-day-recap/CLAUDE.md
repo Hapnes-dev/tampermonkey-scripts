@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.50**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.55**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
