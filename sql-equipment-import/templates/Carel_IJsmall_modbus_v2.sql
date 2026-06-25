@@ -1,4 +1,23 @@
-
+INSERT INTO `iw_sys_plant_units` (`row_date`, `active`, `blockout`, `unit_id`, `unit_name`, `grp_name`, `driver_type`, `driver_addr`, `regulator_type`, `order_no`, `view_order`, `driver_adr_extra`, `unit_extra`) VALUES
+(NOW(), '1', '0', 'U50', 'F50 Plug-In50', 'ca_ijfsmall', 'IJF', '0_50', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U51', 'F51 Plug-In51', 'ca_ijfsmall', 'IJF', '0_51', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U52', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_52', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U53', 'F50 Plug-In50', 'ca_ijfsmall', 'IJF', '0_53', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U54', 'F51 Plug-In51', 'ca_ijfsmall', 'IJF', '0_54', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U55', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_55', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U56', 'F50 Plug-In50', 'ca_ijfsmall', 'IJF', '0_56', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U57', 'F51 Plug-In51', 'ca_ijfsmall', 'IJF', '0_57', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U58', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_58', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U59', 'F50 Plug-In50', 'ca_ijfsmall', 'IJF', '0_59', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U60', 'F51 Plug-In51', 'ca_ijfsmall', 'IJF', '0_60', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U61', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_61', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U62', 'F50 Plug-In50', 'ca_ijfsmall', 'IJF', '0_62', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U63', 'F51 Plug-In51', 'ca_ijfsmall', 'IJF', '0_63', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U64', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_64', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U65', 'F50 Plug-In50', 'ca_ijfsmall', 'IJF', '0_65', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U66', 'F51 Plug-In51', 'ca_ijfsmall', 'IJF', '0_66', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U67', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_67', 'IJMODBUS', 'IJMODBUS', 3501, '', ''),
+(NOW(), '1', '0', 'U68', 'F52 Plug-In52', 'ca_ijfsmall', 'IJF', '0_68', 'IJMODBUS', 'IJMODBUS', 3501, '', '');
 
 
 
@@ -22,7 +41,7 @@ CREATE TABLE IF NOT EXISTS `iw_par_ca_ijfsmall_groups` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='4.3.4';
 
 
-REPLACE INTO `iw_par_ca_ijfsmall_groups` (`row_date`, `type`, `view_order`, `ref`, `value`) VALUES
+INSERT INTO `iw_par_ca_ijfsmall_groups` (`row_date`, `type`, `view_order`, `ref`, `value`) VALUES
 ('2026-06-23 08:28:18', 'group', 93, '1', '243_D_37'),
 ('2026-06-23 08:28:18', 'group', 35, '16', '164_A_42'),
 ('2026-06-23 08:28:18', 'group', 92, '1', '242_D_44'),
@@ -305,7 +324,7 @@ CREATE TABLE IF NOT EXISTS `iw_par_ca_ijfsmall_param` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='4.3.4';
 
 
-REPLACE INTO `iw_par_ca_ijfsmall_param` (`row_date`, `element_id`, `driver_id`, `alias_text`, `menu`, `application`, `parameter_type`, `factory_setting`, `grp`, `att`, `eng_unit`, `format`, `range_min`, `range_max`, `scale`, `raw_min`, `raw_max`, `eng_min`, `eng_max`, `driver_id_extra`, `format_extra`) VALUES
+INSERT INTO `iw_par_ca_ijfsmall_param` (`row_date`, `element_id`, `driver_id`, `alias_text`, `menu`, `application`, `parameter_type`, `factory_setting`, `grp`, `att`, `eng_unit`, `format`, `range_min`, `range_max`, `scale`, `raw_min`, `raw_max`, `eng_min`, `eng_max`, `driver_id_extra`, `format_extra`) VALUES
 ('2026-06-23 08:28:18', '243_D_37', '243_D_37', 'Call defrost', 'FId', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_37_X_N_5_37_X_N', ''),
 ('2026-06-23 08:28:18', '164_A_42', '164_A_42', 'Maximum temperature setpoint', 'r2', 'Analog Values', 'float', '', '', 'rw', '°C/°F', '%.1f', '-50', '50', '1', '0', '1000', '0', '100', '3_42_I16_N_6_42_I16_N', ''),
 ('2026-06-23 08:28:18', '242_D_44', '242_D_44', 'Enable defrost', 'FIc', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_44_X_N_5_44_X_N', ''),
@@ -506,16 +525,11 @@ REPLACE INTO `iw_par_ca_ijfsmall_param` (`row_date`, `element_id`, `driver_id`, 
 ('2026-06-23 08:28:18', '284_D_24', '284_D_24', 'Clock error', 'Etc', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_24_X_N_5_24_X_N', ''),
 ('2026-06-23 08:28:18', '222_D_26', '222_D_26', 'VCC malfunction', 'UCF', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_26_X_N_5_26_X_N', ''),
 ('2026-06-23 08:28:18', '155_D_13', '155_D_13', 'Low temperature alarm', 'LO', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_13_X_N_5_13_X_N', ''),
-('2026-06-23 08:28:18', '155_D_13', '155_D_13', 'Low temperature alarm', 'LO', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_13_X_N_5_13_X_N', '');
-REPLACE INTO `iw_par_ca_ijfsmall_param` (`row_date`, `element_id`, `driver_id`, `alias_text`, `menu`, `application`, `parameter_type`, `factory_setting`, `grp`, `att`, `eng_unit`, `format`, `range_min`, `range_max`, `scale`, `raw_min`, `raw_max`, `eng_min`, `eng_max`, `driver_id_extra`, `format_extra`) VALUES
 ('2026-06-23 08:28:18', '156_D_12', '156_D_12', 'Low pressure alarm', 'LP', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_12_X_N_5_12_X_N', ''),
 ('2026-06-23 08:28:18', '216_D_5', '216_D_5', 'Generic function 1 high difference alarm', 'GHI', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_5_X_N_5_5_X_N', ''),
 ('2026-06-23 08:28:18', '264_D_14', '264_D_14', 'Maintenance request', 'SrC', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_14_X_N_5_14_X_N', ''),
 ('2026-06-23 08:28:18', '515_D_0', '515_D_0', 'OFFLINE', 'OFFLINE', 'Digital IO', 'boolean', '', '', 'r', '', '', '', '', '', '', '', '', '', '2_0_X_N_5_0_X_N', ''),
 ('2026-06-23 08:28:18', '219_D_11', '219_D_11', 'I/O configuration alarm', 'IOC', 'Digital IO', 'boolean', '', '', 'r', '', '', '0', '1', '', '', '', '', '', '2_11_X_N_5_11_X_N', '');
-
-
-
 
 
 CREATE TABLE IF NOT EXISTS `iw_set_ca_ijfsmall` (
@@ -533,7 +547,7 @@ CREATE TABLE IF NOT EXISTS `iw_set_ca_ijfsmall` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='4.3.4';
 
 
-REPLACE INTO `iw_set_ca_ijfsmall` (`row_date`, `element_id`, `active`, `onl_ind`, `update_freq`, `save_data`, `save_freq`, `plant_pri`, `sys_pri`, `alarm_type`) VALUES
+INSERT INTO `iw_set_ca_ijfsmall` (`row_date`, `element_id`, `active`, `onl_ind`, `update_freq`, `save_data`, `save_freq`, `plant_pri`, `sys_pri`, `alarm_type`) VALUES
 ('2026-06-23 08:28:18', '243_D_37', '1', '1', 'norm', 'min', '1', '', '', 0),
 ('2026-06-23 08:28:18', '164_A_42', '1', '0', 'slow', 'min', '1', '', '', 0),
 ('2026-06-23 08:28:18', '242_D_44', '1', '1', 'norm', 'min', '1', '', '', 0),
@@ -746,8 +760,7 @@ REPLACE INTO `iw_set_ca_ijfsmall` (`row_date`, `element_id`, `active`, `onl_ind`
 
 -- Watch out for duplicate unit_id!
 
-INSERT INTO `iw_sys_plant_units` (`row_date`, `active`, `blockout`, `unit_id`, `unit_name`, `grp_name`, `driver_type`, `driver_addr`, `regulator_type`, `order_no`, `view_order`, `driver_adr_extra`, `unit_extra`) VALUES
-('2026-06-23 08:28:18', '1', '0', 'P46', 'P46', 'ca_ijfsmall', 'IJF', '0_46', 'IJMODBUS', 'IJMODBUS', 3501, '', '');
+
 
 
 

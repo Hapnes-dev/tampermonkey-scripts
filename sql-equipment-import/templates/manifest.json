@@ -93,10 +93,10 @@
             "file": "Carel_HECU_Modbus-v2.sql"
         },
         {
-            "name": "Carel_IJsmall_modbus_v1",
-            "display_name": "Carel IJsmall modbus v1",
+            "name": "Carel_IJsmall_modbus_v2",
+            "display_name": "Carel IJsmall modbus v2",
             "driver_type": "Carel",
-            "file": "Carel_IJsmall_modbus_v1.sql"
+            "file": "Carel_IJsmall_modbus_v2.sql"
         },
         {
             "name": "Carel_IR32-v1",
