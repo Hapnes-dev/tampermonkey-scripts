@@ -525,10 +525,10 @@
             "file": "ekc_202c.sql"
         },
         {
-            "name": "ekc_202d",
-            "display_name": "EKC 202D (Danfoss)",
+            "name": "ekc_202d_v2",
+            "display_name": "EKC 202D (Danfoss) v2",
             "driver_type": "EKC202D1",
-            "file": "ekc_202d.sql"
+            "file": "ekc_202d_v2.sql"
         },
         {
             "name": "Eliwell_978_V3",
