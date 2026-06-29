@@ -56,6 +56,8 @@ Make changes to the `.user.js` file in the correct subfolder.
 ### 2. Bump the version
 In the `// ==UserScript==` header, increment `@version` (e.g. 5.2 → 5.3).
 
+> **`rocketlane-chat-bridge` specifically:** the Project Progress Tracker `.html` checks this bridge's live `@version` on every load (`checkBridgeUpdate` → fetches `@version` from the canonical raw URL) and pops an **"Update bridge"** card whenever the user's installed copy is behind. The check is version-agnostic, so **just bumping `@version` here is all the tracker needs to prompt users to the newest bridge** — no `.html` change required. Also sync the PPT-repo snapshot `Project-Progress-Tracker/rocketlane-chat-bridge/rocketlane-chat-bridge.user.js` to match.
+
 ### 3. Update the subfolder README if needed
 If workflow steps changed, update the AI reference README in the same folder.
 
