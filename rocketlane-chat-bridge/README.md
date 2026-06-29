@@ -29,6 +29,16 @@ The script auto-updates whenever a new version is pushed to this repo (Tampermon
 
 All calls go through `GM_xmlhttpRequest`, which is exempt from the browser CORS policy.
 
+## Background desktop notifications (v1.10.0+)
+
+Pops a desktop notification (`GM_notification`) for **new Rocketlane** chat/mention/status notifications and **new Zendesk public replies** — from whichever matched tab is open, so you get alerts **without the Project Progress Tracker open**. As long as you have Rocketlane (or Zendesk, etc.) open in some tab, you're covered.
+
+- Polls every ~60s. Rocketlane: `/notifications/groups?status=New` → one popup per conversation with new activity. Zendesk: search `assignee:<me> updated><3d`, then the latest **public** comment per ticket — pops only when that comment's author isn't you (a real customer/other reply).
+- **Cross-tab dedup + a shared ~60s poll throttle** via `GM_setValue`, so multiple open tabs poll ~once/min total and never double-notify. A per-install **prime** records the current backlog silently on first run, so installing never blasts a backlog.
+- **Toggle** from the Tampermonkey menu → "✅/❌ Desktop notifications". On by default.
+- **Limitation:** can't fire when the browser is fully closed (a static page + userscript can't run with no tab). True always-on push would need a backend server + Web Push.
+- The tracker's own in-page notifier **defers** to this bridge at v1.10.0+, so the same item is never popped twice.
+
 ## Permissions
 
 The script requests `@connect` access to:
