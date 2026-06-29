@@ -405,4 +405,5 @@ INSERT INTO `iw_set_ekc_202d` VALUES ('2026-06-29 08:22:19','Service_0_4_2582','
 INSERT INTO `iw_set_ekc_202d` VALUES ('2026-06-29 08:22:19','In All Groups_0_3_2594','1','0','norm','min','1','','','0');
 
 
---Rev: Added range_min and range_max
+-- Changelog
+-- V2: Added range_min and range_max
