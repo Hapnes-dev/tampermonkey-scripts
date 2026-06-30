@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Younium Status
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -687,6 +687,10 @@
       }
       .ynNavBtn:hover { filter: brightness(1.08); color: var(--text); }
       .ynNavBtnLogo { width: 15px; height: 15px; border-radius: 3px; display: block; flex: 0 0 auto; object-fit: contain; }
+      .ynNavBtnSpinner { display: none; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--hairline-strong); border-top-color: currentColor; flex: 0 0 auto; animation: ynSpin 0.7s linear infinite; }
+      .ynNavBtn.yn-loading .ynNavBtnSpinner { display: inline-block; }
+      .ynNavBtn.yn-loading .ynNavBtnLabel { opacity: 0.8; }
+      @keyframes ynSpin { to { transform: rotate(360deg); } }
       .ynNavBtn.yn-green  { background: var(--good-soft); color: var(--good); border-color: transparent; }
       .ynNavBtn.yn-yellow { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
       .ynNavBtn.yn-red    { background: var(--bad-soft);  color: var(--bad);  border-color: transparent; }
@@ -868,7 +872,7 @@
       inflightPlants.delete(p.plantId);
       ynSessionUnavailable = false;
       const gen = ++ynRenderGen;
-      setButtonState("gray", "Younium: ⏳ Checking…");
+      setButtonState("gray", "Younium", true);
       els.dlgYouniumStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Refreshing…</div>';
       try {
         const fresh = await computeForPlant(p.plantId, p.name);
@@ -920,14 +924,17 @@
   }
 
   // Set the nav button's color tint + label text (the logo stays put).
-  function setButtonState(color, label) {
+  function setButtonState(color, label, loading) {
     const btn = document.getElementById("ynNavBtn");
     if (!btn) return;
     btn.classList.remove("yn-green", "yn-yellow", "yn-red", "yn-gray");
     btn.classList.add("yn-" + (color || "gray"));
+    btn.classList.toggle("yn-loading", !!loading);
     const el = btn.querySelector(".ynNavBtnLabel");
     if (el) el.textContent = label || "Younium";
-    btn.title = (label && label !== "Younium" ? label : "Younium status") + " — click for details";
+    btn.title = loading
+      ? "Checking Younium status…"
+      : ((label && label !== "Younium" ? label : "Younium status") + " — click for details");
   }
 
   // Read the current project's name + plant ID from the page.
@@ -970,7 +977,7 @@
     if (verdictCache.has(plantId)) { applyVerdictToButton(plantId, verdictCache.get(plantId)); return; }
     if (ynSessionUnavailable) { setButtonState("gray", "Younium"); btn.title = "Younium not connected — open younium.com once while logged in, then reload"; return; }
 
-    setButtonState("gray", "Younium: ⏳ Checking…");
+    setButtonState("gray", "Younium", true);
     computeForPlant(plantId, name).then((v) => {
       applyVerdictToButton(plantId, v);
     }).catch((e) => {
@@ -1343,7 +1350,7 @@
     // already ran on page load); otherwise show a spinner and compute.
     if (verdictCache.has(plantId)) { renderYouniumStatusModalBody(verdictCache.get(plantId), gen); return; }
     els.dlgYouniumStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Checking Younium…</div>';
-    setButtonState("gray", "Younium: ⏳ Checking…");
+    setButtonState("gray", "Younium", true);
     try {
       const verdict = await computeForPlant(plantId, name);
       if (gen !== ynRenderGen || !els.dlgYouniumStatus.open) return; // superseded by a newer open/refresh
@@ -1401,8 +1408,12 @@
     const label = document.createElement("span");
     label.className = "ynNavBtnLabel";
     label.textContent = "Younium";
+    const spinner = document.createElement("span");
+    spinner.className = "ynNavBtnSpinner";
+    spinner.setAttribute("aria-hidden", "true");
     btn.appendChild(logo);
     btn.appendChild(label);
+    btn.appendChild(spinner);
     btn.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
