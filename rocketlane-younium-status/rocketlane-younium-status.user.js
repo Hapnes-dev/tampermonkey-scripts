@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Younium Status
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.1
+// @version      1.0.2
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -673,23 +673,32 @@
         }
       }
 
-      /* ── Nav button (sits next to "All files") ── */
+      /* ── Nav button (sits on Rocketlane's own header) ──
+         Colors here are FIXED, not driven by prefers-color-scheme: the button
+         lives on Rocketlane's surface, whose light/dark theme is independent of
+         the OS setting (Rocketlane's header is white even when the OS is in dark
+         mode). The default assumes a LIGHT header; `.yn-on-dark` (toggled at
+         runtime from the detected header luminance) adapts when it's dark. The
+         verdict tints use the brand colors, which read on both. */
       .ynNavBtnCell { display: inline-flex; align-items: center; padding: 0 6px; }
       .ynNavBtn {
         display: inline-flex; align-items: center; gap: 6px;
         height: 30px; padding: 0 12px;
         font-size: 13px; font-weight: 500; line-height: 1;
         border-radius: 999px; cursor: pointer; white-space: nowrap;
-        border: 1px solid var(--hairline-strong);
-        background: var(--surface-3); color: var(--muted);
+        border: 1px solid rgba(15, 23, 42, 0.14);
+        background: rgba(15, 23, 42, 0.05);
+        color: rgba(15, 23, 42, 0.66);
         font-family: inherit;
-        transition: filter .15s, background .15s, color .15s, border-color .15s;
+        transition: background .15s, color .15s, border-color .15s;
       }
-      .ynNavBtn:hover { filter: brightness(1.08); color: var(--text); }
+      .ynNavBtn:hover { background: rgba(15, 23, 42, 0.09); color: rgba(15, 23, 42, 0.92); }
+      .ynNavBtn.yn-on-dark { border-color: rgba(255, 255, 255, 0.16); background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.72); }
+      .ynNavBtn.yn-on-dark:hover { background: rgba(255, 255, 255, 0.13); color: rgba(255, 255, 255, 0.95); }
       .ynNavBtnLogo { width: 15px; height: 15px; border-radius: 3px; display: block; flex: 0 0 auto; object-fit: contain; }
-      .ynNavBtnSpinner { display: none; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--hairline-strong); border-top-color: currentColor; flex: 0 0 auto; animation: ynSpin 0.7s linear infinite; }
+      .ynNavBtnSpinner { display: none; width: 11px; height: 11px; border-radius: 50%; border: 2px solid rgba(128, 130, 140, 0.3); border-top-color: currentColor; flex: 0 0 auto; animation: ynSpin 0.7s linear infinite; }
       .ynNavBtn.yn-loading .ynNavBtnSpinner { display: inline-block; }
-      .ynNavBtn.yn-loading .ynNavBtnLabel { opacity: 0.8; }
+      .ynNavBtn.yn-loading .ynNavBtnLabel { opacity: 0.85; }
       @keyframes ynSpin { to { transform: rotate(360deg); } }
       .ynNavBtn.yn-green  { background: var(--good-soft); color: var(--good); border-color: transparent; }
       .ynNavBtn.yn-yellow { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
@@ -1366,6 +1375,31 @@
   // 5. Nav-button injection.
   // ════════════════════════════════════════════════════════════════════════
 
+  // Detect the actual header background behind the button (Rocketlane's theme is
+  // independent of the OS dark/light setting) and flag a dark surface so the
+  // button's neutral/loading colors stay readable instead of going white-on-white.
+  function ynParseRgb(str) {
+    const m = String(str || "").match(/(\d+(?:\.\d+)?)/g);
+    if (!m || m.length < 3) return null;
+    return { r: Number(m[0]), g: Number(m[1]), b: Number(m[2]), a: m.length >= 4 ? Number(m[3]) : 1 };
+  }
+  function ynEffectiveBg(el) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const c = ynParseRgb(getComputedStyle(node).backgroundColor);
+      if (c && c.a > 0.2) return c;
+      node = node.parentElement;
+    }
+    return { r: 255, g: 255, b: 255, a: 1 }; // assume a light header
+  }
+  function applyButtonSurface() {
+    const btn = document.getElementById("ynNavBtn");
+    if (!btn) return;
+    const c = ynEffectiveBg(btn.parentElement || btn);
+    const lum = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255;
+    btn.classList.toggle("yn-on-dark", lum < 0.5);
+  }
+
   function getNavRow() {
     const direct = document.querySelector('[class*="TabsWrapperDefault-"]');
     if (direct) return direct;
@@ -1434,6 +1468,7 @@
       const allFiles = getAllFilesCell(row);
       row.insertBefore(cell, allFiles ? allFiles.nextSibling : null);
     }
+    applyButtonSurface();
     refreshButtonForCurrentProject();
   }
 
