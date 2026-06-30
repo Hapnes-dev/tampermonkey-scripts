@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Younium Status
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.3
+// @version      1.0.4
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -399,6 +399,7 @@
     if (Number.isFinite(tsCancelled) && tsCancelled <= now) return "Cancelled";
     if (o?.status === 5 || o?.status === 0) return "Draft";
     if (o?.status === 1) return "Created";
+    if (o?.status === 10) return "Partially paid"; // Younium native payment status
     const delivered = youniumDeliveryStatusLabel(o?.status);
     if (delivered) return delivered;
     if (invoicesKnown && postedInvoiceCount > 0) return "Invoiced";
@@ -411,6 +412,8 @@
     switch (label) {
       case "Invoiced":
       case "Delivered":
+      case "Paid":
+      case "Partially paid":
       case "Active": return "youniumSubBadge-green";
       case "Cancelled":
       case "Draft":
@@ -544,14 +547,25 @@
     // ── Invoice check ──
     const invoices = await youniumFetchInvoicesForOrder(out.orderNumber);
     const postedInvoices = (invoices || []).filter(youniumInvoiceIsPosted);
+    // Distinguish ISSUED (posted, real) invoices from fully-PAID ones (status 3
+    // or a paymentDate) so the order can read "Paid" / "Partially paid" /
+    // "Invoiced" the way Younium does — not just "Invoiced" for anything posted.
+    const issuedInvoices = (invoices || []).filter((i) => i && (i.posted || i.status >= 1));
+    const paidInvoices = (invoices || []).filter((i) => i && (i.status === 3 || i.paymentDate));
     out.raw.invoices = invoices;
 
     // ── Order status ──
+    // Younium order.status enum: 1=Created, 5=Draft, 9=Active, 7/8=delivery,
+    // 10=Partially paid (verified live on O-014603). Prefer Younium's own
+    // payment status, then fall back to the invoice-derived paid/partial state.
     const isRawDraft = order.status === 5;
     const isRawCreated = order.status === 1;
     if (isCancelled) out.orderStatus = "Cancelled";
     else if (isRawDraft) out.orderStatus = "Draft";
     else if (isRawCreated) out.orderStatus = "Created (not finalized)";
+    else if (order.status === 10) out.orderStatus = "Partially paid";
+    else if (issuedInvoices.length > 0 && paidInvoices.length >= issuedInvoices.length) out.orderStatus = "Paid";
+    else if (paidInvoices.length > 0) out.orderStatus = "Partially paid";
     else if (postedInvoices.length > 0) out.orderStatus = "Invoiced";
     else if (startsInFuture) out.orderStatus = "Order (pending start)";
     else if (order.isLastVersion) out.orderStatus = "Order (not invoiced)";
@@ -1057,11 +1071,21 @@
     const orderName = order ? (order.description || order.orderNumber || verdict.orderNumber || "—") : (quote?.description || quote?.number || "—");
 
     const displayOrderStatus = verdict.deliveryStatus || verdict.orderStatus;
-    const orderIsGood = displayOrderStatus === "Invoiced" || displayOrderStatus === "Delivered";
+    const orderIsGood = ["Invoiced", "Delivered", "Paid", "Partially paid"].includes(displayOrderStatus);
     const orderIsBad = ["Cancelled", "Expired"].includes(displayOrderStatus) || displayOrderStatus.startsWith("Draft") || displayOrderStatus.startsWith("Created");
     const orderStatusColor = orderIsGood ? "var(--good)" : (orderIsBad ? "var(--bad)" : "var(--warn)");
-    const orderHasPostedInvoices = invoices.length > 0 && invoices.some(i => i.status === 3 || i.posted);
-    const invoiceStatusColor = orderHasPostedInvoices ? "var(--good)" : (invoices.length === 0 ? "var(--bad)" : "var(--warn)");
+    // Invoice payment rollup — how many issued invoices are actually paid, so the
+    // row reads "Paid" / "Partly paid — X of N" / "awaiting payment" accurately.
+    const issuedInvoiceCount = invoices.filter((i) => i && (i.posted || i.status >= 1)).length;
+    const paidInvoiceCount = invoices.filter((i) => i && (i.status === 3 || i.paymentDate)).length;
+    const invoiceLabel = issuedInvoiceCount === 0
+      ? "No invoices yet"
+      : (paidInvoiceCount >= issuedInvoiceCount ? "✓ Paid (" + issuedInvoiceCount + ")"
+        : paidInvoiceCount > 0 ? "Partly paid — " + paidInvoiceCount + " of " + issuedInvoiceCount + " invoices"
+        : "Posted, awaiting payment (" + issuedInvoiceCount + ")");
+    const invoiceStatusColor = issuedInvoiceCount === 0
+      ? "var(--bad)"
+      : (paidInvoiceCount >= issuedInvoiceCount ? "var(--good)" : "var(--warn)");
     const orderBadgeClass = orderIsGood ? "youniumSubBadge-green" : (orderIsBad ? "youniumSubBadge-red" : "youniumSubBadge-yellow");
 
     const RAW = (h) => ({ __html: String(h) });
@@ -1087,10 +1111,7 @@
       ["Order number", verdict.orderNumber],
       ["Order name", orderName],
       ["Order status", RAW('<strong style="color: ' + orderStatusColor + ';">' + (orderIsGood ? "✓ " : "") + escHtml(displayOrderStatus) + '</strong>')],
-      ["Invoice status", orderIsBad ? null : RAW(invoices.length
-        ? '<strong style="color: ' + invoiceStatusColor + ';">' + (orderHasPostedInvoices ? "✓ " : "") +
-          (orderHasPostedInvoices ? "Posted/paid (" + invoices.length + ")" : "Drafted (" + invoices.length + ")") + '</strong>'
-        : '<strong style="color: ' + invoiceStatusColor + ';">No invoices yet</strong>')],
+      ["Invoice status", orderIsBad ? null : RAW('<strong style="color: ' + invoiceStatusColor + ';">' + escHtml(invoiceLabel) + '</strong>')],
       ["Total amount", orderTotal !== "—" ? orderTotal + " " + orderCurrency : "—"],
       ["Currency", orderCurrency],
       ["Created date", fmtDate(order?.created)],
@@ -1150,6 +1171,8 @@
       const isCancelled = Number.isFinite(tsCancelled) && tsCancelled <= now;
       const isExpired = Number.isFinite(tsEnd) && tsEnd <= now && !o.isAutoRenewed && !o.isRenewed;
       const startsInFuture = Number.isFinite(tsStart) && tsStart > now;
+      const issuedInv = inv.filter((i) => i && (i.posted || i.status >= 1));
+      const paidInv = inv.filter((i) => i && (i.status === 3 || i.paymentDate));
       const isRawDraft = o.status === 5;
       const isRawCreated = o.status === 1;
       let statusLbl;
@@ -1157,13 +1180,22 @@
       else if (isExpired) statusLbl = "Expired";
       else if (isRawDraft) statusLbl = "Draft";
       else if (isRawCreated) statusLbl = "Created (not finalized)";
+      else if (o.status === 10) statusLbl = "Partially paid";
+      else if (issuedInv.length > 0 && paidInv.length >= issuedInv.length) statusLbl = "Paid";
+      else if (paidInv.length > 0) statusLbl = "Partially paid";
       else if (postedInvoices.length) statusLbl = "Invoiced";
       else if (startsInFuture) statusLbl = "Order (pending start)";
       else if (o.isLastVersion) statusLbl = "Order (not invoiced)";
       else statusLbl = "Draft (outdated version)";
-      const isInvoiced = statusLbl === "Invoiced";
+      const isGood = ["Invoiced", "Paid", "Partially paid"].includes(statusLbl);
       const isBad = ["Cancelled", "Expired"].includes(statusLbl) || statusLbl.startsWith("Draft") || statusLbl.startsWith("Created");
-      const statusColor = isInvoiced ? "var(--good)" : (isBad ? "var(--bad)" : "var(--warn)");
+      const statusColor = isGood ? "var(--good)" : (isBad ? "var(--bad)" : "var(--warn)");
+      const relInvoiceLabel = issuedInv.length === 0
+        ? "No invoices yet"
+        : (paidInv.length >= issuedInv.length ? "✓ Paid (" + issuedInv.length + ")"
+          : paidInv.length > 0 ? "Partly paid — " + paidInv.length + " of " + issuedInv.length + " invoices"
+          : "Posted, awaiting payment (" + issuedInv.length + ")");
+      const relInvoiceColor = issuedInv.length === 0 ? "var(--bad)" : (paidInv.length >= issuedInv.length ? "var(--good)" : "var(--warn)");
       const total = o?.tcv?.amount ?? o?.acv?.amount ?? o?.fmrr?.amount ?? null;
       const ccy = o?.tcv?.currencyCode || o?.acv?.currencyCode || o?.fmrr?.currencyCode || o?.currency || "—";
       const orderName2 = o.description || o.orderNumber || "—";
@@ -1175,11 +1207,8 @@
         ["Order ID", o.id || "—"],
         ["Order number", o.orderNumber || "Draft"],
         ["Order name", orderName2],
-        ["Order status", RAW('<strong style="color: ' + statusColor + ';">' + (isInvoiced ? "✓ " : "") + escHtml(statusLbl) + '</strong>')],
-        ["Invoice status", isBad ? null : RAW(inv.length
-          ? '<strong style="color: ' + (postedInvoices.length ? "var(--good)" : "var(--warn)") + ';">' +
-            (postedInvoices.length ? "✓ Posted/paid (" + inv.length + ")" : "Drafted (" + inv.length + ")") + '</strong>'
-          : '<strong style="color: var(--bad);">No invoices yet</strong>')],
+        ["Order status", RAW('<strong style="color: ' + statusColor + ';">' + (isGood ? "✓ " : "") + escHtml(statusLbl) + '</strong>')],
+        ["Invoice status", isBad ? null : RAW('<strong style="color: ' + relInvoiceColor + ';">' + escHtml(relInvoiceLabel) + '</strong>')],
         ["Total amount", (total != null && total !== "") ? total + " " + ccy : "—"],
         ["Currency", ccy],
         ["Created date", fmtDate(o?.created)],
