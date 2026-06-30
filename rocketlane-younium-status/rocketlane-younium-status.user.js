@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Younium Status
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.2
+// @version      1.0.3
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -677,7 +677,7 @@
          Colors here are FIXED, not driven by prefers-color-scheme: the button
          lives on Rocketlane's surface, whose light/dark theme is independent of
          the OS setting (Rocketlane's header is white even when the OS is in dark
-         mode). The default assumes a LIGHT header; `.yn-on-dark` (toggled at
+         mode). The default assumes a LIGHT header; .yn-on-dark (toggled at
          runtime from the detected header luminance) adapts when it's dark. The
          verdict tints use the brand colors, which read on both. */
       .ynNavBtnCell { display: inline-flex; align-items: center; padding: 0 6px; }
