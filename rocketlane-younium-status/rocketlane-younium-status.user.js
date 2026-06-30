@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Younium Status
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.4
+// @version      1.0.5
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -413,7 +413,6 @@
       case "Invoiced":
       case "Delivered":
       case "Paid":
-      case "Partially paid":
       case "Active": return "youniumSubBadge-green";
       case "Cancelled":
       case "Draft":
@@ -421,6 +420,7 @@
       case "Not invoiced":
       case "Pending start":
       case "Partially delivered":
+      case "Partially paid":
       case "Created": return "youniumSubBadge-yellow";
       default: return "youniumSubBadge-gray";
     }
@@ -1071,17 +1071,21 @@
     const orderName = order ? (order.description || order.orderNumber || verdict.orderNumber || "—") : (quote?.description || quote?.number || "—");
 
     const displayOrderStatus = verdict.deliveryStatus || verdict.orderStatus;
-    const orderIsGood = ["Invoiced", "Delivered", "Paid", "Partially paid"].includes(displayOrderStatus);
+    // "Partially paid" is a half-way state (some invoices still outstanding), so
+    // it reads yellow with a "–" prefix — not green with a ✓ like a fully-good state.
+    const orderIsPartiallyPaid = displayOrderStatus === "Partially paid";
+    const orderIsGood = ["Invoiced", "Delivered", "Paid"].includes(displayOrderStatus);
     const orderIsBad = ["Cancelled", "Expired"].includes(displayOrderStatus) || displayOrderStatus.startsWith("Draft") || displayOrderStatus.startsWith("Created");
     const orderStatusColor = orderIsGood ? "var(--good)" : (orderIsBad ? "var(--bad)" : "var(--warn)");
+    const orderStatusPrefix = orderIsGood ? "✓ " : (orderIsPartiallyPaid ? "– " : "");
     // Invoice payment rollup — how many issued invoices are actually paid, so the
-    // row reads "Paid" / "Partly paid — X of N" / "awaiting payment" accurately.
+    // row reads "Paid" / "Partly paid — X of N paid (Y outstanding)" / "awaiting".
     const issuedInvoiceCount = invoices.filter((i) => i && (i.posted || i.status >= 1)).length;
     const paidInvoiceCount = invoices.filter((i) => i && (i.status === 3 || i.paymentDate)).length;
     const invoiceLabel = issuedInvoiceCount === 0
       ? "No invoices yet"
       : (paidInvoiceCount >= issuedInvoiceCount ? "✓ Paid (" + issuedInvoiceCount + ")"
-        : paidInvoiceCount > 0 ? "Partly paid — " + paidInvoiceCount + " of " + issuedInvoiceCount + " invoices"
+        : paidInvoiceCount > 0 ? "Partly paid — " + paidInvoiceCount + " of " + issuedInvoiceCount + " invoices paid (" + (issuedInvoiceCount - paidInvoiceCount) + " outstanding)"
         : "Posted, awaiting payment (" + issuedInvoiceCount + ")");
     const invoiceStatusColor = issuedInvoiceCount === 0
       ? "var(--bad)"
@@ -1110,7 +1114,7 @@
       ["Order ID", order?.id || quote?.id || "—"],
       ["Order number", verdict.orderNumber],
       ["Order name", orderName],
-      ["Order status", RAW('<strong style="color: ' + orderStatusColor + ';">' + (orderIsGood ? "✓ " : "") + escHtml(displayOrderStatus) + '</strong>')],
+      ["Order status", RAW('<strong style="color: ' + orderStatusColor + ';">' + orderStatusPrefix + escHtml(displayOrderStatus) + '</strong>')],
       ["Invoice status", orderIsBad ? null : RAW('<strong style="color: ' + invoiceStatusColor + ';">' + escHtml(invoiceLabel) + '</strong>')],
       ["Total amount", orderTotal !== "—" ? orderTotal + " " + orderCurrency : "—"],
       ["Currency", orderCurrency],
@@ -1187,13 +1191,15 @@
       else if (startsInFuture) statusLbl = "Order (pending start)";
       else if (o.isLastVersion) statusLbl = "Order (not invoiced)";
       else statusLbl = "Draft (outdated version)";
-      const isGood = ["Invoiced", "Paid", "Partially paid"].includes(statusLbl);
+      const isPartiallyPaid = statusLbl === "Partially paid";
+      const isGood = ["Invoiced", "Paid"].includes(statusLbl);
       const isBad = ["Cancelled", "Expired"].includes(statusLbl) || statusLbl.startsWith("Draft") || statusLbl.startsWith("Created");
       const statusColor = isGood ? "var(--good)" : (isBad ? "var(--bad)" : "var(--warn)");
+      const statusPrefix = isGood ? "✓ " : (isPartiallyPaid ? "– " : "");
       const relInvoiceLabel = issuedInv.length === 0
         ? "No invoices yet"
         : (paidInv.length >= issuedInv.length ? "✓ Paid (" + issuedInv.length + ")"
-          : paidInv.length > 0 ? "Partly paid — " + paidInv.length + " of " + issuedInv.length + " invoices"
+          : paidInv.length > 0 ? "Partly paid — " + paidInv.length + " of " + issuedInv.length + " invoices paid (" + (issuedInv.length - paidInv.length) + " outstanding)"
           : "Posted, awaiting payment (" + issuedInv.length + ")");
       const relInvoiceColor = issuedInv.length === 0 ? "var(--bad)" : (paidInv.length >= issuedInv.length ? "var(--good)" : "var(--warn)");
       const total = o?.tcv?.amount ?? o?.acv?.amount ?? o?.fmrr?.amount ?? null;
@@ -1207,7 +1213,7 @@
         ["Order ID", o.id || "—"],
         ["Order number", o.orderNumber || "Draft"],
         ["Order name", orderName2],
-        ["Order status", RAW('<strong style="color: ' + statusColor + ';">' + (isGood ? "✓ " : "") + escHtml(statusLbl) + '</strong>')],
+        ["Order status", RAW('<strong style="color: ' + statusColor + ';">' + statusPrefix + escHtml(statusLbl) + '</strong>')],
         ["Invoice status", isBad ? null : RAW('<strong style="color: ' + relInvoiceColor + ';">' + escHtml(relInvoiceLabel) + '</strong>')],
         ["Total amount", (total != null && total !== "") ? total + " " + ccy : "—"],
         ["Currency", ccy],
