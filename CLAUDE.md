@@ -21,6 +21,7 @@ tampermonkey-scripts/
 ├── rocketlane-day-recap/         # My Timesheet: plants visited per day, hours, action chips, config-change drawer
 ├── rocketlane-enhancer/          # Hides the Gantt calendar + adds a floating chat panel on Rocketlane
 ├── rocketlane-project-notes/     # Writable Note column on the Rocketlane Projects list (SQL-persisted)
+├── rocketlane-younium-status/    # ☄️ Younium button on the Rocketlane project nav → plant Younium order/subscription status modal
 └── sql-equipment-import/         # phpMyAdmin panel: load a driver-template .sql, edit units/Modbus, emit SQL
 ```
 
