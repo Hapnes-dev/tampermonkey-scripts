@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      8.6
+// @version      8.7
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -539,6 +539,7 @@
                         log('Both databases OK — skipping creation');
                     } else {
                         // Wait for the "Lag database" button to appear
+                        let dbCreated = false;
                         try {
                             const createBtn = await waitFor('button#create_scan_db', { timeout: 10000 });
                             log('Scanner database missing — clicking "Lag database iw_ak3_scanner"');
@@ -546,8 +547,17 @@
                             log('Waiting for "Database opprettet" confirmation');
                             await waitForText('#message', 'Database opprettet', { timeout: 30000 });
                             log('Database created successfully');
+                            dbCreated = true;
                         } catch (e) {
                             log('No create button found — continuing anyway');
+                        }
+                        // Creating iw_ak3_scanner regenerates the AK3 plant settings, which
+                        // wipes the ScannerMode packet values (timeout=100/interval=400) set on
+                        // Auto-Scan start. Re-apply ScannerMode now so the scan polls fast.
+                        if (dbCreated) {
+                            log('Re-applying ScannerMode after iw_ak3_scanner creation (DB create resets AK3 packet settings)');
+                            await setAk3Mode(plantId, 'ScannerMode');
+                            log('ScannerMode re-applied after DB creation');
                         }
                     }
 

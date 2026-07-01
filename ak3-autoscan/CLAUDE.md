@@ -73,7 +73,7 @@ failure** it's restored to **StandardMode**. Getting this wrong leaves the plant
 
 | Mode | `packet_timeout` | `packet_interval` | When |
 |---|---|---|---|
-| **ScannerMode** | `100` | `400` | set on Auto-Scan start (before `dbcheck`) |
+| **ScannerMode** | `100` | `400` | set on Auto-Scan start; **re-applied after `iw_ak3_scanner` is created** (§5 `dbcheck`) |
 | **StandardMode** | `10` | `4000` | set after `activate`, and on **every** failure path |
 
 Applied by a direct **SQL `UPDATE`** (single statement, `CASE` over both settings):
@@ -110,6 +110,13 @@ Opens the **DB Sjekk** tab, waits for `.test-box`, reads each `.test-box p`: nee
 `iw_plant_server3 … OK` and `iw_ak3_scanner … OK`. If either is missing, clicks `button#create_scan_db`
 ("Lag database iw_ak3_scanner") and waits for `#message` = `"Database opprettet"`. Missing create button →
 logs and continues.
+
+> ⚠️ **If `iw_ak3_scanner` was created here, ScannerMode is re-applied right after** (`setAk3Mode(plantId,
+> 'ScannerMode')`, gated on a `dbCreated` flag). Creating the scanner DB **regenerates the AK3 rows in
+> `iw_sys_plant_settings`**, resetting the packet values (100/400) set at Auto-Scan start — without the
+> re-apply the scan would run in StandardMode (slow polling). The re-apply is intentionally *outside* the
+> "create button might be missing" try/catch, so a `setAk3Mode` failure propagates to the outer handler
+> (revert to StandardMode + abort), consistent with the initial fatal ScannerMode set.
 
 ### `ipconfig` (by far the most intricate — this is where most field failures happen)
 1. Opens **IP Config**, waits for `input#localIp` / `input#remoteIp`.
