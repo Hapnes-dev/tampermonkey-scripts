@@ -33,7 +33,7 @@ All calls go through `GM_xmlhttpRequest`, which is exempt from the browser CORS 
 
 Pops a desktop notification (`GM_notification`) for **new Rocketlane** chat/mention/status notifications and **new Zendesk public replies** — from whichever matched tab is open, so you get alerts **without the Project Progress Tracker open**. As long as you have Rocketlane (or Zendesk, etc.) open in some tab, you're covered.
 
-- Polls every ~60s. Rocketlane: `/notifications/groups?status=New` → one popup per conversation with new activity. Zendesk: search `assignee:<me> updated><3d`, then the latest **public** comment per ticket — pops only when that comment's author isn't you (a real customer/other reply).
+- Polls every ~60s. Rocketlane: `/notifications/groups?status=New` → one popup per conversation with new activity. Zendesk: search `assignee:<me> updated><3d`, then the latest **public** comment per ticket — pops only when that comment's author isn't you (a real customer/other reply) **and the ticket isn't solved/closed** (v1.14.0: resolving a case yourself no longer pops a notification for the customer's last reply — a later requester reply reopens the ticket to `open`, so genuine new responses still notify).
 - **Cross-tab dedup + a shared ~60s poll throttle** via `GM_setValue`, so multiple open tabs poll ~once/min total and never double-notify. A per-install **prime** records the current backlog silently on first run, so installing never blasts a backlog.
 - **Toggle** from the Tampermonkey menu → "✅/❌ Desktop notifications". On by default.
 - **Limitation:** can't fire when the browser is fully closed (a static page + userscript can't run with no tab). True always-on push would need a backend server + Web Push.
