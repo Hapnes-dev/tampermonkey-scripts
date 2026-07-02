@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.58
+// @version      4.59
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -36,6 +36,7 @@
     const KEY_RECENT_DONE  = 'recent_done_ts'; // syncFromPang sets this once recent+username are read (early, pre-inventory)
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
+    const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const SCRIPT_VERSION   = '4.50';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
@@ -1371,6 +1372,7 @@
         #${PANEL_ID} header {
             padding: 10px 14px; background: #161616; color: #fff;
             display: flex; align-items: center; gap: 8px;
+            cursor: move; user-select: none; touch-action: none;
         }
         #${PANEL_ID} header strong { flex: 1; font-size: 14px; }
         #${PANEL_ID} header button {
@@ -1993,6 +1995,41 @@
         fullscanBtn.addEventListener('click', fullScanWithWarning);
         dateInput.addEventListener('change', openDefault);
         panel.querySelector('[data-action=close]').addEventListener('click', () => panel.remove());
+
+        // ---- Draggable panel (v4.59): grab the header to move it anywhere; the position sticks
+        // across opens (KEY_PANEL_POS). Clamped to the viewport so it can't be lost off-screen;
+        // double-click the header to snap back to the default bottom-right dock.
+        const headerEl = panel.querySelector('header');
+        headerEl.title = 'Drag to move · double-click to reset position';
+        const applyPos = (left, top) => {
+            const w = panel.offsetWidth || 460;
+            const L = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - w));
+            const T = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - 44)); // keep the header grabbable
+            panel.style.left = L + 'px'; panel.style.top = T + 'px';
+            panel.style.right = 'auto'; panel.style.bottom = 'auto';
+        };
+        const savedPos = GM_getValue(KEY_PANEL_POS, null);
+        if (savedPos && typeof savedPos.left === 'number' && typeof savedPos.top === 'number') applyPos(savedPos.left, savedPos.top);
+        headerEl.addEventListener('dblclick', () => {
+            GM_setValue(KEY_PANEL_POS, null);
+            panel.style.left = panel.style.top = panel.style.right = panel.style.bottom = ''; // back to the CSS default dock
+        });
+        headerEl.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || e.target.closest('button')) return; // left-drag only; never hijack the × button
+            const r = panel.getBoundingClientRect();
+            const dx = e.clientX - r.left, dy = e.clientY - r.top;
+            const move = (ev) => applyPos(ev.clientX - dx, ev.clientY - dy);
+            const up = () => {
+                document.removeEventListener('pointermove', move);
+                document.removeEventListener('pointerup', up);
+                const rr = panel.getBoundingClientRect();
+                GM_setValue(KEY_PANEL_POS, { left: Math.round(rr.left), top: Math.round(rr.top) });
+            };
+            document.addEventListener('pointermove', move);
+            document.addEventListener('pointerup', up);
+            e.preventDefault();
+        });
+
         openDefault();
         return panel;
     }
