@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.55
+// @version      4.56
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -54,6 +54,15 @@
     const ACTIVE_CAP_MS = 30 * 60 * 1000; // each gap counts at most 30 min (normal work pauses count; real breaks are capped)
     const TAIL_MS       = 10 * 60 * 1000; // wrap-up credited to the day's very last click
     const ISOLATED_TOUCH_CAP = 8;         // minutes: a single config-surface click (pma/sys) with no commit is a quick check, not 30 min of work
+    // Long-silence damping (v4.56). A 39-day corpus (1,043 clicks) showed 40% of all raw credit was
+    // capped 30-min blocks, and for silences > 45 min only ~4 in 10 had a config commit proving work
+    // continued — the rest are far more likely breaks/meetings than half an hour of plant work. So a
+    // capped gap longer than LONGGAP_MS keeps its full 30 only when a change-triggered commit for THAT
+    // plant lands within LONGGAP_EVIDENCE_MS of the silence starting; otherwise it's re-credited at
+    // LONGGAP_CREDIT_MIN. Validated: the visually-approved 26/05 + 12/06 days are bit-identical.
+    const LONGGAP_MS          = 45 * 60 * 1000; // a silence after a click longer than this is a "long gap"
+    const LONGGAP_EVIDENCE_MS = 60 * 60 * 1000; // commit within this of the gap start = proof work continued
+    const LONGGAP_CREDIT_MIN  = 15;             // minutes an unevidenced long gap keeps (instead of the 30 cap)
     // ---- Config-change ("commits") overlay: changes.qxs / services/changes/commits.php ----
     // A plant's config snapshots are logged as commits {date, username:":system:", ...} — ALL
     // automatic (no human author), so we can't say WHO changed a plant. But a commit landing inside
@@ -1147,12 +1156,13 @@
         for (const v of visits) {
             for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action });
         }
-        const minsByPlant = attributeTime(allEvents);
+        const { minutes: minsByPlant, cappedGaps } = attributeTime(allEvents);
         const drawByPlant = designerGapByPlant(allEvents);
         for (const v of visits) {
             v.estimated_minutes = minsByPlant[v.plant_id] || 0;
             v.base_minutes = v.estimated_minutes; // immutable click-only floor; commit fusion adds on top in ensureChangesEnriched
             v.designer_minutes = drawByPlant[v.plant_id] || 0; // gap-after-Designer = real Drawing time (v4.54)
+            v.capped_gaps = cappedGaps[v.plant_id] || [];      // long silences, re-judged against commits (v4.56)
             delete v._events;
         }
 
@@ -1200,9 +1210,9 @@
                 for (const e of ev) events.push({ plant_id: pid, ts: e.t, action: e.a });
                 visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], action_counts: rec.counts, count: ev.length });
             }
-            const mins = attributeTime(events);
+            const { minutes: mins, cappedGaps } = attributeTime(events);
             const draw = designerGapByPlant(events);
-            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; v.designer_minutes = draw[v.plant_id] || 0; }
+            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; v.designer_minutes = draw[v.plant_id] || 0; v.capped_gaps = cappedGaps[v.plant_id] || []; }
             visits.sort((a, b) => a.first_ts - b.first_ts);
             dates[iso] = visits;
         }
@@ -1231,8 +1241,8 @@
     // Input: array of { plant_id, ts } across ALL plants for the day.
     // Output: { [plant_id]: minutes_estimated }
     function attributeTime(events) {
-        const out = {};
-        if (!events || events.length === 0) return out;
+        const minutes = {}, cappedGaps = {};
+        if (!events || events.length === 0) return { minutes, cappedGaps };
         // Deterministic order: by ts, tie-broken by plant_id so two clicks in the same second
         // never reorder run-to-run.
         const sorted = [...events].sort((a, b) =>
@@ -1245,11 +1255,14 @@
             // ACTIVE_CAP_MS so a real break doesn't get billed as work on that plant.
             const gap = next ? Math.max(0, next.ts - cur.ts) : TAIL_MS;
             const credit = Math.min(gap, ACTIVE_CAP_MS);
-            out[cur.plant_id] = (out[cur.plant_id] || 0) + credit;
+            minutes[cur.plant_id] = (minutes[cur.plant_id] || 0) + credit;
+            // Record capped gaps so enrichment can later re-judge long silences against commit
+            // evidence (LONGGAP damping) — the cap credit is provisional for those.
+            if (gap > ACTIVE_CAP_MS) (cappedGaps[cur.plant_id] = cappedGaps[cur.plant_id] || []).push({ ts: cur.ts, gap });
         }
         // Convert ms → rounded minutes
-        for (const id of Object.keys(out)) out[id] = Math.max(1, Math.round(out[id] / 60000));
-        return out;
+        for (const id of Object.keys(minutes)) minutes[id] = Math.max(1, Math.round(minutes[id] / 60000));
+        return { minutes, cappedGaps };
     }
 
     const DESIGNER_BURST_MS = 2 * 60 * 1000; // a same-plant click reached within this of the previous = a momentary
@@ -1647,6 +1660,27 @@
                 // Lower its click-only floor to ISOLATED_TOUCH_CAP. Gated on no-commit (a commit-bearing pma
                 // touch is instead lifted by the fusion below) and on the config surface (so a bare Direct/VNC
                 // login glance is untouched). Strictly reduces credit; provably no effect on the 06-19 split.
+                // Long-silence damping (v4.56): each capped 30-min gap credit is provisional — for a silence
+                // longer than LONGGAP_MS, keep the full 30 only when a change-triggered commit for THIS plant
+                // lands inside the silence's first LONGGAP_EVIDENCE_MS (proof you were still working on it);
+                // otherwise re-credit it at LONGGAP_CREDIT_MIN (a long unevidenced silence is far more likely
+                // a break/meeting than half an hour of work on that plant). Skipped when the commits fetch
+                // failed (commits[..] undefined) or the visit came from a pre-4.56 cache (no capped_gaps).
+                const commitList = commits[v.plant_id];
+                if (Array.isArray(commitList) && Array.isArray(v.capped_gaps) && v.capped_gaps.length) {
+                    const trigAll = commitList.filter(c => !isScheduledCommit(c)).map(c => tsFromPangDate(c.date));
+                    let cut = 0;
+                    for (const g of v.capped_gaps) {
+                        if (!g || !(g.gap > LONGGAP_MS)) continue;
+                        const evidenced = trigAll.some(t => t > g.ts && t <= g.ts + Math.min(g.gap, LONGGAP_EVIDENCE_MS));
+                        if (!evidenced) cut += Math.round(ACTIVE_CAP_MS / 60000) - LONGGAP_CREDIT_MIN;
+                    }
+                    if (cut > 0) {
+                        const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                        v.base_minutes = Math.max(1, b0 - cut);
+                        v.longgap_cut_minutes = b0 - v.base_minutes; // for the verification dump
+                    }
+                }
                 // A single click that opened an ACCESS / VNC / diagnostics surface (phpMyAdmin, System tools,
                 // Direct, Proxy, VNC, …) and committed NOTHING is a quick glance, not sustained work — yet the
                 // 30-min gap cap can credit it up to 30 min. Cap its click-only floor to ISOLATED_TOUCH_CAP.
@@ -1737,6 +1771,8 @@
             plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
             actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.estimated_minutes,
             base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
+            designer_minutes: v.designer_minutes || 0, // v4.56: was dropped by the cache — cached dates silently lost gap-based Drawing (v4.54)
+            capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
         });
         const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
         // Write one or many dates to the cache. A full scan passes every date it found (browsing any
