@@ -22,7 +22,8 @@ tampermonkey-scripts/
 ├── rocketlane-enhancer/          # Hides the Gantt calendar + adds a floating chat panel on Rocketlane
 ├── rocketlane-project-notes/     # Writable Note column on the Rocketlane Projects list (SQL-persisted)
 ├── rocketlane-younium-status/    # ☄️ Younium button on the Rocketlane project nav → plant Younium order/subscription status modal
-└── sql-equipment-import/         # phpMyAdmin panel: load a driver-template .sql, edit units/Modbus, emit SQL
+├── sql-equipment-import/         # phpMyAdmin panel: load a driver-template .sql, edit units/Modbus, emit SQL
+└── younium-order-to-quote/       # 📦 Copy from order button on Younium quote pages → copies an order's products (qty + discount %) onto the quote
 ```
 
 Each folder holds `<script>.user.js` (the userscript installed in Tampermonkey) and a `README.md` (AI reference docs for that script).
