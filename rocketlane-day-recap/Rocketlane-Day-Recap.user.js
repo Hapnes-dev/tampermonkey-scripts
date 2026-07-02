@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.57
+// @version      4.58
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -70,7 +70,11 @@
     // only clicked through). Pad the window a touch (saves often commit a few min after the last click)
     // and ignore commits outside it (e.g. nightly auto-snapshots).
     const CHANGE_PAD_LEAD_MS = 2 * 60 * 1000; // count commits from 2 min before your first action…
-    const CHANGE_PAD_TAIL_MS = 6 * 60 * 1000; // …through 6 min after your last (catches save-triggered commits)
+    const CHANGE_PAD_TAIL_MS = 20 * 60 * 1000; // …through 20 min after your last click. Measured (285 triggered
+    // commits near real visits, 2026-07-02): save→commit lag is 0-2 min for only ~36%; ~31% land 7-20 min after
+    // the nearest click, and 13 click-heavy visits in 3 months ended with a save 7-20 min after the last click —
+    // the old 6-min pad missed all of those (no 🔧 badge, no drawer, no Integration evidence). Deliberately equal
+    // to COMMIT_SESSION_MAX_MS so sparse and click-heavy visits share the same commit-attribution window.
     // Commits split into SCHEDULED snapshots (automatic, regular — hourly at :00/:01, nightly ~00:03,
     // daily ~08:31) vs CHANGE-TRIGGERED (off-the-hour) = real config work. Plant-2701 data: 95/173 commits
     // sit at :00/:01. Only change-triggered commits drive the 🔧 badge and feed the time estimate; the
