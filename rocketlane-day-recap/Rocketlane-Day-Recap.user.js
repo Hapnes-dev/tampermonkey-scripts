@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.56
+// @version      4.57
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -526,8 +526,13 @@
 
     // Fetch get_history for many plants in ONE request via JSON-RPC batching. pang processes the
     // sub-requests sequentially server-side (same concurrency as a single call) but we save a
-    // round-trip per plant. Returns { plant_id: entries[] }. There's no server-side date/user
+    // round-trip per plant. Returns { plant_id: entries[] }, or NULL on a transport/parse failure so
+    // callers can retry — resolving {} on failure used to drop the whole batch silently, and a full
+    // scan then cached that hole as authoritative for every date. There's no server-side date/user
     // filter, so each plant still returns its full history — we filter client-side.
+    // (Measured 2026-07-02: ~3-6 ms/plant server-side, ~45 KB/plant, no gzip — a full scan is
+    // bandwidth/parse-bound at ~300 MB, and the browser caps HTTP/1.1 at ~6 connections per origin,
+    // so SCAN_PARALLEL/HISTORY_BATCH_MAX are already at the effective ceiling.)
     async function gmFetchHistoryBatch(plantIds) {
         const base = await apiOrigin();
         return new Promise(resolve => {
@@ -539,25 +544,33 @@
                 data: JSON.stringify(reqs),
                 timeout: 60000,
                 onload: r => {
-                    const out = {};
                     try {
                         const parsed = JSON.parse(r.responseText);
                         // pang returns an array for multi-request batches, but a single object for a
                         // 1-request batch — normalise to a list and map by echoed id (positional fallback).
                         const list = Array.isArray(parsed) ? parsed : [parsed];
+                        const out = {};
                         for (let k = 0; k < list.length; k++) {
                             const item = list[k];
                             const idx = (typeof item?.id === 'number') ? item.id : k;
                             const pid = plantIds[idx];
                             if (pid != null) out[pid] = Array.isArray(item?.result) ? item.result : [];
                         }
-                    } catch {}
-                    resolve(out);
+                        resolve(out);
+                    } catch { resolve(null); }
                 },
-                onerror:   () => resolve({}),
-                ontimeout: () => resolve({}),
+                onerror:   () => resolve(null),
+                ontimeout: () => resolve(null),
             });
         });
+    }
+
+    // One retry on transport failure; a batch that still fails is reported (not silently dropped).
+    async function fetchHistoryBatchReliable(batch, onFail) {
+        let hist = await gmFetchHistoryBatch(batch);
+        if (!hist) hist = await gmFetchHistoryBatch(batch);
+        if (!hist) { onFail?.(batch.length); return {}; }
+        return hist;
     }
 
     // Same shape as gmFetchHistoryBatch, but for the config-change log behind changes.qxs:
@@ -1116,9 +1129,9 @@
         const batches = [];
         for (let i = 0; i < plantIds.length; i += batchSize) batches.push(plantIds.slice(i, i + batchSize));
 
-        let donePlants = 0;
+        let donePlants = 0, foundCount = 0, failedPlants = 0;
         const perBatch = await pMap(batches, async (batch) => {
-            const histByPlant = await gmFetchHistoryBatch(batch);
+            const histByPlant = await fetchHistoryBatchReliable(batch, n => { failedPlants += n; });
             const found = [];
             for (const pid of batch) {
                 const entries = histByPlant[pid] || [];
@@ -1144,7 +1157,8 @@
                 });
             }
             donePlants += batch.length;
-            onProgress?.(donePlants, plantIds.length);
+            foundCount += found.length;
+            onProgress?.(donePlants, plantIds.length, foundCount);
             return found;
         }, SCAN_PARALLEL);
 
@@ -1166,7 +1180,7 @@
             delete v._events;
         }
 
-        return { visits, username, scanned: plantIds.length, usersOnDate: [...usersOnDate.values()] };
+        return { visits, username, scanned: plantIds.length, usersOnDate: [...usersOnDate.values()], failed: failedPlants };
     }
 
     // Like loadVisitsForDate, but extracts the user's visits for EVERY date in one pass. A full scan
@@ -1182,9 +1196,9 @@
         const batchSize = Math.max(1, Math.min(HISTORY_BATCH_MAX, Math.ceil(plantIds.length / SCAN_PARALLEL)));
         const batches = [];
         for (let i = 0; i < plantIds.length; i += batchSize) batches.push(plantIds.slice(i, i + batchSize));
-        let donePlants = 0;
+        let donePlants = 0, failedPlants = 0;
         await pMap(batches, async (batch) => {
-            const histByPlant = await gmFetchHistoryBatch(batch);
+            const histByPlant = await fetchHistoryBatchReliable(batch, n => { failedPlants += n; });
             // (no await below — safe to mutate the shared maps directly)
             for (const pid of batch) {
                 for (const e of (histByPlant[pid] || [])) {
@@ -1198,7 +1212,7 @@
                 }
             }
             donePlants += batch.length;
-            onProgress?.(donePlants, plantIds.length);
+            onProgress?.(donePlants, plantIds.length, (byDate.get(selectedIso) || { size: 0 }).size);
         }, SCAN_PARALLEL);
         const dates = {};
         for (const [iso, pm] of byDate) {
@@ -1216,7 +1230,7 @@
             visits.sort((a, b) => a.first_ts - b.first_ts);
             dates[iso] = visits;
         }
-        return { dates, usersOnSelected: [...usersOnSelected.values()], username, scanned: plantIds.length };
+        return { dates, usersOnSelected: [...usersOnSelected.values()], username, scanned: plantIds.length, failed: failedPlants };
     }
 
     const NO_TZ = 'Europe/Oslo';
@@ -1426,6 +1440,7 @@
         #${PANEL_ID} .row .act-diag   .dot { background: #a8a8a8; }
         #${PANEL_ID} .row .act-other  .dot { background: #a8a8a8; }
         #${PANEL_ID} .empty { padding: 20px; text-align: center; color: #6f6f6f; font-size: 12px; }
+        #${PANEL_ID} .scan-live { margin-top: 6px; font-size: 11px; color: #8d8d8d; }
         #${PANEL_ID} .total {
             padding: 8px 14px; background: #f4f4f4; border-top: 1px solid #e0e0e0;
             font-size: 12px; color: #525252; display: flex; justify-content: space-between;
@@ -1588,6 +1603,7 @@
         let lastMode = 'quick';     // 'quick' | 'full' — how the shown data was gathered
         let lastFromCache = false;  // true when the shown data came from the full-scan cache
         let lastCacheTs = 0;
+        let lastFailed = 0;         // plants unreachable in the shown scan (after retry) — result not cached
         let scanSeq = 0;       // bumped on every scan / date-change; a run only renders if it's still the latest
 
         const applyAndRender = () => {
@@ -1615,7 +1631,7 @@
             else if (lastMode === 'refresh') source = ' · refreshed';
             totalEl.innerHTML =
                 `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}${escapeHtml(source)}</span>` +
-                `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
+                `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${lastFailed ? ` · ⚠ ${lastFailed} unreachable — not cached` : ''}${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
             ensureChangesEnriched();
         };
 
@@ -1838,9 +1854,25 @@
                         return;
                     }
                 }
-                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}</div>`;
+                if (mode === 'full') {
+                    // Footprint-first: scan the plants you're most likely on first, so the live "found"
+                    // counter fills within seconds. Pure reordering — the result is identical.
+                    const pri = new Set([
+                        ...((GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String)),
+                        ...(((GM_getValue(KEY_USER_PLANTS, {})[effectiveUsername()]) || []).map(String)),
+                    ]);
+                    const head = [], tail = [];
+                    for (const id of plantIds.map(String)) (pri.has(id) ? head : tail).push(id);
+                    plantIds = [...head, ...tail];
+                }
+                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}<div class="scan-live"></div></div>`;
+                const liveEl = list.querySelector('.scan-live');
                 const iso = dateInput.value;
-                const onProg = (done, total) => { if (seq === scanSeq) progress.style.width = Math.round(done / total * 100) + '%'; }; // a superseded scan must stop moving the bar
+                const onProg = (done, total, foundSel) => { // a superseded scan must stop moving the bar
+                    if (seq !== scanSeq) return;
+                    progress.style.width = Math.round(done / total * 100) + '%';
+                    if (liveEl) liveEl.textContent = `${done} of ${total} plants scanned` + (foundSel ? ` · ${foundSel} plant${foundSel === 1 ? '' : 's'} found for ${isoToNorwegianDate(iso)}` : '');
+                };
                 let visits, username, scanned;
                 if (mode === 'full') {
                     // A full scan already pulls every plant's complete history, so extract the user's
@@ -1850,8 +1882,12 @@
                     if (seq !== scanSeq) return;
                     username = all.username; scanned = all.scanned;
                     visits = all.dates[iso] || [];
+                    lastFailed = all.failed || 0;
                     if (username) {
-                        writeCacheDates(username, all.dates, scanned); // cache every date this scan found
+                        // Don't cache a partial scan as authoritative — a batch that failed (even after
+                        // retry) would otherwise leave a silent hole in EVERY cached date until the next
+                        // full scan. The footer warns instead, so you know to re-run.
+                        if (!lastFailed) writeCacheDates(username, all.dates, scanned); // cache every date this scan found
                         const fp = new Set();
                         for (const d in all.dates) for (const v of all.dates[d]) fp.add(v.plant_id);
                         rememberUserPlants(username, [...fp].map(id => ({ plant_id: id })));
@@ -1860,8 +1896,9 @@
                     const r = await loadVisitsForDate(iso, plantIds, onProg);
                     if (seq !== scanSeq) return;
                     visits = r.visits; username = r.username; scanned = r.scanned;
+                    lastFailed = r.failed || 0;
                     rememberUserPlants(username, visits);
-                    if (mode === 'refresh' && username) writeCacheDates(username, { [iso]: visits }, scanned); // Refresh updates only this date
+                    if (mode === 'refresh' && username && !lastFailed) writeCacheDates(username, { [iso]: visits }, scanned); // Refresh updates only this date
                 }
                 progress.style.width = '100%';
 
@@ -1921,6 +1958,7 @@
                 lastMode      = 'full';
                 lastFromCache = true;
                 lastCacheTs   = cached.scanned_at || 0;
+                lastFailed    = 0; // cache is only written by complete scans
                 applyAndRender();
             } else {
                 await doScan('quick');
