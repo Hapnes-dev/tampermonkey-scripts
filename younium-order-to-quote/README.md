@@ -1,6 +1,6 @@
 # Younium Order to Quote
 
-Adds a **📦 Copy from order** button to the Younium **quote** page toolbar — immediately left of **Preview & Send**. Click it, type an existing order number (e.g. `O-015091`), and it copies every product from that order onto the current quote, carrying over each charge's **ordered quantity** and **discount %**. Prices come from the quote's current price list; only quantity and discount are copied.
+Adds a **Copy from order** button to the Younium **quote** page toolbar — immediately left of **Preview & Send**, styled identically to Younium's own toolbar buttons (the button is a live clone of *Preview & Send* with a `content_copy` icon, so it inherits the exact pill shape, colors, and hover). Click it, type an existing order number (e.g. `O-015091`), and it copies every product from that order onto the current quote, carrying over each charge's **ordered quantity** and **discount %**. Prices come from the quote's current price list; only quantity and discount are copied.
 
 ## Install
 
@@ -12,7 +12,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Af
 
 On a Younium quote page (`https://<region>.younium.com/quotes/…`):
 
-1. Injects **📦 Copy from order** into the toolbar, immediately left of **Preview & Send**.
+1. Injects **Copy from order** into the toolbar, immediately left of **Preview & Send**. The button is built by cloning the native *Preview & Send* button (Material classes + Angular scope attributes) and swapping the icon (`data-icon` → `content_copy`) and label — so it always matches Younium's own look; if Younium's button structure ever changes, a self-styled fallback pill is used instead.
 2. Clicking it opens a small dialog. Type an order number (any of `O-015091`, `15091`, `o 15091` — it's normalized to `O-015091`) and press **Fetch**.
 3. The script resolves the current quote (from the URL UUID, or the `Q-…` number in the header), looks up the order, and shows a confirmation: order number, description, account, and product count.
 4. On **Add N products**, for each product on the order it:

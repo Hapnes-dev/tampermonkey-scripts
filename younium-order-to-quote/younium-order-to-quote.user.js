@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Younium Order to Quote
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0
-// @description  Adds a "Copy from order" button on Younium quote pages (left of Preview & Send) — enter an order number (e.g. O-015091) and it copies the order's products onto the quote with each charge's ordered quantity and discount %, letting Younium recompute prices.
+// @version      1.1
+// @description  Adds a "Copy from order" button on Younium quote pages (left of Preview & Send, styled identically to Younium's own toolbar buttons) — enter an order number (e.g. O-015091) and it copies the order's products onto the quote with each charge's ordered quantity and discount %, letting Younium recompute prices.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/younium-order-to-quote/younium-order-to-quote.user.js
@@ -359,11 +359,11 @@
   }
 
   var STYLE = "" +
-    "#ynO2qBtn{display:inline-flex;align-items:center;gap:6px;margin-right:8px;padding:7px 16px;" +
+    "#ynO2qBtn{margin-right:8px;cursor:pointer}" +
+    "#ynO2qBtn.ynO2qFallback{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;" +
     "border:1px solid rgba(255,255,255,.35);border-radius:20px;background:transparent;color:#fff;" +
-    "font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;line-height:1.4}" +
-    "#ynO2qBtn:hover{background:rgba(255,255,255,.12)}" +
-    "#ynO2qBtn:disabled{opacity:.5;cursor:default}" +
+    "font:inherit;font-size:13px;white-space:nowrap;line-height:1.4}" +
+    "#ynO2qBtn.ynO2qFallback:hover{background:rgba(255,255,255,.12)}" +
     "#ynO2qOverlay{position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center}" +
     "#ynO2qCard{width:560px;max-width:92vw;max-height:82vh;display:flex;flex-direction:column;background:#1e1e1e;color:#eee;" +
     "border:1px solid #444;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px}" +
@@ -405,6 +405,53 @@
     return null;
   }
 
+  /**
+   * Clone the native "Preview & Send" button so ours inherits Younium's exact
+   * classes + Angular scope attributes (identical background, radius, hover,
+   * icon colour — and it tracks theme changes). cloneNode copies no event
+   * listeners, so the clone is inert until we wire our own click handler.
+   * The Material icon ligature "visibility" becomes "content_copy" and the
+   * label becomes "Copy from order". Returns null if the structure ever
+   * changes, in which case the caller builds the styled fallback button.
+   */
+  function buildClonedButton(anchor) {
+    try {
+      var btn = anchor.cloneNode(true);
+      btn.id = "ynO2qBtn";
+      btn.type = "button";
+      btn.removeAttribute("disabled");
+      btn.setAttribute("aria-label", "Copy products from an order");
+      var withIds = btn.querySelectorAll("[id]");
+      for (var i = 0; i < withIds.length; i++) withIds[i].removeAttribute("id");
+      // Younium renders button icons as an empty span whose glyph comes from
+      // CSS: .material-symbols-sharp.<name>::before { content: "<name>" }
+      // (ligature font). Swap the class token + data-icon to change the glyph.
+      var replacedIcon = false, replacedLabel = false;
+      var icon = btn.querySelector("[data-icon]");
+      if (icon) {
+        var prevIcon = icon.getAttribute("data-icon");
+        if (prevIcon) icon.classList.remove(prevIcon);
+        icon.classList.add("content_copy");
+        icon.setAttribute("data-icon", "content_copy");
+        replacedIcon = true;
+      }
+      var walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT, null);
+      var node;
+      while ((node = walker.nextNode())) {
+        var t = (node.nodeValue || "").trim();
+        if (!t) continue;
+        if (!replacedIcon && t === "visibility") {
+          node.nodeValue = "content_copy";
+          replacedIcon = true;
+        } else if (!replacedLabel && /Preview & Send/i.test(node.nodeValue)) {
+          node.nodeValue = node.nodeValue.replace(/Preview & Send/i, "Copy from order");
+          replacedLabel = true;
+        }
+      }
+      return replacedLabel ? btn : null;
+    } catch (_) { return null; }
+  }
+
   function injectButton() {
     if (!onQuotePage()) {
       var stale = document.getElementById("ynO2qBtn");
@@ -415,10 +462,14 @@
     var anchor = findPreviewSendButton();
     if (!anchor || !anchor.parentElement) return;
     ensureStyle();
-    var btn = document.createElement("button");
-    btn.id = "ynO2qBtn";
-    btn.type = "button";
-    btn.innerHTML = "📦 Copy from order";
+    var btn = buildClonedButton(anchor);
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "ynO2qBtn";
+      btn.type = "button";
+      btn.className = "ynO2qFallback";
+      btn.innerHTML = "📦 Copy from order";
+    }
     btn.addEventListener("click", openDialog);
     anchor.parentElement.insertBefore(btn, anchor);
   }
