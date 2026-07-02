@@ -253,6 +253,17 @@ resolves to `changes_in_window`).
   Server load = same as single calls (processed sequentially) but far fewer round-trips. The hard limit
   on big scans is **total data volume**, not round-trips — so keeping the everyday scope small (footprint)
   is what keeps it fast.
+- **Measured server profile (2026-07-02, don't re-tune blindly):** ~3–6 ms/plant marginal server cost,
+  ~45 KB/plant payload, **no gzip** → a full scan transfers ~300 MB and is bandwidth/parse-bound. The
+  browser caps HTTP/1.1 at ~**6 connections per origin**, so `SCAN_PARALLEL=20` already sits above the
+  real ceiling — raising batch/concurrency constants buys nothing. The wins are elsewhere:
+- **Scan reliability (v4.57):** `gmFetchHistoryBatch` returns **null** on transport/parse failure (was
+  `{}` — indistinguishable from "no history"); `fetchHistoryBatchReliable` retries once, then reports the
+  batch's plants as failed. A scan with failures **renders but is never cached** (`writeCacheDates`
+  skipped) — a silently-partial full scan used to poison every cached date until the next full scan —
+  and the footer shows `⚠ N unreachable — not cached`. Full scans run **footprint-first** (recent ∪
+  `user_plants` scanned before the other ~7,500) and the progress line shows a live
+  `X of Y plants · Z found for <date>` counter (`.scan-live`).
 
 ---
 
@@ -439,6 +450,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.57** scan deep-dive (measured, not guessed): server ~3–6 ms/plant, ~45 KB/plant, no gzip → full scan ≈ 300 MB, bandwidth/parse-bound; browser HTTP/1.1 ~6 conns/origin means the batch=30/conc=20 constants already exceed the effective ceiling → left unchanged. Shipped instead: **(1)** transport failures retried once and a scan with failures is **never cached** (was: a failed batch resolved `{}`, silently dropped up to 30 plants, and a full scan cached that hole into every date) with a `⚠ N unreachable — not cached` footer; **(2)** live progress counter (`X of Y plants · Z found for <date>`); **(3)** footprint-first ordering in the full scan so your plants surface in the first seconds. Also verified `ensureUserAndRecent` is a warm no-op (no per-scan pang sync).
 - **4.56** deep-dive on per-plant time (39 days / 1,043 clicks / 39 plants, full pipeline replicated offline). Findings: 40% of raw credit was capped 30-min blocks; 107 capped silences (39× 30–45 min, 18× 45–60, 34× 60–120, 16× >120); only 41 had commit evidence of continued work. Shipped **evidence-gated long-silence damping**: capped gaps recorded per plant (`capped_gaps`, cached), and a >45-min silence keeps its 30 only with a triggered commit in its first hour, else 15. Also fixed `cacheVisit` dropping `designer_minutes` — cached dates silently lost v4.54's gap-based Drawing (why a cached day showed nominal-only Drawing). Rejected after measuring: VNC start/stop pairing (`stop_vnc` appears once in the corpus), widening the 20-min fusion window (2 misses vs risk), crude >60-min threshold without the evidence gate (punishes evidenced work). Validation: 18/39 days unchanged, 26/05 + 12/06 bit-identical, changes always −15 per unevidenced long silence.
 - **4.55** `designerGapByPlant` credits the whole designer **session**, not just the immediate gap: it bridges a tight burst of quick same-plant clicks (a momentary pop-out to pma/VNC and back, each gap ≤ `DESIGNER_BURST_MS` = 2 min) and runs until you leave the plant or hit a sustained > 2 min same-plant pause (capped 30). Fixes the "designer → quick check → resume designing" pattern (12/06 plant 10230: 9→30 min) while leaving spread-out designer clicks untouched (26/05 2511 stays 36 min — its clicks are 6 and 31 min apart, not a burst). Residual risk (bounded): a designer click + quick burst + then a long *break* before leaving credits the break as drawing (capped 30); rare.
 - **4.54** better **Drawing** time. The graphic designer logs one pang click then runs click-free, so the flat 8-min/click nominal collapsed long sessions. New `designerGapByPlant(events)` sums the gap AFTER each Designer click (gap-capped) → `v.designer_minutes`; `categorizeVisit` credits Drawing `max(CAT_DESIGNER_MIN_EACH × designerN, v.designer_minutes)` (lift-only over the old nominal). Both build paths now retain per-click action (`_events` in `loadVisitsForDate`, `rec.ev` in `loadUserHistoryAllDates`) to feed it. Validated on the real 26/05 timeline: 2511's 30-min designer session 16→36 min, day Drawing 0.5→0.85 h. Old caches lacking `designer_minutes` fall back to the nominal.
