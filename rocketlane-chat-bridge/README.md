@@ -50,6 +50,12 @@ The script requests `@connect` access to:
 | `assets.rocketlane.com` | Older attachment assets |
 | `d1vtr0p8bkmfca.cloudfront.net` | Avatar / company logo CDN |
 
+## Security model
+
+- **Exposure gate:** the privileged `window.*Bridge` objects are exposed **only** on the tracker origin (`file://`, `localhost`/`127.0.0.1`, or `hapnes-dev.github.io`) **and only** when the page carries the `<meta name="rocketlane-tracker" content="hapnes-dev/Project-Progress-Tracker">` marker. On the platform pages (rocketlane/zendesk/oneflow/younium/hubspot) the script is **capture-only** — it grabs the session token/CSRF and returns before exposing any bridge.
+- **Origin-pinned credentials (v1.15.0):** every request helper checks the resolved URL's origin before attaching credentials and refuses to send them anywhere else — the Rocketlane api-key only to `kiona.api.rocketlane.com`, the Younium Bearer JWT only to `api.younium.com`, and the Zendesk/Oneflow/HubSpot session CSRF/XSRF tokens only to their own origins. A caller-supplied absolute URL can't redirect credentials to another `@connect` host.
+- **No secret logging:** auth diagnostics log presence/length only, never the key or token value.
+
 ## Tenant customization
 
 If your Rocketlane tenant is not `kiona.rocketlane.com`:
