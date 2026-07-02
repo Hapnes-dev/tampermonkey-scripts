@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.59
+// @version      4.60
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1176,12 +1176,13 @@
             for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action });
         }
         const { minutes: minsByPlant, cappedGaps } = attributeTime(allEvents);
-        const drawByPlant = designerGapByPlant(allEvents);
+        const draw = designerGapByPlant(allEvents);
         for (const v of visits) {
             v.estimated_minutes = minsByPlant[v.plant_id] || 0;
             v.base_minutes = v.estimated_minutes; // immutable click-only floor; commit fusion adds on top in ensureChangesEnriched
-            v.designer_minutes = drawByPlant[v.plant_id] || 0; // gap-after-Designer = real Drawing time (v4.54)
-            v.capped_gaps = cappedGaps[v.plant_id] || [];      // long silences, re-judged against commits (v4.56)
+            v.designer_minutes = draw.minutes[v.plant_id] || 0;      // gap-after-Designer = real Drawing time (v4.54)
+            v.designer_last = draw.lastSession[v.plant_id] || null;  // last designer session {s,e} — commit-extendable (v4.60)
+            v.capped_gaps = cappedGaps[v.plant_id] || [];            // long silences, re-judged against commits (v4.56)
             delete v._events;
         }
 
@@ -1231,7 +1232,7 @@
             }
             const { minutes: mins, cappedGaps } = attributeTime(events);
             const draw = designerGapByPlant(events);
-            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; v.designer_minutes = draw[v.plant_id] || 0; v.capped_gaps = cappedGaps[v.plant_id] || []; }
+            for (const v of visits) { v.estimated_minutes = mins[v.plant_id] || 0; v.base_minutes = v.estimated_minutes; v.designer_minutes = draw.minutes[v.plant_id] || 0; v.designer_last = draw.lastSession[v.plant_id] || null; v.capped_gaps = cappedGaps[v.plant_id] || []; }
             visits.sort((a, b) => a.first_ts - b.first_ts);
             dates[iso] = visits;
         }
@@ -1292,8 +1293,8 @@
     // (gap > DESIGNER_BURST_MS between same-plant clicks = you moved to other work) or a plant switch. Capped at
     // ACTIVE_CAP_MS per session. Same cross-plant timeline as attributeTime. (v4.55; v4.54 was the immediate gap only.)
     function designerGapByPlant(events) {
-        const out = {};
-        if (!events || !events.length) return out;
+        const minutes = {}, lastSession = {};
+        if (!events || !events.length) return { minutes, lastSession };
         const sorted = [...events].sort((a, b) => (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
         for (let i = 0; i < sorted.length; i++) {
             if (!CAT_DESIGNER_ACTIONS.has(sorted[i].action)) continue;
@@ -1306,11 +1307,12 @@
                 if (j > i && (next.ts - sorted[j].ts) > DESIGNER_BURST_MS) { endTs = sorted[j].ts; break; }    // sustained pause → moved to other work
                 j++;                                                                                          // designer's own gap, or a quick pop-out → bridge
             }
-            out[plant] = (out[plant] || 0) + Math.min(Math.max(0, endTs - start), ACTIVE_CAP_MS);
+            minutes[plant] = (minutes[plant] || 0) + Math.min(Math.max(0, endTs - start), ACTIVE_CAP_MS);
+            lastSession[plant] = { s: start, e: Math.min(endTs, start + ACTIVE_CAP_MS) }; // last session wins — enrichment may extend it to a commit
             if (j > i) i = j; // skip the rest of this session so overlapping designer clicks aren't double-counted
         }
-        for (const id of Object.keys(out)) out[id] = Math.round(out[id] / 60000);
-        return out;
+        for (const id of Object.keys(minutes)) minutes[id] = Math.round(minutes[id] / 60000);
+        return { minutes, lastSession };
     }
 
     function fmtMinutes(m) {
@@ -1689,8 +1691,10 @@
                 // a break/meeting than half an hour of work on that plant). Skipped when the commits fetch
                 // failed (commits[..] undefined) or the visit came from a pre-4.56 cache (no capped_gaps).
                 const commitList = commits[v.plant_id];
-                if (Array.isArray(commitList) && Array.isArray(v.capped_gaps) && v.capped_gaps.length) {
-                    const trigAll = commitList.filter(c => !isScheduledCommit(c)).map(c => tsFromPangDate(c.date));
+                const trigAll = Array.isArray(commitList)
+                    ? commitList.filter(c => !isScheduledCommit(c)).map(c => tsFromPangDate(c.date))
+                    : null;
+                if (trigAll && Array.isArray(v.capped_gaps) && v.capped_gaps.length) {
                     let cut = 0;
                     for (const g of v.capped_gaps) {
                         if (!g || !(g.gap > LONGGAP_MS)) continue;
@@ -1701,6 +1705,23 @@
                         const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
                         v.base_minutes = Math.max(1, b0 - cut);
                         v.longgap_cut_minutes = b0 - v.base_minutes; // for the verification dump
+                    }
+                }
+                // Commit-anchored designer extension (v4.60): a designer session's click-based end is
+                // often a quick glance at ANOTHER plant — but the graphic save then commits on THIS
+                // plant minutes later, proving the drawing continued (measured: 19 sessions / +190 min
+                // over 3 months, e.g. designer 11:54 → glance elsewhere 11:57 → commit 12:08). Extend
+                // the LAST designer session to the latest triggered commit within 20 min of its end,
+                // still capped at 30 min per session. Category-only: moves minutes Drawing↔Integration
+                // inside the visit; plant/day totals are untouched.
+                if (trigAll && v.designer_last && typeof v.designer_last.e === 'number') {
+                    const capEnd = v.designer_last.s + ACTIVE_CAP_MS;
+                    if (v.designer_last.e < capEnd) {
+                        const cands = trigAll.filter(t => t > v.designer_last.e && t <= v.designer_last.e + COMMIT_SESSION_MAX_MS);
+                        if (cands.length) {
+                            const add = Math.round((Math.min(Math.max(...cands), capEnd) - v.designer_last.e) / 60000);
+                            if (add > 0) { v.designer_minutes = (v.designer_minutes || 0) + add; v.designer_ext_minutes = add; }
+                        }
                     }
                 }
                 // A single click that opened an ACCESS / VNC / diagnostics surface (phpMyAdmin, System tools,
@@ -1794,6 +1815,7 @@
             actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.estimated_minutes,
             base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
             designer_minutes: v.designer_minutes || 0, // v4.56: was dropped by the cache — cached dates silently lost gap-based Drawing (v4.54)
+            designer_last: v.designer_last || null,    // v4.60: last designer session {s,e} for the commit-anchored extension
             capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
         });
         const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
