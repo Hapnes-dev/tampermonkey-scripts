@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Younium Order to Quote
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.1
+// @version      1.2
 // @description  Adds a "Copy from order" button on Younium quote pages (left of Preview & Send, styled identically to Younium's own toolbar buttons) — enter an order number (e.g. O-015091) and it copies the order's products onto the quote with each charge's ordered quantity and discount %, letting Younium recompute prices.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -267,6 +267,7 @@
 
     var chargeBatch = [];
     var warnings = [];
+    var createdCount = 0;
 
     for (var pi = 0; pi < products.length; pi++) {
       var p = products[pi];
@@ -279,12 +280,31 @@
       }
 
       log("info", "Adding " + p.name + "…");
-      var created = await gmYouniumRequest("POST", "/api/quote/product/create", {
-        quoteId: quote.id,
-        productId: productId,
-        chargePlanId: chargePlanId,
-        currencyCode: quote.currencyCode || orderFull.currency || "NOK",
-      });
+      var created;
+      try {
+        created = await gmYouniumRequest("POST", "/api/quote/product/create", {
+          quoteId: quote.id,
+          productId: productId,
+          chargePlanId: chargePlanId,
+          currencyCode: quote.currencyCode || orderFull.currency || "NOK",
+        });
+      } catch (e) {
+        // e.g. HTTP 400 'Product doesn't support OrderType "SalesOrder"' —
+        // subscription products can't go on a sales-type quote (tenant rule).
+        var createMsg = String(e && e.message || e);
+        if (/doesn't support OrderType/i.test(createMsg)) {
+          createMsg = "Younium won't allow this product on this quote type (subscription product on a sales quote) — handle it in a subscription order instead";
+        }
+        warnings.push("“" + p.name + "”: " + createMsg);
+        log("warn", "⚠ " + p.name + " — " + createMsg);
+        continue;
+      }
+      if (!created || !created.id) {
+        warnings.push("“" + p.name + "” — create returned nothing.");
+        log("warn", "⚠ " + p.name + " — create returned nothing");
+        continue;
+      }
+      createdCount++;
       var qCharges = (created && created.quoteProductCharges) || [];
       if (!qCharges.length) {
         warnings.push("“" + p.name + "” was added but came back with no charges.");
@@ -343,9 +363,11 @@
       log("info", "Saving " + chargeBatch.length + " charge(s)…");
       await gmYouniumRequest("PUT", "/api/quote/products/charges", chargeBatch);
     }
-    try { await gmYouniumRequest("PUT", "/api/quote/" + encodeURIComponent(quote.id) + "/calculateKPIs", null); } catch (_) {}
+    if (createdCount) {
+      try { await gmYouniumRequest("PUT", "/api/quote/" + encodeURIComponent(quote.id) + "/calculateKPIs", null); } catch (_) {}
+    }
 
-    return { productCount: products.length, chargeCount: chargeBatch.length, warnings: warnings };
+    return { productCount: products.length, createdCount: createdCount, chargeCount: chargeBatch.length, warnings: warnings };
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -562,7 +584,14 @@
           confirmBox.style.display = "none";
           try {
             var result = await copyOrderToQuote(order, quote, log);
-            log("ok", "✅ Done — " + result.chargeCount + " charge(s) updated across " + result.productCount + " product(s)." +
+            if (!result.createdCount) {
+              log("err", "✖ No products could be added to this quote — see the warnings above.");
+              busy = false;
+              goBtn.disabled = false;
+              input.disabled = false;
+              return;
+            }
+            log("ok", "✅ Done — added " + result.createdCount + " of " + result.productCount + " product(s), " + result.chargeCount + " charge(s) updated." +
               (result.warnings.length ? " " + result.warnings.length + " warning(s) above." : ""));
             log("info", "Reloading to show the new lines…");
             setTimeout(function () { location.reload(); }, 1600);

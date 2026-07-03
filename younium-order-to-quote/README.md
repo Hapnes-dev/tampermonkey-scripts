@@ -19,7 +19,11 @@ On a Younium quote page (`https://<region>.younium.com/quotes/…`):
    - creates the quote product (`POST /api/quote/product/create` with the order line's `productId` + `chargePlanId`), which seeds the charge-plan charges at list price;
    - matches each created quote charge to the order charge (by catalog `chargeId`, falling back to charge name) and applies the order's **ordered quantity** + **discount %**, letting Younium's `calculateQuoteChargePrices` recompute every derived amount server-side;
    - saves the batch (`PUT /api/quote/products/charges`), refreshes KPIs, and reloads the page.
-5. A live log shows each charge as it's applied, plus any warnings (e.g. an order charge that doesn't exist on the current charge plan and must be added manually).
+5. A live log shows each charge as it's applied, plus any warnings (e.g. an order charge that doesn't exist on the current charge plan and must be added manually). **A product that can't be added doesn't abort the copy** — it's logged as a warning and the rest continue; the summary line reports `added X of Y product(s)`. If *nothing* could be added (e.g. a pure subscription order copied onto a sales quote), the run ends with a clear error instead of a success message.
+
+### Verified charge coverage
+
+Tested live against real tenant data (2026-07): quantity charges (model 1, incl. qty 105 lines), flat fees (model 0), tiered (model 2, up to 8 tiers), volume (model 3), one-off (type 0) and recurring (type 1) — quantities and discount % copy exactly; prices always re-price from the quote's current price list. Charges that exist on the quote's charge plan but not on the source order keep their plan defaults (typically qty 0, contributing nothing) and are logged.
 
 **What is copied:** ordered quantity + discount % per charge.
 **What is *not* copied:** unit/list prices — those always follow the quote's current price list, so the quote reflects up-to-date catalog pricing.
@@ -65,5 +69,7 @@ An order product line carries `chargePlan.productId` + `chargePlanId`; the quote
 | "Younium session expired" | Visit `https://eu.younium.com` once while logged in, then retry. |
 | "No order found for O-…" | The order number doesn't exist in this region/tenant, or isn't the last version. |
 | "… not on the current charge plan, add manually" | The order used a charge the product's current charge plan no longer has — add that charge line by hand. |
+| "⚠ … Younium won't allow this product on this quote type" | Subscription products (e.g. `IWMAC Subscription: Basic`) can only go on quotes whose order type allows them — Younium rejects them on a SalesOrder-type quote (`HTTP 400: Product doesn't support OrderType "SalesOrder"`). Copy subscription orders onto a subscription-type quote instead; the other products still copy fine. |
+| "✖ No products could be added to this quote" | Every product on the order was rejected (typically a pure subscription order → sales quote). Nothing was written. |
 
 Diagnostics in DevTools: `window.__ynO2q.token()` (token/region status), `window.__ynO2q.findOrder("O-015091")` (raw order lookup).
