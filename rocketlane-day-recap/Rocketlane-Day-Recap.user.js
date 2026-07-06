@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.98
+// @version      4.99
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.98';
+    const SCRIPT_VERSION   = '4.99';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2391,11 +2391,16 @@
     let _rlCategories = null; // name → categoryId (session cache)
     async function rlCategories() {
         if (_rlCategories) return _rlCategories;
-        const r = await rlFetch('GET', '/timesheets/categories');
-        const map = {};
-        if (Array.isArray(r.json)) for (const c of r.json) if (!c.deleted) map[c.categoryName] = c.categoryId;
-        if (Object.keys(map).length) _rlCategories = map;
-        return map;
+        // One retry — a lone 429/hiccup on this call left a whole Book week day category-less (v4.99,
+        // seen live: Monday's project rows all ⚠ no-category while Tue–Fri were fine).
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const r = await rlFetch('GET', '/timesheets/categories');
+            const map = {};
+            if (Array.isArray(r.json)) for (const c of r.json) if (!c.deleted) map[c.categoryName] = c.categoryId;
+            if (Object.keys(map).length) { _rlCategories = map; return map; }
+            if (!attempt) await new Promise(res => setTimeout(res, 1200));
+        }
+        return {};
     }
     const _rlWeekCache = new Map(); // mondayIso -> { t, p } — collapses Book week's 5 identical weekly GETs (cleared after booking)
     async function rlEntriesOn(iso) {
@@ -3089,11 +3094,12 @@
                 const unsafe = day.plan._dedupeOk === false; // can't see what's already booked ⇒ never book this day
                 const ready = day.plan.filter(e => e.status === 'ready');
                 const already = day.plan.filter(e => e.status === 'already-booked').length;
+                const noCat = day.plan.filter(e => e.status === 'no-category').length;
                 const mins = ready.reduce((s, e) => s + e.minutes, 0);
                 const side = day.err ? '⚠ ' + esc(day.err)
                     : !day.plan.length ? 'no plant work'
                     : unsafe ? '⚠ can’t verify what’s booked — day skipped'
-                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}`;
+                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}`;
                 html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
                 if (unsafe) continue;
                 for (const e of day.plan) {
