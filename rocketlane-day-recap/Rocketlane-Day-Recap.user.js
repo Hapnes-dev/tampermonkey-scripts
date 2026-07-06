@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.73
+// @version      4.74
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.73';
+    const SCRIPT_VERSION   = '4.74';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1691,6 +1691,9 @@
                 // are noise that would otherwise inflate a long visit's 🔧 count and its time.
                 const triggered = inWin.filter(c => !isScheduledCommit(c));
                 v.window_commits = triggered;                              // commit objects, for the drawer
+                // ALL of the day's triggered commits (window or not) — booking texts read these too, since
+                // the descriptive save often lands after the visit window (e.g. while on the next plant).
+                v.day_commits = (commits[v.plant_id] || []).filter(c => pangDateToISODate(c.date) === lastIso && !isScheduledCommit(c));
                 v.changes_in_window = triggered.length;
                 v.change_times = triggered.map(c => tsToLocalTime(tsFromPangDate(c.date)));
                 v.scheduled_in_window = inWin.length - triggered.length;   // counted, not shown as a change
@@ -2367,17 +2370,32 @@
     }
     async function bookTexts(v) {
         const out = { integration: '', drawing: '', racHit: false, drawingNames: [], hints: '' };
-        const commits = (v.window_commits || []).slice(-BOOK_MAX_COMMITS);
-        if (!commits.length) return out;
-        const cids = commits.map(c => String(c.id));
+        // Always-available fallbacks (no commits needed): what TOOLS the session used, and when the
+        // Designer session ran — far more informative than a generic "device/DB config".
+        const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload' };
+        const ac = v.action_counts || {};
+        out.actionsWork = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([a]) => ACT_WORDS[a]).join(' + ');
+        if (v.designer_last && v.designer_last.s) out.designerSession = `Designer session ${tsToLocalTime(v.designer_last.s)}–${tsToLocalTime(v.designer_last.e || v.designer_last.s)}`;
+        // Texts read the visit-window commits PLUS the rest of the day's triggered commits — the save
+        // that describes your work often lands after the visit window (e.g. during the next plant).
+        const seen = new Set(); const commits = [];
+        for (const c of [...(v.window_commits || []), ...(v.day_commits || [])]) { const id = String(c.id); if (!seen.has(id)) { seen.add(id); commits.push(c); } }
+        commits.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
+        const newest = commits.slice(-BOOK_MAX_COMMITS);
+        if (!newest.length) return out;
+        const cids = newest.map(c => String(c.id));
         let patches = {};
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
         const devAdd = [], devMod = new Set(), graphicCids = [], unitJobs = [], settJobs = [];
+        let virtVals = false;
         for (const cid of cids) {
             const tables = Object.entries(patches[cid] || {}).filter(([t, m]) => m && m.mode);
             for (const [t, m] of tables) {
                 if (RAC_RE.test(t)) out.racHit = true;
                 if (/^iw_set_/.test(t)) { if (m.mode === 'add') devAdd.push(bookPrettyToken(t)); else if (/^mod/.test(m.mode)) devMod.add(bookPrettyToken(t)); }
+                // Parameter tuning lives in iw_par_<device>_param/_groups — count a MOD there as "tuned <device>"
+                if (/^iw_par_.+_(param|groups)$/.test(t) && /^mod/.test(m.mode)) devMod.add(bookPrettyToken(t));
+                if (t === 'iw_sys_virtual_values' && /^mod/.test(m.mode)) virtVals = true;
                 if (/graphic_designer/i.test(t)) graphicCids.push(cid);
                 if (t === 'iw_sys_plant_units') unitJobs.push({ table_name: t, commit: cid });
                 if (t === 'iw_sys_plant_settings' && /^mod/.test(m.mode)) settJobs.push({ table_name: t, commit: cid });
@@ -2416,10 +2434,11 @@
         if (uAdd) bits.push(`+${uAdd} unit${uAdd === 1 ? '' : 's'}` + (!devAdd.length && uNames.length ? ` (${uNames.join(', ')}…)` : ''));
         if (uDel) bits.push(`-${uDel} unit${uDel === 1 ? '' : 's'}`);
         if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (!uAdd && uNames.length ? ` (${uNames.slice(0, 2).join(', ')}…)` : ''));
-        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 2).join(', ') + (u.length > 2 ? ` +${u.length - 2}` : '')); }
-        if (settNames.length) bits.push('settings: ' + settNames.slice(0, 2).join(', ') + (settNames.length > 2 ? ` +${settNames.length - 2}` : ''));
+        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3}` : '')); }
+        if (virtVals) bits.push('virtual values');
+        if (settNames.length) bits.push('plant settings: ' + settNames.slice(0, 2).join(', ') + (settNames.length > 2 ? ` +${settNames.length - 2}` : ''));
         let integ = bits.join(' · ');
-        if (integ.length > 95) integ = integ.slice(0, 93) + '…';
+        if (integ.length > 110) integ = integ.slice(0, 108) + '…';
         out.integration = integ;
         if (graphicCids.length) {
             const jobs = [...new Set(graphicCids)].map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
@@ -2540,8 +2559,8 @@
             for (const [cat, min] of bookable) {
                 let category = cat;
                 let act;
-                if (cat === CAT_INTEGRATION) act = 'Integration: ' + (texts.integration || 'device/DB config');
-                else if (cat === CAT_DRAWING) act = 'Drawing: ' + (texts.drawing || 'graphics update in Designer');
+                if (cat === CAT_INTEGRATION) act = 'Integration: ' + (texts.integration || (texts.actionsWork ? texts.actionsWork + ' work' : 'device/DB config'));
+                else if (cat === CAT_DRAWING) act = 'Drawing: ' + (texts.drawing || texts.designerSession || 'graphics update in Designer');
                 else if (cat === CAT_SETUP_PC) act = 'Setup: AK3 scanner setup';
                 else act = CAT_SHORT[cat] + ': plant work';
                 // RAC ⇒ the "integration" is really gateway setup: move it to Setup - PC / Gateway.
