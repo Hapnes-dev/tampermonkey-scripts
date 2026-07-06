@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.97**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.100**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,6 +463,19 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.98–4.100** Book week hardening (all from live use on 2026-07-06):
+  - **Cleared week bookable (4.98):** Thomas empties a week then refills it — but `entries: []` was treated
+    as "can't verify" and locked every day out. The weekly walker now also detects the timesheet
+    STRUCTURE (`sawEntries` — an `entries` ARRAY anywhere, even empty): recognized-but-empty is trusted;
+    only non-200 / unrecognizable responses block booking. Plus `_rlWeekCache` (per-monday promise, 60 s)
+    collapses the 5 identical weekly GETs per build; cleared after `bookPlanEntries`.
+  - **Categories retry (4.99):** one 429/hiccup on `/timesheets/categories` left a whole day's rows
+    ⚠ no-category ("nothing new") — now retried once (1.2 s gap), and the week day-header shows
+    "⚠ N missing category — flip ‹ › to retry" instead of hiding it.
+  - **Verified POST retry (4.100):** a lone HTTP 502 killed 1 of 24 entries. 5xx/429/network failures
+    wait 1.5 s, re-fetch the day's entries and only retry when the write provably did NOT land (a dead
+    gateway can still commit; build-time dedupe guarantees project+category was absent before, so its
+    appearance = our write). Verification unavailable ⇒ failure stands, next rebuild dedupes.
 - **4.93–4.97** ⤴ **Book week** — one click fills Monday–Friday. Toolbar button injected LEFT of Rocketlane's
   own "Add" (`buildWeekButton`: finds the Add button by text, borrows its className, inserted via the same
   MutationObserver as the FAB; throttled 800 ms). Click → floating `#rl-recap-week` modal (reuses the
