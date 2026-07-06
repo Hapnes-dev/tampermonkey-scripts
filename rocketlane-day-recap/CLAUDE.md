@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.55**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.61**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -454,6 +454,9 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.61** housekeeping: re-synced the `SCRIPT_VERSION` console-log const (stale at `'4.50'` since the 4.51–4.60
+  releases; it only prefixes `LOG` lines, but a wrong console tag derails installed-version debugging) and this file's
+  "Current version" header. No behaviour change.
 - **4.60** commit-anchored designer-session extension. The click-based designer session often ends at a quick glance at ANOTHER plant (v4.55's bridge is same-plant only) — but the graphic save then commits on the designer's plant minutes later. Fix: `designerGapByPlant` also returns each plant's LAST session `{s,e}` (→ `v.designer_last`, cached); enrichment extends it to the latest triggered commit ≤ 20 min after `e` (per-session 30-min cap). Corpus-validated: fires 19× / +190 min Drawing over 3 months (e.g. 17/06 10232 designer@11:54 → 5285 glance @11:57 → commit @12:08 ⇒ 3→14 min); category-only, totals unchanged; 12/06 10230 lands on the same 30 min as approved.
 - **4.59** the panel is draggable by its header (pointer events; `KEY_PANEL_POS` persists `{left,top}`; clamped to the viewport on apply so it can't be lost off-screen; double-click the header resets to the default bottom-right dock; the × button is excluded from the drag handle).
 - **4.58** commit→time deep-dive (285 triggered commits near real visits, 39 plants since 04-01). Measured save→commit lag after the nearest click: 0-2 min 103, 3-6 min 46, **7-10 min 30, 11-20 min 38**, 21-60 min 68 — so ~31% of genuine saves landed beyond the old 6-min non-sparse badge window, and **13 click-heavy visits ended with a save 7-20 min after the last click** that got no badge/drawer/evidence at all. Fix: `CHANGE_PAD_TAIL_MS` 6→20 min (aligned with `COMMIT_SESSION_MAX_MS`). Display/evidence only — no time change for click-heavy visits (fusion stays sparse-only); a late commit can now correctly flip an access-only visit out of Quick check into Integration. **Measured & REJECTED — commit-chained session extension** (each save ≤20 min after the previous anchor extends a sparse session past the 20-min clamp, capped 60, stopped at the next click elsewhere): the whole 3-month corpus has only 5 sparse+commit visits, ZERO truncated chains, and the single visit it changes is on the approved 26/05 anchor (10111 22→56 min, partly double-counting an interleaved 9815 glance). Do not re-chase it.
