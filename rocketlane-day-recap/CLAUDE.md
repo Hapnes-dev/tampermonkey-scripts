@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.90**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.91**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,7 +463,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.74–4.90** Book day matured — texts, notes, matcher v2+v3, fetch perf:
+- **4.74–4.91** Book day matured — texts, notes, matcher v2+v3, fetch perf:
   - **Texts (4.74–4.77):** activity texts read the WHOLE day's triggered commits (`v.day_commits` — the
     descriptive save often lands after the visit window); param tuning (`iw_par_*_param/groups` mods) →
     "tuned <device>"; unit adds named by their **unit labels** drawer-style ("added Maskin 2 (000:014)")
@@ -491,7 +491,17 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     phase-derived on ties; sales-order quantity lines (`— N pcs` / "price per unit" / "Aftermarket")
     are excluded from every candidate pool (`BOOK_QTY_TASK_RE` — they contain discipline words like
     "Per energy meter" and would pollute scoring); `nport` joins the Setup pool (Moxa NPort = serial
-    gateway) (4.90).
+    gateway) (4.90). **Creating an activity is the LAST resort** (Thomas's rule, 4.91): pools widened
+    with Norwegian operational vocabulary (`konfig|igangkj|i?driftsett|commission|innregul|integrasjon|
+    oppkobling|programmering|oppstart` for Integration incl. the `Integrasjon:` prefix;
+    `oversikt|grafikk|graphic|skjerm|visualis|image` for Drawing; `server|moxa|router|network/nettverk|
+    port forward|connection/forbindelse/tilkobling` for Setup), then a **rescue pass** evidence-ranks
+    every remaining OPEN task (name- or phase-derived discipline, summed w1+w2 weights) — excluding
+    checklist/admin rows (`BOOK_CHECKLIST_RE`: approvals, alarm test, sales/order/handover/documentation/
+    survey/subscription…), the other categories' signature names, and tasks already picked for another
+    category that day (`usedTasks` guard); Setup walks a gateway-first priority list over open candidates
+    when evidence can't decide. Rescued picks log as "(rescue)". Activities now only remain for
+    checklist-only projects and genuine equal-evidence ties.
   - **Team-bucket fallback (4.76):** no-project rows get a picker over `Team *` projects; booking there
     names the activity `<plant id> <plant name> - <activity>`; choice remembered
     (`book_fallback_project`); per-bucket dupe-guard.
