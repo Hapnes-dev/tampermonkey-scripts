@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.95
+// @version      4.96
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.95';
+    const SCRIPT_VERSION   = '4.96';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2720,24 +2720,37 @@
         const singleOpen = (cands) => { const open = cands.filter(t => !t.done); return open.length === 1 ? open[0] : null; };
         const resolve = (cands, stripRe) => tiered(cands, stripRe) || tiered(cands.filter(t => !t.done), stripRe) || singleOpen(cands);
         // v4.91/4.92: creating an activity is the LAST RESORT — a guessed existing task beats a new
-        // activity (Thomas's rule). Rank every remaining OPEN task by the same discipline evidence
-        // (name or phase); checklist/admin rows and tasks already picked for another category are
-        // always excluded. `fences` (v4.95) keep other categories' signature tasks out in STAGES —
-        // the last fence is relaxed first, so e.g. Setup lands on an Integration task before it would
-        // ever touch a Design task (seen live: "Setup 18m → Design: Energi" — wrong side). Order of
-        // guesses per stage: evidence winner (ties → alphabetical) → this category's strict-pool tasks
-        // alphabetically → any surviving task alphabetically. Null only when nothing survives at all.
+        // activity (Thomas's rule). Rank every remaining task by the same discipline evidence (name or
+        // phase); checklist/admin rows and tasks already picked for another category are always
+        // excluded. `fences` (v4.95) keep other categories' signature tasks out in STAGES — the last
+        // fence is relaxed first, so e.g. Setup lands on an Integration task before it would ever touch
+        // a Design task. At each fence stage OPEN tasks are tried first, then COMPLETED ones (v4.96 —
+        // on finished "Ombygging" projects every task is ✓-done and rescue used to give up: a done
+        // "Design: Refrigeration" still beats a new activity, and a done same-category task beats an
+        // open other-category one). Order of guesses per pool: evidence winner (ties → alphabetical) →
+        // this category's strict-pool tasks → any survivor, the last two ranked by Thomas's discipline
+        // order (refrigeration first — his plants are refrigeration-dominant, so a no-evidence Designer
+        // day guesses "Design: Refrigeration", not the alphabetical "Design: Energi") then name.
         const rescue = (sigCands, fences) => {
-            const ok = t => !t.done && !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
+            const ok = t => !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
             const wSum = Object.assign({}, w2);
             for (const k in w1) wSum[k] = (wSum[k] || 0) + w1[k];
+            const discPri = t => { // index into TASK_DISCIPLINES (name first, else phase); unknown ⇒ last
+                let td = bookDiscOf(t.taskName.replace(/^[a-zæøå ]+\s*[:\-]/i, ''));
+                if (!td.size) td = bookDiscOf(t.phase || '');
+                for (let i = 0; i < TASK_DISCIPLINES.length; i++) if (td.has(TASK_DISCIPLINES[i][0])) return i;
+                return TASK_DISCIPLINES.length;
+            };
             for (let k = (fences || []).length; k >= 0; k--) {
                 const act = (fences || []).slice(0, k);
-                const pool = tasks.filter(t => ok(t) && !act.some(re => re.test(t.taskName)));
-                if (!pool.length) continue;
-                const alpha = list => list.filter(t => pool.includes(t)).sort((a, b) => a.taskName.localeCompare(b.taskName))[0] || null;
-                const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || alpha(sigCands || []) || alpha(pool);
-                if (hit) return Object.assign({ rescued: true }, hit);
+                for (const wantOpen of [true, false]) {
+                    const pool = tasks.filter(t => (wantOpen ? !t.done : t.done) && ok(t) && !act.some(re => re.test(t.taskName)));
+                    if (!pool.length) continue;
+                    const best = list => list.filter(t => pool.includes(t))
+                        .sort((a, b) => (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
+                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || best(sigCands || []) || best(pool);
+                    if (hit) return Object.assign({ rescued: true }, hit);
+                }
             }
             return null;
         };
