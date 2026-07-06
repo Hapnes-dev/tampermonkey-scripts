@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.83
+// @version      4.84
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.83';
+    const SCRIPT_VERSION   = '4.84';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2375,9 +2375,15 @@
         const out = { integration: '', drawing: '', racHit: false, drawingNames: [], drawingLines: [], hints: '' };
         // Always-available fallbacks (no commits needed): what TOOLS the session used, and when the
         // Designer session ran — far more informative than a generic "device/DB config".
-        const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload' };
+        const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload', direct_plant: 'direct login', designer4: 'Designer', designer3: 'Designer', get_status: 'status check' };
         const ac = v.action_counts || {};
-        out.actionsWork = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([a]) => ACT_WORDS[a]).join(' + ');
+        const actEntries = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]);
+        out.actionsWork = actEntries.filter(([a]) => !/^(direct_plant|designer|get_status)/.test(a)).slice(0, 3).map(([a]) => ACT_WORDS[a]).join(' + ');
+        // Notes fallback when no config commit exists: the session described by its TOOLS + counts —
+        // "Worked via phpMyAdmin ×3 · VNC · topology ×2" beats an empty Notes field.
+        out.notesActions = actEntries.length
+            ? 'Worked via ' + actEntries.slice(0, 5).map(([a, n]) => ACT_WORDS[a] + (n > 1 ? ` ×${n}` : '')).join(' · ')
+            : '';
         if (v.designer_last && v.designer_last.s) out.designerSession = 'Designer session'; // no timestamps — the entry carries its own date/duration
         // Texts read the visit-window commits PLUS the rest of the day's triggered commits — the save
         // that describes your work often lands after the visit window (e.g. during the next plant).
@@ -2680,9 +2686,9 @@
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
                 // Detailed multi-line notes → the entry's Notes field (category-matched).
-                const notes = category === CAT_DRAWING ? (texts.notesDraw || '')
-                    : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || ''].filter(Boolean).join('\n')
-                    : (texts.notesInteg || '');
+                const notes = category === CAT_DRAWING ? (texts.notesDraw || texts.notesActions || '')
+                    : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || texts.notesActions || ''].filter(Boolean).join('\n')
+                    : (texts.notesInteg || texts.notesActions || ''); // no commits ⇒ describe the session by its tools
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
