@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.62**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.63**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -454,7 +454,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.62** ⤴ **Book day** — one click writes the split into the Rocketlane timesheet via Rocketlane's own API.
+- **4.62–4.63** ⤴ **Book day** — one click writes the split into the Rocketlane timesheet via Rocketlane's own API.
   New module before `renderVisits`: `rlCreds` (api-key + userId from `localStorage.__api_key`, same as the
   chat-bridge), `rlFetch` (GM_xmlhttpRequest, origin-pinned to `kiona.api.rocketlane.com/api/v1` — page fetch is
   CORS-blocked, the app tunnels through a comlink iframe), `rlProjects` (paginated `GET /projects?pageSize=100&page=N`,
