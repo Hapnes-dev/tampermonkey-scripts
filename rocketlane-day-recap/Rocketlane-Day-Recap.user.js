@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.61
+// @version      4.62
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.61';
+    const SCRIPT_VERSION   = '4.62';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1460,8 +1460,22 @@
         #${PANEL_ID} .catsum-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
         #${PANEL_ID} .catsum-title { font-size: 12px; font-weight: 600; color: #21272a; }
         #${PANEL_ID} .catsum-q { color: #a8a8a8; cursor: help; font-weight: 400; }
+        #${PANEL_ID} .catsum-btns { display: inline-flex; gap: 6px; }
         #${PANEL_ID} .catsum-copy { font-size: 11px; padding: 2px 8px; border: 1px solid #c6c6c6; border-radius: 5px; background: #fff; color: #0f62fe; cursor: pointer; }
         #${PANEL_ID} .catsum-copy:hover { border-color: #0f62fe; }
+        #${PANEL_ID} .catsum-book { font-size: 11px; padding: 2px 8px; border: 1px solid #0f62fe; border-radius: 5px; background: #0f62fe; color: #fff; font-weight: 600; cursor: pointer; }
+        #${PANEL_ID} .catsum-book:hover { background: #0353e9; }
+        #${PANEL_ID} .bookplan { font-size: 12px; color: #21272a; }
+        #${PANEL_ID} .bookplan-head { font-weight: 600; margin-bottom: 6px; }
+        #${PANEL_ID} .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
+        #${PANEL_ID} .bookplan-st { flex: none; width: 18px; text-align: center; }
+        #${PANEL_ID} .bookplan-txt { flex: 1; line-height: 1.35; }
+        #${PANEL_ID} .bookplan-txt small { color: #6f6f6f; }
+        #${PANEL_ID} .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+        #${PANEL_ID} .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
+        #${PANEL_ID} .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
+        #${PANEL_ID} .bookplan-foot button[disabled] { opacity: .5; cursor: default; }
+        #${PANEL_ID} .bookplan-sum { font-size: 12px; color: #24a148; font-weight: 600; flex: 1; }
         #${PANEL_ID} .catsum-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; color: #21272a; }
         #${PANEL_ID} .catsum-name { display: inline-flex; align-items: center; gap: 6px; width: 160px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #${PANEL_ID} .catsum-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
@@ -1626,7 +1640,7 @@
             // (which left "to book" below the configured hours). Quick visits keep their raw estimate. (v4.53, R2)
             if (targetMin > 0) normalizeMinutes(lastVisits.filter(v => categorizeVisit(v)[CAT_CHECK] == null), targetMin, ROUND_TO_MIN);
             renderVisits(list, lastVisits, lastIso, lastScanned);
-            renderCategorySummary(catsumEl, lastVisits);
+            renderCategorySummary(catsumEl, lastVisits, lastIso);
             const stillMissing = lastVisits.filter(v => !v.name).length;
             const displayTotal = targetMin > 0
                 ? lastVisits.reduce((s, v) => s + (v.normalized_minutes || 0), 0)
@@ -2203,7 +2217,7 @@
 
     // Render the category roll-up into its container (called from applyAndRender; refines once commit
     // classes arrive). Includes a Copy button that yields paste-ready "Category: H h" lines for Rocketlane.
-    function renderCategorySummary(container, visits) {
+    function renderCategorySummary(container, visits, isoDate) {
         container.innerHTML = '';
         if (!visits || !visits.length) return;
         const { rows, grand } = dayCategoryTotals(visits);
@@ -2212,7 +2226,9 @@
         head.className = 'catsum-head';
         head.innerHTML =
             `<span class="catsum-title">📋 Day by category <span class="catsum-q" title="Estimated timesheet split of your plant work. Designer &amp; AK3 setup are credited fixed time (they log few clicks); the rest goes to Integration when real config changed, else a short access-only visit (under ~15 min) is a Quick check — shown here but NOT added to the timesheet total. Plant work only — meetings, admin, documentation and training aren't in pang, so add those yourself.">ⓘ</span></span>` +
-            `<button type="button" class="catsum-copy" title="Copy this breakdown to paste into your timesheet">⧉ Copy</button>`;
+            `<span class="catsum-btns">` +
+            `<button type="button" class="catsum-book" title="Create these entries in your Rocketlane timesheet: one per plant &amp; category, project matched by plant id, activity text from what actually changed. Quick checks are never booked; already-booked project+category lines are skipped. You confirm the plan first.">⤴ Book day</button>` +
+            `<button type="button" class="catsum-copy" title="Copy this breakdown to paste into your timesheet">⧉ Copy</button></span>`;
         container.appendChild(head);
         for (const r of rows) {
             const pct = grand ? Math.round((r.minutes / grand) * 100) : 0;
@@ -2240,7 +2256,231 @@
                 .then(() => { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '⧉ Copy'; }, 1500); })
                 .catch(() => { btn.textContent = 'Copy failed'; });
         });
+        head.querySelector('.catsum-book').addEventListener('click', () => {
+            if (!rlCreds()) { alert('No Rocketlane api-key found — reload this Rocketlane tab while logged in, then try again.'); return; }
+            openBookingFlow(container, visits, isoDate);
+        });
     }
+
+    // ===== ⤴ Book day — write the split straight into the Rocketlane timesheet (v4.62) ==========
+    // One click books every bookable plant/category line for the shown date via Rocketlane's own API
+    // (the same api-key the web app uses, read from localStorage.__api_key like the chat-bridge does).
+    // Page-context fetch is CORS-blocked (the app tunnels through a comlink iframe), so all calls go
+    // through GM_xmlhttpRequest. Payload verified by a live trial: POST /users/{id}/time-entries with
+    // { date, minutes, activityName, billable, categoryId (FLAT — mandatory per timesheet config),
+    // projectId } → 201. Quick checks are never booked. Dedupe: an entry for the same project+category
+    // already on that date is skipped, so re-clicking can't double-book.
+    const RL_API = 'https://kiona.api.rocketlane.com/api/v1';
+    const KEY_RL_PROJECTS = 'rl_projects_cache';      // { fetched_at, list: [{id, name}] }
+    const RL_PROJECTS_TTL_MS = 24 * 60 * 60 * 1000;   // project inventory refreshes daily (or on a cache miss)
+    const BOOK_MAX_COMMITS = 4;                       // newest triggered commits inspected for activity texts
+    // "RAC" in the matched project name or in a changed table ⇒ the work is gateway setup, not integration.
+    const RAC_RE = /(^|[\s_.:\-(])rac([\s_.:\-)]|$|\d)/i;
+
+    function rlCreds() {
+        try {
+            const a = JSON.parse(localStorage.getItem('__api_key')); // page localStorage is shared with the sandbox
+            if (Array.isArray(a) && a[1] && a[2]) return { apiKey: String(a[1]), userId: a[2] };
+        } catch (e) { /* fall through */ }
+        return null;
+    }
+    function rlFetch(method, path, body) {
+        return new Promise((resolve) => {
+            const creds = rlCreds();
+            if (!creds) { resolve({ status: 0, json: null, error: 'no api-key (open Rocketlane while logged in)' }); return; }
+            const url = RL_API + path;
+            if (!url.startsWith(RL_API)) { resolve({ status: 0, json: null, error: 'origin pin' }); return; } // never send the key elsewhere
+            GM_xmlhttpRequest({
+                method, url,
+                headers: Object.assign({ 'api-key': creds.apiKey, 'accept': 'application/json' },
+                    body ? { 'content-type': 'application/json' } : {}),
+                data: body ? JSON.stringify(body) : undefined,
+                timeout: 30000,
+                onload: r => { let j = null; try { j = JSON.parse(r.responseText); } catch (e) {} resolve({ status: r.status, json: j, raw: r.responseText }); },
+                onerror: () => resolve({ status: 0, json: null, error: 'network' }),
+                ontimeout: () => resolve({ status: 0, json: null, error: 'timeout' }),
+            });
+        });
+    }
+    // Full project inventory (~800), paginated 100/page, cached a day. Names carry the plant id prefix
+    // ("2184 - Meny Hundvåg: ombygging"), which is what plant→project matching keys on.
+    async function rlProjects(force) {
+        const cached = GM_getValue(KEY_RL_PROJECTS, null);
+        if (!force && cached && cached.list && (Date.now() - cached.fetched_at) < RL_PROJECTS_TTL_MS) return cached.list;
+        const list = [];
+        for (let page = 1; page <= 15; page++) {
+            const r = await rlFetch('GET', `/projects?pageSize=100&page=${page}`);
+            const arr = Array.isArray(r.json) ? r.json : null;
+            if (!arr) break;
+            for (const p of arr) if (p && p.projectId && p.projectName) list.push({ id: p.projectId, name: p.projectName });
+            if (arr.length < 100) break;
+        }
+        if (list.length) GM_setValue(KEY_RL_PROJECTS, { fetched_at: Date.now(), list });
+        return list.length ? list : (cached && cached.list) || [];
+    }
+    function rlFindProject(list, plantId) {
+        const re = new RegExp('^\\s*' + String(plantId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–—:.]');
+        return list.find(p => re.test(p.name)) || null;
+    }
+    let _rlCategories = null; // name → categoryId (session cache)
+    async function rlCategories() {
+        if (_rlCategories) return _rlCategories;
+        const r = await rlFetch('GET', '/timesheets/categories');
+        const map = {};
+        if (Array.isArray(r.json)) for (const c of r.json) if (!c.deleted) map[c.categoryName] = c.categoryId;
+        if (Object.keys(map).length) _rlCategories = map;
+        return map;
+    }
+    async function rlEntriesOn(iso) {
+        const creds = rlCreds(); if (!creds) return [];
+        const d = new Date(iso + 'T12:00:00');
+        const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+        const mIso = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+        const r = await rlFetch('GET', `/users/${creds.userId}/timesheets/${mIso}?useNewLogic=true&sourcePage=MY_TIME_SHEET`);
+        const entries = (r.json && r.json.entries) || [];
+        return entries.filter(e => e.date === iso);
+    }
+
+    // What to WRITE per category — read the visit's newest triggered commits: added devices for the
+    // Integration text, the changed graphic panel NAMES for the Drawing text ("Drawing: Wireless
+    // Overview"), and a RAC sniff on every changed table name.
+    function bookPrettyToken(t) {
+        let s = String(t).replace(/^iw_(set|par)_/, '').replace(/_(groups|param)$/, '').replace(/^da3_/, '');
+        return s.split('_').map(w => /\d/.test(w) ? w.toUpperCase() : (w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+    }
+    async function bookTexts(v) {
+        const out = { integration: '', drawing: '', racHit: false };
+        const commits = (v.window_commits || []).slice(-BOOK_MAX_COMMITS);
+        if (!commits.length) return out;
+        const cids = commits.map(c => String(c.id));
+        let patches = {};
+        try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
+        const devices = [], graphicCids = [];
+        for (const cid of cids) {
+            const tables = Object.entries(patches[cid] || {}).filter(([t, m]) => m && m.mode);
+            for (const [t, m] of tables) {
+                if (RAC_RE.test(t)) out.racHit = true;
+                if (m.mode === 'add' && /^iw_set_/.test(t)) devices.push(bookPrettyToken(t));
+                if (/graphic_designer/i.test(t)) graphicCids.push(cid);
+            }
+        }
+        if (devices.length) {
+            const uniq = [...new Set(devices)];
+            out.integration = 'added ' + uniq.slice(0, 3).join(', ') + (uniq.length > 3 ? ` +${uniq.length - 3} more` : '');
+        }
+        if (graphicCids.length) {
+            const jobs = [...new Set(graphicCids)].map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
+            try {
+                const vers = await gmFetchTwoVersionsBatch(jobs);
+                const names = new Set();
+                for (const ver of vers) {
+                    if (!ver) continue;
+                    const d = chgDiff(ver);
+                    for (const m of d.modified) names.add(String(m.key).split(CHG_SEP).filter(Boolean).join(' / '));
+                    for (const a of d.added) names.add(chgRowLabel(a));
+                    if (names.size >= 3) break;
+                }
+                if (names.size) out.drawing = [...names].slice(0, 3).join(', ');
+            } catch (e) { /* fallback text */ }
+        }
+        return out;
+    }
+
+    // Build the day's booking plan: one entry per plant×category (quick checks excluded), with the
+    // project resolved by plant-id prefix and the activity text derived from what actually changed.
+    async function buildBookingPlan(visits, iso) {
+        const [projects, cats, existing] = [await rlProjects(false), await rlCategories(), await rlEntriesOn(iso)];
+        const plan = [];
+        for (const v of visits) {
+            const split = categorizeVisit(v);
+            const bookable = Object.entries(split).filter(([c, m]) => !CAT_NOT_BOOKED.has(c) && Math.round(m) >= 1);
+            if (!bookable.length) continue;
+            const proj = rlFindProject(projects, v.plant_id);
+            const texts = await bookTexts(v);
+            const racProject = proj ? RAC_RE.test(proj.name) : false;
+            for (const [cat, min] of bookable) {
+                let category = cat;
+                let act;
+                if (cat === CAT_INTEGRATION) act = 'Integration: ' + (texts.integration || 'device/DB config');
+                else if (cat === CAT_DRAWING) act = 'Drawing: ' + (texts.drawing || 'graphics update in Designer');
+                else if (cat === CAT_SETUP_PC) act = 'Setup: AK3 scanner setup';
+                else act = CAT_SHORT[cat] + ': plant work';
+                // RAC ⇒ the "integration" is really gateway setup: move it to Setup - PC / Gateway.
+                if ((texts.racHit || racProject) && cat === CAT_INTEGRATION) {
+                    category = CAT_SETUP_PC;
+                    act = 'Setup: RAC' + (texts.integration ? ' — ' + texts.integration : ' setup');
+                }
+                const catId = cats[category];
+                const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
+                plan.push({
+                    plant_id: v.plant_id, plant: v.name || v.plant_id,
+                    projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
+                    category, categoryId: catId || null, minutes: Math.round(min), activityName: act,
+                    status: !proj ? 'no-project' : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
+                });
+            }
+        }
+        return plan;
+    }
+
+    async function bookPlanEntries(plan, iso, onProgress) {
+        const creds = rlCreds();
+        let ok = 0, fail = 0;
+        for (const e of plan) {
+            if (e.status !== 'ready') continue;
+            const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, {
+                date: iso, minutes: e.minutes, activityName: e.activityName,
+                billable: true, categoryId: e.categoryId, projectId: e.projectId,
+            });
+            e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
+            if (e.status === 'booked') ok++; else { fail++; e.error = (r.json && r.json.errors && r.json.errors[0] && r.json.errors[0].errorMessage) || ('HTTP ' + r.status); }
+            onProgress && onProgress(e);
+        }
+        return { ok, fail };
+    }
+
+    // The confirm-then-book flow, rendered inside the .catsum container.
+    function openBookingFlow(container, visits, iso) {
+        const saved = container.innerHTML;
+        container.innerHTML = '<div class="bookplan"><div class="bookplan-head">⤴ Book to timesheet — building plan…</div></div>';
+        const box = container.querySelector('.bookplan');
+        const esc = escapeHtml;
+        buildBookingPlan(visits, iso).then(plan => {
+            if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
+            const ready = plan.filter(e => e.status === 'ready');
+            const lines = plan.map((e, i) =>
+                `<div class="bookplan-row" data-i="${i}">
+                    <span class="bookplan-st">${e.status === 'ready' ? '☐' : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
+                    <span class="bookplan-txt"><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
+                    <small>${esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'no-project' ? ' — no matching project, book manually' : e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small></span>
+                </div>`).join('');
+            box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${lines}
+                <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
+            wire();
+            function wire() {
+                box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
+                box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
+                    ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
+                    await bookPlanEntries(plan, iso, (e) => {
+                        const i = plan.indexOf(e);
+                        const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
+                        if (st) st.textContent = e.status === 'booked' ? '✅' : '❌';
+                        if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
+                    });
+                    const okN = plan.filter(e => e.status === 'booked').length;
+                    const failN = plan.filter(e => e.status === 'failed').length;
+                    const foot = box.querySelector('.bookplan-foot');
+                    foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''} — reload the timesheet page to see them</span><button type="button" data-b="cancel">Close</button>`;
+                    foot.querySelector('[data-b=cancel]').addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
+                });
+            }
+        }).catch(err => {
+            box.innerHTML = `<div class="bookplan-head">Couldn't build the plan: ${esc(String(err && err.message || err))}</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>`;
+            box.querySelector('[data-b=cancel]').addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
+        });
+    }
+    // Restoring saved HTML loses listeners — just re-render the summary properly.
+    function rewire(container, visits, iso) { renderCategorySummary(container, visits, iso); }
 
     function renderVisits(list, visits, isoDate, scanned) {
         list.innerHTML = '';
