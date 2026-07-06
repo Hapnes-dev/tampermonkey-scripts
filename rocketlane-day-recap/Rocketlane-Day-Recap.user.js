@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.90
+// @version      4.91
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.90';
+    const SCRIPT_VERSION   = '4.91';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2679,7 +2679,10 @@
     // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs")
     // are price rows, not work packages — they contain discipline words and would pollute the scoring.
     const BOOK_QTY_TASK_RE = /\b\d+\s*pcs\b|price per unit|aftermarket/i;
-    function pickTask(tasks, category, texts) {
+    // Checklist/admin rows are never time-booking targets, not even in rescue mode ("Customers approval",
+    // "Alarm test", "Close sales order", "Documentation approved", "Project Satisfaction Survey", …).
+    const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
+    function pickTask(tasks, category, texts, used) {
         tasks = (tasks || []).filter(t => !BOOK_QTY_TASK_RE.test(t.taskName));
         if (!tasks.length) return null;
         // TIERED evidence: device tokens + graphic names are system-level truth; unit NAMES are only a
@@ -2694,9 +2697,23 @@
         // breaking an evidence tie) → exactly one open candidate left ⇒ that's the active work package.
         const singleOpen = (cands) => { const open = cands.filter(t => !t.done); return open.length === 1 ? open[0] : null; };
         const resolve = (cands, stripRe) => tiered(cands, stripRe) || tiered(cands.filter(t => !t.done), stripRe) || singleOpen(cands);
+        // v4.91: creating an activity is the LAST RESORT. When the strict pools can't decide, rank every
+        // remaining OPEN task by the same discipline evidence (name or phase) — checklist/admin rows,
+        // other categories' signature names, and tasks already picked for another category are excluded.
+        // A unique evidence winner or a lone surviving task gets the booking; only a real tie gives up.
+        const rescue = (excludeRe) => {
+            const pool = tasks.filter(t => !t.done && !BOOK_CHECKLIST_RE.test(t.taskName)
+                && !(excludeRe && excludeRe.test(t.taskName)) && !(used && used.has(t.taskId)));
+            if (!pool.length) return null;
+            const wSum = Object.assign({}, w2);
+            for (const k in w1) wSum[k] = (wSum[k] || 0) + w1[k];
+            const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i) || (pool.length === 1 ? pool[0] : null);
+            return hit ? Object.assign({ rescued: true }, hit) : null;
+        };
         if (category === CAT_DRAWING) {
-            // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…").
-            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning/i.test(t.taskName));
+            // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…",
+            // "Nytt oversiktsbilde", "Grafikk", "Skjermbilder", "System Image …").
+            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning|oversikt|grafikk|graphic|skjerm|visualis|image/i.test(t.taskName));
             const suf = t => bookNorm(t.taskName.replace(/^design\s*[:\-]/i, ''));
             // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
             // Rank exact > task-suffix-contains-name > name-contains-suffix with the LONGEST suffix winning —
@@ -2713,19 +2730,28 @@
                 if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
             }
             if (design.length === 1) return design[0];
-            return resolve(design, /^design\s*[:\-]/i);
+            return resolve(design, /^design\s*[:\-]/i) || rescue(/integra(?:tion|sjon)|ak3|scan\b|gateway|\brac\b|nport/i);
         }
         if (category === CAT_INTEGRATION) {
-            let cands = tasks.filter(t => /^integration\s*[:\-]/i.test(t.taskName));
-            if (!cands.length) // no Integration:-prefixed tasks — fall back to bare-discipline work packages
-                cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName));
+            let cands = tasks.filter(t => /^integra(?:tion|sjon)\s*[:\-]/i.test(t.taskName));
+            if (!cands.length) // no Integration:-prefixed tasks — bare-discipline or generic commissioning work packages
+                cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName)
+                    || /konfig|igangkj|i?driftsett|commission|innregul|integrasjon|oppkobling|programmering|oppstart/i.test(t.taskName));
             if (cands.length === 1) return cands[0];
-            return resolve(cands, /^integration\s*[:\-]/i);
+            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(/design|bilde|tegning|ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i);
         }
         if (category === CAT_SETUP_PC) {
-            const c = tasks.filter(t => /(ak3|scan|gateway|rac|nport)\b/i.test(t.taskName)); // NPort = Moxa serial gateway ("Nport configured" in the Hardware phase)
+            // NPort/Moxa = serial gateway; "Server configured" / "Port forwarding" / "Connection to the
+            // plant" (Hardware & Network phases) are gateway-setup work too.
+            const c = tasks.filter(t => /(ak3|scan|gateway|rac|nport|server|moxa|router|nettverk|network)\b|port\s*forward|forbindelse|tilkobling|connection/i.test(t.taskName));
             if (c.length === 1) return c[0];
-            return resolve(c, /^[a-zæøå ]+[:\-]/i);
+            const hit = resolve(c, /^[a-zæøå ]+[:\-]/i);
+            if (hit) return hit;
+            // No evidence distinguishes gateway tasks — walk a fixed priority over the OPEN ones instead
+            // of giving up (gateway-est name first).
+            for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
+                { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return t; }
+            return null;
         }
         return null;
     }
@@ -2743,6 +2769,7 @@
             const texts = await bookTexts(v);
             const tasks = proj ? await rlTasks(proj.id) : [];
             const racProject = proj ? RAC_RE.test(proj.name) : false;
+            const usedTasks = new Set(); // rescue must not book two categories onto the same task
             for (const [cat, min] of bookable) {
                 let category = cat;
                 let act;
@@ -2756,8 +2783,9 @@
                     act = 'Setup: RAC' + (texts.integration ? ' — ' + texts.integration : ' setup');
                 }
                 // Prefer an existing project task; the rich text then rides along as the entry's note.
-                const task = pickTask(tasks, category, texts);
-                LOG('book: pick', v.plant_id, category, '→', task ? task.taskName : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
+                const task = pickTask(tasks, category, texts, usedTasks);
+                if (task) usedTasks.add(task.taskId);
+                LOG('book: pick', v.plant_id, category, '→', task ? task.taskName + (task.rescued ? ' (rescue)' : '') : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
                 // Detailed multi-line notes → the entry's Notes field (category-matched).
