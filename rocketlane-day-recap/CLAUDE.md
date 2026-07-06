@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.95**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.96**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -479,6 +479,13 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   **4.95** (from the live test): rescue fences are STAGED (last fence relaxes first — Setup lands on an
   Integration task before ever touching a Design task; "Setup 18m → Design: Energi" was wrong), and
   `BOOK_QTY_TASK_RE` also catches `— x3` / `N stk` / leading `IWMAC Image|Aftermarket` sales-line notations.
+  **4.96** (from 2619 Ombygging): each fence stage tries OPEN tasks then COMPLETED ones — on finished
+  projects every task is ✓-done and rescue used to fall through to an activity; a done
+  "Design: Refrigeration" beats a new activity, and done same-category beats open other-category. With
+  zero evidence, guesses rank by Thomas's discipline order (refrig > vent > energy > wireless > heat >
+  machine — `TASK_DISCIPLINES` index via name-then-phase) instead of alphabetically, so a commit-less
+  Designer day guesses "Design: Refrigeration", not "Design: Energi". Verified live: last week's plan
+  has ZERO "new activity" rows.
 - **4.74–4.92** Book day matured — texts, notes, matcher v2+v3, fetch perf:
   - **Texts (4.74–4.77):** activity texts read the WHOLE day's triggered commits (`v.day_commits` — the
     descriptive save often lands after the visit window); param tuning (`iw_par_*_param/groups` mods) →
