@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.63
+// @version      4.64
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.63';
+    const SCRIPT_VERSION   = '4.64';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2344,7 +2344,10 @@
             entries = Object.values(entries).reduce((a, x) => a.concat(Array.isArray(x) ? x : []), []);
         }
         if (!Array.isArray(entries)) entries = [];
-        return entries.filter(e => e && e.date === iso);
+        const onDate = entries.filter(e => e && e.date === iso);
+        LOG('book: weekly', mIso, 'status', r.status, 'entries', entries.length, '→ on', iso, onDate.length,
+            r.status !== 200 ? ('body: ' + String(r.raw).slice(0, 180)) : '');
+        return onDate;
     }
 
     // What to WRITE per category — read the visit's newest triggered commits: added devices for the
