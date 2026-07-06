@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.71
+// @version      4.72
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.71';
+    const SCRIPT_VERSION   = '4.72';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1469,6 +1469,7 @@
         #${PANEL_ID} .bookplan-head { font-weight: 600; margin-bottom: 6px; position: sticky; top: 0; z-index: 1; background: #f9fbff; padding: 2px 0 6px; }
         #${PANEL_ID} .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
         #${PANEL_ID} .bookplan-st { flex: none; width: 18px; text-align: center; }
+        #${PANEL_ID} .bookplan-cb { width: 14px; height: 14px; margin: 1px 0 0; accent-color: #0f62fe; cursor: pointer; }
         #${PANEL_ID} .bookplan-txt { flex: 1; line-height: 1.35; }
         #${PANEL_ID} .bookplan-txt small { color: #6f6f6f; }
         #${PANEL_ID} .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
@@ -2568,7 +2569,7 @@
         const creds = rlCreds();
         let ok = 0, fail = 0;
         for (const e of plan) {
-            if (e.status !== 'ready') continue;
+            if (e.status !== 'ready' || e.selected === false) continue; // unticked rows stay untouched
             const body = { date: iso, minutes: e.minutes, billable: true, categoryId: e.categoryId, projectId: e.projectId };
             if (e.taskId) { body.taskId = e.taskId; body.notes = e.activityName; } // task entry: rich text → notes
             else body.activityName = e.activityName;                              // no fitting task: create the activity
@@ -2589,9 +2590,10 @@
         buildBookingPlan(visits, iso).then(plan => {
             if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
             const ready = plan.filter(e => e.status === 'ready');
+            // Bookable rows get a real CHECKBOX (ticked by default) — untick what you don't want synced.
             const lines = plan.map((e, i) =>
                 `<div class="bookplan-row" data-i="${i}">
-                    <span class="bookplan-st">${e.status === 'ready' ? '☐' : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
+                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">' : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt"><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
                     <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'no-project' ? ' — no matching project, book manually' : e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small></span>
                 </div>`).join('');
@@ -2600,9 +2602,20 @@
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
             function wire() {
+                const updateGo = () => {
+                    const n = [...box.querySelectorAll('.bookplan-cb')].filter(c => c.checked).length;
+                    const go = box.querySelector('[data-b=go]');
+                    if (go) { go.disabled = n === 0; go.textContent = `Book ${n} entr${n === 1 ? 'y' : 'ies'}`; }
+                };
+                box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
                 box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
                 box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
                     ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
+                    // Freeze the selection: unticked rows are skipped (and their boxes locked).
+                    box.querySelectorAll('.bookplan-row').forEach(row => {
+                        const idx = +row.dataset.i, cb = row.querySelector('.bookplan-cb');
+                        if (cb && plan[idx]) { plan[idx].selected = cb.checked; cb.disabled = true; }
+                    });
                     await bookPlanEntries(plan, iso, (e) => {
                         const i = plan.indexOf(e);
                         const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
@@ -2611,8 +2624,9 @@
                     });
                     const okN = plan.filter(e => e.status === 'booked').length;
                     const failN = plan.filter(e => e.status === 'failed').length;
+                    const skipN = plan.filter(e => e.status === 'ready' && e.selected === false).length;
                     const foot = box.querySelector('.bookplan-foot');
-                    foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''} — reload the timesheet page to see them</span><button type="button" data-b="cancel">Close</button>`;
+                    foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span><button type="button" data-b="cancel">Close</button>`;
                     foot.querySelector('[data-b=cancel]').addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
                 });
             }
