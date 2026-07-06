@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.102
+// @version      4.103
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.102';
+    const SCRIPT_VERSION   = '4.103';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2823,10 +2823,14 @@
 
     // Build the day's booking plan: one entry per plant×category (quick checks excluded), with the
     // project resolved by plant-id prefix and the activity text derived from what actually changed.
-    async function buildBookingPlan(visits, iso) {
+    // onStep (optional) reports per-plant progress — the what-changed fetches are the slow part on a
+    // busy pang, and a silent 5-minute "Loading…" reads as a hang (v4.103, seen live post-full-scan).
+    async function buildBookingPlan(visits, iso, onStep) {
         const [projects, cats, existing] = [await rlProjects(false), await rlCategories(), await rlEntriesOn(iso)];
         const plan = [];
-        for (const v of visits) {
+        for (let vi = 0; vi < visits.length; vi++) {
+            const v = visits[vi];
+            onStep && onStep(vi + 1, visits.length, v);
             const split = categorizeVisit(v);
             const bookable = Object.entries(split).filter(([c, m]) => !CAT_NOT_BOOKED.has(c) && Math.round(m) >= 1);
             if (!bookable.length) continue;
@@ -3065,7 +3069,7 @@
     // Load one day's visits ready for booking: full-scan cache when present (instant + complete),
     // else a quick scan over recent + footprint plants; then names, commit enrichment, and the
     // 7,5 h distribution over bookable (non-quick-check) plants.
-    async function loadDayForBooking(iso, onProg, overrideDates) {
+    async function loadDayForBooking(iso, onProg, overrideDates, statusCb) {
         if (iso > todayISO()) return []; // future days can't have plant work — never burn a scan on them (v4.94)
         const username = effectiveUsername();
         let visits;
@@ -3082,10 +3086,12 @@
         if (!visits.length) return visits;
         const missing = visits.filter(v => !v.name).map(v => v.plant_id);
         if (missing.length) {
+            statusCb && statusCb(`looking up ${missing.length} plant name${missing.length === 1 ? '' : 's'}…`);
             try { await fetchMissingPlantNames(missing, null); } catch (e) { /* names are cosmetic */ }
             const names = GM_getValue(KEY_PLANT_NAMES, {});
             for (const v of visits) if (!v.name) v.name = cachedPlantName(names, v.plant_id) || v.name;
         }
+        statusCb && statusCb(`correlating config commits for ${visits.length} plant${visits.length === 1 ? '' : 's'}…`);
         await enrichVisitsWithCommits(visits, iso);
         for (const v of visits) v.normalized_minutes = null;
         const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
@@ -3144,12 +3150,13 @@
                 if (seq !== mySeq) return;
                 if (st) st.textContent = `Loading ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)…`;
                 try {
-                    const visits = await loadDayForBooking(iso, (done, total) => {
-                        const s = statusEl();
-                        if (s && seq === mySeq) s.textContent = `Scanning ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5) — ${done} of ${total} plants…`;
-                    }, override);
+                    const dayLabel = `${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)`;
+                    const say = txt => { const s = statusEl(); if (s && seq === mySeq) s.textContent = `${dayLabel} — ${txt}`; };
+                    const visits = await loadDayForBooking(iso,
+                        (done, total) => say(`scanning ${done} of ${total} plants…`), override, say);
                     if (seq !== mySeq) return;
-                    const plan = visits.length ? await buildBookingPlan(visits, iso) : [];
+                    const plan = visits.length ? await buildBookingPlan(visits, iso,
+                        (n, total, v) => say(`reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
                     days.push({ iso, wd: WD[i], plan });
                 } catch (err) {
                     days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err) });
