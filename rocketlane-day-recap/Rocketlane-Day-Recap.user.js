@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.70
+// @version      4.71
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.70';
+    const SCRIPT_VERSION   = '4.71';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1465,13 +1465,14 @@
         #${PANEL_ID} .catsum-copy:hover { border-color: #0f62fe; }
         #${PANEL_ID} .catsum-book { font-size: 11px; padding: 2px 8px; border: 1px solid #0f62fe; border-radius: 5px; background: #0f62fe; color: #fff; font-weight: 600; cursor: pointer; }
         #${PANEL_ID} .catsum-book:hover { background: #0353e9; }
-        #${PANEL_ID} .bookplan { font-size: 12px; color: #21272a; }
-        #${PANEL_ID} .bookplan-head { font-weight: 600; margin-bottom: 6px; }
+        #${PANEL_ID} .bookplan { font-size: 12px; color: #21272a; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
+        #${PANEL_ID} .bookplan-head { font-weight: 600; margin-bottom: 6px; position: sticky; top: 0; z-index: 1; background: #f9fbff; padding: 2px 0 6px; }
         #${PANEL_ID} .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
         #${PANEL_ID} .bookplan-st { flex: none; width: 18px; text-align: center; }
         #${PANEL_ID} .bookplan-txt { flex: 1; line-height: 1.35; }
         #${PANEL_ID} .bookplan-txt small { color: #6f6f6f; }
-        #${PANEL_ID} .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+        #${PANEL_ID} .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
+        #${PANEL_ID} .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
         #${PANEL_ID} .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
         #${PANEL_ID} .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
         #${PANEL_ID} .bookplan-foot button[disabled] { opacity: .5; cursor: default; }
@@ -2350,6 +2351,7 @@
         const onDate = entries.filter(e => e && e.date === iso);
         LOG('book: weekly', mIso, 'status', r.status, 'entries', entries.length, '→ on', iso, onDate.length,
             r.status !== 200 ? ('body: ' + String(r.raw).slice(0, 180)) : '');
+        onDate._checkOk = r.status === 200; // dedupe is only trustworthy when the weekly fetch succeeded
         return onDate;
     }
 
@@ -2558,6 +2560,7 @@
                 });
             }
         }
+        plan._dedupeOk = existing._checkOk !== false; // surfaced as a warning banner when the check failed
         return plan;
     }
 
@@ -2592,7 +2595,8 @@
                     <span class="bookplan-txt"><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
                     <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'no-project' ? ' — no matching project, book manually' : e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small></span>
                 </div>`).join('');
-            box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${lines}
+            const warn = plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '';
+            box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
             function wire() {
