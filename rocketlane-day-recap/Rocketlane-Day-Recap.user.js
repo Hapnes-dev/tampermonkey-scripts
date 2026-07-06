@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.76
+// @version      4.77
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.76';
+    const SCRIPT_VERSION   = '4.77';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2406,7 +2406,8 @@
         }
         // When nothing was "added", say what really happened: diff the units table (added / removed /
         // RENAMED units, with a couple of the new names) and plant settings (which settings changed).
-        let uAdd = 0, uDel = 0, uRen = 0; const uNames = [];
+        let uAdd = 0, uDel = 0, uRen = 0;
+        const uAddNames = [], uRenNames = [];  // proper unit LABELS ("AK-CC55-017x 6 (000:006)"), drawer-style
         const settNames = [];
         const jobs = unitJobs.concat(settJobs);
         if (jobs.length) {
@@ -2418,9 +2419,9 @@
                     if (d.unreadable) continue;
                     if (jobs[i].table_name === 'iw_sys_plant_units') {
                         uAdd += d.added.length; uDel += d.removed.length;
-                        for (const a of d.added) if (uNames.length < 2) uNames.push(chgUnitLabel(a));
+                        for (const a of d.added) { const l = chgUnitLabel(a); if (l && !uAddNames.includes(l)) uAddNames.push(l); }
                         const renRows = new Set();
-                        for (const m of d.modified) if (m.col === 'unit_name') { renRows.add(m.key); if (uNames.length < 2 && m.to) uNames.push(m.to); }
+                        for (const m of d.modified) if (m.col === 'unit_name') { renRows.add(m.key); if (m.to && !uRenNames.includes(m.to)) uRenNames.push(m.to); }
                         uRen += renRows.size;
                     } else {
                         for (const m of d.modified) {
@@ -2431,12 +2432,18 @@
                 }
             } catch (e) { /* keep what we have */ }
         }
-        // Compose the Integration text: added devices → unit changes (with names) → tuned devices → settings.
+        // Compose the Integration text. Added units are named by their UNIT LABELS (like the 🔧 drawer's
+        // "Device added: AK-CC55-017x 6 (000:006)") — the raw driver-table tokens ("080Z0202 041X") only
+        // appear when the units diff wasn't available.
         const bits = [];
-        if (devAdd.length) { const u = [...new Set(devAdd)]; bits.push('added ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3} more` : '')); }
-        if (uAdd) bits.push(`+${uAdd} unit${uAdd === 1 ? '' : 's'}` + (!devAdd.length && uNames.length ? ` (${uNames.join(', ')}…)` : ''));
+        if (uAdd) {
+            bits.push('added ' + uAddNames.slice(0, 2).join(', ') + (uAdd > 2 ? ` +${uAdd - 2} more` : ''));
+        } else if (devAdd.length) {
+            const u = [...new Set(devAdd)];
+            bits.push('added ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3} more` : ''));
+        }
         if (uDel) bits.push(`-${uDel} unit${uDel === 1 ? '' : 's'}`);
-        if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (!uAdd && uNames.length ? ` (${uNames.slice(0, 2).join(', ')}…)` : ''));
+        if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (uRenNames.length ? ` (${uRenNames.slice(0, 2).join(', ')}…)` : ''));
         if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3}` : '')); }
         if (virtVals) bits.push('virtual values');
         if (settNames.length) bits.push('plant settings: ' + settNames.slice(0, 2).join(', ') + (settNames.length > 2 ? ` +${settNames.length - 2}` : ''));
@@ -2467,7 +2474,7 @@
         }
         out.hints = [
             [...tokset].join(' '),
-            devAdd.join(' '), [...devMod].join(' '), uNames.join(' '), settNames.join(' '), out.drawingNames.join(' '),
+            devAdd.join(' '), [...devMod].join(' '), uAddNames.join(' '), uRenNames.join(' '), settNames.join(' '), out.drawingNames.join(' '),
         ].join(' ').toLowerCase();
         return out;
     }
