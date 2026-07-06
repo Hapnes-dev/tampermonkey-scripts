@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.82
+// @version      4.83
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.82';
+    const SCRIPT_VERSION   = '4.83';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2389,7 +2389,8 @@
         const cids = newest.map(c => String(c.id));
         let patches = {};
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
-        const devAdd = [], devMod = new Set(), graphicCids = [], unitJobs = [], settJobs = [];
+        const devAdd = [], devMod = new Set(), graphicCids = [], unitJobs = [], settJobs = [], tuneJobs = [];
+        const tuneSeen = new Set();
         let virtVals = false;
         for (const cid of cids) {
             const tables = Object.entries(patches[cid] || {}).filter(([t, m]) => m && m.mode);
@@ -2398,6 +2399,8 @@
                 if (/^iw_set_/.test(t)) { if (m.mode === 'add') devAdd.push(bookPrettyToken(t)); else if (/^mod/.test(m.mode)) devMod.add(bookPrettyToken(t)); }
                 // Parameter tuning lives in iw_par_<device>_param/_groups — count a MOD there as "tuned <device>"
                 if (/^iw_par_.+_(param|groups)$/.test(t) && /^mod/.test(m.mode)) devMod.add(bookPrettyToken(t));
+                // Diff a few tuned tables so the notes can say WHICH params changed (newest commit wins per table).
+                if ((/^iw_set_/.test(t) || /^iw_par_.+_param$/.test(t)) && /^mod/.test(m.mode) && !tuneSeen.has(t) && tuneJobs.length < 4) { tuneSeen.add(t); tuneJobs.push({ table_name: t, commit: cid }); }
                 if (t === 'iw_sys_virtual_values' && /^mod/.test(m.mode)) virtVals = true;
                 if (/graphic_designer/i.test(t)) graphicCids.push(cid);
                 if (t === 'iw_sys_plant_units') unitJobs.push({ table_name: t, commit: cid });
@@ -2408,8 +2411,11 @@
         // RENAMED units, with a couple of the new names) and plant settings (which settings changed).
         let uAdd = 0, uDel = 0, uRen = 0;
         const uAddNames = [], uRenNames = [], renPairs = [];  // unit LABELS + "old → new" rename pairs, drawer-style
-        const settNames = [];
-        const jobs = unitJobs.concat(settJobs);
+        const settNames = [], settDetails = [];               // names for the title; "name: old → new" for the notes
+        const tuneMap = new Map();                            // device pretty-name -> [changed param labels]
+        const bookClipVal = s => { s = String(s == null ? '' : s); return s.length > 18 ? s.slice(0, 16) + '…' : s; };
+        const SECRET_RE = /pass|pwd|secret|token|key/i;       // never print secret VALUES in a timesheet note
+        const jobs = unitJobs.concat(settJobs, tuneJobs);
         if (jobs.length) {
             try {
                 const vers = await gmFetchTwoVersionsBatch(jobs);
@@ -2417,7 +2423,8 @@
                     const ver = vers[i]; if (!ver) continue;
                     const d = chgDiff(ver);
                     if (d.unreadable) continue;
-                    if (jobs[i].table_name === 'iw_sys_plant_units') {
+                    const tbl = jobs[i].table_name;
+                    if (tbl === 'iw_sys_plant_units') {
                         uAdd += d.added.length; uDel += d.removed.length;
                         for (const a of d.added) { const l = chgUnitLabel(a); if (l && !uAddNames.includes(l)) uAddNames.push(l); }
                         const renRows = new Set();
@@ -2428,11 +2435,23 @@
                             if (pair && !renPairs.includes(pair)) renPairs.push(pair);
                         }
                         uRen += renRows.size;
-                    } else {
+                    } else if (tbl === 'iw_sys_plant_settings') {
                         for (const m of d.modified) {
                             const lbl = String(chgRowLabel(m) || '').replace(/\s*\(.*\)$/, '');
                             if (lbl && !settNames.includes(lbl)) settNames.push(lbl);
+                            const full = String(chgRowLabel(m) || lbl);
+                            const detail = SECRET_RE.test(full) ? `${full}: changed` : `${full}: ${bookClipVal(m.from)} → ${bookClipVal(m.to)}`;
+                            if (full && !settDetails.some(x => x.startsWith(full + ':'))) settDetails.push(detail);
                         }
+                    } else {
+                        // a tuned device table: collect WHICH params changed (drawer-style row labels)
+                        const dev = bookPrettyToken(tbl);
+                        const rowsSeen = tuneMap.get(dev) || [];
+                        for (const m of d.modified) {
+                            const lbl = String(chgRowLabel(m) || m.col || '').trim();
+                            if (lbl && rowsSeen.length < 6 && !rowsSeen.includes(lbl)) rowsSeen.push(lbl);
+                        }
+                        if (rowsSeen.length) tuneMap.set(dev, rowsSeen);
                     }
                 }
             } catch (e) { /* keep what we have */ }
@@ -2498,9 +2517,24 @@
         else if (devAdd.length) { const u = [...new Set(devAdd)]; nInteg.push('Added: ' + u.slice(0, 5).join(', ') + (u.length > 5 ? ` (+${u.length - 5} more)` : '')); }
         if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 5).join(', ') + (uRen > 5 ? ` (+${uRen - 5} more)` : ''));
         if (uDel) nInteg.push(`Removed: ${uDel} unit${uDel === 1 ? '' : 's'}`);
-        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) nInteg.push('Tuned params: ' + u.slice(0, 4).join(', ') + (u.length > 4 ? ` (+${u.length - 4} more)` : '')); }
+        if (devMod.size) {
+            const u = [...devMod].filter(x => devAdd.indexOf(x) < 0);
+            if (u.length) {
+                // Show WHICH params changed for up to 2 tuned devices ("Data Engine (poll_rate, log_level +3)");
+                // remaining devices by name only.
+                const parts = [];
+                for (const dev of u.slice(0, 4)) {
+                    const rows = tuneMap.get(dev);
+                    if (rows && rows.length && parts.filter(p => p.includes('(')).length < 2) {
+                        parts.push(dev + ' (' + rows.slice(0, 3).join(', ') + (rows.length > 3 ? ` +${rows.length - 3}` : '') + ')');
+                    } else parts.push(dev);
+                }
+                nInteg.push('Tuned params: ' + parts.join(', ') + (u.length > 4 ? ` (+${u.length - 4} more)` : ''));
+            }
+        }
         if (virtVals) nInteg.push('Virtual values changed');
-        if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
+        if (settDetails.length) nInteg.push('Plant settings: ' + settDetails.slice(0, 3).join('; ') + (settDetails.length > 3 ? ` (+${settDetails.length - 3} more)` : ''));
+        else if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
         out.notesInteg = nInteg.join('\n');
         const nDraw = [];
         if (out.drawingLines && out.drawingLines.length) {
