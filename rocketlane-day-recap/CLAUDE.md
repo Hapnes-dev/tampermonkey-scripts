@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.88**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.89**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,7 +463,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.74–4.88** Book day matured — texts, notes, matcher v2, fetch perf:
+- **4.74–4.89** Book day matured — texts, notes, matcher v2, fetch perf:
   - **Texts (4.74–4.77):** activity texts read the WHOLE day's triggered commits (`v.day_commits` — the
     descriptive save often lands after the visit window); param tuning (`iw_par_*_param/groups` mods) →
     "tuned <device>"; unit adds named by their **unit labels** drawer-style ("added Maskin 2 (000:014)")

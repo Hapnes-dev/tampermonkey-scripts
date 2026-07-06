@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.88
+// @version      4.89
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.88';
+    const SCRIPT_VERSION   = '4.89';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2653,9 +2653,12 @@
     }
     function bookPickWeighted(cands, weights, stripRe) {
         if (!cands.length) return null;
-        const scored = cands.map(t => { const td = bookDiscOf(t.taskName.replace(stripRe, '')); let ov = 0; for (const x of td) ov += (weights[x] || 0); return { t, ov }; }).filter(x => x.ov > 0);
+        // Specificity tiebreak (v4.89, from the canonical template): "Heating/ VGV" spans TWO disciplines
+        // (heat + vent via "VGV"), so pure vent evidence used to tie it against plain "Ventilation".
+        // On equal evidence the task naming FEWER disciplines (the more specific one) wins.
+        const scored = cands.map(t => { const td = bookDiscOf(t.taskName.replace(stripRe, '')); let ov = 0; for (const x of td) ov += (weights[x] || 0); return { t, ov, nd: td.size }; }).filter(x => x.ov > 0);
         if (scored.length === 1) return scored[0].t;
-        if (scored.length > 1) { scored.sort((a, b) => b.ov - a.ov); if (scored[0].ov > scored[1].ov) return scored[0].t; }
+        if (scored.length > 1) { scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd)); if (scored[0].ov > scored[1].ov || (scored[0].ov === scored[1].ov && scored[0].nd < scored[1].nd)) return scored[0].t; }
         return null; // ambiguous ⇒ let the fallback create an activity
     }
     function pickTask(tasks, category, texts) {
