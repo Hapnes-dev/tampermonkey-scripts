@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.103
+// @version      4.104
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.103';
+    const SCRIPT_VERSION   = '4.104';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2857,6 +2857,12 @@
                 LOG('book: pick', v.plant_id, category, '→', task ? task.taskName + (task.rescued ? ' (rescue)' : '') : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
+                // A no-project plant already booked into a TEAM BUCKET today (activity "<plant id> …",
+                // same category) is done — show ⏭ at PLAN time instead of an armable picker row. The
+                // book-time guard always caught this, but the review UI offered a tickbox for work that
+                // was already on the sheet (v4.104, seen live after a week booking).
+                const bucketDupe = !proj && !!catId && existing.some(e => e.category && e.category.categoryId === catId
+                    && String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0);
                 // Detailed multi-line notes → the entry's Notes field (category-matched).
                 const notes = category === CAT_DRAWING ? (texts.notesDraw || texts.notesActions || '')
                     : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || texts.notesActions || ''].filter(Boolean).join('\n')
@@ -2866,7 +2872,7 @@
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
                     taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
                     category, categoryId: catId || null, minutes: Math.round(min), activityName: act, notes,
-                    status: !proj ? 'no-project' : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
+                    status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
                 });
             }
         }
