@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.100**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.101**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,7 +463,14 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.98–4.100** Book week hardening (all from live use on 2026-07-06):
+- **4.98–4.101** Book week hardening (all from live use on 2026-07-06):
+  - **Full-scan gate (4.101, Thomas's rule):** Book week must stand on FULL-scan data — quick scans miss
+    plant-admin/designer visits and would mis-distribute the 7,5 h. `weekEnsureFullScan` checks every
+    non-future weekday for full-scan cache (today re-scans when older than 30 min) and runs ONE
+    footprint-first full scan covering all missing days (a single sweep caches every date). Partial
+    scans (unreachable plants) are used for the build but flagged in a warn banner and NOT cached; if
+    the scan can't run at all, quick data is used with a loud "plans may MISS plants" banner.
+    `cacheVisit`/`readCache`/`writeCacheDates` hoisted out of the panel closure for this.
   - **Cleared week bookable (4.98):** Thomas empties a week then refills it — but `entries: []` was treated
     as "can't verify" and locked every day out. The weekly walker now also detects the timesheet
     STRUCTURE (`sawEntries` — an `entries` ARRAY anywhere, even empty): recognized-but-empty is trusted;
