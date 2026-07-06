@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.101
+// @version      4.102
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.101';
+    const SCRIPT_VERSION   = '4.102';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3022,8 +3022,10 @@
     // Book week must stand on FULL-scan data (v4.101, Thomas's rule): quick scans only cover recent +
     // footprint plants and can miss plant-admin/designer visits — booking a week from them would both
     // drop plants and mis-distribute the 7,5 h. ONE full scan caches EVERY date it finds, so a single
-    // sweep covers all missing weekdays at once. Today's cache re-scans when older than 30 min.
-    const WEEK_TODAY_MAX_AGE_MS = 30 * 60000;
+    // sweep covers all missing weekdays at once. A RECENT cache is trusted as-is (v4.102, Thomas):
+    // past days never re-scan, and today's cache only re-scans when older than 3 h (more of the day
+    // has happened since) — a fresh scan from the panel or a previous Book week is never repeated.
+    const WEEK_TODAY_MAX_AGE_MS = 3 * 3600000;
     async function weekEnsureAllPlants(statusCb) {
         const all = GM_getValue(KEY_ALL_PLANTS, []) || [];
         if (all.length >= FULL_INVENTORY_MIN) return all;
