@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.91**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.92**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,7 +463,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.74–4.91** Book day matured — texts, notes, matcher v2+v3, fetch perf:
+- **4.74–4.92** Book day matured — texts, notes, matcher v2+v3, fetch perf:
   - **Texts (4.74–4.77):** activity texts read the WHOLE day's triggered commits (`v.day_commits` — the
     descriptive save often lands after the visit window); param tuning (`iw_par_*_param/groups` mods) →
     "tuned <device>"; unit adds named by their **unit labels** drawer-style ("added Maskin 2 (000:014)")
@@ -500,8 +500,13 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     checklist/admin rows (`BOOK_CHECKLIST_RE`: approvals, alarm test, sales/order/handover/documentation/
     survey/subscription…), the other categories' signature names, and tasks already picked for another
     category that day (`usedTasks` guard); Setup walks a gateway-first priority list over open candidates
-    when evidence can't decide. Rescued picks log as "(rescue)". Activities now only remain for
-    checklist-only projects and genuine equal-evidence ties.
+    when evidence can't decide, then rescues too. Rescued picks log as "(rescue)" and show
+    "📌 task *(best guess)*" in the plan row (`taskGuess`). **A guessed task beats a new activity (4.92)**:
+    rescue always returns a pick while any open non-checklist task survives — evidence ties break
+    alphabetically (deterministic; `guess` flag on `bookPickWeighted`), zero evidence falls back to the
+    category's strict-pool tasks alphabetically, then ANY open task; the other-category name fence only
+    holds while better candidates exist. Activities now remain ONLY for checklist-only projects and
+    tasks already taken by another category that day.
   - **Team-bucket fallback (4.76):** no-project rows get a picker over `Team *` projects; booking there
     names the activity `<plant id> <plant name> - <activity>`; choice remembered
     (`book_fallback_project`); per-bucket dupe-guard.
