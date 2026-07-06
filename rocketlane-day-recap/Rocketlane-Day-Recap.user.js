@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.84
+// @version      4.85
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.84';
+    const SCRIPT_VERSION   = '4.85';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -98,7 +98,9 @@
     const BTN_ID   = 'rl-day-recap-fab';
     const PARALLEL = 8;
     const SCAN_PARALLEL = 20;  // concurrent get_history requests — same server concurrency whether batched or not
-    const HISTORY_BATCH_MAX = 30; // max plant_ids per batched get_history request (JSON-RPC batch; bounds response size)
+    const HISTORY_BATCH_MAX = 10; // max plant_ids per batched get_history request. v4.85 measurement: the server
+                                  // SERIALIZES a batch, so big batches head-of-line-block the ~6 browser connections;
+                                  // batch 10 × 20 workers ran the same sample 1.6× faster than 30 × 20 (434 vs 710 ms/120 plants)
     const MAX_CACHED_DATES = 400; // per-user cap on cached date results (a full scan caches every date you worked)
     const FULL_INVENTORY_MIN = 7000;
     const TRUSTED_PLANT_NAMES = {
@@ -584,34 +586,52 @@
     // Same server as actions.php, so apiOrigin()'s http-first choice applies (GM_xmlhttpRequest can't
     // use the internal https cert). Like get_history there's no server-side date filter — each plant
     // returns its full commit history, which we filter to the visit window client-side.
-    async function gmFetchCommitsBatch(plantIds) {
-        const base = await apiOrigin();
+    // v4.85 deep-dive findings: commits.php SERIALIZES a JSON-RPC batch server-side — a cold 7-plant
+    // batch measured 2.9 s while the same plants as parallel SINGLE requests took 0.9 s (3.2×). And a
+    // plant's commit list covers EVERY date, yet it was refetched on each date view. So: per-plant
+    // session cache (TTL 10 min — today's list grows while you work) + misses fetched as single
+    // requests through a small pool.
+    const _commitsCache = new Map(); // plant_id -> { ts, list }
+    const COMMITS_CACHE_TTL_MS = 10 * 60 * 1000;
+    function gmFetchCommitsOne(base, pid) {
         return new Promise(resolve => {
-            const reqs = plantIds.map((pid, i) => ({ jsonrpc: '2.0', method: 'get_commits', params: { plant_id: String(pid) }, id: i }));
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: base + '/services/changes/commits.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                data: JSON.stringify(reqs),
+                data: JSON.stringify([{ jsonrpc: '2.0', method: 'get_commits', params: { plant_id: String(pid) }, id: 0 }]),
                 timeout: 60000,
                 onload: r => {
-                    const out = {};
-                    try {
-                        const parsed = JSON.parse(r.responseText);
-                        const list = Array.isArray(parsed) ? parsed : [parsed];
-                        for (let k = 0; k < list.length; k++) {
-                            const item = list[k];
-                            const idx = (typeof item?.id === 'number') ? item.id : k;
-                            const pid = plantIds[idx];
-                            if (pid != null) out[pid] = Array.isArray(item?.result) ? item.result : [];
-                        }
-                    } catch {}
-                    resolve(out);
+                    let list = [];
+                    try { const p = JSON.parse(r.responseText); const res = Array.isArray(p) ? p[0] : p; if (Array.isArray(res?.result)) list = res.result; } catch {}
+                    resolve(list);
                 },
-                onerror:   () => resolve({}),
-                ontimeout: () => resolve({}),
+                onerror: () => resolve(null), ontimeout: () => resolve(null),
             });
         });
+    }
+    async function gmFetchCommitsBatch(plantIds) {
+        const base = await apiOrigin();
+        const out = {};
+        const now = Date.now();
+        const misses = [];
+        for (const pid of plantIds.map(String)) {
+            const c = _commitsCache.get(pid);
+            if (c && (now - c.ts) < COMMITS_CACHE_TTL_MS) out[pid] = c.list;
+            else misses.push(pid);
+        }
+        let idx = 0;
+        const worker = async () => {
+            while (idx < misses.length) {
+                const pid = misses[idx++];
+                const list = await gmFetchCommitsOne(base, pid);
+                if (list !== null) { out[pid] = list; _commitsCache.set(pid, { ts: Date.now(), list }); }
+                else out[pid] = (_commitsCache.get(pid) || {}).list || []; // network miss → stale cache or empty
+            }
+        };
+        const pool = []; for (let k = 0; k < Math.min(8, misses.length); k++) pool.push(worker());
+        await Promise.all(pool);
+        return out;
     }
 
     // ===== "What changed" detail (config-commit diff drill-down) =====================
@@ -672,29 +692,45 @@
         });
     }
 
+    // A commit's table content is IMMUTABLE — cache every fetched (table, commit) for the session, so
+    // plan rebuilds and drawer opens across dates never refetch the same diff data (v4.85).
+    const _twoVerCache = new Map(); // `${table}|${commit}` -> result
     async function gmFetchTwoVersionsBatch(jobs) {
         const base = await apiOrigin();
-        return new Promise(resolve => {
-            const reqs = jobs.map((j, i) => ({ jsonrpc: '2.0', method: 'get_two_versions', params: { table_name: j.table_name, commit: String(j.commit) }, id: i }));
+        const out = new Array(jobs.length).fill(null);
+        const missIdx = [];
+        for (let i = 0; i < jobs.length; i++) {
+            const key = jobs[i].table_name + '|' + jobs[i].commit;
+            if (_twoVerCache.has(key)) out[i] = _twoVerCache.get(key);
+            else missIdx.push(i);
+        }
+        if (!missIdx.length) return out;
+        await new Promise(resolve => {
+            const reqs = missIdx.map((mi, i) => ({ jsonrpc: '2.0', method: 'get_two_versions', params: { table_name: jobs[mi].table_name, commit: String(jobs[mi].commit) }, id: i }));
             GM_xmlhttpRequest({
                 method: 'POST', url: base + '/services/changes/data.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: JSON.stringify(reqs), timeout: 60000,
                 onload: r => {
-                    const out = new Array(jobs.length).fill(null);
                     try {
                         const parsed = JSON.parse(r.responseText);
                         const list = Array.isArray(parsed) ? parsed : [parsed];
                         for (let k = 0; k < list.length; k++) {
                             const item = list[k];
                             const idx = (typeof item?.id === 'number') ? item.id : k;
-                            if (idx >= 0 && idx < out.length) out[idx] = (item && item.result) ? item.result : null;
+                            if (idx >= 0 && idx < missIdx.length) {
+                                const mi = missIdx[idx];
+                                const res = (item && item.result) ? item.result : null;
+                                out[mi] = res;
+                                if (res) _twoVerCache.set(jobs[mi].table_name + '|' + jobs[mi].commit, res);
+                            }
                         }
                     } catch {}
-                    resolve(out);
+                    resolve();
                 },
-                onerror: () => resolve(jobs.map(() => null)), ontimeout: () => resolve(jobs.map(() => null)),
+                onerror: () => resolve(), ontimeout: () => resolve(),
             });
         });
+        return out;
     }
 
     function chgTokenOf(t) { const m = String(t).match(CHG_DEV_TOKEN_RE); return m ? m[1].toUpperCase() : null; }
@@ -1670,10 +1706,9 @@
             visits._changesDone = true;
             const seq = scanSeq;
             const ids = [...new Set(visits.map(v => String(v.plant_id)))];
-            const commits = {};
-            for (let i = 0; i < ids.length; i += HISTORY_BATCH_MAX) {
-                Object.assign(commits, await gmFetchCommitsBatch(ids.slice(i, i + HISTORY_BATCH_MAX)));
-            }
+            // One call — gmFetchCommitsBatch pools single requests internally (3.2× faster cold than a
+            // server-serialized batch) and serves repeat date-views from its session cache.
+            const commits = await gmFetchCommitsBatch(ids);
             if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
             let any = false;
             for (const v of visits) {
