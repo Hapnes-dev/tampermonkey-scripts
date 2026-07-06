@@ -463,7 +463,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.98–4.101** Book week hardening (all from live use on 2026-07-06):
+- **4.98–4.104** Book week hardening (all from live use on 2026-07-06):
   - **Full-scan gate (4.101, Thomas's rule):** Book week must stand on FULL-scan data — quick scans miss
     plant-admin/designer visits and would mis-distribute the 7,5 h. `weekEnsureFullScan` checks every
     non-future weekday for full-scan cache (a RECENT cache is trusted — past days never re-scan,
