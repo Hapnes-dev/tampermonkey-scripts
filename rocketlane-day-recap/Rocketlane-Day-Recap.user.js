@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.79
+// @version      4.80
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.79';
+    const SCRIPT_VERSION   = '4.80';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2372,7 +2372,7 @@
         return s.split('_').map(w => /\d/.test(w) ? w.toUpperCase() : (w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
     }
     async function bookTexts(v) {
-        const out = { integration: '', drawing: '', racHit: false, drawingNames: [], hints: '' };
+        const out = { integration: '', drawing: '', racHit: false, drawingNames: [], drawingLines: [], hints: '' };
         // Always-available fallbacks (no commits needed): what TOOLS the session used, and when the
         // Designer session ran — far more informative than a generic "device/DB config".
         const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload' };
@@ -2459,15 +2459,36 @@
             const jobs = [...new Set(graphicCids)].map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
             try {
                 const vers = await gmFetchTwoVersionsBatch(jobs);
-                const names = new Set();
+                // Per-panel detail across the day's commits, drawer-style: first rev → last rev + what
+                // was edited (layout / background image). Feeds both the names and the Notes lines.
+                const panels = new Map(); // panel -> { from, to, what:Set, added }
                 for (const ver of vers) {
                     if (!ver) continue;
                     const d = chgDiff(ver);
-                    for (const m of d.modified) names.add(String(m.key).split(CHG_SEP).filter(Boolean).join(' / '));
-                    for (const a of d.added) names.add(chgRowLabel(a));
-                    if (names.size >= 3) break;
+                    const byPanel = new Map();
+                    for (const m of d.modified) { if (!byPanel.has(m.key)) byPanel.set(m.key, []); byPanel.get(m.key).push(m); }
+                    for (const [key, mods] of byPanel) {
+                        const panel = String(key).split(CHG_SEP).filter(Boolean).join(' / ') || '(panel)';
+                        const p = panels.get(panel) || { from: null, to: null, what: new Set(), added: false };
+                        const rev = mods.find(m => m.col === 'revision');
+                        if (rev) { if (p.from == null) p.from = rev.from; p.to = rev.to; }
+                        if (mods.some(m => m.col === 'xml' || m.col === 'json')) p.what.add('layout');
+                        if (mods.some(m => /picture|image|thumb|icon/i.test(m.col || ''))) p.what.add('background image');
+                        panels.set(panel, p);
+                    }
+                    for (const a of d.added) { const l = chgRowLabel(a); if (l && !panels.has(l)) panels.set(l, { from: null, to: null, what: new Set(), added: true }); }
                 }
-                if (names.size) { out.drawingNames = [...names]; out.drawing = out.drawingNames.slice(0, 3).join(', '); }
+                if (panels.size) {
+                    out.drawingNames = [...panels.keys()];
+                    out.drawing = out.drawingNames.slice(0, 3).join(', ');
+                    out.drawingLines = [...panels.entries()].map(([panel, p]) => {
+                        let txt = panel;
+                        if (p.added) txt += ' (new)';
+                        if (p.from != null) txt += `: rev ${p.from} → ${p.to}`;
+                        if (p.what.size) txt += ' · ' + [...p.what].join(' + ') + ' edited';
+                        return txt;
+                    });
+                }
             } catch (e) { /* fallback text */ }
         }
         // DETAILED multi-line notes for the time entry's Notes field — the full picture, uncapped names
@@ -2482,7 +2503,12 @@
         if (settNames.length) nInteg.push('Plant settings: ' + settNames.join(', '));
         out.notesInteg = nInteg.join('\n');
         const nDraw = [];
-        if (out.drawingNames.length) nDraw.push('Drawings changed: ' + out.drawingNames.join(', '));
+        if (out.drawingLines && out.drawingLines.length) {
+            nDraw.push(out.drawingLines.length === 1 ? 'Drawing changed: ' + out.drawingLines[0] : 'Drawings changed:');
+            if (out.drawingLines.length > 1) for (const l of out.drawingLines) nDraw.push('- ' + l);
+        } else if (out.drawingNames.length) {
+            nDraw.push('Drawings changed: ' + out.drawingNames.join(', '));
+        }
         if (out.designerSession) nDraw.push(out.designerSession);
         out.notesDraw = nDraw.join('\n');
         // Curated evidence for the task matcher: DEVICE tokens only (framework tables like iw_sys_* /
