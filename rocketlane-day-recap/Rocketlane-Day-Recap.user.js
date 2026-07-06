@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.86
+// @version      4.87
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.86';
+    const SCRIPT_VERSION   = '4.87';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2620,7 +2620,7 @@
         let arr = r.json;
         if (arr && !Array.isArray(arr)) arr = arr.tasks || arr.data || [];
         const tasks = (Array.isArray(arr) ? arr : []).filter(t => t && t.taskId && t.taskName)
-            .map(t => ({ taskId: t.taskId, taskName: String(t.taskName) }));
+            .map(t => ({ taskId: t.taskId, taskName: String(t.taskName), done: !!t.completedAt })); // done ⇒ ticked off in the plan
         _rlTasksCache[projectId] = tasks;
         return tasks;
     }
@@ -2660,6 +2660,11 @@
         const w1 = bookDiscWeights((texts.tokStr || '') + ' ' + gStr);
         const w2 = bookDiscWeights(texts.uStr || '');
         const tiered = (cands, stripRe) => bookPickWeighted(cands, w1, stripRe) || (Object.keys(w1).length ? null : bookPickWeighted(cands, w2, stripRe));
+        // Checklist-state helpers (v4.87): completed tasks are usually not what today's work was.
+        // resolve() = evidence over ALL candidates → evidence over OPEN-ONLY (drops ✓-done tasks, often
+        // breaking an evidence tie) → exactly one open candidate left ⇒ that's the active work package.
+        const singleOpen = (cands) => { const open = cands.filter(t => !t.done); return open.length === 1 ? open[0] : null; };
+        const resolve = (cands, stripRe) => tiered(cands, stripRe) || tiered(cands.filter(t => !t.done), stripRe) || singleOpen(cands);
         if (category === CAT_DRAWING) {
             // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…").
             const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning/i.test(t.taskName));
@@ -2679,19 +2684,19 @@
                 if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
             }
             if (design.length === 1) return design[0];
-            return tiered(design, /^design\s*[:\-]/i);
+            return resolve(design, /^design\s*[:\-]/i);
         }
         if (category === CAT_INTEGRATION) {
             let cands = tasks.filter(t => /^integration\s*[:\-]/i.test(t.taskName));
             if (!cands.length) // no Integration:-prefixed tasks — fall back to bare-discipline work packages
                 cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName));
             if (cands.length === 1) return cands[0];
-            return tiered(cands, /^integration\s*[:\-]/i);
+            return resolve(cands, /^integration\s*[:\-]/i);
         }
         if (category === CAT_SETUP_PC) {
             const c = tasks.filter(t => /(ak3|scan|gateway|rac)\b/i.test(t.taskName));
             if (c.length === 1) return c[0];
-            return tiered(c, /^[a-zæøå ]+[:\-]/i);
+            return resolve(c, /^[a-zæøå ]+[:\-]/i);
         }
         return null;
     }
