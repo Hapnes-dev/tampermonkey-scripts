@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.75
+// @version      4.76
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.75';
+    const SCRIPT_VERSION   = '4.76';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1470,6 +1470,7 @@
         #${PANEL_ID} .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
         #${PANEL_ID} .bookplan-st { flex: none; width: 18px; text-align: center; }
         #${PANEL_ID} .bookplan-cb { width: 14px; height: 14px; margin: 1px 0 0; accent-color: #0f62fe; cursor: pointer; }
+        #${PANEL_ID} .bookplan-proj { font-size: 11px; max-width: 190px; padding: 1px 2px; border: 1px solid #c6c6c6; border-radius: 4px; background: #fff; color: #21272a; }
         #${PANEL_ID} .bookplan-txt { flex: 1; line-height: 1.35; }
         #${PANEL_ID} .bookplan-txt small { color: #6f6f6f; }
         #${PANEL_ID} .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
@@ -2585,6 +2586,10 @@
             }
         }
         plan._dedupeOk = existing._checkOk !== false; // surfaced as a warning banner when the check failed
+        plan._existing = existing;                    // for fallback-booking dupe checks at book time
+        // Team bucket projects ("Team Kulde Oppgaver", …) — offered as a fallback home for plants that
+        // have no Rocketlane project of their own.
+        plan._teamProjects = projects.filter(p => /^\s*team\s/i.test(p.name));
         return plan;
     }
 
@@ -2592,10 +2597,22 @@
         const creds = rlCreds();
         let ok = 0, fail = 0;
         for (const e of plan) {
-            if (e.status !== 'ready' || e.selected === false) continue; // unticked rows stay untouched
-            const body = { date: iso, minutes: e.minutes, billable: true, categoryId: e.categoryId, projectId: e.projectId };
-            if (e.taskId) { body.taskId = e.taskId; body.notes = e.activityName; } // task entry: rich text → notes
-            else body.activityName = e.activityName;                              // no fitting task: create the activity
+            // Fallback rows: a no-project plant the user chose to book into a team bucket project.
+            const isFallback = e.status === 'no-project' && e.selected === true && e.fallbackProjectId;
+            if (!isFallback && (e.status !== 'ready' || e.selected === false)) continue; // unticked rows stay untouched
+            let projectId = e.projectId, taskId = e.taskId, act = e.activityName;
+            if (isFallback) {
+                projectId = e.fallbackProjectId; taskId = null;
+                act = `${e.plant_id} ${e.plant} - ${e.activityName}`; // "<plant id> <plant name> - <activity>"
+                // Same plant already booked into this bucket+category today? Skip instead of duplicating.
+                const ex = plan._existing || [];
+                if (ex.some(x => x.project && x.project.id === projectId && x.category && x.category.categoryId === e.categoryId && String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0)) {
+                    e.status = 'already-booked'; onProgress && onProgress(e); continue;
+                }
+            }
+            const body = { date: iso, minutes: e.minutes, billable: true, categoryId: e.categoryId, projectId };
+            if (taskId) { body.taskId = taskId; body.notes = act; } // task entry: rich text → notes
+            else body.activityName = act;                          // no fitting task: create the activity
             const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
             if (e.status === 'booked') ok++; else {
@@ -2617,12 +2634,19 @@
         buildBookingPlan(visits, iso).then(plan => {
             if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
             const ready = plan.filter(e => e.status === 'ready');
+            const teamProjects = plan._teamProjects || [];
+            const rememberedFallback = GM_getValue('book_fallback_project', 0);
+            const teamOpts = teamProjects.map(p => `<option value="${p.id}"${p.id === rememberedFallback ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
             // Bookable rows get a real CHECKBOX (ticked by default) — untick what you don't want synced.
+            // No-project rows get an UNTICKED checkbox + a team-bucket picker: choose a project to book
+            // the plant there as "<plant id> <plant name> - <activity>".
             const lines = plan.map((e, i) =>
                 `<div class="bookplan-row" data-i="${i}">
-                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">' : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
+                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">'
+                        : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${rememberedFallback ? '' : ' disabled'} title="Tick to book into the selected team project">`
+                        : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt"><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
-                    <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'no-project' ? ' — no matching project, book manually' : e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small></span>
+                    <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>no own project — book into: <select class="bookplan-proj"><option value="">choose team project…</option>${teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '';
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
@@ -2635,6 +2659,15 @@
                     if (go) { go.disabled = n === 0; go.textContent = `Book ${n} entr${n === 1 ? 'y' : 'ies'}`; }
                 };
                 box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
+                // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms.
+                box.querySelectorAll('.bookplan-proj').forEach(sel => sel.addEventListener('change', (ev) => {
+                    const row = ev.target.closest('.bookplan-row');
+                    const cb = row && row.querySelector('.bookplan-cb');
+                    const val = +ev.target.value || 0;
+                    if (cb) { cb.disabled = !val; cb.checked = !!val; }
+                    if (val) GM_setValue('book_fallback_project', val); // remembered as next time's default
+                    updateGo();
+                }));
                 box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
                 box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
                     ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
@@ -2642,11 +2675,17 @@
                     box.querySelectorAll('.bookplan-row').forEach(row => {
                         const idx = +row.dataset.i, cb = row.querySelector('.bookplan-cb');
                         if (cb && plan[idx]) { plan[idx].selected = cb.checked; cb.disabled = true; }
+                        const sel = row.querySelector('.bookplan-proj');
+                        if (sel && plan[idx]) {
+                            plan[idx].fallbackProjectId = +sel.value || null;
+                            plan[idx].fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null;
+                            sel.disabled = true;
+                        }
                     });
                     await bookPlanEntries(plan, iso, (e) => {
                         const i = plan.indexOf(e);
                         const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
-                        if (st) st.textContent = e.status === 'booked' ? '✅' : '❌';
+                        if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : '❌';
                         if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
                     });
                     const okN = plan.filter(e => e.status === 'booked').length;
