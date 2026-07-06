@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.80
+// @version      4.81
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.80';
+    const SCRIPT_VERSION   = '4.81';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2491,25 +2491,28 @@
                 }
             } catch (e) { /* fallback text */ }
         }
-        // DETAILED multi-line notes for the time entry's Notes field — the full picture, uncapped names
-        // (the activity title stays short; this is where the "what exactly changed" lives).
+        // DETAILED multi-line notes for the time entry's Notes field — informative but CAPPED, so a big
+        // commissioning day doesn't dump 20 lines into one note (the activity title stays short regardless).
         const nInteg = [];
-        if (uAddNames.length) nInteg.push('Added: ' + uAddNames.slice(0, 10).join(', ') + (uAdd > 10 ? ` (+${uAdd - 10} more)` : ''));
-        else if (devAdd.length) nInteg.push('Added: ' + [...new Set(devAdd)].join(', '));
-        if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 10).join(', ') + (uRen > 10 ? ` (+${uRen - 10} more)` : ''));
+        if (uAddNames.length) nInteg.push('Added: ' + uAddNames.slice(0, 5).join(', ') + (uAdd > 5 ? ` (+${uAdd - 5} more)` : ''));
+        else if (devAdd.length) { const u = [...new Set(devAdd)]; nInteg.push('Added: ' + u.slice(0, 5).join(', ') + (u.length > 5 ? ` (+${u.length - 5} more)` : '')); }
+        if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 5).join(', ') + (uRen > 5 ? ` (+${uRen - 5} more)` : ''));
         if (uDel) nInteg.push(`Removed: ${uDel} unit${uDel === 1 ? '' : 's'}`);
-        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) nInteg.push('Tuned params: ' + u.join(', ')); }
+        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) nInteg.push('Tuned params: ' + u.slice(0, 4).join(', ') + (u.length > 4 ? ` (+${u.length - 4} more)` : '')); }
         if (virtVals) nInteg.push('Virtual values changed');
-        if (settNames.length) nInteg.push('Plant settings: ' + settNames.join(', '));
+        if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
         out.notesInteg = nInteg.join('\n');
         const nDraw = [];
         if (out.drawingLines && out.drawingLines.length) {
-            nDraw.push(out.drawingLines.length === 1 ? 'Drawing changed: ' + out.drawingLines[0] : 'Drawings changed:');
-            if (out.drawingLines.length > 1) for (const l of out.drawingLines) nDraw.push('- ' + l);
+            const lines = out.drawingLines.slice(0, 4);
+            nDraw.push(lines.length === 1 ? 'Drawing changed: ' + lines[0] : 'Drawings changed:');
+            if (lines.length > 1) for (const l of lines) nDraw.push('- ' + l);
+            if (out.drawingLines.length > 4) nDraw.push(`(+${out.drawingLines.length - 4} more drawings)`);
         } else if (out.drawingNames.length) {
-            nDraw.push('Drawings changed: ' + out.drawingNames.join(', '));
+            nDraw.push('Drawings changed: ' + out.drawingNames.slice(0, 4).join(', '));
+        } else if (out.designerSession) {
+            nDraw.push(out.designerSession); // fallback only — real drawing detail replaces it
         }
-        if (out.designerSession) nDraw.push(out.designerSession);
         out.notesDraw = nDraw.join('\n');
         // Curated evidence for the task matcher: DEVICE tokens only (framework tables like iw_sys_* /
         // iw_gen_* / iw_lnk_* are excluded — their names word-match nonsense like "system(s)"/"parameters"
