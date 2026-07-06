@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.103**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.104**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -472,6 +472,10 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     scans (unreachable plants) are used for the build but flagged in a warn banner and NOT cached; if
     the scan can't run at all, quick data is used with a loud "plans may MISS plants" banner.
     `cacheVisit`/`readCache`/`writeCacheDates` hoisted out of the panel closure for this.
+  - **Bucket dedupe at PLAN time (4.104):** team-bucket entries were only deduped at BOOK time, so the
+    review UI kept offering tickable picker rows for plants whose bucket entry (activity `<plant id> …`,
+    same category) already existed — they now render ⏭ "already booked" up front (`bucketDupe` in
+    `buildBookingPlan`; the book-time guard remains the backstop).
   - **Live phase progress (4.103):** post-scan pang is saturated and the plan build (≈2 slow pang calls
     per plant, 60 s timeouts) sat SILENT on "Loading Mon…" for minutes — looked hung, was working. The
     status line now narrates: "looking up N plant names…", "correlating config commits for N plants…",
