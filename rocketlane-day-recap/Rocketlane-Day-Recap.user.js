@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.100
+// @version      4.101
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.100';
+    const SCRIPT_VERSION   = '4.101';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1764,32 +1764,8 @@
             }
         };
 
-        // ----- Full-scan result cache (keyed by username + date) -----
-        // A full scan is ~7,600 requests / ~1 min, so we cache its result per date. Past dates
-        // never change; today's can go stale as you keep working, which is why the footer shows
-        // the cache time and a Full scan always re-runs and overwrites it.
-        const cacheVisit = (v) => ({
-            plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
-            actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.estimated_minutes,
-            base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
-            designer_minutes: v.designer_minutes || 0, // v4.56: was dropped by the cache — cached dates silently lost gap-based Drawing (v4.54)
-            designer_last: v.designer_last || null,    // v4.60: last designer session {s,e} for the commit-anchored extension
-            capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
-        });
-        const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
-        // Write one or many dates to the cache. A full scan passes every date it found (browsing any
-        // of them is then instant); Refresh passes just the one date it refreshed. Keyed by username + date.
-        const writeCacheDates = (username, datesObj, scanned) => {
-            if (!username || !datesObj) return;
-            const cache = GM_getValue(KEY_SCAN_CACHE, {});
-            if (!cache[username]) cache[username] = {};
-            const now = Date.now();
-            for (const iso in datesObj) cache[username][iso] = { scanned_at: now, scanned, visits: (datesObj[iso] || []).map(cacheVisit) };
-            // Keep the most-recent MAX_CACHED_DATES dates per user (by date) so storage stays bounded.
-            const keys = Object.keys(cache[username]).sort();
-            if (keys.length > MAX_CACHED_DATES) keys.slice(0, keys.length - MAX_CACHED_DATES).forEach(d => delete cache[username][d]);
-            GM_setValue(KEY_SCAN_CACHE, cache);
-        };
+        // ----- Full-scan result cache: cacheVisit/readCache/writeCacheDates are TOP-LEVEL now
+        // (v4.101) — ⤴ Book week runs its own full scan without the panel being open.
 
         // Quick (recent-only) scan found nothing. The visit is very likely on a plant you didn't open
         // in pang (plant-admin/designer), which only a Full scan covers — so offer that prominently
@@ -2205,6 +2181,33 @@
             openBookingFlow(container, visits, isoDate);
         });
     }
+
+    // ----- Full-scan result cache (keyed by username + date; hoisted from the panel in v4.101) -----
+    // A full scan is ~7,600 requests / ~1 min, so we cache its result per date. Past dates
+    // never change; today's can go stale as you keep working, which is why the footer shows
+    // the cache time and a Full scan always re-runs and overwrites it.
+    const cacheVisit = (v) => ({
+        plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
+        actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.estimated_minutes,
+        base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
+        designer_minutes: v.designer_minutes || 0, // v4.56: was dropped by the cache — cached dates silently lost gap-based Drawing (v4.54)
+        designer_last: v.designer_last || null,    // v4.60: last designer session {s,e} for the commit-anchored extension
+        capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
+    });
+    const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
+    // Write one or many dates to the cache. A full scan passes every date it found (browsing any
+    // of them is then instant); Refresh passes just the one date it refreshed. Keyed by username + date.
+    const writeCacheDates = (username, datesObj, scanned) => {
+        if (!username || !datesObj) return;
+        const cache = GM_getValue(KEY_SCAN_CACHE, {});
+        if (!cache[username]) cache[username] = {};
+        const now = Date.now();
+        for (const iso in datesObj) cache[username][iso] = { scanned_at: now, scanned, visits: (datesObj[iso] || []).map(cacheVisit) };
+        // Keep the most-recent MAX_CACHED_DATES dates per user (by date) so storage stays bounded.
+        const keys = Object.keys(cache[username]).sort();
+        if (keys.length > MAX_CACHED_DATES) keys.slice(0, keys.length - MAX_CACHED_DATES).forEach(d => delete cache[username][d]);
+        GM_setValue(KEY_SCAN_CACHE, cache);
+    };
 
     // Commit enrichment core — hoisted out of the panel closure (v4.93) so ⤴ Book week can enrich any
     // day's visits without the panel being open. Correlates each visit with its plant's config commits,
@@ -3016,15 +3019,57 @@
         d.setDate(d.getDate() + n);
         return d.toISOString().slice(0, 10);
     }
+    // Book week must stand on FULL-scan data (v4.101, Thomas's rule): quick scans only cover recent +
+    // footprint plants and can miss plant-admin/designer visits — booking a week from them would both
+    // drop plants and mis-distribute the 7,5 h. ONE full scan caches EVERY date it finds, so a single
+    // sweep covers all missing weekdays at once. Today's cache re-scans when older than 30 min.
+    const WEEK_TODAY_MAX_AGE_MS = 30 * 60000;
+    async function weekEnsureAllPlants(statusCb) {
+        const all = GM_getValue(KEY_ALL_PLANTS, []) || [];
+        if (all.length >= FULL_INVENTORY_MIN) return all;
+        statusCb && statusCb('Loading the full plant inventory from pang… (opens pang briefly, one-time)');
+        await autoSyncFromPang(45000, [], true); // foreground harvest: reliable, unlike a throttled background tab
+        return GM_getValue(KEY_ALL_PLANTS, []) || [];
+    }
+    async function weekEnsureFullScan(mondayIso, statusCb) {
+        const username = effectiveUsername();
+        if (!username) return { ok: false, reason: 'pang user unknown — open pang once' };
+        const today = todayISO();
+        const need = [];
+        for (let i = 0; i < 5; i++) {
+            const iso = addDaysISO(mondayIso, i);
+            if (iso > today) continue; // future — nothing to scan
+            const c = readCache(username, iso);
+            if (!c || (iso === today && Date.now() - (c.scanned_at || 0) > WEEK_TODAY_MAX_AGE_MS)) need.push(iso);
+        }
+        if (!need.length) return { ok: true, ran: false };
+        let plantIds = (await weekEnsureAllPlants(statusCb)).map(String);
+        if (!plantIds.length) return { ok: false, reason: 'plant inventory unavailable' };
+        // Footprint-first ordering (same as the panel's Full scan): pure reordering, identical result.
+        const pri = new Set([
+            ...((GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String)),
+            ...(((GM_getValue(KEY_USER_PLANTS, {})[username]) || []).map(String)),
+        ]);
+        const head = [], tail = [];
+        for (const id of plantIds) (pri.has(id) ? head : tail).push(id);
+        plantIds = [...head, ...tail];
+        const all = await loadUserHistoryAllDates(plantIds, need[0], (done, total) =>
+            statusCb && statusCb(`Full scan (${need.length} day${need.length === 1 ? '' : 's'} uncached) — ${done} of ${total} plants…`));
+        if (!all.username) return { ok: false, reason: 'could not identify your pang user in the scan' };
+        rememberUserPlants(all.username, [].concat(...Object.values(all.dates || {})));
+        if (!all.failed) writeCacheDates(all.username, all.dates, all.scanned); // partial scans are never cached (silent holes)
+        return { ok: true, ran: true, failed: all.failed || 0, dates: all.dates || {}, scanned: all.scanned };
+    }
     // Load one day's visits ready for booking: full-scan cache when present (instant + complete),
     // else a quick scan over recent + footprint plants; then names, commit enrichment, and the
     // 7,5 h distribution over bookable (non-quick-check) plants.
-    async function loadDayForBooking(iso, onProg) {
+    async function loadDayForBooking(iso, onProg, overrideDates) {
         if (iso > todayISO()) return []; // future days can't have plant work — never burn a scan on them (v4.94)
         const username = effectiveUsername();
         let visits;
-        const cached = username ? ((GM_getValue(KEY_SCAN_CACHE, {}) || {})[username] || {})[iso] : null;
-        if (cached) visits = cached.visits.map(v => ({ ...v }));
+        const cached = username ? readCache(username, iso) : null;
+        if (overrideDates) visits = (overrideDates[iso] || []).map(v => ({ ...v })); // fresh full scan that couldn't be cached (partial)
+        else if (cached) visits = cached.visits.map(v => ({ ...v }));
         else {
             const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
             const mine = ((GM_getValue(KEY_USER_PLANTS, {})[username]) || []).map(String);
@@ -3076,17 +3121,31 @@
             const mySeq = ++seq;
             box.innerHTML = headHtml() + '<div class="rl-week-status">Building plans…</div>';
             wireNav();
+            const statusEl = () => box.querySelector('.rl-week-status');
+            // Full-scan gate (v4.101): the week's plans must come from FULL-scan data — run one scan
+            // covering every uncached weekday before building. Quick data is only ever the fallback
+            // when the scan itself is impossible, and then it's flagged loudly.
+            let weekWarn = '', override = null;
+            try {
+                const fs = await weekEnsureFullScan(monday, msg => { const s = statusEl(); if (s && seq === mySeq) s.textContent = msg; });
+                if (seq !== mySeq) return;
+                if (!fs.ok) weekWarn = `⚠ Full scan unavailable (${esc(fs.reason)}) — built from quick data, plans may MISS plants.`;
+                else if (fs.ran && fs.failed) { weekWarn = `⚠ ${fs.failed} plant${fs.failed === 1 ? '' : 's'} unreachable during the full scan — using the partial result (not cached).`; override = fs.dates; }
+            } catch (err) {
+                if (seq !== mySeq) return;
+                weekWarn = `⚠ Full scan failed (${esc(String((err && err.message) || err))}) — built from quick data, plans may MISS plants.`;
+            }
             const days = [];
             for (let i = 0; i < 5; i++) {
                 const iso = addDaysISO(monday, i);
-                const st = box.querySelector('.rl-week-status');
+                const st = statusEl();
                 if (seq !== mySeq) return;
                 if (st) st.textContent = `Loading ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)…`;
                 try {
                     const visits = await loadDayForBooking(iso, (done, total) => {
-                        const s = box.querySelector('.rl-week-status');
+                        const s = statusEl();
                         if (s && seq === mySeq) s.textContent = `Scanning ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5) — ${done} of ${total} plants…`;
-                    });
+                    }, override);
                     if (seq !== mySeq) return;
                     const plan = visits.length ? await buildBookingPlan(visits, iso) : [];
                     days.push({ iso, wd: WD[i], plan });
@@ -3095,10 +3154,10 @@
                 }
             }
             if (seq !== mySeq) return;
-            render(days);
+            render(days, weekWarn);
         }
 
-        function render(days) {
+        function render(days, weekWarn) {
             const rows = []; // flat index across all days: { e, day }
             // Team-bucket picker for no-project plants — same flow as ⤴ Book day (v4.97): choose a
             // "Team … Oppgaver" project, the row arms, and it books there as "<plant id> <plant> - <activity>".
@@ -3131,7 +3190,7 @@
                 }
             }
             const readyRows = rows.filter(r => r.e.status === 'ready');
-            box.innerHTML = headHtml() + html +
+            box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '') + html +
                 `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
             wireNav();
             const updateGo = () => {
