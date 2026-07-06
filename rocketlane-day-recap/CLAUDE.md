@@ -253,14 +253,23 @@ resolves to `changes_in_window`).
 - **Full scan** = all ~7600 plants (after a one-time confirm, ~1 min). Because `get_history` returns each
   plant's *entire* history, ONE full scan **caches every date you worked** (`full_scan_cache`, capped
   `MAX_CACHED_DATES` = 400 dates/user) — browsing any other date that month is then instant.
-- Scans **batch** `get_history` (`HISTORY_BATCH_MAX` = 30 plants/request, `SCAN_PARALLEL` = 20 concurrent).
-  Server load = same as single calls (processed sequentially) but far fewer round-trips. The hard limit
-  on big scans is **total data volume**, not round-trips — so keeping the everyday scope small (footprint)
-  is what keeps it fast.
-- **Measured server profile (2026-07-02, don't re-tune blindly):** ~3–6 ms/plant marginal server cost,
-  ~45 KB/plant payload, **no gzip** → a full scan transfers ~300 MB and is bandwidth/parse-bound. The
-  browser caps HTTP/1.1 at ~**6 connections per origin**, so `SCAN_PARALLEL=20` already sits above the
-  real ceiling — raising batch/concurrency constants buys nothing. The wins are elsewhere:
+- Scans **batch** `get_history` (`HISTORY_BATCH_MAX` = 10 plants/request, `SCAN_PARALLEL` = 20 workers).
+  **v4.85 measurement supersedes the old "batch 30 is fine" advice:** the server SERIALIZES a JSON-RPC
+  batch, so large batches head-of-line-block the ~6 real browser connections — batch 10 × 20 ran the same
+  120-plant sample **1.6× faster** than 30 × 20 (434 vs 710 ms; full scan est. ~45 s → ~28 s) with far
+  lower variance. The hard limit on big scans is still **total data volume**.
+- **Measured server profile (2026-07-02 + 2026-07-06):** ~3–6 ms/plant marginal server cost, ~45 KB/plant
+  payload, **no gzip** (nginx ignores Accept-Encoding) → a full scan transfers ~300 MB. All pang JSON is
+  **pretty-printed: 44–55% pure whitespace** — no query param disables it; dropping `JSON_PRETTY_PRINT`
+  server-side would nearly halve the transfer (flagged to the team). `get_history` caps at **500 rows** and
+  ignores every filter param (limit/since/date/user probed). The raw IP 404s (vhost wants the hostname) —
+  no second connection pool. The browser caps HTTP/1.1 at ~**6 connections per origin**.
+- **Changes-log fetching (v4.85):** `commits.php` is ALSO batch-serialized — a cold 7-plant batch measured
+  2.9 s vs **0.9 s as parallel singles** (3.2×), so `gmFetchCommitsBatch` fetches misses as single requests
+  through an 8-wide pool and keeps a per-plant **session cache** (`_commitsCache`, TTL 10 min — a plant's
+  commit list covers every date, it was being refetched per date view). `gmFetchTwoVersionsBatch` caches
+  every (table, commit) result for the session (`_twoVerCache` — commit content is immutable), so Book-day
+  plan rebuilds and drawer opens never refetch a diff.
 - **Scan reliability (v4.57):** `gmFetchHistoryBatch` returns **null** on transport/parse failure (was
   `{}` — indistinguishable from "no history"); `fetchHistoryBatchReliable` retries once, then reports the
   batch's plants as failed. A scan with failures **renders but is never cached** (`writeCacheDates`
@@ -454,7 +463,35 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.62–4.86** ⤴ **Book day** — one click writes the split into the Rocketlane timesheet via Rocketlane's own API.
+- **4.74–4.86** Book day matured — texts, notes, matcher v2, fetch perf:
+  - **Texts (4.74–4.77):** activity texts read the WHOLE day's triggered commits (`v.day_commits` — the
+    descriptive save often lands after the visit window); param tuning (`iw_par_*_param/groups` mods) →
+    "tuned <device>"; unit adds named by their **unit labels** drawer-style ("added Maskin 2 (000:014)")
+    with raw driver-table tokens only as fallback; no-commit fallbacks: Integration → tools used
+    ("phpMyAdmin + VNC work"), Drawing → "Designer session" (no timestamps per Thomas).
+  - **Notes (4.78–4.84):** every entry fills the Notes field, category-matched and CAPPED (5 Added / 5
+    Renamed `old → new` pairs / 4 Tuned/Settings / 4 drawings): settings show values ("packet_interval
+    (AK3): 400 → 4000", clipped 18 ch, `SECRET_RE` masks pass/pwd/secret/token/key as "changed"); tuned
+    devices show WHICH params (≤4 diffed tables, ≤2 devices detailed); drawings show per-panel
+    "rev X → Y · layout edited" (range aggregated across the day); commit-less sessions get
+    "Worked via phpMyAdmin ×3 · direct login" (`notesActions`) so Notes is never empty.
+  - **Task matcher v2 (4.82, calibrated on 37 real cases × 16 projects — 11→15 matched, zero losses):**
+    `TASK_DISCIPLINES` learned device ORDER-NO prefixes (Danfoss 080Z/084B/EKC/AK-CC ⇒ refrig,
+    Exhausto/OJ ⇒ vent, CGE/EM2 ⇒ energy); **tiered evidence** (`texts.tokStr` + graphic names outrank
+    `texts.uStr` unit names — MQTT sensors renamed "Kjøttdisk"/"Fryserom" dragged days into refrig);
+    **weighted** disciplines (distinct key hits break mixed-day ties); Norwegian↔English discipline
+    bridge for Design tasks ("360.001 Ventilasjon" → "Design: Ventilation"); bare drawing tasks
+    (`bilde|tegning`) join the Design pool.
+  - **Team-bucket fallback (4.76):** no-project rows get a picker over `Team *` projects; booking there
+    names the activity `<plant id> <plant name> - <activity>`; choice remembered
+    (`book_fallback_project`); per-bucket dupe-guard.
+  - **Noise filter (4.86):** `BOOK_NOISE_RE` (data_engine|sysinfo) — internal machinery never appears in
+    titles/notes/matcher evidence.
+  - **Fetch perf (4.85):** see §7 — batch 10, commits as pooled singles + session cache, two_versions cache.
+  - Plus: plan list scrolls with sticky head/foot (4.71), per-row tickboxes (4.72), archived projects
+    excluded + API `reason` shown on failures (4.73), weekly-entries WALKER parser + dedupe warn banner
+    (4.75 — response wrapping varies per backend node).
+- **4.62–4.73** ⤴ **Book day** — one click writes the split into the Rocketlane timesheet via Rocketlane's own API.
   New module before `renderVisits`: `rlCreds` (api-key + userId from `localStorage.__api_key`, same as the
   chat-bridge), `rlFetch` (GM_xmlhttpRequest, origin-pinned to `kiona.api.rocketlane.com/api/v1` — page fetch is
   CORS-blocked, the app tunnels through a comlink iframe), `rlProjects` (paginated `GET /projects?pageSize=100&page=N`,
