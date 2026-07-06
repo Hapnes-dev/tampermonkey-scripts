@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.91
+// @version      4.92
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.91';
+    const SCRIPT_VERSION   = '4.92';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2654,7 +2654,7 @@
         for (const d of TASK_DISCIPLINES) { let n = 0; for (const k of d[2]) if (t.includes(k)) n++; if (d[1].test(bookNorm(t))) n++; if (n) w[d[0]] = n; }
         return w;
     }
-    function bookPickWeighted(cands, weights, stripRe) {
+    function bookPickWeighted(cands, weights, stripRe, guess) {
         if (!cands.length) return null;
         // Tiebreaks, in order (lexicographic — top candidate must beat #2 somewhere or it's ambiguous):
         //  1. evidence score
@@ -2662,6 +2662,8 @@
         //     (heat + vent via "VGV") and used to tie plain "Ventilation" — FEWER named disciplines wins.
         //  3. name over phase (v4.90): a task whose NAME carries the discipline beats one that only
         //     inherits it from its phase/category ("Design: Refrigeration" > "Nytt oversiktsbilde").
+        // With `guess` (v4.92, rescue mode): a full tie no longer gives up — the alphabetically first of
+        // the tied-top tasks is returned as the best guess (existing task beats a new activity).
         const scored = cands.map(t => {
             let td = bookDiscOf(t.taskName.replace(stripRe, '')), ph = 0;
             if (!td.size && t.phase) { td = bookDiscOf(t.phase); ph = 1; } // "Nytt oversiktsbilde" under phase "Refrigeration and freezing systems"
@@ -2670,11 +2672,11 @@
         }).filter(x => x.ov > 0);
         if (scored.length === 1) return scored[0].t;
         if (scored.length > 1) {
-            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph));
+            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph) || a.t.taskName.localeCompare(b.t.taskName));
             const [a, b] = scored;
-            if (a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t; // fully tied ⇒ ambiguous
+            if (guess || a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t; // fully tied ⇒ ambiguous (unless guessing)
         }
-        return null; // ambiguous ⇒ let the fallback create an activity
+        return null; // ambiguous ⇒ let the fallback decide
     }
     // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs")
     // are price rows, not work packages — they contain discipline words and would pollute the scoring.
@@ -2697,17 +2699,21 @@
         // breaking an evidence tie) → exactly one open candidate left ⇒ that's the active work package.
         const singleOpen = (cands) => { const open = cands.filter(t => !t.done); return open.length === 1 ? open[0] : null; };
         const resolve = (cands, stripRe) => tiered(cands, stripRe) || tiered(cands.filter(t => !t.done), stripRe) || singleOpen(cands);
-        // v4.91: creating an activity is the LAST RESORT. When the strict pools can't decide, rank every
-        // remaining OPEN task by the same discipline evidence (name or phase) — checklist/admin rows,
-        // other categories' signature names, and tasks already picked for another category are excluded.
-        // A unique evidence winner or a lone surviving task gets the booking; only a real tie gives up.
-        const rescue = (excludeRe) => {
-            const pool = tasks.filter(t => !t.done && !BOOK_CHECKLIST_RE.test(t.taskName)
-                && !(excludeRe && excludeRe.test(t.taskName)) && !(used && used.has(t.taskId)));
+        // v4.91/4.92: creating an activity is the LAST RESORT — a guessed existing task beats a new
+        // activity (Thomas's rule). Rank every remaining OPEN task by the same discipline evidence
+        // (name or phase); checklist/admin rows and tasks already picked for another category are
+        // always excluded. Other categories' signature names are avoided only while better candidates
+        // exist. Order of guesses: evidence winner (ties → alphabetical) → this category's strict-pool
+        // tasks alphabetically → any surviving task alphabetically. Null only when nothing survives.
+        const rescue = (sigCands, excludeRe) => {
+            const ok = t => !t.done && !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
+            let pool = tasks.filter(t => ok(t) && !(excludeRe && excludeRe.test(t.taskName)));
+            if (!pool.length) pool = tasks.filter(ok); // even another category's task beats a new activity
             if (!pool.length) return null;
             const wSum = Object.assign({}, w2);
             for (const k in w1) wSum[k] = (wSum[k] || 0) + w1[k];
-            const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i) || (pool.length === 1 ? pool[0] : null);
+            const alpha = list => list.filter(t => pool.includes(t)).sort((a, b) => a.taskName.localeCompare(b.taskName))[0] || null;
+            const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || alpha(sigCands || []) || alpha(pool);
             return hit ? Object.assign({ rescued: true }, hit) : null;
         };
         if (category === CAT_DRAWING) {
@@ -2730,7 +2736,7 @@
                 if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
             }
             if (design.length === 1) return design[0];
-            return resolve(design, /^design\s*[:\-]/i) || rescue(/integra(?:tion|sjon)|ak3|scan\b|gateway|\brac\b|nport/i);
+            return resolve(design, /^design\s*[:\-]/i) || rescue(design, /integra(?:tion|sjon)|ak3|scan\b|gateway|\brac\b|nport/i);
         }
         if (category === CAT_INTEGRATION) {
             let cands = tasks.filter(t => /^integra(?:tion|sjon)\s*[:\-]/i.test(t.taskName));
@@ -2738,7 +2744,7 @@
                 cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName)
                     || /konfig|igangkj|i?driftsett|commission|innregul|integrasjon|oppkobling|programmering|oppstart/i.test(t.taskName));
             if (cands.length === 1) return cands[0];
-            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(/design|bilde|tegning|ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i);
+            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(cands, /design|bilde|tegning|ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i);
         }
         if (category === CAT_SETUP_PC) {
             // NPort/Moxa = serial gateway; "Server configured" / "Port forwarding" / "Connection to the
@@ -2751,7 +2757,7 @@
             // of giving up (gateway-est name first).
             for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
                 { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return t; }
-            return null;
+            return rescue(c, /design|bilde|tegning|integra(?:tion|sjon)/i);
         }
         return null;
     }
@@ -2795,7 +2801,7 @@
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
-                    taskId: task ? task.taskId : null, taskName: task ? task.taskName : null,
+                    taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
                     category, categoryId: catId || null, minutes: Math.round(min), activityName: act, notes,
                     status: !proj ? 'no-project' : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
                 });
@@ -2863,7 +2869,7 @@
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${rememberedFallback ? '' : ' disabled'} title="Tick to book into the selected team project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
-                    <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>no own project — book into: <select class="bookplan-proj"><option value="">choose team project…</option>${teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>no own project — book into: <select class="bookplan-proj"><option value="">choose team project…</option>${teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '';
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
