@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.72
+// @version      4.73
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.72';
+    const SCRIPT_VERSION   = '4.73';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2304,20 +2304,22 @@
             });
         });
     }
-    // Full project inventory (~800), paginated 100/page, cached a day. Names carry the plant id prefix
-    // ("2184 - Meny Hundvåg: ombygging"), which is what plant→project matching keys on.
+    // Full project inventory (~1200), paginated 100/page, cached a day. Names carry the plant id prefix
+    // ("2184 - Meny Hundvåg: ombygging"), which is what plant→project matching keys on. ARCHIVED projects
+    // are dropped: they reject time entries with 400 "Invalid projectId", and plants can have an archived
+    // duplicate next to the live project (2619 had both — the archived one matched first and 400'd).
     async function rlProjects(force) {
         const cached = GM_getValue(KEY_RL_PROJECTS, null);
-        if (!force && cached && cached.list && (Date.now() - cached.fetched_at) < RL_PROJECTS_TTL_MS) return cached.list;
+        if (!force && cached && cached.v === 2 && cached.list && (Date.now() - cached.fetched_at) < RL_PROJECTS_TTL_MS) return cached.list;
         const list = [];
-        for (let page = 1; page <= 15; page++) {
+        for (let page = 1; page <= 20; page++) {
             const r = await rlFetch('GET', `/projects?pageSize=100&page=${page}`);
             const arr = Array.isArray(r.json) ? r.json : null;
             if (!arr) break;
-            for (const p of arr) if (p && p.projectId && p.projectName) list.push({ id: p.projectId, name: p.projectName });
+            for (const p of arr) if (p && p.projectId && p.projectName && !p.archived) list.push({ id: p.projectId, name: p.projectName });
             if (arr.length < 100) break;
         }
-        if (list.length) GM_setValue(KEY_RL_PROJECTS, { fetched_at: Date.now(), list });
+        if (list.length) GM_setValue(KEY_RL_PROJECTS, { v: 2, fetched_at: Date.now(), list });
         return list.length ? list : (cached && cached.list) || [];
     }
     function rlFindProject(list, plantId) {
@@ -2575,7 +2577,11 @@
             else body.activityName = e.activityName;                              // no fitting task: create the activity
             const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
-            if (e.status === 'booked') ok++; else { fail++; e.error = (r.json && r.json.errors && r.json.errors[0] && r.json.errors[0].errorMessage) || ('HTTP ' + r.status); }
+            if (e.status === 'booked') ok++; else {
+                fail++;
+                const err0 = (r.json && r.json.errors && r.json.errors[0]) || {};
+                e.error = err0.errorMessage || err0.reason || (r.json && r.json.message) || ('HTTP ' + r.status);
+            }
             onProgress && onProgress(e);
         }
         return { ok, fail };
