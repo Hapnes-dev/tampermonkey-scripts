@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.89**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.90**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,7 +463,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.74–4.89** Book day matured — texts, notes, matcher v2, fetch perf:
+- **4.74–4.90** Book day matured — texts, notes, matcher v2+v3, fetch perf:
   - **Texts (4.74–4.77):** activity texts read the WHOLE day's triggered commits (`v.day_commits` — the
     descriptive save often lands after the visit window); param tuning (`iw_par_*_param/groups` mods) →
     "tuned <device>"; unit adds named by their **unit labels** drawer-style ("added Maskin 2 (000:014)")
@@ -482,6 +482,16 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     **weighted** disciplines (distinct key hits break mixed-day ties); Norwegian↔English discipline
     bridge for Design tasks ("360.001 Ventilasjon" → "Design: Ventilation"); bare drawing tasks
     (`bilde|tegning`) join the Design pool.
+  - **Matcher v3 — checklist & template aware (4.87–4.90):** task `done` state (`completedAt`) breaks
+    evidence ties — `resolve` = tiered(all) → tiered(open-only) → single-open-candidate (4.87). Equal
+    evidence prefers the task naming FEWER disciplines — "Heating/ VGV" spans heat+vent via VGV and no
+    longer ties plain "Ventilation"; calibrated on the canonical template 503140 "IWMAC 3.0" (4.89).
+    A task whose NAME carries no discipline inherits it from its **phase/category name** ("Nytt
+    oversiktsbilde" under "Refrigeration and freezing systems"), with name-derived beating
+    phase-derived on ties; sales-order quantity lines (`— N pcs` / "price per unit" / "Aftermarket")
+    are excluded from every candidate pool (`BOOK_QTY_TASK_RE` — they contain discipline words like
+    "Per energy meter" and would pollute scoring); `nport` joins the Setup pool (Moxa NPort = serial
+    gateway) (4.90).
   - **Team-bucket fallback (4.76):** no-project rows get a picker over `Team *` projects; booking there
     names the activity `<plant id> <plant name> - <activity>`; choice remembered
     (`book_fallback_project`); per-bucket dupe-guard.
