@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.67
+// @version      4.68
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.67';
+    const SCRIPT_VERSION   = '4.68';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2361,7 +2361,7 @@
         return s.split('_').map(w => /\d/.test(w) ? w.toUpperCase() : (w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
     }
     async function bookTexts(v) {
-        const out = { integration: '', drawing: '', racHit: false };
+        const out = { integration: '', drawing: '', racHit: false, drawingNames: [], hints: '' };
         const commits = (v.window_commits || []).slice(-BOOK_MAX_COMMITS);
         if (!commits.length) return out;
         const cids = commits.map(c => String(c.id));
@@ -2428,10 +2428,83 @@
                     for (const a of d.added) names.add(chgRowLabel(a));
                     if (names.size >= 3) break;
                 }
-                if (names.size) out.drawing = [...names].slice(0, 3).join(', ');
+                if (names.size) { out.drawingNames = [...names]; out.drawing = out.drawingNames.slice(0, 3).join(', '); }
             } catch (e) { /* fallback text */ }
         }
+        // Everything we saw, lowercased — the task matcher greps this for discipline keywords.
+        out.hints = [
+            Object.keys(patches).map(cid => Object.keys(patches[cid] || {}).join(' ')).join(' '),
+            devAdd.join(' '), [...devMod].join(' '), uNames.join(' '), settNames.join(' '), out.drawingNames.join(' '),
+        ].join(' ').toLowerCase();
         return out;
+    }
+
+    // ---- Task-first booking: prefer an EXISTING project task over creating an activity -----------
+    // Projects carry structured work packages ("Integration: Refrigeration", "Design: Wireless overview",
+    // bare-discipline tasks like "Wireless"). Book onto the best-fitting one (the rich what-changed text
+    // goes into the entry's NOTES); only when nothing fits does the button create an activity like before.
+    const _rlTasksCache = {}; // projectId -> [{taskId, taskName}] (session cache)
+    async function rlTasks(projectId) {
+        if (_rlTasksCache[projectId]) return _rlTasksCache[projectId];
+        const r = await rlFetch('GET', `/tasks/search?project.value=${projectId}&match=all`);
+        let arr = r.json;
+        if (arr && !Array.isArray(arr)) arr = arr.tasks || arr.data || [];
+        const tasks = (Array.isArray(arr) ? arr : []).filter(t => t && t.taskId && t.taskName)
+            .map(t => ({ taskId: t.taskId, taskName: String(t.taskName) }));
+        _rlTasksCache[projectId] = tasks;
+        return tasks;
+    }
+    // Discipline detector: [suffix-regex, hint-keywords]. A task suffix names a discipline; it fits when
+    // the day's evidence (table/device/unit/graphic names) contains one of that discipline's keywords.
+    const TASK_DISCIPLINES = [
+        [/refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'ibs', 'pls']],
+        [/vent|vgv|ahu/, ['vent', 'corrigo', 'vgv', 'ahu', 'aggregat']],
+        [/energ/, ['energ', 'em2', 'cge', 'meter', 'måler']],
+        [/wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ing_', 'ing ']],
+        [/heat|varme/, ['varme', 'heat']],
+        [/machine|maskin/, ['maskin', 'machine']],
+    ];
+    function bookNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9æøå]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+    function bookTaskScore(suffix, hints) {
+        let sc = 0;
+        const s = bookNorm(suffix);
+        for (const [re, keys] of TASK_DISCIPLINES) if (re.test(s)) { for (const k of keys) if (hints.includes(k)) { sc += 2; break; } }
+        for (const w of s.split(' ')) if (w.length >= 4 && hints.includes(w)) sc += 1;
+        return sc;
+    }
+    function pickTask(tasks, category, texts) {
+        if (!tasks || !tasks.length) return null;
+        const hints = texts.hints || '';
+        const best = (cands) => {
+            if (!cands.length) return null;
+            if (cands.length === 1) return cands[0];
+            let top = null, topSc = 0, tie = false;
+            for (const t of cands) {
+                const sc = bookTaskScore(t.taskName.replace(/^[a-zæøå ]+[:\-]/i, ''), hints);
+                if (sc > topSc) { top = t; topSc = sc; tie = false; } else if (sc === topSc && sc > 0) tie = true;
+            }
+            return (top && !tie) ? top : null; // ambiguous ⇒ let the fallback create an activity
+        };
+        if (category === CAT_DRAWING) {
+            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName));
+            // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
+            for (const name of (texts.drawingNames || [])) {
+                const n = bookNorm(name);
+                const hit = design.find(t => { const s = bookNorm(t.taskName.replace(/^design\s*[:\-]/i, '')); return s && (s.includes(n) || n.includes(s)); });
+                if (hit) return hit;
+            }
+            return best(design);
+        }
+        if (category === CAT_INTEGRATION) {
+            let cands = tasks.filter(t => /^integration\s*[:\-]/i.test(t.taskName));
+            if (!cands.length) // no Integration:-prefixed tasks — fall back to bare-discipline work packages
+                cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName));
+            return best(cands);
+        }
+        if (category === CAT_SETUP_PC) {
+            return best(tasks.filter(t => /(ak3|scan|gateway|rac)\b/i.test(t.taskName)));
+        }
+        return null;
     }
 
     // Build the day's booking plan: one entry per plant×category (quick checks excluded), with the
@@ -2445,6 +2518,7 @@
             if (!bookable.length) continue;
             const proj = rlFindProject(projects, v.plant_id);
             const texts = await bookTexts(v);
+            const tasks = proj ? await rlTasks(proj.id) : [];
             const racProject = proj ? RAC_RE.test(proj.name) : false;
             for (const [cat, min] of bookable) {
                 let category = cat;
@@ -2458,11 +2532,14 @@
                     category = CAT_SETUP_PC;
                     act = 'Setup: RAC' + (texts.integration ? ' — ' + texts.integration : ' setup');
                 }
+                // Prefer an existing project task; the rich text then rides along as the entry's note.
+                const task = pickTask(tasks, category, texts);
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
+                    taskId: task ? task.taskId : null, taskName: task ? task.taskName : null,
                     category, categoryId: catId || null, minutes: Math.round(min), activityName: act,
                     status: !proj ? 'no-project' : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
                 });
@@ -2476,10 +2553,10 @@
         let ok = 0, fail = 0;
         for (const e of plan) {
             if (e.status !== 'ready') continue;
-            const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, {
-                date: iso, minutes: e.minutes, activityName: e.activityName,
-                billable: true, categoryId: e.categoryId, projectId: e.projectId,
-            });
+            const body = { date: iso, minutes: e.minutes, billable: true, categoryId: e.categoryId, projectId: e.projectId };
+            if (e.taskId) { body.taskId = e.taskId; body.notes = e.activityName; } // task entry: rich text → notes
+            else body.activityName = e.activityName;                              // no fitting task: create the activity
+            const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
             if (e.status === 'booked') ok++; else { fail++; e.error = (r.json && r.json.errors && r.json.errors[0] && r.json.errors[0].errorMessage) || ('HTTP ' + r.status); }
             onProgress && onProgress(e);
@@ -2500,7 +2577,7 @@
                 `<div class="bookplan-row" data-i="${i}">
                     <span class="bookplan-st">${e.status === 'ready' ? '☐' : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt"><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
-                    <small>${esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'no-project' ? ' — no matching project, book manually' : e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small></span>
+                    <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'no-project' ? ' — no matching project, book manually' : e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small></span>
                 </div>`).join('');
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
