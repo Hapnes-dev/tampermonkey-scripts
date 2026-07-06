@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.65
+// @version      4.66
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.65';
+    const SCRIPT_VERSION   = '4.66';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2337,8 +2337,11 @@
         const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
         const mIso = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
         const r = await rlFetch('GET', `/users/${creds.userId}/timesheets/${mIso}?useNewLogic=true&sourcePage=MY_TIME_SHEET`);
-        // Shape varies with auth context: entries can be an array, or an object keyed by date/group.
-        const j = r.json || {};
+        // Shape varies with auth context: cookie-authed (GM) responses wrap the weekly object in a
+        // ONE-ELEMENT ARRAY — [{entries:[…]}] — while api-key-only returns the bare object.
+        let root = r.json;
+        if (Array.isArray(root) && root.length === 1 && root[0] && typeof root[0] === 'object' && !root[0].date) root = root[0];
+        const j = root || {};
         let entries = (j.entries != null) ? j.entries : (Array.isArray(j) ? j : []);
         if (!Array.isArray(entries) && entries && typeof entries === 'object') {
             entries = Object.values(entries).reduce((a, x) => a.concat(Array.isArray(x) ? x : []), []);
