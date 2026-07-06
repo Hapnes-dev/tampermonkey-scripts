@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.94
+// @version      4.95
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.94';
+    const SCRIPT_VERSION   = '4.95';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2696,9 +2696,11 @@
         }
         return null; // ambiguous ⇒ let the fallback decide
     }
-    // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs")
-    // are price rows, not work packages — they contain discipline words and would pollute the scoring.
-    const BOOK_QTY_TASK_RE = /\b\d+\s*pcs\b|price per unit|aftermarket/i;
+    // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs",
+    // "IWMAC Image: System image - Machinery — x3") are price rows, not work packages — they contain
+    // discipline words and would pollute the scoring. Covers the "N pcs", "xN"/"N stk" and IWMAC
+    // Image/Aftermarket sales-line notations (seen live on 2701, v4.95).
+    const BOOK_QTY_TASK_RE = /\b\d+\s*(pcs|stk)\b|price per unit|aftermarket|^iwmac\s+(image|aftermarket)\b|[—–-]\s*x\s?\d+\s*$/i;
     // Checklist/admin rows are never time-booking targets, not even in rescue mode ("Customers approval",
     // "Alarm test", "Close sales order", "Documentation approved", "Project Satisfaction Survey", …).
     const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
@@ -2720,19 +2722,24 @@
         // v4.91/4.92: creating an activity is the LAST RESORT — a guessed existing task beats a new
         // activity (Thomas's rule). Rank every remaining OPEN task by the same discipline evidence
         // (name or phase); checklist/admin rows and tasks already picked for another category are
-        // always excluded. Other categories' signature names are avoided only while better candidates
-        // exist. Order of guesses: evidence winner (ties → alphabetical) → this category's strict-pool
-        // tasks alphabetically → any surviving task alphabetically. Null only when nothing survives.
-        const rescue = (sigCands, excludeRe) => {
+        // always excluded. `fences` (v4.95) keep other categories' signature tasks out in STAGES —
+        // the last fence is relaxed first, so e.g. Setup lands on an Integration task before it would
+        // ever touch a Design task (seen live: "Setup 18m → Design: Energi" — wrong side). Order of
+        // guesses per stage: evidence winner (ties → alphabetical) → this category's strict-pool tasks
+        // alphabetically → any surviving task alphabetically. Null only when nothing survives at all.
+        const rescue = (sigCands, fences) => {
             const ok = t => !t.done && !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
-            let pool = tasks.filter(t => ok(t) && !(excludeRe && excludeRe.test(t.taskName)));
-            if (!pool.length) pool = tasks.filter(ok); // even another category's task beats a new activity
-            if (!pool.length) return null;
             const wSum = Object.assign({}, w2);
             for (const k in w1) wSum[k] = (wSum[k] || 0) + w1[k];
-            const alpha = list => list.filter(t => pool.includes(t)).sort((a, b) => a.taskName.localeCompare(b.taskName))[0] || null;
-            const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || alpha(sigCands || []) || alpha(pool);
-            return hit ? Object.assign({ rescued: true }, hit) : null;
+            for (let k = (fences || []).length; k >= 0; k--) {
+                const act = (fences || []).slice(0, k);
+                const pool = tasks.filter(t => ok(t) && !act.some(re => re.test(t.taskName)));
+                if (!pool.length) continue;
+                const alpha = list => list.filter(t => pool.includes(t)).sort((a, b) => a.taskName.localeCompare(b.taskName))[0] || null;
+                const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || alpha(sigCands || []) || alpha(pool);
+                if (hit) return Object.assign({ rescued: true }, hit);
+            }
+            return null;
         };
         if (category === CAT_DRAWING) {
             // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…",
@@ -2754,7 +2761,8 @@
                 if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
             }
             if (design.length === 1) return design[0];
-            return resolve(design, /^design\s*[:\-]/i) || rescue(design, /integra(?:tion|sjon)|ak3|scan\b|gateway|\brac\b|nport/i);
+            // Fences: setup names stay out longest; integration names are relaxed first.
+            return resolve(design, /^design\s*[:\-]/i) || rescue(design, [/ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i, /integra(?:tion|sjon)/i]);
         }
         if (category === CAT_INTEGRATION) {
             let cands = tasks.filter(t => /^integra(?:tion|sjon)\s*[:\-]/i.test(t.taskName));
@@ -2762,7 +2770,8 @@
                 cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName)
                     || /konfig|igangkj|i?driftsett|commission|innregul|integrasjon|oppkobling|programmering|oppstart/i.test(t.taskName));
             if (cands.length === 1) return cands[0];
-            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(cands, /design|bilde|tegning|ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i);
+            // Fences: design names stay out longest; setup names are relaxed first.
+            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(cands, [/design|bilde|tegning/i, /ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i]);
         }
         if (category === CAT_SETUP_PC) {
             // NPort/Moxa = serial gateway; "Server configured" / "Port forwarding" / "Connection to the
@@ -2775,7 +2784,9 @@
             // of giving up (gateway-est name first).
             for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
                 { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return t; }
-            return rescue(c, /design|bilde|tegning|integra(?:tion|sjon)/i);
+            // Fences: design names stay out longest — gateway setup is integration-side work, so an
+            // Integration task is the natural second choice ("Setup 18m → Design: Energi" was wrong).
+            return rescue(c, [/design|bilde|tegning/i, /integra(?:tion|sjon)/i]);
         }
         return null;
     }
