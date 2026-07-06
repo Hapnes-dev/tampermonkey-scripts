@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.87
+// @version      4.88
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.87';
+    const SCRIPT_VERSION   = '4.88';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2320,6 +2320,8 @@
     // Internal plant machinery whose tables change as a side-effect of the system running — never present
     // them as work ("tuned Data Engine") and never let them feed the task matcher.
     const BOOK_NOISE_RE = /data_engine|sysinfo/i;
+    // Same idea for individual plant-setting ROWS: "scripts (PHP-APP)" stream lists etc. are sys config churn.
+    const SETT_NOISE_RE = /\bscripts?\b|php.?app|data.?engine|sysinfo/i;
 
     function rlCreds() {
         try {
@@ -2484,10 +2486,15 @@
                         uRen += renRows.size;
                     } else if (tbl === 'iw_sys_plant_settings') {
                         for (const m of d.modified) {
-                            const lbl = String(chgRowLabel(m) || '').replace(/\s*\(.*\)$/, '');
+                            const full = String(chgRowLabel(m) || '');
+                            // System-internal settings churn on their own ("scripts (PHP-APP)" stream lists,
+                            // data-engine/sysinfo housekeeping) — never present them as work.
+                            if (SETT_NOISE_RE.test(full)) continue;
+                            const lbl = full.replace(/\s*\(.*\)$/, '');
                             if (lbl && !settNames.includes(lbl)) settNames.push(lbl);
-                            const full = String(chgRowLabel(m) || lbl);
-                            const detail = SECRET_RE.test(full) ? `${full}: changed` : `${full}: ${bookClipVal(m.from)} → ${bookClipVal(m.to)}`;
+                            const f = bookClipVal(m.from), t = bookClipVal(m.to);
+                            // Secret values, or values identical after clipping ("1;stream_… → 1;stream_…"): say "changed".
+                            const detail = (SECRET_RE.test(full) || f === t) ? `${full}: changed` : `${full}: ${f} → ${t}`;
                             if (full && !settDetails.some(x => x.startsWith(full + ':'))) settDetails.push(detail);
                         }
                     } else {
