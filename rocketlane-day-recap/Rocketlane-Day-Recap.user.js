@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.85
+// @version      4.86
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.85';
+    const SCRIPT_VERSION   = '4.86';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2317,6 +2317,9 @@
     const BOOK_MAX_COMMITS = 4;                       // newest triggered commits inspected for activity texts
     // "RAC" in the matched project name or in a changed table ⇒ the work is gateway setup, not integration.
     const RAC_RE = /(^|[\s_.:\-(])rac([\s_.:\-)]|$|\d)/i;
+    // Internal plant machinery whose tables change as a side-effect of the system running — never present
+    // them as work ("tuned Data Engine") and never let them feed the task matcher.
+    const BOOK_NOISE_RE = /data_engine|sysinfo/i;
 
     function rlCreds() {
         try {
@@ -2437,6 +2440,9 @@
             const tables = Object.entries(patches[cid] || {}).filter(([t, m]) => m && m.mode);
             for (const [t, m] of tables) {
                 if (RAC_RE.test(t)) out.racHit = true;
+                // Internal machinery, not user work: the Data Engine / sysinfo tables drift as a side-effect
+                // of running the plant — "tuned Data Engine" in a timesheet is meaningless noise.
+                if (BOOK_NOISE_RE.test(t)) continue;
                 if (/^iw_set_/.test(t)) { if (m.mode === 'add') devAdd.push(bookPrettyToken(t)); else if (/^mod/.test(m.mode)) devMod.add(bookPrettyToken(t)); }
                 // Parameter tuning lives in iw_par_<device>_param/_groups — count a MOD there as "tuned <device>"
                 if (/^iw_par_.+_(param|groups)$/.test(t) && /^mod/.test(m.mode)) devMod.add(bookPrettyToken(t));
@@ -2595,7 +2601,7 @@
         // "Kjøttdisk"/"Fryserom" and would otherwise pull every day into refrigeration.
         const tokset = new Set();
         for (const cid of cids) for (const [t, m] of Object.entries(patches[cid] || {})) {
-            if (m && m.mode && !/^iw_(sys|gen|lnk)_/.test(t)) tokset.add(bookPrettyToken(t).toLowerCase());
+            if (m && m.mode && !/^iw_(sys|gen|lnk)_/.test(t) && !BOOK_NOISE_RE.test(t)) tokset.add(bookPrettyToken(t).toLowerCase());
         }
         out.tokStr = [...tokset].concat(devAdd, [...devMod]).join(' ').toLowerCase();
         out.uStr = uAddNames.concat(uRenNames).join(' ').toLowerCase();
