@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.81
+// @version      4.82
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.81';
+    const SCRIPT_VERSION   = '4.82';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2514,17 +2514,17 @@
             nDraw.push(out.designerSession); // fallback only — real drawing detail replaces it
         }
         out.notesDraw = nDraw.join('\n');
-        // Curated evidence for the task matcher: DEVICE tokens only (framework tables like iw_sys_* /
-        // iw_gen_* / iw_lnk_* are excluded — their names word-match nonsense like "system(s)"/"parameters"
-        // and made every discipline tie), plus device/unit/setting/graphic names.
+        // Curated evidence for the task matcher, TIERED (v4.82): tokStr = device-table tokens (framework
+        // tables iw_sys_*/iw_gen_*/iw_lnk_* excluded — their names word-match nonsense) — system-level
+        // truth; uStr = unit add/rename NAMES — fallback tier only, since MQTT sensors get renamed to
+        // "Kjøttdisk"/"Fryserom" and would otherwise pull every day into refrigeration.
         const tokset = new Set();
         for (const cid of cids) for (const [t, m] of Object.entries(patches[cid] || {})) {
             if (m && m.mode && !/^iw_(sys|gen|lnk)_/.test(t)) tokset.add(bookPrettyToken(t).toLowerCase());
         }
-        out.hints = [
-            [...tokset].join(' '),
-            devAdd.join(' '), [...devMod].join(' '), uAddNames.join(' '), uRenNames.join(' '), settNames.join(' '), out.drawingNames.join(' '),
-        ].join(' ').toLowerCase();
+        out.tokStr = [...tokset].concat(devAdd, [...devMod]).join(' ').toLowerCase();
+        out.uStr = uAddNames.concat(uRenNames).join(' ').toLowerCase();
+        out.hints = [out.tokStr, out.uStr, settNames.join(' '), out.drawingNames.join(' ')].join(' ').toLowerCase(); // for the LOG
         return out;
     }
 
@@ -2543,39 +2543,45 @@
         _rlTasksCache[projectId] = tasks;
         return tasks;
     }
-    // Discipline detector: [suffix-regex, hint-keywords]. A task suffix names a discipline; it fits when
-    // the day's evidence (table/device/unit/graphic names) contains one of that discipline's keywords.
+    // Discipline detector: [name, suffix-regex, evidence-keywords]. Calibrated on 37 real plant-day cases
+    // across 16 projects (v4.82 deep-dive: match rate 11→15, zero losses): device ORDER-NO prefixes carry
+    // discipline (Danfoss 080Z/084B/EKC/AK-CC ⇒ refrigeration, Exhausto/OJ ⇒ ventilation, CGE/EM2 ⇒ energy).
     const TASK_DISCIPLINES = [
-        [/refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'pls']],
-        [/vent|vgv|ahu/, ['vent', 'corrigo', 'vgv', 'ahu', 'aggregat']],
-        [/energ/, ['energ', 'em2', 'cge', 'meter', 'måler']],
-        [/wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ibs0', 'ing ', 'ing_']], // IBS/ING/Ruuvi = wireless MQTT sensors
-        [/heat|varme/, ['varme', 'heat']],
-        [/machine|maskin/, ['maskin', 'machine']],
+        ['refrig', /refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'pls', 'ak-cc', '084b', '080z', 'ekc', 'ak2', 'kulde']],
+        ['vent', /vent|vgv|ahu/, ['vent', 'corrigo', 'vgv', 'ahu', 'aggregat', 'exhausto', 'oj ', 'swegon', 'systemair', 'flexit']],
+        ['energy', /energ/, ['energ', 'em2', 'cge', 'meter', 'måler']],
+        ['wireless', /wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ibs0', 'ing ', 'ing_', 'trådløs']], // IBS/ING/Ruuvi = wireless MQTT sensors
+        ['heat', /heat|varme/, ['varme', 'heat', 'fjernvarme']],
+        ['machine', /machine|maskin/, ['maskin', 'machine']],
     ];
     function bookNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9æøå]+/g, ' ').replace(/\s+/g, ' ').trim(); }
-    function bookTaskScore(suffix, hints) {
-        let sc = 0;
-        const s = bookNorm(suffix);
-        for (const [re, keys] of TASK_DISCIPLINES) if (re.test(s)) { for (const k of keys) if (hints.includes(k)) { sc += 2; break; } }
-        for (const w of s.split(' ')) if (w.length >= 4 && hints.includes(w)) sc += 1;
-        return sc;
+    function bookDiscOf(text) { const t = bookNorm(text); const out = new Set(); for (const d of TASK_DISCIPLINES) if (d[1].test(t)) out.add(d[0]); return out; }
+    // Weighted discipline evidence: count DISTINCT keyword hits per discipline (+1 for a regex hit), so
+    // "EM270 + CGE" (energy ×2) outweighs a lone "084B…" (refrig ×1) on a mixed day.
+    function bookDiscWeights(str) {
+        const w = {}; const t = String(str || '').toLowerCase();
+        for (const d of TASK_DISCIPLINES) { let n = 0; for (const k of d[2]) if (t.includes(k)) n++; if (d[1].test(bookNorm(t))) n++; if (n) w[d[0]] = n; }
+        return w;
+    }
+    function bookPickWeighted(cands, weights, stripRe) {
+        if (!cands.length) return null;
+        const scored = cands.map(t => { const td = bookDiscOf(t.taskName.replace(stripRe, '')); let ov = 0; for (const x of td) ov += (weights[x] || 0); return { t, ov }; }).filter(x => x.ov > 0);
+        if (scored.length === 1) return scored[0].t;
+        if (scored.length > 1) { scored.sort((a, b) => b.ov - a.ov); if (scored[0].ov > scored[1].ov) return scored[0].t; }
+        return null; // ambiguous ⇒ let the fallback create an activity
     }
     function pickTask(tasks, category, texts) {
         if (!tasks || !tasks.length) return null;
-        const hints = texts.hints || '';
-        const best = (cands) => {
-            if (!cands.length) return null;
-            if (cands.length === 1) return cands[0];
-            let top = null, topSc = 0, tie = false;
-            for (const t of cands) {
-                const sc = bookTaskScore(t.taskName.replace(/^[a-zæøå ]+[:\-]/i, ''), hints);
-                if (sc > topSc) { top = t; topSc = sc; tie = false; } else if (sc === topSc && sc > 0) tie = true;
-            }
-            return (top && !tie) ? top : null; // ambiguous ⇒ let the fallback create an activity
-        };
+        // TIERED evidence: device tokens + graphic names are system-level truth; unit NAMES are only a
+        // fallback — on MQTT projects the wireless sensors get renamed to "Kjøttdisk"/"Fryserom", which
+        // would otherwise drag every day into refrigeration.
+        const gStr = (texts.drawingNames || []).join(' ');
+        const w1 = bookDiscWeights((texts.tokStr || '') + ' ' + gStr);
+        const w2 = bookDiscWeights(texts.uStr || '');
+        const tiered = (cands, stripRe) => bookPickWeighted(cands, w1, stripRe) || (Object.keys(w1).length ? null : bookPickWeighted(cands, w2, stripRe));
         if (category === CAT_DRAWING) {
-            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName));
+            // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…").
+            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning/i.test(t.taskName));
             const suf = t => bookNorm(t.taskName.replace(/^design\s*[:\-]/i, ''));
             // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
             // Rank exact > task-suffix-contains-name > name-contains-suffix with the LONGEST suffix winning —
@@ -2587,17 +2593,24 @@
                 if (!hit) hit = design.find(t => suf(t) && suf(t).includes(n));
                 if (!hit) hit = design.filter(t => suf(t) && n.includes(suf(t))).sort((a, b) => suf(b).length - suf(a).length)[0];
                 if (hit) return hit;
+                // Discipline bridge across languages: graphic "360.001 Ventilasjon" → task "Design: Ventilation".
+                const gd = bookDiscOf(name);
+                if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
             }
-            return best(design);
+            if (design.length === 1) return design[0];
+            return tiered(design, /^design\s*[:\-]/i);
         }
         if (category === CAT_INTEGRATION) {
             let cands = tasks.filter(t => /^integration\s*[:\-]/i.test(t.taskName));
             if (!cands.length) // no Integration:-prefixed tasks — fall back to bare-discipline work packages
                 cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName));
-            return best(cands);
+            if (cands.length === 1) return cands[0];
+            return tiered(cands, /^integration\s*[:\-]/i);
         }
         if (category === CAT_SETUP_PC) {
-            return best(tasks.filter(t => /(ak3|scan|gateway|rac)\b/i.test(t.taskName)));
+            const c = tasks.filter(t => /(ak3|scan|gateway|rac)\b/i.test(t.taskName));
+            if (c.length === 1) return c[0];
+            return tiered(c, /^[a-zæøå ]+[:\-]/i);
         }
         return null;
     }
