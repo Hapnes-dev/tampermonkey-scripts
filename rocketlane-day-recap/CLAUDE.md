@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.96**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.97**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,7 +463,7 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
-- **4.93–4.95** ⤴ **Book week** — one click fills Monday–Friday. Toolbar button injected LEFT of Rocketlane's
+- **4.93–4.97** ⤴ **Book week** — one click fills Monday–Friday. Toolbar button injected LEFT of Rocketlane's
   own "Add" (`buildWeekButton`: finds the Add button by text, borrows its className, inserted via the same
   MutationObserver as the FAB; throttled 800 ms). Click → floating `#rl-recap-week` modal (reuses the
   `.bookplan` CSS via `:is(#panel, #week)` selectors): per weekday it loads visits (full-scan cache when
@@ -472,8 +472,10 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   (`loadDayForBooking`), and builds the normal booking plan. Day headers show "N to book · 7h 30m · ⏭ M
   already booked"; ‹ › switch weeks; tickbox per row; one Book button books day by day. **Never duplicates**:
   per-day server dedupe (project+category already on the date ⇒ ⏭), and a day whose weekly-entries check
-  failed renders as "⚠ can't verify — day skipped" with NO bookable rows. No-project rows are not bookable
-  in week mode (team buckets need the per-day flow). The commit-enrichment core was hoisted out of the
+  failed renders as "⚠ can't verify — day skipped" with NO bookable rows. No-project rows get the same
+  team-bucket picker as Book day (4.97): "book into: <Team … Oppgaver>" select with the remembered
+  `book_fallback_project` preselected, tick to arm, books as `<plant id> <plant name> - <activity>`
+  with the per-bucket dupe guard. The commit-enrichment core was hoisted out of the
   panel closure as top-level `enrichVisitsWithCommits(visits, iso)` (verified line-identical, only
   `lastIso`→`iso`); the panel's `ensureChangesEnriched` is now a thin seq-guard wrapper around it.
   **4.95** (from the live test): rescue fences are STAGED (last fence relaxes first — Setup lands on an
