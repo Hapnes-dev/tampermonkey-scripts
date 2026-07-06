@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.68
+// @version      4.69
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.68';
+    const SCRIPT_VERSION   = '4.69';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2487,10 +2487,16 @@
         };
         if (category === CAT_DRAWING) {
             const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName));
+            const suf = t => bookNorm(t.taskName.replace(/^design\s*[:\-]/i, ''));
             // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
+            // Rank exact > task-suffix-contains-name > name-contains-suffix with the LONGEST suffix winning —
+            // otherwise a generic "Design: Overview" steals "Wireless Overview" from "Design: Wireless overview".
             for (const name of (texts.drawingNames || [])) {
                 const n = bookNorm(name);
-                const hit = design.find(t => { const s = bookNorm(t.taskName.replace(/^design\s*[:\-]/i, '')); return s && (s.includes(n) || n.includes(s)); });
+                if (!n) continue;
+                let hit = design.find(t => suf(t) === n);
+                if (!hit) hit = design.find(t => suf(t) && suf(t).includes(n));
+                if (!hit) hit = design.filter(t => suf(t) && n.includes(suf(t))).sort((a, b) => suf(b).length - suf(a).length)[0];
                 if (hit) return hit;
             }
             return best(design);
@@ -2534,6 +2540,7 @@
                 }
                 // Prefer an existing project task; the rich text then rides along as the entry's note.
                 const task = pickTask(tasks, category, texts);
+                LOG('book: pick', v.plant_id, category, '→', task ? task.taskName : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
                 plan.push({
