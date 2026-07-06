@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.99
+// @version      4.100
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.99';
+    const SCRIPT_VERSION   = '4.100';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2892,7 +2892,23 @@
             const notes = e.notes || '';
             if (taskId) { body.taskId = taskId; body.notes = notes || act; } // task entry: details (or the title) → notes
             else { body.activityName = act; if (notes) body.notes = notes; } // activity entry: details → Notes field
-            const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
+            let r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
+            // Transient server error (a lone HTTP 502 killed one entry of a 24-entry week, 2026-07-06):
+            // a dead gateway may still have COMMITTED the write, so verify before retrying — the entry
+            // is retried only when the sheet provably does NOT have it yet (never duplicate).
+            if (!(r.status === 200 || r.status === 201) && (r.status >= 500 || r.status === 429 || !r.status)) {
+                await new Promise(res => setTimeout(res, 1500));
+                _rlWeekCache.clear();
+                const now = await rlEntriesOn(iso);
+                // Build-time dedupe guarantees the sheet had NO entry for this project+category today,
+                // so one appearing now can only be OUR write that the gateway failed to acknowledge.
+                const landed = now._checkOk && now.some(x => x.project && x.project.id === projectId
+                    && x.category && x.category.categoryId === e.categoryId
+                    && (!isFallback || String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0));
+                if (landed) r = { status: 201, json: null };
+                else if (now._checkOk) r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
+                // check unavailable ⇒ leave the failure — a rebuilt plan dedupes correctly later
+            }
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
             if (e.status === 'booked') ok++; else {
                 fail++;
