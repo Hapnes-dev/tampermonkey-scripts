@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.97
+// @version      4.98
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.97';
+    const SCRIPT_VERSION   = '4.98';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2397,28 +2397,37 @@
         if (Object.keys(map).length) _rlCategories = map;
         return map;
     }
+    const _rlWeekCache = new Map(); // mondayIso -> { t, p } — collapses Book week's 5 identical weekly GETs (cleared after booking)
     async function rlEntriesOn(iso) {
         const creds = rlCreds(); if (!creds) return [];
         const d = new Date(iso + 'T12:00:00');
         const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
         const mIso = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
-        const r = await rlFetch('GET', `/users/${creds.userId}/timesheets/${mIso}?useNewLogic=true&sourcePage=MY_TIME_SHEET`);
+        const hit = _rlWeekCache.get(mIso);
+        let p = (hit && Date.now() - hit.t < 60000) ? hit.p : null;
+        if (!p) { p = rlFetch('GET', `/users/${creds.userId}/timesheets/${mIso}?useNewLogic=true&sourcePage=MY_TIME_SHEET`); _rlWeekCache.set(mIso, { t: Date.now(), p }); }
+        const r = await p;
         // The weekly response's wrapping VARIES (bare object / [{…}] / multi-element arrays, depending on
         // auth context and backend node). Stop chasing shapes: walk the whole payload (bounded) and collect
         // anything that looks like a time entry — an object carrying `date` + `timeEntryId`.
         const entries = [];
+        let sawEntries = false; // saw the timesheet STRUCTURE (an `entries` ARRAY anywhere, even empty)
         const walk = (node, depth) => {
             if (!node || depth > 5) return;
             if (Array.isArray(node)) { for (const x of node) walk(x, depth + 1); return; }
             if (typeof node !== 'object') return;
             if (node.date && node.timeEntryId) { entries.push(node); return; }
+            if (Array.isArray(node.entries)) sawEntries = true;
             for (const val of Object.values(node)) if (val && typeof val === 'object') walk(val, depth + 1);
         };
         walk(r.json, 0);
         const onDate = entries.filter(e => e && e.date === iso);
-        LOG('book: weekly', mIso, 'status', r.status, 'entries', entries.length, '→ on', iso, onDate.length,
+        LOG('book: weekly', mIso, 'status', r.status, 'entries', entries.length, 'structSeen', sawEntries, '→ on', iso, onDate.length,
             r.status !== 200 ? ('body: ' + String(r.raw).slice(0, 180)) : '');
-        onDate._checkOk = r.status === 200 && entries.length > 0; // empty week ⇒ can't distinguish "no entries" from a shape miss → warn
+        // A cleared/fresh week legitimately returns `entries: []` (verified against the UI 2026-07-06 —
+        // Thomas empties a week, then Book week refills it). Recognized-but-empty structure is therefore
+        // trusted (v4.98); only a non-200 or a response with NO recognizable structure blocks booking.
+        onDate._checkOk = r.status === 200 && (entries.length > 0 || sawEntries);
         return onDate;
     }
 
@@ -2887,6 +2896,7 @@
             }
             onProgress && onProgress(e);
         }
+        _rlWeekCache.clear(); // fresh dedupe data on the next plan build — we just changed the sheet
         return { ok, fail };
     }
 
