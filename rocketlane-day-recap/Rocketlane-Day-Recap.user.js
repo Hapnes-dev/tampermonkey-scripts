@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.89
+// @version      4.90
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.89';
+    const SCRIPT_VERSION   = '4.90';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2627,7 +2627,10 @@
         let arr = r.json;
         if (arr && !Array.isArray(arr)) arr = arr.tasks || arr.data || [];
         const tasks = (Array.isArray(arr) ? arr : []).filter(t => t && t.taskId && t.taskName)
-            .map(t => ({ taskId: t.taskId, taskName: String(t.taskName), done: !!t.completedAt })); // done ⇒ ticked off in the plan
+            .map(t => ({
+                taskId: t.taskId, taskName: String(t.taskName), done: !!t.completedAt, // done ⇒ ticked off in the plan
+                phase: String((t.projectPhase && t.projectPhase.projectPhaseName) || ''), // category/phase carries the discipline for bare-named tasks
+            }));
         _rlTasksCache[projectId] = tasks;
         return tasks;
     }
@@ -2653,16 +2656,32 @@
     }
     function bookPickWeighted(cands, weights, stripRe) {
         if (!cands.length) return null;
-        // Specificity tiebreak (v4.89, from the canonical template): "Heating/ VGV" spans TWO disciplines
-        // (heat + vent via "VGV"), so pure vent evidence used to tie it against plain "Ventilation".
-        // On equal evidence the task naming FEWER disciplines (the more specific one) wins.
-        const scored = cands.map(t => { const td = bookDiscOf(t.taskName.replace(stripRe, '')); let ov = 0; for (const x of td) ov += (weights[x] || 0); return { t, ov, nd: td.size }; }).filter(x => x.ov > 0);
+        // Tiebreaks, in order (lexicographic — top candidate must beat #2 somewhere or it's ambiguous):
+        //  1. evidence score
+        //  2. specificity (v4.89, from the canonical template): "Heating/ VGV" spans TWO disciplines
+        //     (heat + vent via "VGV") and used to tie plain "Ventilation" — FEWER named disciplines wins.
+        //  3. name over phase (v4.90): a task whose NAME carries the discipline beats one that only
+        //     inherits it from its phase/category ("Design: Refrigeration" > "Nytt oversiktsbilde").
+        const scored = cands.map(t => {
+            let td = bookDiscOf(t.taskName.replace(stripRe, '')), ph = 0;
+            if (!td.size && t.phase) { td = bookDiscOf(t.phase); ph = 1; } // "Nytt oversiktsbilde" under phase "Refrigeration and freezing systems"
+            let ov = 0; for (const x of td) ov += (weights[x] || 0);
+            return { t, ov, nd: td.size, ph };
+        }).filter(x => x.ov > 0);
         if (scored.length === 1) return scored[0].t;
-        if (scored.length > 1) { scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd)); if (scored[0].ov > scored[1].ov || (scored[0].ov === scored[1].ov && scored[0].nd < scored[1].nd)) return scored[0].t; }
+        if (scored.length > 1) {
+            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph));
+            const [a, b] = scored;
+            if (a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t; // fully tied ⇒ ambiguous
+        }
         return null; // ambiguous ⇒ let the fallback create an activity
     }
+    // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs")
+    // are price rows, not work packages — they contain discipline words and would pollute the scoring.
+    const BOOK_QTY_TASK_RE = /\b\d+\s*pcs\b|price per unit|aftermarket/i;
     function pickTask(tasks, category, texts) {
-        if (!tasks || !tasks.length) return null;
+        tasks = (tasks || []).filter(t => !BOOK_QTY_TASK_RE.test(t.taskName));
+        if (!tasks.length) return null;
         // TIERED evidence: device tokens + graphic names are system-level truth; unit NAMES are only a
         // fallback — on MQTT projects the wireless sensors get renamed to "Kjøttdisk"/"Fryserom", which
         // would otherwise drag every day into refrigeration.
@@ -2704,7 +2723,7 @@
             return resolve(cands, /^integration\s*[:\-]/i);
         }
         if (category === CAT_SETUP_PC) {
-            const c = tasks.filter(t => /(ak3|scan|gateway|rac)\b/i.test(t.taskName));
+            const c = tasks.filter(t => /(ak3|scan|gateway|rac|nport)\b/i.test(t.taskName)); // NPort = Moxa serial gateway ("Nport configured" in the Hardware phase)
             if (c.length === 1) return c[0];
             return resolve(c, /^[a-zæøå ]+[:\-]/i);
         }
