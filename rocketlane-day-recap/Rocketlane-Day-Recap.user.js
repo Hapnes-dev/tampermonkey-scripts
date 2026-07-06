@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.66
+// @version      4.67
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.66';
+    const SCRIPT_VERSION   = '4.67';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2350,7 +2350,6 @@
         const onDate = entries.filter(e => e && e.date === iso);
         LOG('book: weekly', mIso, 'status', r.status, 'entries', entries.length, '→ on', iso, onDate.length,
             r.status !== 200 ? ('body: ' + String(r.raw).slice(0, 180)) : '');
-        if (!onDate.length) LOG('book: weekly raw head', String(r.raw).slice(0, 260));
         return onDate;
     }
 
@@ -2368,19 +2367,55 @@
         const cids = commits.map(c => String(c.id));
         let patches = {};
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
-        const devices = [], graphicCids = [];
+        const devAdd = [], devMod = new Set(), graphicCids = [], unitJobs = [], settJobs = [];
         for (const cid of cids) {
             const tables = Object.entries(patches[cid] || {}).filter(([t, m]) => m && m.mode);
             for (const [t, m] of tables) {
                 if (RAC_RE.test(t)) out.racHit = true;
-                if (m.mode === 'add' && /^iw_set_/.test(t)) devices.push(bookPrettyToken(t));
+                if (/^iw_set_/.test(t)) { if (m.mode === 'add') devAdd.push(bookPrettyToken(t)); else if (/^mod/.test(m.mode)) devMod.add(bookPrettyToken(t)); }
                 if (/graphic_designer/i.test(t)) graphicCids.push(cid);
+                if (t === 'iw_sys_plant_units') unitJobs.push({ table_name: t, commit: cid });
+                if (t === 'iw_sys_plant_settings' && /^mod/.test(m.mode)) settJobs.push({ table_name: t, commit: cid });
             }
         }
-        if (devices.length) {
-            const uniq = [...new Set(devices)];
-            out.integration = 'added ' + uniq.slice(0, 3).join(', ') + (uniq.length > 3 ? ` +${uniq.length - 3} more` : '');
+        // When nothing was "added", say what really happened: diff the units table (added / removed /
+        // RENAMED units, with a couple of the new names) and plant settings (which settings changed).
+        let uAdd = 0, uDel = 0, uRen = 0; const uNames = [];
+        const settNames = [];
+        const jobs = unitJobs.concat(settJobs);
+        if (jobs.length) {
+            try {
+                const vers = await gmFetchTwoVersionsBatch(jobs);
+                for (let i = 0; i < jobs.length; i++) {
+                    const ver = vers[i]; if (!ver) continue;
+                    const d = chgDiff(ver);
+                    if (d.unreadable) continue;
+                    if (jobs[i].table_name === 'iw_sys_plant_units') {
+                        uAdd += d.added.length; uDel += d.removed.length;
+                        for (const a of d.added) if (uNames.length < 2) uNames.push(chgUnitLabel(a));
+                        const renRows = new Set();
+                        for (const m of d.modified) if (m.col === 'unit_name') { renRows.add(m.key); if (uNames.length < 2 && m.to) uNames.push(m.to); }
+                        uRen += renRows.size;
+                    } else {
+                        for (const m of d.modified) {
+                            const lbl = String(chgRowLabel(m) || '').replace(/\s*\(.*\)$/, '');
+                            if (lbl && !settNames.includes(lbl)) settNames.push(lbl);
+                        }
+                    }
+                }
+            } catch (e) { /* keep what we have */ }
         }
+        // Compose the Integration text: added devices → unit changes (with names) → tuned devices → settings.
+        const bits = [];
+        if (devAdd.length) { const u = [...new Set(devAdd)]; bits.push('added ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3} more` : '')); }
+        if (uAdd) bits.push(`+${uAdd} unit${uAdd === 1 ? '' : 's'}` + (!devAdd.length && uNames.length ? ` (${uNames.join(', ')}…)` : ''));
+        if (uDel) bits.push(`-${uDel} unit${uDel === 1 ? '' : 's'}`);
+        if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (!uAdd && uNames.length ? ` (${uNames.slice(0, 2).join(', ')}…)` : ''));
+        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 2).join(', ') + (u.length > 2 ? ` +${u.length - 2}` : '')); }
+        if (settNames.length) bits.push('settings: ' + settNames.slice(0, 2).join(', ') + (settNames.length > 2 ? ` +${settNames.length - 2}` : ''));
+        let integ = bits.join(' · ');
+        if (integ.length > 95) integ = integ.slice(0, 93) + '…';
+        out.integration = integ;
         if (graphicCids.length) {
             const jobs = [...new Set(graphicCids)].map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
             try {
