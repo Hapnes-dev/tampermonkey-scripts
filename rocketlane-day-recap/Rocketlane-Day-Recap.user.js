@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.69
+// @version      4.70
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.69';
+    const SCRIPT_VERSION   = '4.70';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2431,9 +2431,15 @@
                 if (names.size) { out.drawingNames = [...names]; out.drawing = out.drawingNames.slice(0, 3).join(', '); }
             } catch (e) { /* fallback text */ }
         }
-        // Everything we saw, lowercased — the task matcher greps this for discipline keywords.
+        // Curated evidence for the task matcher: DEVICE tokens only (framework tables like iw_sys_* /
+        // iw_gen_* / iw_lnk_* are excluded — their names word-match nonsense like "system(s)"/"parameters"
+        // and made every discipline tie), plus device/unit/setting/graphic names.
+        const tokset = new Set();
+        for (const cid of cids) for (const [t, m] of Object.entries(patches[cid] || {})) {
+            if (m && m.mode && !/^iw_(sys|gen|lnk)_/.test(t)) tokset.add(bookPrettyToken(t).toLowerCase());
+        }
         out.hints = [
-            Object.keys(patches).map(cid => Object.keys(patches[cid] || {}).join(' ')).join(' '),
+            [...tokset].join(' '),
             devAdd.join(' '), [...devMod].join(' '), uNames.join(' '), settNames.join(' '), out.drawingNames.join(' '),
         ].join(' ').toLowerCase();
         return out;
@@ -2457,10 +2463,10 @@
     // Discipline detector: [suffix-regex, hint-keywords]. A task suffix names a discipline; it fits when
     // the day's evidence (table/device/unit/graphic names) contains one of that discipline's keywords.
     const TASK_DISCIPLINES = [
-        [/refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'ibs', 'pls']],
+        [/refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'pls']],
         [/vent|vgv|ahu/, ['vent', 'corrigo', 'vgv', 'ahu', 'aggregat']],
         [/energ/, ['energ', 'em2', 'cge', 'meter', 'måler']],
-        [/wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ing_', 'ing ']],
+        [/wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ibs0', 'ing ', 'ing_']], // IBS/ING/Ruuvi = wireless MQTT sensors
         [/heat|varme/, ['varme', 'heat']],
         [/machine|maskin/, ['maskin', 'machine']],
     ];
