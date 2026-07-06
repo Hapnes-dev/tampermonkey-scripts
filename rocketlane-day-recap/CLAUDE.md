@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.102**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.103**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -472,6 +472,11 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     scans (unreachable plants) are used for the build but flagged in a warn banner and NOT cached; if
     the scan can't run at all, quick data is used with a loud "plans may MISS plants" banner.
     `cacheVisit`/`readCache`/`writeCacheDates` hoisted out of the panel closure for this.
+  - **Live phase progress (4.103):** post-scan pang is saturated and the plan build (≈2 slow pang calls
+    per plant, 60 s timeouts) sat SILENT on "Loading Mon…" for minutes — looked hung, was working. The
+    status line now narrates: "looking up N plant names…", "correlating config commits for N plants…",
+    and per-plant "reading what changed — plant 3 of 9 (10233)…" (`buildBookingPlan` gained an optional
+    `onStep` callback; the day flow passes none).
   - **Cleared week bookable (4.98):** Thomas empties a week then refills it — but `entries: []` was treated
     as "can't verify" and locked every day out. The weekly walker now also detects the timesheet
     STRUCTURE (`sawEntries` — an `entries` ARRAY anywhere, even empty): recognized-but-empty is trusted;
