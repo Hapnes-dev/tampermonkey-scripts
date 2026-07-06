@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.74
+// @version      4.75
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.74';
+    const SCRIPT_VERSION   = '4.75';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2344,20 +2344,22 @@
         const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
         const mIso = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
         const r = await rlFetch('GET', `/users/${creds.userId}/timesheets/${mIso}?useNewLogic=true&sourcePage=MY_TIME_SHEET`);
-        // Shape varies with auth context: cookie-authed (GM) responses wrap the weekly object in a
-        // ONE-ELEMENT ARRAY — [{entries:[…]}] — while api-key-only returns the bare object.
-        let root = r.json;
-        if (Array.isArray(root) && root.length === 1 && root[0] && typeof root[0] === 'object' && !root[0].date) root = root[0];
-        const j = root || {};
-        let entries = (j.entries != null) ? j.entries : (Array.isArray(j) ? j : []);
-        if (!Array.isArray(entries) && entries && typeof entries === 'object') {
-            entries = Object.values(entries).reduce((a, x) => a.concat(Array.isArray(x) ? x : []), []);
-        }
-        if (!Array.isArray(entries)) entries = [];
+        // The weekly response's wrapping VARIES (bare object / [{…}] / multi-element arrays, depending on
+        // auth context and backend node). Stop chasing shapes: walk the whole payload (bounded) and collect
+        // anything that looks like a time entry — an object carrying `date` + `timeEntryId`.
+        const entries = [];
+        const walk = (node, depth) => {
+            if (!node || depth > 5) return;
+            if (Array.isArray(node)) { for (const x of node) walk(x, depth + 1); return; }
+            if (typeof node !== 'object') return;
+            if (node.date && node.timeEntryId) { entries.push(node); return; }
+            for (const val of Object.values(node)) if (val && typeof val === 'object') walk(val, depth + 1);
+        };
+        walk(r.json, 0);
         const onDate = entries.filter(e => e && e.date === iso);
         LOG('book: weekly', mIso, 'status', r.status, 'entries', entries.length, '→ on', iso, onDate.length,
             r.status !== 200 ? ('body: ' + String(r.raw).slice(0, 180)) : '');
-        onDate._checkOk = r.status === 200; // dedupe is only trustworthy when the weekly fetch succeeded
+        onDate._checkOk = r.status === 200 && entries.length > 0; // empty week ⇒ can't distinguish "no entries" from a shape miss → warn
         return onDate;
     }
 
