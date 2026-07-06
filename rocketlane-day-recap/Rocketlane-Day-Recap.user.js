@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.92
+// @version      4.93
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.92';
+    const SCRIPT_VERSION   = '4.93';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -96,6 +96,8 @@
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
     const BTN_ID   = 'rl-day-recap-fab';
+    const WEEK_ID     = 'rl-recap-week';     // ⤴ Book week floating modal
+    const WEEK_BTN_ID = 'rl-book-week-btn';  // toolbar button injected left of Rocketlane's "Add"
     const PARALLEL = 8;
     const SCAN_PARALLEL = 20;  // concurrent get_history requests — same server concurrency whether batched or not
     const HISTORY_BATCH_MAX = 10; // max plant_ids per batched get_history request. v4.85 measurement: the server
@@ -1501,20 +1503,28 @@
         #${PANEL_ID} .catsum-copy:hover { border-color: #0f62fe; }
         #${PANEL_ID} .catsum-book { font-size: 11px; padding: 2px 8px; border: 1px solid #0f62fe; border-radius: 5px; background: #0f62fe; color: #fff; font-weight: 600; cursor: pointer; }
         #${PANEL_ID} .catsum-book:hover { background: #0353e9; }
-        #${PANEL_ID} .bookplan { font-size: 12px; color: #21272a; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
-        #${PANEL_ID} .bookplan-head { font-weight: 600; margin-bottom: 6px; position: sticky; top: 0; z-index: 1; background: #f9fbff; padding: 2px 0 6px; }
-        #${PANEL_ID} .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
-        #${PANEL_ID} .bookplan-st { flex: none; width: 18px; text-align: center; }
-        #${PANEL_ID} .bookplan-cb { width: 14px; height: 14px; margin: 1px 0 0; accent-color: #0f62fe; cursor: pointer; }
-        #${PANEL_ID} .bookplan-proj { font-size: 11px; max-width: 190px; padding: 1px 2px; border: 1px solid #c6c6c6; border-radius: 4px; background: #fff; color: #21272a; }
-        #${PANEL_ID} .bookplan-txt { flex: 1; line-height: 1.35; }
-        #${PANEL_ID} .bookplan-txt small { color: #6f6f6f; }
-        #${PANEL_ID} .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
-        #${PANEL_ID} .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
-        #${PANEL_ID} .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
-        #${PANEL_ID} .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
-        #${PANEL_ID} .bookplan-foot button[disabled] { opacity: .5; cursor: default; }
-        #${PANEL_ID} .bookplan-sum { font-size: 12px; color: #24a148; font-weight: 600; flex: 1; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan { font-size: 12px; color: #21272a; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-head { font-weight: 600; margin-bottom: 6px; position: sticky; top: 0; z-index: 1; background: #f9fbff; padding: 2px 0 6px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-st { flex: none; width: 18px; text-align: center; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-cb { width: 14px; height: 14px; margin: 1px 0 0; accent-color: #0f62fe; cursor: pointer; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-proj { font-size: 11px; max-width: 190px; padding: 1px 2px; border: 1px solid #c6c6c6; border-radius: 4px; background: #fff; color: #21272a; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt { flex: 1; line-height: 1.35; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt small { color: #6f6f6f; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[disabled] { opacity: .5; cursor: default; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-sum { font-size: 12px; color: #24a148; font-weight: 600; flex: 1; }
+        #${WEEK_ID} { position: fixed; top: 64px; right: 24px; width: 480px; max-width: calc(100vw - 40px); background: #f9fbff; border: 1px solid #d0d7e2; border-radius: 10px; box-shadow: 0 10px 30px rgba(16,24,40,.22); z-index: 2147483000; padding: 12px 14px; color: #21272a; font-family: inherit; }
+        #${WEEK_ID} .bookplan { max-height: 68vh; }
+        #${WEEK_ID} .rl-week-day { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; font-size: 12px; color: #0043ce; margin-top: 8px; padding: 6px 0 2px; border-top: 2px solid #dfe6f2; }
+        #${WEEK_ID} .rl-week-day small { color: #6f6f6f; font-weight: 500; text-align: right; }
+        #${WEEK_ID} .rl-week-status { font-size: 12px; color: #525252; padding: 8px 0; }
+        #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; }
+        #${WEEK_ID} .rl-week-nav button { font-size: 13px; line-height: 1.4; padding: 0 8px; border: 1px solid #c6c6c6; background: #fff; border-radius: 5px; cursor: pointer; }
+        #${WEEK_BTN_ID} { white-space: nowrap; }
         #${PANEL_ID} .catsum-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; color: #21272a; }
         #${PANEL_ID} .catsum-name { display: inline-flex; align-items: center; gap: 6px; width: 160px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #${PANEL_ID} .catsum-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
@@ -1705,117 +1715,10 @@
             if (!visits || !visits.length || visits._changesDone) return;
             visits._changesDone = true;
             const seq = scanSeq;
-            const ids = [...new Set(visits.map(v => String(v.plant_id)))];
-            // One call — gmFetchCommitsBatch pools single requests internally (3.2× faster cold than a
-            // server-serialized batch) and serves repeat date-views from its session cache.
-            const commits = await gmFetchCommitsBatch(ids);
+            // Core moved to top-level enrichVisitsWithCommits (v4.93) so ⤴ Book week can enrich any
+            // day's visits without the panel; this wrapper only keeps the stale-view guards + repaint.
+            const any = await enrichVisitsWithCommits(visits, lastIso);
             if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
-            let any = false;
-            for (const v of visits) {
-                // A sparse-click visit that opened a CONFIG SURFACE (edit/access/vnc action) is a sub-tool
-                // config session: the work happens in a tool that logs almost no pang clicks and the save
-                // commits a while after your last click. For those, widen the window tail so the session-
-                // ending commit is caught (for BOTH the badge and the time credit); else keep the tight window.
-                const hasConfigAction = (v.actions || []).some(a => { const m = ACTION_META[a]; return m && (m.cat === 'edit' || m.cat === 'access' || m.cat === 'vnc'); });
-                const sparseConfig = (v.count || 0) <= SPARSE_CLICK_MAX && hasConfigAction;
-                const start = v.first_ts - CHANGE_PAD_LEAD_MS;
-                const end   = (v.last_ts || v.first_ts) + (sparseConfig ? COMMIT_SESSION_MAX_MS : CHANGE_PAD_TAIL_MS);
-                const inWin = (commits[v.plant_id] || [])
-                    .filter(c => { const t = tsFromPangDate(c.date); return t >= start && t <= end; })
-                    .sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
-                // Badge + time use only CHANGE-TRIGGERED commits; scheduled snapshots (hourly/nightly/daily)
-                // are noise that would otherwise inflate a long visit's 🔧 count and its time.
-                const triggered = inWin.filter(c => !isScheduledCommit(c));
-                v.window_commits = triggered;                              // commit objects, for the drawer
-                // ALL of the day's triggered commits (window or not) — booking texts read these too, since
-                // the descriptive save often lands after the visit window (e.g. while on the next plant).
-                v.day_commits = (commits[v.plant_id] || []).filter(c => pangDateToISODate(c.date) === lastIso && !isScheduledCommit(c));
-                v.changes_in_window = triggered.length;
-                v.change_times = triggered.map(c => tsToLocalTime(tsFromPangDate(c.date)));
-                v.scheduled_in_window = inWin.length - triggered.length;   // counted, not shown as a change
-                // Isolated config-touch cap — a single pang click that opened a config SURFACE (phpMyAdmin or
-                // System tools) but committed NOTHING is a quick check, not sustained work; yet the global
-                // 30-min gap cap can credit it up to 30 min (verified over 30 days: a lone pma click → 30 min).
-                // Lower its click-only floor to ISOLATED_TOUCH_CAP. Gated on no-commit (a commit-bearing pma
-                // touch is instead lifted by the fusion below) and on the config surface (so a bare Direct/VNC
-                // login glance is untouched). Strictly reduces credit; provably no effect on the 06-19 split.
-                // Long-silence damping (v4.56): each capped 30-min gap credit is provisional — for a silence
-                // longer than LONGGAP_MS, keep the full 30 only when a change-triggered commit for THIS plant
-                // lands inside the silence's first LONGGAP_EVIDENCE_MS (proof you were still working on it);
-                // otherwise re-credit it at LONGGAP_CREDIT_MIN (a long unevidenced silence is far more likely
-                // a break/meeting than half an hour of work on that plant). Skipped when the commits fetch
-                // failed (commits[..] undefined) or the visit came from a pre-4.56 cache (no capped_gaps).
-                const commitList = commits[v.plant_id];
-                const trigAll = Array.isArray(commitList)
-                    ? commitList.filter(c => !isScheduledCommit(c)).map(c => tsFromPangDate(c.date))
-                    : null;
-                if (trigAll && Array.isArray(v.capped_gaps) && v.capped_gaps.length) {
-                    let cut = 0;
-                    for (const g of v.capped_gaps) {
-                        if (!g || !(g.gap > LONGGAP_MS)) continue;
-                        const evidenced = trigAll.some(t => t > g.ts && t <= g.ts + Math.min(g.gap, LONGGAP_EVIDENCE_MS));
-                        if (!evidenced) cut += Math.round(ACTIVE_CAP_MS / 60000) - LONGGAP_CREDIT_MIN;
-                    }
-                    if (cut > 0) {
-                        const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                        v.base_minutes = Math.max(1, b0 - cut);
-                        v.longgap_cut_minutes = b0 - v.base_minutes; // for the verification dump
-                    }
-                }
-                // Commit-anchored designer extension (v4.60): a designer session's click-based end is
-                // often a quick glance at ANOTHER plant — but the graphic save then commits on THIS
-                // plant minutes later, proving the drawing continued (measured: 19 sessions / +190 min
-                // over 3 months, e.g. designer 11:54 → glance elsewhere 11:57 → commit 12:08). Extend
-                // the LAST designer session to the latest triggered commit within 20 min of its end,
-                // still capped at 30 min per session. Category-only: moves minutes Drawing↔Integration
-                // inside the visit; plant/day totals are untouched.
-                if (trigAll && v.designer_last && typeof v.designer_last.e === 'number') {
-                    const capEnd = v.designer_last.s + ACTIVE_CAP_MS;
-                    if (v.designer_last.e < capEnd) {
-                        const cands = trigAll.filter(t => t > v.designer_last.e && t <= v.designer_last.e + COMMIT_SESSION_MAX_MS);
-                        if (cands.length) {
-                            const add = Math.round((Math.min(Math.max(...cands), capEnd) - v.designer_last.e) / 60000);
-                            if (add > 0) { v.designer_minutes = (v.designer_minutes || 0) + add; v.designer_ext_minutes = add; }
-                        }
-                    }
-                }
-                // A single click that opened an ACCESS / VNC / diagnostics surface (phpMyAdmin, System tools,
-                // Direct, Proxy, VNC, …) and committed NOTHING is a quick glance, not sustained work — yet the
-                // 30-min gap cap can credit it up to 30 min. Cap its click-only floor to ISOLATED_TOUCH_CAP.
-                // Edit surfaces (Designer/AK3) and server actions are deliberate work and are NOT capped. Uses
-                // v.actions (set on both scan paths), so the cap now also applies on quick/single-date scans. (v4.53, R-g)
-                if ((v.count || 0) === 1 && triggered.length === 0 && (v.actions || []).length === 1) {
-                    const cat0 = (ACTION_META[v.actions[0]] || {}).cat;
-                    if (cat0 === 'access' || cat0 === 'vnc' || cat0 === 'diag') {
-                        const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                        if (b0 > ISOLATED_TOUCH_CAP) v.base_minutes = ISOLATED_TOUCH_CAP;
-                    }
-                }
-                // Time fusion — additive, bounded, idempotent (always recomputed from the click baseline, so
-                // repeated re-renders never compound). For a sparse config session, credit the real active
-                // span [first click → last triggered commit], clamped to [MIN, MAX], and lift estimated_minutes
-                // to it when the click-only base is lower. Click-heavy plants never qualify, so addMs stays 0.
-                const base = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                if (sparseConfig && triggered.length) {
-                    // The triggered commit is the only hard evidence of when this sparse sub-tool session ended.
-                    const lastC = tsFromPangDate(triggered[triggered.length - 1].date);
-                    const sessionMin = Math.round(Math.min(Math.max(lastC - v.first_ts, COMMIT_SESSION_MIN_MS), COMMIT_SESSION_MAX_MS) / 60000);
-                    const capMin = Math.round(ACTIVE_CAP_MS / 60000);
-                    // Lift a low click-base UP to the session span; and when the base only reached its value because
-                    // a long cross-plant idle hit the 30-min gap cap (base ≥ cap — unearnable from ≤2 clicks), pull
-                    // it DOWN to the commit-defined span. Sub-cap bases stay lift-only → no regression (v4.52, R1).
-                    v.estimated_minutes = (base >= capMin) ? sessionMin : Math.max(base, sessionMin);
-                } else {
-                    v.estimated_minutes = base;
-                }
-                v.commit_added_minutes = v.estimated_minutes - base;      // may be negative when the cap artifact is corrected
-                if (triggered.length || v.commit_added_minutes) any = true;
-            }
-            // NOTE: no per-commit content classification. A measurement over 30 real days (457 triggered
-            // commits across 94 plants) found 100% classify as "integration" — adding a device commits the
-            // graphic table AND the device tables together, so commit CONTENT can never isolate Drawing/Settings.
-            // `changes_in_window > 0` is therefore the identical signal; categorizeVisit's fallback uses it.
-            // (Removed the v4.48 tables.php pass — it fetched per-commit table lists that never changed routing.)
             if (any) applyAndRender(); // repaint with badges + fused time + category summary
         };
 
@@ -2301,6 +2204,121 @@
             if (!rlCreds()) { alert('No Rocketlane api-key found — reload this Rocketlane tab while logged in, then try again.'); return; }
             openBookingFlow(container, visits, isoDate);
         });
+    }
+
+    // Commit enrichment core — hoisted out of the panel closure (v4.93) so ⤴ Book week can enrich any
+    // day's visits without the panel being open. Correlates each visit with its plant's config commits,
+    // applies the time rules (isolated-touch cap, long-silence damping, designer extension, commit fusion)
+    // and sets window_commits/day_commits for the booking texts. Idempotent — always recomputed from the
+    // click baseline, so repeated calls never compound. Mutates the visit objects in place; returns
+    // whether anything changed (the panel repaints on true).
+    async function enrichVisitsWithCommits(visits, iso) {
+        if (!visits || !visits.length) return false;
+        const ids = [...new Set(visits.map(v => String(v.plant_id)))];
+        // One call — gmFetchCommitsBatch pools single requests internally (3.2× faster cold than a
+        // server-serialized batch) and serves repeat date-views from its session cache.
+        const commits = await gmFetchCommitsBatch(ids);
+        let any = false;
+        for (const v of visits) {
+            // A sparse-click visit that opened a CONFIG SURFACE (edit/access/vnc action) is a sub-tool
+            // config session: the work happens in a tool that logs almost no pang clicks and the save
+            // commits a while after your last click. For those, widen the window tail so the session-
+            // ending commit is caught (for BOTH the badge and the time credit); else keep the tight window.
+            const hasConfigAction = (v.actions || []).some(a => { const m = ACTION_META[a]; return m && (m.cat === 'edit' || m.cat === 'access' || m.cat === 'vnc'); });
+            const sparseConfig = (v.count || 0) <= SPARSE_CLICK_MAX && hasConfigAction;
+            const start = v.first_ts - CHANGE_PAD_LEAD_MS;
+            const end   = (v.last_ts || v.first_ts) + (sparseConfig ? COMMIT_SESSION_MAX_MS : CHANGE_PAD_TAIL_MS);
+            const inWin = (commits[v.plant_id] || [])
+                .filter(c => { const t = tsFromPangDate(c.date); return t >= start && t <= end; })
+                .sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
+            // Badge + time use only CHANGE-TRIGGERED commits; scheduled snapshots (hourly/nightly/daily)
+            // are noise that would otherwise inflate a long visit's 🔧 count and its time.
+            const triggered = inWin.filter(c => !isScheduledCommit(c));
+            v.window_commits = triggered;                              // commit objects, for the drawer
+            // ALL of the day's triggered commits (window or not) — booking texts read these too, since
+            // the descriptive save often lands after the visit window (e.g. while on the next plant).
+            v.day_commits = (commits[v.plant_id] || []).filter(c => pangDateToISODate(c.date) === iso && !isScheduledCommit(c));
+            v.changes_in_window = triggered.length;
+            v.change_times = triggered.map(c => tsToLocalTime(tsFromPangDate(c.date)));
+            v.scheduled_in_window = inWin.length - triggered.length;   // counted, not shown as a change
+            // Long-silence damping (v4.56): each capped 30-min gap credit is provisional — for a silence
+            // longer than LONGGAP_MS, keep the full 30 only when a change-triggered commit for THIS plant
+            // lands inside the silence's first LONGGAP_EVIDENCE_MS (proof you were still working on it);
+            // otherwise re-credit it at LONGGAP_CREDIT_MIN (a long unevidenced silence is far more likely
+            // a break/meeting than half an hour of work on that plant). Skipped when the commits fetch
+            // failed (commits[..] undefined) or the visit came from a pre-4.56 cache (no capped_gaps).
+            const commitList = commits[v.plant_id];
+            const trigAll = Array.isArray(commitList)
+                ? commitList.filter(c => !isScheduledCommit(c)).map(c => tsFromPangDate(c.date))
+                : null;
+            if (trigAll && Array.isArray(v.capped_gaps) && v.capped_gaps.length) {
+                let cut = 0;
+                for (const g of v.capped_gaps) {
+                    if (!g || !(g.gap > LONGGAP_MS)) continue;
+                    const evidenced = trigAll.some(t => t > g.ts && t <= g.ts + Math.min(g.gap, LONGGAP_EVIDENCE_MS));
+                    if (!evidenced) cut += Math.round(ACTIVE_CAP_MS / 60000) - LONGGAP_CREDIT_MIN;
+                }
+                if (cut > 0) {
+                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                    v.base_minutes = Math.max(1, b0 - cut);
+                    v.longgap_cut_minutes = b0 - v.base_minutes; // for the verification dump
+                }
+            }
+            // Commit-anchored designer extension (v4.60): a designer session's click-based end is
+            // often a quick glance at ANOTHER plant — but the graphic save then commits on THIS
+            // plant minutes later, proving the drawing continued (measured: 19 sessions / +190 min
+            // over 3 months, e.g. designer 11:54 → glance elsewhere 11:57 → commit 12:08). Extend
+            // the LAST designer session to the latest triggered commit within 20 min of its end,
+            // still capped at 30 min per session. Category-only: moves minutes Drawing↔Integration
+            // inside the visit; plant/day totals are untouched.
+            if (trigAll && v.designer_last && typeof v.designer_last.e === 'number') {
+                const capEnd = v.designer_last.s + ACTIVE_CAP_MS;
+                if (v.designer_last.e < capEnd) {
+                    const cands = trigAll.filter(t => t > v.designer_last.e && t <= v.designer_last.e + COMMIT_SESSION_MAX_MS);
+                    if (cands.length) {
+                        const add = Math.round((Math.min(Math.max(...cands), capEnd) - v.designer_last.e) / 60000);
+                        if (add > 0) { v.designer_minutes = (v.designer_minutes || 0) + add; v.designer_ext_minutes = add; }
+                    }
+                }
+            }
+            // A single click that opened an ACCESS / VNC / diagnostics surface (phpMyAdmin, System tools,
+            // Direct, Proxy, VNC, …) and committed NOTHING is a quick glance, not sustained work — yet the
+            // 30-min gap cap can credit it up to 30 min. Cap its click-only floor to ISOLATED_TOUCH_CAP.
+            // Edit surfaces (Designer/AK3) and server actions are deliberate work and are NOT capped. Uses
+            // v.actions (set on both scan paths), so the cap now also applies on quick/single-date scans. (v4.53, R-g)
+            if ((v.count || 0) === 1 && triggered.length === 0 && (v.actions || []).length === 1) {
+                const cat0 = (ACTION_META[v.actions[0]] || {}).cat;
+                if (cat0 === 'access' || cat0 === 'vnc' || cat0 === 'diag') {
+                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                    if (b0 > ISOLATED_TOUCH_CAP) v.base_minutes = ISOLATED_TOUCH_CAP;
+                }
+            }
+            // Time fusion — additive, bounded, idempotent (always recomputed from the click baseline, so
+            // repeated re-renders never compound). For a sparse config session, credit the real active
+            // span [first click → last triggered commit], clamped to [MIN, MAX], and lift estimated_minutes
+            // to it when the click-only base is lower. Click-heavy plants never qualify, so addMs stays 0.
+            const base = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+            if (sparseConfig && triggered.length) {
+                // The triggered commit is the only hard evidence of when this sparse sub-tool session ended.
+                const lastC = tsFromPangDate(triggered[triggered.length - 1].date);
+                const sessionMin = Math.round(Math.min(Math.max(lastC - v.first_ts, COMMIT_SESSION_MIN_MS), COMMIT_SESSION_MAX_MS) / 60000);
+                const capMin = Math.round(ACTIVE_CAP_MS / 60000);
+                // Lift a low click-base UP to the session span; and when the base only reached its value because
+                // a long cross-plant idle hit the 30-min gap cap (base ≥ cap — unearnable from ≤2 clicks), pull
+                // it DOWN to the commit-defined span. Sub-cap bases stay lift-only → no regression (v4.52, R1).
+                v.estimated_minutes = (base >= capMin) ? sessionMin : Math.max(base, sessionMin);
+            } else {
+                v.estimated_minutes = base;
+            }
+            v.commit_added_minutes = v.estimated_minutes - base;      // may be negative when the cap artifact is corrected
+            if (triggered.length || v.commit_added_minutes) any = true;
+        }
+        // NOTE: no per-commit content classification. A measurement over 30 real days (457 triggered
+        // commits across 94 plants) found 100% classify as "integration" — adding a device commits the
+        // graphic table AND the device tables together, so commit CONTENT can never isolate Drawing/Settings.
+        // `changes_in_window > 0` is therefore the identical signal; categorizeVisit's fallback uses it.
+        // (Removed the v4.48 tables.php pass — it fetched per-commit table lists that never changed routing.)
+        return any;
     }
 
     // ===== ⤴ Book day — write the split straight into the Rocketlane timesheet (v4.62) ==========
@@ -2927,6 +2945,191 @@
     // Restoring saved HTML loses listeners — just re-render the summary properly.
     function rewire(container, visits, iso) { renderCategorySummary(container, visits, iso); }
 
+    // ===== ⤴ Book week — one click fills Monday–Friday (v4.93) =====================================
+    // Toolbar button injected left of Rocketlane's own "Add": builds a booking plan for every weekday
+    // (cached scan if available, else a quick recent+footprint scan), distributes each day to the
+    // workday total (default 7,5 h) across its bookable plants, and books after one review. Duplicate
+    // safety: per-day server dedupe (project+category already on that date ⇒ ⏭), and a day whose
+    // existing-entries check failed is NOT bookable at all — never risk a double entry.
+    function mondayOfISO(iso) {
+        const d = new Date(iso + 'T12:00:00');
+        d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // Mon=0 … Sun=6
+        return d.toISOString().slice(0, 10);
+    }
+    function addDaysISO(iso, n) {
+        const d = new Date(iso + 'T12:00:00');
+        d.setDate(d.getDate() + n);
+        return d.toISOString().slice(0, 10);
+    }
+    // Load one day's visits ready for booking: full-scan cache when present (instant + complete),
+    // else a quick scan over recent + footprint plants; then names, commit enrichment, and the
+    // 7,5 h distribution over bookable (non-quick-check) plants.
+    async function loadDayForBooking(iso, onProg) {
+        const username = effectiveUsername();
+        let visits;
+        const cached = username ? ((GM_getValue(KEY_SCAN_CACHE, {}) || {})[username] || {})[iso] : null;
+        if (cached) visits = cached.visits.map(v => ({ ...v }));
+        else {
+            const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
+            const mine = ((GM_getValue(KEY_USER_PLANTS, {})[username]) || []).map(String);
+            const plantIds = [...new Set([...recent, ...mine])];
+            if (!plantIds.length) return [];
+            visits = (await loadVisitsForDate(iso, plantIds, onProg)).visits || [];
+        }
+        if (!visits.length) return visits;
+        const missing = visits.filter(v => !v.name).map(v => v.plant_id);
+        if (missing.length) {
+            try { await fetchMissingPlantNames(missing, null); } catch (e) { /* names are cosmetic */ }
+            const names = GM_getValue(KEY_PLANT_NAMES, {});
+            for (const v of visits) if (!v.name) v.name = cachedPlantName(names, v.plant_id) || v.name;
+        }
+        await enrichVisitsWithCommits(visits, iso);
+        for (const v of visits) v.normalized_minutes = null;
+        const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
+        const bookable = visits.filter(v => categorizeVisit(v)[CAT_CHECK] == null);
+        if (bookable.length) normalizeMinutes(bookable, Math.round(hours * 60), ROUND_TO_MIN);
+        return visits;
+    }
+    function toggleWeekBooking() {
+        const ex = document.getElementById(WEEK_ID);
+        if (ex) { ex.remove(); return; }
+        openWeekBooking();
+    }
+    function openWeekBooking() {
+        const wrap = document.createElement('div');
+        wrap.id = WEEK_ID;
+        wrap.innerHTML = '<div class="bookplan"></div>';
+        document.body.appendChild(wrap);
+        const box = wrap.querySelector('.bookplan');
+        const esc = escapeHtml;
+        const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+        let seq = 0;
+        // Start on the week of the panel's selected date when the panel is open, else the current week.
+        const panelDate = document.querySelector(`#${PANEL_ID} input[type=date]`);
+        let monday = mondayOfISO((panelDate && panelDate.value) || todayISO());
+
+        const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
+            <span class="rl-week-nav"><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
+        const wireNav = () => {
+            box.querySelector('[data-b=prev]')?.addEventListener('click', () => { monday = addDaysISO(monday, -7); build(); });
+            box.querySelector('[data-b=next]')?.addEventListener('click', () => { monday = addDaysISO(monday, 7); build(); });
+            box.querySelectorAll('[data-b=cancel]').forEach(b => b.addEventListener('click', () => wrap.remove()));
+        };
+
+        async function build() {
+            const mySeq = ++seq;
+            box.innerHTML = headHtml() + '<div class="rl-week-status">Building plans…</div>';
+            wireNav();
+            const days = [];
+            for (let i = 0; i < 5; i++) {
+                const iso = addDaysISO(monday, i);
+                const st = box.querySelector('.rl-week-status');
+                if (seq !== mySeq) return;
+                if (st) st.textContent = `Loading ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)…`;
+                try {
+                    const visits = await loadDayForBooking(iso, (done, total) => {
+                        const s = box.querySelector('.rl-week-status');
+                        if (s && seq === mySeq) s.textContent = `Scanning ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5) — ${done} of ${total} plants…`;
+                    });
+                    if (seq !== mySeq) return;
+                    const plan = visits.length ? await buildBookingPlan(visits, iso) : [];
+                    days.push({ iso, wd: WD[i], plan });
+                } catch (err) {
+                    days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err) });
+                }
+            }
+            if (seq !== mySeq) return;
+            render(days);
+        }
+
+        function render(days) {
+            const rows = []; // flat index across all days: { e, day }
+            let html = '';
+            for (const day of days) {
+                const unsafe = day.plan._dedupeOk === false; // can't see what's already booked ⇒ never book this day
+                const ready = day.plan.filter(e => e.status === 'ready');
+                const already = day.plan.filter(e => e.status === 'already-booked').length;
+                const mins = ready.reduce((s, e) => s + e.minutes, 0);
+                const side = day.err ? '⚠ ' + esc(day.err)
+                    : !day.plan.length ? 'no plant work'
+                    : unsafe ? '⚠ can’t verify what’s booked — day skipped'
+                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}`;
+                html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
+                if (unsafe) continue;
+                for (const e of day.plan) {
+                    const i = rows.length;
+                    rows.push({ e, day });
+                    html += `<div class="bookplan-row" data-i="${i}">
+                        <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">' : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
+                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : e.status === 'no-project' ? '— no matching project (book via ⤴ Book day)' : '✳ new activity: ' + esc(e.activityName)}${e.status === 'already-booked' ? ' — already booked' : ''}</small></span>
+                    </div>`;
+                }
+            }
+            const readyRows = rows.filter(r => r.e.status === 'ready');
+            box.innerHTML = headHtml() + html +
+                `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
+            wireNav();
+            const updateGo = () => {
+                const n = [...box.querySelectorAll('.bookplan-cb')].filter(c => c.checked).length;
+                const go = box.querySelector('[data-b=go]');
+                if (go) { go.disabled = n === 0; go.textContent = `Book ${n} entr${n === 1 ? 'y' : 'ies'}`; }
+            };
+            box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
+            box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
+                ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
+                box.querySelector('[data-b=prev]')?.setAttribute('disabled', '');
+                box.querySelector('[data-b=next]')?.setAttribute('disabled', '');
+                // Freeze the selection, then book day by day.
+                box.querySelectorAll('.bookplan-row').forEach(rowEl => {
+                    const idx = +rowEl.dataset.i, cb = rowEl.querySelector('.bookplan-cb');
+                    if (cb && rows[idx]) { rows[idx].e.selected = cb.checked; cb.disabled = true; }
+                });
+                const onOne = (e) => {
+                    const i = rows.findIndex(r => r.e === e);
+                    if (i < 0) return;
+                    const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
+                    if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : '❌';
+                    if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
+                };
+                for (const day of new Set(rows.map(r => r.day))) {
+                    if (day.plan._dedupeOk === false) continue; // belt & braces — these rows were never rendered
+                    await bookPlanEntries(day.plan, day.iso, onOne);
+                }
+                const all = rows.map(r => r.e);
+                const okN = all.filter(e => e.status === 'booked').length;
+                const failN = all.filter(e => e.status === 'failed').length;
+                const skipN = all.filter(e => e.status === 'ready' && e.selected === false).length;
+                const foot = box.querySelector('.bookplan-foot');
+                foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span><button type="button" data-b="cancel">Close</button>`;
+                foot.querySelector('[data-b=cancel]').addEventListener('click', () => wrap.remove());
+            });
+        }
+
+        build();
+    }
+    // Toolbar button, left of Rocketlane's own "Add" — borrows its classes so it matches the UI.
+    let _lastWeekBtnScan = 0;
+    function buildWeekButton() {
+        if (document.getElementById(WEEK_BTN_ID)) return;
+        const now = Date.now();
+        if (now - _lastWeekBtnScan < 800) return; // the SPA mutates constantly — don't rescan every tick
+        _lastWeekBtnScan = now;
+        const btns = [...document.querySelectorAll('button')];
+        const addBtn = btns.find(b => b.textContent.trim().toLowerCase() === 'add' && b.offsetParent)
+            || btns.find(b => /^add\b/i.test(b.textContent.trim()) && b.textContent.trim().length <= 8 && b.offsetParent);
+        if (!addBtn) return; // toolbar not rendered yet — the MutationObserver retries
+        const btn = document.createElement('button');
+        btn.id = WEEK_BTN_ID;
+        btn.type = 'button';
+        btn.className = addBtn.className;
+        btn.style.marginRight = '8px';
+        btn.textContent = '⤴ Book week';
+        btn.title = 'Fill Monday–Friday from your IWMAC day recaps: 7,5 h per day split across the plants you worked, booked onto existing tasks. Anything already on the sheet is skipped — never duplicates.';
+        btn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); toggleWeekBooking(); });
+        addBtn.parentElement.insertBefore(btn, addBtn);
+    }
+
     function renderVisits(list, visits, isoDate, scanned) {
         list.innerHTML = '';
         if (scanned === 0) {
@@ -3012,6 +3215,8 @@
     function removeRocketlaneUi() {
         document.getElementById(BTN_ID)?.remove();
         document.getElementById(PANEL_ID)?.remove();
+        document.getElementById(WEEK_BTN_ID)?.remove();
+        document.getElementById(WEEK_ID)?.remove();
     }
 
     function syncRocketlaneUi() {
@@ -3021,6 +3226,7 @@
         }
         injectStyle();
         buildButton();
+        buildWeekButton();
     }
 
     function buildButton() {
