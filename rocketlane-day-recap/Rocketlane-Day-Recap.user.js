@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.77
+// @version      4.78
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.77';
+    const SCRIPT_VERSION   = '4.78';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2385,7 +2385,7 @@
         for (const c of [...(v.window_commits || []), ...(v.day_commits || [])]) { const id = String(c.id); if (!seen.has(id)) { seen.add(id); commits.push(c); } }
         commits.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
         const newest = commits.slice(-BOOK_MAX_COMMITS);
-        if (!newest.length) return out;
+        if (!newest.length) { out.notesDraw = out.designerSession || ''; return out; }
         const cids = newest.map(c => String(c.id));
         let patches = {};
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
@@ -2407,7 +2407,7 @@
         // When nothing was "added", say what really happened: diff the units table (added / removed /
         // RENAMED units, with a couple of the new names) and plant settings (which settings changed).
         let uAdd = 0, uDel = 0, uRen = 0;
-        const uAddNames = [], uRenNames = [];  // proper unit LABELS ("AK-CC55-017x 6 (000:006)"), drawer-style
+        const uAddNames = [], uRenNames = [], renPairs = [];  // unit LABELS + "old → new" rename pairs, drawer-style
         const settNames = [];
         const jobs = unitJobs.concat(settJobs);
         if (jobs.length) {
@@ -2421,7 +2421,12 @@
                         uAdd += d.added.length; uDel += d.removed.length;
                         for (const a of d.added) { const l = chgUnitLabel(a); if (l && !uAddNames.includes(l)) uAddNames.push(l); }
                         const renRows = new Set();
-                        for (const m of d.modified) if (m.col === 'unit_name') { renRows.add(m.key); if (m.to && !uRenNames.includes(m.to)) uRenNames.push(m.to); }
+                        for (const m of d.modified) if (m.col === 'unit_name') {
+                            renRows.add(m.key);
+                            if (m.to && !uRenNames.includes(m.to)) uRenNames.push(m.to);
+                            const pair = (m.from ? m.from + ' → ' : '') + (m.to || '');
+                            if (pair && !renPairs.includes(pair)) renPairs.push(pair);
+                        }
                         uRen += renRows.size;
                     } else {
                         for (const m of d.modified) {
@@ -2465,6 +2470,21 @@
                 if (names.size) { out.drawingNames = [...names]; out.drawing = out.drawingNames.slice(0, 3).join(', '); }
             } catch (e) { /* fallback text */ }
         }
+        // DETAILED multi-line notes for the time entry's Notes field — the full picture, uncapped names
+        // (the activity title stays short; this is where the "what exactly changed" lives).
+        const nInteg = [];
+        if (uAddNames.length) nInteg.push('Added: ' + uAddNames.slice(0, 10).join(', ') + (uAdd > 10 ? ` (+${uAdd - 10} more)` : ''));
+        else if (devAdd.length) nInteg.push('Added: ' + [...new Set(devAdd)].join(', '));
+        if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 10).join(', ') + (uRen > 10 ? ` (+${uRen - 10} more)` : ''));
+        if (uDel) nInteg.push(`Removed: ${uDel} unit${uDel === 1 ? '' : 's'}`);
+        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) nInteg.push('Tuned params: ' + u.join(', ')); }
+        if (virtVals) nInteg.push('Virtual values changed');
+        if (settNames.length) nInteg.push('Plant settings: ' + settNames.join(', '));
+        out.notesInteg = nInteg.join('\n');
+        const nDraw = [];
+        if (out.drawingNames.length) nDraw.push('Drawings changed: ' + out.drawingNames.join(', '));
+        if (out.designerSession) nDraw.push(out.designerSession);
+        out.notesDraw = nDraw.join('\n');
         // Curated evidence for the task matcher: DEVICE tokens only (framework tables like iw_sys_* /
         // iw_gen_* / iw_lnk_* are excluded — their names word-match nonsense like "system(s)"/"parameters"
         // and made every discipline tie), plus device/unit/setting/graphic names.
@@ -2583,11 +2603,15 @@
                 LOG('book: pick', v.plant_id, category, '→', task ? task.taskName : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
+                // Detailed multi-line notes → the entry's Notes field (category-matched).
+                const notes = category === CAT_DRAWING ? (texts.notesDraw || '')
+                    : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || ''].filter(Boolean).join('\n')
+                    : (texts.notesInteg || '');
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
                     taskId: task ? task.taskId : null, taskName: task ? task.taskName : null,
-                    category, categoryId: catId || null, minutes: Math.round(min), activityName: act,
+                    category, categoryId: catId || null, minutes: Math.round(min), activityName: act, notes,
                     status: !proj ? 'no-project' : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
                 });
             }
@@ -2618,8 +2642,9 @@
                 }
             }
             const body = { date: iso, minutes: e.minutes, billable: true, categoryId: e.categoryId, projectId };
-            if (taskId) { body.taskId = taskId; body.notes = act; } // task entry: rich text → notes
-            else body.activityName = act;                          // no fitting task: create the activity
+            const notes = e.notes || '';
+            if (taskId) { body.taskId = taskId; body.notes = notes || act; } // task entry: details (or the title) → notes
+            else { body.activityName = act; if (notes) body.notes = notes; } // activity entry: details → Notes field
             const r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
             if (e.status === 'booked') ok++; else {
@@ -2652,7 +2677,7 @@
                     <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">'
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${rememberedFallback ? '' : ' disabled'} title="Tick to book into the selected team project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                    <span class="bookplan-txt"><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
+                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
                     <small>${e.taskName ? '📌 task: <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>no own project — book into: <select class="bookplan-proj"><option value="">choose team project…</option>${teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '';
