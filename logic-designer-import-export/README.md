@@ -24,6 +24,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 | **Plant-bound parameter bindings** | `PARAMV`/`WRITETOUNIT` `driver_ids` (and legacy `driver_id`) are plant-prefixed (`3111_IWT_…`). On cross-plant import you get a one-click prefix rewrite `source_` → `target_`. Foreign prefixes that don't match the source plant are left untouched. |
 | **Bindings that can't auto-transfer** | `CALENDAR`/`CALENDAR 2.0` ids and `TAGVALUE` unit bindings are plant-specific id spaces — the import warns you to reconfigure those blocks via their dialogs. |
 | **Unknown block types** | If the sketch uses processes not published in the target designer's library, you're warned with the list before anything is touched. |
+| **Bad files fail clearly** | A file that can't be imported opens an **itemised error panel** — every problem with a plain-language fix (wrong envelope, missing `mode`, string ids, `from`/`to` wires, unknown/renamed block types with the correct name, `override` nested in `data`, wires to non-existent blocks, …), a *Copy problems* button, and nothing touches the canvas. Same checks as `validate-vv-sketch.js`, live in the panel. |
 | **Unsaved work** | Import asks before replacing a dirty canvas; export never modifies the canvas (it even preserves the dirty flag across the host's `save()` side effect). |
 | **Accidental overwrite** | After import, `application.current_sketch` is cleared so the host's save flow prompts for a new name instead of overwriting. |
 

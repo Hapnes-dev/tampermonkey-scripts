@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.3.0
 // @description  Export the current VV Designer sketch to a JSON file and import it on another plant (with driver-id plant rebinding) — adds Export/Import entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,6 +52,101 @@ function parseImportPayload(parsed) {
     return { ok: false, error: 'Sketch document is malformed (mode/blocks/connections missing).' };
   }
   return { ok: true, sketch: doc, envelope: envelope, error: null };
+}
+
+// Common wrong block-type names AIs emit → the real type.
+var LDIO_TYPE_ALIASES = {
+  EQUAL: 'LIKE', EQUALS: 'LIKE', NOTEQUAL: 'UNLIKE', NOT_EQUAL: 'UNLIKE',
+  GREATERTHAN: 'BIGGERTHAN', GREATER_THAN: 'BIGGERTHAN', LESSTHAN: 'SMALLERTHAN', LESS_THAN: 'SMALLERTHAN',
+  AND: 'COMP_AND', OR: 'COMP_OR', NOT: 'INVERT',
+  CONSTANT: 'CONST', PARAM: 'PARAMV', PARAMETER: 'PARAMV', READ: 'PARAMV',
+  DIGITAL_INPUT: 'PARAMV', ANALOG_INPUT: 'PARAMV', INPUT: 'PARAMV', SENSOR: 'PARAMV',
+  WRITE: 'WRITETOUNIT', WRITEOUTUNIT: 'WRITETOUNIT', WRITE_TO_UNIT: 'WRITETOUNIT', DIGITAL_OUTPUT: 'WRITETOUNIT',
+  TIMER: 'DELAY_VARIABLE', VARIABLE_DELAY: 'DELAY_VARIABLE', COUNTER: 'PULSE_COUNT',
+  TAG: 'TAGVALUE', TAG_VALUE: 'TAGVALUE', VIRTUAL_OUTPUT: 'VIRTUALOUT',
+};
+var LDIO_NO_EQUIVALENT = {
+  RISING_EDGE: 'no edge block — use PULSE_COUNT with block_func_args.type "flank_rising_edge"',
+  FALLING_EDGE: 'no edge block — use PULSE_COUNT type "flank_falling_edge"',
+  EDGE: 'no edge block — use PULSE_COUNT flank_* mode',
+  TOGGLE: 'no toggle block — compose PULSE_COUNT(flank_rising_edge) → MOD ← CONST(2)',
+  FLIPFLOP: 'no flip-flop block — set/reset memory is LATCH',
+  FLIP_FLOP: 'no flip-flop block — set/reset memory is LATCH',
+};
+
+// Diagnose a parsed import payload against the host contract and return a
+// human-readable, itemised report. Pure — knownTypes is passed in (use
+// paper.blocks in the browser so process blocks on THIS plant are recognised).
+// Returns { fatal: bool, errors: [str], warnings: [str], sketch|null }.
+function diagnoseImport(parsed, knownTypes) {
+  var errors = [], warnings = [];
+  knownTypes = knownTypes || {};
+
+  if (!parsed || typeof parsed !== 'object') {
+    return { fatal: true, errors: ['The file is not a JSON object.'], warnings: warnings, sketch: null };
+  }
+
+  // Invented-schema signals (both real failures started here).
+  ['schema', 'logic', 'steps', 'parameterBindings', 'inputs', 'outputs'].forEach(function (k) {
+    if (k in parsed) errors.push('Top level has "' + k + '" — this is not the VV format. A sketch is only {"format":"vv-fbx-sketch","sketch":{mode,blocks,connections}} (or a bare {mode,blocks,connections}); every operation is a block + wire, there is no "' + k + '".');
+  });
+
+  var doc = null;
+  if (parsed.format === 'vv-fbx-sketch' && parsed.sketch) doc = parsed.sketch;
+  else if (Array.isArray(parsed.blocks) && Array.isArray(parsed.connections)) doc = parsed;
+  else {
+    errors.push('Unrecognized shape — needs {"format":"vv-fbx-sketch","sketch":{…}} or a bare {"mode","blocks","connections"} document' + (parsed.format ? ' (format is "' + parsed.format + '")' : ' (no "format" key)') + '.');
+    return { fatal: true, errors: errors, warnings: warnings, sketch: null };
+  }
+  ['logic', 'steps', 'parameterBindings'].forEach(function (k) {
+    if (k in doc) errors.push('sketch."' + k + '" is not a real field — express logic as blocks + connections.');
+  });
+
+  if (typeof doc.mode !== 'string') errors.push('sketch.mode is missing — add "mode":"function".');
+  if (!Array.isArray(doc.blocks)) errors.push('sketch.blocks must be an array.');
+  if (!Array.isArray(doc.connections)) errors.push('sketch.connections must be an array.');
+  if (!Array.isArray(doc.blocks) || !Array.isArray(doc.connections)) {
+    return { fatal: true, errors: errors, warnings: warnings, sketch: null };
+  }
+
+  var ids = {};
+  doc.blocks.forEach(function (b, i) {
+    var at = 'block #' + i + (b && b.type ? ' (' + b.type + ')' : '');
+    if (!b || typeof b !== 'object') { errors.push(at + ' is not an object.'); return; }
+    if (typeof b.id === 'string') errors.push(at + ' id "' + b.id + '" is text — block ids must be whole numbers (0,1,2,…).');
+    else if (!Number.isInteger(b.id)) errors.push(at + ' has no integer id.');
+    else if (ids[b.id]) errors.push(at + ' id ' + b.id + ' is used twice.');
+    else ids[b.id] = b;
+
+    if (typeof b.type !== 'string') errors.push(at + ' has no type.');
+    else if (!(b.type in knownTypes)) {
+      if (LDIO_TYPE_ALIASES[b.type]) errors.push(at + ' — "' + b.type + '" is not a VV block; use "' + LDIO_TYPE_ALIASES[b.type] + '".');
+      else if (LDIO_NO_EQUIVALENT[b.type]) errors.push(at + ' — "' + b.type + '": ' + LDIO_NO_EQUIVALENT[b.type] + '.');
+      else errors.push(at + ' — unknown block type "' + b.type + '" (not a system block, and no such process on this plant/library).');
+    }
+    if (b.data && typeof b.data === 'object') {
+      if ('override' in b.data || 'runtime' in b.data || 'properties' in b.data)
+        errors.push(at + ' has override/runtime/properties inside "data" — those are block-level fields, siblings of data.');
+      if ((b.type === 'PARAMV' || b.type === 'WRITETOUNIT') && Array.isArray(b.data.driver_ids) && b.data.driver_ids.length === 0)
+        warnings.push(at + ' has an empty driver_ids array — it will import unconfigured; bind it after import or set data to null.');
+    }
+  });
+
+  doc.connections.forEach(function (c, i) {
+    var at = 'wire #' + i;
+    if (!c || typeof c !== 'object') { errors.push(at + ' is not an object.'); return; }
+    if ('from' in c || 'to' in c) { errors.push(at + ' uses from/to — wires must be {"source":{"id":N,"put":N},"target":{"id":N,"put":N}}.'); return; }
+    ['source', 'target'].forEach(function (side) {
+      var s = c[side];
+      if (!s || typeof s !== 'object') { errors.push(at + ' has no ' + side + '.'); return; }
+      if ('block' in s || 'pin' in s || 'output' in s || 'input' in s) errors.push(at + '.' + side + ' uses block/pin/output/input — use numeric "id" and "put".');
+      if (!Number.isInteger(s.id)) errors.push(at + '.' + side + ' needs an integer block id.');
+      else if (!(s.id in ids)) errors.push(at + '.' + side + ' points at block id ' + s.id + ', which does not exist.');
+      if (!Number.isInteger(s.put)) errors.push(at + '.' + side + ' needs a numeric pin index "put".');
+    });
+  });
+
+  return { fatal: errors.length > 0, errors: errors, warnings: warnings, sketch: doc };
 }
 
 // Detect the plant prefix used by parameter bindings in a sketch document.
@@ -156,7 +251,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.2.0';
+    var VERSION = '1.3.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -193,6 +288,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-btn-primary { background: #2c5d8e; border-color: #3d7ab3; }\
       .ldio-btn-primary:hover { background: #357ab8; }\
       .ldio-version { opacity: 0.45; font-size: 10px; }\
+      .ldio-errpanel { width: 620px; }\
+      .ldio-err-sub { font-size: 12px; color: #e6a5a5; margin-bottom: 8px; }\
+      .ldio-err-list { max-height: 46vh; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 6px; background: #1a1a1a; }\
+      .ldio-err-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px; font-size: 12px; line-height: 1.4; border-bottom: 1px solid rgba(255,255,255,0.05); }\
+      .ldio-err-item:last-child { border-bottom: 0; }\
+      .ldio-err-dot { color: #ff6b6b; font-weight: 700; flex: 0 0 auto; }\
+      .ldio-warn-item { color: #d9c07a; }\
+      .ldio-warn-item .ldio-err-dot { color: #d9c07a; }\
     ';
     if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
     else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
@@ -204,6 +307,72 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       el.className = 'ldio-toast' + (kind === 'error' ? ' ldio-toast-error' : '');
       document.body.appendChild(el);
       setTimeout(function () { el.remove(); }, 4500);
+    }
+
+    // ─── Error panel — itemised import problems (with fixes) ─────────
+    function showErrorPanel(headline, errors, warnings) {
+      var overlay = document.createElement('div');
+      overlay.className = 'ldio-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'ldio-panel ldio-errpanel';
+      function close() { overlay.remove(); panel.remove(); document.removeEventListener('keydown', onKey, true); }
+      function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } }
+      overlay.addEventListener('click', close);
+
+      var h = document.createElement('h3');
+      h.textContent = headline;
+      panel.appendChild(h);
+
+      var sub = document.createElement('div');
+      sub.className = 'ldio-err-sub';
+      sub.textContent = (errors.length ? errors.length + (errors.length === 1 ? ' problem' : ' problems') : 'No blocking problems') +
+        (warnings.length ? ' · ' + warnings.length + (warnings.length === 1 ? ' note' : ' notes') : '') +
+        '. Nothing was imported — fix these and try again.';
+      panel.appendChild(sub);
+
+      var list = document.createElement('div');
+      list.className = 'ldio-err-list';
+      errors.forEach(function (e) {
+        var row = document.createElement('div'); row.className = 'ldio-err-item';
+        var dot = document.createElement('span'); dot.className = 'ldio-err-dot'; dot.textContent = '✗';
+        var txt = document.createElement('span'); txt.textContent = e;
+        row.appendChild(dot); row.appendChild(txt); list.appendChild(row);
+      });
+      warnings.forEach(function (w) {
+        var row = document.createElement('div'); row.className = 'ldio-err-item ldio-warn-item';
+        var dot = document.createElement('span'); dot.className = 'ldio-err-dot'; dot.textContent = '!';
+        var txt = document.createElement('span'); txt.textContent = w;
+        row.appendChild(dot); row.appendChild(txt); list.appendChild(row);
+      });
+      panel.appendChild(list);
+
+      var btnRow = document.createElement('div');
+      btnRow.className = 'ldio-btn-row';
+      var hint = document.createElement('span');
+      hint.className = 'ldio-version';
+      hint.textContent = 'Tip: node validate-vv-sketch.js <file> gives the same checks in your editor.';
+      var copyBtn = document.createElement('button');
+      copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
+      copyBtn.textContent = 'Copy problems';
+      copyBtn.addEventListener('click', function () {
+        var text = headline + '\n' + errors.map(function (e) { return '- ' + e; }).join('\n') +
+          (warnings.length ? '\n' + warnings.map(function (w) { return '(note) ' + w; }).join('\n') : '');
+        var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); toast('Problem list copied.'); } catch (e) { /* ignore */ }
+        ta.remove();
+      });
+      var okBtn = document.createElement('button');
+      okBtn.type = 'button'; okBtn.className = 'ldio-btn ldio-btn-primary'; okBtn.style.marginLeft = '6px';
+      okBtn.textContent = 'Close';
+      okBtn.addEventListener('click', close);
+      var btns = document.createElement('span'); btns.appendChild(copyBtn); btns.appendChild(okBtn);
+      btnRow.appendChild(hint); btnRow.appendChild(btns);
+      panel.appendChild(btnRow);
+
+      document.body.appendChild(overlay);
+      document.body.appendChild(panel);
+      document.addEventListener('keydown', onKey, true);
     }
 
     // ─── Export ─────────────────────────────────────────────────────
@@ -417,18 +586,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var paper = W.logic_designer && W.logic_designer.paper;
         if (!paper || !paper.initialized) { toast('Designer not ready — open/start the application first.', 'error'); return; }
 
-        var res = parseImportPayload(parsed);
-        if (!res.ok) { toast(res.error, 'error'); return; }
-        var sketch = res.sketch;
-        var envelope = res.envelope;
-
-        // Unknown block types (processes missing from this library) degrade badly — ask first.
-        var unknown = listUnknownBlockTypes(sketch, paper.blocks || {});
-        if (unknown.length > 0) {
-          var goOn = confirm('This sketch uses ' + unknown.length + ' block type(s) unknown on this plant/library:\n\n' +
-            unknown.join(', ') + '\n\nThey may be processes from a library that is not loaded here. Import anyway?');
-          if (!goOn) return;
+        // Rich diagnostics: itemised, host-contract-aware, with fixes.
+        var diag = diagnoseImport(parsed, paper.blocks || {});
+        if (diag.fatal) {
+          showErrorPanel('This file can\'t be imported', diag.errors, diag.warnings);
+          return;
         }
+        var sketch = diag.sketch;
+        var envelope = (parsed && parsed.format === 'vv-fbx-sketch') ? parsed : null;
+        // Non-fatal notes (e.g. empty driver_ids) — surface but continue.
+        if (diag.warnings.length) toast(diag.warnings.length + ' note(s): ' + diag.warnings[0] + (diag.warnings.length > 1 ? ' (…)' : ''));
 
         // Plant rebinding: rewrite "<src>_" driver-id prefixes to this plant.
         var currentPlant = String((W.query_string && W.query_string.plant_id) || '');
@@ -588,5 +755,6 @@ if (typeof module !== 'undefined' && module.exports) {
     listManualRebindWarnings: listManualRebindWarnings,
     listUnknownBlockTypes: listUnknownBlockTypes,
     buildExportFilename: buildExportFilename,
+    diagnoseImport: diagnoseImport,
   };
 }
