@@ -1103,12 +1103,18 @@ HARD RULES (violating ANY one breaks the import):
     PULSE_COUNT(flank_rising_edge) → MOD ← CONST(2) (count resets each configured
     period). Set/reset memory = LATCH; time-based toggle = TOGGLE_INTERVAL.
  5. Data payloads are snake_case host fields, copied from the table:
-    PARAMV  {"driver_ids":["<PLANT>_<…>"]}          (ARRAY; or null to bind later)
+    PARAMV  {"driver_ids":["<PLANT>_<…>"]}          (NON-EMPTY array; or null to bind later
+                                                     — an empty [] is "configured with nothing")
     CONST   {"alias_text":…,"type":"integer|float|boolean|string",
              "initial_value":…,"mode":"single","eng_unit":…,"readonly":false}
     ALARM   {"alias_text":…,"pri":"a"|"b"|"c",
              "alarm_type":"general"|"system",
              "alarm_destination":"general"|"ew"|"cw"}      (no other priorities exist)
+    block_func_args inner keys differ per block and must be copied exactly:
+    PULSE_COUNT {"periode","type","periode_amount"} · PERIODE_VALUE {"mode","periode",
+    "period_amount"} · CORRELATION {"periode","period_amount"} · AVG_IN_PERIOD
+    {"period","period_amount"}. override/runtime/properties are BLOCK-level fields —
+    NEVER inside data.
  6. Each INPUT pin takes exactly ONE wire. Outputs may fan out.
  7. NEVER invent a driver id. Use ids the user supplied/verified, else data: null
     with override.alias_text "TODO bind: <what>". A unit id like "000:001" is a UNIT,
@@ -1431,3 +1437,17 @@ each now validator-enforced (16 errors on that file):
 The working translation of that intent (toggle on rising edge) is recipe §19.2 /
 `toggle_rising_edge_5440.json` — PULSE_COUNT's **native `flank_rising_edge` mode** → MOD ←
 CONST(2), verified live.
+
+**A fifth attempt regressed on already-taught lessons and added three new mistakes** (22
+validator errors): connections back to `from`/`to` with `block`/`output`/`input` keys; CONST
+back to `{"value":2}`; missing `mode`/`x`/`y` again — plus new: **`override` nested *inside*
+`data`** (override/runtime/properties are BLOCK-level siblings of `data`, never inside it),
+**`driver_ids: []` empty** (either bind real ids or use `data: null` — an empty array is
+"configured with nothing"), and **`block_func_args {"mode": "flank_rising_edge"}`** — the
+flank/level selector key on PULSE_COUNT is **`type`**, not `mode` (`mode` belongs to
+PERIODE_VALUE; the per-type `block_func_args` key sets differ and must be copied exactly:
+PULSE_COUNT `periode/type/periode_amount`, PERIODE_VALUE `mode/periode/period_amount`,
+CORRELATION `periode/period_amount`, AVG_IN_PERIOD `period/period_amount`). Takeaway for AIs:
+**models drift back to their priors between attempts — regenerate from the §20.6/§19.2
+templates and re-validate every time; never trust that a previously-corrected mistake stays
+corrected.**

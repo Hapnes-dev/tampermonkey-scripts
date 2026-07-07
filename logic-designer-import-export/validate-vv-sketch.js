@@ -126,6 +126,15 @@ const NO_EQUIVALENT = {
 // Blocks whose non-null data must carry block_func_args (period-family).
 const NEEDS_BLOCK_FUNC_ARGS = ['PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD'];
 
+// Verified inner keys of block_func_args per type — note the periode/period
+// spelling differences ARE the host contract, not typos.
+const REQUIRED_BFA_KEYS = {
+  PULSE_COUNT: ['periode', 'type', 'periode_amount'],
+  PERIODE_VALUE: ['mode', 'periode', 'period_amount'],
+  CORRELATION: ['periode', 'period_amount'],
+  AVG_IN_PERIOD: ['period', 'period_amount'],
+};
+
 // Minimum REQUIRED input pins per common block (optional pins excluded).
 const REQUIRED_INPUTS = {
   COMP_AND: 2, COMP_OR: 2, BIGGERTHAN: 2, BIGGERTHANOREQUAL: 2, SMALLERTHAN: 2,
@@ -156,6 +165,9 @@ const FORBIDDEN_BLOCK_KEYS = {
   message: 'alarm text is data.alias_text on the ALARM block',
 };
 const FORBIDDEN_DATA_KEYS = {
+  override: 'override is a BLOCK-level field (a sibling of "data"), never inside data — move it up one level',
+  runtime: 'runtime is a BLOCK-level field (a sibling of "data"), never inside data',
+  properties: 'properties is a BLOCK-level field (a sibling of "data"), never inside data',
   address: 'no "address" field — bind via data.driver_ids with a FULL parameter driver id (e.g. "5440_AK3_AKC_0_1_0_0_2576"); a unit id like "000:001" is a UNIT, not a parameter',
   reset_interval: 'no such field — period blocks are configured via block_func_args {"periode":"sec|min|hour|day|week|month|year","type":…,"periode_amount":N}; the count resets each configured period (there is no "never")',
   driverId: 'use driver_ids (snake_case, ARRAY): {"driver_ids":["<id>"]}',
@@ -247,6 +259,8 @@ function validateSketchDocument(doc, report) {
           err(`${at} (${b.type}).data needs driver_ids: ["<PLANT>_<DRIVER>_…"] (or leave data null to bind after import)`);
         } else if ('driver_ids' in d && !Array.isArray(d.driver_ids)) {
           err(`${at} (${b.type}).data.driver_ids must be an ARRAY of strings`);
+        } else if (Array.isArray(d.driver_ids) && d.driver_ids.length === 0) {
+          err(`${at} (${b.type}).data.driver_ids is EMPTY — either bind real ids, or set data: null (imports red for post-import binding; empty array is "configured with nothing")`);
         }
         if (b.type === 'WRITETOUNIT') warn(`${at} WRITETOUNIT writes to REAL hardware when deployed — confirm this is intended`);
       }
@@ -269,6 +283,15 @@ function validateSketchDocument(doc, report) {
       }
       if (NEEDS_BLOCK_FUNC_ARGS.includes(b.type) && !('block_func_args' in d)) {
         err(`${at} (${b.type}).data must be {"block_func_args":{…}} — e.g. PULSE_COUNT: {"block_func_args":{"periode":"day","type":"flank_rising_edge","periode_amount":1}}`);
+      } else if ('block_func_args' in d && REQUIRED_BFA_KEYS[b.type]) {
+        const bfa = d.block_func_args || {};
+        const missing = REQUIRED_BFA_KEYS[b.type].filter((k) => !(k in bfa));
+        if (missing.length) {
+          err(`${at} (${b.type}).data.block_func_args missing key(s): ${missing.join(', ')} — required: {${REQUIRED_BFA_KEYS[b.type].join(', ')}}`);
+        }
+        if (b.type === 'PULSE_COUNT' && 'mode' in bfa) {
+          err(`${at} (PULSE_COUNT).block_func_args has no "mode" — the level/flank selector key is "type" (values: over_or_equal_value|absolute_value|flank_rising_edge|flank_falling_edge|flank_changing_edge). "mode" belongs to PERIODE_VALUE.`);
+        }
       }
     } else if (d == null) {
       const needsCfg = ['PARAMV', 'TAGVALUE', 'CALENDAR', 'CALENDAR_2_0', 'CONST', 'ALARM', 'ALARM_OBJECT', 'ALARM_OBJECT_EXTENDED', 'WRITETOUNIT', 'VIRTUALOUT', 'FORMULA', 'SELECTOR', 'PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD'];
