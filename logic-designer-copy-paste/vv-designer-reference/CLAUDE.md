@@ -177,18 +177,25 @@ How the palette actually renders (left panel, top half):
 - **Category headers** ("Basic Inputs", "Basic Functions", …) are dark collapsible bars;
   categories render in source order and scroll independently of the process-library tree
   below.
-- **Mode filtering, visually confirmed:** in FUNCTION mode exactly the three
-  `mode:'process'` blocks are absent — `PROCESSIN` (Basic Inputs starts at Calendar),
-  `AVERAGE_PERIODE` (Special Functions jumps from Pulse count to Season selector), and
-  `PROCESSOUT`. Display order of everything else matches the §4.1–4.5 listings 1:1.
+- **Mode filtering, visually confirmed (all 5 categories screenshotted end-to-end):** in
+  FUNCTION mode exactly the three `mode:'process'` blocks are absent — `PROCESSIN`
+  (Basic Inputs starts at Calendar), `AVERAGE_PERIODE` (Special Functions jumps from Pulse
+  count to Season selector), and `PROCESSOUT` (Basic Outputs shows 7 of 8: Alarm, Alarm
+  Object, Alarm Object Extended, Write to unitparameter, Virtual Output, Temp. value,
+  Variable output). Transformers shows its single Mapped transform. Display order matches
+  the §4.1–4.5 listings 1:1 throughout.
 - **Icons** are served from `/qxs_components/views/ext/qxs_fbx/images/<glyph>` (per-block
   `glyph` filename; `common.png` fallback). Distinctive designs: logic-gate shapes (And/Or),
   literal comparison symbols (`>` `≥` `<` `≤`, `=` Like, `|=` Unlike), ⤓/⤒ arrows (Min/Max),
   `Σ` (Sum), `f(x)` (Formula), operator glyphs `a·b`-style (Multiply/Divide/Add/Subtract),
   `%` (Mod), `x̄` (Average), `Δ` (Delta T), `|×|` (Absolute), literal "if"/"if else" text
   (IF/IF_ELSE), square-wave (Toggled value), ⚡-variants (the five Spot Price blocks),
-  clock faces (Delay family, Current time), a "PID" badge, and colour accents on
-  Season selector / Weather / Sunrise-and-sunset.
+  clock faces (Delay family, Current time), a "PID" badge, a digit-counter box (Hour meter),
+  a **bell family** for the three Alarm blocks (plain bell → bell+badge → bell+more badges,
+  `alarm*.png`), arrow-into-box (Write to unitparameter, `write_unit.png`) vs
+  arrow-out-of-box (Virtual Output, `write_virtual.png`), and colour accents on
+  Season selector / Weather / Sunrise-and-sunset / Mapped transform (red-green arrows,
+  `transform.png`).
 - **Shared glyphs — icon alone can't disambiguate these** (same file per group):
   Criteria = Toggled value (`toggled_value.png`); Delay = Variable Delay = Age of value
   (`delay.png`); Weather = Sunrise and sunset (`weather.png`); Calendar = Calendar 2.0
