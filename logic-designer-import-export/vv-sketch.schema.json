@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/vv-sketch.schema.json",
+  "title": "VV Designer sketch export (vv-fbx-sketch)",
+  "description": "A sketch for the IWMAC VV Designer (vv_fbx.qxs), as accepted by the Logic Designer Import/Export userscript. Either the envelope form or the bare sketch document. NOTE: this schema catches structural mistakes; run validate-vv-sketch.js for the full semantic ruleset (valid block types, per-type data payloads, single-wire inputs).",
+  "oneOf": [
+    { "$ref": "#/definitions/envelope" },
+    { "$ref": "#/definitions/sketch" }
+  ],
+  "definitions": {
+    "envelope": {
+      "type": "object",
+      "required": ["format", "sketch"],
+      "properties": {
+        "format": { "const": "vv-fbx-sketch" },
+        "version": { "const": 1 },
+        "exported_at": { "type": "string" },
+        "source_plant_id": { "type": ["string", "null"] },
+        "source_sketch_id": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "block_count": { "type": "integer", "minimum": 0 },
+        "connection_count": { "type": "integer", "minimum": 0 },
+        "sketch": { "$ref": "#/definitions/sketch" }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["schema"] },
+          { "required": ["logic"] },
+          { "required": ["steps"] },
+          { "required": ["parameterBindings"] },
+          { "required": ["inputs"] },
+          { "required": ["outputs"] }
+        ]
+      }
+    },
+    "sketch": {
+      "type": "object",
+      "required": ["mode", "blocks", "connections"],
+      "properties": {
+        "mode": { "enum": ["function", "process"] },
+        "require_plant_revision": { "type": "integer", "minimum": 0 },
+        "blocks": { "type": "array", "items": { "$ref": "#/definitions/block" } },
+        "connections": { "type": "array", "items": { "$ref": "#/definitions/connection" } },
+        "groups": { "type": "array" }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["logic"] },
+          { "required": ["steps"] },
+          { "required": ["parameterBindings"] }
+        ]
+      }
+    },
+    "block": {
+      "type": "object",
+      "required": ["id", "type", "func", "x", "y"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0, "description": "Numeric block id, unique within the sketch. NEVER a string." },
+        "type": { "type": "string", "pattern": "^[A-Z0-9_.:]+$", "description": "UPPERCASE palette key (e.g. PARAMV, CONST, BIGGERTHAN, ALARM) or a published process key. EQUAL and WRITEOUTUNIT do not exist — use LIKE and WRITETOUNIT." },
+        "func": { "type": "string", "description": "The block_func for this type — copy verbatim from the reference table (e.g. paramv, const, biggerthan, alarm)." },
+        "compile_type": { "enum": ["input", "reference", "function", "condition", "output", "process"] },
+        "data": { "type": ["object", "null"], "description": "Per-type config payload (snake_case host fields: driver_ids[], initial_value, pri, alarm_type, …) or null to import unconfigured." },
+        "override": { "type": ["object", "array"], "description": "Display overrides, e.g. {\"alias_text\": \"My label\"}. This is where the on-canvas label lives." },
+        "runtime": { "type": ["object", "array"] },
+        "properties": { "type": ["object", "array"] },
+        "output_type": {},
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["blockType"] },
+          { "required": ["label"] },
+          { "required": ["expression"] },
+          { "required": ["severity"] },
+          { "required": ["message"] }
+        ]
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": ["source", "target"],
+      "properties": {
+        "source": { "$ref": "#/definitions/endpoint" },
+        "target": { "$ref": "#/definitions/targetEndpoint" },
+        "alias_text": { "type": ["string", "null"] },
+        "label": {}
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["from"] },
+          { "required": ["to"] }
+        ]
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["id", "put"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0, "description": "Block id (integer, must exist in blocks[])." },
+        "put": { "type": "integer", "minimum": 0, "description": "0-based pin index. Named pins (out/a/b/trigger) do not exist." }
+      },
+      "additionalProperties": false
+    },
+    "targetEndpoint": {
+      "type": "object",
+      "required": ["id", "put"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "put": { "type": "integer", "minimum": 0 },
+        "by_refference": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

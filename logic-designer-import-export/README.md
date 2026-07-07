@@ -43,6 +43,20 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 
 Import also accepts a **bare** `paper.save()` document (`{mode, blocks, connections, …}`), so JSON from other tooling works too.
 
+## Validating AI-generated files
+
+If an AI (ChatGPT, Copilot, Claude, …) generated the sketch JSON, **validate it before importing** — two real AI attempts failed on invented schemas/field names (documented in [`../logic-designer-copy-paste/vv-designer-reference/CLAUDE.md`](../logic-designer-copy-paste/vv-designer-reference/CLAUDE.md) §20.8/§20.9):
+
+```
+node validate-vv-sketch.js my-sketch.json
+```
+
+[`validate-vv-sketch.js`](validate-vv-sketch.js) checks the full host contract — envelope shape, `sketch.mode`, integer block ids, the 71-type allowlist (with a correction map: `EQUAL`→`LIKE`, `WRITEOUTUNIT`→`WRITETOUNIT`, …), verbatim `func` values, per-type `data` payloads (`driver_ids[]`, `initial_value`, `pri a|b|c`, …), `source`/`target` + numeric `put` connections, and one-wire-per-input. Exit 0 = importable; exit 1 = numbered errors, each with the exact fix.
+
+[`vv-sketch.schema.json`](vv-sketch.schema.json) is a JSON Schema (draft-07) for editor/CI validation of the same format (the validator is stricter — prefer it).
+
+When *prompting* an AI to generate a sketch, give it the **machine contract**: §20.0 + the §20.4 block table + the §20.6 example from the reference doc — that trio is self-contained and was written to be pasted as instructions.
+
 ## How it integrates
 
 - The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + the two items to the `file` level before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks are caught by a capture-phase listener (and a wrapped `application.on_menu` as fallback).

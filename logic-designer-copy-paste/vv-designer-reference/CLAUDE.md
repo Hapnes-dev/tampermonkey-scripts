@@ -23,7 +23,10 @@ system, the save format, the server API, and the compile/deploy lifecycle. See
 >   ready-to-import example. **This is the one to use when asked to "generate the JSON".**
 >   ⚠️ The file **must** be `{"format":"vv-fbx-sketch","sketch":{mode,blocks,connections}}` (or a
 >   bare `{mode,blocks,connections}`) — a graph of typed blocks + wires. **Do not invent a
->   `schema`/`steps`/`expression`-style format** (§20's STOP box + §20.8 show a real rejection).
+>   `schema`/`steps`/`expression`-style format** (§20's STOP box + §20.8/§20.9 show two real
+>   rejections). **§20.0 is the normative machine contract** — when delegating generation to
+>   another AI, paste §20.0 + §20.4 + §20.6, and always run
+>   `node validate-vv-sketch.js <file>` on the result before importing.
 >
 > Sections 1–18 are the reference both link back into.
 
@@ -1035,6 +1038,84 @@ live browser needed to author it — you emit the file directly. This is the fas
 > If you catch yourself writing an `expression` string or a `steps` array, you are building the
 > wrong thing — convert it to blocks + connections first.
 
+### 20.0 The machine contract (hand this to ANY AI generating a file)
+
+This subsection is **self-contained and normative**. When asking another model (ChatGPT,
+Copilot, Gemini, …) to generate VV logic, paste **§20.0 + the §20.4 block table + the §20.6
+example** as its instructions — nothing else is needed, and nothing less is safe. Then run the
+output through the **mechanical validator** before importing (see below) — do not trust any
+AI-generated file unvalidated, including your own.
+
+```text
+CONTRACT — VV Designer sketch JSON (vv-fbx-sketch). Follow EXACTLY.
+
+OUTPUT = one pure-JSON file (no comments, no trailing commas):
+
+{ "format": "vv-fbx-sketch", "version": 1, "exported_at": "<ISO8601>",
+  "source_plant_id": null, "source_sketch_id": null, "name": "<short name>",
+  "block_count": <int>, "connection_count": <int>,
+  "sketch": {
+    "mode": "function",                      // REQUIRED. "function" unless building a process
+    "require_plant_revision": 0,
+    "blocks": [ <block>, … ],
+    "connections": [ <connection>, … ],
+    "groups": []
+  } }
+
+<block> = { "id": <int 0,1,2,… unique>,      // INTEGER. Never a string.
+            "type": "<PALETTE_KEY>",         // ONLY from the block table. UPPERCASE.
+            "func": "<block_func>",          // copy VERBATIM from the block table
+            "compile_type": "<from table>",
+            "data": <object per table> | null,   // null ⇒ imports unconfigured (red)
+            "override": {} | {"alias_text":"<canvas label>"},
+            "runtime": {}, "properties": {},
+            "output_type": <from table>, "x": <number>, "y": <number> }
+
+<connection> = { "source": {"id": <block id>, "put": <output pin index, 0-based>},
+                 "target": {"id": <block id>, "put": <input  pin index, 0-based>} }
+
+HARD RULES (violating ANY one breaks the import):
+ 1. ALLOWLIST SEMANTICS: emit ONLY the keys shown above and the data fields shown in
+    the block table. If a key is not in this contract, it does not exist. Do not
+    invent, rename, or camelCase anything.
+ 2. Block ids are integers. Pin refs are numeric indices. There are NO named pins
+    (no "out"/"a"/"b"/"trigger") and NO "from"/"to"/"block"/"pin" keys.
+ 3. There is NO expression language, NO "steps", NO "logic", NO "parameterBindings",
+    NO "schema" key, NO "inputs"/"outputs" arrays, NO "severity"/"message"/"label"/
+    "blockType"/"writePulse"/"durationMs". Every operation is a block; every data
+    flow is a wire.
+ 4. Only block types in the table exist. In particular: equality is LIKE (not EQUAL);
+    inequality is UNLIKE; write-to-hardware is WRITETOUNIT (not WRITEOUTUNIT);
+    AND/OR are COMP_AND/COMP_OR; NOT is INVERT.
+ 5. Data payloads are snake_case host fields, copied from the table:
+    PARAMV  {"driver_ids":["<PLANT>_<…>"]}          (ARRAY; or null to bind later)
+    CONST   {"alias_text":…,"type":"integer|float|boolean|string",
+             "initial_value":…,"mode":"single","eng_unit":…,"readonly":false}
+    ALARM   {"alias_text":…,"pri":"a"|"b"|"c",
+             "alarm_type":"general"|"system",
+             "alarm_destination":"general"|"ew"|"cw"}      (no other priorities exist)
+ 6. Each INPUT pin takes exactly ONE wire. Outputs may fan out.
+ 7. NEVER invent a driver id. Use ids the user supplied/verified, else data: null
+    with override.alias_text "TODO bind: <what>".
+ 8. Do not include WRITETOUNIT unless the user explicitly asked to write to hardware.
+ 9. Wire every non-optional input of every block you place (comparators need both
+    pins; DELAY_VARIABLE needs value + a CONST seconds on put 1).
+10. Before answering, self-check: parse your own JSON; verify rules 1–9; verify every
+    connection's ids exist and block_count/connection_count match the arrays.
+```
+
+**Mechanical enforcement (don't skip):**
+- `node validate-vv-sketch.js <file.json>` — validator shipped in the repo at
+  [`logic-designer-import-export/validate-vv-sketch.js`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-import-export/validate-vv-sketch.js).
+  Exit 0 = importable; exit 1 = numbered errors with the exact fix for each. It encodes every
+  rule above **plus** the full 71-type allowlist, a wrong-name correction map (EQUAL→LIKE,
+  WRITEOUTUNIT→WRITETOUNIT, …), per-type data checks, and the single-wire-per-input rule.
+  Both real AI failures (§20.8, §20.9) fail it with precise messages; the verified-good files
+  pass.
+- [`vv-sketch.schema.json`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-import-export/vv-sketch.schema.json)
+  — JSON Schema (draft-07) for editor/CI validation; catches the structural mistakes
+  (string ids, `from`/`to`, forbidden keys). The validator is stricter — prefer it.
+
 ### 20.1 The file to emit — the export envelope
 Emit **pure JSON** (no comments) in the `vv-fbx-sketch` envelope the import script accepts:
 ```jsonc
@@ -1110,9 +1191,14 @@ one wire**. On import the host connects with `force=true`, so author only valid 
 7. **Write the file** (e.g. `vv-sketch_<desc>.json`) and tell the user to Import it, then
    configure any red (unbound) input blocks, F10, save, and deploy when ready.
 
-### 20.4 Block generation reference (the common set)
-`data: null` = needs no config (or leave null to configure post-import). Pin order = input
-index. For expandable blocks add inputs `i2,i3,…` and matching connections.
+### 20.4 Block generation reference (the common set) — ALLOWLIST
+**These are the only field names and values that exist** — copy `type`/`func`/`compile_type`/
+`data` cells **verbatim** (exact casing; never rename to camelCase or a synonym; see §20.9 for
+what happens if you do). `data: null` = needs no config (or leave null to configure
+post-import). Pin order = input index. For expandable blocks add inputs `i2,i3,…` and matching
+connections. The full 71-type palette is in §4; anything not listed in §4/§20.4 does not exist
+(the validator's correction map catches common inventions: EQUAL→LIKE, WRITEOUTUNIT→WRITETOUNIT,
+GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 
 | Type | func | compile_type | output_type | inputs (pins) | `data` template |
 |---|---|---|---|---|---|
@@ -1200,6 +1286,9 @@ is meant to produce. (The host re-derives block structure from each `type` on lo
 so a hand-authored file behaves identically to a `paper.save()` one.)
 
 ### 20.7 Validation checklist for a generated file
+- [ ] **Run the mechanical validator first**: `node validate-vv-sketch.js <file>` (§20.0) —
+      it enforces this whole checklist and more, with per-error fixes. The items below are the
+      manual fallback when Node isn't available.
 - [ ] **Top-level shape is right:** either `"format":"vv-fbx-sketch"` + a `"sketch"` object,
       **or** a bare doc with top-level `"blocks"`/`"connections"`. **No `"schema"` key. No
       `logic`/`steps`/`expression`/`inputs`/`outputs`/`parameterBindings`.** (This is the #1
