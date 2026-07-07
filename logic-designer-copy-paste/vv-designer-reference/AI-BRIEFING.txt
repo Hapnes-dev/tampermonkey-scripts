@@ -1,0 +1,472 @@
+================================================================================
+VV DESIGNER (IWMAC) — BRIEFING FOR AI ASSISTANTS GENERATING LOGIC
+================================================================================
+Read this whole document before generating anything. It is self-contained.
+Your task, when asked, is to produce ONE pure-JSON file that the "Logic
+Designer Import/Export" userscript can import into the VV Designer at
+http://internal.iwmac.local/vv_fbx.qxs?plant_id=<PLANT>.
+
+Five previous AI attempts failed. Every failure is documented at the end of
+this briefing (section 9) as explicit prohibitions. The output is also checked
+by a mechanical validator — files that break any rule here are rejected with
+errors before they ever reach the designer.
+
+--------------------------------------------------------------------------------
+1. WHAT THE VV DESIGNER IS
+--------------------------------------------------------------------------------
+The VV Designer ("Virtual Values Designer") is IWMAC/Kiona's visual
+function-block editor for refrigeration/energy plants. A user builds a
+"sketch": a dataflow graph of typed blocks wired output-pin to input-pin,
+like a PLC function block diagram. The sketch is saved on a plant, compiled
+server-side, and deployed to that plant's controllers, where it runs
+continuously: reading live parameters, computing, raising alarms, storing
+virtual values, and (optionally) writing setpoints back to hardware.
+
+Key vocabulary:
+- Plant: one installation (identified by plant_id, e.g. 5440). Everything is
+  plant-scoped.
+- Sketch: one logic graph. The deployable unit.
+- Block: one node. Its "type" is an UPPERCASE palette key (e.g. PARAMV,
+  BIGGERTHAN, ALARM). Each type has fixed input/output pins.
+- Pin ("put"): a numeric, 0-based connection point. Inputs are on the left of
+  a block, outputs on the right. Outputs may fan out to many inputs; EACH
+  INPUT ACCEPTS EXACTLY ONE WIRE.
+- Connection: a wire from one block's output pin to another block's input pin.
+- Parameter / driver id: a real data point on the plant, identified by a full
+  driver id string such as "5440_AK3_AKC_0_1_0_0_2576". The leading digits are
+  the plant id. NOTE: a unit id like "000:001" is a UNIT (a device holding
+  many parameters) — it is NOT a parameter and can never be used as a binding.
+- Process: a published, reusable sub-sketch that appears as a single block.
+  Only relevant if the user explicitly names one.
+
+THE SINGLE MOST IMPORTANT FACT: there is NO expression language, NO script,
+NO "steps", NO conditions-as-text. Every operation — every comparison, every
+AND, every alarm, every write — is a separate BLOCK, and every data flow is a
+WIRE. If you find yourself writing an expression string like
+"enable && temp > limit", stop: that must become a CONST block, a comparator
+block, a COMP_AND block and wires.
+
+--------------------------------------------------------------------------------
+2. THE OUTPUT FILE — EXACT SHAPE (NORMATIVE)
+--------------------------------------------------------------------------------
+Emit ONE pure JSON file. No comments (// or /* */ make the file unparseable),
+no trailing commas, no placeholders outside the rules below.
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "<ISO8601 timestamp>",
+  "source_plant_id": null,
+  "source_sketch_id": null,
+  "name": "<short descriptive name>",
+  "block_count": <integer, must equal sketch.blocks.length>,
+  "connection_count": <integer, must equal sketch.connections.length>,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [ <block>, ... ],
+    "connections": [ <connection>, ... ],
+    "groups": []
+  }
+}
+
+"mode" is REQUIRED and is "function" for normal plant logic ("process" only
+when explicitly building a reusable process). Omitting mode = instant
+rejection ("Sketch document is malformed").
+
+<block> — every block object has EXACTLY these fields:
+
+{
+  "id": 0,                          // INTEGER, unique, 0,1,2,... NEVER a string
+  "type": "BIGGERTHAN",             // UPPERCASE palette key from section 4 ONLY
+  "func": "biggerthan",             // copied VERBATIM from section 4 — never omit
+  "compile_type": "function",       // from section 4
+  "data": { ... } | null,           // per-type payload from section 4, or null
+  "override": {},                   // or {"alias_text": "<canvas label>"}
+  "runtime": {},
+  "properties": {},
+  "output_type": "boolean",         // from section 4 (informational)
+  "x": 260, "y": 110                // numeric canvas coordinates — REQUIRED
+}
+
+- The on-canvas label lives in override.alias_text. There is no "name" or
+  "label" field on a block.
+- override, runtime, properties are BLOCK-LEVEL fields, siblings of "data".
+  They NEVER appear inside data.
+- "func" is applied verbatim on load; omitting it breaks the compiled sketch.
+- Lay out x/y left-to-right by dataflow: sources x≈40, logic x≈260-500,
+  outputs x≈700; stack parallel branches ~150 px apart vertically.
+
+<connection> — every wire has EXACTLY this shape:
+
+{ "source": { "id": 0, "put": 0 }, "target": { "id": 2, "put": 0 } }
+
+- source = the block whose OUTPUT the wire leaves; target = the block whose
+  INPUT it enters. "put" is the 0-based pin index on that side.
+- There are NO named pins. Keys "from", "to", "block", "pin", "output",
+  "input" DO NOT EXIST in this format and cause rejection.
+- Each target (id, put) pair may appear at most once across all connections.
+- Wire EVERY non-optional input of every block you place.
+
+ALLOWLIST SEMANTICS: only the keys shown in this section and the data fields
+shown in section 4 exist. If a key is not listed here, it does not exist. Do
+not invent, rename, camelCase, or "improve" any field name.
+
+--------------------------------------------------------------------------------
+3. THE TYPE SYSTEM (WHY WIRES ARE ACCEPTED OR REFUSED)
+--------------------------------------------------------------------------------
+Values on wires are boolean, integer, float, string, or mixed. Inputs accept
+widened types: an input declaring "float" accepts boolean/integer/float; an
+input declaring "string" or "mixed" accepts everything. Comparator and logic
+blocks output boolean. Arithmetic blocks output float.
+
+Two additional constraints:
+- Some inputs demand a specific SOURCE BLOCK TYPE (require_type). Example:
+  PULSE_COUNT's input 1 ("Logic True Level") must be fed by a CONST block.
+- TAGVALUE blocks can ONLY feed process blocks (their output carries
+  require_type "process"). For ordinary logic, the general reader is PARAMV.
+  Never use TAGVALUE unless wiring a published process's pinned tag input.
+
+--------------------------------------------------------------------------------
+4. BLOCK REFERENCE — THE ALLOWLIST
+--------------------------------------------------------------------------------
+Copy type / func / compile_type / data EXACTLY. "data: null" means the block
+needs no configuration (or is deliberately left for the user to bind after
+import — it then shows a red title until configured in the designer).
+
+READERS AND SOURCES (compile_type "input")
+- PARAMV  | func "paramv"
+  Reads one plant parameter. data: {"driver_ids": ["<FULL_DRIVER_ID>"]}
+  driver_ids is a NON-EMPTY ARRAY of full ids. If you do not know the real id,
+  set data: null and override.alias_text "TODO bind: <description>" — never
+  invent an id, never emit an empty array.
+  output_type: ["mixed"]
+- CONST   | func "const"
+  A user-editable constant (limits, setpoints, levels). data:
+  {"alias_text": "<name>", "type": "integer"|"float"|"boolean"|"string",
+   "initial_value": <value>, "mode": "single", "eng_unit": "<unit or ''>",
+   "readonly": false}
+  Add "precision": "%.1f" (or %.2f/%.3f) only when type is float.
+  output_type: ["boolean","integer","float","string"]
+- CALENDAR | func "calendar_value" — boolean from a plant calendar schedule.
+  data: {"calendar": "<id>", "offset": 0, "post_offset": 0} or null (TODO bind).
+- CALENDAR_2_0 | func "calendar.run" — newer calendar; data null to bind later.
+- CRITERIA | func "criterias.run" — boolean from date/time ranges (year, month,
+  week, day-of-week, hour, minute). Configure post-import (data null).
+- TOGGLE_INTERVAL | func "toggle_interval.run" — boolean square wave on a time
+  interval. Configure post-import.
+- WEATHER | func "weather.run_by_ccp_country" and WEATHER_SUN | func
+  "weather_sun.run_by_place" — YR.no weather / day-night. Configure post-import.
+- SPOT_PRICE family (SPOT_PRICE "spotprice.run", SPOT_PRICE_LOW
+  "spotprice.run_is_low_price", SPOT_PRICE_HIGH "spotprice.run_is_high_price",
+  SPOT_PRICE_ANALYSER "spotprice.run_analyse") — electricity spot prices.
+
+COMPARATORS AND LOGIC (compile_type "function", output boolean, 2 inputs each
+unless noted, data null)
+- BIGGERTHAN "biggerthan", BIGGERTHANOREQUAL "biggerthanorequal",
+  SMALLERTHAN "smallerthan", SMALLERTHANOREQUAL "smallerthanorequal"
+- LIKE "like" (equality), UNLIKE "unlike" (inequality)
+  THERE IS NO "EQUAL" BLOCK. Equality is LIKE.
+- COMP_AND "comp_and", COMP_OR "comp_or" (expandable inputs; wire i0,i1,...)
+- INVERT "invert" (1 input, boolean NOT)
+
+ARITHMETIC (compile_type "function", output float, data null)
+- ADD "add", SUBTRACT "subtract", MULTIPLY "multiply", DIVIDE "divide",
+  MOD "mod", AVERAGE "average", MIN "comp_min", MAX "comp_max",
+  DIFF "diff" (abs difference), ABSOLUTE "absolute" (1 input)
+
+TIME / PERSISTENCE / MEMORY
+- DELAY_VARIABLE | func "alarm_multi_delay" | data null
+  "Condition must hold N seconds before output goes true." Inputs: put 0 = the
+  boolean/value; put 1 = a CONST with the delay in SECONDS (required); put 2 =
+  optional CONST delay-when-false. Best debounce block for generated logic.
+- DELAY | func "alarm_multi_delay" — same idea but delay set in a dialog;
+  prefer DELAY_VARIABLE.
+- AGE_OF_VALUE "age_of_value", DELTA_T "delta_t" — age of a value.
+- LATCH | func "latch.run" | data null — set/reset memory: put 0 = set,
+  put 1 = reset, output holds 1 until reset.
+- HOURMETER "hourmeter.run" — accumulated run time of a boolean.
+- PULSE_COUNT | func "pulse_count"
+  Counts events on a signal within a configured period. data:
+  {"block_func_args": {"periode": "day", "type": "flank_rising_edge",
+    "periode_amount": 1}}
+  periode: "sec"|"min"|"hour"|"day"|"week"|"month"|"year"
+  type: "over_or_equal_value" | "absolute_value" | "flank_rising_edge" |
+        "flank_falling_edge" | "flank_changing_edge"
+  (so rising/falling-edge counting is NATIVE — via "type", NOT "mode")
+  Inputs: put 0 = the signal; put 1 = a CONST "Logic True Level" (REQUIRED,
+  must be a CONST source). The count RESETS each configured period — there is
+  no "never reset".
+- PERIODE_VALUE ("Counter Limit") | func "counter_limit.run"
+  data: {"block_func_args": {"mode": "alarm"|"value", "periode": "day",
+  "period_amount": 1}}. NOTE the inner keys differ from PULSE_COUNT.
+- AVG_IN_PERIOD "avg_in_period": data {"block_func_args": {"period": "min",
+  "period_amount": 5}} — note this one uses "period" (no e).
+  Also MIN_IN_PERIOD "min_in_period", MAX_IN_PERIOD "max_in_period",
+  SUM_IN_PERIOD "sum_in_period".
+  The block_func_args key sets are per-type host contract — copy them exactly;
+  do not normalize the periode/period spelling differences.
+
+SELECTION AND MATH EXPRESSIONS
+- SELECTOR | func "selector" — 3 inputs: put 0 boolean condition, put 1 value
+  if true, put 2 value if false. Build the two alternatives as CONST blocks.
+- INPUT_SELECTOR "selector_ex.run" — biggest/smallest/indexed of many inputs.
+- FORMULA | func "formula"
+  The ONLY place any expression exists, and it is server-side PHP math over
+  named inputs inp0..inpN-1 (N = number of wired inputs):
+  data: {"formula": "inp0*1.8+32", "output_type": "float", "title": "<name>",
+         "precision": "%.1f"}
+  Allowed: + - * / % ^, comparisons, ternary ?:, and/&&/or/||, and functions
+  min max abs round floor ceil sqrt pow sin cos log log10 exp fmod pi()
+  random(). NOT allowed: if(){} blocks, named constants (pi, e), variables
+  other than inp0..inpN-1. Prefer plain arithmetic blocks for trivial math.
+- TRANSFORM_MAPPED "transform_mapped.run" — refrigerant conversion tables
+  (pressure→temperature etc.). Configure post-import.
+
+OUTPUTS (compile_type "output" unless noted)
+- ALARM | func "alarm"
+  data: {"alias_text": "<alarm text>", "pri": "a"|"b"|"c",
+         "alarm_type": "general"|"system",
+         "alarm_destination": "general"|"ew"|"cw"}
+  ONLY priorities a/b/c exist (a = most severe). There is no "n", no "info",
+  no "severity", no "message" field.
+- ALARM_OBJECT "alarm_object" (adds a cost input), ALARM_OBJECT_EXTENDED
+  "alarm_object_extended" (cost/value/limit inputs) — same data shape.
+- VIRTUALOUT | func "virtualout"
+  Stores the input as a new virtual parameter (trendable, safe). data:
+  {"alias_text": "<name>", "type": "integer"|"float"|"boolean",
+   "engineering": {"unit": "<unit or ''>"}}  (+ "precision" for float)
+- WRITETOUNIT | func "set_unit_value" | compile_type "function"
+  WRITES TO REAL HARDWARE when deployed. data: {"force_write": false,
+  "delay": 0, "limit_count": false, "count": "",
+  "driver_ids": ["<FULL_DRIVER_ID>"]}
+  Include this block ONLY if the user explicitly asked to write to hardware
+  AND supplied/confirmed the exact target parameter. Otherwise use VIRTUALOUT.
+- TEMP_VALUE "tmp_value" — persist and pass through a value.
+- VARIABLE_OUTPUT "variable_output" / VARIABLE_INPUT "variable_input" — named
+  reference pair to reuse a value elsewhere in the same sketch.
+
+BLOCKS THAT DO NOT EXIST (all have appeared in failed AI files):
+EQUAL, EQUALS, GREATERTHAN, LESSTHAN, AND, OR, NOT, WRITE, WRITEOUTUNIT,
+WRITE_TO_UNIT, DIGITAL_INPUT, ANALOG_INPUT, INPUT, OUTPUT, SENSOR, READ,
+RISING_EDGE, FALLING_EDGE, EDGE, EDGE_DETECT, TOGGLE, FLIPFLOP, TIMER,
+COUNTER, CONSTANT, PARAMETER. Their correct translations:
+  EQUAL→LIKE · GREATERTHAN→BIGGERTHAN · LESSTHAN→SMALLERTHAN · AND→COMP_AND ·
+  OR→COMP_OR · NOT→INVERT · WRITE/WRITEOUTUNIT/DIGITAL_OUTPUT→WRITETOUNIT ·
+  DIGITAL_INPUT/ANALOG_INPUT/READ/SENSOR→PARAMV · CONSTANT→CONST ·
+  TIMER→DELAY_VARIABLE · COUNTER→PULSE_COUNT · SR latch→LATCH ·
+  RISING_EDGE/TOGGLE→ composed, see recipes below.
+
+--------------------------------------------------------------------------------
+5. RECIPES (PROVEN SHAPES — REUSE THESE)
+--------------------------------------------------------------------------------
+R1. THRESHOLD ALARM WITH PERSISTENCE (the workhorse — most requests are this):
+    PARAMV(value) → BIGGERTHAN ← CONST(limit)
+    → [optional gate: COMP_AND ← CALENDAR/CRITERIA]
+    → DELAY_VARIABLE ← CONST(seconds, on put 1)
+    → ALARM{pri,...}
+    For "below limit" use SMALLERTHAN. Verified live.
+
+R2. TOGGLE ON RISING EDGE (verified live):
+    PARAMV(digital signal) → PULSE_COUNT{periode:"day",
+      type:"flank_rising_edge", periode_amount:1} ← CONST(1) on put 1
+    → MOD ← CONST(2)
+    → VIRTUALOUT (or WRITETOUNIT with an explicit confirmed target)
+    Caveat: the count resets each period, so 0/1 parity can flip at the
+    period boundary; widen the period if that matters.
+
+R3. HYSTERESIS / HOLD UNTIL RESET:
+    comparator(high) → LATCH.put0 (set); comparator(low) → LATCH.put1 (reset);
+    LATCH output → downstream.
+
+R4. PICK SETPOINT BY CONDITION (night/eco setback, spot price):
+    condition (CALENDAR / WEATHER_SUN / SPOT_PRICE_LOW) → SELECTOR.put0;
+    CONST(setpoint A) → put1; CONST(setpoint B) → put2; output → VIRTUALOUT
+    or (explicitly confirmed) WRITETOUNIT.
+
+R5. COMPUTED KPI / VIRTUAL VALUE:
+    PARAMV readings → arithmetic blocks or FORMULA → VIRTUALOUT.
+
+R6. FAN-OUT: one output may feed many inputs (e.g. one comparator triggering
+    several alarms). Never wire two sources into one input.
+
+--------------------------------------------------------------------------------
+6. WHAT YOU CANNOT KNOW — AND MUST NOT INVENT
+--------------------------------------------------------------------------------
+- Real driver ids exist only on the actual plant. Use ONLY ids the user
+  pasted/confirmed. Otherwise: "data": null and
+  "override": {"alias_text": "TODO bind: <what to select>"} — the block
+  imports with a red title and the user binds it in the designer dialog.
+- Same for calendar ids (CALENDAR) and tag bindings.
+- A unit/device address ("000:001", "IWT01") is NOT a parameter. If the user
+  gives only a unit, leave the binding as TODO and say which unit to pick from.
+- Never guess which hardware parameter a WRITETOUNIT should target.
+
+--------------------------------------------------------------------------------
+7. COMPLETE VALID EXAMPLE (import-ready — copy this structure)
+--------------------------------------------------------------------------------
+Task: "Alarm if room temp > 8 °C for 15 min during opening hours."
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-07T00:00:00.000Z",
+  "source_plant_id": null,
+  "source_sketch_id": null,
+  "name": "High temp alarm 8C 15min calendar-gated",
+  "block_count": 8,
+  "connection_count": 7,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [
+      { "id": 0, "type": "PARAMV", "func": "paramv", "compile_type": "input",
+        "data": null,
+        "override": { "alias_text": "TODO bind: room temperature" },
+        "runtime": {}, "properties": {}, "output_type": ["mixed"],
+        "x": 40, "y": 60 },
+      { "id": 1, "type": "CONST", "func": "const", "compile_type": "input",
+        "data": { "alias_text": "High temp limit", "type": "float",
+                  "initial_value": 8, "mode": "single", "eng_unit": "°C",
+                  "readonly": false, "precision": "%.1f" },
+        "override": { "alias_text": "High temp limit (8 °C)" },
+        "runtime": {}, "properties": {},
+        "output_type": ["boolean","integer","float","string"],
+        "x": 40, "y": 200 },
+      { "id": 2, "type": "BIGGERTHAN", "func": "biggerthan",
+        "compile_type": "function", "data": null, "override": {},
+        "runtime": {}, "properties": {}, "output_type": "boolean",
+        "x": 260, "y": 110 },
+      { "id": 3, "type": "CALENDAR", "func": "calendar_value",
+        "compile_type": "input", "data": null,
+        "override": { "alias_text": "TODO bind: opening-hours calendar" },
+        "runtime": {}, "properties": {}, "output_type": ["mixed"],
+        "x": 40, "y": 330 },
+      { "id": 4, "type": "COMP_AND", "func": "comp_and",
+        "compile_type": "function", "data": null, "override": {},
+        "runtime": {}, "properties": {}, "output_type": "boolean",
+        "x": 440, "y": 150 },
+      { "id": 5, "type": "CONST", "func": "const", "compile_type": "input",
+        "data": { "alias_text": "Persistence", "type": "integer",
+                  "initial_value": 900, "mode": "single", "eng_unit": "s",
+                  "readonly": false },
+        "override": { "alias_text": "Persist 900 s (15 min)" },
+        "runtime": {}, "properties": {},
+        "output_type": ["boolean","integer","float","string"],
+        "x": 440, "y": 320 },
+      { "id": 6, "type": "DELAY_VARIABLE", "func": "alarm_multi_delay",
+        "compile_type": "function", "data": null, "override": {},
+        "runtime": {}, "properties": {}, "output_type": "boolean",
+        "x": 640, "y": 180 },
+      { "id": 7, "type": "ALARM", "func": "alarm", "compile_type": "output",
+        "data": { "alias_text": "Room too warm during opening hours",
+                  "pri": "b", "alarm_type": "general",
+                  "alarm_destination": "general" },
+        "override": {}, "runtime": {}, "properties": {}, "output_type": null,
+        "x": 840, "y": 190 }
+    ],
+    "connections": [
+      { "source": { "id": 0, "put": 0 }, "target": { "id": 2, "put": 0 } },
+      { "source": { "id": 1, "put": 0 }, "target": { "id": 2, "put": 1 } },
+      { "source": { "id": 2, "put": 0 }, "target": { "id": 4, "put": 0 } },
+      { "source": { "id": 3, "put": 0 }, "target": { "id": 4, "put": 1 } },
+      { "source": { "id": 4, "put": 0 }, "target": { "id": 6, "put": 0 } },
+      { "source": { "id": 5, "put": 0 }, "target": { "id": 6, "put": 1 } },
+      { "source": { "id": 6, "put": 0 }, "target": { "id": 7, "put": 0 } }
+    ],
+    "groups": []
+  }
+}
+
+This exact file has been loaded in the live designer: all 8 blocks render,
+all 7 wires connect, and the syntax check flags only the two intentional
+"TODO bind" blocks. That is the target state for anything you produce.
+
+--------------------------------------------------------------------------------
+8. WORKFLOW AFTER YOU ANSWER
+--------------------------------------------------------------------------------
+The user will:
+1. Run: node validate-vv-sketch.js <your-file>.json
+   (mechanical validator; exit 0 = importable, otherwise numbered errors —
+   if the user pastes errors back to you, fix EXACTLY what they say).
+2. Import via File → Transfer → Import sketch (JSON) in the designer
+   (file, drag-drop, or pasted JSON text).
+3. Open each red "TODO bind" block and select the real parameter/calendar.
+4. Press F10 (syntax check), save, and decide about deployment themselves.
+Deployment and hardware writes are ALWAYS the human's decision.
+
+--------------------------------------------------------------------------------
+9. DOCUMENTED FAILURES — NEVER REPEAT THESE
+--------------------------------------------------------------------------------
+Five real AI-generated files failed. The exact mistakes, all of which the
+validator now rejects:
+
+FAILURE 1 — invented an abstract schema:
+  top-level "schema", "inputs", "outputs", "parameterBindings",
+  "logic": {"steps": [{"type":"read"...},{"type":"condition",
+  "expression":"a && b > c"...},{"type":"writePulse"...}]}
+  → NONE of that exists. No steps. No expression strings. Blocks + wires only.
+
+FAILURE 2 — right idea, wrong field names:
+  missing sketch.mode; string block ids ("p_comm_error"); connections as
+  {"from":{"block":..,"pin":"out"},"to":{...,"pin":"a"}}; data.driverId
+  (camelCase singular) instead of driver_ids array; CONST {"value":..,
+  "valueType":..} instead of initial_value/type/mode; ALARM
+  {"priority":"A","message":".."} instead of pri/alias_text; invented types
+  EQUAL and WRITEOUTUNIT; block-level "blockType"/"label"; missing func.
+
+FAILURE 3 — PLC vocabulary:
+  invented DIGITAL_INPUT, RISING_EDGE, TOGGLE, WRITE block types; "name" and
+  "config": {"address": "001:001"} fields; string connections
+  "input1.output". Unit addresses are not parameters; edge/toggle are
+  compositions (see R2), not blocks.
+
+FAILURE 4 — // comments and shortcuts:
+  // comments inside JSON (parse failure); every block missing func and x/y;
+  CONST {"value":2} again; PULSE_COUNT {"reset_interval":0} (invented — the
+  real config is block_func_args, and the count always resets per period);
+  PULSE_COUNT's required CONST "Logic True Level" input left unwired.
+
+FAILURE 5 — regressions plus new details:
+  connections back to from/to with block/output/input keys; CONST value
+  again; "override" nested INSIDE data (it is a block-level sibling of data);
+  "driver_ids": [] empty (either real ids or data null — an empty array is
+  "configured with nothing"); block_func_args {"mode":"flank_rising_edge"} —
+  on PULSE_COUNT the selector key is "type", not "mode" ("mode" belongs to
+  PERIODE_VALUE); missing periode/periode_amount.
+
+The meta-lesson from failure 5: corrected mistakes crept back in later
+attempts. Therefore: regenerate from section 7's template every time, and
+re-check against section 10 before answering. Do not trust your priors about
+node-graph JSON formats — this format is what it is.
+
+--------------------------------------------------------------------------------
+10. SELF-CHECK BEFORE ANSWERING (run through ALL of these)
+--------------------------------------------------------------------------------
+[ ] Output is pure JSON: no comments, no trailing commas, parses cleanly.
+[ ] Top level: "format":"vv-fbx-sketch" + "sketch" (or a bare
+    {mode,blocks,connections} document). No other envelope keys invented.
+[ ] sketch.mode = "function". groups = []. require_plant_revision present.
+[ ] Every block has integer unique id, a type from section 4, its exact func,
+    compile_type, data per section 4 (or null), override/runtime/properties
+    at BLOCK level, numeric x and y.
+[ ] No forbidden fields anywhere: name, label, blockType, config, address,
+    expression, severity, message, priority, value, valueType, driverId,
+    reset_interval, steps, schema, from, to, block, pin.
+[ ] Connections use source/target with integer id and 0-based integer put;
+    every referenced id exists; no input pin has two wires.
+[ ] Every non-optional input of every placed block is wired — comparators and
+    arithmetic need both pins; DELAY_VARIABLE needs its CONST seconds on
+    put 1; PULSE_COUNT needs its CONST level on put 1 (CONST source required);
+    ALARM/VIRTUALOUT/WRITETOUNIT need their put 0.
+[ ] block_func_args inner keys copied exactly per type (PULSE_COUNT:
+    periode/type/periode_amount; PERIODE_VALUE: mode/periode/period_amount;
+    AVG_IN_PERIOD: period/period_amount).
+[ ] driver_ids: only real, user-confirmed ids; otherwise data null + TODO
+    label. No WRITETOUNIT unless explicitly requested with a confirmed target.
+[ ] block_count and connection_count equal the actual array lengths.
+[ ] Tell the user: validate → import → bind red blocks → F10 → save; deploy
+    is their call.
+
+END OF BRIEFING.
+================================================================================

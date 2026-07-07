@@ -1054,9 +1054,12 @@ live browser needed to author it — you emit the file directly. This is the fas
 
 This subsection is **self-contained and normative**. When asking another model (ChatGPT,
 Copilot, Gemini, …) to generate VV logic, paste **§20.0 + the §20.4 block table + the §20.6
-example** as its instructions — nothing else is needed, and nothing less is safe. Then run the
-output through the **mechanical validator** before importing (see below) — do not trust any
-AI-generated file unvalidated, including your own.
+example** as its instructions — or, easier, hand it the **ready-made briefing**
+[`AI-BRIEFING.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt)
+(~3 150 words: concepts, contract, allowlist, recipes, validated example, all five failure
+histories as prohibitions, self-check). Then run the output through the **mechanical
+validator** before importing (see below) — do not trust any AI-generated file unvalidated,
+including your own.
 
 ```text
 CONTRACT — VV Designer sketch JSON (vv-fbx-sketch). Follow EXACTLY.

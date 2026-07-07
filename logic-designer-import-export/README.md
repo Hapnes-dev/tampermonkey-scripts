@@ -55,7 +55,7 @@ node validate-vv-sketch.js my-sketch.json
 
 [`vv-sketch.schema.json`](vv-sketch.schema.json) is a JSON Schema (draft-07) for editor/CI validation of the same format (the validator is stricter — prefer it).
 
-When *prompting* an AI to generate a sketch, give it the **machine contract**: §20.0 + the §20.4 block table + the §20.6 example from the reference doc — that trio is self-contained and was written to be pasted as instructions.
+When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`../logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt`](../logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt) (self-contained: concepts, contract, block allowlist, recipes, a validated example, all documented AI failures as prohibitions, and a self-check). Alternatively paste §20.0 + §20.4 + §20.6 from the reference doc.
 
 ## How it integrates
 
