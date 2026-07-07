@@ -46,3 +46,7 @@ The header carries `@updateURL` + `@downloadURL` pointing at this file's raw URL
 ## Grants
 
 `unsafeWindow` (reach the host's `logic_designer`), `GM_setValue`/`GM_getValue` (clipboard), `GM_addStyle` (UI). No network grants — it makes no external requests.
+
+## Reference: how the VV Designer works
+
+[`vv-designer-reference/`](vv-designer-reference/) is a deep-dive on the host editor this script drives — its block library, type/connection rules, save format, server API, and the exact in-memory object model (`paper.elements`, pin `connected_to` shapes, `element_pointer`, the mutation API) that this script's host-adapter relies on. [`vv-designer-reference/CLAUDE.md`](vv-designer-reference/CLAUDE.md) is the write-up; `reference_data/` holds captured samples (save-format, a real sketch + compiled preview, config/library payloads, formula-grammar probes, dropdown enums).
