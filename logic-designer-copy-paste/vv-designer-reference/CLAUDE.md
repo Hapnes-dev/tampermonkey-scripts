@@ -709,6 +709,17 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
+**Second ecosystem script — "Logic Designer Import/Export" v1.0.0** (same repo,
+`logic-designer-import-export/`): adds a **Transfer** section (Export/Import sketch as JSON)
+to the File menu so logic can be moved **between plants**. Cross-plant import offers a
+one-click **driver-id rebind** (`<src>_…` → `<target>_…` on `driver_ids`/legacy `driver_id`),
+warns about CALENDAR/TAGVALUE bindings and unknown process blocks, and clears
+`application.current_sketch` after import so Ctrl+S saves as a *new* sketch. Integration
+pattern worth reusing: it wraps `menu_main.creator.render` to append items to the `file`
+level before every rebuild (menus are re-rendered on each mode switch), and wraps
+`application.on_menu` to catch its `file_ldio_*` item ids. Live-verified end-to-end
+(export envelope → simulated foreign plant → rebind → 6 blocks/5 wires restored, syntax ok).
+
 ---
 
 ## 17. Persistence, fleet & reports — the data model (verified live)
