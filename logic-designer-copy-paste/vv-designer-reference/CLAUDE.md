@@ -14,10 +14,15 @@ This document is the result of a deep runtime + source dive (Playwright + PowerS
 system, the save format, the server API, and the compile/deploy lifecycle. See
 [[iwmac-changes-testing]] for the sibling pang/changes pipeline.
 
-> **Here to BUILD logic (not just understand the tool)?** Jump to **§19 — the
-> logic-building playbook**: requirement→block mapping, proven recipes, a step-by-step
-> build procedure (UI and programmatic), verified `data` payload templates, and the
-> pre-flight checklist. Sections 1–18 are the reference it links back into.
+> **Here to BUILD logic (not just understand the tool)?**
+> - **§19 — logic-building playbook**: requirement→block mapping, proven recipes, and a
+>   build procedure for constructing logic **live** on the canvas (UI or programmatic).
+> - **§20 — generate a sketch `.json` from a description**: the offline path — user describes
+>   logic, you **write a `.json` file** they Import (via the Logic Designer Import/Export
+>   userscript). Block/connection schema, a per-block generation table, and a complete
+>   ready-to-import example. **This is the one to use when asked to "generate the JSON".**
+>
+> Sections 1–18 are the reference both link back into.
 
 ---
 
@@ -985,3 +990,189 @@ Discovered the real parameter via param_chooser (§19.4), wired without `force`,
 `load_sketch(8660)` returned all 6 blocks / 5 connections (state PROGRESS,
 compile_state 0 = never deployed). Open it:
 `vv_fbx.qxs?plant_id=3111&sketch=8660`. Not deployed — deploying is a human decision.
+
+---
+
+## 20. Generating a sketch `.json` from a description (offline authoring)
+
+**Goal:** the user describes logic in words → you (the AI) **write a `.json` file** → the user
+loads it with the **Logic Designer Import/Export** userscript (File → Transfer → Import). No
+live browser needed to author it — you emit the file directly. This is the fastest path from
+"I want an alarm that…" to something runnable, and it's what to reach for when asked to
+"generate the JSON".
+
+### 20.1 The file to emit — the export envelope
+Emit **pure JSON** (no comments) in the `vv-fbx-sketch` envelope the import script accepts:
+```jsonc
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "<ISO 8601 timestamp>",
+  "source_plant_id": null,            // null for fresh logic; set to target plant if known
+  "source_sketch_id": null,
+  "name": "<short descriptive name>",
+  "block_count": <N>, "connection_count": <M>,
+  "sketch": { …the sketch document, below… }
+}
+```
+(The import script also accepts a **bare** sketch document — the `sketch` object alone — but
+the envelope is preferred: it carries the name and enables cross-plant rebind.)
+
+### 20.2 The sketch document (what `sketch` holds)
+Exactly the §8 `paper.save()` shape:
+```jsonc
+{
+  "mode": "function",                 // "function" for plant logic; "process" only for reusable sub-sketches
+  "require_plant_revision": <max over blocks, see 20.5>,
+  "blocks": [ …block objects… ],
+  "connections": [ …connection objects… ],
+  "groups": []
+}
+```
+
+**Block object** — per block:
+```jsonc
+{
+  "id": 0,                            // 0-indexed sequential integer, unique in the sketch
+  "type": "BIGGERTHAN",               // palette key (20.4 table)
+  "func": "biggerthan",               // block_func (20.4 table) — applied on load, keep correct
+  "compile_type": "function",         // input|reference|function|condition|output (20.4)
+  "data": null,                       // per-type config payload (20.4 / §6), or null if none/unknown
+  "override": {},                     // e.g. {"alias_text":"…"} to rename the block on canvas
+  "runtime": {},
+  "properties": {},                   // usually {} (or []); interval/format_extra/etc. rarely
+  "output_type": "boolean",           // 20.4 table (informational; re-derived from type on load)
+  "x": 220, "y": 80                   // canvas position (px)
+}
+```
+**Connection object** — one per wire (source **output** → target **input**):
+```jsonc
+{ "source": { "id": 0, "put": 0 }, "target": { "id": 2, "put": 0 } }
+```
+`put` is the 0-based pin index. Outputs may fan out to many inputs; **each input takes exactly
+one wire**. On import the host connects with `force=true`, so author only valid type pairings
+(§3) — a `boolean`/numeric comparator output into a `boolean`/mixed input, etc.
+
+> **Why this loads even hand-authored:** `paper.load()` calls `__render_block(type, x, y, id,
+> override, properties)` which rebuilds each block's structure (inputs/outputs/compile_type/
+> colour) **from its `type`**, then applies your `func` and `data`, then wires connections with
+> force. So `type`, `id`, `func`, `data`, `x`, `y` and the connections are the load-critical
+> fields; `compile_type`/`output_type` are re-derived (include them anyway for a clean
+> re-export).
+
+### 20.3 Authoring procedure
+1. **Map the description to a recipe** (§19.1/§19.2). Most requests are the threshold-alarm
+   shape: `reader → comparator ← limit → [gate] → [delay] → output`.
+2. **Assign block ids** 0,1,2,… in any order; keep them unique.
+3. **Lay out `x`/`y`** left→right by dataflow so the imported graph is readable: sources
+   `x≈40`, comparators/logic `x≈240`, delay/mid `x≈480`, outputs `x≈700`; stack parallel
+   inputs ~120 px apart in `y`.
+4. **Fill `data`** from the 20.4 table. For values the user gave (limits, delays, priorities),
+   author them fully. For **plant-specific bindings you can't know** (real `PARAMV` driver ids,
+   `CALENDAR` ids), **leave `data: null`** — the block imports **unconfigured (red title)** and
+   the user binds it via the normal dialog after import. Never invent a real driver id.
+5. **Add connections** per the recipe.
+6. **Compute `require_plant_revision`** (20.5) and the counts; stamp `name`/`exported_at`.
+7. **Write the file** (e.g. `vv-sketch_<desc>.json`) and tell the user to Import it, then
+   configure any red (unbound) input blocks, F10, save, and deploy when ready.
+
+### 20.4 Block generation reference (the common set)
+`data: null` = needs no config (or leave null to configure post-import). Pin order = input
+index. For expandable blocks add inputs `i2,i3,…` and matching connections.
+
+| Type | func | compile_type | output_type | inputs (pins) | `data` template |
+|---|---|---|---|---|---|
+| `PARAMV` | `paramv` | input | `["mixed"]` | — | `{"driver_ids":["<REAL_ID>"]}` — **or `null`** to bind post-import |
+| `CONST` | `const` | input | `["boolean","integer","float","string"]` | — | `{"alias_text":"Limit","type":"float","initial_value":8,"mode":"single","eng_unit":"°C","readonly":false,"precision":"%.1f"}` (type ∈ integer/float/boolean/string; drop `precision` unless float) |
+| `CALENDAR` | `calendar_value` | input | `["mixed"]` | — | `{"calendar":"<id>","offset":0,"post_offset":0}` — or `null` to bind post-import |
+| `BIGGERTHAN` | `biggerthan` | function | `boolean` | i0,i1 numeric | `null` |
+| `BIGGERTHANOREQUAL` | `biggerthanorequal` | function | `boolean` | i0,i1 | `null` |
+| `SMALLERTHAN` | `smallerthan` | function | `boolean` | i0,i1 | `null` |
+| `SMALLERTHANOREQUAL` | `smallerthanorequal` | function | `boolean` | i0,i1 | `null` |
+| `LIKE` / `UNLIKE` | `like` / `unlike` | function | `boolean` | i0,i1 | `null` |
+| `COMP_AND` / `COMP_OR` | `comp_and` / `comp_or` | function | `boolean` | i0,i1,… (expandable, boolean) | `null` |
+| `INVERT` | `invert` | function | `boolean` | i0 boolean | `null` |
+| `ADD`/`SUBTRACT`/`MULTIPLY` | `add`/`subtract`/`multiply` | function | `float` | i0,i1,… numeric (expandable) | `null` |
+| `DIVIDE` | `divide` | function | `["integer","float"]` | i0,i1 | `null` |
+| `MIN`/`MAX`/`AVERAGE` | `comp_min`/`comp_max`/`average` | function | `float` | i0,i1,… (expandable) | `null` |
+| `FORMULA` | `formula` | function | `float` | inp0,inp1,… (expandable) | `{"formula":"inp0+inp1","output_type":"float","title":"…","precision":"%.1f"}` (grammar §6) |
+| `SELECTOR` | `selector` | function | `["integer","float"]` | i0 bool, i1 if-true, i2 if-false | requires config — build the two alternatives as `CONST`s |
+| `DELAY_VARIABLE` | `alarm_multi_delay` | function | `boolean` | i0 value, i1 delay-true (CONST s), i2 delay-false (optional CONST) | `null` (delays come from the CONST inputs) |
+| `AVG_IN_PERIOD` | `avg_in_period` | function | `float` | i0 value (by-ref) | `{"block_func_args":{"period":"min","period_amount":5}}` (note key **`period`**) |
+| `MIN_IN_PERIOD`/`MAX_IN_PERIOD`/`SUM_IN_PERIOD` | `min_in_period`/`max_in_period`/`sum_in_period` | function | `float` | i0 value (by-ref) | requires config `{"block_func_args":{…}}` |
+| `LATCH` | `latch.run` | function | `integer` | i0 set, i1 reset | `null` (needs plant rev ≥1683) |
+| `PERIODE_VALUE` | `counter_limit.run` | function | `["float","boolean"]` | i0 param, i1 limit | `{"block_func_args":{"mode":"alarm","periode":"day","period_amount":1}}` (note key **`periode`**) |
+| `ALARM` | `alarm` | output | `null` | i0 boolean | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` (pri a/b/c; dest general/ew/cw) |
+| `ALARM_OBJECT` | `alarm_object` | output | `null` | i0 condition, i1 cost | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` |
+| `VIRTUALOUT` | `virtualout` | output | `null` | i0 mixed | `{"alias_text":"…","type":"float","engineering":{"unit":""},"precision":"%.1f"}` |
+| `WRITETOUNIT` | `set_unit_value` | function | `null` | i0 value | `{"force_write":false,"delay":0,"limit_count":false,"count":"","driver_ids":["<REAL_ID>"]}` — **real hardware write; confirm with user** |
+| `TEMP_VALUE` | `tmp_value` | output | `["mixed"]` | i0 mixed | `{"alias_text":"…"}` |
+
+For any block not listed, pull `block_func`/`compile_type`/`inputs`/`outputs` from §4, or open
+it once in the live designer and read `get_block_data(ref)` (§19.4).
+
+### 20.5 `require_plant_revision`
+Set it to the **max** minimum-revision of the blocks used (0 if none apply). Common floors:
+`IF`/`IF_ELSE`/`CRITERIA`/`AVG_IN_PERIOD`/`WEATHER`/`HOURMETER` **620** (`CRITERIA`/`AVG` 604),
+`CALENDAR_2_0` **1460**, `OPTIMAL_START_STOP` **1543**, `SPOT_PRICE*` **1670–1683**,
+`RESET_INPUT`/`PID_CONTROLLER`/`LATCH` **1683**. If unsure, 0 is safe (the plant just needs to
+meet whatever the blocks actually require at compile).
+
+### 20.6 Worked example — the file for "Alarm if room temp > 8 °C for 15 min during opening hours"
+A complete, ready-to-import file (leave `PARAMV`/`CALENDAR` unbound for the user to pick):
+```json
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-07T00:00:00.000Z",
+  "source_plant_id": null,
+  "source_sketch_id": null,
+  "name": "High temp alarm 8C 15min calendar-gated",
+  "block_count": 8,
+  "connection_count": 7,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [
+      { "id": 0, "type": "PARAMV", "func": "paramv", "compile_type": "input", "data": null, "override": { "alias_text": "TODO bind: room temperature" }, "runtime": {}, "properties": {}, "output_type": ["mixed"], "x": 40, "y": 60 },
+      { "id": 1, "type": "CONST", "func": "const", "compile_type": "input", "data": { "alias_text": "High temp limit", "type": "float", "initial_value": 8, "mode": "single", "eng_unit": "°C", "readonly": false, "precision": "%.1f" }, "override": { "alias_text": "High temp limit (8 °C)" }, "runtime": {}, "properties": {}, "output_type": ["boolean","integer","float","string"], "x": 40, "y": 200 },
+      { "id": 2, "type": "BIGGERTHAN", "func": "biggerthan", "compile_type": "function", "data": null, "override": {}, "runtime": {}, "properties": {}, "output_type": "boolean", "x": 260, "y": 110 },
+      { "id": 3, "type": "CALENDAR", "func": "calendar_value", "compile_type": "input", "data": null, "override": { "alias_text": "TODO bind: opening-hours calendar" }, "runtime": {}, "properties": {}, "output_type": ["mixed"], "x": 40, "y": 330 },
+      { "id": 4, "type": "COMP_AND", "func": "comp_and", "compile_type": "function", "data": null, "override": {}, "runtime": {}, "properties": {}, "output_type": "boolean", "x": 440, "y": 150 },
+      { "id": 5, "type": "CONST", "func": "const", "compile_type": "input", "data": { "alias_text": "Persistence", "type": "integer", "initial_value": 900, "mode": "single", "eng_unit": "s", "readonly": false }, "override": { "alias_text": "Persist 900 s (15 min)" }, "runtime": {}, "properties": {}, "output_type": ["boolean","integer","float","string"], "x": 440, "y": 320 },
+      { "id": 6, "type": "DELAY_VARIABLE", "func": "alarm_multi_delay", "compile_type": "function", "data": null, "override": {}, "runtime": {}, "properties": {}, "output_type": "boolean", "x": 640, "y": 180 },
+      { "id": 7, "type": "ALARM", "func": "alarm", "compile_type": "output", "data": { "alias_text": "Room too warm during opening hours", "pri": "b", "alarm_type": "general", "alarm_destination": "general" }, "override": {}, "runtime": {}, "properties": {}, "output_type": null, "x": 840, "y": 190 }
+    ],
+    "connections": [
+      { "source": { "id": 0, "put": 0 }, "target": { "id": 2, "put": 0 } },
+      { "source": { "id": 1, "put": 0 }, "target": { "id": 2, "put": 1 } },
+      { "source": { "id": 2, "put": 0 }, "target": { "id": 4, "put": 0 } },
+      { "source": { "id": 3, "put": 0 }, "target": { "id": 4, "put": 1 } },
+      { "source": { "id": 4, "put": 0 }, "target": { "id": 6, "put": 0 } },
+      { "source": { "id": 5, "put": 0 }, "target": { "id": 6, "put": 1 } },
+      { "source": { "id": 6, "put": 0 }, "target": { "id": 7, "put": 0 } }
+    ],
+    "groups": []
+  }
+}
+```
+After import the two `TODO bind:` blocks show **red** (unconfigured) — the user opens each,
+picks the real parameter/calendar, then F10 → Save. **Verified live 2026-07-07:** this exact
+hand-authored file was `paper.load()`-ed on plant 3111 — all **8 blocks / 7 wires** rendered,
+every `func` correct, the two bound `CONST`s configured, and `syntax_check(true)` returned
+exactly `["PARAMV(0) is not configured", "CALENDAR(3) is not configured"]` — i.e. only the two
+intentionally-unbound inputs, exactly the "configure these two, then save" state the template
+is meant to produce. (The host re-derives block structure from each `type` on load — 20.2 note —
+so a hand-authored file behaves identically to a `paper.save()` one.)
+
+### 20.7 Validation checklist for a generated file
+- [ ] Pure JSON, parses cleanly (no trailing commas, no comments).
+- [ ] Every `connections[].source.id`/`target.id` exists in `blocks[]`; `put` indices are in range.
+- [ ] Each **input** pin has ≤1 incoming wire; every non-optional input is wired (or the user is
+      told it's intentionally left for post-import binding).
+- [ ] Type pairings valid (§3): comparator/logic outputs are `boolean`; don't feed a `string`
+      CONST into a numeric-only input.
+- [ ] `block_count`/`connection_count` match the arrays; `require_plant_revision` = max floor.
+- [ ] Real hardware bindings (`WRITETOUNIT`) and real driver ids are present **only** if the
+      user supplied them; otherwise left `null`/placeholder and flagged.
+- [ ] You told the user: Import → configure red blocks → F10 → Save → deploy is their call.
