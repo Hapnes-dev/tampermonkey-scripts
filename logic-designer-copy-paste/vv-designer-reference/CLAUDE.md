@@ -730,9 +730,12 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" v1.0.0** (same repo,
-`logic-designer-import-export/`): adds a **Transfer** section (Export/Import sketch as JSON)
-to the File menu so logic can be moved **between plants**. Cross-plant import offers a
+**Second ecosystem script — "Logic Designer Import/Export" (v1.2.0)** (same repo,
+`logic-designer-import-export/`): adds a **Transfer** section to the File menu — **Export**
+(file download), **Import** (panel: file / drag-drop / paste-JSON), and **Copy sketch (JSON
+text)** (clipboard — copy on plant A, paste into Import on plant B, no file; uses the
+`execCommand` fallback since `navigator.clipboard` is unavailable on plain http) — so logic can
+be moved **between plants**. Cross-plant import offers a
 one-click **driver-id rebind** (`<src>_…` → `<target>_…` on `driver_ids`/legacy `driver_id`),
 warns about CALENDAR/TAGVALUE bindings and unknown process blocks, and clears
 `application.current_sketch` after import so Ctrl+S saves as a *new* sketch. Integration

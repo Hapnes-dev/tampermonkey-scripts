@@ -10,9 +10,9 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 
 ## Workflow: move logic to another plant
 
-1. On the **source plant** (`vv_fbx.qxs?plant_id=A`): open the sketch → **File → Transfer → Export sketch (JSON)** → a `vv-sketch_<plant>_<name>_<date>.json` file downloads.
+1. On the **source plant** (`vv_fbx.qxs?plant_id=A`): open the sketch → **File → Transfer → Export sketch (JSON)** → a `vv-sketch_<plant>_<name>_<date>.json` file downloads. *(Fileless alternative: **Copy sketch (JSON text)** puts the same JSON on the clipboard.)*
 2. Open the designer for the **target plant** (`vv_fbx.qxs?plant_id=B`) and start the application (pick any project).
-3. **File → Transfer → Import sketch (JSON)** → an import panel opens. Load the sketch any of three ways: click **Choose File**, **drag-and-drop** the `.json` onto the panel, or **paste** the exported JSON text and press **Import pasted JSON**.
+3. **File → Transfer → Import sketch (JSON)** → an import panel opens. Load the sketch any of three ways: click **Choose File**, **drag-and-drop** the `.json` onto the panel, or **paste** the exported/copied JSON text and press **Import pasted JSON**. (Copy on plant A + paste on plant B = transfer with no file at all.)
 4. If the sketch came from a different plant, you're asked to **rebind parameter bindings**: `A_…` driver ids are rewritten to `B_…` (say OK when the plants share the same unit layout — e.g. identical store setups; Cancel keeps the original ids for manual reconfiguration).
 5. The graph lands on the canvas marked **unsaved**, and the current-sketch pointer is cleared — so **Ctrl+S opens "Save sketch"** to store it as a *new* sketch on the target plant (it can never silently overwrite a previously open sketch).
 6. Verify (F10), save into a project, deploy when ready — all through the normal host flows.

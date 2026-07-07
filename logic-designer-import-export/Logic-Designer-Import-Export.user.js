@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  Export the current VV Designer sketch to a JSON file and import it on another plant (with driver-id plant rebinding) — adds Export/Import entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -156,7 +156,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.1.0';
+    var VERSION = '1.2.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -207,31 +207,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // ─── Export ─────────────────────────────────────────────────────
+    // Builds the current canvas's export envelope, or null (with a toast).
+    function buildCurrentEnvelope() {
+      var paper = W.logic_designer && W.logic_designer.paper;
+      if (!paper) { toast('Designer not ready.', 'error'); return null; }
+      var blockCount = Object.keys(paper.elements || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
+      if (blockCount === 0) { toast('Canvas is empty — nothing to export.'); return null; }
+
+      // paper.save() clears the dirty flag as a side effect — preserve it.
+      var wasChanged = paper.changed;
+      var sketch = paper.save();
+      paper.changed = wasChanged;
+
+      var plantId = (W.query_string && W.query_string.plant_id) || null;
+      return buildExportEnvelope({
+        sketch: sketch,
+        sourcePlantId: plantId,
+        sketchId: W.application ? W.application.current_sketch : null,
+        sketchName: W.application ? W.application.current_sketch_name : null,
+      });
+    }
+
     function doExport() {
       try {
-        var paper = W.logic_designer && W.logic_designer.paper;
-        if (!paper) { toast('Designer not ready.', 'error'); return; }
-        var blockCount = Object.keys(paper.elements || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
-        if (blockCount === 0) { toast('Canvas is empty — nothing to export.'); return; }
-
-        // paper.save() clears the dirty flag as a side effect — preserve it.
-        var wasChanged = paper.changed;
-        var sketch = paper.save();
-        paper.changed = wasChanged;
-
-        var plantId = (W.query_string && W.query_string.plant_id) || null;
-        var envelope = buildExportEnvelope({
-          sketch: sketch,
-          sourcePlantId: plantId,
-          sketchId: W.application ? W.application.current_sketch : null,
-          sketchName: W.application ? W.application.current_sketch_name : null,
-        });
-
+        var envelope = buildCurrentEnvelope();
+        if (!envelope) return;
         var blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
-        a.download = buildExportFilename(plantId, envelope.name);
+        a.download = buildExportFilename(envelope.source_plant_id, envelope.name);
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -240,6 +245,49 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       } catch (err) {
         console.error('[' + SCRIPT_NAME + '] export failed:', err);
         toast('Export failed (see console).', 'error');
+      }
+    }
+
+    // ─── Copy as JSON text ──────────────────────────────────────────
+    // navigator.clipboard is unavailable on plain http (insecure origin),
+    // so the primary path is the execCommand fallback — which requires a
+    // user gesture: we run synchronously inside the menu click (capture
+    // handler), so the gesture is intact.
+    function copyTextToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).catch(function () { /* fall through to sync path below on next call */ });
+        return true;
+      }
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+      return ok;
+    }
+
+    function doCopyJson() {
+      try {
+        var envelope = buildCurrentEnvelope();
+        if (!envelope) return null;
+        var text = JSON.stringify(envelope, null, 2);
+        var ok = copyTextToClipboard(text);
+        if (ok) {
+          toast('Copied ' + envelope.block_count + ' blocks / ' + envelope.connection_count + ' wires as JSON — paste into Import on the target plant.');
+        } else {
+          toast('Could not access the clipboard — use Export (file) instead.', 'error');
+        }
+        return text;
+      } catch (err) {
+        console.error('[' + SCRIPT_NAME + '] copy JSON failed:', err);
+        toast('Copy failed (see console).', 'error');
+        return null;
       }
     }
 
@@ -436,6 +484,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // "file_ldio_export" / "file_ldio_import".
     var ICON_EXPORT = '<li class="fa fa-fw fa-download" style="font-size:14px"></li>&nbsp;Export sketch (JSON)';
     var ICON_IMPORT = '<li class="fa fa-fw fa-upload" style="font-size:14px"></li>&nbsp;Import sketch (JSON)';
+    var ICON_COPY = '<li class="fa fa-fw fa-copy" style="font-size:14px"></li>&nbsp;Copy sketch (JSON text)';
 
     // Resolve a click target inside the dropdown to one of our item ids.
     function resolveOwnMenuItemId(target) {
@@ -446,7 +495,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var index = itemEl.getAttribute('data-index');
         var item = W.menu_main && W.menu_main.menu_items ? W.menu_main.menu_items[index] : null;
         if (!item) return null;
-        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import') return item.id;
+        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import' || item.id === 'file_ldio_copy') return item.id;
       } catch (err) { /* fall through */ }
       return null;
     }
@@ -460,6 +509,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       lastHandledAt = Date.now();
       if (id === 'file_ldio_import') openImportPanel();
       else if (id === 'file_ldio_export') doExport();
+      else if (id === 'file_ldio_copy') doCopyJson();
       // Do NOT stop the event — the host's handler still runs and closes the
       // dropdown; our on_menu wrap below swallows the unknown item id.
     }
@@ -479,6 +529,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               this.add_header(fileLevel, 'Transfer');
               this.add(fileLevel, ICON_EXPORT, 'ldio_export');
               this.add(fileLevel, ICON_IMPORT, 'ldio_import');
+              this.add(fileLevel, ICON_COPY, 'ldio_copy');
             }
           }
         } catch (err) {
@@ -491,9 +542,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // event), the panel path still works from here — it needs no gesture.
       var origOnMenu = W.application.on_menu;
       W.application.on_menu = function (event) {
-        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import')) {
+        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import' || event.item_id === 'file_ldio_copy')) {
           if (Date.now() - lastHandledAt > 1000) {
             if (event.item_id === 'file_ldio_export') doExport();
+            else if (event.item_id === 'file_ldio_copy') doCopyJson();
             else openImportPanel();
           }
           return;
@@ -521,7 +573,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }, 300);
 
     // Expose internals for console debugging / live verification.
-    W.__LDIO = { version: VERSION, doExport: doExport, openImportPanel: openImportPanel, applyImport: applyImport };
+    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport };
   })();
 }
 
