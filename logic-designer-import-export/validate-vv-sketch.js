@@ -100,11 +100,27 @@ const TYPE_ALIASES = {
   LESSTHAN: 'SMALLERTHAN', LESS_THAN: 'SMALLERTHAN', LT: 'SMALLERTHAN',
   AND: 'COMP_AND', OR: 'COMP_OR', NOT: 'INVERT', XOR: 'COMP_OR',
   CONSTANT: 'CONST', PARAM: 'PARAMV', PARAMETER: 'PARAMV', READ: 'PARAMV',
+  DIGITAL_INPUT: 'PARAMV', ANALOG_INPUT: 'PARAMV', INPUT: 'PARAMV', SENSOR: 'PARAMV',
   WRITEOUTUNIT: 'WRITETOUNIT', WRITE_TO_UNIT: 'WRITETOUNIT', WRITEUNIT: 'WRITETOUNIT',
   WRITE: 'WRITETOUNIT', WRITEPULSE: 'WRITETOUNIT',
+  DIGITAL_OUTPUT: 'WRITETOUNIT', ANALOG_OUTPUT: 'WRITETOUNIT',
   DELAY_VAR: 'DELAY_VARIABLE', VARIABLE_DELAY: 'DELAY_VARIABLE',
+  TIMER: 'DELAY_VARIABLE', COUNTER: 'PULSE_COUNT',
+  SR_LATCH: 'LATCH', SET_RESET: 'LATCH',
   ALARM_OBJ: 'ALARM_OBJECT', VIRTUAL_OUT: 'VIRTUALOUT', VIRTUAL_OUTPUT: 'VIRTUALOUT',
   TAG: 'TAGVALUE', TAG_VALUE: 'TAGVALUE',
+};
+
+// Concepts with NO VV block at all — the graph must be composed differently.
+const NO_EQUIVALENT = {
+  RISING_EDGE: 'VV has no edge-detect block. Compose: PULSE_COUNT(input, level 1) counts rising transitions; pair with MOD ← CONST(2) for a per-edge toggle, or LATCH for set/hold (verify in the simulator).',
+  FALLING_EDGE: 'VV has no edge-detect block. Invert the signal (INVERT) and see RISING_EDGE guidance.',
+  EDGE: 'VV has no edge-detect block — see RISING_EDGE guidance.',
+  EDGE_DETECT: 'VV has no edge-detect block — see RISING_EDGE guidance.',
+  TOGGLE: 'VV has no toggle/flip-flop block. Compose: PULSE_COUNT → MOD ← CONST(2) (flips 0/1 per pulse within the configured period), or SHIFT_REGISTER in circular mode over CONST 0/1 registers (verify in the simulator). Time-based toggling = TOGGLE_INTERVAL.',
+  FLIPFLOP: 'VV has no flip-flop block — see TOGGLE guidance (set/reset memory = LATCH).',
+  FLIP_FLOP: 'VV has no flip-flop block — see TOGGLE guidance (set/reset memory = LATCH).',
+  PULSE: 'no PULSE block — counting pulses = PULSE_COUNT; generating a timed pulse = TOGGLE_INTERVAL.',
 };
 
 // Keys that signal an invented schema (each with the correct move).
@@ -119,11 +135,14 @@ const FORBIDDEN_TOPLEVEL = {
 const FORBIDDEN_BLOCK_KEYS = {
   blockType: 'the key is "type"',
   label: 'canvas label goes in override.alias_text',
+  name: 'canvas label goes in override.alias_text',
+  config: 'not a save-format field — the payload lives in "data"; expandable pin counts live in properties.input_count',
   expression: 'there is no expression language — wire comparator/logic blocks instead',
   severity: 'alarm severity is data.pri ("a"|"b"|"c") on an ALARM block',
   message: 'alarm text is data.alias_text on the ALARM block',
 };
 const FORBIDDEN_DATA_KEYS = {
+  address: 'no "address" field — bind via data.driver_ids with a FULL parameter driver id (e.g. "5440_AK3_AKC_0_1_0_0_2576"); a unit id like "000:001" is a UNIT, not a parameter',
   driverId: 'use driver_ids (snake_case, ARRAY): {"driver_ids":["<id>"]}',
   driverIdNo: 'not part of block data — drop it',
   elementId: 'not part of block data — drop it',
@@ -178,6 +197,8 @@ function validateSketchDocument(doc, report) {
     } else if (!(b.type in SYSTEM_BLOCKS)) {
       if (b.type in TYPE_ALIASES) {
         err(`${at}.type "${b.type}" is NOT a real block type — use "${TYPE_ALIASES[b.type]}"`);
+      } else if (b.type in NO_EQUIVALENT) {
+        err(`${at}.type "${b.type}" is NOT a real block type and has no direct equivalent — ${NO_EQUIVALENT[b.type]}`);
       } else if (/^[a-z]/.test(b.type)) {
         err(`${at}.type "${b.type}" — block types are UPPERCASE palette keys (see the reference §4/§20.4)`);
       } else {
@@ -326,4 +347,4 @@ if (require.main === module) {
   process.exit(anyErrors ? 1 : 0);
 }
 
-module.exports = { validateFile, SYSTEM_BLOCKS, TYPE_ALIASES };
+module.exports = { validateFile, SYSTEM_BLOCKS, TYPE_ALIASES, NO_EQUIVALENT };

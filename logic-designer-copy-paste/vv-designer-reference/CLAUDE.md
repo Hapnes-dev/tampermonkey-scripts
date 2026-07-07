@@ -1085,8 +1085,13 @@ HARD RULES (violating ANY one breaks the import):
     "blockType"/"writePulse"/"durationMs". Every operation is a block; every data
     flow is a wire.
  4. Only block types in the table exist. In particular: equality is LIKE (not EQUAL);
-    inequality is UNLIKE; write-to-hardware is WRITETOUNIT (not WRITEOUTUNIT);
-    AND/OR are COMP_AND/COMP_OR; NOT is INVERT.
+    inequality is UNLIKE; write-to-hardware is WRITETOUNIT (not WRITEOUTUNIT/WRITE/
+    DIGITAL_OUTPUT); ANY read of a plant value is PARAMV (there is no DIGITAL_INPUT/
+    ANALOG_INPUT/INPUT/SENSOR); AND/OR are COMP_AND/COMP_OR; NOT is INVERT.
+    There are NO edge-detect (RISING_EDGE) and NO toggle/flip-flop (TOGGLE) blocks —
+    compose them (e.g. PULSE_COUNT → MOD ← CONST(2), or SHIFT_REGISTER circular over
+    CONST 0/1 registers; set/reset memory = LATCH; time-based toggle = TOGGLE_INTERVAL)
+    and verify composed behaviour in the simulator.
  5. Data payloads are snake_case host fields, copied from the table:
     PARAMV  {"driver_ids":["<PLANT>_<…>"]}          (ARRAY; or null to bind later)
     CONST   {"alias_text":…,"type":"integer|float|boolean|string",
@@ -1096,7 +1101,9 @@ HARD RULES (violating ANY one breaks the import):
              "alarm_destination":"general"|"ew"|"cw"}      (no other priorities exist)
  6. Each INPUT pin takes exactly ONE wire. Outputs may fan out.
  7. NEVER invent a driver id. Use ids the user supplied/verified, else data: null
-    with override.alias_text "TODO bind: <what>".
+    with override.alias_text "TODO bind: <what>". A unit id like "000:001" is a UNIT,
+    not a parameter — there is no "address" field; bindings are FULL parameter driver
+    ids (e.g. "5440_AK3_AKC_0_1_0_0_2576") in data.driver_ids.
  8. Do not include WRITETOUNIT unless the user explicitly asked to write to hardware.
  9. Wire every non-optional input of every block you place (comparators need both
     pins; DELAY_VARIABLE needs value + a CONST seconds on put 1).
@@ -1386,3 +1393,11 @@ Its real driver ids were correct and reusable — the fix was pouring them into 
 > SMALLERTHAN←CONST(−2)→ALARM}` (Display Air fans out to both) — `paper.load()`-ed with **9
 > blocks / 7 wires, all types rendered, `syntax_check(true).ok` with zero errors**, and all four
 > driver ids confirmed real via param_chooser. That's the shape to emit.
+
+**A third failure (Copilot, same day) repeated the classes** — string ids, `from:"x.output"`
+string connections, `name`/`config.address` fields — and added a new one: **PLC-vocabulary
+block types that don't exist** (`DIGITAL_INPUT`→PARAMV, `WRITE`→WRITETOUNIT, and
+`RISING_EDGE`/`TOGGLE` which have **no VV equivalent at all** — see §20.0 rule 4 for the
+compositions). Also note its `config.address: "001:001"` confusion: that's a **unit** id;
+bindings need the full **parameter** driver id (§20.0 rule 7). The validator catches all of it
+with per-error guidance (22 errors on that file).
