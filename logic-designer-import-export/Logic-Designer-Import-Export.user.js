@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  Export the current VV Designer sketch to a JSON file and import it on another plant (with driver-id plant rebinding) — adds Export/Import entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -218,31 +218,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // ─── Import ─────────────────────────────────────────────────────
+    // The hidden file input is created EAGERLY at install and opened
+    // SYNCHRONOUSLY inside the native click event (capture phase, see
+    // onCaptureClick below). Opening it later — e.g. from the host's menu
+    // callback chain — loses Chrome's transient user activation and the
+    // picker silently refuses to open. (v1.0.1 fix.)
     var fileInput = null;
 
+    function ensureFileInput() {
+      if (fileInput) return fileInput;
+      fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = '.json,application/json';
+      fileInput.style.display = 'none';
+      (document.body || document.documentElement).appendChild(fileInput);
+      fileInput.addEventListener('change', function () {
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          var parsed;
+          try { parsed = JSON.parse(String(reader.result)); }
+          catch (e) { toast('Not valid JSON: ' + e.message, 'error'); return; }
+          applyImport(parsed);
+        };
+        reader.onerror = function () { toast('Could not read the file.', 'error'); };
+        reader.readAsText(file);
+      });
+      return fileInput;
+    }
+
     function doImport() {
-      if (!fileInput) {
-        fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = '.json,application/json';
-        fileInput.style.display = 'none';
-        document.body.appendChild(fileInput);
-        fileInput.addEventListener('change', function () {
-          var file = fileInput.files && fileInput.files[0];
-          if (!file) return;
-          var reader = new FileReader();
-          reader.onload = function () {
-            var parsed;
-            try { parsed = JSON.parse(String(reader.result)); }
-            catch (e) { toast('Not valid JSON: ' + e.message, 'error'); return; }
-            applyImport(parsed);
-          };
-          reader.onerror = function () { toast('Could not read the file.', 'error'); };
-          reader.readAsText(file);
-        });
-      }
-      fileInput.value = ''; // allow re-picking the same file
-      fileInput.click();
+      var input = ensureFileInput();
+      input.value = ''; // allow re-picking the same file
+      input.click();
     }
 
     function applyImport(parsed) {
@@ -313,10 +322,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // The host rebuilds the whole menu on every mode change via
     // menu_main.creator.render(true). Patch render permanently: before each
     // render, append our Transfer section to the "file" level if missing.
-    // Item ids get the parent prefix, so clicks arrive at application.on_menu
-    // as "file_ldio_export" / "file_ldio_import".
+    // Item ids get the parent prefix, so they surface as
+    // "file_ldio_export" / "file_ldio_import".
     var ICON_EXPORT = '<li class="fa fa-fw fa-download" style="font-size:14px"></li>&nbsp;Export sketch (JSON)';
     var ICON_IMPORT = '<li class="fa fa-fw fa-upload" style="font-size:14px"></li>&nbsp;Import sketch (JSON)';
+
+    // Resolve a click target inside the dropdown to one of our item ids.
+    function resolveOwnMenuItemId(target) {
+      try {
+        if (!target || !target.closest) return null;
+        var itemEl = target.closest('.iw_oc_menu_dropdown_item');
+        if (!itemEl) return null;
+        var index = itemEl.getAttribute('data-index');
+        var item = W.menu_main && W.menu_main.menu_items ? W.menu_main.menu_items[index] : null;
+        if (!item) return null;
+        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import') return item.id;
+      } catch (err) { /* fall through */ }
+      return null;
+    }
+
+    // Capture-phase click handler: runs INSIDE the native user gesture, before
+    // the host's own menu handler. This is what allows fileInput.click() to
+    // actually open the OS file picker (transient activation intact).
+    var lastHandledAt = 0;
+    function onCaptureClick(event) {
+      var id = resolveOwnMenuItemId(event.target);
+      if (!id) return;
+      lastHandledAt = Date.now();
+      if (id === 'file_ldio_import') doImport();
+      else if (id === 'file_ldio_export') doExport();
+      // Do NOT stop the event — the host's handler still runs and closes the
+      // dropdown; our on_menu wrap below swallows the unknown item id.
+    }
 
     function installMenuHooks() {
       var creator = W.menu_main.creator;
@@ -341,12 +378,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return origRender.call(this, clear);
       };
 
+      // Fallback + swallow: if the capture handler already acted (normal
+      // path), just swallow our ids so the host's switch doesn't see them.
+      // If it somehow didn't (markup change), run the action here — export
+      // still works from this path; the file picker may need the fallback
+      // user to click Import again.
       var origOnMenu = W.application.on_menu;
       W.application.on_menu = function (event) {
-        if (event && event.item_id === 'file_ldio_export') { doExport(); return; }
-        if (event && event.item_id === 'file_ldio_import') { doImport(); return; }
+        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import')) {
+          if (Date.now() - lastHandledAt > 1500) {
+            if (event.item_id === 'file_ldio_export') doExport();
+            else doImport();
+          }
+          return;
+        }
         return origOnMenu.call(this, event);
       };
+
+      document.addEventListener('click', onCaptureClick, true);
+      ensureFileInput();
 
       // Rebuild once so the entries appear without needing a mode switch.
       try {
