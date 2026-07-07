@@ -1268,3 +1268,32 @@ So "high-temp alarm on Display Air > 8 °C" becomes the §20.6 shape:
 in the PARAMV, everything else a wired block. Do that per described condition and collect them
 into one `sketch.blocks`/`connections`. **If your draft contains the word `expression` or a
 `steps`/`parameterBindings` array, delete it and re-express as blocks before emitting.**
+
+### 20.9 Second failure class: right shape, wrong host contract
+The *next* attempt (M365 Copilot, same regulator) got the big idea right — a `vv-fbx-sketch`
+envelope with `blocks` + `connections`, and it even harvested **real** driver ids from the plant
+— yet still failed. This is the subtler, more common trap once the model knows it needs blocks:
+it invents field names and shapes instead of using the host's exact contract. Every one of these
+was live-verified against plant 5440:
+
+| # | What it emitted | Why it fails | Correct (host contract) |
+|---|---|---|---|
+| 1 | `sketch` has `name`/`description`/`metadata` but **no `mode`** | Importer rejects: *"Sketch document is malformed (mode/blocks/connections missing)"* (`typeof doc.mode !== 'string'`) | `sketch.mode: "function"` is **required** |
+| 2 | block `"id": "p_comm_error"` (strings) | Host ids are numeric (`element_pointer`); string keys break save + every `/^\d+$/` path | `"id": 0,1,2,…` **integers**, unique |
+| 3 | connections `{ "from":{block,pin:"out"}, "to":{block,pin:"a"} }` | `__connect` reads `source.id`/`source.put`; `from`/`to` are undefined to it, and pins are **numeric indices** not names | `{ "source":{"id":0,"put":0}, "target":{"id":2,"put":0} }` |
+| 4 | PARAMV `data.driverId` (camelCase, singular) | Host reads **`data.driver_ids`** (snake, **array**) — the camel/singular field is ignored → unbound | `"data":{"driver_ids":["5440_AK3_AKC_0_1_0_0_2576"]}` |
+| 5 | CONST `data.value` + `valueType` | Host reads `initial_value`+`type`+`mode` — so the const has **no value** | `{"type":"float","initial_value":8,"mode":"single","alias_text":"…"}` |
+| 6 | ALARM `data.priority`/`message` | Host reads `alarm_type`/`alarm_destination`/`alias_text`; and `pri` is **only `a`/`b`/`c`** (it used `"n"`) | `{"pri":"a","alarm_type":"general","alarm_destination":"general","alias_text":"…"}` |
+| 7 | types `"EQUAL"` and `"WRITEOUTUNIT"` | **Not real block types** — `__render_block` silently drops them (`type in paper.blocks` is false) | equality = **`LIKE`**; write = **`WRITETOUNIT`** (§20.4) |
+| 8 | per block: `blockType`, `label`; no `func`/`compile_type` | `label`/`blockType` are ignored (canvas label = `override.alias_text`); missing `func` leaves the block's server function unset | include `func` + `compile_type` (§20.4); put the label in `override.alias_text` |
+
+**Rules that kill this whole class:** copy `type`/`func`/`compile_type`/`data` **verbatim from
+the §20.4 table** (never rename a field to camelCase or a synonym); ids are integers; connections
+are `source`/`target` + numeric `id`/`put`; only block types that appear in §4/§20.4 exist.
+Its real driver ids were correct and reusable — the fix was pouring them into the right shapes.
+
+> **Verified fix (live on plant 5440, 2026-07-07):** the corrected sketch —
+> `PARAMV(…_COM_ERR) → ALARM`; `PARAMV(…_2576) →{BIGGERTHAN←CONST(8)→ALARM,
+> SMALLERTHAN←CONST(−2)→ALARM}` (Display Air fans out to both) — `paper.load()`-ed with **9
+> blocks / 7 wires, all types rendered, `syntax_check(true).ok` with zero errors**, and all four
+> driver ids confirmed real via param_chooser. That's the shape to emit.
