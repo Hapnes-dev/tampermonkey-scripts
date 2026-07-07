@@ -1089,9 +1089,10 @@ HARD RULES (violating ANY one breaks the import):
     DIGITAL_OUTPUT); ANY read of a plant value is PARAMV (there is no DIGITAL_INPUT/
     ANALOG_INPUT/INPUT/SENSOR); AND/OR are COMP_AND/COMP_OR; NOT is INVERT.
     There are NO edge-detect (RISING_EDGE) and NO toggle/flip-flop (TOGGLE) blocks —
-    compose them (e.g. PULSE_COUNT → MOD ← CONST(2), or SHIFT_REGISTER circular over
-    CONST 0/1 registers; set/reset memory = LATCH; time-based toggle = TOGGLE_INTERVAL)
-    and verify composed behaviour in the simulator.
+    but PULSE_COUNT has NATIVE edge count modes (block_func_args.type
+    "flank_rising_edge"/"flank_falling_edge"/"flank_changing_edge"). Toggle-per-edge =
+    PULSE_COUNT(flank_rising_edge) → MOD ← CONST(2) (count resets each configured
+    period). Set/reset memory = LATCH; time-based toggle = TOGGLE_INTERVAL.
  5. Data payloads are snake_case host fields, copied from the table:
     PARAMV  {"driver_ids":["<PLANT>_<…>"]}          (ARRAY; or null to bind later)
     CONST   {"alias_text":…,"type":"integer|float|boolean|string",
@@ -1106,7 +1107,9 @@ HARD RULES (violating ANY one breaks the import):
     ids (e.g. "5440_AK3_AKC_0_1_0_0_2576") in data.driver_ids.
  8. Do not include WRITETOUNIT unless the user explicitly asked to write to hardware.
  9. Wire every non-optional input of every block you place (comparators need both
-    pins; DELAY_VARIABLE needs value + a CONST seconds on put 1).
+    pins; DELAY_VARIABLE needs value + a CONST seconds on put 1; PULSE_COUNT needs
+    the signal on put 0 + a CONST "Logic True Level" on put 1 — put 1 REQUIRES a
+    CONST source).
 10. Before answering, self-check: parse your own JSON; verify rules 1–9; verify every
     connection's ids exist and block_count/connection_count match the arrays.
 ```
@@ -1229,6 +1232,7 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `MIN_IN_PERIOD`/`MAX_IN_PERIOD`/`SUM_IN_PERIOD` | `min_in_period`/`max_in_period`/`sum_in_period` | function | `float` | i0 value (by-ref) | requires config `{"block_func_args":{…}}` |
 | `LATCH` | `latch.run` | function | `integer` | i0 set, i1 reset | `null` (needs plant rev ≥1683) |
 | `PERIODE_VALUE` | `counter_limit.run` | function | `["float","boolean"]` | i0 param, i1 limit | `{"block_func_args":{"mode":"alarm","periode":"day","period_amount":1}}` (note key **`periode`**) |
+| `PULSE_COUNT` | `pulse_count` | function | `["integer"]` | i0 signal (by-ref), i1 level (**requires CONST**) | `{"block_func_args":{"periode":"day","type":"flank_rising_edge","periode_amount":1}}` — periode ∈ sec/min/hour/day/week/month/year; type ∈ `over_or_equal_value`/`absolute_value`/**`flank_rising_edge`**/`flank_falling_edge`/`flank_changing_edge` (⇒ native edge counting!); count resets each period |
 | `ALARM` | `alarm` | output | `null` | i0 boolean | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` (pri a/b/c; dest general/ew/cw) |
 | `ALARM_OBJECT` | `alarm_object` | output | `null` | i0 condition, i1 cost | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` |
 | `VIRTUALOUT` | `virtualout` | output | `null` | i0 mixed | `{"alias_text":"…","type":"float","engineering":{"unit":""},"precision":"%.1f"}` |
