@@ -9,8 +9,8 @@
 > **URL:** `http://internal.iwmac.local/vv_fbx.qxs?plant_id=<PLANT_ID>`
 > (analysed against `plant_id=3111` — "IWMAC Demo 1").
 
-This document is the result of a deep runtime + source dive (Playwright + PowerShell,
-2026-07-07). It describes the data model, the block library, the connection/rules type
+This document is the result of a deep runtime + source dive.
+It describes the data model, the block library, the connection/rules type
 system, the save format, the server API, and the compile/deploy lifecycle. See
 [[iwmac-changes-testing]] for the sibling pang/changes pipeline.
 
