@@ -16,7 +16,7 @@ tampermonkey-scripts/
 ├── CLAUDE.md                     # This file
 ├── ak3-autoscan/                 # Automates the AK3 scanner setup workflow on IWMAC plant servers
 ├── iwmac-topology-copy/          # Copy/export topology + inject live driver columns on sys_tools
-├── logic-designer-copy-paste/    # Copy/paste block subgraphs, multi-wire, remove-connectors, undo on the VV Designer (by Henrik Monge; + vv-designer-reference docs)
+├── logic-designer-copy-paste/    # Copy/paste (Ctrl+C/V + Ctrl+B ghost), multi-wire (Shift+F), remove-connectors, drag-move undo, sketch quick-open, alarm→block highlight on the VV Designer (Henrik Monge; + vv-designer-reference docs)
 ├── logic-designer-import-export/ # Export/Import sketch (JSON) in the VV Designer File menu — move logic between plants w/ driver-id rebinding
 ├── oneflow-copy-products/        # Copy product lists on Oneflow (tilbud PDF) + HubSpot (deal line items)
 ├── rocketlane-chat-bridge/       # Bridges Rocketlane's API to the local Project Progress Tracker (CORS bypass)

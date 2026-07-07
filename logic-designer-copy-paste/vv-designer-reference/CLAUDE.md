@@ -674,7 +674,7 @@ Each connection object: `{ id, line, bg, from, to, user:{ source, target } }`, w
 
 ## 16. Ecosystem: the "Logic Designer Section Copy/Paste" userscript
 
-A community **Tampermonkey userscript** (v1.5.2, author *Henrik Monge*,
+A community **Tampermonkey userscript** (**v1.7.0**, author *Henrik Monge*,
 `@match …/vv_fbx.qxs*`) adds editor features the host lacks, by driving the §15 internals.
 Worth knowing because (a) it's in real use against this tool, and (b) its `HostAdapter` is a
 battle-tested reference for scripting the designer. It never calls the server — it only
@@ -685,10 +685,14 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 |---|---|---|
 | Copy section | `Ctrl+C` | Snapshot selected blocks + their **internal** wires (both endpoints selected) to a clipboard. |
 | Paste section | `Ctrl+V` | Recreate the snapshot offset by `(40,40)`, re-wire, select the new nodes. |
-| Undo | `Ctrl+Z` | Session-scoped LIFO over paste/delete/wire/tag ops (not the host's own undo). |
-| Multi-wire | `Shift+W` | Pick N pins/blocks on one side, click a target; fans out / distributes / expands inputs to wire many at once. Toggles auto-expand → fill-only → off. |
+| Paste at cursor (ghost) | `Ctrl+B` | Paste with a cursor-following **ghost preview**; click to drop it where you want. Shares the `Ctrl+V` clipboard + a common commit path (`applySnapshotAt`). *(v1.6+)* |
+| Undo | `Ctrl+Z` | Session-scoped LIFO over paste/delete/wire/**move**/tag ops (not the host's own undo). |
+| Multi-wire | `Shift+F` | Pick N pins/blocks on one side, click a target; fans out / distributes / expands inputs to wire many at once. Toggles auto-expand → fill-only → off. *(was `Shift+W` ≤ v1.5.x)* |
 | Remove connectors | `Shift+D` | Click/drag/marquee wires or blocks to bulk-delete connections. |
 | Paste tags | menu | Bulk-set `driver_ids` on selected `PARAMV`/`WRITETOUNIT` blocks from pasted lines (one per block, or fill a single `WRITETOUNIT` with all). Writes the plural `driver_ids` array — which matches the **modern host schema** for both types (the PARAMV dialog itself writes plural and migrates legacy singular `driver_id` on open, §6). |
+| Drag-move undo | automatic | Wraps `paper.__move_block` so a host block-drag (incl. alt-drag-with-connected / multi-select drag, which fire one `__move_block` per block) coalesces into **one** `move-batch` undo step; undo replays the recorded FROM coords and wires follow. Host snaps moves to a 10 px grid. *(v1.7)* |
+| Sketch quick-open | automatic | Augments the host **"Get started!"** dialog with a per-project arrow listing that project's sketches → opens one directly (via `logic_designer_manager` project/sketch RPC). *(v1.7)* |
+| Alarm → block highlight | automatic | In the VV "problems" alarm window (`div#comp_application_window_problems_tbl_wnd_vv_alarms`), clicking an alarm token `VV_<proj>_<sketch>:<pointer>:<line>` flashes the block whose canvas `(NN)` pointer matches. DOM-scrape, read-only (no host alarm RPC exists). *(v1.7)* |
 
 - **Clipboard format** (persisted via `GM_setValue`, key `ldscp:clipboard:v1`):
   ```jsonc
@@ -698,17 +702,23 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
   ```
   Nodes get portable `localId`s so a paste is position-independent; wires whose endpoints
   aren't both in the selection are dropped at copy time.
-- **How it hooks the host:** monkey-patches `paper.__connect` and `paper.__disconnect_output`
-  to log host-native wire edits into its own undo stack, and **polls `paper.selected_blocks`
-  every 150 ms** to observe marquee selections (the host fires no selection event a script can
-  catch). It guards against false undo entries during host-driven rebuilds by fingerprinting
-  element + pin counts (a block resize or sketch swap clears the stack).
+- **How it hooks the host:** monkey-patches `paper.__connect` + `paper.__disconnect_output`
+  (wire edits) and `paper.__move_block` (drag-moves) to log host-native gestures into its own
+  undo stack, and **polls `paper.selected_blocks` every 150 ms** to observe marquee selections
+  (the host fires no selection event a script can catch). It guards against false undo entries
+  during host-driven rebuilds by fingerprinting element + pin counts (a block resize or sketch
+  swap clears the stack), and coalesces the many `__move_block` calls of a single drag via a
+  short flush window.
 - **Reused host facts it confirms:** the §15 element/pin/connection shapes, the `connected_to`
   `put_id` asymmetry, `element_pointer` as the id source, the disconnect *pair*, `force=true`
-  on `__connect`, and `set_block_data`/`set_block_override` for retagging.
-- **Testable core:** the pure graph helpers (`buildSnapshot`, `createUndoHistory`,
-  `pairSourcesToTargets`, `classifyBlockPinDirection`, `distributeSourcesAcrossTargets`) are
-  split out and `module.exports`-ed for Node unit tests; the browser IIFE is skipped under Node.
+  on `__connect`, `set_block_data`/`set_block_override` for retagging, and — new in v1.7 —
+  `__move_block(block,x,y)` snapping to a 10 px grid (`Math.round(c/10)*10`) and setting
+  `block.set.transform` absolutely (undo replays FROM coords, wires redraw for free).
+- **Testable core:** the pure helpers (`buildSnapshot`, `createUndoHistory`,
+  `pairSourcesToTargets`, `classifyBlockPinDirection`, `distributeSourcesAcrossTargets`, and
+  v1.7's `matchProjectId`, `formatSketchEntry`, `isRowProcessed`, `parseAlarmToken`,
+  `distinctPointers`) are split out and `module.exports`-ed for Node unit tests; the browser
+  IIFE is skipped under Node.
 
 > If you extend or debug this script, the §15 contract is the source of truth. The most
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`

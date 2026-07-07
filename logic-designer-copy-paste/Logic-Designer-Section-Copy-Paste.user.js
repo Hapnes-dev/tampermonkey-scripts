@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Section Copy/Paste
 // @namespace    https://logic-designer-section.local
-// @version      1.5.2
+// @version      1.7.0
 // @description  Copy/paste selected node subgraphs (with internal wires and variable bindings) in the iwmac logic designer.
 // @author       Henrik Monge
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -201,6 +201,70 @@ function distributeSourcesAcrossTargets({ sources, targets }) {
   return { slices, unassigned: 0 };
 }
 
+// ─── Sketch quick-open pure helpers (Node-testable) ────────────────
+
+// Resolve a project row's visible name to its project id, given a
+// load_project_list() result ([{id, name}]). Exact (trimmed) match first,
+// then case-insensitive. Returns the id string, or null if unresolved.
+function matchProjectId(rowName, projects) {
+  if (!Array.isArray(projects) || projects.length === 0) return null;
+  const name = String(rowName == null ? '' : rowName).trim();
+  if (!name) return null;
+  for (const p of projects) {
+    if (p && String(p.name).trim() === name) return String(p.id);
+  }
+  const lower = name.toLowerCase();
+  for (const p of projects) {
+    if (p && String(p.name).trim().toLowerCase() === lower) return String(p.id);
+  }
+  return null;
+}
+
+// Build display fields for one sketch list entry. Pure: maps a sketch
+// metadata object {id, name, date, compile_date} to display strings.
+// `changed` = last changed (date), `deployed` = last deployed (compile_date).
+// "Saved by" is NOT available from load_sketch_list (only after a full
+// load_sketch), so it's intentionally omitted from the browse view.
+function formatSketchEntry(sketch) {
+  const s = sketch || {};
+  const name = String(s.name == null ? '' : s.name).trim() || '(untitled)';
+  const changed = String(s.date == null ? '' : s.date).trim() || '—';
+  const deployed = String(s.compile_date == null ? '' : s.compile_date).trim() || '—';
+  return { id: String(s.id), name, changed, deployed };
+}
+
+// Idempotency predicate for dialog re-open: the "Get started!" window is
+// hidden+reused (not rebuilt), so rows reappear. The DOM code stamps a
+// processed row with el.dataset.ldscpSqo = '1'. Returns true when already
+// stamped, so we don't inject a second arrow.
+function isRowProcessed(markerValue) {
+  return typeof markerValue === 'string' && markerValue.length > 0;
+}
+
+// Parse a host alarm-row string into its parts. Format:
+//   VV_<proj>_<sketch>:<pointer>:<line>   e.g. "VV_1021_3445:41:1"
+// `pointer` matches paper.elements[ref].pointer (the canvas "(NN)" label).
+// Pure — used by both the Node tests and the AlarmHighlight module.
+function parseAlarmToken(text) {
+  if (typeof text !== 'string') return null;
+  const m = text.match(/VV_(\d+)_(\d+):(\d+):(\d+)/);
+  if (!m) return null;
+  return { proj: Number(m[1]), sketch: Number(m[2]), pointer: Number(m[3]), line: Number(m[4]) };
+}
+
+// Distinct block pointers from a list of parsed alarms, first-seen order.
+// Drives the "Errors: N" pill count and flashAll(). Pure.
+function distinctPointers(alarms) {
+  if (!Array.isArray(alarms)) return [];
+  const seen = [];
+  for (const a of alarms) {
+    if (a && typeof a.pointer === 'number' && !seen.includes(a.pointer)) {
+      seen.push(a.pointer);
+    }
+  }
+  return seen;
+}
+
 // Skip the browser-only body when loaded under Node for tests.
 // Without this guard, the IIFE's references to unsafeWindow / GM_*
 // would throw the moment Node `require()`s this file for pure-helper tests.
@@ -210,12 +274,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // ─── User-editable keyboard shortcuts ──────────────────────────
     // Each shortcut: { key: 'w' (single lowercase char), label: 'Shift+W' (menu display) }.
-    // Both shortcuts are Shift-only chords; modifier mix is fixed (no Ctrl/Alt/Meta).
+    // MULTIWIRE / REMOVE are Shift-only chords. PASTE_PLACE is a Ctrl chord.
     // To rebind, change both `key` and `label` so the keyboard handler AND the
-    // menu entry stay in sync.
+    // menu entry stay in sync. PASTE_PLACE additionally has `ctrl: true` so the
+    // handler knows to treat it as a Ctrl chord rather than a Shift chord.
     const SHORTCUTS = {
-      MULTIWIRE: { key: 'w', label: 'Shift+W' },
-      REMOVE:    { key: 'd', label: 'Shift+D' },
+      MULTIWIRE:   { key: 'f', label: 'Shift+F' },
+      REMOVE:      { key: 'd', label: 'Shift+D' },
+      PASTE_PLACE: { key: 'b', label: 'Ctrl+B', ctrl: true },
     };
 
     // ═══════════════════════════════════════════════════════════════
@@ -223,7 +289,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // ═══════════════════════════════════════════════════════════════
 
     const SCRIPT_NAME = 'Logic Designer Section Copy/Paste';
-    const VERSION = '1.5.2';
+    const VERSION = '1.7.0';
     const LOAD_FLAG = '__LDSCP_LOADED';
     const STORE_KEY = 'ldscp:clipboard:v1';
     const PASTE_OFFSET = { x: 40, y: 40 };
@@ -233,6 +299,50 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     if (W[LOAD_FLAG]) return;
     W[LOAD_FLAG] = true;
+
+    // ─── Cursor tracker (used by GhostPasteMode entry + copy anchor) ──
+    // Updated by a passive document mousemove listener installed at bootstrap.
+    // `lastCursorClient` is null until the user moves the mouse at least once.
+    let lastCursorClient = null;
+    // Refs that were selected at the most recent doCopy() — used by
+    // GhostPasteMode.buildOverlay to find the live host elements to clone.
+    // Not persisted — reset on reload, set on every copy. Null until first copy.
+    let latestSelectionRefs = null;
+
+    function installCursorTracker() {
+      document.addEventListener('mousemove', (event) => {
+        lastCursorClient = { x: event.clientX, y: event.clientY };
+      }, { capture: true, passive: true });
+    }
+
+    // Project a clientX/clientY pair into the host's SVG world coordinates.
+    // Returns null if the host SVG is not reachable or the conversion fails.
+    // Used by doCopy (to record cursorAnchor) and by GhostPasteMode (per mousemove).
+    function clientToSvgWorld(clientPt) {
+      if (!clientPt) return null;
+      try {
+        const paper = W.logic_designer?.paper;
+        const elements = paper?.elements;
+        if (!elements) return null;
+        // Find any element's owner SVG. Raphael shapes all share the same root.
+        let svg = null;
+        for (const key of Object.keys(elements)) {
+          const node = elements[key]?.set?.items?.[0]?.node;
+          if (node?.ownerSVGElement) { svg = node.ownerSVGElement; break; }
+        }
+        if (!svg || typeof svg.createSVGPoint !== 'function') return null;
+        const pt = svg.createSVGPoint();
+        pt.x = clientPt.x;
+        pt.y = clientPt.y;
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return null;
+        const w = pt.matrixTransform(ctm.inverse());
+        return { x: w.x, y: w.y };
+      } catch (err) {
+        console.warn(`[${SCRIPT_NAME}] clientToSvgWorld failed:`, err);
+        return null;
+      }
+    }
 
     // Inline monochrome SVG icons (Lucide-style). No network fetches.
     const COPY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
@@ -1254,9 +1364,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       function enter() {
         if (mode === 'collecting' || mode === 'fill') return;
-        // Mutually exclusive with remove-mode.
+        // Mutually exclusive with remove-mode and ghost-paste.
         if (typeof RemoveConnectorsMode !== 'undefined' && RemoveConnectorsMode.isActive()) {
           RemoveConnectorsMode.exit();
+        }
+        if (typeof GhostPasteMode !== 'undefined' && GhostPasteMode.isActive()) {
+          GhostPasteMode.exit();
         }
         mode = 'collecting';
         sourceSide = null;
@@ -1411,8 +1524,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       function enter() {
         if (mode === 'active') return;
-        // Mutually exclusive with multi-wire mode.
+        // Mutually exclusive with multi-wire and ghost-paste.
         if (MultiWireMode.isActive()) MultiWireMode.exit();
+        if (typeof GhostPasteMode !== 'undefined' && GhostPasteMode.isActive()) {
+          GhostPasteMode.exit();
+        }
         mode = 'active';
         setBanner('Remove mode: click wires/blocks/marquee to delete. (Esc to cancel)');
       }
@@ -1557,6 +1673,296 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return { enter, exit, toggle, isActive, install };
     })();
 
+    // ═══════════════════════════════════════════════════════════════
+    //  GhostPasteMode — Ctrl+B paste with cursor-following ghost.
+    //  Reuses the same snapshot Ctrl+V reads. Commits via applySnapshotAt.
+    // ═══════════════════════════════════════════════════════════════
+    const GhostPasteMode = (() => {
+      let active = false;
+      let bannerEl = null;
+      let overlayEl = null;             // SVG <g> appended to the host paper SVG
+      let svgRoot = null;               // cached host SVG element while active
+      let snapshot = null;              // the clipboard snapshot for this mode session
+      let anchorWorld = null;           // {x,y} in SVG world coords — the snapshot-side anchor
+      let lastWorldPt = null;           // {x,y} cursor in SVG world coords (for click commit)
+
+      function setBanner(text) {
+        if (!bannerEl) {
+          bannerEl = document.createElement('div');
+          bannerEl.className = 'ldscp-mode-banner';
+          document.body.appendChild(bannerEl);
+        }
+        bannerEl.textContent = text;
+      }
+
+      function clearBanner() {
+        if (bannerEl) {
+          bannerEl.remove();
+          bannerEl = null;
+        }
+      }
+
+      // Build the SVG ghost overlay: a single <g class="ldscp-ghost-overlay">
+      // appended to the host's Raphael paper SVG, containing per-node
+      // <g transform="translate(dx,dy)"> wrappers around cloned shape nodes
+      // (or fallback labeled rectangles when the live host elements can't
+      // be identified). Internal wires drawn as dashed straight lines.
+      //
+      // Side effects: writes svgRoot, overlayEl. Returns false if the host
+      // SVG can't be located.
+      function buildOverlay() {
+        const paper = W.logic_designer?.paper;
+        const elements = paper?.elements || {};
+        let foundSvg = null;
+        for (const key of Object.keys(elements)) {
+          const node = elements[key]?.set?.items?.[0]?.node;
+          if (node?.ownerSVGElement) { foundSvg = node.ownerSVGElement; break; }
+        }
+        if (!foundSvg) return false;
+        svgRoot = foundSvg;
+
+        const ns = 'http://www.w3.org/2000/svg';
+        const g = document.createElementNS(ns, 'g');
+        g.setAttribute('class', 'ldscp-ghost-overlay');
+        g.setAttribute('transform', 'translate(0,0)');
+
+        // Prefer cloning live elements (true-to-render preview).
+        const liveRefs = Array.isArray(latestSelectionRefs)
+          ? latestSelectionRefs.filter((r) => elements[r] != null)
+          : [];
+        const refsMatchSnapshot = liveRefs.length === snapshot.nodes.length;
+
+        if (refsMatchSnapshot) {
+          for (let i = 0; i < liveRefs.length; i++) {
+            const ref = liveRefs[i];
+            const snapNode = snapshot.nodes[i];
+            const live = elements[ref];
+            const items = live?.set?.items || [];
+            const nodeGroup = document.createElementNS(ns, 'g');
+            const dx = snapNode.position.x - anchorWorld.x;
+            const dy = snapNode.position.y - anchorWorld.y;
+            nodeGroup.setAttribute('transform', `translate(${dx},${dy})`);
+            for (const item of items) {
+              const node = item?.node;
+              if (!node) continue;
+              const clone = node.cloneNode(true);
+              // Strip ids to avoid id collisions with the live host tree.
+              clone.removeAttribute('id');
+              const idChildren = clone.querySelectorAll('[id]');
+              for (let k = 0; k < idChildren.length; k++) idChildren[k].removeAttribute('id');
+              // The clone carries the original absolute transform. Strip it
+              // so the parent <g> translate is the only positioning.
+              clone.removeAttribute('transform');
+              nodeGroup.appendChild(clone);
+            }
+            g.appendChild(nodeGroup);
+          }
+        } else {
+          // Fallback: labeled rectangles per snapshot node.
+          for (const snapNode of snapshot.nodes) {
+            const dx = snapNode.position.x - anchorWorld.x;
+            const dy = snapNode.position.y - anchorWorld.y;
+            const w = snapNode.data?.config?.width  ?? 80;
+            const h = snapNode.data?.config?.height ?? 40;
+            const rect = document.createElementNS(ns, 'rect');
+            rect.setAttribute('x', String(dx));
+            rect.setAttribute('y', String(dy));
+            rect.setAttribute('width', String(w));
+            rect.setAttribute('height', String(h));
+            rect.setAttribute('fill', '#3a3a3a');
+            rect.setAttribute('stroke', '#8ad');
+            rect.setAttribute('stroke-width', '1');
+            g.appendChild(rect);
+            const label = document.createElementNS(ns, 'text');
+            label.setAttribute('x', String(dx + 6));
+            label.setAttribute('y', String(dy + 16));
+            label.setAttribute('fill', '#d4d4d4');
+            label.setAttribute('font-size', '11');
+            label.textContent = snapNode.type;
+            g.appendChild(label);
+          }
+        }
+
+        // Internal wires as dashed straight lines between approximate
+        // block midpoints. This is a guide preview, not a precise routing.
+        for (const wire of snapshot.wires) {
+          const fromNode = snapshot.nodes.find((n) => n.localId === wire.from.nodeLocalId);
+          const toNode   = snapshot.nodes.find((n) => n.localId === wire.to.nodeLocalId);
+          if (!fromNode || !toNode) continue;
+          const x1 = fromNode.position.x - anchorWorld.x + 40;
+          const y1 = fromNode.position.y - anchorWorld.y + 20;
+          const x2 = toNode.position.x   - anchorWorld.x;
+          const y2 = toNode.position.y   - anchorWorld.y + 20;
+          const line = document.createElementNS(ns, 'line');
+          line.setAttribute('class', 'ldscp-ghost-overlay-wire');
+          line.setAttribute('x1', String(x1));
+          line.setAttribute('y1', String(y1));
+          line.setAttribute('x2', String(x2));
+          line.setAttribute('y2', String(y2));
+          g.appendChild(line);
+        }
+
+        svgRoot.appendChild(g);
+        overlayEl = g;
+        return true;
+      }
+
+      function teardownOverlay() {
+        if (overlayEl && overlayEl.parentNode) overlayEl.parentNode.removeChild(overlayEl);
+        overlayEl = null;
+        svgRoot = null;
+      }
+
+      // Pick the anchor point on the snapshot — the point that will be glued
+      // to the cursor. If snapshot.cursorAnchor exists (copy was done with
+      // mouse over canvas), use the snapshot node closest to it. Otherwise
+      // fall back to the bounding-box top-left of the snapshot nodes.
+      function chooseAnchor(snap) {
+        if (!snap || !snap.nodes || snap.nodes.length === 0) return { x: 0, y: 0 };
+        if (snap.cursorAnchor && typeof snap.cursorAnchor.x === 'number') {
+          let best = snap.nodes[0];
+          let bestD2 = Infinity;
+          for (const n of snap.nodes) {
+            const dx = n.position.x - snap.cursorAnchor.x;
+            const dy = n.position.y - snap.cursorAnchor.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) { bestD2 = d2; best = n; }
+          }
+          return { x: best.position.x, y: best.position.y };
+        }
+        // Bbox top-left fallback.
+        let minX = Infinity, minY = Infinity;
+        for (const n of snap.nodes) {
+          if (n.position.x < minX) minX = n.position.x;
+          if (n.position.y < minY) minY = n.position.y;
+        }
+        return { x: minX, y: minY };
+      }
+
+      function enter() {
+        if (active) return;
+        const snap = ClipboardStore.load();
+        if (!snap || !snap.nodes || snap.nodes.length === 0) {
+          toast('Nothing to paste.');
+          return;
+        }
+        const paper = W.logic_designer?.paper;
+        if (!paper) {
+          toast('Logic designer not ready.', 'error');
+          return;
+        }
+        // Mutex: exit other modes.
+        if (MultiWireMode.isActive()) MultiWireMode.exit();
+        if (RemoveConnectorsMode.isActive()) RemoveConnectorsMode.exit();
+
+        snapshot = snap;
+        anchorWorld = chooseAnchor(snap);
+        // overlayEl is populated by buildOverlay (Task 7).
+        const built = buildOverlay();
+        if (!built) {
+          toast('Ghost-paste: could not locate canvas. Try Ctrl+V instead.', 'error');
+          snapshot = null;
+          return;
+        }
+        active = true;
+        setBanner('Paste-Place — click to drop · Esc / right-click to cancel');
+        // Listeners installed once at bootstrap; they bail when !active.
+      }
+
+      function exit() {
+        if (!active) return;
+        active = false;
+        teardownOverlay();
+        clearBanner();
+        snapshot = null;
+        anchorWorld = null;
+        lastWorldPt = null;
+      }
+
+      function toggle() {
+        if (active) exit();
+        else enter();
+      }
+
+      function isActive() {
+        return active;
+      }
+
+      function onMouseMoveGhost(event) {
+        if (!active || !overlayEl) return;
+        const world = clientToSvgWorld({ x: event.clientX, y: event.clientY });
+        if (!world) return;
+        lastWorldPt = world;
+        overlayEl.setAttribute('transform', `translate(${world.x},${world.y})`);
+      }
+
+      function onClickGhost(event) {
+        if (!active) return;
+        if (event.button !== 0) return;
+        // Only commit if the click landed inside the host SVG.
+        if (!svgRoot || !svgRoot.contains(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const world = clientToSvgWorld({ x: event.clientX, y: event.clientY }) || lastWorldPt;
+        if (!world) {
+          toast('Ghost-paste: could not determine drop coordinates.', 'error');
+          exit();
+          return;
+        }
+        // Capture snapshot/anchor BEFORE exit() clears them.
+        const snap = snapshot;
+        const anchor = anchorWorld;
+        // Tear down BEFORE applying so the ghost doesn't get caught in any
+        // host re-render triggered by createNode.
+        exit();
+        const result = applySnapshotAt({
+          snapshot: snap,
+          snapshotOriginAnchor: anchor,
+          basePos: world,
+        });
+        const totalFails = result.nodeFailures.length + result.wireFailures.length;
+        let msg = `Pasted ${result.okNodes} of ${result.totalRequestedNodes} nodes, `
+                + `${result.okWires} of ${result.totalRequestedWires} wires.`;
+        if (totalFails > 0) {
+          msg += ` ${totalFails} failed (see console).`;
+          toast(msg, 'error');
+        } else {
+          toast(msg);
+        }
+      }
+
+      function onContextMenuGhost(event) {
+        if (!active) return;
+        event.preventDefault();
+        event.stopPropagation();
+        exit();
+      }
+
+      function onKeyDownGhost(event) {
+        if (!active) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          exit();
+        }
+      }
+
+      function onBlurGhost() {
+        if (!active) return;
+        exit();
+      }
+
+      function install() {
+        document.addEventListener('mousemove', onMouseMoveGhost, true);
+        document.addEventListener('click', onClickGhost, true);
+        document.addEventListener('contextmenu', onContextMenuGhost, true);
+        document.addEventListener('keydown', onKeyDownGhost, true);
+        window.addEventListener('blur', onBlurGhost);
+      }
+
+      // Exposed so other modes can mutex-exit us and so installKeyboardShortcuts
+      // can call toggle()/isActive().
+      return { enter, exit, toggle, isActive, install };
+    })();
     // ═══════════════════════════════════════════════════════════════
     //  Wire observer — wraps paper.__connect / __disconnect_output /
     //  __disconnect_input so host-native wire create/remove gestures
@@ -1790,6 +2196,112 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     })();
 
     // ═══════════════════════════════════════════════════════════════
+    //  Move observer — wraps paper.__move_block so host-native block
+    //  drag-to-move gestures push a 'move-batch' undo record. Contiguous
+    //  calls within a short flush window coalesce into one batch so a
+    //  single drag (including alt-drag-with-connected or multi-select
+    //  drag, which fire one __move_block per affected block) undoes as
+    //  one Ctrl+Z step.
+    //
+    //  The host's __move_block(block, x, y) snaps to a 10px grid via
+    //  Math.round(coord/10)*10, sets block.set.transform absolutely
+    //  (not by delta), and redraws every wire touching the block via
+    //  paper.paper.connection(conn). Undo just calls __move_block with
+    //  the recorded FROM coords — wires follow for free.
+    // ═══════════════════════════════════════════════════════════════
+    const MoveObserver = (() => {
+      let originalMove = null;
+      let installed = false;
+      const SUPPRESS = new Set();      // refs whose next __move_block call is script-initiated (e.g. undo) — skip recording
+      let pendingBatch = null;         // accumulator for contiguous calls
+      let flushTimer = null;
+      const FLUSH_MS = 50;             // coalesce window — generous given probe-2 showed sub-ms gaps between back-to-back calls
+
+      function snap(coord) {
+        return Math.round(coord / 10) * 10;
+      }
+
+      function flush() {
+        if (pendingBatch && pendingBatch.length > 0) {
+          undoHistory.push({
+            type: 'move-batch',
+            timestamp: new Date().toISOString(),
+            payload: { moves: pendingBatch },
+          });
+        }
+        pendingBatch = null;
+        flushTimer = null;
+      }
+
+      function record(move) {
+        if (!pendingBatch) pendingBatch = [];
+        // If the same ref shows up twice in one batch (rare; nested host call),
+        // keep the FIRST `from` and the LAST `to` so undo restores the original.
+        const existing = pendingBatch.find((m) => m.ref === move.ref);
+        if (existing) {
+          existing.to = move.to;
+        } else {
+          pendingBatch.push(move);
+        }
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = setTimeout(flush, FLUSH_MS);
+      }
+
+      function install() {
+        if (installed) return;
+        const paper = W.logic_designer?.paper;
+        // Defer until host is ready (matches WireObserver's gate). Without
+        // this, install runs at script-bootstrap when paper.initialized may
+        // still be false and the wrap silently no-ops forever.
+        if (!paper || paper.initialized !== true || typeof paper.__move_block !== 'function') {
+          setTimeout(install, 500);
+          return;
+        }
+        originalMove = paper.__move_block;
+        paper.__move_block = function (block, x, y) {
+          const ref = block?.pointer;
+          // Capture FROM before host overwrites it. The matrix on the main
+          // shape already reflects host's previous snapped coords.
+          const main = block?.set?.items?.[0];
+          const fromX = (main && main.matrix && typeof main.matrix.e === 'number') ? main.matrix.e : null;
+          const fromY = (main && main.matrix && typeof main.matrix.f === 'number') ? main.matrix.f : null;
+          const result = originalMove.call(this, block, x, y);
+          try {
+            if (ref != null && fromX != null && fromY != null && !SUPPRESS.has(ref)) {
+              const toX = snap(typeof x === 'number' ? x : fromX);
+              const toY = snap(typeof y === 'number' ? y : fromY);
+              if (fromX !== toX || fromY !== toY) {
+                record({ ref, from: { x: fromX, y: fromY }, to: { x: toX, y: toY } });
+              }
+            }
+          } catch (err) {
+            console.error(`[${SCRIPT_NAME}] MoveObserver record failed:`, err);
+          }
+          SUPPRESS.delete(ref);
+          return result;
+        };
+        installed = true;
+      }
+
+      function uninstall() {
+        if (!installed) return;
+        const paper = W.logic_designer?.paper;
+        if (paper && originalMove) paper.__move_block = originalMove;
+        originalMove = null;
+        installed = false;
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        pendingBatch = null;
+        SUPPRESS.clear();
+      }
+
+      function suppressNextFor(ref) {
+        if (ref != null) SUPPRESS.add(ref);
+      }
+
+      return { install, uninstall, suppressNextFor };
+    })();
+
+    // ═══════════════════════════════════════════════════════════════
     //  Clipboard store — wraps GM_setValue / GM_getValue
     // ═══════════════════════════════════════════════════════════════
 
@@ -1849,7 +2361,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         const wires = HostAdapter.getInternalWires(sel);
         const snap = buildSnapshot({ nodes, wires });
+        snap.cursorAnchor = clientToSvgWorld(lastCursorClient);
         ClipboardStore.save(snap);
+        latestSelectionRefs = sel.slice();
         toast(`Copied ${snap.nodes.length} nodes, ${snap.wires.length} wires.`);
       } catch (err) {
         console.error(`[${SCRIPT_NAME}] copy failed:`, err);
@@ -1858,22 +2372,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Paste action — recreates the saved snapshot.
+    //  applySnapshotAt — shared commit path for Ctrl+V offset paste
+    //  and Ctrl+B ghost paste. Materializes the snapshot at the given
+    //  basePos (designer-space). Records a 'paste' undo entry.
     // ═══════════════════════════════════════════════════════════════
+    //
+    // basePos semantics: the snapshot stores each node's original position.
+    // We compute a translation vector `delta = basePos - snapshotOriginAnchor`,
+    // where `snapshotOriginAnchor` is supplied by the caller:
+    //   - Ctrl+V: snapshotOriginAnchor = nodes[0].position, basePos = nodes[0].position + PASTE_OFFSET
+    //     -> delta = PASTE_OFFSET (original behavior).
+    //   - Ctrl+B: snapshotOriginAnchor = the chosen anchor node's position (or bbox top-left),
+    //     basePos = cursorDesignerCoords -> delta = cursor - anchor.
+    //
+    // Returns { okNodes, okWires, totalRequestedNodes, totalRequestedWires,
+    //          createdRefs, nodeFailures, wireFailures } for the caller to toast on.
+    function applySnapshotAt({ snapshot, snapshotOriginAnchor, basePos }) {
+      const delta = {
+        x: basePos.x - snapshotOriginAnchor.x,
+        y: basePos.y - snapshotOriginAnchor.y,
+      };
 
-    function doPaste() {
-      const snap = ClipboardStore.load();
-      if (!snap) {
-        toast('Nothing to paste.');
-        return;
-      }
-
-      // Offset all nodes by PASTE_OFFSET so the paste lands visibly next to
-      // the originals. Mutate a deep copy, not the stored snapshot.
-      const nodes = JSON.parse(JSON.stringify(snap.nodes));
+      const nodes = JSON.parse(JSON.stringify(snapshot.nodes));
       for (const n of nodes) {
-        n.position.x += PASTE_OFFSET.x;
-        n.position.y += PASTE_OFFSET.y;
+        n.position.x += delta.x;
+        n.position.y += delta.y;
       }
 
       const localToRef = new Map();
@@ -1881,10 +2404,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       for (const n of nodes) {
         try {
-          // The snapshot stored each node's `data` as the full host-adapter payload
-          // (see doCopy: `data: HostAdapter.getNodeData(ref)`).
-          // Pull `type` and `position` from the snapshot top-level (they're explicit
-          // there); pass the host-adapter payload as `payload` to createNode.
           const ref = HostAdapter.createNode({
             type: n.type,
             position: n.position,
@@ -1898,7 +2417,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
 
       const wireFailures = [];
-      for (const w of snap.wires) {
+      for (const w of snapshot.wires) {
         const fromNode = localToRef.get(w.from.nodeLocalId);
         const toNode = localToRef.get(w.to.nodeLocalId);
         if (fromNode == null || toNode == null) {
@@ -1916,14 +2435,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
       }
 
-      // Select the new nodes so the user can immediately drag the group.
       try {
         HostAdapter.setSelection(Array.from(localToRef.values()));
       } catch (err) {
         console.warn(`[${SCRIPT_NAME}] setSelection failed (non-fatal):`, err);
       }
 
-      // Record on undoHistory so doUndo can remove these nodes later.
       const createdRefs = Array.from(localToRef.values());
       if (createdRefs.length > 0) {
         undoHistory.push({
@@ -1933,10 +2450,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }
 
-      const okNodes = localToRef.size;
-      const okWires = snap.wires.length - wireFailures.length;
-      let msg = `Pasted ${okNodes} of ${snap.nodes.length} nodes, ${okWires} of ${snap.wires.length} wires.`;
-      const totalFails = nodeFailures.length + wireFailures.length;
+      return {
+        okNodes: localToRef.size,
+        okWires: snapshot.wires.length - wireFailures.length,
+        totalRequestedNodes: snapshot.nodes.length,
+        totalRequestedWires: snapshot.wires.length,
+        createdRefs,
+        nodeFailures,
+        wireFailures,
+      };
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Paste action — recreates the saved snapshot.
+    // ═══════════════════════════════════════════════════════════════
+
+    function doPaste() {
+      const snap = ClipboardStore.load();
+      if (!snap) {
+        toast('Nothing to paste.');
+        return;
+      }
+      if (!snap.nodes || snap.nodes.length === 0) {
+        toast('Nothing to paste.');
+        return;
+      }
+
+      // Original Ctrl+V behavior: anchor on nodes[0] and offset by PASTE_OFFSET.
+      const anchor = snap.nodes[0].position;
+      const basePos = { x: anchor.x + PASTE_OFFSET.x, y: anchor.y + PASTE_OFFSET.y };
+
+      const result = applySnapshotAt({
+        snapshot: snap,
+        snapshotOriginAnchor: anchor,
+        basePos,
+      });
+
+      const totalFails = result.nodeFailures.length + result.wireFailures.length;
+      let msg = `Pasted ${result.okNodes} of ${result.totalRequestedNodes} nodes, `
+              + `${result.okWires} of ${result.totalRequestedWires} wires.`;
       if (totalFails > 0) {
         msg += ` ${totalFails} failed (see console).`;
         toast(msg, 'error');
@@ -1969,9 +2521,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         undoWireRemove(record);
       } else if (record.type === 'tag-paste') {
         undoTagPaste(record);
+      } else if (record.type === 'move-batch') {
+        undoMoveBatch(record);
       } else {
         console.warn(`[${SCRIPT_NAME}] unknown undo record type:`, record.type);
         toast('Unknown undo record (see console).', 'error');
+      }
+    }
+
+    function undoMoveBatch(record) {
+      const paper = W.logic_designer?.paper;
+      if (!paper) {
+        toast('Undo move: paper not ready.', 'error');
+        return;
+      }
+      const moves = record.payload.moves || [];
+      let ok = 0;
+      const failures = [];
+      for (const m of moves) {
+        const block = paper.elements?.[m.ref];
+        if (!block) {
+          failures.push({ ref: m.ref, reason: 'block no longer exists' });
+          continue;
+        }
+        try {
+          MoveObserver.suppressNextFor(m.ref);
+          paper.__move_block(block, m.from.x, m.from.y);
+          ok++;
+        } catch (err) {
+          failures.push({ ref: m.ref, reason: String(err) });
+          console.error(`[${SCRIPT_NAME}] undoMoveBatch failed for ref ${m.ref}:`, err);
+        }
+      }
+      const noun = moves.length === 1 ? 'block' : 'blocks';
+      let msg = `Undid move: ${ok} of ${moves.length} ${noun} restored.`;
+      if (failures.length > 0) {
+        msg += ` ${failures.length} failed (see console).`;
+        toast(msg, 'error');
+      } else {
+        toast(msg);
       }
     }
 
@@ -2389,6 +2977,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         .ldscp-launcher:hover { background: rgba(40, 40, 40, 0.96); color: #ffffff; }
         .ldscp-launcher svg { display: block; }
+        .ldscp-alarm-pill {
+          position: fixed;
+          bottom: 56px;
+          right: 16px;
+          z-index: 99999;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 8px 5px 10px;
+          background: rgba(140, 30, 30, 0.94);
+          color: #fff;
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          border-radius: 14px;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+          font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          cursor: pointer;
+          user-select: none;
+        }
+        .ldscp-alarm-pill:hover { background: rgba(165, 40, 40, 0.96); }
+        .ldscp-alarm-pill-label { white-space: nowrap; }
+        .ldscp-alarm-pill-x {
+          opacity: 0.7;
+          font-size: 14px;
+          line-height: 1;
+          padding: 0 2px;
+        }
+        .ldscp-alarm-pill-x:hover { opacity: 1; }
         .ldscp-menu {
           position: fixed;
           right: 16px;
@@ -2461,6 +3076,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           stroke: #ff5555 !important;
           opacity: 0.85;
         }
+        .ldscp-ghost-overlay,
+        .ldscp-ghost-overlay * {
+          pointer-events: none;
+        }
+        .ldscp-ghost-overlay {
+          opacity: 0.45;
+        }
+        .ldscp-ghost-overlay-wire {
+          stroke: #8ad;
+          stroke-width: 2;
+          stroke-dasharray: 4 3;
+          fill: none;
+        }
         .ldscp-paste-tags-panel {
           display: flex;
           flex-direction: column;
@@ -2522,6 +3150,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         .ldscp-paste-tags-btn-primary:hover {
           background: #357ab8;
         }
+        .ldscp-sqo-arrow {
+          float: right;
+          margin: 0 8px;
+          cursor: pointer;
+          color: #ff8c00;
+          user-select: none;
+          font-size: 20px;
+          font-weight: bold;
+          line-height: 1;
+          text-shadow: 0 0 2px rgba(0,0,0,0.6);
+          transition: transform 0.12s, color 0.12s;
+        }
+        .ldscp-sqo-arrow:hover { color: #ffc04d; }
+        .ldscp-sqo-arrow.ldscp-sqo-open { transform: rotate(180deg); }
+        .ldscp-sqo-list {
+          max-height: 220px;
+          overflow-y: auto;
+          margin: 2px 0 6px 0;
+          background: rgba(0, 0, 0, 0.45);
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          border-radius: 4px;
+        }
+        .ldscp-sqo-item {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 3px 10px;
+          cursor: pointer;
+          color: #f0f0f0;
+          font-size: 11px;
+          line-height: 1.4;
+        }
+        .ldscp-sqo-item + .ldscp-sqo-item { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+        .ldscp-sqo-item:hover { background: rgba(255, 179, 0, 0.18); color: #fff; }
+        .ldscp-sqo-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ldscp-sqo-meta { color: #d0d0d0; white-space: nowrap; flex: 0 0 auto; font-size: 9px; }
+        .ldscp-sqo-empty, .ldscp-sqo-error { padding: 6px 12px; color: #c0c0c0; font-size: 13px; }
+        .ldscp-sqo-error { color: #e8857a; }
       `);
     }
 
@@ -2859,6 +3526,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             RemoveConnectorsMode.exit();
             return;
           }
+          if (GhostPasteMode.isActive()) {
+            event.preventDefault();
+            GhostPasteMode.exit();
+            return;
+          }
         }
 
         // Shift+<key> mode toggles. Keys configured in SHORTCUTS at the top.
@@ -2892,9 +3564,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (hasTextSelection()) return;
           event.preventDefault();
           doPaste();
+        } else if (key === SHORTCUTS.PASTE_PLACE.key && SHORTCUTS.PASTE_PLACE.ctrl) {
+          if (hasTextSelection()) return;
+          event.preventDefault();
+          GhostPasteMode.toggle();
         } else if (key === 'z') {
-          // Ctrl+Z while in multi-wire mode cancels the mode instead of running undo.
-          // User intent: "abort the in-flight action," not "step further back."
+          // Ctrl+Z while any in-flight mode is active cancels the mode instead
+          // of running undo. User intent: "abort the in-flight action," not
+          // "step further back."
           if (MultiWireMode.isActive()) {
             event.preventDefault();
             MultiWireMode.exit();
@@ -2903,6 +3580,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (RemoveConnectorsMode.isActive()) {
             event.preventDefault();
             RemoveConnectorsMode.exit();
+            return;
+          }
+          if (GhostPasteMode.isActive()) {
+            event.preventDefault();
+            GhostPasteMode.exit();
             return;
           }
           // Intentionally no hasTextSelection() guard here: text selection
@@ -2915,21 +3597,497 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  Sketch quick-open — augments the host "Get started!" dialog with
+    //  a per-project arrow that lists the project's sketches and opens
+    //  one directly. Reads logic_designer_manager (project/sketch RPC).
+    //  Self-contained; no interaction with the canvas observers.
+    // ═══════════════════════════════════════════════════════════════
+    const SketchQuickOpen = (() => {
+      // Project rows are <tr> in the splash dialog's PROJECTS table. Scope to
+      // that table's id — the dialog also holds a Processes table (800+ rows)
+      // sharing the .qxsTable_tr class; an unscoped selector grabs those too.
+      const ROW_SEL = '#comp_application_windows_tbl_wnd_splash_projects tr.qxsTable_tr';
+      const LISTROW_CLASS = 'ldscp-sqo-listrow';
+      let projectsCache = null;   // load_project_list result, per dialog session
+      const sketchCache = new Map(); // project_id -> sketch array, per dialog session
+
+      function getPlantId() {
+        if (W.plant_id != null) return String(W.plant_id);
+        const u = new URLSearchParams(location.search).get('plant_id');
+        return u != null ? String(u) : null;
+      }
+
+      function dialogVisible() {
+        const box = document.getElementById('comp_application_windows_wnd_splash');
+        return !!box && box.style.display !== 'none' && box.offsetParent !== null;
+      }
+
+      function findProjectRows() {
+        if (!dialogVisible()) return [];
+        return Array.from(document.querySelectorAll(ROW_SEL));
+      }
+
+      function clearCaches() {
+        projectsCache = null;
+        sketchCache.clear();
+      }
+
+      function ensureProjects(cb) {
+        if (projectsCache) { cb(projectsCache); return; }
+        const plantId = getPlantId();
+        if (plantId == null) { cb([]); return; }
+        try {
+          W.logic_designer_manager.load_project_list(plantId, (projects) => {
+            projectsCache = Array.isArray(projects) ? projects : [];
+            cb(projectsCache);
+          });
+        } catch (err) {
+          console.error(`[${SCRIPT_NAME}] SketchQuickOpen load_project_list failed:`, err);
+          cb([]);
+        }
+      }
+
+      function attachArrow(row, projects) {
+        if (isRowProcessed(row.dataset.ldscpSqo)) return;
+        // row is a <tr>; its single cell's text is the project name. The
+        // header row ("Project Name") matches no project -> id null -> skipped.
+        const cell = row.querySelector('td');
+        if (!cell) return; // header uses <th>; skip without marking (stays re-checkable)
+        const projectId = matchProjectId(row.textContent, projects);
+        row.dataset.ldscpSqo = '1';
+        if (projectId == null) return; // can't resolve id -> no arrow, but row is marked
+
+        const arrow = document.createElement('span');
+        arrow.className = 'ldscp-sqo-arrow';
+        arrow.textContent = '▾';
+        arrow.title = 'Show sketches';
+        arrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          toggleList(row, projectId, arrow, cell);
+        });
+        cell.appendChild(arrow); // into the <td>, not the <tr> (span in tr won't render)
+      }
+
+      function attachArrows(rows, projects) {
+        rows.forEach((row) => attachArrow(row, projects));
+      }
+
+      function onDialogPresent() {
+        const rows = findProjectRows();
+        if (rows.length === 0) return;
+        ensureProjects((projects) => attachArrows(rows, projects));
+      }
+
+      function ensureSketches(projectId, cb) {
+        if (sketchCache.has(projectId)) { cb(sketchCache.get(projectId)); return; }
+        try {
+          W.logic_designer_manager.load_sketch_list(projectId, (sketches) => {
+            const arr = Array.isArray(sketches) ? sketches : [];
+            sketchCache.set(projectId, arr);
+            cb(arr);
+          });
+        } catch (err) {
+          console.error(`[${SCRIPT_NAME}] SketchQuickOpen load_sketch_list failed:`, err);
+          cb(null); // null signals error (vs. [] = genuinely empty)
+        }
+      }
+
+      function buildList(projectId, sketches) {
+        const list = document.createElement('div');
+        list.className = 'ldscp-sqo-list';
+        if (sketches === null) {
+          const e = document.createElement('div');
+          e.className = 'ldscp-sqo-error';
+          e.textContent = 'Failed to load sketches.';
+          list.appendChild(e);
+          return list;
+        }
+        if (sketches.length === 0) {
+          const e = document.createElement('div');
+          e.className = 'ldscp-sqo-empty';
+          e.textContent = '(no sketches)';
+          list.appendChild(e);
+          return list;
+        }
+        sketches.forEach((sk) => {
+          const entry = formatSketchEntry(sk);
+          const item = document.createElement('div');
+          item.className = 'ldscp-sqo-item';
+          item.title = 'Open sketch';
+          const nameEl = document.createElement('span');
+          nameEl.className = 'ldscp-sqo-name';
+          nameEl.textContent = entry.name;
+          const metaEl = document.createElement('span');
+          metaEl.className = 'ldscp-sqo-meta';
+          // Last changed / last deployed, date-only (drop the HH:MM time and
+          // seconds) — compact, one line.
+          const day = (d) => d.split(' ')[0];
+          metaEl.textContent = `chg ${day(entry.changed)} · dep ${day(entry.deployed)}`;
+          item.appendChild(nameEl);
+          item.appendChild(metaEl);
+          item.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            openSketch(projectId, entry.id);
+          });
+          list.appendChild(item);
+        });
+        return list;
+      }
+
+      // Wrap the list div in a <tr><td colspan> so it's a valid sibling row
+      // of the project <tr> (a bare <div> can't sit between table rows).
+      function makeListRow(row, list) {
+        const tr = document.createElement('tr');
+        tr.className = LISTROW_CLASS;
+        const td = document.createElement('td');
+        td.colSpan = row.cells ? row.cells.length || 1 : 1;
+        td.appendChild(list);
+        tr.appendChild(td);
+        return tr;
+      }
+
+      function toggleList(row, projectId, arrow, cell) {
+        // Collapse if our list-row is already showing. Find it by class
+        // anywhere after the row (not just nextElementSibling — the host may
+        // reorder rows), so collapse is robust.
+        const existing = Array.from(row.parentNode.querySelectorAll(`tr.${LISTROW_CLASS}`))
+          .find((tr) => tr.previousElementSibling === row);
+        if (existing) { // collapse — pure DOM, no host interaction
+          existing.remove();
+          arrow.classList.remove('ldscp-sqo-open');
+          return;
+        }
+        // Expand: select the project row first (qxs records selection on the
+        // <td>; our stopPropagation suppressed the row's native select, and
+        // the later splash-Ok needs a selected project). Only on expand, so
+        // collapse stays a clean DOM op that the host can't perturb.
+        if (cell) fireClick(cell);
+        ensureSketches(projectId, (sketches) => {
+          // re-check: user may have toggled again before the RPC returned
+          const after = row.nextElementSibling;
+          if (after && after.classList.contains(LISTROW_CLASS)) return;
+          const listRow = makeListRow(row, buildList(projectId, sketches));
+          row.parentNode.insertBefore(listRow, row.nextSibling);
+          arrow.classList.add('ldscp-sqo-open');
+        });
+      }
+
+      // Real click (mousedown→mouseup→click) on a host element. The qxs
+      // widgets bind on these events; a bare .click() sometimes isn't enough.
+      function fireClick(el) {
+        if (!el) return false;
+        // No `view:` — under the userscript sandbox `window` isn't the real
+        // Window MouseEvent accepts, and it's optional for click dispatch.
+        for (const type of ['mousedown', 'mouseup', 'click']) {
+          el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+        }
+        return true;
+      }
+
+      // Hover an element (qxs top-menus open their dropdown on hover, not click).
+      function fireHover(el) {
+        if (!el) return false;
+        for (const type of ['mouseover', 'mouseenter', 'mousemove']) {
+          el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+        }
+        return true;
+      }
+
+      // Poll up to ~tries*delayMs for fn() to return truthy, then cb(result|null).
+      function pollFor(fn, cb, tries = 40, delayMs = 50) {
+        const r = fn();
+        if (r) { cb(r); return; }
+        if (tries <= 0) { cb(null); return; }
+        setTimeout(() => pollFor(fn, cb, tries - 1, delayMs), delayMs);
+      }
+
+      // Find a clickable element by visible text within a scope (default: document).
+      function findByText(text, selector, scope) {
+        const root = scope || document;
+        const re = new RegExp(`^\\s*${text}\\s*$`, 'i');
+        return Array.from(root.querySelectorAll(selector))
+          .find((el) => re.test(el.textContent || el.value || '')) || null;
+      }
+
+      function openSketch(projectId, sketchId) {
+        // DRIVE the host's native open click-for-click (PROBE16), then STOP at
+        // the final Ok — the host runs the real load (composites, wires, error
+        // screen). Manual paper.load replays dropped composites + corrupted
+        // state, so we touch ZERO host APIs; we only click what a user clicks:
+        //   splash Ok  ->  File menu  ->  "Load Sketch" item  ->  sketch row  ->  load-dialog Ok
+        // Selecting a project then Ok runs ld.init()/paper.init() (project
+        // open); File->Load Sketch opens the load dialog scoped to that project.
+        const splash = document.getElementById('comp_application_windows_wnd_splash');
+        const splashOk = splash && findByText('Ok', 'button.qxs_button_container, button', splash);
+        if (!splashOk) { toast('Sketch open: splash Ok not found.', 'error'); return; }
+        clearCaches();
+        fireClick(splashOk); // -> project opens, splash closes
+
+        // Open the File menu (qxs top-menus open on HOVER, not click), then
+        // click its "Load Sketch" dropdown item (only in DOM once menu open).
+        pollFor(
+          () => findByText('File', '.iw_oc_menu_top_level, .iw_oc_menu_level'),
+          (fileMenu) => {
+            if (!fileMenu) { toast('Sketch open: File menu not found.', 'error'); return; }
+            fireHover(fileMenu); fireClick(fileMenu);
+            pollFor(
+              () => Array.from(document.querySelectorAll('.iw_oc_menu_dropdown_item, [class*="dropdown_item"]'))
+                .find((el) => /load sketch/i.test(el.textContent || '') && el.offsetParent !== null),
+              (loadItem) => {
+                if (!loadItem) { toast('Sketch open: "Load Sketch" item not found.', 'error'); return; }
+                fireClick(loadItem);
+
+                pollFor(
+                  () => {
+                    const win = document.getElementById('comp_application_windows_wnd_load');
+                    if (!win || win.offsetParent === null) return null;
+                    const row = Array.from(win.querySelectorAll('tr.qxsTable_tr')).find((r) => {
+                      const idCell = r.querySelector('td');
+                      return idCell && idCell.textContent.trim() === String(sketchId);
+                    });
+                    return row ? { win, row } : null;
+                  },
+                  (found) => {
+                    if (!found) { toast('Sketch open: row not found in Load dialog.', 'error'); return; }
+                    // The qxs table binds selection on the <td>, not the <tr>
+                    // (PROBE15: clicking a cell set qxsTable_td_selected). Click
+                    // the id cell so the dialog records the selected sketch.
+                    const cell = found.row.querySelector('td') || found.row;
+                    fireClick(cell);
+                    // Give the table a tick to record selection, then Ok.
+                    pollFor(
+                      () => found.win.querySelector('.qxsTable_td_selected') || true,
+                      () => {
+                        const okBtn = findByText('Ok', 'button.qxs_button_container, button', found.win);
+                        if (!okBtn) { toast('Sketch open: Load-dialog Ok not found.', 'error'); return; }
+                        fireClick(okBtn); // host runs the full native open
+                      },
+                      4, 30
+                    );
+                  }
+                );
+              }
+            );
+          }
+        );
+      }
+
+      function install() {
+        if (!W.logic_designer_manager) {
+          // Host RPC client absent — stay dormant, no error.
+          return;
+        }
+        const mo = new MutationObserver(() => {
+          if (dialogVisible()) onDialogPresent();
+          else clearCaches();
+        });
+        mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+      }
+
+      return { install };
+    })();
+
+    // ═══════════════════════════════════════════════════════════════
+    //  AlarmHighlight — flash the block a "Virtual Values alarms" line
+    //  refers to. Alarm token VV_<proj>_<sketch>:<pointer>:<line>; the
+    //  <pointer> matches paper.elements[ref].pointer (the canvas "(NN)"
+    //  label). No host alarm RPC exists, so we scrape the dialog DOM and
+    //  retain the list so the "Errors: N" pill can re-flash after the
+    //  dialog is closed. Strictly read-only — no host state mutated.
+    //  Probed DOM (live, 2026-06-29): the alarm dialog is
+    //  div#comp_application_window_problems_tbl_wnd_vv_alarms — a "problems"
+    //  window, NOT a qxs_comlayer and NOT a comp_application_windows_wnd_*.
+    //  Its rows are tr.qxsTable_tr; each Message cell holds a
+    //  VV_<proj>_<sketch>:<pointer>:<line> token.
+    // ═══════════════════════════════════════════════════════════════
+    const AlarmHighlight = (() => {
+      const ALARM_DIALOG_ID = 'comp_application_window_problems_tbl_wnd_vv_alarms';
+      // The .qxs_window ancestor whose inline style toggles display:none → shown.
+      // Stable id (no random suffix); observing only this element's style attr
+      // means we wake on dialog open/close, NOT on every host canvas redraw.
+      const ALARM_WINDOW_ID = 'comp_application_window_problems_wnd_vv_alarms';
+      const ROW_TOKEN_RE = /VV_\d+_\d+:\d+:\d+/;
+
+      let lastAlarms = [];       // [{ pointer, line, rowEl }]
+      let pillEl = null;         // the fixed "Errors: N" pill
+      const activeOverlays = []; // outstanding flash <rect>s, for cleanup
+
+      // The alarm dialog by its stable id. offsetParent guards visibility —
+      // the element exists (hidden) when the dialog is closed.
+      function findAlarmDialog() {
+        const dlg = document.getElementById(ALARM_DIALOG_ID);
+        return dlg && dlg.offsetParent !== null ? dlg : null;
+      }
+
+      // Scan for the element whose .pointer equals the alarm's middle
+      // number. Linear over ~tens of blocks — no index needed.
+      function refByPointer(pointer) {
+        const els = W.logic_designer?.paper?.elements;
+        if (!els) return null;
+        for (const k in els) {
+          if (els[k] && els[k].pointer === pointer) return k;
+        }
+        return null;
+      }
+
+      // Draw an auto-fading orange rect around the block's main shape.
+      function drawBlockOutline(ref) {
+        const el = W.logic_designer?.paper?.elements?.[ref];
+        const main = el?.set?.items?.[0];
+        const node = main?.node;
+        if (!node) return null;
+        const svg = node.ownerSVGElement;
+        if (!svg) return null;
+        let box;
+        try { box = node.getBBox(); } catch { return null; }
+        // getBBox() is in the shape's LOCAL coords (pre-transform); the block
+        // is positioned by a transform on the shape (matrix.e/f). Add that
+        // translation so the rect lands ON the block, not at the SVG origin —
+        // same pattern as drawPinOverlay (m.e/f + local coord).
+        const m = main.matrix;
+        const tx = (m && typeof m.e === 'number') ? m.e : 0;
+        const ty = (m && typeof m.f === 'number') ? m.f : 0;
+        const pad = 6;
+        const ns = 'http://www.w3.org/2000/svg';
+        const rect = document.createElementNS(ns, 'rect');
+        rect.setAttribute('x', String(box.x + tx - pad));
+        rect.setAttribute('y', String(box.y + ty - pad));
+        rect.setAttribute('width', String(box.width + pad * 2));
+        rect.setAttribute('height', String(box.height + pad * 2));
+        rect.setAttribute('fill', 'none');
+        rect.setAttribute('stroke', '#ffa500');
+        rect.setAttribute('stroke-width', '3');
+        rect.setAttribute('rx', '4');
+        rect.style.pointerEvents = 'none';
+        rect.style.transition = 'opacity 0.4s ease';
+        svg.appendChild(rect);
+        return rect;
+      }
+
+      function flash(ref) {
+        if (ref == null) return;
+        const rect = drawBlockOutline(ref);
+        if (!rect) return;
+        activeOverlays.push(rect);
+        setTimeout(() => { rect.style.opacity = '0'; }, 1600);
+        setTimeout(() => {
+          rect.remove();
+          const i = activeOverlays.indexOf(rect);
+          if (i !== -1) activeOverlays.splice(i, 1);
+        }, 2050);
+      }
+
+      function flashAll() {
+        let missing = 0;
+        for (const p of distinctPointers(lastAlarms)) {
+          const ref = refByPointer(p);
+          if (ref == null) { missing++; continue; }
+          flash(ref);
+        }
+        if (missing > 0) {
+          console.warn(`[${SCRIPT_NAME}] AlarmHighlight: ${missing} alarm block(s) not on this sketch.`);
+        }
+      }
+
+      // Build lastAlarms from the open alarm dialog and wire each row to
+      // flash its own block. Idempotent: rows already wired are skipped.
+      function scrapeAlarms() {
+        const dlg = findAlarmDialog();
+        if (!dlg) return;
+        const rows = Array.from(dlg.querySelectorAll('tr.qxsTable_tr'))
+          .filter((tr) => ROW_TOKEN_RE.test(tr.textContent || ''));
+        const next = [];
+        for (const tr of rows) {
+          const parsed = parseAlarmToken(tr.textContent);
+          if (!parsed) continue;
+          next.push({ pointer: parsed.pointer, line: parsed.line, rowEl: tr });
+          if (tr.dataset.ldscpAlarm !== '1') {
+            tr.dataset.ldscpAlarm = '1';
+            tr.style.cursor = 'pointer';
+            tr.addEventListener('click', () => { flash(refByPointer(parsed.pointer)); });
+          }
+        }
+        lastAlarms = next;
+        renderPill();
+      }
+
+      function renderPill() {
+        // Count alarm ROWS (what the dialog lists), not distinct blocks —
+        // two alarms on the same block should read "Errors: 2". flashAll still
+        // de-dupes by pointer so a shared block only flashes once.
+        const count = lastAlarms.length;
+        if (count === 0) {
+          if (pillEl) { pillEl.remove(); pillEl = null; }
+          return;
+        }
+        if (!pillEl) {
+          pillEl = document.createElement('div');
+          pillEl.className = 'ldscp-alarm-pill';
+          pillEl.title = 'Flash blocks referenced by Virtual Values alarms';
+          const label = document.createElement('span');
+          label.className = 'ldscp-alarm-pill-label';
+          label.addEventListener('click', flashAll);
+          const close = document.createElement('span');
+          close.className = 'ldscp-alarm-pill-x';
+          close.textContent = '×';
+          close.title = 'Dismiss';
+          close.addEventListener('click', (e) => {
+            e.stopPropagation();
+            lastAlarms = [];
+            renderPill();
+          });
+          pillEl.appendChild(label);
+          pillEl.appendChild(close);
+          document.body.appendChild(pillEl);
+        }
+        pillEl.querySelector('.ldscp-alarm-pill-label').textContent = `⚠ Errors: ${count}`;
+      }
+
+      function install() {
+        // Observe ONLY the alarm window element's style attribute — it flips
+        // display:none → shown on open. This avoids a page-wide observer that
+        // would wake on every host canvas redraw. scrapeAlarms only runs when
+        // the dialog is actually visible (findAlarmDialog guards on
+        // offsetParent), so our own DOM writes can't loop it.
+        const win = document.getElementById(ALARM_WINDOW_ID);
+        if (!win) {
+          // Not in the DOM yet — retry shortly (host builds dialogs lazily on
+          // some loads). Bounded by the natural page lifetime; no busy loop.
+          setTimeout(install, 1000);
+          return;
+        }
+        const mo = new MutationObserver(() => {
+          if (findAlarmDialog()) scrapeAlarms();
+        });
+        mo.observe(win, { attributes: true, attributeFilter: ['style'] });
+      }
+
+      return { install };
+    })();
+
+    // ═══════════════════════════════════════════════════════════════
     //  Bootstrap
     // ═══════════════════════════════════════════════════════════════
 
     mountLauncher();
+    installCursorTracker();
     installKeyboardShortcuts();
     SelectionInterceptor.install();
     DeleteInterceptor.install();
     MultiWireMode.install();
     RemoveConnectorsMode.install();
+    GhostPasteMode.install();
     WireObserver.install();
+    MoveObserver.install();
+    SketchQuickOpen.install();
+    AlarmHighlight.install();
 
   })();
 }
 
 // ─── Node-only export footer (browser ignores this) ─────────────────
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildSnapshot, createUndoHistory, pairSourcesToTargets, classifyBlockPinDirection, distributeSourcesAcrossTargets };
+  module.exports = { buildSnapshot, createUndoHistory, pairSourcesToTargets, classifyBlockPinDirection, distributeSourcesAcrossTargets, matchProjectId, formatSketchEntry, isRowProcessed, parseAlarmToken, distinctPointers };
 }
