@@ -10,9 +10,14 @@
 > (analysed against `plant_id=3111` — "IWMAC Demo 1").
 
 This document is the result of a deep runtime + source dive (Playwright + PowerShell,
-2026-07-07). It describes the data model, the block library, the connection/type rules,
-the save format, the server API, and the compile/deploy lifecycle. See
+2026-07-07). It describes the data model, the block library, the connection/rules type
+system, the save format, the server API, and the compile/deploy lifecycle. See
 [[iwmac-changes-testing]] for the sibling pang/changes pipeline.
+
+> **Here to BUILD logic (not just understand the tool)?** Jump to **§19 — the
+> logic-building playbook**: requirement→block mapping, proven recipes, a step-by-step
+> build procedure (UI and programmatic), verified `data` payload templates, and the
+> pre-flight checklist. Sections 1–18 are the reference it links back into.
 
 ---
 
@@ -792,3 +797,134 @@ plant's data points (**1186** for plant 3111), e.g. `TCR_LT_JKU_PRESSURE_RP0_SUC
 | **`require_plant_revision`** | Minimum plant firmware revision a block needs; sketch's value = max over blocks. |
 | **VV** | "Virtual Values" — IWMAC's computed/derived values produced by these sketches. |
 | **Tag / Parameter / Unit** | Real plant data points a sketch reads (`TAGVALUE`/`PARAMV`) or writes (`WRITETOUNIT`/`VIRTUALOUT`). |
+
+---
+
+## 19. Logic-building playbook (for AI assistants)
+
+You've been asked to **create logic** — an alarm, a virtual value, a control rule. This
+section turns the reference above into a build procedure. Follow it top to bottom.
+
+### 19.0 Clarify before building
+Ask (or infer from context) — these change the graph:
+1. **Which plant** (`plant_id` in the URL) and **which project/sketch** (new, or edit existing?).
+2. **Inputs**: which tags/parameters? Get exact ids via `load_avaliable_tags()` (§17.6) or ask.
+3. **Output effect**: alarm (which priority A/B/C, type, destination §6)? a stored virtual
+   value (`VIRTUALOUT`)? a write to a real setpoint (`WRITETOUNIT` — **writes to hardware**,
+   confirm intent)?
+4. **Conditions**: thresholds, delays/persistence, calendar/time gating, seasons.
+5. **Deploy now or just draft?** Saving is safe; **deploy pushes to a live plant** — always
+   confirm with the user before deploying, and never deploy on plants you weren't asked about.
+
+### 19.1 Requirement → block mapping
+| Requirement fragment | Block(s) to reach for |
+|---|---|
+| "read temp/pressure/status from unit X" | **`PARAMV`** — the general reader for plain function logic. (`TAGVALUE`'s output has `require_type:'process'` — it can **only** feed a process block's pinned tag input, §4.1/§10.) |
+| "a settable limit/setpoint the user can tweak" | `CONST` (becomes an exposed, editable parameter; `readonly:false`) |
+| "when open / within schedule" | `CALENDAR` / `CALENDAR_2_0` (needs a calendar on the plant, §17.6) |
+| "only at night / by sun" | `WEATHER_SUN`; "by outdoor temp/forecast" → `WEATHER` |
+| "in summer vs winter" | `IS_WITHIN_DATES` (Season selector) |
+| "on weekdays 7–17" etc. | `CRITERIA` (year/month/week/day/hour/min ranges §6) |
+| "X greater/less than Y" | `BIGGERTHAN(OREQUAL)` / `SMALLERTHAN(OREQUAL)`; equality `LIKE`/`UNLIKE` |
+| "both/any of…" | `COMP_AND` / `COMP_OR` (expandable inputs); "not" → `INVERT` |
+| "must hold for N minutes" (debounce) | `DELAY_VARIABLE` (delay via CONST inputs — best for programmatic builds) or `DELAY` (delay in config dialog) |
+| "average/min/max/sum over a period" | `AVG/MIN/MAX/SUM_IN_PERIOD` (input **by_refference**) |
+| "how long has it been running" | `HOURMETER`; "how old is the value" → `AGE_OF_VALUE`, `DELTA_T` |
+| "stays on until reset" (hysteresis/holding circuit) | `LATCH` (set/reset) |
+| "pick A when true else B" | `SELECTOR`; "largest/smallest of many" → `INPUT_SELECTOR` |
+| "custom math" | `FORMULA` (`inp0…inpN‑1`, §6 grammar) — prefer ADD/MULTIPLY/… for trivial cases |
+| "cheap/expensive electricity hours" | `SPOT_PRICE_LOW` / `SPOT_PRICE_HIGH` / `SPOT_PRICE_ANALYSER` |
+| "convert pressure→temperature (refrigerant)" | `TRANSFORM_MAPPED` or a **transformations property** on the reading (§6 maps) |
+| "raise an alarm" | `ALARM` (or `ALARM_OBJECT(_EXTENDED)` to attach cost/value/limit) |
+| "store a computed value (trend/dashboard)" | `VIRTUALOUT` (creates a new plant parameter) |
+| "write to the controller" | `WRITETOUNIT` (⚠ real write; force/delay/count options) |
+| "bind a process's tag input" | `TAGVALUE` (auto-created when you drop a process; multi-select units ⇒ **repeat mode** §6 = same logic stamped per unit) |
+| "same logic for 40 fridges" | a **process** + `TAGVALUE` repeat mode, or publish the process and stamp it per sketch |
+| "reusable piece for many sketches" | Build in **process mode** with `PROCESSIN`/`PROCESSOUT`, publish (§9/§10) |
+
+Prefer an existing **library process** over rebuilding common logic: search the toolbox tree
+(726 in "Drift"); dropping one auto-creates its pinned inputs (`require_data`, §10).
+
+### 19.2 Proven recipe shapes
+- **Threshold alarm with persistence** (the workhorse):
+  `PARAMV(temp)` → `BIGGERTHAN` ← `CONST(limit)`; → `COMP_AND` ← `CALENDAR` (optional gate);
+  → `DELAY_VARIABLE` ← `CONST(delay-when-true s)`; → `ALARM{pri, type, destination}`.
+- **Hysteresis / holding circuit**: comparator(high) → `LATCH.set`; comparator(low or
+  `INVERT`) → `LATCH.reset`; `LATCH.value` → output. (Library also has "Holdekrets" processes.)
+- **Virtual KPI**: readings → `FORMULA`/arithmetic → `VIRTUALOUT{alias, type:'float',
+  engineering:{unit}}` (+ set an **interval** property §6 if it shouldn't run every scan).
+- **Spot-price load shift**: `SPOT_PRICE_LOW` → `SELECTOR` (comfort vs eco setpoint via two
+  `CONST`) → `WRITETOUNIT(setpoint)`.
+- **Season/night setback**: `IS_WITHIN_DATES`/`WEATHER_SUN` → `SELECTOR` → setpoint write.
+- **Fan-out one condition to many alarms**: one comparator output connects to many inputs
+  (outputs multi-connect; inputs take exactly one wire).
+
+### 19.3 Build procedure — in the UI
+1. Open `vv_fbx.qxs?plant_id=<id>`, pick/create the **Project** (Get started dialog).
+2. Click blocks in the toolbox to spawn (§4.7); click output-pin then input-pin to wire (§2).
+3. Right-click each red-titled block → **Configure element** (red title = unconfigured).
+4. **F10** syntax check → fix blinking puts/blocks until `Syntax OK`.
+5. **Ctrl+S** → name + **revision comment**. Then (only if asked) deploy via Tools →
+   Deploy Manager (§12).
+
+### 19.4 Build procedure — programmatic (Playwright/console)
+Drive `logic_designer.paper` (§14/§15). Skeleton that composes with §19.2 recipes:
+```js
+const p = logic_designer.paper;                     // assumes startup() done (library loaded)
+const src  = p.__render_block('PARAMV', 40, 40);    // returns numeric ref (reader — see note)
+const lim  = p.__render_block('CONST',   40, 160);
+const gt   = p.__render_block('BIGGERTHAN', 220, 90);
+const al   = p.__render_block('ALARM',  400, 90);
+// PARAMV's data shape is dialog-built (parameter_chooser): configure it via the UI once,
+// or copy a configured block's shape from an existing sketch with p.get_block_data(ref).
+p.set_block_data(lim, {alias_text:'Limit', type:'float', initial_value:8, mode:'single',
+                       eng_unit:'°C', readonly:false, precision:'%.1f'});
+p.set_block_data(al,  {alias_text:'High temp', pri:'b', alarm_type:'general',
+                       alarm_destination:'general'});
+p.__connect({id:src,put:0},{id:gt,put:0});          // NO force ⇒ type rules enforced (§3.2)
+p.__connect({id:lim,put:0},{id:gt,put:1});
+p.__connect({id:gt, put:0},{id:al,put:0});
+const check = p.syntax_check(true);                  // {ok, errors[]} — iterate until ok
+```
+Rules of thumb:
+- Omit `force` on `__connect` while building so the host validates types for you.
+- Prefer blocks whose config arrives **via CONST inputs** (`DELAY_VARIABLE`, `SELECTOR`,
+  `LATCH`, comparators) — no dialog-only `data` shapes to guess. For dialog-configured
+  blocks use the §6 payloads verbatim; if a shape isn't documented there, **open the real
+  dialog once and diff `get_block_data(ref)`** rather than inventing fields.
+- After every `set_block_data`, the title turns black (configured). `p.changed` tracks dirt.
+- Persist only on request: `logic_designer_manager.save_sketch(project_id, name, p.save(),
+  sketch_id_or_null, syntax_ok, comment, cb)` — a **comment is required practice** (§17.1).
+  To edit an existing sketch: `load_sketch(id, true)` → `p.load(reply.sketch)` → mutate → save
+  with the same `sketch_id`.
+- **Never call** `deploy`/`compile_sketch_from_*`/`publish_process`/`WRITETOUNIT`-bearing
+  saves without explicit user confirmation (§19.0.5).
+
+### 19.5 Pre-flight checklist (before save/deploy)
+- [ ] `syntax_check(true).ok === true` (all non-optional puts wired, all
+      `require_configuration` blocks have `data`, types compatible §3).
+- [ ] Numeric flow: remember arithmetic blocks emit **strings via `.toFixed(2)`** in
+      simulation; server compile handles numbers — but avoid feeding string-typed CONSTs
+      into numeric-only inputs.
+- [ ] Period/age blocks (`*_IN_PERIOD`, `DELAY*`, `AGE_OF_VALUE`) take their value input
+      **by_refference**. Feeding them a computed value is fine and common (the production
+      "Monitor reception" sketch runs `PARAMV → AVG_IN_PERIOD → SMALLERTHAN →
+      DELAY_VARIABLE → ALARM`), but `*_IN_PERIOD` aggregates history — feed it the raw
+      reading (`PARAMV`), not post-processed math, unless you mean to aggregate the math.
+- [ ] `require_plant_revision` of every used block ≤ plant firmware (§17.5 revision report;
+      spot-price needs ≥1670, PID/LATCH ≥1683, OSS ≥1543).
+- [ ] Alarm blocks: priority/type/destination chosen deliberately (§6) — destination `ew`
+      routes to Energy Watcher, `cw` to Climate Watcher.
+- [ ] Consider an **interval** property (§6) on heavy period/weather/spot blocks.
+- [ ] Save with a descriptive **revision comment**; verify with the client-side simulator
+      (Tools → Simulate, §13) before proposing deploy.
+
+### 19.6 Worked example — "Alarm if room > 8 °C for 15 min during opening hours"
+Blocks: `PARAMV`(room temp) · `CONST`(8 °C float) · `BIGGERTHAN` · `CALENDAR`(opening) ·
+`COMP_AND` · `DELAY_VARIABLE` · `CONST`(900 s integer) · `ALARM`(pri b).
+Wiring: temp→GT.i0, limit→GT.i1, GT→AND.i0, CAL→AND.i1, AND→DLY.i0, 900→DLY.i1,
+DLY→ALARM.i0. Configure PARAMV to the parameter, CALENDAR to the schedule, ALARM's texts.
+F10 → Ctrl+S ("high-temp alarm w/ 15 min persistence, calendar-gated") → simulate → propose
+deploy. This is recipe 19.2#1 verbatim — most real requests are that recipe with different
+inputs, limits, and gates. (Mirror of the real production pattern in §17.3's
+"Monitor reception" sketch.)
