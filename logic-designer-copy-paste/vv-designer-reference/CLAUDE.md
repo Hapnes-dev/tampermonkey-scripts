@@ -235,6 +235,14 @@ Highlights of the `data` shapes:
   type, by_refference, …}` (+ tag/constant/scaling fields depending on method).
 - **TAGVALUE** (via tag_chooser): `{value:[units], tag:require_data}`; multi-select flips the
   connected block into **repeat** runtime mode (`repeat_count`, `repeat_block`).
+- **PARAMV** (verified from a production sketch): `{driver_id: "<DRIVER_ID>"}` — a **singular
+  string** (e.g. `1001_REC_REC_4_1_THROUGHPUT_APACK_0`), with the friendly name in
+  `override.alias_text`. Contrast with WRITETOUNIT's **plural** `driver_ids` array.
+- **AVG_IN_PERIOD** (verified from production): `{block_func_args:{period:'min',
+  period_amount:5}}` — ⚠ the key is **`period`** here, while PERIODE_VALUE / PULSE_COUNT /
+  CORRELATION use **`periode`**. Copy the exact key per block type.
+- **DELAY_VARIABLE**: `data: null` even in production — it needs no configuration; the
+  delays arrive via its CONST inputs (i1 true-delay, i2 optional false-delay).
 - **ALARM**: `{alias_text, pri:'a'|'b'|'c', alarm_type:'general'|'system',
   alarm_destination:'general'|'ew'|'cw'}` (destination labels: General / Energy Watcher /
   Climate Watcher).
@@ -670,7 +678,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 | Undo | `Ctrl+Z` | Session-scoped LIFO over paste/delete/wire/tag ops (not the host's own undo). |
 | Multi-wire | `Shift+W` | Pick N pins/blocks on one side, click a target; fans out / distributes / expands inputs to wire many at once. Toggles auto-expand → fill-only → off. |
 | Remove connectors | `Shift+D` | Click/drag/marquee wires or blocks to bulk-delete connections. |
-| Paste tags | menu | Bulk-set `driver_ids` on selected `PARAMV`/`WRITETOUNIT` blocks from pasted lines (one per block, or fill a single `WRITETOUNIT` with all). |
+| Paste tags | menu | Bulk-set `driver_ids` on selected `PARAMV`/`WRITETOUNIT` blocks from pasted lines (one per block, or fill a single `WRITETOUNIT` with all). ⚠ The script writes the **plural** `driver_ids` array to both types, but the verified host shape for `PARAMV` is the **singular** `{driver_id:"…"}` (§6) — plural is confirmed only for `WRITETOUNIT`; verify the PARAMV path against a compile before relying on it. |
 
 - **Clipboard format** (persisted via `GM_setValue`, key `ldscp:clipboard:v1`):
   ```jsonc
@@ -712,8 +720,9 @@ Plant (plant_id, firmware revision)
 ```
 - **`load_sketch(sketch_id, with_data)`** →
   `{sketch_id, state, compile_state, sketch_name, plant_id, project_id, project_name, sketch}`.
-  **Gotcha:** pass **`with_data=true`** or `sketch` comes back as the bare flag `1`, not the
-  document. With data, `sketch` is the §8 save document.
+  **Gotcha (verified live, all three variants):** call it **without** `with_data` —
+  `load_sketch(id)` → `sketch` is the full §8 document. Passing `true`/`1` returns the bare
+  flag `sketch: 1`; passing `false` returns an empty object. (The app itself always omits it.)
 - **Sketch `state`** (e.g. `PROGRESS`) is the sketch's own lifecycle, separate from a process's
   `state`. **`compile_state`** `'1'` = has a current compile.
 - **History/revisions**: every save appends `{saved_by, date, comment}` (the comment is the
@@ -846,9 +855,13 @@ Prefer an existing **library process** over rebuilding common logic: search the 
 (726 in "Drift"); dropping one auto-creates its pinned inputs (`require_data`, §10).
 
 ### 19.2 Proven recipe shapes
-- **Threshold alarm with persistence** (the workhorse):
+- **Threshold alarm with persistence** (the workhorse — **executed live 2026-07-07**: all 7
+  wires connect without `force`, `syntax_check(true).ok === true`, min plant revision 0):
   `PARAMV(temp)` → `BIGGERTHAN` ← `CONST(limit)`; → `COMP_AND` ← `CALENDAR` (optional gate);
   → `DELAY_VARIABLE` ← `CONST(delay-when-true s)`; → `ALARM{pri, type, destination}`.
+  Toolbox tip: spawning `DELAY_VARIABLE` via toolbox click auto-creates + wires both delay
+  `CONST`s (its `autoconnect` inputs) and leaves the block's output selected, ready to click
+  a target input — verified live.
 - **Hysteresis / holding circuit**: comparator(high) → `LATCH.set`; comparator(low or
   `INVERT`) → `LATCH.reset`; `LATCH.value` → output. (Library also has "Holdekrets" processes.)
 - **Virtual KPI**: readings → `FORMULA`/arithmetic → `VIRTUALOUT{alias, type:'float',
@@ -875,8 +888,7 @@ const src  = p.__render_block('PARAMV', 40, 40);    // returns numeric ref (read
 const lim  = p.__render_block('CONST',   40, 160);
 const gt   = p.__render_block('BIGGERTHAN', 220, 90);
 const al   = p.__render_block('ALARM',  400, 90);
-// PARAMV's data shape is dialog-built (parameter_chooser): configure it via the UI once,
-// or copy a configured block's shape from an existing sketch with p.get_block_data(ref).
+p.set_block_data(src, {driver_id: '<DRIVER_ID>'});  // §6 — verified production shape
 p.set_block_data(lim, {alias_text:'Limit', type:'float', initial_value:8, mode:'single',
                        eng_unit:'°C', readonly:false, precision:'%.1f'});
 p.set_block_data(al,  {alias_text:'High temp', pri:'b', alarm_type:'general',
@@ -895,8 +907,8 @@ Rules of thumb:
 - After every `set_block_data`, the title turns black (configured). `p.changed` tracks dirt.
 - Persist only on request: `logic_designer_manager.save_sketch(project_id, name, p.save(),
   sketch_id_or_null, syntax_ok, comment, cb)` — a **comment is required practice** (§17.1).
-  To edit an existing sketch: `load_sketch(id, true)` → `p.load(reply.sketch)` → mutate → save
-  with the same `sketch_id`.
+  To edit an existing sketch: `load_sketch(id)` (**omit** `with_data`, §17.1) →
+  `p.load(reply.sketch)` → mutate → save with the same `sketch_id`.
 - **Never call** `deploy`/`compile_sketch_from_*`/`publish_process`/`WRITETOUNIT`-bearing
   saves without explicit user confirmation (§19.0.5).
 
@@ -919,7 +931,7 @@ Rules of thumb:
 - [ ] Save with a descriptive **revision comment**; verify with the client-side simulator
       (Tools → Simulate, §13) before proposing deploy.
 
-### 19.6 Worked example — "Alarm if room > 8 °C for 15 min during opening hours"
+### 19.6 Worked example — "Alarm if room > 8 °C for 15 min during opening hours" (executed live ✓)
 Blocks: `PARAMV`(room temp) · `CONST`(8 °C float) · `BIGGERTHAN` · `CALENDAR`(opening) ·
 `COMP_AND` · `DELAY_VARIABLE` · `CONST`(900 s integer) · `ALARM`(pri b).
 Wiring: temp→GT.i0, limit→GT.i1, GT→AND.i0, CAL→AND.i1, AND→DLY.i0, 900→DLY.i1,
