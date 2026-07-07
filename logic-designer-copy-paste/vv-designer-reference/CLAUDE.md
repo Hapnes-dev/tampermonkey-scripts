@@ -874,6 +874,8 @@ Ask (or infer from context) — these change the graph:
 | "X greater/less than Y" | `BIGGERTHAN(OREQUAL)` / `SMALLERTHAN(OREQUAL)`; equality `LIKE`/`UNLIKE` |
 | "both/any of…" | `COMP_AND` / `COMP_OR` (expandable inputs); "not" → `INVERT` |
 | "must hold for N minutes" (debounce) | `DELAY_VARIABLE` (delay via CONST inputs — best for programmatic builds) or `DELAY` (delay in config dialog) |
+| "on rising/falling edge", "count starts/pulses" | `PULSE_COUNT` with `block_func_args.type` = `flank_rising_edge`/`flank_falling_edge`/`flank_changing_edge` (native edge counting; signal→i0, **CONST level→i1 required**) |
+| "toggle/flip a value on each pulse" | `PULSE_COUNT`(flank mode) → `MOD` ← `CONST(2)` — 0/1 flips per edge (count resets per configured period). Time-based toggle = `TOGGLE_INTERVAL`; set/reset hold = `LATCH` |
 | "average/min/max/sum over a period" | `AVG/MIN/MAX/SUM_IN_PERIOD` (input **by_refference**) |
 | "how long has it been running" | `HOURMETER`; "how old is the value" → `AGE_OF_VALUE`, `DELTA_T` |
 | "stays on until reset" (hysteresis/holding circuit) | `LATCH` (set/reset) |
@@ -906,6 +908,13 @@ Prefer an existing **library process** over rebuilding common logic: search the 
 - **Spot-price load shift**: `SPOT_PRICE_LOW` → `SELECTOR` (comfort vs eco setpoint via two
   `CONST`) → `WRITETOUNIT(setpoint)`.
 - **Season/night setback**: `IS_WITHIN_DATES`/`WEATHER_SUN` → `SELECTOR` → setpoint write.
+- **Toggle on rising edge** (**verified live on plant 5440, 2026-07-07** — loaded, 6 blocks/
+  5 wires, syntax ok; import-ready file `Downloads/toggle_rising_edge_5440.json`):
+  `PARAMV(digital input)` → `PULSE_COUNT{block_func_args:{periode:'day',
+  type:'flank_rising_edge', periode_amount:1}}` ← `CONST(1)` (Logic True Level, put 1);
+  → `MOD` ← `CONST(2)`; → `VIRTUALOUT` (or `WRITETOUNIT` with an explicit target parameter).
+  Caveat: the count resets each configured period, so parity can flip at the period boundary —
+  widen the period if that matters.
 - **Fan-out one condition to many alarms**: one comparator output connects to many inputs
   (outputs multi-connect; inputs take exactly one wire).
 
@@ -1405,3 +1414,20 @@ block types that don't exist** (`DIGITAL_INPUT`→PARAMV, `WRITE`→WRITETOUNIT,
 compositions). Also note its `config.address: "001:001"` confusion: that's a **unit** id;
 bindings need the full **parameter** driver id (§20.0 rule 7). The validator catches all of it
 with per-error guidance (22 errors on that file).
+
+**A fourth failure (Copilot again, after coaching) got the closest yet** — bare document,
+integer ids, correct `source`/`target`+`put` connections — and *still* failed on five details,
+each now validator-enforced (16 errors on that file):
+1. **`//` comments inside the JSON** → `JSON.parse` fails before the importer even looks at it.
+   Emit *pure* JSON, always.
+2. Every block **missing `func`** (and `x`/`y`) — `paper.load` applies `func` verbatim, so its
+   absence breaks the compiled sketch.
+3. CONST `{"value": 2}` instead of `{"initial_value":2,"type":"integer","mode":"single"}`.
+4. PULSE_COUNT with invented `{"reset_interval":0}` — the real shape is
+   `{"block_func_args":{"periode":…,"type":…,"periode_amount":…}}`, and there is **no
+   "never reset"**: the count resets each configured period.
+5. PULSE_COUNT's required **"Logic True Level" input (put 1) left unwired** — it must be fed by
+   a `CONST` (host `require_type`). Every non-optional input of every placed block needs a wire.
+The working translation of that intent (toggle on rising edge) is recipe §19.2 /
+`toggle_rising_edge_5440.json` — PULSE_COUNT's **native `flank_rising_edge` mode** → MOD ←
+CONST(2), verified live.
