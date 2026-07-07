@@ -235,9 +235,14 @@ Highlights of the `data` shapes:
   type, by_refference, …}` (+ tag/constant/scaling fields depending on method).
 - **TAGVALUE** (via tag_chooser): `{value:[units], tag:require_data}`; multi-select flips the
   connected block into **repeat** runtime mode (`repeat_count`, `repeat_block`).
-- **PARAMV** (verified from a production sketch): `{driver_id: "<DRIVER_ID>"}` — a **singular
-  string** (e.g. `1001_REC_REC_4_1_THROUGHPUT_APACK_0`), with the friendly name in
-  `override.alias_text`. Contrast with WRITETOUNIT's **plural** `driver_ids` array.
+- **PARAMV**: modern shape **`{driver_ids: ["<DRIVER_ID>", …]}` (plural array)** — this is
+  what the host dialog (`show_paramv`) writes; selecting multiple parameters also sets
+  `output_count` = one output per parameter. Old sketches carry legacy singular
+  `{driver_id: "…"}` (seen in 2021 production data); the dialog **migrates** singular→plural
+  when opened. Friendly name goes in `override.alias_text` as
+  `"<unit_id>, <unit_name>, <param alias>"`. Driver ids look like
+  `3111_IWT_IWT_1_1_0_BAT_0`; discover them programmatically via the param_chooser service
+  (§19.4).
 - **AVG_IN_PERIOD** (verified from production): `{block_func_args:{period:'min',
   period_amount:5}}` — ⚠ the key is **`period`** here, while PERIODE_VALUE / PULSE_COUNT /
   CORRELATION use **`periode`**. Copy the exact key per block type.
@@ -678,7 +683,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 | Undo | `Ctrl+Z` | Session-scoped LIFO over paste/delete/wire/tag ops (not the host's own undo). |
 | Multi-wire | `Shift+W` | Pick N pins/blocks on one side, click a target; fans out / distributes / expands inputs to wire many at once. Toggles auto-expand → fill-only → off. |
 | Remove connectors | `Shift+D` | Click/drag/marquee wires or blocks to bulk-delete connections. |
-| Paste tags | menu | Bulk-set `driver_ids` on selected `PARAMV`/`WRITETOUNIT` blocks from pasted lines (one per block, or fill a single `WRITETOUNIT` with all). ⚠ The script writes the **plural** `driver_ids` array to both types, but the verified host shape for `PARAMV` is the **singular** `{driver_id:"…"}` (§6) — plural is confirmed only for `WRITETOUNIT`; verify the PARAMV path against a compile before relying on it. |
+| Paste tags | menu | Bulk-set `driver_ids` on selected `PARAMV`/`WRITETOUNIT` blocks from pasted lines (one per block, or fill a single `WRITETOUNIT` with all). Writes the plural `driver_ids` array — which matches the **modern host schema** for both types (the PARAMV dialog itself writes plural and migrates legacy singular `driver_id` on open, §6). |
 
 - **Clipboard format** (persisted via `GM_setValue`, key `ldscp:clipboard:v1`):
   ```jsonc
@@ -888,7 +893,8 @@ const src  = p.__render_block('PARAMV', 40, 40);    // returns numeric ref (read
 const lim  = p.__render_block('CONST',   40, 160);
 const gt   = p.__render_block('BIGGERTHAN', 220, 90);
 const al   = p.__render_block('ALARM',  400, 90);
-p.set_block_data(src, {driver_id: '<DRIVER_ID>'});  // §6 — verified production shape
+p.set_block_data(src, {driver_ids: ['<DRIVER_ID>']}); // §6 — modern plural shape
+p.set_block_override(src, 'alias_text', '<UNIT_ID>, <UNIT_NAME>, <PARAM ALIAS>');
 p.set_block_data(lim, {alias_text:'Limit', type:'float', initial_value:8, mode:'single',
                        eng_unit:'°C', readonly:false, precision:'%.1f'});
 p.set_block_data(al,  {alias_text:'High temp', pri:'b', alarm_type:'general',
@@ -911,6 +917,22 @@ Rules of thumb:
   `p.load(reply.sketch)` → mutate → save with the same `sketch_id`.
 - **Never call** `deploy`/`compile_sketch_from_*`/`publish_process`/`WRITETOUNIT`-bearing
   saves without explicit user confirmation (§19.0.5).
+- **Discover real driver_ids programmatically** (same source the PARAMV dialog uses — the
+  param_chooser component service over the commlayer):
+  ```js
+  const poll = (func, data) => new Promise(res => core.communication.poll({
+    file: '../lib/xml/qxs/views/ext/qxs_param_chooser/runtime/class.param_chooser.php',
+    func, data, callback: res }));
+  // units on the plant:            → {data:{data:[{plant_id, alias_name, units:[{unit_id, unit_name, driver_type}]}]}}
+  await poll('param_chooser->get_left',  {plant_id: query_string.plant_id, mode:'unit', values_to_load:[]});
+  // parameters of one unit:        → {data:{data:[{id:'<group>', parameters:[{alias_text, driver_id, driver_id_no, element_id}]}]}}
+  await poll('param_chooser->get_right', {plant_id: query_string.plant_id, mode:'unit',
+              value:{plant_id, unit_id:'IWT01', unit_name:'Tempnod 1'}});
+  ```
+- **Saving a NEW sketch** (mirrors the app's own call): `logic_designer_manager.save_sketch(
+  project_id, name, p.save(), false /*sketch_id=false ⇒ create*/, syntax_ok, cb)` →
+  `{sketch_id, sketch_name}`. Re-saving an existing sketch passes its `sketch_id` plus a
+  revision `comment`.
 
 ### 19.5 Pre-flight checklist (before save/deploy)
 - [ ] `syntax_check(true).ok === true` (all non-optional puts wired, all
@@ -940,3 +962,15 @@ F10 → Ctrl+S ("high-temp alarm w/ 15 min persistence, calendar-gated") → sim
 deploy. This is recipe 19.2#1 verbatim — most real requests are that recipe with different
 inputs, limits, and gates. (Mirror of the real production pattern in §17.3's
 "Monitor reception" sketch.)
+
+### 19.7 End-to-end proof (built + saved for real, 2026-07-07)
+The full pipeline was executed on plant 3111 producing **sketch 8660
+"claude_demo_tempnod1_battery_alarm"** in project "test" (3201): a wireless sensor-node
+**low-battery maintenance alarm** —
+`PARAMV{driver_ids:['3111_IWT_IWT_1_1_0_BAT_0']}` ("IWT01 Tempnod 1, Battery level")
+→ `SMALLERTHAN` ← `CONST(20 %)`; → `DELAY_VARIABLE` ← `CONST(3600 s)`; → `ALARM{pri:'c'}`.
+Discovered the real parameter via param_chooser (§19.4), wired without `force`,
+`syntax_check(true).ok`, saved via `save_sketch(…, false, true)` → round-trip
+`load_sketch(8660)` returned all 6 blocks / 5 connections (state PROGRESS,
+compile_state 0 = never deployed). Open it:
+`vv_fbx.qxs?plant_id=3111&sketch=8660`. Not deployed — deploying is a human decision.
