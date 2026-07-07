@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.1
+// @version      1.1.0
 // @description  Export the current VV Designer sketch to a JSON file and import it on another plant (with driver-id plant rebinding) — adds Export/Import entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -156,10 +156,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
+    var VERSION = '1.1.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
     W[LOAD_FLAG] = true;
+
+    // ─── Styles (GM_addStyle when sandboxed; <style> fallback otherwise) ──
+    var CSS = '\
+      .ldio-toast { position: fixed; bottom: 16px; right: 16px; z-index: 100000;\
+        padding: 8px 12px; background: rgba(30,30,30,0.92); color: #fff;\
+        font: 12px/1.3 sans-serif; border-radius: 4px;\
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3); pointer-events: none; }\
+      .ldio-toast-error { background: rgba(140,30,30,0.92); }\
+      .ldio-overlay { position: fixed; inset: 0; z-index: 99998;\
+        background: rgba(0,0,0,0.35); }\
+      .ldio-panel { position: fixed; top: 15%; left: 50%; transform: translateX(-50%);\
+        z-index: 99999; width: 460px; max-width: 92vw; padding: 14px;\
+        background: rgba(25,25,25,0.97); color: #d4d4d4; border-radius: 8px;\
+        border: 1px solid rgba(255,255,255,0.14);\
+        box-shadow: 0 8px 28px rgba(0,0,0,0.55);\
+        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }\
+      .ldio-panel h3 { margin: 0 0 10px 0; font-size: 14px; color: #fff; }\
+      .ldio-file-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }\
+      .ldio-file-row input[type=file] { flex: 1; color: #d4d4d4; font-size: 12px; }\
+      .ldio-drop { border: 2px dashed rgba(255,255,255,0.25); border-radius: 6px;\
+        padding: 14px; text-align: center; color: #9a9a9a; margin-bottom: 10px; }\
+      .ldio-drop.ldio-drop-hot { border-color: #ffa500; color: #ffa500; background: rgba(255,165,0,0.06); }\
+      .ldio-panel textarea { width: 100%; box-sizing: border-box; height: 84px;\
+        background: #1e1e1e; color: #d4d4d4; border: 1px solid rgba(255,255,255,0.15);\
+        border-radius: 4px; padding: 6px 8px; font: 11px/1.4 monospace; resize: vertical; }\
+      .ldio-btn-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }\
+      .ldio-btn { background: #2a2a2a; color: #d4d4d4; border: 1px solid rgba(255,255,255,0.15);\
+        border-radius: 4px; padding: 6px 14px; font-size: 12px; cursor: pointer; }\
+      .ldio-btn:hover { background: #383838; }\
+      .ldio-btn-primary { background: #2c5d8e; border-color: #3d7ab3; }\
+      .ldio-btn-primary:hover { background: #357ab8; }\
+      .ldio-version { opacity: 0.45; font-size: 10px; }\
+    ';
+    if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
+    else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
 
     // ─── Toast ──────────────────────────────────────────────────────
     function toast(message, kind) {
@@ -167,17 +203,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       el.textContent = message;
       el.className = 'ldio-toast' + (kind === 'error' ? ' ldio-toast-error' : '');
       document.body.appendChild(el);
-      setTimeout(function () { el.remove(); }, 4000);
-    }
-
-    if (typeof GM_addStyle === 'function') {
-      GM_addStyle('\
-        .ldio-toast { position: fixed; bottom: 16px; right: 16px; z-index: 99999;\
-          padding: 8px 12px; background: rgba(30,30,30,0.92); color: #fff;\
-          font: 12px/1.3 sans-serif; border-radius: 4px;\
-          box-shadow: 0 2px 8px rgba(0,0,0,0.3); pointer-events: none; }\
-        .ldio-toast-error { background: rgba(140,30,30,0.92); }\
-      ');
+      setTimeout(function () { el.remove(); }, 4500);
     }
 
     // ─── Export ─────────────────────────────────────────────────────
@@ -217,41 +243,125 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
-    // ─── Import ─────────────────────────────────────────────────────
-    // The hidden file input is created EAGERLY at install and opened
-    // SYNCHRONOUSLY inside the native click event (capture phase, see
-    // onCaptureClick below). Opening it later — e.g. from the host's menu
-    // callback chain — loses Chrome's transient user activation and the
-    // picker silently refuses to open. (v1.0.1 fix.)
-    var fileInput = null;
+    // ─── Import panel ───────────────────────────────────────────────
+    // v1.1.0: no programmatic input.click() at all. The menu opens a panel
+    // holding a VISIBLE file input — the user's own click on it is a direct
+    // gesture, so the OS picker always opens (this defeated v1.0.x, where
+    // Chrome dropped the transient activation before input.click() ran).
+    // The panel also accepts drag-and-drop and pasted JSON.
+    var panelEls = null; // { overlay, panel, input, drop, textarea }
 
-    function ensureFileInput() {
-      if (fileInput) return fileInput;
-      fileInput = document.createElement('input');
-      fileInput.type = 'file';
-      fileInput.accept = '.json,application/json';
-      fileInput.style.display = 'none';
-      (document.body || document.documentElement).appendChild(fileInput);
-      fileInput.addEventListener('change', function () {
-        var file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        var reader = new FileReader();
-        reader.onload = function () {
-          var parsed;
-          try { parsed = JSON.parse(String(reader.result)); }
-          catch (e) { toast('Not valid JSON: ' + e.message, 'error'); return; }
-          applyImport(parsed);
-        };
-        reader.onerror = function () { toast('Could not read the file.', 'error'); };
-        reader.readAsText(file);
-      });
-      return fileInput;
+    function closeImportPanel() {
+      if (!panelEls) return;
+      panelEls.overlay.remove();
+      panelEls.panel.remove();
+      panelEls = null;
+      document.removeEventListener('keydown', onPanelKeydown, true);
     }
 
-    function doImport() {
-      var input = ensureFileInput();
-      input.value = ''; // allow re-picking the same file
-      input.click();
+    function onPanelKeydown(event) {
+      if (event.key === 'Escape' && panelEls) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeImportPanel();
+      }
+    }
+
+    function readFileAndImport(file) {
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        closeImportPanel();
+        var parsed;
+        try { parsed = JSON.parse(String(reader.result)); }
+        catch (e) { toast('Not valid JSON: ' + e.message, 'error'); return; }
+        applyImport(parsed);
+      };
+      reader.onerror = function () { toast('Could not read the file.', 'error'); };
+      reader.readAsText(file);
+    }
+
+    function openImportPanel() {
+      if (panelEls) { closeImportPanel(); }
+
+      var overlay = document.createElement('div');
+      overlay.className = 'ldio-overlay';
+      overlay.addEventListener('click', closeImportPanel);
+
+      var panel = document.createElement('div');
+      panel.className = 'ldio-panel';
+
+      var h = document.createElement('h3');
+      h.textContent = 'Import sketch (JSON)';
+      panel.appendChild(h);
+
+      // 1) Visible file input — a direct user click, always opens the picker.
+      var fileRow = document.createElement('div');
+      fileRow.className = 'ldio-file-row';
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,application/json';
+      input.addEventListener('change', function () {
+        readFileAndImport(input.files && input.files[0]);
+      });
+      fileRow.appendChild(input);
+      panel.appendChild(fileRow);
+
+      // 2) Drag & drop zone.
+      var drop = document.createElement('div');
+      drop.className = 'ldio-drop';
+      drop.textContent = '…or drop a vv-sketch .json file here';
+      drop.addEventListener('dragover', function (e) { e.preventDefault(); e.stopPropagation(); drop.classList.add('ldio-drop-hot'); });
+      drop.addEventListener('dragleave', function () { drop.classList.remove('ldio-drop-hot'); });
+      drop.addEventListener('drop', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        drop.classList.remove('ldio-drop-hot');
+        var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        readFileAndImport(f);
+      });
+      panel.appendChild(drop);
+
+      // 3) Paste-JSON fallback.
+      var textarea = document.createElement('textarea');
+      textarea.placeholder = '…or paste the exported JSON here and press Import';
+      textarea.spellcheck = false;
+      panel.appendChild(textarea);
+
+      var btnRow = document.createElement('div');
+      btnRow.className = 'ldio-btn-row';
+      var ver = document.createElement('span');
+      ver.className = 'ldio-version';
+      ver.textContent = 'LDIO v' + VERSION;
+      var btns = document.createElement('span');
+      var cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'ldio-btn';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.marginRight = '6px';
+      cancelBtn.addEventListener('click', closeImportPanel);
+      var importBtn = document.createElement('button');
+      importBtn.type = 'button';
+      importBtn.className = 'ldio-btn ldio-btn-primary';
+      importBtn.textContent = 'Import pasted JSON';
+      importBtn.addEventListener('click', function () {
+        var text = textarea.value.trim();
+        if (!text) { toast('Paste JSON first, or pick a file above.'); return; }
+        var parsed;
+        try { parsed = JSON.parse(text); }
+        catch (e) { toast('Not valid JSON: ' + e.message, 'error'); return; }
+        closeImportPanel();
+        applyImport(parsed);
+      });
+      btns.appendChild(cancelBtn);
+      btns.appendChild(importBtn);
+      btnRow.appendChild(ver);
+      btnRow.appendChild(btns);
+      panel.appendChild(btnRow);
+
+      document.body.appendChild(overlay);
+      document.body.appendChild(panel);
+      document.addEventListener('keydown', onPanelKeydown, true);
+      panelEls = { overlay: overlay, panel: panel, input: input, drop: drop, textarea: textarea };
     }
 
     function applyImport(parsed) {
@@ -341,15 +451,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return null;
     }
 
-    // Capture-phase click handler: runs INSIDE the native user gesture, before
-    // the host's own menu handler. This is what allows fileInput.click() to
-    // actually open the OS file picker (transient activation intact).
+    // Capture-phase click handler: keeps export inside the native gesture
+    // (nice for the download) and opens the import panel immediately.
     var lastHandledAt = 0;
     function onCaptureClick(event) {
       var id = resolveOwnMenuItemId(event.target);
       if (!id) return;
       lastHandledAt = Date.now();
-      if (id === 'file_ldio_import') doImport();
+      if (id === 'file_ldio_import') openImportPanel();
       else if (id === 'file_ldio_export') doExport();
       // Do NOT stop the event — the host's handler still runs and closes the
       // dropdown; our on_menu wrap below swallows the unknown item id.
@@ -378,17 +487,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return origRender.call(this, clear);
       };
 
-      // Fallback + swallow: if the capture handler already acted (normal
-      // path), just swallow our ids so the host's switch doesn't see them.
-      // If it somehow didn't (markup change), run the action here — export
-      // still works from this path; the file picker may need the fallback
-      // user to click Import again.
+      // Fallback: if the capture handler didn't act (markup change, missed
+      // event), the panel path still works from here — it needs no gesture.
       var origOnMenu = W.application.on_menu;
       W.application.on_menu = function (event) {
         if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import')) {
-          if (Date.now() - lastHandledAt > 1500) {
+          if (Date.now() - lastHandledAt > 1000) {
             if (event.item_id === 'file_ldio_export') doExport();
-            else doImport();
+            else openImportPanel();
           }
           return;
         }
@@ -396,7 +502,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
 
       document.addEventListener('click', onCaptureClick, true);
-      ensureFileInput();
 
       // Rebuild once so the entries appear without needing a mode switch.
       try {
@@ -411,12 +516,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (W.application && W.menu_main && W.menu_main.creator && W.logic_designer) {
         clearInterval(installPoll);
         installMenuHooks();
-        console.log('[' + SCRIPT_NAME + '] installed.');
+        console.log('[' + SCRIPT_NAME + '] v' + VERSION + ' installed.');
       }
     }, 300);
 
     // Expose internals for console debugging / live verification.
-    W.__LDIO = { doExport: doExport, doImport: doImport, applyImport: applyImport };
+    W.__LDIO = { version: VERSION, doExport: doExport, openImportPanel: openImportPanel, applyImport: applyImport };
   })();
 }
 

@@ -12,7 +12,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 
 1. On the **source plant** (`vv_fbx.qxs?plant_id=A`): open the sketch → **File → Transfer → Export sketch (JSON)** → a `vv-sketch_<plant>_<name>_<date>.json` file downloads.
 2. Open the designer for the **target plant** (`vv_fbx.qxs?plant_id=B`) and start the application (pick any project).
-3. **File → Transfer → Import sketch (JSON)** → pick the file.
+3. **File → Transfer → Import sketch (JSON)** → an import panel opens. Load the sketch any of three ways: click **Choose File**, **drag-and-drop** the `.json` onto the panel, or **paste** the exported JSON text and press **Import pasted JSON**.
 4. If the sketch came from a different plant, you're asked to **rebind parameter bindings**: `A_…` driver ids are rewritten to `B_…` (say OK when the plants share the same unit layout — e.g. identical store setups; Cancel keeps the original ids for manual reconfiguration).
 5. The graph lands on the canvas marked **unsaved**, and the current-sketch pointer is cleared — so **Ctrl+S opens "Save sketch"** to store it as a *new* sketch on the target plant (it can never silently overwrite a previously open sketch).
 6. Verify (F10), save into a project, deploy when ready — all through the normal host flows.
@@ -45,8 +45,9 @@ Import also accepts a **bare** `paper.save()` document (`{mode, blocks, connecti
 
 ## How it integrates
 
-- The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + the two items to the `file` level before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks arrive as `file_ldio_export` / `file_ldio_import` through a wrapped `application.on_menu`.
-- Export = `logic_designer.paper.save()` in an envelope; import = validation → optional rebind (on a deep copy) → `paper.reset()` + `paper.load()`.
+- The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + the two items to the `file` level before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks are caught by a capture-phase listener (and a wrapped `application.on_menu` as fallback).
+- Export = `logic_designer.paper.save()` in an envelope → `Blob` download.
+- Import opens a **panel with a visible file input** (plus drag-drop and paste). This is deliberate: a browser only opens a file picker from a *direct* user click, so a visible input the user clicks themselves always works — a programmatic `input.click()` fired from the host's menu-callback chain gets rejected once the click's user-activation has lapsed (the v1.0.x bug). Import then runs validation → optional rebind (on a deep copy) → `paper.reset()` + `paper.load()`.
 - No server calls, no network grants — saving/deploying stays in the host's hands.
 - Internals exposed as `window.__LDIO` for console debugging; pure helpers are `module.exports`-ed for Node unit tests.
 
