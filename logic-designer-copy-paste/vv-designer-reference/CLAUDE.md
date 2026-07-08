@@ -28,7 +28,8 @@ system, the save format, the server API, and the compile/deploy lifecycle. See
 >   another AI, paste §20.0 + §20.4 + §20.6, and always run
 >   `node validate-vv-sketch.js <file>` on the result before importing.
 >
-> Sections 1–18 are the reference both link back into.
+> Sections 1–18 are the reference both link back into; **§21** is ground truth from a
+> 15-sketch production corpus (6 plants) — check it when unsure what real files look like.
 
 ---
 
@@ -267,12 +268,20 @@ Highlights of the `data` shapes:
   `alarm`|`value` (alarm = boolean over-limit; value = counter value for the period).
 - **PERIODE_VALUE / PULSE_COUNT / CORRELATION / WEATHER…**: `{block_func_args:{mode, periode,
   period_amount, …}}` (period ∈ `hour|day|week|month|year`).
+- **SELECTOR** (production shape): `{output_type:'integer'|'float'}` — only the output type lives
+  in `data`; the two alternatives arrive as inputs (usually `CONST`s).
+- **TOGGLE_INTERVAL** (production shape): `{block_func_args:{interval:'min', offset:0}}`.
+- **WEATHER** (production shape): `{block_func_args:{func:'current_dew_point', period_count:1}}` +
+  `properties.output_count`. The geo lookup arrives as **string-`CONST` inputs**, not in `data`:
+  put 0 County, put 1 Commune, put 2 Place (all optional — unconnected ⇒ GPS), put 3/4 period
+  start/end hour.
 - **FORMULA**: `{formula, title, output_type, eng_unit, precision?, scaling?}` — the formula is
   **server-verified** (`verify_math(formula, input_count)`) before save; changing output type
   prunes now-incompatible connections (with a confirm). **Grammar** (a server-side **PHP
   expression evaluator**, probed live): inputs are referenced as **`inp0`, `inp1`, … `inpN‑1`**
   (0-indexed, bounded by the block's input count — `inp2` on a 2-input block errors). Supports
-  `+ - * / % ^`, comparisons `> < >= <=`, ternary `?:`, boolean `and`/`&&`/`or`/`||`, and the
+  `+ - * / % ^`, comparisons `> < >= <=` and `==` (production-verified — mode decoders like
+  `inp0==2`, §21), ternary `?:`, boolean `and`/`&&`/`or`/`||`, and the
   functions `min max abs round floor ceil sqrt pow sin cos log log10 exp fmod pi() random()`.
   **Not** supported: block-statement `if(){}`, or bare named constants (`pi`, `e`, `M_PI`).
   `precision` is printf-style: `%.1f` / `%.2f` / `%.3f`. `output_type` ∈ integer/float/boolean/string.
@@ -287,6 +296,11 @@ Highlights of the `data` shapes:
 **Refrigerant/thermo transform maps** (for `TRANSFORM_MAPPED` and property transformations,
 `available_transformations`): `suva_404a/407c/410a/507/hfc_134a`, `co2_enthalpy`, `co2_svg`,
 `r717_ammonia`, `tega_co2`, `cop_350_he/mt/parallel/kw` (COP maps need `require_plant_revision ≥1030`).
+**Custom maps** (production-verified, §21): a user-defined table flips the block to
+`func: 'transform_mapped_custom.run'` — same `type: 'TRANSFORM_MAPPED'`, different `func` — with
+`data.block_func_args.map = '__custom__'` and the table in
+`properties.custom_transform_map = {alias_text, value:{inputs:[[from,to],…], output:[from,to]}}`
+(+ `properties.input_count`/`input_alias_texts`).
 
 **Criteria** (`available_criterias`): `year (1970–2099)`, `month_of_year (1–12)`,
 `week_of_year (1–52)`, `day_of_year (1–365)`, `day_of_month (1–31)`, `day_of_week (1–7)`,
@@ -294,7 +308,9 @@ Highlights of the `data` shapes:
 
 **Block-level properties** (separate from `data`, set via right-click → Properties):
 `interval` / `interval_offset` (how often the block runs), `transformations[]`,
-`format_extra` (enumeration lookup), `documentation`.
+`format_extra` (enumeration lookup), `documentation`. In exports each **set** property is an
+`{alias_text, value}` object — e.g. `interval:{alias_text:'Interval', value:'10 sec'}` — and a
+block with no properties exports `properties: []` (PHP empty array); accept both `[]` and `{}`.
 
 ---
 
@@ -356,7 +372,13 @@ Notes:
 - **`require_plant_revision`** is computed at save time as the **max** of every used block's
   requirement — this is how the system knows the minimum plant firmware needed to run the sketch.
 - **`by_refference`** on a connection means the consumer wants the *reference* (address) of the
-  value, not just its computed value (used by period/aggregation/delay blocks).
+  value, not just its computed value (used by period/aggregation/delay blocks). It sits on the
+  **target** endpoint: `"target":{"id":53,"put":0,"by_refference":true}` (production example:
+  `AGE_OF_VALUE`'s value input).
+- **Real exports additionally carry** (production corpus, §21): a connection **`alias_text`** =
+  the target input pin's name ("Condition", "Value", "Input 1", …) on every wire — informational,
+  not needed on import; process-block instances carry block-level `current_revision` (string);
+  CONST `data` always includes `values: null` in single mode; empty `properties` is `[]`.
 - `save(exclude_configuration, include_static_linking)` can omit config for
   dynamically-linked blocks (used when publishing processes).
 - `save_svg()` exports the canvas as SVG (used when publishing a process preview image).
@@ -920,6 +942,18 @@ Prefer an existing **library process** over rebuilding common logic: search the 
   → `MOD` ← `CONST(2)`; → `VIRTUALOUT` (or `WRITETOUNIT` with an explicit target parameter).
   Caveat: the count resets each configured period, so parity can flip at the period boundary —
   widen the period if that matters.
+- **Parameter bridge** (production's most common tiny sketch, §21): `PARAMV → WRITETOUNIT` —
+  copy a value across buses/units (e.g. BACnet outdoor temp → Frico fan-heater input). One
+  `WRITETOUNIT` with several `driver_ids` fans the same value out to many parameters.
+- **Gated write / enable switch** (production standard for switchable writes): `CONST(boolean)
+  → IF.i0 (Condition)`; `value → IF.i1 (Value)`; `IF → WRITETOUNIT`. Flip the CONST to stop the
+  write without deleting logic (IF invalidates the untaken branch, §4.2).
+- **Watchdog / heartbeat**: `TOGGLE_INTERVAL{block_func_args:{interval:'min',offset:0}} → IF ←
+  CONST(enable) → WRITETOUNIT`, with `properties.interval = '10 sec'` on toggle + write so the
+  alternating value is pushed every 10 s (plant-5290 production).
+- **Mode decoder / state fan-out**: `PARAMV(mode integer)` → N× `FORMULA{formula:'inp0==K',
+  output_type:'boolean'}` → each boolean gates its own branch (`SELECTOR`/`IF`/write). Production's
+  way to turn one multi-state parameter into per-state logic.
 - **Fan-out one condition to many alarms**: one comparator output connects to many inputs
   (outputs multi-connect; inputs take exactly one wire).
 
@@ -1188,7 +1222,7 @@ Exactly the §8 `paper.save()` shape:
   "data": null,                       // per-type config payload (20.4 / §6), or null if none/unknown
   "override": {},                     // e.g. {"alias_text":"…"} to rename the block on canvas
   "runtime": {},
-  "properties": {},                   // usually {} (or []); interval/format_extra/etc. rarely
+  "properties": {},                   // {} or [] when empty (host exports []); set entries are {"<prop>":{"alias_text":…,"value":…}}
   "output_type": "boolean",           // 20.4 table (informational; re-derived from type on load)
   "x": 220, "y": 80                   // canvas position (px)
 }
@@ -1249,18 +1283,22 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `DIVIDE` | `divide` | function | `["integer","float"]` | i0,i1 | `null` |
 | `MIN`/`MAX`/`AVERAGE` | `comp_min`/`comp_max`/`average` | function | `float` | i0,i1,… (expandable) | `null` |
 | `FORMULA` | `formula` | function | `float` | inp0,inp1,… (expandable) | `{"formula":"inp0+inp1","output_type":"float","title":"…","precision":"%.1f"}` (grammar §6) |
-| `SELECTOR` | `selector` | function | `["integer","float"]` | i0 bool, i1 if-true, i2 if-false | requires config — build the two alternatives as `CONST`s |
+| `SELECTOR` | `selector` | function | `["integer","float"]` | i0 bool, i1 if-true, i2 if-false | `{"output_type":"integer"}` (or `"float"`) — the alternatives arrive as `CONST` inputs |
+| `IF` | `if` | condition | `"mixed"` | i0 Condition (boolean), i1 Value | `null` — passes Value only while Condition is true (downstream otherwise invalidated); **the production gate for switchable writes** (rev ≥620) |
 | `DELAY_VARIABLE` | `alarm_multi_delay` | function | `boolean` | i0 value, i1 delay-true (CONST s), i2 delay-false (optional CONST) | `null` (delays come from the CONST inputs) |
 | `AVG_IN_PERIOD` | `avg_in_period` | function | `float` | i0 value (by-ref) | `{"block_func_args":{"period":"min","period_amount":5}}` (note key **`period`**) |
 | `MIN_IN_PERIOD`/`MAX_IN_PERIOD`/`SUM_IN_PERIOD` | `min_in_period`/`max_in_period`/`sum_in_period` | function | `float` | i0 value (by-ref) | requires config `{"block_func_args":{…}}` |
 | `LATCH` | `latch.run` | function | `integer` | i0 set, i1 reset | `null` (needs plant rev ≥1683) |
 | `PERIODE_VALUE` | `counter_limit.run` | function | `["float","boolean"]` | i0 param, i1 limit | `{"block_func_args":{"mode":"alarm","periode":"day","period_amount":1}}` (note key **`periode`**) |
 | `PULSE_COUNT` | `pulse_count` | function | `["integer"]` | i0 signal (by-ref), i1 level (**requires CONST**) | `{"block_func_args":{"periode":"day","type":"flank_rising_edge","periode_amount":1}}` — periode ∈ sec/min/hour/day/week/month/year; type ∈ `over_or_equal_value`/`absolute_value`/**`flank_rising_edge`**/`flank_falling_edge`/`flank_changing_edge` (⇒ native edge counting!); count resets each period |
+| `TOGGLE_INTERVAL` | `toggle_interval.run` | function | `["boolean"]` | — | `{"block_func_args":{"interval":"min","offset":0}}` |
+| `WEATHER` | `weather.run_by_ccp_country` | function | `["float"]` | i0 County, i1 Commune, i2 Place (optional string `CONST`s; unconnected ⇒ GPS), i3 period start, i4 period end | `{"block_func_args":{"func":"current_dew_point","period_count":1}}` + `properties.output_count` (rev ≥620) |
 | `ALARM` | `alarm` | output | `null` | i0 boolean | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` (pri a/b/c; dest general/ew/cw) |
 | `ALARM_OBJECT` | `alarm_object` | output | `null` | i0 condition, i1 cost | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` |
 | `VIRTUALOUT` | `virtualout` | output | `null` | i0 mixed | `{"alias_text":"…","type":"float","engineering":{"unit":""},"precision":"%.1f"}` |
-| `WRITETOUNIT` | `set_unit_value` | function | `null` | i0 value | `{"force_write":false,"delay":0,"limit_count":false,"count":"","driver_ids":["<REAL_ID>"]}` — **real hardware write; confirm with user** |
+| `WRITETOUNIT` | `set_unit_value` | function | `null` | i0 value | `{"force_write":false,"delay":0,"limit_count":false,"count":1,"driver_ids":["<REAL_ID>", …]}` — several ids fan the value out to many parameters; **real hardware write; confirm with user** |
 | `TEMP_VALUE` | `tmp_value` | output | `["mixed"]` | i0 mixed | `{"alias_text":"…"}` |
+| `TRANSFORM_MAPPED` | `transform_mapped.run` — **`transform_mapped_custom.run` when the map is custom** | function | `"float"` | i0 value | named map: `{"block_func_args":{"map":"<§6 map key>"}}`; custom: `{"block_func_args":{"map":"__custom__"}}` + the table in `properties.custom_transform_map` (§6) |
 
 For any block not listed, pull `block_func`/`compile_type`/`inputs`/`outputs` from §4, or open
 it once in the live designer and read `get_block_data(ref)` (§19.4).
@@ -1459,3 +1497,37 @@ CORRELATION `periode/period_amount`, AVG_IN_PERIOD `period/period_amount`). Take
 **models drift back to their priors between attempts — regenerate from the §20.6/§19.2
 templates and re-validate every time; never trust that a previously-corrected mistake stays
 corrected.**
+
+---
+
+## 21. Ground truth — a 15-sketch production corpus (2026-07-08)
+
+15 real sketches exported (via the Import/Export userscript) from **six production plants**
+(4862, 5290, 8565, 8602, 9652, 10111) — **310 blocks / 285 wires** — were analysed and run
+through `validate-vv-sketch.js`. **All pass**; the corpus exposed exactly one validator false
+positive, since fixed: `TRANSFORM_MAPPED` with a custom map exports
+`func "transform_mapped_custom.run"` (§6). Findings folded into §6/§8/§19.2/§20.4 above;
+the headline numbers:
+
+- **Block-type frequency**: CONST ×139 · WRITETOUNIT ×49 · PARAMV ×45 · process instances ×18
+  (6 distinct library processes) · FORMULA ×11 · IF ×9 · DELAY_VARIABLE ×7 · VIRTUALOUT ×5 ·
+  BIGGERTHAN ×4 — and only **2 ALARMs** in the whole corpus. Production VV logic overwhelmingly
+  *controls* (writes setpoints/signals); it doesn't just alarm.
+- **The recurring shapes** are §19.2's parameter-bridge, gated-write (`IF`), watchdog
+  (`TOGGLE_INTERVAL → IF → WRITETOUNIT`), and mode-decoder (`FORMULA "inp0==K"`) recipes —
+  the smallest production sketch is literally `PARAMV → WRITETOUNIT` (2 blocks, 1 wire).
+- **Envelope/format**: every export uses the v1 envelope; `groups` is `[]` in all 17 files;
+  sketch-level `require_plant_revision` is only ever **0 or 620** in the corpus (620 = IF/
+  WEATHER/AGE_OF_VALUE present).
+- **Field shapes confirmed at scale**: `properties: []` when empty, `{alias_text, value}` entries
+  when set (`interval`, `format_extra`, `documentation`, `input_count`, `output_count`,
+  `custom_transform_map`); connection `alias_text` on **every** wire; CONST always carries
+  `values: null` (and string CONSTs use string `initial_value` — WEATHER geo); WRITETOUNIT
+  always `count: 1` with `limit_count: false`, and multi-id fan-out is real
+  (one block, two `driver_ids`, alias "Multiple parameters"); units in `engineering.unit`/
+  `eng_unit` may be HTML entities (`&deg;C`).
+- **Process instances in the wild**: `type` = uppercase library eid (`29_59DF59D32D9E56.37390576`),
+  `func` = the same lowercased, `compile_type: "process"`, block-level `current_revision: "9596"`,
+  and `data` either `null` or `{alias_text}` (the per-instance label lives in **data**, not
+  override, for process blocks). Cross-plant these only resolve if the target plant's library
+  publishes the same process key — the importer warns otherwise.

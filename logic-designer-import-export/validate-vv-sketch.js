@@ -235,7 +235,7 @@ function validateSketchDocument(doc, report) {
       const def = SYSTEM_BLOCKS[b.type];
       if (b.func === undefined) {
         err(`${at} (${b.type}) missing "func" — must be "${def.func}" (paper.load applies it verbatim; omitting breaks compile)`);
-      } else if (b.func !== def.func && !(b.type === 'IS_WITHIN_DATES' && b.func === 'is_within_date')) {
+      } else if (b.func !== def.func && !(b.type === 'IS_WITHIN_DATES' && b.func === 'is_within_date') && !(b.type === 'TRANSFORM_MAPPED' && b.func === 'transform_mapped_custom.run')) {
         err(`${at} (${b.type}) func "${b.func}" wrong — must be "${def.func}"`);
       }
       if (b.compile_type !== undefined && b.compile_type !== def.compile_type && def.compile_type !== null) {

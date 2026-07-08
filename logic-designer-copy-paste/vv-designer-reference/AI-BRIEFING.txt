@@ -238,8 +238,10 @@ OUTPUTS (compile_type "output" unless noted)
    "engineering": {"unit": "<unit or ''>"}}  (+ "precision" for float)
 - WRITETOUNIT | func "set_unit_value" | compile_type "function"
   WRITES TO REAL HARDWARE when deployed. data: {"force_write": false,
-  "delay": 0, "limit_count": false, "count": "",
+  "delay": 0, "limit_count": false, "count": 1,
   "driver_ids": ["<FULL_DRIVER_ID>"]}
+  (production always uses count 1; several driver_ids in one block fan the
+  same value out to many parameters)
   Include this block ONLY if the user explicitly asked to write to hardware
   AND supplied/confirmed the exact target parameter. Otherwise use VIRTUALOUT.
 - TEMP_VALUE "tmp_value" — persist and pass through a value.
