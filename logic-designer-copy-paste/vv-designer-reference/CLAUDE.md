@@ -1093,9 +1093,12 @@ Copilot, Gemini, …) to generate VV logic, paste **§20.0 + the §20.4 block ta
 example** as its instructions — or, easier, hand it the **ready-made briefing**
 [`AI-BRIEFING.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt)
 (~3 150 words: concepts, contract, allowlist, recipes, validated example, all five failure
-histories as prohibitions, self-check). Then run the output through the **mechanical
-validator** before importing (see below) — do not trust any AI-generated file unvalidated,
-including your own.
+histories as prohibitions, self-check) — **paired with
+[`AI-EXAMPLES.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-copy-paste/vv-designer-reference/AI-EXAMPLES.txt)**
+(seven complete production sketches + notable block shapes, verbatim in the accepted format —
+the briefing says what is allowed, the examples show what correct output looks like; §21).
+Then run the output through the **mechanical validator** before importing (see below) — do not
+trust any AI-generated file unvalidated, including your own.
 
 ```text
 CONTRACT — VV Designer sketch JSON (vv-fbx-sketch). Follow EXACTLY.
@@ -1506,8 +1509,10 @@ corrected.**
 (4862, 5290, 8565, 8602, 9652, 10111) — **310 blocks / 285 wires** — were analysed and run
 through `validate-vv-sketch.js`. **All pass**; the corpus exposed exactly one validator false
 positive, since fixed: `TRANSFORM_MAPPED` with a custom map exports
-`func "transform_mapped_custom.run"` (§6). Findings folded into §6/§8/§19.2/§20.4 above;
-the headline numbers:
+`func "transform_mapped_custom.run"` (§6). A curated teaching subset — seven complete sketches
+plus the notable block shapes, verbatim — is committed alongside as
+[`AI-EXAMPLES.txt`](AI-EXAMPLES.txt); hand it to any AI together with `AI-BRIEFING.txt`.
+Findings folded into §6/§8/§19.2/§20.4 above; the headline numbers:
 
 - **Block-type frequency**: CONST ×139 · WRITETOUNIT ×49 · PARAMV ×45 · process instances ×18
   (6 distinct library processes) · FORMULA ×11 · IF ×9 · DELAY_VARIABLE ×7 · VIRTUALOUT ×5 ·
