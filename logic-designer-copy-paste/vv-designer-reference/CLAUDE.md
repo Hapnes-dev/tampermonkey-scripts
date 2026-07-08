@@ -25,7 +25,7 @@ system, the save format, the server API, and the compile/deploy lifecycle. See
 >   bare `{mode,blocks,connections}`) — a graph of typed blocks + wires. **Do not invent a
 >   `schema`/`steps`/`expression`-style format** (§20's STOP box + §20.8/§20.9 show two real
 >   rejections). **§20.0 is the normative machine contract** — when delegating generation to
->   another AI, paste §20.0 + §20.4 + §20.6, and always run
+>   another AI, use the **§20.10 delegation kit** (or paste §20.0 + §20.4 + §20.6), and always run
 >   `node validate-vv-sketch.js <file>` on the result before importing.
 >
 > Sections 1–18 are the reference both link back into; **§21** is ground truth from a
@@ -1500,6 +1500,105 @@ CORRELATION `periode/period_amount`, AVG_IN_PERIOD `period/period_amount`). Take
 **models drift back to their priors between attempts — regenerate from the §20.6/§19.2
 templates and re-validate every time; never trust that a previously-corrected mistake stays
 corrected.**
+
+### 20.10 Delegating generation to Copilot / another AI — the ready-to-use kit
+
+Three assets in this folder cover every delegation channel. Pick by how much you can give
+the other AI:
+
+| Channel | What to give it |
+|---|---|
+| **M365 Copilot declarative agent** (instruction field, ≤8000 chars) | Paste [`AI-AGENT-INSTRUCTIONS.txt`](AI-AGENT-INSTRUCTIONS.txt) into the instructions; attach [`AI-BRIEFING.txt`](AI-BRIEFING.txt) + [`AI-EXAMPLES.txt`](AI-EXAMPLES.txt) as knowledge files. |
+| **Chat that can fetch URLs** (Copilot Chat, ChatGPT w/ browsing, Gemini) | Paste the block below — it links the raw files. |
+| **Chat that cannot fetch** | Paste the block below **plus** the full contents of `AI-BRIEFING.txt` and `AI-EXAMPLES.txt`. |
+
+Whatever comes back: **run `node validate-vv-sketch.js <file>` before importing — no
+exceptions.** All five §20.8/§20.9 failures were delivered confidently.
+
+The ready-to-paste block:
+
+```text
+TASK
+You generate logic for IWMAC's VV Designer - a visual function-block editor
+for refrigeration/energy plants. The user describes the logic in words; you
+deliver exactly ONE pure-JSON .json file they import via File > Transfer >
+Import sketch (JSON). This is a niche in-house format: your generic
+assumptions about node-graph JSON are wrong here. Five earlier AI attempts
+failed by inventing formats - the rules below are a binding contract.
+
+REFERENCE MATERIAL (read before generating; binding)
+1. AI-BRIEFING.txt - the rules: concepts, the full block allowlist with exact
+   data payloads, recipes, prohibitions.
+2. AI-EXAMPLES.txt - seven real production sketches, verbatim: what correct
+   output looks like. Pattern-match the request to the closest example and
+   keep its structure.
+Raw URLs (fetch if you can; otherwise ask the user to paste the contents):
+https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt
+https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-copy-paste/vv-designer-reference/AI-EXAMPLES.txt
+
+THE ONE MENTAL MODEL
+A sketch is a dataflow graph: BLOCKS (typed nodes) + CONNECTIONS (wires
+between numeric pins). There is no expression language, no steps, no bindings
+catalog. Every read, constant, comparison, AND/OR, delay, alarm and write is
+its own block. If you catch yourself writing "expression", "steps", "from"/
+"to" or a named pin - stop and convert it to blocks + wires.
+
+OUTPUT SHAPE (pure JSON - no comments, no trailing commas)
+{"format":"vv-fbx-sketch","version":1,"exported_at":"<ISO8601>",
+ "source_plant_id":null,"source_sketch_id":null,"name":"<short name>",
+ "block_count":N,"connection_count":M,
+ "sketch":{"mode":"function","require_plant_revision":0,
+           "blocks":[...],"connections":[...],"groups":[]}}
+block: {"id":<unique int>,"type":"<UPPERCASE key>","func":"<exact func>",
+        "compile_type":"<per type>","data":<per-type object|null>,
+        "override":{"alias_text":"<canvas label>"} or {},"runtime":{},
+        "properties":{},"output_type":<per type>,"x":<int>,"y":<int>}
+wire:  {"source":{"id":<block>,"put":<output pin, 0-based>},
+        "target":{"id":<block>,"put":<input pin, 0-based>}}
+
+GENERATION PROCEDURE - follow in order
+1. RECIPE: match the request to a recipe/example (parameter bridge, gated
+   write via IF, threshold alarm with persistence, watchdog, mode decoder,
+   selector, toggle-on-edge, ...). Most requests are a known recipe with
+   different inputs, limits and gates.
+2. BLOCKS: express every operation as a block. type/func/compile_type/data
+   come VERBATIM from the briefing/examples - never invent or rename a field.
+   EQUAL, WRITEOUTUNIT, DIGITAL_INPUT, RISING_EDGE, TOGGLE do not exist - use
+   the briefing's translation table (LIKE, WRITETOUNIT, PARAMV, PULSE_COUNT
+   flank modes, PULSE_COUNT+MOD+CONST(2)).
+3. IDS AND LAYOUT: ids 0..N-1 (unique integers). x/y left-to-right by
+   dataflow: sources x~40, logic x~260-500, outputs x~700; parallel rows
+   120-150 px apart in y.
+4. DATA: values the user gave (limits, delays, alarm priority/text) are
+   authored fully - tweakable limits/delays as CONST blocks. Plant bindings
+   you do not know (PARAMV/WRITETOUNIT driver ids, CALENDAR ids): data null +
+   override.alias_text "TODO bind: <what>" - the block imports red and the
+   user binds it. NEVER invent a driver id. WRITETOUNIT only if the user
+   explicitly asked to write to hardware; otherwise VIRTUALOUT.
+5. WIRES: wire EVERY non-optional input; one wire max per input; outputs may
+   fan out. Comparators need both pins; DELAY_VARIABLE needs a CONST seconds
+   on put 1; PULSE_COUNT needs a CONST level on put 1.
+6. ENVELOPE: block_count/connection_count = the array lengths.
+   require_plant_revision: 620 if IF/WEATHER/AGE_OF_VALUE is used, else 0.
+7. SELF-CHECK (mandatory): mentally JSON.parse your output; ids unique
+   integers; every wire endpoint exists; counts match; NONE of these keys
+   anywhere: schema, steps, logic, expression, parameterBindings, inputs/
+   outputs arrays, from, to, block, pin, label, name, blockType, config,
+   address, value, valueType, driverId, severity, message, priority,
+   writePulse, durationMs, reset_interval.
+8. DELIVER: the complete JSON in ONE code block (or as a .json file), then
+   2-4 short bullets: which blocks import red and need binding, and the
+   pipeline - validate with  node validate-vv-sketch.js <file>  -> import
+   (File > Transfer > Import) -> configure red blocks -> F10 -> save.
+   Deploying and hardware writes are the human's decision - never assume them.
+
+IF INFORMATION IS MISSING
+Ask once for the plant id and exact parameter/driver ids. If the user cannot
+provide them, generate TODO-bind blocks (data null) instead of guessing.
+
+Regenerate from the reference material on every attempt - do not patch your
+own previous draft; models drift back to invented formats between attempts.
+```
 
 ---
 
