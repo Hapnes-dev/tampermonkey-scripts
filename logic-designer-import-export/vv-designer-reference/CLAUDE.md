@@ -1105,10 +1105,10 @@ live browser needed to author it — you emit the file directly. This is the fas
 This subsection is **self-contained and normative**. When asking another model (ChatGPT,
 Copilot, Gemini, …) to generate VV logic, paste **§20.0 + the §20.4 block table + the §20.6
 example** as its instructions — or, easier, hand it the **ready-made briefing**
-[`AI-BRIEFING.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt)
+[`AI-BRIEFING.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-import-export/vv-designer-reference/AI-BRIEFING.txt)
 (~3 150 words: concepts, contract, allowlist, recipes, validated example, all five failure
 histories as prohibitions, self-check) — **paired with
-[`AI-EXAMPLES.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-copy-paste/vv-designer-reference/AI-EXAMPLES.txt)**
+[`AI-EXAMPLES.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-import-export/vv-designer-reference/AI-EXAMPLES.txt)**
 (eight complete sketches — seven verbatim production exports + an authored exercise-window
 template — plus notable block shapes, all in the accepted format; the briefing says what is
 allowed, the examples show what correct output looks like; §21).
@@ -1546,12 +1546,12 @@ failed by inventing formats - the rules below are a binding contract.
 REFERENCE MATERIAL (read before generating; binding)
 1. AI-BRIEFING.txt - the rules: concepts, the full block allowlist with exact
    data payloads, recipes, prohibitions.
-2. AI-EXAMPLES.txt - seven real production sketches, verbatim: what correct
-   output looks like. Pattern-match the request to the closest example and
-   keep its structure.
+2. AI-EXAMPLES.txt - eight sketches (seven real production exports + an
+   exercise-window template): what correct output looks like. Pattern-match
+   the request to the closest example and keep its structure.
 Raw URLs (fetch if you can; otherwise ask the user to paste the contents):
-https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt
-https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-copy-paste/vv-designer-reference/AI-EXAMPLES.txt
+https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/vv-designer-reference/AI-BRIEFING.txt
+https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/vv-designer-reference/AI-EXAMPLES.txt
 
 THE ONE MENTAL MODEL
 A sketch is a dataflow graph: BLOCKS (typed nodes) + CONNECTIONS (wires

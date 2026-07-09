@@ -51,7 +51,7 @@ Import also accepts a **bare** `paper.save()` document (`{mode, blocks, connecti
 
 ## Validating AI-generated files
 
-If an AI (ChatGPT, Copilot, Claude, …) generated the sketch JSON, **validate it before importing** — two real AI attempts failed on invented schemas/field names (documented in [`../logic-designer-copy-paste/vv-designer-reference/CLAUDE.md`](../logic-designer-copy-paste/vv-designer-reference/CLAUDE.md) §20.8/§20.9):
+If an AI (ChatGPT, Copilot, Claude, …) generated the sketch JSON, **validate it before importing** — two real AI attempts failed on invented schemas/field names (documented in [`vv-designer-reference/CLAUDE.md`](vv-designer-reference/CLAUDE.md) §20.8/§20.9):
 
 ```
 node validate-vv-sketch.js my-sketch.json
@@ -61,7 +61,7 @@ node validate-vv-sketch.js my-sketch.json
 
 [`vv-sketch.schema.json`](vv-sketch.schema.json) is a JSON Schema (draft-07) for editor/CI validation of the same format (the validator is stricter — prefer it).
 
-When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`../logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt`](../logic-designer-copy-paste/vv-designer-reference/AI-BRIEFING.txt) (self-contained: concepts, contract, block allowlist, recipes, a validated example, all documented AI failures as prohibitions, and a self-check) **together with [`AI-EXAMPLES.txt`](../logic-designer-copy-paste/vv-designer-reference/AI-EXAMPLES.txt)** — eight complete sketches (seven verbatim production exports + an authored exercise-window template) plus notable block shapes, all in the accepted format (the briefing says what's allowed; the examples show what correct output looks like). Alternatively paste §20.0 + §20.4 + §20.6 from the reference doc.
+When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`vv-designer-reference/AI-BRIEFING.txt`](vv-designer-reference/AI-BRIEFING.txt) (self-contained: concepts, contract, block allowlist, recipes, a validated example, all documented AI failures as prohibitions, and a self-check) **together with [`AI-EXAMPLES.txt`](vv-designer-reference/AI-EXAMPLES.txt)** — eight complete sketches (seven verbatim production exports + an authored exercise-window template) plus notable block shapes, all in the accepted format (the briefing says what's allowed; the examples show what correct output looks like). Alternatively paste §20.0 + §20.4 + §20.6 from the reference doc.
 
 ## How it integrates
 
@@ -71,4 +71,4 @@ When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`.
 - No server calls, no network grants — saving/deploying stays in the host's hands.
 - Internals exposed as `window.__LDIO` for console debugging; pure helpers are `module.exports`-ed for Node unit tests.
 
-See [`../logic-designer-copy-paste/vv-designer-reference/`](../logic-designer-copy-paste/vv-designer-reference/) for the full VV Designer internals reference these integrations are built on.
+See [`vv-designer-reference/`](vv-designer-reference/) (in this folder) for the full VV Designer internals reference these integrations are built on.
