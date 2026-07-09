@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.7.0
+// @version      1.8.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -459,7 +459,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.7.0';
+    var VERSION = '1.8.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -505,27 +505,44 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-warn-item { color: #d9c07a; }\
       .ldio-warn-item .ldio-err-dot { color: #d9c07a; }\
       .ldio-sim-panel { position: fixed; top: 70px; right: 16px; left: auto; transform: none;\
-        width: 380px; max-height: 82vh; display: flex; flex-direction: column; }\
-      .ldio-sim-head { cursor: move; user-select: none; }\
-      .ldio-sim-rows { overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;\
-        background: #1a1a1a; padding: 4px; margin-bottom: 8px; flex: 0 1 auto; max-height: 34vh; }\
-      .ldio-sim-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; font-size: 12px;\
+        width: 400px; height: 500px; min-width: 330px; min-height: 280px;\
+        max-width: 96vw; max-height: 94vh; display: flex; flex-direction: column;\
+        resize: both; overflow: hidden; padding: 0; }\
+      .ldio-sim-panel .ldio-sim-head { display: flex; align-items: center; gap: 8px;\
+        cursor: move; user-select: none; margin: 0; padding: 10px 12px; font-size: 13px;\
+        font-weight: 600; color: #fff; border-bottom: 1px solid rgba(255,255,255,0.1);\
+        background: rgba(255,255,255,0.03); flex: 0 0 auto; }\
+      .ldio-sim-head span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\
+      .ldio-sim-x { flex: 0 0 auto; cursor: pointer; border: 0; background: transparent; color: #9a9a9a;\
+        font: 15px/1 sans-serif; padding: 3px 8px; border-radius: 4px; }\
+      .ldio-sim-x:hover { background: rgba(255,80,80,0.18); color: #ff8a8a; }\
+      .ldio-sim-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;\
+        padding: 9px 12px 4px 12px; }\
+      .ldio-sim-sec { flex: 0 0 auto; font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase;\
+        color: #8f8f8f; margin: 3px 0 4px 1px; }\
+      .ldio-sim-rows { overflow-y: auto; border: 1px solid rgba(255,255,255,0.09); border-radius: 6px;\
+        background: #1a1a1a; padding: 3px 5px; flex: 1 1 110px; min-height: 62px; }\
+      .ldio-sim-row { display: flex; align-items: center; gap: 6px; padding: 4px; font-size: 12px;\
         border-bottom: 1px solid rgba(255,255,255,0.05); }\
       .ldio-sim-row:last-child { border-bottom: 0; }\
-      .ldio-sim-row .ldio-sim-ptr { color: #7aa7d9; flex: 0 0 auto; font-family: monospace; }\
+      .ldio-sim-row .ldio-sim-ptr { color: #7aa7d9; flex: 0 0 auto; font: 11px/1.2 Consolas, monospace; }\
       .ldio-sim-row .ldio-sim-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\
-      .ldio-sim-row input[type=number] { width: 74px; background: #1e1e1e; color: #d4d4d4;\
-        border: 1px solid rgba(255,255,255,0.15); border-radius: 3px; padding: 3px 5px; font-size: 12px; }\
+      .ldio-sim-row input[type=number] { width: 70px; background: #141414; color: #e8e8e8;\
+        border: 1px solid rgba(255,255,255,0.16); border-radius: 4px; padding: 4px 6px; font-size: 12px; }\
+      .ldio-sim-row input[type=number]:focus { outline: none; border-color: #3d7ab3; }\
       .ldio-sim-row input.ldio-sim-missing { border-color: #d9c07a; }\
-      .ldio-sim-mini { padding: 2px 7px; font-size: 11px; }\
-      .ldio-sim-result { overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;\
-        background: #1a1a1a; padding: 6px; font-size: 12px; line-height: 1.45; max-height: 26vh; flex: 0 1 auto; }\
+      .ldio-sim-mini { padding: 3px 8px; font-size: 11px; border-radius: 4px; }\
+      .ldio-sim-ctl { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 12px;\
+        flex-wrap: wrap; flex: 0 0 auto; }\
+      .ldio-sim-spring { flex: 1 1 auto; }\
+      .ldio-sim-result { overflow: auto; border: 1px solid rgba(255,255,255,0.09); border-radius: 6px;\
+        background: #1a1a1a; padding: 7px 8px; font-size: 12px; line-height: 1.5; flex: 1.3 1 130px; min-height: 70px; }\
       .ldio-sim-result .ldio-sim-true { color: #7ad97a; }\
       .ldio-sim-result .ldio-sim-false { color: #ff8a8a; }\
       .ldio-sim-result .ldio-sim-msg { color: #d9c07a; }\
-      .ldio-sim-ctl { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px 0; font-size: 12px; flex-wrap: wrap; }\
-      .ldio-sim-flow { font: 11px/1.5 Consolas, monospace; white-space: pre; overflow-x: auto; color: #bfcbd6;\
-        margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 6px; }\
+      .ldio-sim-flow { font: 11px/1.5 Consolas, monospace; white-space: pre; color: #bfcbd6;\
+        margin-top: 7px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 7px; }\
+      .ldio-sim-foot { flex: 0 0 auto; padding: 3px 12px 8px 12px; }\
     ';
     if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
     else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
@@ -928,11 +945,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    function onSimPanelKeydown(e) {
+      if (e.key === 'Escape' && simState.panel) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeSimPanel();
+      }
+    }
+
     function closeSimPanel() {
       if (!simState.panel) return;
       var paper = simPaper();
       if (paper) { simClearCanvas(paper); simRemoveHooks(paper); }
       if (simState.debounce) { clearTimeout(simState.debounce); simState.debounce = null; }
+      document.removeEventListener('keydown', onSimPanelKeydown, true);
       simState.panel.remove();
       simState.panel = null;
     }
@@ -948,12 +974,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       var h = document.createElement('h3');
       h.className = 'ldio-sim-head';
-      h.textContent = 'Live simulate — set inputs, watch the flow';
+      var title = document.createElement('span');
+      title.textContent = 'Live simulate';
+      title.title = 'Set inputs, watch the flow on the canvas. Drag the header to move; drag the bottom-right corner to resize.';
+      var xBtn = document.createElement('button');
+      xBtn.type = 'button';
+      xBtn.className = 'ldio-sim-x';
+      xBtn.textContent = '✕';
+      xBtn.title = 'Close (Esc) — restores the canvas';
+      xBtn.addEventListener('click', closeSimPanel);
+      h.appendChild(title);
+      h.appendChild(xBtn);
       panel.appendChild(h);
-      // Drag by the header.
+      // Drag by the header (not from the close button).
       (function () {
         var sx = 0, sy = 0, px = 0, py = 0, dragging = false;
         h.addEventListener('mousedown', function (e) {
+          if (e.target === xBtn) return;
           dragging = true; sx = e.clientX; sy = e.clientY;
           var r = panel.getBoundingClientRect(); px = r.left; py = r.top;
           e.preventDefault();
@@ -967,9 +1004,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         document.addEventListener('mouseup', function () { dragging = false; });
       })();
 
+      var body = document.createElement('div');
+      body.className = 'ldio-sim-body';
+      panel.appendChild(body);
+
+      var secIn = document.createElement('div');
+      secIn.className = 'ldio-sim-sec';
+      secIn.textContent = 'Inputs';
+      body.appendChild(secIn);
+
       var rows = document.createElement('div');
       rows.className = 'ldio-sim-rows';
-      panel.appendChild(rows);
+      body.appendChild(rows);
 
       var ctl = document.createElement('div');
       ctl.className = 'ldio-sim-ctl';
@@ -984,13 +1030,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       autoLabel.appendChild(document.createTextNode(' auto re-run'));
       var refreshBtn = document.createElement('button');
       refreshBtn.type = 'button'; refreshBtn.className = 'ldio-btn';
-      refreshBtn.textContent = '↻ Inputs';
+      refreshBtn.textContent = '↻';
       refreshBtn.title = 'Rebuild the input list after canvas edits (values are kept per block)';
       refreshBtn.addEventListener('click', simBuildRows);
       var stopBtn = document.createElement('button');
       stopBtn.type = 'button'; stopBtn.className = 'ldio-btn';
-      stopBtn.textContent = '■ Clear';
-      stopBtn.title = 'Remove the simulated values from the canvas';
+      stopBtn.textContent = '■';
+      stopBtn.title = 'Clear the simulated values from the canvas';
       stopBtn.addEventListener('click', function () {
         var p2 = simPaper();
         if (p2) simClearCanvas(p2);
@@ -998,32 +1044,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
-      copyBtn.textContent = '⧉ Copy log';
-      copyBtn.title = 'Copy a full simulation log (inputs, flow, results, blocks, wires) — paste it to an AI to debug/improve the logic';
+      copyBtn.textContent = '⧉ Log';
+      copyBtn.title = 'Copy the full simulation log (inputs, flow, results, blocks, wires) — paste it to an AI to debug/improve the logic';
       copyBtn.addEventListener('click', function () {
         var text = buildLastSimLog();
         if (!text) { toast('Run a simulation first.'); return; }
         if (copyTextToClipboard(text)) toast('Simulation log copied — paste it to your AI.');
         else toast('Could not access the clipboard.', 'error');
       });
-      var closeBtn = document.createElement('button');
-      closeBtn.type = 'button'; closeBtn.className = 'ldio-btn';
-      closeBtn.textContent = 'Close';
-      closeBtn.addEventListener('click', closeSimPanel);
-      ctl.appendChild(runBtn); ctl.appendChild(autoLabel); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn); ctl.appendChild(stopBtn); ctl.appendChild(closeBtn);
-      panel.appendChild(ctl);
+      var spring = document.createElement('div');
+      spring.className = 'ldio-sim-spring';
+      ctl.appendChild(runBtn); ctl.appendChild(autoLabel); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn); ctl.appendChild(stopBtn);
+      body.appendChild(ctl);
+
+      var secOut = document.createElement('div');
+      secOut.className = 'ldio-sim-sec';
+      secOut.textContent = 'Result';
+      body.appendChild(secOut);
 
       var result = document.createElement('div');
       result.className = 'ldio-sim-result';
-      panel.appendChild(result);
+      body.appendChild(result);
 
       var hint = document.createElement('div');
-      hint.className = 'ldio-version';
-      hint.style.marginTop = '6px';
-      hint.textContent = 'Values render on the blocks; wires go green as the flow runs. Nothing touches the plant — client-side only. LDIO v' + VERSION;
+      hint.className = 'ldio-version ldio-sim-foot';
+      hint.textContent = 'Client-side only — nothing touches the plant · LDIO v' + VERSION;
       panel.appendChild(hint);
 
       document.body.appendChild(panel);
+      document.addEventListener('keydown', onSimPanelKeydown, true);
       simState.panel = panel;
       simState.rowsEl = rows;
       simState.resultEl = result;
