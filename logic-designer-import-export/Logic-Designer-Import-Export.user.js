@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.11.0
+// @version      1.12.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.11.0';
+    var VERSION = '1.12.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -549,6 +549,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-sim-ctl { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 12px;\
         flex-wrap: wrap; flex: 0 0 auto; }\
       .ldio-sim-spring { flex: 1 1 auto; }\
+      .ldio-btn-stop-on { background: #8e2c2c; border-color: #c04b4b; color: #fff; }\
+      .ldio-btn-stop-on:hover { background: #a83636; }\
       .ldio-sim-result { overflow: auto; border: 1px solid rgba(255,255,255,0.09); border-radius: 6px;\
         background: #1a1a1a; padding: 7px 8px; font-size: 12px; line-height: 1.5; flex: 1.3 1 130px; min-height: 70px; }\
       .ldio-sim-result .ldio-sim-true { color: #7ad97a; }\
@@ -737,6 +739,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       values: {}, missing: [], msgs: [], debounce: null,
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
+      stopBtnEl: null, // turns red while simulated values are on the canvas
       lastRun: null, // snapshot of the latest run, for Copy log / getSimLog
       // Live-view watcher state: with auto re-run on, the flow stays on the
       // canvas — re-simulated when the canvas changes, repainted if wiped —
@@ -819,11 +822,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simState.hooked = false;
     }
 
+    // Reflect "simulated values are on the canvas" on the Stop button (red).
+    function simSetActive(active) {
+      if (simState.stopBtnEl) simState.stopBtnEl.classList.toggle('ldio-btn-stop-on', !!active);
+    }
+
     // Remove sim visuals from the canvas and restore wire colours.
     function simClearCanvas(paper) {
       if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); paper.simulation_stopper = null; }
       paper.__simulation_reset(true);
       paper.simulation_stack = null;
+      simSetActive(false);
     }
 
     function simResultLine(text, cls) {
@@ -912,6 +921,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         simResultLine('FAILED — simulation stopped on a block error: ' + err.message, 'ldio-sim-false');
         simResultLine('(Usually an unconfigured block — configure it and rerun. ⧉ Log has the details.)');
         simState.msgs.forEach(function (m) { simResultLine('⚠ ' + m, 'ldio-sim-msg'); });
+        simSetActive(paper.simulation_elements && paper.simulation_elements.length > 0);
         return;
       }
       // The host's simulator_stop() may have fired mid-run (a sim error path
@@ -981,6 +991,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       flowEl.className = 'ldio-sim-flow';
       flowEl.textContent = 'Flow — evaluation order:\n' + flow.join('\n');
       simState.resultEl.appendChild(flowEl);
+      simSetActive(true);
     }
 
     // Full log of the latest run (also exposed as __LDIO.getSimLog()).
@@ -1143,6 +1154,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       refreshBtn.addEventListener('click', simBuildRows);
       var stopBtn = document.createElement('button');
       stopBtn.type = 'button'; stopBtn.className = 'ldio-btn';
+      simState.stopBtnEl = stopBtn;
       stopBtn.textContent = '■ Stop';
       stopBtn.title = 'Stop: cancel a pending auto re-run and clear the simulated values from the canvas';
       stopBtn.addEventListener('click', function () {
