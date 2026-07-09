@@ -752,7 +752,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.3.0)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.4.0)** (same repo,
 `logic-designer-import-export/`): adds a **Transfer** section to the File menu — **Export**
 (file download), **Import** (panel: file / drag-drop / paste-JSON), and **Copy sketch (JSON
 text)** (clipboard — copy on plant A, paste into Import on plant B, no file; uses the
@@ -767,6 +767,12 @@ pattern worth reusing: it wraps `menu_main.creator.render` to append items to th
 level before every rebuild (menus are re-rendered on each mode switch), and wraps
 `application.on_menu` to catch its `file_ldio_*` item ids. Live-verified end-to-end
 (export envelope → simulated foreign plant → rebind → 6 blocks/5 wires restored, syntax ok).
+v1.4.0 adds two **additive** envelope fields — `generator` (script version) and
+`requires_processes` (manifest of library-process dependencies: key/name/revision, stamped only
+when the sketch uses processes) — plus import-side normalization: omitted
+`override`/`runtime`/`properties`/`data`/`groups` get defaults and a missing `func` is filled
+from the live palette, so near-miss hand-authored files import cleanly while real exports pass
+through byte-identical. v1.3-era files are unaffected in both directions.
 
 ---
 
@@ -1197,6 +1203,8 @@ Emit **pure JSON** (no comments) in the `vv-fbx-sketch` envelope the import scri
   "source_sketch_id": null,
   "name": "<short descriptive name>",
   "block_count": <N>, "connection_count": <M>,
+  // v1.4+ exports may also stamp "generator" + "requires_processes" — optional,
+  // additive; generated files need not (and should not bother to) include them
   "sketch": { …the sketch document, below… }
 }
 ```

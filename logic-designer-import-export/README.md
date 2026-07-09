@@ -23,7 +23,8 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 |---|---|
 | **Plant-bound parameter bindings** | `PARAMV`/`WRITETOUNIT` `driver_ids` (and legacy `driver_id`) are plant-prefixed (`3111_IWT_…`). On cross-plant import you get a one-click prefix rewrite `source_` → `target_`. Foreign prefixes that don't match the source plant are left untouched. |
 | **Bindings that can't auto-transfer** | `CALENDAR`/`CALENDAR 2.0` ids and `TAGVALUE` unit bindings are plant-specific id spaces — the import warns you to reconfigure those blocks via their dialogs. |
-| **Unknown block types** | If the sketch uses processes not published in the target designer's library, you're warned with the list before anything is touched. |
+| **Unknown block types** | If the sketch uses processes not published in the target designer's library, you're warned with the list before anything is touched — by *display name* when the export carries the v1.4 `requires_processes` manifest, not just the cryptic key. |
+| **Hand-/AI-authored near-misses** | Import fills omitted housekeeping fields on a copy (`override`/`runtime`/`properties` → `{}`, `data` → `null`, `groups` → `[]`) and a missing `func` from the plant's palette (with a toast). Real exports pass through byte-identical. |
 | **Bad files fail clearly** | A file that can't be imported opens an **itemised error panel** — every problem with a plain-language fix (wrong envelope, missing `mode`, string ids, `from`/`to` wires, unknown/renamed block types with the correct name, `override` nested in `data`, wires to non-existent blocks, …), a *Copy problems* button, and nothing touches the canvas. Same checks as `validate-vv-sketch.js`, live in the panel. |
 | **Unsaved work** | Import asks before replacing a dirty canvas; export never modifies the canvas (it even preserves the dirty flag across the host's `save()` side effect). |
 | **Accidental overwrite** | After import, `application.current_sketch` is cleared so the host's save flow prompts for a new name instead of overwriting. |
@@ -37,12 +38,16 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
   "source_plant_id": "3111", "source_sketch_id": "8660",
   "name": "claude_demo_tempnod1_battery_alarm",
   "block_count": 6, "connection_count": 5,
+  "generator": "LDIO v1.4.0",            // v1.4+: which script version exported it
+  "requires_processes": [                // v1.4+: only when library processes are used
+    { "type": "29_59DF59D32D9E56.37390576", "alias_text": "EW Switch", "current_revision": "3833" }
+  ],
   "sketch": { "mode": "function", "require_plant_revision": 0,
               "blocks": [...], "connections": [...], "groups": [...] }   // exact paper.save() document
 }
 ```
 
-Import also accepts a **bare** `paper.save()` document (`{mode, blocks, connections, …}`), so JSON from other tooling works too.
+Import also accepts a **bare** `paper.save()` document (`{mode, blocks, connections, …}`), so JSON from other tooling works too. The two `v1.4+` fields are **optional and additive**: v1.3-era exports and hand-authored envelopes without them import unchanged, and older importers/validators ignore them.
 
 ## Validating AI-generated files
 

@@ -20,6 +20,20 @@
         "name": { "type": ["string", "null"] },
         "block_count": { "type": "integer", "minimum": 0 },
         "connection_count": { "type": "integer", "minimum": 0 },
+        "generator": { "type": "string", "description": "v1.4+: userscript version that exported the file (e.g. \"LDIO v1.4.0\"). Optional, additive." },
+        "requires_processes": {
+          "type": "array",
+          "description": "v1.4+: library processes the sketch depends on — the target plant's library must publish these keys. Optional, additive; only stamped when process blocks are used.",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "description": "The process key (uppercase library eid)." },
+              "alias_text": { "type": ["string", "null"] },
+              "current_revision": { "type": ["string", "null"] }
+            }
+          }
+        },
         "sketch": { "$ref": "#/definitions/sketch" }
       },
       "not": {

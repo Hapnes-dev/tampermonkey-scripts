@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.4.0
 // @description  Export the current VV Designer sketch to a JSON file and import it on another plant (with driver-id plant rebinding) — adds Export/Import entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,8 +18,10 @@
 // ─── Pure helpers (top-level so Node tests can reach them) ──────────
 
 // Wrap a paper.save() document in a portable export envelope.
-function buildExportEnvelope({ sketch, sourcePlantId, sketchId, sketchName }) {
-  return {
+// generator/requiresProcesses (v1.4+) are optional and only stamped when
+// provided — v1.3-era files and hand-authored envelopes stay valid as-is.
+function buildExportEnvelope({ sketch, sourcePlantId, sketchId, sketchName, generator, requiresProcesses }) {
+  var envelope = {
     format: 'vv-fbx-sketch',
     version: 1,
     exported_at: new Date().toISOString(),
@@ -28,8 +30,55 @@ function buildExportEnvelope({ sketch, sourcePlantId, sketchId, sketchName }) {
     name: sketchName || null,
     block_count: sketch.blocks.length,
     connection_count: sketch.connections.length,
-    sketch: sketch,
   };
+  if (generator) envelope.generator = generator;
+  if (requiresProcesses && requiresProcesses.length > 0) envelope.requires_processes = requiresProcesses;
+  envelope.sketch = sketch; // big payload last, for human readers
+  return envelope;
+}
+
+// Collect the published library processes a sketch depends on — the target
+// plant's library must publish these keys for the import to resolve them.
+// palette (optional, paper.blocks in the browser) enriches with the process's
+// display name; process instances store theirs in data.alias_text (§21).
+function listProcessDependencies(sketch, palette) {
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < sketch.blocks.length; i++) {
+    var b = sketch.blocks[i];
+    if (!b || b.compile_type !== 'process' || typeof b.type !== 'string' || seen[b.type]) continue;
+    seen[b.type] = true;
+    var def = palette && palette[b.type];
+    var alias = (def && (def.alias_text || (def.data && def.data.alias_text))) ||
+      (b.data && b.data.alias_text) || null;
+    out.push({ type: b.type, alias_text: alias, current_revision: b.current_revision || null });
+  }
+  return out;
+}
+
+// Fill host housekeeping fields a hand-/AI-authored file may omit, on a DEEP
+// COPY: override/runtime/properties default to {}, data to null, groups to [],
+// and a missing func is filled from the palette definition when derivable.
+// Real exports carry all of these and pass through unchanged.
+function normalizeSketchForLoad(sketchIn, palette) {
+  var sketch = JSON.parse(JSON.stringify(sketchIn));
+  var filledFuncs = 0;
+  var filledFields = 0;
+  for (var i = 0; i < sketch.blocks.length; i++) {
+    var b = sketch.blocks[i];
+    if (!b || typeof b !== 'object') continue;
+    if (b.override == null) { b.override = {}; filledFields++; }
+    if (b.runtime == null) { b.runtime = {}; filledFields++; }
+    if (b.properties == null) { b.properties = {}; filledFields++; }
+    if (!('data' in b)) { b.data = null; filledFields++; }
+    if (typeof b.func !== 'string' || !b.func) {
+      var def = palette && palette[b.type];
+      var func = def && (def.block_func || (def.data && def.data.block_func));
+      if (typeof func === 'string' && func) { b.func = func; filledFuncs++; }
+    }
+  }
+  if (!Array.isArray(sketch.groups)) { sketch.groups = []; filledFields++; }
+  return { sketch: sketch, filledFuncs: filledFuncs, filledFields: filledFields };
 }
 
 // Accept either the envelope or a bare paper.save() document.
@@ -109,6 +158,12 @@ function diagnoseImport(parsed, knownTypes) {
     return { fatal: true, errors: errors, warnings: warnings, sketch: null };
   }
 
+  // v1.4+ exports carry a process manifest — use it to name missing processes.
+  var manifest = {};
+  if (Array.isArray(parsed.requires_processes)) {
+    parsed.requires_processes.forEach(function (p) { if (p && p.type) manifest[p.type] = p; });
+  }
+
   var ids = {};
   doc.blocks.forEach(function (b, i) {
     var at = 'block #' + i + (b && b.type ? ' (' + b.type + ')' : '');
@@ -122,7 +177,10 @@ function diagnoseImport(parsed, knownTypes) {
     else if (!(b.type in knownTypes)) {
       if (LDIO_TYPE_ALIASES[b.type]) errors.push(at + ' — "' + b.type + '" is not a VV block; use "' + LDIO_TYPE_ALIASES[b.type] + '".');
       else if (LDIO_NO_EQUIVALENT[b.type]) errors.push(at + ' — "' + b.type + '": ' + LDIO_NO_EQUIVALENT[b.type] + '.');
+      else if (manifest[b.type]) errors.push(at + ' — the library process "' + (manifest[b.type].alias_text || b.type) + '" (' + b.type + ') is not published on this plant — link/publish it in the target library first.');
       else errors.push(at + ' — unknown block type "' + b.type + '" (not a system block, and no such process on this plant/library).');
+    } else if (typeof b.func !== 'string' || !b.func) {
+      warnings.push(at + ' has no "func" — import fills it from this plant\'s palette; add it for a portable file (validate-vv-sketch.js lists the correct value).');
     }
     if (b.data && typeof b.data === 'object') {
       if ('override' in b.data || 'runtime' in b.data || 'properties' in b.data)
@@ -251,7 +309,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.3.0';
+    var VERSION = '1.4.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -394,6 +452,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         sourcePlantId: plantId,
         sketchId: W.application ? W.application.current_sketch : null,
         sketchName: W.application ? W.application.current_sketch_name : null,
+        generator: 'LDIO v' + VERSION,
+        requiresProcesses: listProcessDependencies(sketch, paper.blocks || {}),
       });
     }
 
@@ -597,6 +657,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Non-fatal notes (e.g. empty driver_ids) — surface but continue.
         if (diag.warnings.length) toast(diag.warnings.length + ' note(s): ' + diag.warnings[0] + (diag.warnings.length > 1 ? ' (…)' : ''));
 
+        // Fill housekeeping fields hand-authored files may omit (override/
+        // runtime/properties/data/groups, missing funcs from the palette).
+        // Real exports pass through unchanged.
+        var norm = normalizeSketchForLoad(sketch, paper.blocks || {});
+        sketch = norm.sketch;
+        if (norm.filledFuncs > 0) toast('Filled ' + norm.filledFuncs + ' missing block func(s) from the palette.');
+
         // Plant rebinding: rewrite "<src>_" driver-id prefixes to this plant.
         var currentPlant = String((W.query_string && W.query_string.plant_id) || '');
         var sourcePlant = (envelope && envelope.source_plant_id) || detectSourcePlantFromDriverIds(sketch);
@@ -748,6 +815,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     buildExportEnvelope: buildExportEnvelope,
+    listProcessDependencies: listProcessDependencies,
+    normalizeSketchForLoad: normalizeSketchForLoad,
     parseImportPayload: parseImportPayload,
     detectSourcePlantFromDriverIds: detectSourcePlantFromDriverIds,
     countRebindableDriverIds: countRebindableDriverIds,
