@@ -19,7 +19,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 
 ## Live Simulate — test the logic before deploying
 
-**File → Simulate → Live simulate (panel)** runs the sketch **on the canvas, client-side only** — nothing is compiled or sent to the plant — so you can watch the flow and confirm it behaves before saving or deploying.
+Click **Live Simulate** in the top menu bar (right of *Set Process Mode*; also under **File → Simulate**) to run the sketch **on the canvas, client-side only** — nothing is compiled or sent to the plant — so you can watch the flow and confirm it behaves before saving or deploying.
 
 It drives the host's own simulator (Tools → Simulate, the same per-block math), but fixes the three things that make the built-in one awkward for iterating:
 
@@ -77,7 +77,7 @@ When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`v
 
 ## How it integrates
 
-- The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + its items (and a **Simulate** header + Live simulate) to the `file` level before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks are caught by a capture-phase listener (and a wrapped `application.on_menu` as fallback).
+- The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + its items (and a **Simulate** header + Live simulate) to the `file` level, plus a top-level **Live Simulate** button after the mode toggle (`creator.add(null, …)` — the same call the host uses for File/Tools/Set Process Mode), before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks are caught by a capture-phase listener (and a wrapped `application.on_menu` as fallback).
 - Export = `logic_designer.paper.save()` in an envelope → `Blob` download.
 - Import opens a **panel with a visible file input** (plus drag-drop and paste). This is deliberate: a browser only opens a file picker from a *direct* user click, so a visible input the user clicks themselves always works — a programmatic `input.click()` fired from the host's menu-callback chain gets rejected once the click's user-activation has lapsed (the v1.0.x bug). Import then runs validation → optional rebind (on a deep copy) → `paper.reset()` + `paper.load()`.
 - **Live Simulate** drives the host's own client simulator (`paper.simulator_step` + the per-block `sim` functions). It temporarily wraps three host hooks while the panel is open — `paper.get_user_input` (feed panel values instead of `prompt()`), `system_dialogs.information.show` (route alarm/error modals into the panel), and `paper.callback` (swallow the host's `simulation_*` progress events) — and restores all three on Close. It mirrors the host's `simulator_start` setup but skips the `confirm()`, runs the step loop to completion in one go, and cancels the host's 5-second auto-clear so results persist. The dirty flag is preserved across `save()`'s side effect, so simulating never marks the sketch unsaved.

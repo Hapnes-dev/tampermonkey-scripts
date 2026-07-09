@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.0
+// @version      1.6.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -355,7 +355,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.5.0';
+    var VERSION = '1.6.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1080,12 +1080,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function resolveOwnMenuItemId(target) {
       try {
         if (!target || !target.closest) return null;
-        var itemEl = target.closest('.iw_oc_menu_dropdown_item');
+        var itemEl = target.closest('.iw_oc_menu_dropdown_item, .iw_oc_menu_level');
         if (!itemEl) return null;
         var index = itemEl.getAttribute('data-index');
         var item = W.menu_main && W.menu_main.menu_items ? W.menu_main.menu_items[index] : null;
         if (!item) return null;
-        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import' || item.id === 'file_ldio_copy' || item.id === 'file_ldio_sim') return item.id;
+        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import' || item.id === 'file_ldio_copy' || item.id === 'file_ldio_sim' || item.id === 'ldio_sim_top') return item.id;
       } catch (err) { /* fall through */ }
       return null;
     }
@@ -1100,7 +1100,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (id === 'file_ldio_import') openImportPanel();
       else if (id === 'file_ldio_export') doExport();
       else if (id === 'file_ldio_copy') doCopyJson();
-      else if (id === 'file_ldio_sim') openSimPanel();
+      else if (id === 'file_ldio_sim' || id === 'ldio_sim_top') openSimPanel();
       // Do NOT stop the event — the host's handler still runs and closes the
       // dropdown; our on_menu wrap below swallows the unknown item id.
     }
@@ -1125,6 +1125,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               this.add(fileLevel, ICON_SIM, 'ldio_sim');
             }
           }
+          // Top-level "Live Simulate" button, right of "Set Process Mode".
+          // The host declares top-level entries as add(null, text, id) — our
+          // wrap runs after prepare_ui_menu filled this.data, so appending
+          // here lands last in the bar (= right of the mode toggle).
+          var topPresent = (this.data || []).some(function (l) { return l && l.id === 'ldio_sim_top'; });
+          if (!topPresent && (this.data || []).length > 0) this.add(null, 'Live Simulate', 'ldio_sim_top');
         } catch (err) {
           console.error('[' + SCRIPT_NAME + '] menu injection failed:', err);
         }
@@ -1135,11 +1141,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // event), the panel path still works from here — it needs no gesture.
       var origOnMenu = W.application.on_menu;
       W.application.on_menu = function (event) {
-        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import' || event.item_id === 'file_ldio_copy' || event.item_id === 'file_ldio_sim')) {
+        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import' || event.item_id === 'file_ldio_copy' || event.item_id === 'file_ldio_sim' || event.item_id === 'ldio_sim_top')) {
           if (Date.now() - lastHandledAt > 1000) {
             if (event.item_id === 'file_ldio_export') doExport();
             else if (event.item_id === 'file_ldio_copy') doCopyJson();
-            else if (event.item_id === 'file_ldio_sim') openSimPanel();
+            else if (event.item_id === 'file_ldio_sim' || event.item_id === 'ldio_sim_top') openSimPanel();
             else openImportPanel();
           }
           return;
