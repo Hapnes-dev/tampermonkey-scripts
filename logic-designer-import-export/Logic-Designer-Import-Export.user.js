@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.0
+// @version      1.13.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.12.0';
+    var VERSION = '1.13.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -740,6 +740,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
       stopBtnEl: null, // turns red while simulated values are on the canvas
+      dimEls: [], replayTimer: null, // flow-visualisation extras
       lastRun: null, // snapshot of the latest run, for Copy log / getSimLog
       // Live-view watcher state: with auto re-run on, the flow stays on the
       // canvas — re-simulated when the canvas changes, repainted if wiped —
@@ -827,9 +828,99 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.stopBtnEl) simState.stopBtnEl.classList.toggle('ldio-btn-stop-on', !!active);
     }
 
+    // ── Flow visualisation on the canvas ─────────────────────────────
+    // Wire colour = the value it carries (host reset animates back to the
+    // normal orange, so colours never leak past Stop/clear).
+    function simWireColor(v) {
+      if (v === undefined) return '#BBBBBB';                    // never evaluated
+      if (v === true || v === 'ALARM') return '#1FA31F';        // boolean TRUE
+      if (v === false || v === 'FALSE') return '#D64545';       // boolean FALSE
+      return '#2C7FB8';                                         // numeric/other
+    }
+
+    function simPaintFlow(paper, results) {
+      for (var i = 0; i < paper.connections.length; i++) {
+        var c = paper.connections[i];
+        try {
+          c.line.stop(); // kill the host's in-flight highlight animation
+          c.line.attr('stroke', simWireColor(results[c.user.source]));
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    // Dark overlay on blocks the run never evaluated (invalidated IF branch
+    // or unreachable) — kept in our own list so we control the cleanup.
+    function simClearDims() {
+      simState.dimEls.forEach(function (r) { try { r.remove(); } catch (e) { /* ignore */ } });
+      simState.dimEls = [];
+    }
+
+    function simDimUnreached(paper) {
+      simClearDims();
+      var completed = {};
+      (paper.simulation_completed_blocks || []).forEach(function (id) { completed[id] = 1; });
+      Object.keys(paper.elements || {}).forEach(function (key) {
+        if (!/^\d+$/.test(key) || completed[key]) return;
+        var el = paper.elements[key];
+        try {
+          var bbox = el.set[el.main.set_id].getBBox(false);
+          var r = paper.paper.rect(bbox.x - 2, bbox.y - 2, bbox.width + 4, bbox.height + 4, 4)
+            .attr({ fill: '#000', opacity: 0.3, stroke: 'none' });
+          simState.dimEls.push(r);
+        } catch (e) { /* ignore */ }
+      });
+    }
+
+    // Replay the LAST run visually: reveal each block's value box in
+    // evaluation order and colour its outgoing wires as the signal spreads.
+    // Pure playback — nothing is re-simulated.
+    function simReplay() {
+      var paper = simPaper();
+      if (!paper) { toast('Designer not ready.', 'error'); return; }
+      var fpNow;
+      try { fpNow = simCanvasFingerprint(paper); } catch (e) { return; }
+      if (!paper.simulation_stack || fpNow !== simState.lastRunFp || !simState.lastRun || !simState.lastRun.ok) {
+        simRunOnce(); // need a fresh, matching run to play back
+        if (!paper.simulation_stack || !simState.lastRun || !simState.lastRun.ok) return;
+      }
+      if (simState.replayTimer) { clearInterval(simState.replayTimer); simState.replayTimer = null; }
+      var els = paper.simulation_elements || [];
+      var order = simState.lastRun.order || [];
+      var results = simState.lastRun.results || {};
+      if (!els.length || !order.length) return;
+      els.forEach(function (el) { try { el.hide(); } catch (e) { /* ignore */ } });
+      for (var i = 0; i < paper.connections.length; i++) {
+        try { paper.connections[i].line.stop(); paper.connections[i].line.attr('stroke', '#EEE'); } catch (e) { /* ignore */ }
+      }
+      var perBlock = Math.max(1, Math.floor(els.length / order.length));
+      var idx = 0;
+      simState.replayTimer = setInterval(function () {
+        if (idx >= order.length) {
+          clearInterval(simState.replayTimer);
+          simState.replayTimer = null;
+          els.forEach(function (el) { try { el.show(); } catch (e) { /* ignore */ } });
+          simPaintFlow(paper, results);
+          return;
+        }
+        for (var k = idx * perBlock; k < (idx + 1) * perBlock && k < els.length; k++) {
+          try { els[k].show(); } catch (e) { /* ignore */ }
+        }
+        var id = order[idx];
+        for (var w = 0; w < paper.connections.length; w++) {
+          var c = paper.connections[w];
+          if (c.user && c.user.source === id) {
+            try { c.line.stop(); c.line.attr('stroke', simWireColor(results[id])); } catch (e) { /* ignore */ }
+          }
+        }
+        idx++;
+      }, 320);
+    }
+
     // Remove sim visuals from the canvas and restore wire colours.
     function simClearCanvas(paper) {
       if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); paper.simulation_stopper = null; }
+      if (simState.replayTimer) { clearInterval(simState.replayTimer); simState.replayTimer = null; }
+      simClearDims();
       paper.__simulation_reset(true);
       paper.simulation_stack = null;
       simSetActive(false);
@@ -883,6 +974,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var wasChanged = paper.changed;
       if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); }
       paper.simulation_stopper = null;
+      if (simState.replayTimer) { clearInterval(simState.replayTimer); simState.replayTimer = null; }
+      simClearDims();
       paper.__simulation_reset(true);
       for (var x = 0; x < paper.connections.length; x++) paper.connections[x].line.attr('stroke', '#EEE');
       paper.simulation_elements = [];
@@ -991,6 +1084,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       flowEl.className = 'ldio-sim-flow';
       flowEl.textContent = 'Flow — evaluation order:\n' + flow.join('\n');
       simState.resultEl.appendChild(flowEl);
+      simPaintFlow(paper, results);
+      simDimUnreached(paper);
       simSetActive(true);
     }
 
@@ -1175,9 +1270,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (copyTextToClipboard(text)) toast('Simulation log copied — paste it to your AI.');
         else toast('Could not access the clipboard.', 'error');
       });
+      var replayBtn = document.createElement('button');
+      replayBtn.type = 'button'; replayBtn.className = 'ldio-btn';
+      replayBtn.textContent = '🎬';
+      replayBtn.title = 'Replay the last run in slow motion — watch the flow propagate block by block';
+      replayBtn.addEventListener('click', simReplay);
       var spring = document.createElement('div');
       spring.className = 'ldio-sim-spring';
-      ctl.appendChild(runBtn); ctl.appendChild(stopBtn); ctl.appendChild(autoLabel); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn);
+      ctl.appendChild(runBtn); ctl.appendChild(stopBtn); ctl.appendChild(replayBtn); ctl.appendChild(autoLabel); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn);
       body.appendChild(ctl);
 
       var secOut = document.createElement('div');
