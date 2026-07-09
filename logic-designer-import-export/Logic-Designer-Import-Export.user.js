@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.15.0
+// @version      1.16.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.15.0';
+    var VERSION = '1.16.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -745,16 +745,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Live-view watcher state: with auto re-run on, the flow stays on the
       // canvas — re-simulated when the canvas changes, repainted if wiped —
       // until ■ Stop is clicked (stopped=true suppresses the repaint).
-      lastRunFp: null, prevPollFp: null, watchTimer: null, stopped: false,
+      lastRunFp: null, lastLayoutFp: null, prevPollFp: null, prevPollLayout: null,
+      watchTimer: null, stopped: false,
     };
 
-    // Cheap change-detector: the exact save() document (structure, data,
-    // positions), with the dirty flag preserved across save()'s side effect.
+    // Change-detectors from a save() document: LOGIC (types/data/wires — what
+    // the simulation depends on) and LAYOUT (everything incl. x/y). A block
+    // move changes layout only → we repaint at the new positions; only a
+    // logic change counts as "the sketch changed".
+    function simFpFromDoc(doc) {
+      var stripped = (doc.blocks || []).map(function (b) {
+        var c = {};
+        for (var k in b) { if (k !== 'x' && k !== 'y') c[k] = b[k]; }
+        return c;
+      });
+      return {
+        logic: JSON.stringify({ m: doc.mode, b: stripped, c: doc.connections }),
+        layout: JSON.stringify(doc),
+      };
+    }
+
     function simCanvasFingerprint(paper) {
       var wasChanged = paper.changed;
       var doc = paper.save(false);
       paper.changed = wasChanged;
-      return JSON.stringify(doc);
+      return simFpFromDoc(doc);
     }
 
     function simWatchTick() {
@@ -763,23 +778,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var fp;
       try { fp = simCanvasFingerprint(paper); } catch (e) { return; }
       var autoRun = simState.autoRunEl && simState.autoRunEl.checked;
-      if (fp !== simState.lastRunFp) {
-        // Canvas changed since the last run — with auto re-run ON,
-        // re-simulate once it settles (two equal polls), so a drag doesn't
-        // spam reruns mid-move. With it off, the last result stays in the
-        // panel but stale values are not repainted onto a changed sketch.
-        if (autoRun && fp === simState.prevPollFp) {
+      if (fp.logic !== simState.lastRunFp) {
+        // The LOGIC changed since the last run — with auto re-run ON,
+        // re-simulate once it settles (two equal polls). With it off, the
+        // last result stays in the panel but stale values are not repainted
+        // onto changed logic.
+        if (autoRun && fp.logic === simState.prevPollFp) {
           simState.stopped = false;
           simBuildRows();
           simQueueRun();
         }
-      } else if (paper.simulation_stack === null && simState.lastRun && simState.lastRun.ok && !simState.stopped) {
-        // Same sketch but the overlay was wiped (host cleared it) — repaint
-        // REGARDLESS of the auto re-run checkbox: the flow values stay on
-        // the canvas until ■ Stop.
-        simRunOnce();
+      } else if (!simState.stopped && simState.lastRun && simState.lastRun.ok && !simState.replayTimer) {
+        if (paper.simulation_stack === null) {
+          // Overlay wiped (host cleared it) — repaint regardless of the
+          // checkbox: the flow values stay on the canvas until ■ Stop.
+          simRunOnce();
+        } else if (fp.layout !== simState.lastLayoutFp && fp.layout === simState.prevPollLayout) {
+          // Same logic, blocks were MOVED (layout settled) — repaint so the
+          // value boxes and wire colours follow the blocks.
+          simRunOnce();
+        }
       }
-      simState.prevPollFp = fp;
+      simState.prevPollFp = fp.logic;
+      simState.prevPollLayout = fp.layout;
     }
 
     function simPaper() {
@@ -813,6 +834,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (e && /^simulation_/.test(String(e.action))) return;
         return simState.origCb.call(this, e);
       };
+      // HOST BUG workaround: __highlight_block_connection reads
+      // inputs[i].connected_to.connection_id without a null check, so the
+      // host simulator crashes on any block with an UNCONNECTED optional
+      // input (e.g. DELAY_VARIABLE's false-delay). Null-safe mirror of the
+      // probed source (2026-07-09) while the panel is open.
+      simState.hadOwnHl = Object.prototype.hasOwnProperty.call(paper, '__highlight_block_connection');
+      simState.origHl = paper.__highlight_block_connection;
+      paper.__highlight_block_connection = function (block) {
+        for (var i = 0, len = block.inputs.length; i < len; i++) {
+          var connection = block.inputs[i].connected_to;
+          if (!connection) continue; // optional input, not wired
+          this.simulation_connections.push(connection.connection_id);
+          for (var ci = 0, clen = this.connections.length; ci < clen; ci++) {
+            if (this.connections[ci].id === connection.connection_id) {
+              this.connections[ci].line.animate({ stroke: '#009900' }, 500);
+            }
+          }
+        }
+      };
       simState.hooked = true;
     }
 
@@ -820,6 +860,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!simState.hooked) return;
       if (simState.hadOwnGUI) paper.get_user_input = simState.origGUI; else delete paper.get_user_input;
       if (simState.hadOwnCb) paper.callback = simState.origCb; else delete paper.callback;
+      if (simState.hadOwnHl) paper.__highlight_block_connection = simState.origHl; else delete paper.__highlight_block_connection;
       if (simState.origShow && W.system_dialogs && W.system_dialogs.information) {
         W.system_dialogs.information.show = simState.origShow;
       }
@@ -874,15 +915,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    // How long the replay dwells on a block. Time-behaviour blocks dwell
+    // longer, proportional to their configured delay: DELAY_VARIABLE reads
+    // its seconds from the CONST wired to put 1 (1 s sim-time ≈ 40 ms replay,
+    // capped at +2.5 s) — so a 30 s delay visibly "takes time" on the wire.
+    function simReplayDwellMs(stack, results, id) {
+      var base = 350;
+      var b = null;
+      for (var i = 0; i < stack.blocks.length; i++) { if (stack.blocks[i].id === id) { b = stack.blocks[i]; break; } }
+      if (!b || b.type !== 'DELAY_VARIABLE') return base;
+      var secs = 0;
+      for (var j = 0; j < stack.connections.length; j++) {
+        var c = stack.connections[j];
+        if (c.target && c.target.id === id && c.target.put === 1) { secs = parseFloat(results[c.source.id]) || 0; break; }
+      }
+      return base + Math.min(2500, secs * 40);
+    }
+
     // Replay the LAST run visually: reveal each block's value box in
-    // evaluation order and colour its outgoing wires as the signal spreads.
-    // Pure playback — nothing is re-simulated.
+    // evaluation order; its outgoing wires ANIMATE into their value colour
+    // over the block's dwell time (delays flow slowly). Pure playback —
+    // nothing is re-simulated.
     function simReplay() {
       var paper = simPaper();
       if (!paper) { toast('Designer not ready.', 'error'); return; }
       var fpNow;
       try { fpNow = simCanvasFingerprint(paper); } catch (e) { return; }
-      if (!paper.simulation_stack || fpNow !== simState.lastRunFp || !simState.lastRun || !simState.lastRun.ok) {
+      if (!paper.simulation_stack || fpNow.logic !== simState.lastRunFp || !simState.lastRun || !simState.lastRun.ok) {
         simRunOnce(); // need a fresh, matching run to play back
         if (!paper.simulation_stack || !simState.lastRun || !simState.lastRun.ok) return;
       }
@@ -890,6 +949,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var els = paper.simulation_elements || [];
       var order = simState.lastRun.order || [];
       var results = simState.lastRun.results || {};
+      var stack = simState.lastRun.stack;
       if (!els.length || !order.length) return;
       els.forEach(function (el) { try { el.hide(); } catch (e) { /* ignore */ } });
       for (var i = 0; i < paper.connections.length; i++) {
@@ -897,9 +957,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       var perBlock = Math.max(1, Math.floor(els.length / order.length));
       var idx = 0;
-      simState.replayTimer = setInterval(function () {
+      function stepReplay() {
         if (idx >= order.length) {
-          clearInterval(simState.replayTimer);
           simState.replayTimer = null;
           els.forEach(function (el) { try { el.show(); } catch (e) { /* ignore */ } });
           simPaintFlow(paper, results);
@@ -909,14 +968,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           try { els[k].show(); } catch (e) { /* ignore */ }
         }
         var id = order[idx];
+        var dwell = simReplayDwellMs(stack, results, id);
+        // the signal "travels" the outgoing wires over the dwell time
         for (var w = 0; w < paper.connections.length; w++) {
           var c = paper.connections[w];
           if (c.user && c.user.source === id) {
-            try { c.line.stop(); c.line.attr('stroke', simWireColor(results[id])); } catch (e) { /* ignore */ }
+            try { c.line.stop(); c.line.animate({ stroke: simWireColor(results[id]) }, Math.min(dwell, 1200)); } catch (e) { /* ignore */ }
           }
         }
         idx++;
-      }, 320);
+        simState.replayTimer = setTimeout(stepReplay, dwell);
+      }
+      stepReplay();
     }
 
     // Remove sim visuals from the canvas and restore wire colours.
@@ -945,7 +1008,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var blockCount = Object.keys(paper.elements || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
       if (blockCount === 0) {
         simResultLine('Canvas is empty — nothing to simulate.');
-        try { simState.lastRunFp = simCanvasFingerprint(paper); } catch (e) { /* ignore */ }
+        try {
+          var fpE = simCanvasFingerprint(paper);
+          simState.lastRunFp = fpE.logic;
+          simState.lastLayoutFp = fpE.layout;
+        } catch (e) { /* ignore */ }
         return;
       }
 
@@ -958,7 +1025,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var wasChanged0 = paper.changed;
         var stack0 = paper.save(false);
         paper.changed = wasChanged0;
-        simState.lastRunFp = JSON.stringify(stack0);
+        var fp0 = simFpFromDoc(stack0);
+        simState.lastRunFp = fp0.logic;
+        simState.lastLayoutFp = fp0.layout;
         simState.lastRun = {
           ok: false, error: null, syntaxErrors: (check.errors || []).slice(),
           stack: JSON.parse(JSON.stringify(stack0)),
@@ -993,7 +1062,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Structure snapshot up front, so a failed run can still be logged
       // (Copy log) with the sketch + how far it got.
       var stackCopy = JSON.parse(JSON.stringify(paper.simulation_stack));
-      simState.lastRunFp = JSON.stringify(paper.simulation_stack);
+      var fpRun = simFpFromDoc(paper.simulation_stack);
+      simState.lastRunFp = fpRun.logic;
+      simState.lastLayoutFp = fpRun.layout;
       function failRun(errorText) {
         simState.lastRun = {
           ok: false, error: errorText, syntaxErrors: [],
@@ -1090,6 +1161,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simPaintFlow(paper, results);
       simDimUnreached(paper);
       simSetActive(true);
+      // The host's per-step highlight animations (500 ms) can land after us —
+      // repaint once more when they are done so the value colours win.
+      var paintResults = simState.lastRun.results;
+      setTimeout(function () {
+        if (simPaper() === paper && paper.simulation_stack) simPaintFlow(paper, paintResults);
+      }, 700);
     }
 
     // Full log of the latest run (also exposed as __LDIO.getSimLog()).
@@ -1608,7 +1685,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }, 300);
 
     // Expose internals for console debugging / live verification.
-    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, closeSimPanel: closeSimPanel, getSimLog: buildLastSimLog };
+    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, simReplay: simReplay, closeSimPanel: closeSimPanel, getSimLog: buildLastSimLog, _sim: simState };
   })();
 }
 
