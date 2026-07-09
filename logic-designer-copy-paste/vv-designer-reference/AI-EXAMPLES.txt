@@ -3,14 +3,15 @@ VV DESIGNER - REAL SKETCH EXAMPLES (vv-fbx-sketch format)
 ================================================================================
 
 WHAT THIS IS
-  Seven complete, real sketch files (exported 2026-07-08 from live production
-  IWMAC plants with the Logic Designer Import/Export userscript) plus the
-  notable single-block shapes from larger production sketches - combined into
-  one file so an AI agent can learn the EXACT structure of a valid VV sketch.
+  Eight complete sketch files - seven real production exports (2026-07-08, via
+  the Logic Designer Import/Export userscript) plus one authored, validated
+  template (example 8) - and the notable single-block shapes from larger
+  production sketches, combined into one file so an AI agent can learn the
+  EXACT structure of a valid VV sketch.
 
-  Every JSON document under an "EXAMPLE n" heading is verbatim production data
-  and passes validate-vv-sketch.js: save one as a .json file and it imports
-  as-is (File -> Transfer -> Import sketch (JSON) on the VV Designer,
+  Every JSON document under an "EXAMPLE n" heading passes validate-vv-sketch.js
+  (examples 1-7 are verbatim production data): save one as a .json file and it
+  imports as-is (File -> Transfer -> Import sketch (JSON) on the VV Designer,
   internal.iwmac.local/vv_fbx.qxs).
 
 HOW TO USE THIS FILE (for an AI generating a sketch)
@@ -1526,6 +1527,804 @@ The complete file, verbatim:
   }
 }
 
+================================================================================
+EXAMPLE 8 - RECURRING EXERCISE WINDOW / "MOSJONERING" (authored template: calendar-gated run + LATCH restore)
+================================================================================
+
+Authored template (validated with validate-vv-sketch.js, not a plant export), 22 blocks / 29 wires.
+Exercise a pump on a recurring window (e.g. 1 hour every 14 days): write On inside
+the window; afterwards restore Off - but only if the pump was Off before the window.
+A manual Auto outside the window clears that memory at once; a manual On clears it
+after 60 s (deliberate compromise to tell manual On apart from the exercise override).
+
+What it teaches:
+  - The window MUST come from a plant CALENDAR (recurring schedule, bound after
+    import). TOGGLE_INTERVAL cannot do this: it is a symmetric square wave with
+    ONLY {"interval","offset"} - no duration/duty field exists.
+  - Read-back + write to the SAME switch point: PARAMV reads the state, LIKE
+    blocks decode it against tweakable CONSTs (2=Av, 3=Paa, 1=Auto here - VERIFY
+    the numeric states against the actual driver before deploying).
+  - LATCH as an off-memory: set = Av AND outside-window; reset = (Auto outside)
+    OR (manual Paa outside, persisted 60 s through DELAY_VARIABLE <- CONST).
+  - LATCH outputs an INTEGER - compare BIGGERTHAN <- CONST(0) to get a boolean
+    before feeding COMP_OR (boolean inputs accept only booleans).
+  - The gated-write idiom at the end: IF(condition = window OR memory,
+    value = SELECTOR(window ? Paa : Av)) -> WRITETOUNIT. No condition, no write.
+  - All three plant bindings are data: null "TODO bind" - calendar, read point,
+    write point. require_plant_revision 1683 (LATCH).
+
+Blocks:
+  id 0: CALENDAR "TODO bind: mosjoneringskalender (f.eks. 1 t hver 14. dag)"  (data: null)
+  id 1: PARAMV "TODO bind: pumpens bryterpunkt (lese)"  (data: null)
+  id 2: CONST "Bryterverdi Av (2) - verifiser mot driveren"
+  id 3: CONST "Bryterverdi Paa (3) - verifiser mot driveren"
+  id 4: CONST "Bryterverdi Auto (1) - verifiser mot driveren"
+  id 5: LIKE "staar i Av?"  (data: null)
+  id 6: LIKE "staar i Paa?"  (data: null)
+  id 7: LIKE "staar i Auto?"  (data: null)
+  id 8: INVERT "utenfor vinduet"  (data: null)
+  id 9: COMP_AND "Av utenfor vindu => sett minne"  (data: null)
+  id 10: COMP_AND "manuell Paa utenfor vindu"  (data: null)
+  id 11: COMP_AND "Auto utenfor vindu => nullstill"  (data: null)
+  id 12: CONST "Reset-forsinkelse manuell Paa"
+  id 13: DELAY_VARIABLE "manuell Paa i 60 s => nullstill"  (data: null)
+  id 14: COMP_OR "nullstill minne"  (data: null)
+  id 15: LATCH "av-minne (pumpen var Av)"  (data: null)
+  id 16: CONST "null (terskel for minne)"
+  id 17: BIGGERTHAN "minne aktivt?"  (data: null)
+  id 18: COMP_OR "skal vi skrive?"  (data: null)
+  id 19: SELECTOR "i vindu: Paa, ellers: Av"
+  id 20: IF "gated skriving"  (data: null)
+  id 21: WRITETOUNIT "TODO bind: pumpens bryterpunkt (skrive)"  (data: null)
+Wiring (source output -> target input):
+  PARAMV(1) out0 -> in0 LIKE(5)
+  CONST(2) out0 -> in1 LIKE(5)
+  PARAMV(1) out0 -> in0 LIKE(6)
+  CONST(3) out0 -> in1 LIKE(6)
+  PARAMV(1) out0 -> in0 LIKE(7)
+  CONST(4) out0 -> in1 LIKE(7)
+  CALENDAR(0) out0 -> in0 INVERT(8)
+  LIKE(5) out0 -> in0 COMP_AND(9)
+  INVERT(8) out0 -> in1 COMP_AND(9)
+  LIKE(6) out0 -> in0 COMP_AND(10)
+  INVERT(8) out0 -> in1 COMP_AND(10)
+  LIKE(7) out0 -> in0 COMP_AND(11)
+  INVERT(8) out0 -> in1 COMP_AND(11)
+  COMP_AND(10) out0 -> in0 DELAY_VARIABLE(13)
+  CONST(12) out0 -> in1 DELAY_VARIABLE(13)
+  COMP_AND(11) out0 -> in0 COMP_OR(14)
+  DELAY_VARIABLE(13) out0 -> in1 COMP_OR(14)
+  COMP_AND(9) out0 -> in0 LATCH(15)
+  COMP_OR(14) out0 -> in1 LATCH(15)
+  LATCH(15) out0 -> in0 BIGGERTHAN(17)
+  CONST(16) out0 -> in1 BIGGERTHAN(17)
+  CALENDAR(0) out0 -> in0 COMP_OR(18)
+  BIGGERTHAN(17) out0 -> in1 COMP_OR(18)
+  CALENDAR(0) out0 -> in0 SELECTOR(19)
+  CONST(3) out0 -> in1 SELECTOR(19)
+  CONST(2) out0 -> in2 SELECTOR(19)
+  COMP_OR(18) out0 -> in0 IF(20)
+  SELECTOR(19) out0 -> in1 IF(20)
+  IF(20) out0 -> in0 WRITETOUNIT(21)
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-09T00:00:00.000Z",
+  "source_plant_id": null,
+  "source_sketch_id": null,
+  "name": "Mosjonering pumpe - kalendergated m/ av-minne (TEMPLATE)",
+  "block_count": 22,
+  "connection_count": 29,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 1683,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "calendar_value",
+        "type": "CALENDAR",
+        "compile_type": "input",
+        "data": null,
+        "override": {
+          "alias_text": "TODO bind: mosjoneringskalender (f.eks. 1 t hver 14. dag)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "mixed"
+        ],
+        "x": 40,
+        "y": 60
+      },
+      {
+        "id": 1,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": null,
+        "override": {
+          "alias_text": "TODO bind: pumpens bryterpunkt (lese)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "mixed"
+        ],
+        "x": 40,
+        "y": 200
+      },
+      {
+        "id": 2,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Bryterverdi Av (2) - verifiser mot driveren",
+          "initial_value": 2,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Bryterverdi Av (2) - verifiser mot driveren"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 40,
+        "y": 340
+      },
+      {
+        "id": 3,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Bryterverdi Paa (3) - verifiser mot driveren",
+          "initial_value": 3,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Bryterverdi Paa (3) - verifiser mot driveren"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 40,
+        "y": 470
+      },
+      {
+        "id": 4,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Bryterverdi Auto (1) - verifiser mot driveren",
+          "initial_value": 1,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Bryterverdi Auto (1) - verifiser mot driveren"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 40,
+        "y": 600
+      },
+      {
+        "id": 5,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "staar i Av?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 220
+      },
+      {
+        "id": 6,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "staar i Paa?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 360
+      },
+      {
+        "id": 7,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "staar i Auto?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 500
+      },
+      {
+        "id": 8,
+        "func": "invert",
+        "type": "INVERT",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "utenfor vinduet"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 80
+      },
+      {
+        "id": 9,
+        "func": "comp_and",
+        "type": "COMP_AND",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "Av utenfor vindu => sett minne"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 520,
+        "y": 140
+      },
+      {
+        "id": 10,
+        "func": "comp_and",
+        "type": "COMP_AND",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "manuell Paa utenfor vindu"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 520,
+        "y": 320
+      },
+      {
+        "id": 11,
+        "func": "comp_and",
+        "type": "COMP_AND",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "Auto utenfor vindu => nullstill"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 520,
+        "y": 500
+      },
+      {
+        "id": 12,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Reset-forsinkelse manuell Paa",
+          "initial_value": 60,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "s",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Reset-forsinkelse manuell Paa"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 520,
+        "y": 640
+      },
+      {
+        "id": 13,
+        "func": "alarm_multi_delay",
+        "type": "DELAY_VARIABLE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "manuell Paa i 60 s => nullstill"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean"
+        ],
+        "x": 720,
+        "y": 380
+      },
+      {
+        "id": 14,
+        "func": "comp_or",
+        "type": "COMP_OR",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "nullstill minne"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 900,
+        "y": 440
+      },
+      {
+        "id": 15,
+        "func": "latch.run",
+        "type": "LATCH",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "av-minne (pumpen var Av)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "integer",
+        "x": 1080,
+        "y": 260
+      },
+      {
+        "id": 16,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "null (terskel for minne)",
+          "initial_value": 0,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "null (terskel for minne)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 1080,
+        "y": 420
+      },
+      {
+        "id": 17,
+        "func": "biggerthan",
+        "type": "BIGGERTHAN",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "minne aktivt?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 1260,
+        "y": 340
+      },
+      {
+        "id": 18,
+        "func": "comp_or",
+        "type": "COMP_OR",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "skal vi skrive?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 1440,
+        "y": 160
+      },
+      {
+        "id": 19,
+        "func": "selector",
+        "type": "SELECTOR",
+        "compile_type": "function",
+        "data": {
+          "output_type": "integer"
+        },
+        "override": {
+          "alias_text": "i vindu: Paa, ellers: Av"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "integer",
+          "float"
+        ],
+        "x": 1440,
+        "y": 420
+      },
+      {
+        "id": 20,
+        "func": "if",
+        "type": "IF",
+        "compile_type": "condition",
+        "data": null,
+        "override": {
+          "alias_text": "gated skriving"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "mixed",
+        "x": 1640,
+        "y": 300,
+        "required_plant_revision": 620
+      },
+      {
+        "id": 21,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "TODO bind: pumpens bryterpunkt (skrive)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": null,
+        "x": 1820,
+        "y": 300
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 5,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 5,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 6,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 3,
+          "put": 0
+        },
+        "target": {
+          "id": 6,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 7,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 4,
+          "put": 0
+        },
+        "target": {
+          "id": 7,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 8,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 5,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 8,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 6,
+          "put": 0
+        },
+        "target": {
+          "id": 10,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 8,
+          "put": 0
+        },
+        "target": {
+          "id": 10,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 7,
+          "put": 0
+        },
+        "target": {
+          "id": 11,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 8,
+          "put": 0
+        },
+        "target": {
+          "id": 11,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 10,
+          "put": 0
+        },
+        "target": {
+          "id": 13,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 12,
+          "put": 0
+        },
+        "target": {
+          "id": 13,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 11,
+          "put": 0
+        },
+        "target": {
+          "id": 14,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 13,
+          "put": 0
+        },
+        "target": {
+          "id": 14,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 9,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 14,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 15,
+          "put": 0
+        },
+        "target": {
+          "id": 17,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 16,
+          "put": 0
+        },
+        "target": {
+          "id": 17,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 18,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 17,
+          "put": 0
+        },
+        "target": {
+          "id": 18,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 19,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 3,
+          "put": 0
+        },
+        "target": {
+          "id": 19,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 19,
+          "put": 2
+        }
+      },
+      {
+        "source": {
+          "id": 18,
+          "put": 0
+        },
+        "target": {
+          "id": 20,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 19,
+          "put": 0
+        },
+        "target": {
+          "id": 20,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 20,
+          "put": 0
+        },
+        "target": {
+          "id": 21,
+          "put": 0
+        }
+      }
+    ],
+    "groups": []
+  }
+}
 ================================================================================
 NOTABLE REAL BLOCK SHAPES (lifted verbatim from larger production sketches)
 ================================================================================

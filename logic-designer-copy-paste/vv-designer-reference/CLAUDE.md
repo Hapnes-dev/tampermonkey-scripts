@@ -916,7 +916,7 @@ Ask (or infer from context) — these change the graph:
 | "must hold for N minutes" (debounce) | `DELAY_VARIABLE` (delay via CONST inputs — best for programmatic builds) or `DELAY` (delay in config dialog) |
 | "on rising/falling edge", "count starts/pulses" | `PULSE_COUNT` with `block_func_args.type` = `flank_rising_edge`/`flank_falling_edge`/`flank_changing_edge` (native edge counting; signal→i0, **CONST level→i1 required**) |
 | "toggle/flip a value on each pulse" | `PULSE_COUNT`(flank mode) → `MOD` ← `CONST(2)` — 0/1 flips per edge (count resets per configured period). Time-based toggle = `TOGGLE_INTERVAL`; set/reset hold = `LATCH` |
-| "recurring maintenance/exercise window" (mosjonering: run X h every N days) | A plant **`CALENDAR`** with the recurring schedule gating the logic. **Not** `TOGGLE_INTERVAL` — it is a symmetric square wave with no duration field (§6); `CRITERIA` has time-of-day/weekday ranges but no every-N-days period. |
+| "recurring maintenance/exercise window" (mosjonering: run X h every N days) | A plant **`CALENDAR`** with the recurring schedule gating the logic. **Not** `TOGGLE_INTERVAL` — it is a symmetric square wave with no duration field (§6); `CRITERIA` has time-of-day/weekday ranges but no every-N-days period. **Ready-to-import template: [`AI-EXAMPLES.txt`](AI-EXAMPLES.txt) example 8** (calendar-gated run + LATCH off-memory restore). |
 | "average/min/max/sum over a period" | `AVG/MIN/MAX/SUM_IN_PERIOD` (input **by_refference**) |
 | "how long has it been running" | `HOURMETER`; "how old is the value" → `AGE_OF_VALUE`, `DELTA_T` |
 | "stays on until reset" (hysteresis/holding circuit) | `LATCH` (set/reset) |
@@ -1109,8 +1109,9 @@ example** as its instructions — or, easier, hand it the **ready-made briefing*
 (~3 150 words: concepts, contract, allowlist, recipes, validated example, all five failure
 histories as prohibitions, self-check) — **paired with
 [`AI-EXAMPLES.txt`](https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/logic-designer-copy-paste/vv-designer-reference/AI-EXAMPLES.txt)**
-(seven complete production sketches + notable block shapes, verbatim in the accepted format —
-the briefing says what is allowed, the examples show what correct output looks like; §21).
+(eight complete sketches — seven verbatim production exports + an authored exercise-window
+template — plus notable block shapes, all in the accepted format; the briefing says what is
+allowed, the examples show what correct output looks like; §21).
 Then run the output through the **mechanical validator** before importing (see below) — do not
 trust any AI-generated file unvalidated, including your own.
 
@@ -1624,8 +1625,9 @@ own previous draft; models drift back to invented formats between attempts.
 (4862, 5290, 8565, 8602, 9652, 10111) — **310 blocks / 285 wires** — were analysed and run
 through `validate-vv-sketch.js`. **All pass**; the corpus exposed exactly one validator false
 positive, since fixed: `TRANSFORM_MAPPED` with a custom map exports
-`func "transform_mapped_custom.run"` (§6). A curated teaching subset — seven complete sketches
-plus the notable block shapes, verbatim — is committed alongside as
+`func "transform_mapped_custom.run"` (§6). A curated teaching subset — seven production sketches,
+an authored mosjonering/exercise-window template (example 8, §19.1), plus the notable block
+shapes — is committed alongside as
 [`AI-EXAMPLES.txt`](AI-EXAMPLES.txt); hand it to any AI together with `AI-BRIEFING.txt`.
 Findings folded into §6/§8/§19.2/§20.4 above; the headline numbers:
 
