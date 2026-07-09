@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.0
+// @version      1.7.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -125,6 +125,110 @@ function formatSimValue(v) {
   if (v === undefined) return '(not reached)';
   if (v === null) return '(null)';
   return String(v);
+}
+
+function simBlockLabel(b) {
+  return (b && ((b.override && b.override.alias_text) || (b.data && b.data.alias_text))) || '';
+}
+
+// Explain the flow of one simulation run, step by step: evaluation order, and
+// for every block which upstream blocks fed which input pin with what value.
+// stack = the run's paper.save() snapshot; results = {pointer: value};
+// order = simulation_completed_blocks (completion order); inputValues = the
+// panel's user-set values keyed by pointer.
+function buildSimFlowLines(stack, results, order, inputValues) {
+  var byId = {};
+  stack.blocks.forEach(function (b) { byId[b.id] = b; });
+  var lines = [];
+  order.forEach(function (id, i) {
+    var b = byId[id];
+    if (!b) return;
+    var label = simBlockLabel(b);
+    var head = 'step ' + (i + 1) + ': ' + b.type + ' (' + id + ')' + (label ? ' "' + label + '"' : '') + ' = ' + formatSimValue(results[id]);
+    var feeds = stack.connections.filter(function (c) { return c.target && c.target.id === id; });
+    if (feeds.length === 0 && inputValues && (id in inputValues)) head += '   [panel input]';
+    lines.push(head);
+    feeds.sort(function (a, b2) { return a.target.put - b2.target.put; }).forEach(function (c) {
+      var s = byId[c.source.id];
+      var sl = simBlockLabel(s);
+      lines.push('    in' + c.target.put + ' <- ' + (s ? s.type : '?') + ' (' + c.source.id + ')' + (sl ? ' "' + sl + '"' : '') +
+        ' = ' + formatSimValue(results[c.source.id]) + (c.alias_text ? '   [pin: ' + c.alias_text + ']' : ''));
+    });
+  });
+  var notRun = stack.blocks.filter(function (b) { return order.indexOf(b.id) === -1; });
+  if (notRun.length) {
+    lines.push('');
+    lines.push('NOT EVALUATED (invalidated IF branch, or never reached):');
+    notRun.forEach(function (b) {
+      var l = simBlockLabel(b);
+      lines.push('  ' + b.type + ' (' + b.id + ')' + (l ? ' "' + l + '"' : ''));
+    });
+  }
+  return lines;
+}
+
+// Build the full, self-contained simulation log — made to be pasted to an AI
+// so it can debug/improve the logic without access to the designer.
+// run = {ok, syntaxErrors, stack, results, order, inputValues, missing, messages}
+// meta = {version, plantId, sketchName, mode}
+function buildSimulationLog(run, meta) {
+  var L = [];
+  L.push('=== VV DESIGNER - LIVE SIMULATE LOG (LDIO v' + (meta.version || '?') + ') ===');
+  L.push('Plant: ' + (meta.plantId || '?') + ' | Sketch: ' + (meta.sketchName || '(unsaved)') + ' | Mode: ' + (meta.mode || '?'));
+  L.push('This is a CLIENT-SIDE simulation of an IWMAC VV Designer function-block sketch');
+  L.push('(blocks wired output->input; format reference: vv-designer-reference/AI-BRIEFING.txt');
+  L.push('in https://github.com/hapnes-dev/tampermonkey-scripts). Values below are what each');
+  L.push('block computed with the given inputs. Please analyse whether the logic behaves as');
+  L.push('intended and point out what to change.');
+  L.push('');
+  if (!run.ok) {
+    L.push('RESULT: SYNTAX CHECK FAILED - nothing was simulated. Errors:');
+    (run.syntaxErrors || []).forEach(function (e) { L.push('  - ' + e); });
+  } else {
+    var total = run.stack.blocks.length;
+    L.push('RESULT: ' + (run.order.length === total ? 'COMPLETE' : 'INCOMPLETE') + ' (' + run.order.length + '/' + total + ' blocks evaluated)');
+  }
+  L.push('');
+  L.push('INPUTS (values set in the Live Simulate panel):');
+  var anyInput = false;
+  var byId = {};
+  (run.stack.blocks || []).forEach(function (b) { byId[b.id] = b; });
+  Object.keys(run.inputValues || {}).forEach(function (ptr) {
+    var b = byId[ptr];
+    var label = simBlockLabel(b);
+    L.push('  ' + (b ? b.type : '?') + ' (' + ptr + ')' + (label ? ' "' + label + '"' : '') + ' = ' + run.inputValues[ptr]);
+    anyInput = true;
+  });
+  if (!anyInput) L.push('  (none)');
+  if (run.missing && run.missing.length) {
+    L.push('  NOTE: these input blocks had NO value and defaulted to 0: ' + run.missing.join(', '));
+  }
+  if (run.ok) {
+    L.push('');
+    L.push('FLOW (evaluation order; "inN <- ..." shows what fed each input pin):');
+    buildSimFlowLines(run.stack, run.results, run.order, run.inputValues).forEach(function (l) { L.push('  ' + l); });
+    L.push('');
+    L.push('MESSAGES (alarm popups etc. raised during the run):');
+    if (run.messages && run.messages.length) run.messages.forEach(function (m) { L.push('  - ' + m); });
+    else L.push('  (none)');
+  }
+  L.push('');
+  L.push('BLOCKS (id: TYPE "label" data=...):');
+  (run.stack.blocks || []).forEach(function (b) {
+    var label = simBlockLabel(b);
+    var data = '';
+    try { data = b.data == null ? 'null' : JSON.stringify(b.data); } catch (e) { data = '(unserializable)'; }
+    if (data.length > 220) data = data.slice(0, 220) + '…';
+    L.push('  ' + b.id + ': ' + b.type + (label ? ' "' + label + '"' : '') + ' data=' + data);
+  });
+  L.push('WIRES (source output -> target input):');
+  (run.stack.connections || []).forEach(function (c) {
+    var s = byId[c.source.id], t = byId[c.target.id];
+    L.push('  ' + (s ? s.type : '?') + '(' + c.source.id + ') out' + c.source.put + ' -> in' + c.target.put + ' ' + (t ? t.type : '?') + '(' + c.target.id + ')' + (c.alias_text ? '   [pin: ' + c.alias_text + ']' : ''));
+  });
+  L.push('');
+  L.push('(For the full importable sketch JSON: File > Transfer > Export sketch (JSON).)');
+  return L.join('\n');
 }
 
 // Accept either the envelope or a bare paper.save() document.
@@ -355,7 +459,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.6.0';
+    var VERSION = '1.7.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -420,6 +524,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-sim-result .ldio-sim-false { color: #ff8a8a; }\
       .ldio-sim-result .ldio-sim-msg { color: #d9c07a; }\
       .ldio-sim-ctl { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px 0; font-size: 12px; flex-wrap: wrap; }\
+      .ldio-sim-flow { font: 11px/1.5 Consolas, monospace; white-space: pre; overflow-x: auto; color: #bfcbd6;\
+        margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 6px; }\
     ';
     if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
     else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
@@ -600,6 +706,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       values: {}, missing: [], msgs: [], debounce: null,
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
+      lastRun: null, // snapshot of the latest run, for Copy log / getSimLog
     };
 
     function simPaper() {
@@ -671,6 +778,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!check.ok) {
         simResultLine('Syntax check failed — fix these first:', 'ldio-sim-false');
         (check.errors || []).forEach(function (e) { simResultLine('  ' + e); });
+        // Still snapshot the sketch so Copy log can hand the structure +
+        // errors to an AI even when nothing could be simulated.
+        var wasChanged0 = paper.changed;
+        var stack0 = paper.save(false);
+        paper.changed = wasChanged0;
+        simState.lastRun = {
+          ok: false, syntaxErrors: (check.errors || []).slice(),
+          stack: JSON.parse(JSON.stringify(stack0)),
+          results: {}, order: [], inputValues: JSON.parse(JSON.stringify(simState.values)),
+          missing: [], messages: [],
+        };
         return;
       }
 
@@ -732,6 +850,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var ptr = parseInt(inputs[i].getAttribute('data-ptr'), 10);
         inputs[i].classList.toggle('ldio-sim-missing', simState.missing.indexOf(ptr) !== -1);
       }
+
+      // Snapshot the run for Copy log, and explain the flow in the panel.
+      simState.lastRun = {
+        ok: true, syntaxErrors: [],
+        stack: JSON.parse(JSON.stringify(paper.simulation_stack)),
+        results: JSON.parse(JSON.stringify(results)),
+        order: paper.simulation_completed_blocks.slice(),
+        inputValues: JSON.parse(JSON.stringify(simState.values)),
+        missing: simState.missing.slice(),
+        messages: simState.msgs.slice(),
+      };
+      var flow = buildSimFlowLines(simState.lastRun.stack, simState.lastRun.results, simState.lastRun.order, simState.lastRun.inputValues);
+      var flowEl = document.createElement('div');
+      flowEl.className = 'ldio-sim-flow';
+      flowEl.textContent = 'Flow — evaluation order:\n' + flow.join('\n');
+      simState.resultEl.appendChild(flowEl);
+    }
+
+    // Full log of the latest run (also exposed as __LDIO.getSimLog()).
+    function buildLastSimLog() {
+      if (!simState.lastRun) return null;
+      var paper = simPaper();
+      return buildSimulationLog(simState.lastRun, {
+        version: VERSION,
+        plantId: (W.query_string && W.query_string.plant_id) || null,
+        sketchName: W.application ? W.application.current_sketch_name : null,
+        mode: paper ? paper.mode : null,
+      });
     }
 
     function simQueueRun() {
@@ -850,11 +996,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (p2) simClearCanvas(p2);
         simState.resultEl.textContent = '';
       });
+      var copyBtn = document.createElement('button');
+      copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
+      copyBtn.textContent = '⧉ Copy log';
+      copyBtn.title = 'Copy a full simulation log (inputs, flow, results, blocks, wires) — paste it to an AI to debug/improve the logic';
+      copyBtn.addEventListener('click', function () {
+        var text = buildLastSimLog();
+        if (!text) { toast('Run a simulation first.'); return; }
+        if (copyTextToClipboard(text)) toast('Simulation log copied — paste it to your AI.');
+        else toast('Could not access the clipboard.', 'error');
+      });
       var closeBtn = document.createElement('button');
       closeBtn.type = 'button'; closeBtn.className = 'ldio-btn';
       closeBtn.textContent = 'Close';
       closeBtn.addEventListener('click', closeSimPanel);
-      ctl.appendChild(runBtn); ctl.appendChild(autoLabel); ctl.appendChild(refreshBtn); ctl.appendChild(stopBtn); ctl.appendChild(closeBtn);
+      ctl.appendChild(runBtn); ctl.appendChild(autoLabel); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn); ctl.appendChild(stopBtn); ctl.appendChild(closeBtn);
       panel.appendChild(ctl);
 
       var result = document.createElement('div');
@@ -1173,7 +1329,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }, 300);
 
     // Expose internals for console debugging / live verification.
-    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, closeSimPanel: closeSimPanel };
+    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, closeSimPanel: closeSimPanel, getSimLog: buildLastSimLog };
   })();
 }
 
@@ -1186,6 +1342,8 @@ if (typeof module !== 'undefined' && module.exports) {
     listSimInputBlocks: listSimInputBlocks,
     listSimOutputBlocks: listSimOutputBlocks,
     formatSimValue: formatSimValue,
+    buildSimFlowLines: buildSimFlowLines,
+    buildSimulationLog: buildSimulationLog,
     parseImportPayload: parseImportPayload,
     detectSourcePlantFromDriverIds: detectSourcePlantFromDriverIds,
     countRebindableDriverIds: countRebindableDriverIds,
