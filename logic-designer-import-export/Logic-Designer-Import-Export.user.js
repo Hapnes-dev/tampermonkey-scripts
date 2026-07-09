@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.0
+// @version      1.10.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -182,18 +182,28 @@ function buildSimulationLog(run, meta) {
   L.push('block computed with the given inputs. Please analyse whether the logic behaves as');
   L.push('intended and point out what to change.');
   L.push('');
+  var total = (run.stack && run.stack.blocks) ? run.stack.blocks.length : 0;
   if (!run.ok) {
-    L.push('RESULT: SYNTAX CHECK FAILED - nothing was simulated. Errors:');
-    (run.syntaxErrors || []).forEach(function (e) { L.push('  - ' + e); });
+    L.push('RESULT: FAILED — the simulation did not complete.');
+    if (run.syntaxErrors && run.syntaxErrors.length) {
+      L.push('Cause: the syntax check rejected the sketch, nothing was simulated. Errors:');
+      run.syntaxErrors.forEach(function (e) { L.push('  - ' + e); });
+    }
+    if (run.error) L.push('Cause: ' + run.error);
+    if (run.order && run.order.length) {
+      L.push('It stopped after ' + run.order.length + '/' + total + ' blocks — the partial flow below shows how far it got.');
+    }
   } else {
-    var total = run.stack.blocks.length;
     L.push('RESULT: ' + (run.order.length === total ? 'COMPLETE' : 'INCOMPLETE') + ' (' + run.order.length + '/' + total + ' blocks evaluated)');
+    if (run.order.length !== total) {
+      L.push('(Blocks can be skipped legitimately when an IF/IF_ELSE invalidated their branch — see NOT EVALUATED under FLOW.)');
+    }
   }
   L.push('');
   L.push('INPUTS (values set in the Live Simulate panel):');
   var anyInput = false;
   var byId = {};
-  (run.stack.blocks || []).forEach(function (b) { byId[b.id] = b; });
+  ((run.stack && run.stack.blocks) || []).forEach(function (b) { byId[b.id] = b; });
   Object.keys(run.inputValues || {}).forEach(function (ptr) {
     var b = byId[ptr];
     var label = simBlockLabel(b);
@@ -204,18 +214,18 @@ function buildSimulationLog(run, meta) {
   if (run.missing && run.missing.length) {
     L.push('  NOTE: these input blocks had NO value and defaulted to 0: ' + run.missing.join(', '));
   }
-  if (run.ok) {
+  if (run.stack && run.order && run.order.length) {
     L.push('');
-    L.push('FLOW (evaluation order; "inN <- ..." shows what fed each input pin):');
+    L.push('FLOW' + (run.ok ? '' : ' (PARTIAL — the run failed before completing)') + ' (evaluation order; "inN <- ..." shows what fed each input pin):');
     buildSimFlowLines(run.stack, run.results, run.order, run.inputValues).forEach(function (l) { L.push('  ' + l); });
-    L.push('');
-    L.push('MESSAGES (alarm popups etc. raised during the run):');
-    if (run.messages && run.messages.length) run.messages.forEach(function (m) { L.push('  - ' + m); });
-    else L.push('  (none)');
   }
   L.push('');
+  L.push('MESSAGES (alarm popups / errors raised during the run):');
+  if (run.messages && run.messages.length) run.messages.forEach(function (m) { L.push('  - ' + m); });
+  else L.push('  (none)');
+  L.push('');
   L.push('BLOCKS (id: TYPE "label" data=...):');
-  (run.stack.blocks || []).forEach(function (b) {
+  ((run.stack && run.stack.blocks) || []).forEach(function (b) {
     var label = simBlockLabel(b);
     var data = '';
     try { data = b.data == null ? 'null' : JSON.stringify(b.data); } catch (e) { data = '(unserializable)'; }
@@ -223,7 +233,7 @@ function buildSimulationLog(run, meta) {
     L.push('  ' + b.id + ': ' + b.type + (label ? ' "' + label + '"' : '') + ' data=' + data);
   });
   L.push('WIRES (source output -> target input):');
-  (run.stack.connections || []).forEach(function (c) {
+  ((run.stack && run.stack.connections) || []).forEach(function (c) {
     var s = byId[c.source.id], t = byId[c.target.id];
     L.push('  ' + (s ? s.type : '?') + '(' + c.source.id + ') out' + c.source.put + ' -> in' + c.target.put + ' ' + (t ? t.type : '?') + '(' + c.target.id + ')' + (c.alias_text ? '   [pin: ' + c.alias_text + ']' : ''));
   });
@@ -460,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.9.0';
+    var VERSION = '1.10.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -806,7 +816,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var stack0 = paper.save(false);
         paper.changed = wasChanged0;
         simState.lastRun = {
-          ok: false, syntaxErrors: (check.errors || []).slice(),
+          ok: false, error: null, syntaxErrors: (check.errors || []).slice(),
           stack: JSON.parse(JSON.stringify(stack0)),
           results: {}, order: [], inputValues: JSON.parse(JSON.stringify(simState.values)),
           missing: [], messages: [],
@@ -834,6 +844,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       paper.simulation_completed_blocks = [];
       paper.simulation_connections = [];
       paper.simulation_data = {};
+      // Structure snapshot up front, so a failed run can still be logged
+      // (Copy log) with the sketch + how far it got.
+      var stackCopy = JSON.parse(JSON.stringify(paper.simulation_stack));
+      function failRun(errorText) {
+        simState.lastRun = {
+          ok: false, error: errorText, syntaxErrors: [],
+          stack: stackCopy,
+          results: JSON.parse(JSON.stringify(paper.simulation_stack_block_values || {})),
+          order: (paper.simulation_completed_blocks || []).slice(),
+          inputValues: JSON.parse(JSON.stringify(simState.values)),
+          missing: simState.missing.slice(),
+          messages: simState.msgs.slice(),
+        };
+      }
 
       var cap = Math.max(200, paper.simulation_steps * 5);
       var guard = 0;
@@ -842,14 +866,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           paper.simulator_step();
         }
       } catch (err) {
-        simResultLine('Simulation stopped on a block error: ' + err.message, 'ldio-sim-false');
-        simResultLine('(Usually an unconfigured block — configure it and rerun.)');
+        failRun('A block sim crashed: ' + err.message + ' (usually an unconfigured block).');
+        simResultLine('FAILED — simulation stopped on a block error: ' + err.message, 'ldio-sim-false');
+        simResultLine('(Usually an unconfigured block — configure it and rerun. ⧉ Log has the details.)');
+        simState.msgs.forEach(function (m) { simResultLine('⚠ ' + m, 'ldio-sim-msg'); });
         return;
       }
       // The host's simulator_stop() may have fired mid-run (a sim error path
       // nulls simulation_stack) — report instead of touching null state.
       if (!paper.simulation_stack) {
-        simResultLine('The host stopped the simulation mid-run (a block reported an error).', 'ldio-sim-false');
+        failRun('The host stopped the simulation mid-run — a block sim reported an error (see MESSAGES).');
+        simResultLine('FAILED — the host stopped the simulation mid-run (a block reported an error).', 'ldio-sim-false');
         simState.msgs.forEach(function (m) { simResultLine('⚠ ' + m, 'ldio-sim-msg'); });
         return;
       }
@@ -899,7 +926,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       // Snapshot the run for Copy log, and explain the flow in the panel.
       simState.lastRun = {
-        ok: true, syntaxErrors: [],
+        ok: true, error: null, syntaxErrors: [],
         stack: JSON.parse(JSON.stringify(paper.simulation_stack)),
         results: JSON.parse(JSON.stringify(results)),
         order: paper.simulation_completed_blocks.slice(),
@@ -1064,12 +1091,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       refreshBtn.addEventListener('click', simBuildRows);
       var stopBtn = document.createElement('button');
       stopBtn.type = 'button'; stopBtn.className = 'ldio-btn';
-      stopBtn.textContent = '■';
-      stopBtn.title = 'Clear the simulated values from the canvas';
+      stopBtn.textContent = '■ Stop';
+      stopBtn.title = 'Stop: cancel a pending auto re-run and clear the simulated values from the canvas';
       stopBtn.addEventListener('click', function () {
+        if (simState.debounce) { clearTimeout(simState.debounce); simState.debounce = null; }
         var p2 = simPaper();
         if (p2) simClearCanvas(p2);
         simState.resultEl.textContent = '';
+        simResultLine('Stopped — simulated values cleared from the canvas.');
       });
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
@@ -1083,7 +1112,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       var spring = document.createElement('div');
       spring.className = 'ldio-sim-spring';
-      ctl.appendChild(runBtn); ctl.appendChild(autoLabel); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn); ctl.appendChild(stopBtn);
+      ctl.appendChild(runBtn); ctl.appendChild(stopBtn); ctl.appendChild(autoLabel); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn);
       body.appendChild(ctl);
 
       var secOut = document.createElement('div');
