@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.8.0
+// @version      1.9.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -137,6 +137,7 @@ function simBlockLabel(b) {
 // order = simulation_completed_blocks (completion order); inputValues = the
 // panel's user-set values keyed by pointer.
 function buildSimFlowLines(stack, results, order, inputValues) {
+  if (!stack || !Array.isArray(stack.blocks)) return [];
   var byId = {};
   stack.blocks.forEach(function (b) { byId[b.id] = b; });
   var lines = [];
@@ -459,7 +460,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.8.0';
+    var VERSION = '1.9.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -532,6 +533,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-sim-row input[type=number]:focus { outline: none; border-color: #3d7ab3; }\
       .ldio-sim-row input.ldio-sim-missing { border-color: #d9c07a; }\
       .ldio-sim-mini { padding: 3px 8px; font-size: 11px; border-radius: 4px; }\
+      .ldio-sim-val { flex: 0 0 auto; min-width: 46px; text-align: right;\
+        font: 11px/1.2 Consolas, monospace; color: #8fb8e0; }\
+      .ldio-sim-val.ldio-sim-defaulted { color: #d9c07a; }\
       .ldio-sim-ctl { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 12px;\
         flex-wrap: wrap; flex: 0 0 auto; }\
       .ldio-sim-spring { flex: 1 1 auto; }\
@@ -736,11 +740,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simState.hadOwnGUI = Object.prototype.hasOwnProperty.call(paper, 'get_user_input');
       simState.origGUI = paper.get_user_input;
       paper.get_user_input = function (block) {
-        var raw = simState.values[block.pointer];
+        var ptr = block && block.pointer;
+        var raw = simState.values[ptr];
         var v = parseFloat(raw);
-        if (isNaN(v)) { v = 0; if (simState.missing.indexOf(block.pointer) === -1) simState.missing.push(block.pointer); }
-        this.simulation_stack_block_values[block.pointer] = v;
-        this.simulation_user_values[block.pointer] = v;
+        if (isNaN(v)) { v = 0; if (ptr != null && simState.missing.indexOf(ptr) === -1) simState.missing.push(ptr); }
+        this.simulation_stack_block_values[ptr] = v;
+        this.simulation_user_values[ptr] = v;
         this.simulation_auto_proceed = true;
         return v;
       };
@@ -841,6 +846,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         simResultLine('(Usually an unconfigured block — configure it and rerun.)');
         return;
       }
+      // The host's simulator_stop() may have fired mid-run (a sim error path
+      // nulls simulation_stack) — report instead of touching null state.
+      if (!paper.simulation_stack) {
+        simResultLine('The host stopped the simulation mid-run (a block reported an error).', 'ldio-sim-false');
+        simState.msgs.forEach(function (m) { simResultLine('⚠ ' + m, 'ldio-sim-msg'); });
+        return;
+      }
       // The final step schedules the host's 5 s auto-clear — cancel it so the
       // values stay visible on the canvas until Stop/rerun.
       if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); paper.simulation_stopper = null; }
@@ -861,11 +873,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.missing.length) {
         simResultLine('Note: ' + simState.missing.length + ' input(s) had no value and defaulted to 0: block ' + simState.missing.join(', '), 'ldio-sim-msg');
       }
-      // Flag the empty inputs in the rows list.
+      // Make the used values visible in the panel after every (re)run:
+      // fill empty fields with the value the run actually used, and show a
+      // "= value" badge per row (amber when it silently defaulted to 0).
       var inputs = simState.rowsEl.querySelectorAll('input[data-ptr]');
       for (var i = 0; i < inputs.length; i++) {
         var ptr = parseInt(inputs[i].getAttribute('data-ptr'), 10);
-        inputs[i].classList.toggle('ldio-sim-missing', simState.missing.indexOf(ptr) !== -1);
+        var wasDefaulted = simState.missing.indexOf(ptr) !== -1;
+        var used = results[ptr];
+        if (inputs[i].value === '' && used !== undefined) {
+          inputs[i].value = String(used);
+          simState.values[ptr] = inputs[i].value;
+        }
+        inputs[i].classList.toggle('ldio-sim-missing', wasDefaulted);
+        var badge = inputs[i].parentElement.querySelector('.ldio-sim-val');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'ldio-sim-val';
+          badge.title = 'Value used in the last run';
+          inputs[i].parentElement.appendChild(badge);
+        }
+        badge.textContent = '= ' + formatSimValue(used);
+        badge.classList.toggle('ldio-sim-defaulted', wasDefaulted);
       }
 
       // Snapshot the run for Copy log, and explain the flow in the panel.
