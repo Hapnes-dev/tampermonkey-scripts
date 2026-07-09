@@ -1,6 +1,6 @@
 # Logic Designer Import/Export
 
-Adds **Export sketch (JSON)** and **Import sketch (JSON)** to the **File** menu of the IWMAC **VV Designer** (`internal.iwmac.local/vv_fbx.qxs`), so a sketch's logic can be moved **between plants** — something the host tool has no direct way to do (sketches live per-plant; templates are the only built-in detour).
+Adds **Export sketch (JSON)** and **Import sketch (JSON)** to the **File** menu of the IWMAC **VV Designer** (`internal.iwmac.local/vv_fbx.qxs`), so a sketch's logic can be moved **between plants** — something the host tool has no direct way to do (sketches live per-plant; templates are the only built-in detour). Also adds a **Live Simulate** panel to try the logic on the canvas before you ever save or deploy.
 
 ## Install
 
@@ -16,6 +16,18 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Au
 4. If the sketch came from a different plant, you're asked to **rebind parameter bindings**: `A_…` driver ids are rewritten to `B_…` (say OK when the plants share the same unit layout — e.g. identical store setups; Cancel keeps the original ids for manual reconfiguration).
 5. The graph lands on the canvas marked **unsaved**, and the current-sketch pointer is cleared — so **Ctrl+S opens "Save sketch"** to store it as a *new* sketch on the target plant (it can never silently overwrite a previously open sketch).
 6. Verify (F10), save into a project, deploy when ready — all through the normal host flows.
+
+## Live Simulate — test the logic before deploying
+
+**File → Simulate → Live simulate (panel)** runs the sketch **on the canvas, client-side only** — nothing is compiled or sent to the plant — so you can watch the flow and confirm it behaves before saving or deploying.
+
+It drives the host's own simulator (Tools → Simulate, the same per-block math), but fixes the three things that make the built-in one awkward for iterating:
+
+- **You set the inputs in a panel**, not through a `prompt()` popping up for every block. Each block that needs a value (`PARAMV`, `TAGVALUE`, `CALENDAR`, `TOGGLE_INTERVAL`, …) gets a row with a number field and quick **0 / 1** buttons; `CONST`s use their configured value automatically.
+- **The whole graph runs at once** (no Next-Next-Next), and the values **stay on the canvas** — each block shows its result (green **TRUE** / red **FALSE** / the number), wires go green as the flow runs, and IF/IF_ELSE branches grey out. The host normally wipes this after 5 s; the panel keeps it.
+- **Every change re-simulates automatically** (toggle *auto re-run* off for manual **▶ Run**). Change a limit, flip a switch to 1, watch the alarm/write output flip live.
+
+The panel lists the **output blocks** (`ALARM`, `VIRTUALOUT`, `WRITETOUNIT`, …) with their computed values, and routes any alarm-fired message into the panel instead of a modal. **↻ Inputs** rebuilds the row list after you add/remove blocks (typed values are kept per block); **■ Clear** wipes the on-canvas values; **Close** restores everything. It runs `syntax_check` first and shows the same errors F10 would, so an unconfigured/unwired block is reported rather than silently mis-simulated. It never sets the dirty flag or calls the server — saving and deploying stay entirely in your hands.
 
 ## What it handles for you
 
@@ -65,9 +77,10 @@ When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`v
 
 ## How it integrates
 
-- The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + the two items to the `file` level before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks are caught by a capture-phase listener (and a wrapped `application.on_menu` as fallback).
+- The host rebuilds its menu on every mode switch; the script wraps `menu_main.creator.render` and appends a **Transfer** header + its items (and a **Simulate** header + Live simulate) to the `file` level before each render — so the entries survive FUNCTION↔PROCESS switches. Clicks are caught by a capture-phase listener (and a wrapped `application.on_menu` as fallback).
 - Export = `logic_designer.paper.save()` in an envelope → `Blob` download.
 - Import opens a **panel with a visible file input** (plus drag-drop and paste). This is deliberate: a browser only opens a file picker from a *direct* user click, so a visible input the user clicks themselves always works — a programmatic `input.click()` fired from the host's menu-callback chain gets rejected once the click's user-activation has lapsed (the v1.0.x bug). Import then runs validation → optional rebind (on a deep copy) → `paper.reset()` + `paper.load()`.
+- **Live Simulate** drives the host's own client simulator (`paper.simulator_step` + the per-block `sim` functions). It temporarily wraps three host hooks while the panel is open — `paper.get_user_input` (feed panel values instead of `prompt()`), `system_dialogs.information.show` (route alarm/error modals into the panel), and `paper.callback` (swallow the host's `simulation_*` progress events) — and restores all three on Close. It mirrors the host's `simulator_start` setup but skips the `confirm()`, runs the step loop to completion in one go, and cancels the host's 5-second auto-clear so results persist. The dirty flag is preserved across `save()`'s side effect, so simulating never marks the sketch unsaved.
 - No server calls, no network grants — saving/deploying stays in the host's hands.
 - Internals exposed as `window.__LDIO` for console debugging; pure helpers are `module.exports`-ed for Node unit tests.
 

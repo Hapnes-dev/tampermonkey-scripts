@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.0
-// @description  Export the current VV Designer sketch to a JSON file and import it on another plant (with driver-id plant rebinding) — adds Export/Import entries to the File menu.
+// @version      1.5.0
+// @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/Logic-Designer-Import-Export.user.js
@@ -79,6 +79,52 @@ function normalizeSketchForLoad(sketchIn, palette) {
   }
   if (!Array.isArray(sketch.groups)) { sketch.groups = []; filledFields++; }
   return { sketch: sketch, filledFuncs: filledFuncs, filledFields: filledFields };
+}
+
+// ─── Live-simulate helpers (pure) ────────────────────────────────────
+// The host's client simulator asks the user for a value (via prompt) for every
+// block whose palette sim function calls get_user_input — PARAMV, TAGVALUE,
+// CALENDAR, TOGGLE_INTERVAL, … (CONST reads its configured initial_value).
+// List those blocks on the canvas so a panel can collect the values up front.
+function listSimInputBlocks(elements, palette) {
+  var rows = [];
+  for (var key in elements) {
+    if (!/^\d+$/.test(key)) continue;
+    var el = elements[key];
+    if (!el || typeof el !== 'object') continue;
+    var def = palette && palette[el.block_type];
+    var sim = def && def.sim;
+    if (typeof sim !== 'function' || String(sim).indexOf('get_user_input') === -1) continue;
+    var label = (el.override && el.override.alias_text) || (el.data && el.data.alias_text) || el.alias_text || el.block_type;
+    rows.push({ pointer: parseInt(key, 10), type: el.block_type, label: String(label) });
+  }
+  rows.sort(function (a, b) { return a.pointer - b.pointer; });
+  return rows;
+}
+
+// The sinks worth summarising after a run: output-compiled blocks + WRITETOUNIT
+// (compile_type "function" but semantically a sink).
+function listSimOutputBlocks(elements) {
+  var rows = [];
+  for (var key in elements) {
+    if (!/^\d+$/.test(key)) continue;
+    var el = elements[key];
+    if (!el || typeof el !== 'object') continue;
+    if (el.compile_type !== 'output' && el.block_type !== 'WRITETOUNIT') continue;
+    var label = (el.override && el.override.alias_text) || (el.data && el.data.alias_text) || el.alias_text || '';
+    rows.push({ pointer: parseInt(key, 10), type: el.block_type, label: String(label) });
+  }
+  rows.sort(function (a, b) { return a.pointer - b.pointer; });
+  return rows;
+}
+
+// Render a simulated value for humans: booleans/ALARM keep their meaning.
+function formatSimValue(v) {
+  if (v === true) return 'TRUE';
+  if (v === false) return 'FALSE';
+  if (v === undefined) return '(not reached)';
+  if (v === null) return '(null)';
+  return String(v);
 }
 
 // Accept either the envelope or a bare paper.save() document.
@@ -309,7 +355,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.4.0';
+    var VERSION = '1.5.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -354,6 +400,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-err-dot { color: #ff6b6b; font-weight: 700; flex: 0 0 auto; }\
       .ldio-warn-item { color: #d9c07a; }\
       .ldio-warn-item .ldio-err-dot { color: #d9c07a; }\
+      .ldio-sim-panel { position: fixed; top: 70px; right: 16px; left: auto; transform: none;\
+        width: 380px; max-height: 82vh; display: flex; flex-direction: column; }\
+      .ldio-sim-head { cursor: move; user-select: none; }\
+      .ldio-sim-rows { overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;\
+        background: #1a1a1a; padding: 4px; margin-bottom: 8px; flex: 0 1 auto; max-height: 34vh; }\
+      .ldio-sim-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; font-size: 12px;\
+        border-bottom: 1px solid rgba(255,255,255,0.05); }\
+      .ldio-sim-row:last-child { border-bottom: 0; }\
+      .ldio-sim-row .ldio-sim-ptr { color: #7aa7d9; flex: 0 0 auto; font-family: monospace; }\
+      .ldio-sim-row .ldio-sim-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\
+      .ldio-sim-row input[type=number] { width: 74px; background: #1e1e1e; color: #d4d4d4;\
+        border: 1px solid rgba(255,255,255,0.15); border-radius: 3px; padding: 3px 5px; font-size: 12px; }\
+      .ldio-sim-row input.ldio-sim-missing { border-color: #d9c07a; }\
+      .ldio-sim-mini { padding: 2px 7px; font-size: 11px; }\
+      .ldio-sim-result { overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;\
+        background: #1a1a1a; padding: 6px; font-size: 12px; line-height: 1.45; max-height: 26vh; flex: 0 1 auto; }\
+      .ldio-sim-result .ldio-sim-true { color: #7ad97a; }\
+      .ldio-sim-result .ldio-sim-false { color: #ff8a8a; }\
+      .ldio-sim-result .ldio-sim-msg { color: #d9c07a; }\
+      .ldio-sim-ctl { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px 0; font-size: 12px; flex-wrap: wrap; }\
     ';
     if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
     else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
@@ -518,6 +584,295 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         toast('Copy failed (see console).', 'error');
         return null;
       }
+    }
+
+    // ─── Live simulate ──────────────────────────────────────────────
+    // Drives the HOST's own client simulator (paper.simulator_step + the
+    // per-block sim functions, §13 of the reference), but: input values come
+    // from a panel instead of prompt() per block, the whole graph runs in one
+    // go instead of Next-Next-Next, results STAY on the canvas (the host
+    // auto-clears after 5 s), and every value change re-simulates live.
+    // Contract live-probed 2026-07-09: get_user_input side effects
+    // (stack_block_values + user_values + auto_proceed), simulator_start's
+    // confirm()/defer, the step loop, and the 'Timed stop' 5 s auto-clear.
+    var simState = {
+      panel: null, rowsEl: null, resultEl: null, autoRunEl: null,
+      values: {}, missing: [], msgs: [], debounce: null,
+      hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
+      hadOwnCb: false, origCb: null,
+    };
+
+    function simPaper() {
+      var paper = W.logic_designer && W.logic_designer.paper;
+      return (paper && paper.initialized) ? paper : null;
+    }
+
+    function simInstallHooks(paper) {
+      if (simState.hooked) return;
+      simState.hadOwnGUI = Object.prototype.hasOwnProperty.call(paper, 'get_user_input');
+      simState.origGUI = paper.get_user_input;
+      paper.get_user_input = function (block) {
+        var raw = simState.values[block.pointer];
+        var v = parseFloat(raw);
+        if (isNaN(v)) { v = 0; if (simState.missing.indexOf(block.pointer) === -1) simState.missing.push(block.pointer); }
+        this.simulation_stack_block_values[block.pointer] = v;
+        this.simulation_user_values[block.pointer] = v;
+        this.simulation_auto_proceed = true;
+        return v;
+      };
+      // Route the host's info modals (alarm fired, sim errors) into the panel.
+      if (W.system_dialogs && W.system_dialogs.information) {
+        simState.origShow = W.system_dialogs.information.show;
+        W.system_dialogs.information.show = function (m) { simState.msgs.push(String(m).replace(/<[^>]*>/g, '')); };
+      }
+      // Swallow simulation_* callbacks so the host's progress-bar UI stays out.
+      simState.hadOwnCb = Object.prototype.hasOwnProperty.call(paper, 'callback');
+      simState.origCb = paper.callback;
+      paper.callback = function (e) {
+        if (e && /^simulation_/.test(String(e.action))) return;
+        return simState.origCb.call(this, e);
+      };
+      simState.hooked = true;
+    }
+
+    function simRemoveHooks(paper) {
+      if (!simState.hooked) return;
+      if (simState.hadOwnGUI) paper.get_user_input = simState.origGUI; else delete paper.get_user_input;
+      if (simState.hadOwnCb) paper.callback = simState.origCb; else delete paper.callback;
+      if (simState.origShow && W.system_dialogs && W.system_dialogs.information) {
+        W.system_dialogs.information.show = simState.origShow;
+      }
+      simState.hooked = false;
+    }
+
+    // Remove sim visuals from the canvas and restore wire colours.
+    function simClearCanvas(paper) {
+      if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); paper.simulation_stopper = null; }
+      paper.__simulation_reset(true);
+      paper.simulation_stack = null;
+    }
+
+    function simResultLine(text, cls) {
+      var div = document.createElement('div');
+      if (cls) div.className = cls;
+      div.textContent = text;
+      simState.resultEl.appendChild(div);
+    }
+
+    function simRunOnce() {
+      var paper = simPaper();
+      if (!paper) { toast('Designer not ready — open/start the application first.', 'error'); return; }
+      if (!simState.panel || !simState.resultEl) { openSimPanel(); if (!simState.panel) return; }
+      simState.resultEl.textContent = '';
+      var blockCount = Object.keys(paper.elements || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
+      if (blockCount === 0) { simResultLine('Canvas is empty — nothing to simulate.'); return; }
+
+      var check = paper.syntax_check(true);
+      if (!check.ok) {
+        simResultLine('Syntax check failed — fix these first:', 'ldio-sim-false');
+        (check.errors || []).forEach(function (e) { simResultLine('  ' + e); });
+        return;
+      }
+
+      simState.msgs = [];
+      simState.missing = [];
+
+      // Own setup — mirrors the host's simulator_start minus its confirm(),
+      // deferred first step and callbacks (probed source, 2026-07-09). The
+      // dirty flag is preserved across save()'s side effect (host loses it).
+      var wasChanged = paper.changed;
+      if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); }
+      paper.simulation_stopper = null;
+      paper.__simulation_reset(true);
+      for (var x = 0; x < paper.connections.length; x++) paper.connections[x].line.attr('stroke', '#EEE');
+      paper.simulation_elements = [];
+      paper.simulation_stack = paper.save(false);
+      paper.changed = wasChanged;
+      paper.simulation_steps = paper.simulation_stack.blocks.length;
+      paper.simulation_stack_block_values = {};
+      paper.simulation_user_values = {};
+      paper.simulation_completed_blocks = [];
+      paper.simulation_connections = [];
+      paper.simulation_data = {};
+
+      var cap = Math.max(200, paper.simulation_steps * 5);
+      var guard = 0;
+      try {
+        while (paper.simulation_stack && paper.simulation_completed_blocks.length < paper.simulation_steps && guard++ < cap) {
+          paper.simulator_step();
+        }
+      } catch (err) {
+        simResultLine('Simulation stopped on a block error: ' + err.message, 'ldio-sim-false');
+        simResultLine('(Usually an unconfigured block — configure it and rerun.)');
+        return;
+      }
+      // The final step schedules the host's 5 s auto-clear — cancel it so the
+      // values stay visible on the canvas until Stop/rerun.
+      if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); paper.simulation_stopper = null; }
+
+      var done = paper.simulation_completed_blocks.length;
+      var results = paper.simulation_stack_block_values || {};
+      if (done < paper.simulation_steps) {
+        simResultLine('Incomplete: ' + done + '/' + paper.simulation_steps + ' blocks evaluated (branch invalidated or a block returned no value).', 'ldio-sim-msg');
+      }
+      var outs = listSimOutputBlocks(paper.elements || {});
+      if (outs.length === 0) simResultLine('No output blocks on the canvas.');
+      outs.forEach(function (o) {
+        var v = results[o.pointer];
+        var cls = (v === true || v === 'ALARM') ? 'ldio-sim-true' : (v === false || v === 'FALSE' ? 'ldio-sim-false' : null);
+        simResultLine(o.type + ' (' + o.pointer + ')' + (o.label ? ' ' + o.label : '') + '  →  ' + formatSimValue(v), cls);
+      });
+      simState.msgs.forEach(function (m) { simResultLine('⚠ ' + m, 'ldio-sim-msg'); });
+      if (simState.missing.length) {
+        simResultLine('Note: ' + simState.missing.length + ' input(s) had no value and defaulted to 0: block ' + simState.missing.join(', '), 'ldio-sim-msg');
+      }
+      // Flag the empty inputs in the rows list.
+      var inputs = simState.rowsEl.querySelectorAll('input[data-ptr]');
+      for (var i = 0; i < inputs.length; i++) {
+        var ptr = parseInt(inputs[i].getAttribute('data-ptr'), 10);
+        inputs[i].classList.toggle('ldio-sim-missing', simState.missing.indexOf(ptr) !== -1);
+      }
+    }
+
+    function simQueueRun() {
+      if (!simState.autoRunEl || !simState.autoRunEl.checked) return;
+      if (simState.debounce) clearTimeout(simState.debounce);
+      simState.debounce = setTimeout(function () { simState.debounce = null; simRunOnce(); }, 300);
+    }
+
+    function simBuildRows() {
+      var paper = simPaper();
+      simState.rowsEl.textContent = '';
+      if (!paper) { simState.rowsEl.textContent = 'Designer not ready.'; return; }
+      var rows = listSimInputBlocks(paper.elements || {}, paper.blocks || {});
+      if (rows.length === 0) {
+        simState.rowsEl.textContent = 'No input blocks need values (CONSTs use their configured value).';
+        return;
+      }
+      rows.forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'ldio-sim-row';
+        var ptr = document.createElement('span');
+        ptr.className = 'ldio-sim-ptr';
+        ptr.textContent = '(' + r.pointer + ')';
+        var label = document.createElement('span');
+        label.className = 'ldio-sim-label';
+        label.textContent = r.label + ' · ' + r.type;
+        label.title = r.label + ' (' + r.type + ')';
+        var input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.placeholder = '0';
+        input.setAttribute('data-ptr', String(r.pointer));
+        if (simState.values[r.pointer] !== undefined) input.value = simState.values[r.pointer];
+        input.addEventListener('input', function () {
+          simState.values[r.pointer] = input.value;
+          simQueueRun();
+        });
+        var btn0 = document.createElement('button');
+        btn0.type = 'button'; btn0.className = 'ldio-btn ldio-sim-mini'; btn0.textContent = '0';
+        btn0.title = 'False / 0';
+        btn0.addEventListener('click', function () { input.value = '0'; simState.values[r.pointer] = '0'; simQueueRun(); });
+        var btn1 = document.createElement('button');
+        btn1.type = 'button'; btn1.className = 'ldio-btn ldio-sim-mini'; btn1.textContent = '1';
+        btn1.title = 'True / 1';
+        btn1.addEventListener('click', function () { input.value = '1'; simState.values[r.pointer] = '1'; simQueueRun(); });
+        row.appendChild(ptr); row.appendChild(label); row.appendChild(input); row.appendChild(btn0); row.appendChild(btn1);
+        simState.rowsEl.appendChild(row);
+      });
+    }
+
+    function closeSimPanel() {
+      if (!simState.panel) return;
+      var paper = simPaper();
+      if (paper) { simClearCanvas(paper); simRemoveHooks(paper); }
+      if (simState.debounce) { clearTimeout(simState.debounce); simState.debounce = null; }
+      simState.panel.remove();
+      simState.panel = null;
+    }
+
+    function openSimPanel() {
+      var paper = simPaper();
+      if (!paper) { toast('Designer not ready — open/start the application first.', 'error'); return; }
+      if (simState.panel) { closeSimPanel(); }
+      simInstallHooks(paper);
+
+      var panel = document.createElement('div');
+      panel.className = 'ldio-panel ldio-sim-panel';
+
+      var h = document.createElement('h3');
+      h.className = 'ldio-sim-head';
+      h.textContent = 'Live simulate — set inputs, watch the flow';
+      panel.appendChild(h);
+      // Drag by the header.
+      (function () {
+        var sx = 0, sy = 0, px = 0, py = 0, dragging = false;
+        h.addEventListener('mousedown', function (e) {
+          dragging = true; sx = e.clientX; sy = e.clientY;
+          var r = panel.getBoundingClientRect(); px = r.left; py = r.top;
+          e.preventDefault();
+        });
+        document.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          panel.style.left = (px + e.clientX - sx) + 'px';
+          panel.style.right = 'auto';
+          panel.style.top = (py + e.clientY - sy) + 'px';
+        });
+        document.addEventListener('mouseup', function () { dragging = false; });
+      })();
+
+      var rows = document.createElement('div');
+      rows.className = 'ldio-sim-rows';
+      panel.appendChild(rows);
+
+      var ctl = document.createElement('div');
+      ctl.className = 'ldio-sim-ctl';
+      var runBtn = document.createElement('button');
+      runBtn.type = 'button'; runBtn.className = 'ldio-btn ldio-btn-primary';
+      runBtn.textContent = '▶ Run';
+      runBtn.addEventListener('click', simRunOnce);
+      var autoLabel = document.createElement('label');
+      var autoCb = document.createElement('input');
+      autoCb.type = 'checkbox'; autoCb.checked = true; autoCb.style.verticalAlign = 'middle';
+      autoLabel.appendChild(autoCb);
+      autoLabel.appendChild(document.createTextNode(' auto re-run'));
+      var refreshBtn = document.createElement('button');
+      refreshBtn.type = 'button'; refreshBtn.className = 'ldio-btn';
+      refreshBtn.textContent = '↻ Inputs';
+      refreshBtn.title = 'Rebuild the input list after canvas edits (values are kept per block)';
+      refreshBtn.addEventListener('click', simBuildRows);
+      var stopBtn = document.createElement('button');
+      stopBtn.type = 'button'; stopBtn.className = 'ldio-btn';
+      stopBtn.textContent = '■ Clear';
+      stopBtn.title = 'Remove the simulated values from the canvas';
+      stopBtn.addEventListener('click', function () {
+        var p2 = simPaper();
+        if (p2) simClearCanvas(p2);
+        simState.resultEl.textContent = '';
+      });
+      var closeBtn = document.createElement('button');
+      closeBtn.type = 'button'; closeBtn.className = 'ldio-btn';
+      closeBtn.textContent = 'Close';
+      closeBtn.addEventListener('click', closeSimPanel);
+      ctl.appendChild(runBtn); ctl.appendChild(autoLabel); ctl.appendChild(refreshBtn); ctl.appendChild(stopBtn); ctl.appendChild(closeBtn);
+      panel.appendChild(ctl);
+
+      var result = document.createElement('div');
+      result.className = 'ldio-sim-result';
+      panel.appendChild(result);
+
+      var hint = document.createElement('div');
+      hint.className = 'ldio-version';
+      hint.style.marginTop = '6px';
+      hint.textContent = 'Values render on the blocks; wires go green as the flow runs. Nothing touches the plant — client-side only. LDIO v' + VERSION;
+      panel.appendChild(hint);
+
+      document.body.appendChild(panel);
+      simState.panel = panel;
+      simState.rowsEl = rows;
+      simState.resultEl = result;
+      simState.autoRunEl = autoCb;
+      simBuildRows();
     }
 
     // ─── Import panel ───────────────────────────────────────────────
@@ -719,6 +1074,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var ICON_EXPORT = '<li class="fa fa-fw fa-download" style="font-size:14px"></li>&nbsp;Export sketch (JSON)';
     var ICON_IMPORT = '<li class="fa fa-fw fa-upload" style="font-size:14px"></li>&nbsp;Import sketch (JSON)';
     var ICON_COPY = '<li class="fa fa-fw fa-copy" style="font-size:14px"></li>&nbsp;Copy sketch (JSON text)';
+    var ICON_SIM = '<li class="fa fa-fw fa-play-circle" style="font-size:14px"></li>&nbsp;Live simulate (panel)';
 
     // Resolve a click target inside the dropdown to one of our item ids.
     function resolveOwnMenuItemId(target) {
@@ -729,7 +1085,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var index = itemEl.getAttribute('data-index');
         var item = W.menu_main && W.menu_main.menu_items ? W.menu_main.menu_items[index] : null;
         if (!item) return null;
-        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import' || item.id === 'file_ldio_copy') return item.id;
+        if (item.id === 'file_ldio_export' || item.id === 'file_ldio_import' || item.id === 'file_ldio_copy' || item.id === 'file_ldio_sim') return item.id;
       } catch (err) { /* fall through */ }
       return null;
     }
@@ -744,6 +1100,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (id === 'file_ldio_import') openImportPanel();
       else if (id === 'file_ldio_export') doExport();
       else if (id === 'file_ldio_copy') doCopyJson();
+      else if (id === 'file_ldio_sim') openSimPanel();
       // Do NOT stop the event — the host's handler still runs and closes the
       // dropdown; our on_menu wrap below swallows the unknown item id.
     }
@@ -764,6 +1121,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               this.add(fileLevel, ICON_EXPORT, 'ldio_export');
               this.add(fileLevel, ICON_IMPORT, 'ldio_import');
               this.add(fileLevel, ICON_COPY, 'ldio_copy');
+              this.add_header(fileLevel, 'Simulate');
+              this.add(fileLevel, ICON_SIM, 'ldio_sim');
             }
           }
         } catch (err) {
@@ -776,10 +1135,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // event), the panel path still works from here — it needs no gesture.
       var origOnMenu = W.application.on_menu;
       W.application.on_menu = function (event) {
-        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import' || event.item_id === 'file_ldio_copy')) {
+        if (event && (event.item_id === 'file_ldio_export' || event.item_id === 'file_ldio_import' || event.item_id === 'file_ldio_copy' || event.item_id === 'file_ldio_sim')) {
           if (Date.now() - lastHandledAt > 1000) {
             if (event.item_id === 'file_ldio_export') doExport();
             else if (event.item_id === 'file_ldio_copy') doCopyJson();
+            else if (event.item_id === 'file_ldio_sim') openSimPanel();
             else openImportPanel();
           }
           return;
@@ -807,7 +1167,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }, 300);
 
     // Expose internals for console debugging / live verification.
-    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport };
+    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, closeSimPanel: closeSimPanel };
   })();
 }
 
@@ -817,6 +1177,9 @@ if (typeof module !== 'undefined' && module.exports) {
     buildExportEnvelope: buildExportEnvelope,
     listProcessDependencies: listProcessDependencies,
     normalizeSketchForLoad: normalizeSketchForLoad,
+    listSimInputBlocks: listSimInputBlocks,
+    listSimOutputBlocks: listSimOutputBlocks,
+    formatSimValue: formatSimValue,
     parseImportPayload: parseImportPayload,
     detectSourcePlantFromDriverIds: detectSourcePlantFromDriverIds,
     countRebindableDriverIds: countRebindableDriverIds,

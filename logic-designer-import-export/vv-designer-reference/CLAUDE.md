@@ -561,6 +561,20 @@ Reports (process/project/usage/versions/revision), and `vv_changes.qxs` (VV chan
   IF/IF_ELSE **grey out** invalidated branches.
 - This validates **logic/wiring**, not real plant data. It's a design aid, distinct from the
   server-side Simulation Manager.
+- **Live-probed write contract (2026-07-09)** — the internals the Import/Export **Live Simulate**
+  panel drives (§16): `simulator_start()` syntax-checks, `__simulation_reset(true)`s, greys wires
+  to `#EEE`, snapshots `simulation_stack = save(false)`, then `confirm()`s "use previous input
+  values?" and defers the first `simulator_step()`. Each step calls `__get_next_block()`
+  (roots/input-less first, then blocks whose inputs all have values) →
+  `__simulator_get_block_value()` (runs the palette `sim`, caches in
+  `simulation_stack_block_values[pointer]`) → draws a white rect + value text (`#0F0` TRUE /
+  `#F00` FALSE) → `__highlight_block_connection()`. Value-less inputs call `get_user_input()`,
+  which `prompt()`s and sets `simulation_stack_block_values`/`simulation_user_values` +
+  `simulation_auto_proceed=true`. On completion `simulator_stop` is scheduled **+5 s** (auto-wipe).
+  To drive it headlessly/live: override `get_user_input` to return panel values (set those three
+  fields yourself), run the step loop to `completed==steps`, and cancel the deferred stop to keep
+  results on-canvas. `ALARM.sim` returns `'ALARM'`/`'FALSE'` and pushes an
+  `system_dialogs.information.show` modal when the condition is true.
 
 ---
 
@@ -780,6 +794,13 @@ when the sketch uses processes) — plus import-side normalization: omitted
 `override`/`runtime`/`properties`/`data`/`groups` get defaults and a missing `func` is filled
 from the live palette, so near-miss hand-authored files import cleanly while real exports pass
 through byte-identical. v1.3-era files are unaffected in both directions.
+v1.5.0 adds a **Live Simulate** panel (File → Simulate) that drives the host's own client
+simulator (§13) but replaces its per-block `prompt()` with a value panel, runs the whole graph
+in one pass, keeps the on-canvas result overlay (cancels the host's 5 s auto-clear), and
+re-simulates on every value change — a before-deploy test loop. It wraps/restores three host
+hooks (`get_user_input`, `system_dialogs.information.show`, `paper.callback`) and preserves the
+dirty flag, so it never marks the sketch unsaved or calls the server. Pure helpers
+(`listSimInputBlocks`/`listSimOutputBlocks`/`formatSimValue`) are `module.exports`-ed.
 
 ---
 
