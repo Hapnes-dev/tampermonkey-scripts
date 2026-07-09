@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.13.0
+// @version      1.14.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.13.0';
+    var VERSION = '1.14.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -760,21 +760,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function simWatchTick() {
       var paper = simPaper();
       if (!paper || !simState.panel) return;
-      if (!simState.autoRunEl || !simState.autoRunEl.checked) { simState.prevPollFp = null; return; }
       var fp;
       try { fp = simCanvasFingerprint(paper); } catch (e) { return; }
+      var autoRun = simState.autoRunEl && simState.autoRunEl.checked;
       if (fp !== simState.lastRunFp) {
-        // Canvas changed since the last run — re-simulate once it settles
-        // (two equal polls), so a drag doesn't spam reruns mid-move.
-        if (fp === simState.prevPollFp) {
+        // Canvas changed since the last run — with auto re-run ON,
+        // re-simulate once it settles (two equal polls), so a drag doesn't
+        // spam reruns mid-move. With it off, the last result stays in the
+        // panel but stale values are not repainted onto a changed sketch.
+        if (autoRun && fp === simState.prevPollFp) {
           simState.stopped = false;
           simBuildRows();
           simQueueRun();
         }
       } else if (paper.simulation_stack === null && simState.lastRun && simState.lastRun.ok && !simState.stopped) {
         // Same sketch but the overlay was wiped (host cleared it) — repaint
-        // so the flow stays visible while auto re-run is on.
-        simQueueRun();
+        // REGARDLESS of the auto re-run checkbox: the flow values stay on
+        // the canvas until ■ Stop.
+        simRunOnce();
       }
       simState.prevPollFp = fp;
     }
@@ -1237,7 +1240,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       runBtn.textContent = '▶ Run';
       runBtn.addEventListener('click', simRunOnce);
       var autoLabel = document.createElement('label');
-      autoLabel.title = 'Live view: re-simulate on every value or canvas change, and keep the flow painted on the canvas — until ■ Stop';
+      autoLabel.title = 'Re-simulate automatically on every value or canvas change. (The painted flow always stays on the canvas until ■ Stop, checked or not.)';
       var autoCb = document.createElement('input');
       autoCb.type = 'checkbox'; autoCb.checked = true; autoCb.style.verticalAlign = 'middle';
       autoLabel.appendChild(autoCb);
