@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.0
+// @version      1.11.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.10.0';
+    var VERSION = '1.11.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -738,7 +738,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
       lastRun: null, // snapshot of the latest run, for Copy log / getSimLog
+      // Live-view watcher state: with auto re-run on, the flow stays on the
+      // canvas — re-simulated when the canvas changes, repainted if wiped —
+      // until ■ Stop is clicked (stopped=true suppresses the repaint).
+      lastRunFp: null, prevPollFp: null, watchTimer: null, stopped: false,
     };
+
+    // Cheap change-detector: the exact save() document (structure, data,
+    // positions), with the dirty flag preserved across save()'s side effect.
+    function simCanvasFingerprint(paper) {
+      var wasChanged = paper.changed;
+      var doc = paper.save(false);
+      paper.changed = wasChanged;
+      return JSON.stringify(doc);
+    }
+
+    function simWatchTick() {
+      var paper = simPaper();
+      if (!paper || !simState.panel) return;
+      if (!simState.autoRunEl || !simState.autoRunEl.checked) { simState.prevPollFp = null; return; }
+      var fp;
+      try { fp = simCanvasFingerprint(paper); } catch (e) { return; }
+      if (fp !== simState.lastRunFp) {
+        // Canvas changed since the last run — re-simulate once it settles
+        // (two equal polls), so a drag doesn't spam reruns mid-move.
+        if (fp === simState.prevPollFp) {
+          simState.stopped = false;
+          simBuildRows();
+          simQueueRun();
+        }
+      } else if (paper.simulation_stack === null && simState.lastRun && simState.lastRun.ok && !simState.stopped) {
+        // Same sketch but the overlay was wiped (host cleared it) — repaint
+        // so the flow stays visible while auto re-run is on.
+        simQueueRun();
+      }
+      simState.prevPollFp = fp;
+    }
 
     function simPaper() {
       var paper = W.logic_designer && W.logic_designer.paper;
@@ -802,9 +837,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var paper = simPaper();
       if (!paper) { toast('Designer not ready — open/start the application first.', 'error'); return; }
       if (!simState.panel || !simState.resultEl) { openSimPanel(); if (!simState.panel) return; }
+      simState.stopped = false;
       simState.resultEl.textContent = '';
       var blockCount = Object.keys(paper.elements || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
-      if (blockCount === 0) { simResultLine('Canvas is empty — nothing to simulate.'); return; }
+      if (blockCount === 0) {
+        simResultLine('Canvas is empty — nothing to simulate.');
+        try { simState.lastRunFp = simCanvasFingerprint(paper); } catch (e) { /* ignore */ }
+        return;
+      }
 
       var check = paper.syntax_check(true);
       if (!check.ok) {
@@ -815,6 +855,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var wasChanged0 = paper.changed;
         var stack0 = paper.save(false);
         paper.changed = wasChanged0;
+        simState.lastRunFp = JSON.stringify(stack0);
         simState.lastRun = {
           ok: false, error: null, syntaxErrors: (check.errors || []).slice(),
           stack: JSON.parse(JSON.stringify(stack0)),
@@ -847,6 +888,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Structure snapshot up front, so a failed run can still be logged
       // (Copy log) with the sketch + how far it got.
       var stackCopy = JSON.parse(JSON.stringify(paper.simulation_stack));
+      simState.lastRunFp = JSON.stringify(paper.simulation_stack);
       function failRun(errorText) {
         simState.lastRun = {
           ok: false, error: errorText, syntaxErrors: [],
@@ -986,6 +1028,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (simState.values[r.pointer] !== undefined) input.value = simState.values[r.pointer];
         input.addEventListener('input', function () {
           simState.values[r.pointer] = input.value;
+          simState.stopped = false;
           simQueueRun();
         });
         var btn0 = document.createElement('button');
@@ -1009,11 +1052,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    // Every instance closes its own panel/watcher when any instance opens one.
+    document.addEventListener('ldio-sim-close-all', function () { closeSimPanel(); });
+
     function closeSimPanel() {
       if (!simState.panel) return;
       var paper = simPaper();
       if (paper) { simClearCanvas(paper); simRemoveHooks(paper); }
       if (simState.debounce) { clearTimeout(simState.debounce); simState.debounce = null; }
+      if (simState.watchTimer) { clearInterval(simState.watchTimer); simState.watchTimer = null; }
       document.removeEventListener('keydown', onSimPanelKeydown, true);
       simState.panel.remove();
       simState.panel = null;
@@ -1022,7 +1069,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function openSimPanel() {
       var paper = simPaper();
       if (!paper) { toast('Designer not ready — open/start the application first.', 'error'); return; }
-      if (simState.panel) { closeSimPanel(); }
+      // Cross-instance close: ask every LDIO instance on the page (incl. a
+      // superseded one after a script update) to shut down its own panel AND
+      // watcher, then sweep any orphaned panel DOM whose owner is gone.
+      document.dispatchEvent(new CustomEvent('ldio-sim-close-all'));
+      document.querySelectorAll('.ldio-sim-panel').forEach(function (el) { el.remove(); });
       simInstallHooks(paper);
 
       var panel = document.createElement('div');
@@ -1080,6 +1131,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       runBtn.textContent = '▶ Run';
       runBtn.addEventListener('click', simRunOnce);
       var autoLabel = document.createElement('label');
+      autoLabel.title = 'Live view: re-simulate on every value or canvas change, and keep the flow painted on the canvas — until ■ Stop';
       var autoCb = document.createElement('input');
       autoCb.type = 'checkbox'; autoCb.checked = true; autoCb.style.verticalAlign = 'middle';
       autoLabel.appendChild(autoCb);
@@ -1094,11 +1146,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       stopBtn.textContent = '■ Stop';
       stopBtn.title = 'Stop: cancel a pending auto re-run and clear the simulated values from the canvas';
       stopBtn.addEventListener('click', function () {
+        simState.stopped = true; // suppress the live-view repaint until Run/next change
         if (simState.debounce) { clearTimeout(simState.debounce); simState.debounce = null; }
         var p2 = simPaper();
         if (p2) simClearCanvas(p2);
         simState.resultEl.textContent = '';
-        simResultLine('Stopped — simulated values cleared from the canvas.');
+        simResultLine('Stopped — simulated values cleared. Auto re-run resumes on the next change (or ▶ Run).');
       });
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
@@ -1135,6 +1188,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simState.rowsEl = rows;
       simState.resultEl = result;
       simState.autoRunEl = autoCb;
+      simState.stopped = false;
+      simState.prevPollFp = null;
+      simState.lastRunFp = null;
+      simState.watchTimer = setInterval(simWatchTick, 800);
       simBuildRows();
     }
 
