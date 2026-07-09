@@ -153,8 +153,12 @@ READERS AND SOURCES (compile_type "input")
 - CALENDAR_2_0 | func "calendar.run" — newer calendar; data null to bind later.
 - CRITERIA | func "criterias.run" — boolean from date/time ranges (year, month,
   week, day-of-week, hour, minute). Configure post-import (data null).
-- TOGGLE_INTERVAL | func "toggle_interval.run" — boolean square wave on a time
-  interval. Configure post-import.
+- TOGGLE_INTERVAL | func "toggle_interval.run" | data
+  {"block_func_args":{"interval":"sec|min|hour|day|week|month|year","offset":0}}
+  (offset = whole seconds; exactly these two keys). SYMMETRIC square wave only:
+  the output flips at each interval boundary. There is NO duration/duty field,
+  so "X hours every N days" is NOT expressible with this block - gate on a
+  plant CALENDAR (recurring schedule) for asymmetric windows instead.
 - WEATHER | func "weather.run_by_ccp_country" and WEATHER_SUN | func
   "weather_sun.run_by_place" — YR.no weather / day-night. Configure post-import.
 - SPOT_PRICE family (SPOT_PRICE "spotprice.run", SPOT_PRICE_LOW

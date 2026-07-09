@@ -124,7 +124,7 @@ const NO_EQUIVALENT = {
 };
 
 // Blocks whose non-null data must carry block_func_args (period-family).
-const NEEDS_BLOCK_FUNC_ARGS = ['PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD'];
+const NEEDS_BLOCK_FUNC_ARGS = ['PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD', 'TOGGLE_INTERVAL'];
 
 // Verified inner keys of block_func_args per type — note the periode/period
 // spelling differences ARE the host contract, not typos.
@@ -133,7 +133,12 @@ const REQUIRED_BFA_KEYS = {
   PERIODE_VALUE: ['mode', 'periode', 'period_amount'],
   CORRELATION: ['periode', 'period_amount'],
   AVG_IN_PERIOD: ['period', 'period_amount'],
+  TOGGLE_INTERVAL: ['interval', 'offset'],
 };
+
+// TOGGLE_INTERVAL is a SYMMETRIC square wave (live-probed dialog contract):
+// {"interval":"<unit>","offset":<int seconds>} — no duration/duty exists.
+const TOGGLE_INTERVAL_UNITS = ['sec', 'min', 'hour', 'day', 'week', 'month', 'year'];
 
 // Minimum REQUIRED input pins per common block (optional pins excluded).
 const REQUIRED_INPUTS = {
@@ -292,9 +297,20 @@ function validateSketchDocument(doc, report) {
         if (b.type === 'PULSE_COUNT' && 'mode' in bfa) {
           err(`${at} (PULSE_COUNT).block_func_args has no "mode" — the level/flank selector key is "type" (values: over_or_equal_value|absolute_value|flank_rising_edge|flank_falling_edge|flank_changing_edge). "mode" belongs to PERIODE_VALUE.`);
         }
+        if (b.type === 'TOGGLE_INTERVAL') {
+          if ('interval' in bfa && !TOGGLE_INTERVAL_UNITS.includes(bfa.interval)) {
+            err(`${at} (TOGGLE_INTERVAL).block_func_args.interval "${bfa.interval}" invalid — one of ${TOGGLE_INTERVAL_UNITS.join('|')}`);
+          }
+          if ('offset' in bfa && !Number.isInteger(bfa.offset)) {
+            err(`${at} (TOGGLE_INTERVAL).block_func_args.offset must be an INTEGER (whole seconds) — got ${JSON.stringify(bfa.offset)}`);
+          }
+          for (const bad of ['duration', 'duty', 'on_time', 'window', 'length', 'hours', 'days', 'period', 'periode']) {
+            if (bad in bfa) err(`${at} (TOGGLE_INTERVAL).block_func_args has no "${bad}" — the block is a SYMMETRIC square wave, exactly {"interval":"sec|min|hour|day|week|month|year","offset":<int seconds>}; an asymmetric window ("X h every N days") is NOT expressible with this block — gate on a plant CALENDAR instead`);
+          }
+        }
       }
     } else if (d == null) {
-      const needsCfg = ['PARAMV', 'TAGVALUE', 'CALENDAR', 'CALENDAR_2_0', 'CONST', 'ALARM', 'ALARM_OBJECT', 'ALARM_OBJECT_EXTENDED', 'WRITETOUNIT', 'VIRTUALOUT', 'FORMULA', 'SELECTOR', 'PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD'];
+      const needsCfg = ['PARAMV', 'TAGVALUE', 'CALENDAR', 'CALENDAR_2_0', 'CONST', 'ALARM', 'ALARM_OBJECT', 'ALARM_OBJECT_EXTENDED', 'WRITETOUNIT', 'VIRTUALOUT', 'FORMULA', 'SELECTOR', 'PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD', 'TOGGLE_INTERVAL'];
       if (needsCfg.includes(b.type)) warn(`${at} (${b.type}) data is null — imports UNCONFIGURED (red); fine only if the user is meant to bind it after import`);
     }
   });

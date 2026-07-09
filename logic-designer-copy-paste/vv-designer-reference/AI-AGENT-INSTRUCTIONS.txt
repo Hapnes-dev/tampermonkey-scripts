@@ -34,6 +34,7 @@ BLOCK ALLOWLIST (type | func | compile_type | data):
 - ALARM | alarm | output | {"alias_text":"<alarm text>","pri":"a|b|c","alarm_type":"general|system","alarm_destination":"general|ew|cw"} — ONLY a/b/c exist (a most severe). No "severity"/"message"/"priority".
 - VIRTUALOUT | virtualout | output | {"alias_text":"..","type":"integer|float|boolean","engineering":{"unit":".."}} — safe stored value; default output block.
 - WRITETOUNIT | set_unit_value | function | {"force_write":false,"delay":0,"limit_count":false,"count":1,"driver_ids":["<FULL_ID>"]} — REAL HARDWARE WRITE. Only when explicitly requested with a confirmed target parameter; otherwise use VIRTUALOUT.
+- TOGGLE_INTERVAL | toggle_interval.run | function | {"block_func_args":{"interval":"sec|min|hour|day|week|month|year","offset":0}} — symmetric square wave (flips each interval boundary; offset in whole seconds). NO duty/duration field: "X h every N days" is NOT expressible — use a plant CALENDAR instead.
 - TAGVALUE: only feeds process blocks — for normal reads always use PARAMV.
 
 THESE BLOCKS DO NOT EXIST (translate): EQUAL→LIKE, GREATERTHAN→BIGGERTHAN, LESSTHAN→SMALLERTHAN, AND→COMP_AND, OR→COMP_OR, NOT→INVERT, WRITE/WRITEOUTUNIT/DIGITAL_OUTPUT→WRITETOUNIT, DIGITAL_INPUT/ANALOG_INPUT/READ/SENSOR→PARAMV, CONSTANT→CONST, TIMER→DELAY_VARIABLE, COUNTER→PULSE_COUNT, SR_LATCH→LATCH. RISING_EDGE/TOGGLE/FLIPFLOP have no block: rising-edge = PULSE_COUNT type flank_rising_edge; toggle-per-edge = PULSE_COUNT(flank_rising_edge) → MOD ← CONST(2).

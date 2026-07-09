@@ -270,7 +270,14 @@ Highlights of the `data` shapes:
   period_amount, …}}` (period ∈ `hour|day|week|month|year`).
 - **SELECTOR** (production shape): `{output_type:'integer'|'float'}` — only the output type lives
   in `data`; the two alternatives arrive as inputs (usually `CONST`s).
-- **TOGGLE_INTERVAL** (production shape): `{block_func_args:{interval:'min', offset:0}}`.
+- **TOGGLE_INTERVAL** (full contract — live-probed from the "Configure Toggled Interval" dialog's
+  `do_ok` handler, 2026-07-09): `{block_func_args:{interval:'sec'|'min'|'hour'|'day'|'week'|'month'|'year',
+  offset:<integer>}}` — exactly these two keys; the dialog labels the field **"Offset (Seconds)"**
+  and `parseInt`s it (default `'day'`/`0`). Semantics: a **symmetric square wave** — the boolean
+  flips at each interval boundary, phase-shifted by `offset` seconds. There is **no
+  duration/duty-cycle field**, so it cannot express asymmetric windows ("1 h every 14 days") —
+  gate on a plant **CALENDAR** with a recurring schedule for those (`CRITERIA` covers
+  time-of-day/day-of-week windows but has no every-N-days period either).
 - **WEATHER** (production shape): `{block_func_args:{func:'current_dew_point', period_count:1}}` +
   `properties.output_count`. The geo lookup arrives as **string-`CONST` inputs**, not in `data`:
   put 0 County, put 1 Commune, put 2 Place (all optional — unconnected ⇒ GPS), put 3/4 period
@@ -909,6 +916,7 @@ Ask (or infer from context) — these change the graph:
 | "must hold for N minutes" (debounce) | `DELAY_VARIABLE` (delay via CONST inputs — best for programmatic builds) or `DELAY` (delay in config dialog) |
 | "on rising/falling edge", "count starts/pulses" | `PULSE_COUNT` with `block_func_args.type` = `flank_rising_edge`/`flank_falling_edge`/`flank_changing_edge` (native edge counting; signal→i0, **CONST level→i1 required**) |
 | "toggle/flip a value on each pulse" | `PULSE_COUNT`(flank mode) → `MOD` ← `CONST(2)` — 0/1 flips per edge (count resets per configured period). Time-based toggle = `TOGGLE_INTERVAL`; set/reset hold = `LATCH` |
+| "recurring maintenance/exercise window" (mosjonering: run X h every N days) | A plant **`CALENDAR`** with the recurring schedule gating the logic. **Not** `TOGGLE_INTERVAL` — it is a symmetric square wave with no duration field (§6); `CRITERIA` has time-of-day/weekday ranges but no every-N-days period. |
 | "average/min/max/sum over a period" | `AVG/MIN/MAX/SUM_IN_PERIOD` (input **by_refference**) |
 | "how long has it been running" | `HOURMETER`; "how old is the value" → `AGE_OF_VALUE`, `DELTA_T` |
 | "stays on until reset" (hysteresis/holding circuit) | `LATCH` (set/reset) |
@@ -1302,7 +1310,7 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `LATCH` | `latch.run` | function | `integer` | i0 set, i1 reset | `null` (needs plant rev ≥1683) |
 | `PERIODE_VALUE` | `counter_limit.run` | function | `["float","boolean"]` | i0 param, i1 limit | `{"block_func_args":{"mode":"alarm","periode":"day","period_amount":1}}` (note key **`periode`**) |
 | `PULSE_COUNT` | `pulse_count` | function | `["integer"]` | i0 signal (by-ref), i1 level (**requires CONST**) | `{"block_func_args":{"periode":"day","type":"flank_rising_edge","periode_amount":1}}` — periode ∈ sec/min/hour/day/week/month/year; type ∈ `over_or_equal_value`/`absolute_value`/**`flank_rising_edge`**/`flank_falling_edge`/`flank_changing_edge` (⇒ native edge counting!); count resets each period |
-| `TOGGLE_INTERVAL` | `toggle_interval.run` | function | `["boolean"]` | — | `{"block_func_args":{"interval":"min","offset":0}}` |
+| `TOGGLE_INTERVAL` | `toggle_interval.run` | function | `["boolean"]` | — | `{"block_func_args":{"interval":"sec|min|hour|day|week|month|year","offset":<int seconds>}}` — **symmetric square wave only** (flips each interval boundary; no duration/duty field). "X h every N days" is NOT expressible — use a plant `CALENDAR` (§6) |
 | `WEATHER` | `weather.run_by_ccp_country` | function | `["float"]` | i0 County, i1 Commune, i2 Place (optional string `CONST`s; unconnected ⇒ GPS), i3 period start, i4 period end | `{"block_func_args":{"func":"current_dew_point","period_count":1}}` + `properties.output_count` (rev ≥620) |
 | `ALARM` | `alarm` | output | `null` | i0 boolean | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` (pri a/b/c; dest general/ew/cw) |
 | `ALARM_OBJECT` | `alarm_object` | output | `null` | i0 condition, i1 cost | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` |
