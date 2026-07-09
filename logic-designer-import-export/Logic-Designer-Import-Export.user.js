@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.0
+// @version      1.15.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.14.0';
+    var VERSION = '1.15.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1242,7 +1242,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var autoLabel = document.createElement('label');
       autoLabel.title = 'Re-simulate automatically on every value or canvas change. (The painted flow always stays on the canvas until ■ Stop, checked or not.)';
       var autoCb = document.createElement('input');
-      autoCb.type = 'checkbox'; autoCb.checked = true; autoCb.style.verticalAlign = 'middle';
+      autoCb.type = 'checkbox'; autoCb.checked = false; autoCb.style.verticalAlign = 'middle';
       autoLabel.appendChild(autoCb);
       autoLabel.appendChild(document.createTextNode(' auto re-run'));
       var refreshBtn = document.createElement('button');
