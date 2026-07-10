@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.16.0
+// @version      1.17.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.16.0';
+    var VERSION = '1.17.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -501,11 +501,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         background: #1e1e1e; color: #d4d4d4; border: 1px solid rgba(255,255,255,0.15);\
         border-radius: 4px; padding: 6px 8px; font: 11px/1.4 monospace; resize: vertical; }\
       .ldio-btn-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }\
-      .ldio-btn { background: #2a2a2a; color: #d4d4d4; border: 1px solid rgba(255,255,255,0.15);\
-        border-radius: 4px; padding: 6px 14px; font-size: 12px; cursor: pointer; }\
-      .ldio-btn:hover { background: #383838; }\
-      .ldio-btn-primary { background: #2c5d8e; border-color: #3d7ab3; }\
-      .ldio-btn-primary:hover { background: #357ab8; }\
+      .ldio-btn { background: #2b2b2b; color: #dcdcdc; border: 1px solid rgba(255,255,255,0.16);\
+        border-radius: 5px; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer;\
+        transition: background 0.15s, border-color 0.15s, opacity 0.15s; }\
+      .ldio-btn:hover:not(:disabled) { background: #3a3a3a; border-color: rgba(255,255,255,0.28); }\
+      .ldio-btn:focus-visible { outline: 2px solid #4a8ecf; outline-offset: 1px; }\
+      .ldio-btn:disabled { opacity: 0.45; cursor: default; }\
+      .ldio-btn-primary { background: #2f6fb2; border-color: #4a8ecf; color: #fff; }\
+      .ldio-btn-primary:hover:not(:disabled) { background: #3b82cc; }\
+      .ldio-sim-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;\
+        color: #9a9a9a; flex: 0 0 auto; margin-left: 2px; white-space: nowrap; }\
+      .ldio-sim-dot { width: 8px; height: 8px; border-radius: 50%; background: #8a8a8a; flex: 0 0 auto; }\
+      .ldio-dot-pulse { animation: ldio-pulse 1.4s ease-out infinite; }\
+      @keyframes ldio-pulse { 0% { box-shadow: 0 0 0 0 rgba(255,255,255,0.35); }\
+        70% { box-shadow: 0 0 0 6px rgba(255,255,255,0); } 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); } }\
       .ldio-version { opacity: 0.45; font-size: 10px; }\
       .ldio-errpanel { width: 620px; }\
       .ldio-err-sub { font-size: 12px; color: #e6a5a5; margin-bottom: 8px; }\
@@ -740,7 +749,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
       stopBtnEl: null, // turns red while simulated values are on the canvas
-      dimEls: [], replayTimer: null, // flow-visualisation extras
+      runBtnEl: null, replayBtnEl: null, statusEl: null, // pro controls + status chip
+      dimEls: [], replayTimer: null, dashedNodes: [], postPaintTimer: null, // flow-visualisation extras
       lastRun: null, // snapshot of the latest run, for Copy log / getSimLog
       // Live-view watcher state: with auto re-run on, the flow stays on the
       // canvas — re-simulated when the canvas changes, repainted if wiped —
@@ -872,6 +882,59 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.stopBtnEl) simState.stopBtnEl.classList.toggle('ldio-btn-stop-on', !!active);
     }
 
+    // Status chip: what is the simulator doing right now?
+    var SIM_STATUS = {
+      ready: { color: '#8a8a8a', text: 'Ready', pulse: false },
+      active: { color: '#2ecc71', text: 'Values on canvas', pulse: false },
+      live: { color: '#2ecc71', text: 'Live — re-runs on change', pulse: true },
+      replaying: { color: '#4da3ff', text: 'Replaying…', pulse: true },
+    };
+    function simSetStatus(state) {
+      if (!simState.statusEl) return;
+      var m = SIM_STATUS[state] || SIM_STATUS.ready;
+      var dot = simState.statusEl.firstChild;
+      var txt = simState.statusEl.lastChild;
+      dot.className = 'ldio-sim-dot' + (m.pulse ? ' ldio-dot-pulse' : '');
+      dot.style.background = m.color;
+      txt.textContent = m.text;
+    }
+    // The status an idle-but-painted panel should show.
+    function simRestingStatus() {
+      return (simState.autoRunEl && simState.autoRunEl.checked) ? 'live' : 'active';
+    }
+    function simSetBusy(busy) {
+      if (simState.runBtnEl) simState.runBtnEl.disabled = !!busy;
+      if (simState.replayBtnEl) simState.replayBtnEl.disabled = !!busy;
+    }
+
+    // "Signal travels the wire": draw the wire in its value colour from the
+    // source towards the target over ms, via a stroke-dashoffset transition
+    // on the underlying SVG path. Nodes are tracked for exact cleanup.
+    function simFillWire(conn, color, ms) {
+      try {
+        conn.line.stop();
+        conn.line.attr('stroke', color);
+        var node = conn.line.node;
+        var len = node && node.getTotalLength ? node.getTotalLength() : 0;
+        if (!len || ms < 120) return;
+        node.style.transition = 'none';
+        node.style.strokeDasharray = len + ' ' + len;
+        node.style.strokeDashoffset = len;
+        simState.dashedNodes.push(node);
+        void node.getBoundingClientRect(); // flush so the transition animates
+        node.style.transition = 'stroke-dashoffset ' + ms + 'ms linear';
+        node.style.strokeDashoffset = '0';
+      } catch (e) {
+        try { conn.line.attr('stroke', color); } catch (e2) { /* ignore */ }
+      }
+    }
+    function simClearDashes() {
+      simState.dashedNodes.forEach(function (n) {
+        try { n.style.transition = ''; n.style.strokeDasharray = ''; n.style.strokeDashoffset = ''; } catch (e) { /* ignore */ }
+      });
+      simState.dashedNodes = [];
+    }
+
     // ── Flow visualisation on the canvas ─────────────────────────────
     // Wire colour = the value it carries (host reset animates back to the
     // normal orange, so colours never leak past Stop/clear).
@@ -929,7 +992,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var c = stack.connections[j];
         if (c.target && c.target.id === id && c.target.put === 1) { secs = parseFloat(results[c.source.id]) || 0; break; }
       }
-      return base + Math.min(2500, secs * 40);
+      return base + Math.min(4000, secs * 80);
     }
 
     // Replay the LAST run visually: reveal each block's value box in
@@ -946,11 +1009,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!paper.simulation_stack || !simState.lastRun || !simState.lastRun.ok) return;
       }
       if (simState.replayTimer) { clearInterval(simState.replayTimer); simState.replayTimer = null; }
+      // No late repaint from the run may fire mid-replay (that's the "blink").
+      if (simState.postPaintTimer) { clearTimeout(simState.postPaintTimer); simState.postPaintTimer = null; }
+      simClearDashes();
       var els = paper.simulation_elements || [];
       var order = simState.lastRun.order || [];
       var results = simState.lastRun.results || {};
       var stack = simState.lastRun.stack;
       if (!els.length || !order.length) return;
+      simSetBusy(true);
+      simSetStatus('replaying');
       els.forEach(function (el) { try { el.hide(); } catch (e) { /* ignore */ } });
       for (var i = 0; i < paper.connections.length; i++) {
         try { paper.connections[i].line.stop(); paper.connections[i].line.attr('stroke', '#EEE'); } catch (e) { /* ignore */ }
@@ -959,9 +1027,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var idx = 0;
       function stepReplay() {
         if (idx >= order.length) {
+          // Final, stable frame: solid wires in their value colours, every
+          // value box visible — and nothing scheduled that could repaint.
           simState.replayTimer = null;
+          simClearDashes();
           els.forEach(function (el) { try { el.show(); } catch (e) { /* ignore */ } });
           simPaintFlow(paper, results);
+          simSetBusy(false);
+          simSetStatus(simRestingStatus());
           return;
         }
         for (var k = idx * perBlock; k < (idx + 1) * perBlock && k < els.length; k++) {
@@ -969,12 +1042,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         var id = order[idx];
         var dwell = simReplayDwellMs(stack, results, id);
-        // the signal "travels" the outgoing wires over the dwell time
+        // The signal FILLS the outgoing wires from source to target over the
+        // dwell — a delay block's wire visibly fills slowly.
         for (var w = 0; w < paper.connections.length; w++) {
           var c = paper.connections[w];
-          if (c.user && c.user.source === id) {
-            try { c.line.stop(); c.line.animate({ stroke: simWireColor(results[id]) }, Math.min(dwell, 1200)); } catch (e) { /* ignore */ }
-          }
+          if (c.user && c.user.source === id) simFillWire(c, simWireColor(results[id]), dwell - 60);
         }
         idx++;
         simState.replayTimer = setTimeout(stepReplay, dwell);
@@ -986,10 +1058,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function simClearCanvas(paper) {
       if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); paper.simulation_stopper = null; }
       if (simState.replayTimer) { clearInterval(simState.replayTimer); simState.replayTimer = null; }
+      if (simState.postPaintTimer) { clearTimeout(simState.postPaintTimer); simState.postPaintTimer = null; }
+      simClearDashes();
       simClearDims();
       paper.__simulation_reset(true);
       paper.simulation_stack = null;
       simSetActive(false);
+      simSetBusy(false);
+      simSetStatus('ready');
     }
 
     function simResultLine(text, cls) {
@@ -1047,6 +1123,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (paper.simulation_stopper) { clearTimeout(paper.simulation_stopper); }
       paper.simulation_stopper = null;
       if (simState.replayTimer) { clearInterval(simState.replayTimer); simState.replayTimer = null; }
+      if (simState.postPaintTimer) { clearTimeout(simState.postPaintTimer); simState.postPaintTimer = null; }
+      simClearDashes();
+      simSetBusy(false);
       simClearDims();
       paper.__simulation_reset(true);
       for (var x = 0; x < paper.connections.length; x++) paper.connections[x].line.attr('stroke', '#EEE');
@@ -1161,11 +1240,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simPaintFlow(paper, results);
       simDimUnreached(paper);
       simSetActive(true);
+      simSetStatus(simRestingStatus());
       // The host's per-step highlight animations (500 ms) can land after us —
       // repaint once more when they are done so the value colours win.
+      // Tracked so a replay/stop can cancel it (no late "blink").
       var paintResults = simState.lastRun.results;
-      setTimeout(function () {
-        if (simPaper() === paper && paper.simulation_stack) simPaintFlow(paper, paintResults);
+      simState.postPaintTimer = setTimeout(function () {
+        simState.postPaintTimer = null;
+        if (simPaper() === paper && paper.simulation_stack && !simState.replayTimer) simPaintFlow(paper, paintResults);
       }, 700);
     }
 
@@ -1314,14 +1396,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       ctl.className = 'ldio-sim-ctl';
       var runBtn = document.createElement('button');
       runBtn.type = 'button'; runBtn.className = 'ldio-btn ldio-btn-primary';
+      simState.runBtnEl = runBtn;
       runBtn.textContent = '▶ Run';
-      runBtn.addEventListener('click', simRunOnce);
+      runBtn.title = 'Simulate the sketch with the values above';
+      runBtn.addEventListener('click', function () { simRunOnce(); });
       var autoLabel = document.createElement('label');
       autoLabel.title = 'Re-simulate automatically on every value or canvas change. (The painted flow always stays on the canvas until ■ Stop, checked or not.)';
       var autoCb = document.createElement('input');
       autoCb.type = 'checkbox'; autoCb.checked = false; autoCb.style.verticalAlign = 'middle';
+      autoCb.addEventListener('change', function () {
+        if (simState.stopBtnEl && simState.stopBtnEl.classList.contains('ldio-btn-stop-on')) simSetStatus(simRestingStatus());
+      });
       autoLabel.appendChild(autoCb);
       autoLabel.appendChild(document.createTextNode(' auto re-run'));
+      var status = document.createElement('span');
+      status.className = 'ldio-sim-status';
+      var statusDot = document.createElement('span');
+      statusDot.className = 'ldio-sim-dot';
+      var statusTxt = document.createElement('span');
+      statusTxt.textContent = 'Ready';
+      status.appendChild(statusDot);
+      status.appendChild(statusTxt);
+      simState.statusEl = status;
       var refreshBtn = document.createElement('button');
       refreshBtn.type = 'button'; refreshBtn.className = 'ldio-btn';
       refreshBtn.textContent = '↻';
@@ -1352,12 +1448,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       var replayBtn = document.createElement('button');
       replayBtn.type = 'button'; replayBtn.className = 'ldio-btn';
-      replayBtn.textContent = '🎬';
-      replayBtn.title = 'Replay the last run in slow motion — watch the flow propagate block by block';
+      simState.replayBtnEl = replayBtn;
+      replayBtn.textContent = '🎬 Slow-mo';
+      replayBtn.title = 'Replay the last run in slow motion — watch the signal fill each wire, block by block (delays fill slowly)';
       replayBtn.addEventListener('click', simReplay);
       var spring = document.createElement('div');
       spring.className = 'ldio-sim-spring';
-      ctl.appendChild(runBtn); ctl.appendChild(stopBtn); ctl.appendChild(replayBtn); ctl.appendChild(autoLabel); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn);
+      ctl.appendChild(runBtn); ctl.appendChild(stopBtn); ctl.appendChild(replayBtn); ctl.appendChild(autoLabel); ctl.appendChild(status); ctl.appendChild(spring); ctl.appendChild(copyBtn); ctl.appendChild(refreshBtn);
       body.appendChild(ctl);
 
       var secOut = document.createElement('div');
@@ -1384,6 +1481,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simState.prevPollFp = null;
       simState.lastRunFp = null;
       simState.watchTimer = setInterval(simWatchTick, 800);
+      simSetStatus('ready');
       simBuildRows();
     }
 
