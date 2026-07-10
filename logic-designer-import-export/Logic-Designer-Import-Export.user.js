@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.0
+// @version      1.22.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.21.0';
+    var VERSION = '1.22.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -537,7 +537,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         font: 15px/1 sans-serif; padding: 3px 8px; border-radius: 4px; }\
       .ldio-sim-x:hover { background: rgba(255,80,80,0.18); color: #ff8a8a; }\
       .ldio-sim-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;\
-        padding: 9px 12px 4px 12px; }\
+        padding: 9px 12px 10px 12px; }\
       .ldio-sim-sec { flex: 0 0 auto; font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase;\
         color: #8f8f8f; margin: 3px 0 4px 1px; }\
       .ldio-sim-rows { overflow-y: auto; border: 1px solid rgba(255,255,255,0.09); border-radius: 6px;\
@@ -567,7 +567,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-sim-result .ldio-sim-msg { color: #d9c07a; }\
       .ldio-sim-flow { font: 11px/1.5 Consolas, monospace; white-space: pre; color: #bfcbd6;\
         margin-top: 7px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 7px; }\
-      .ldio-sim-foot { flex: 0 0 auto; padding: 3px 12px 8px 12px; }\
     ';
     if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
     else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
@@ -1507,11 +1506,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var result = document.createElement('div');
       result.className = 'ldio-sim-result';
       body.appendChild(result);
-
-      var hint = document.createElement('div');
-      hint.className = 'ldio-version ldio-sim-foot';
-      hint.textContent = 'Client-side only — nothing touches the plant · LDIO v' + VERSION;
-      panel.appendChild(hint);
 
       document.body.appendChild(panel);
       document.addEventListener('keydown', onSimPanelKeydown, true);
