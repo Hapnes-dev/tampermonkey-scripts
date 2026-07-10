@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.20.0
+// @version      1.21.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.20.0';
+    var VERSION = '1.21.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -849,6 +849,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (e && /^simulation_/.test(String(e.action))) return;
         return simState.origCb.call(this, e);
       };
+      // HOST auto-clear killer: the simulator schedules a 'Timed stop' 5 s
+      // after completion (and a 'Done' stop on a stray deferred step). On
+      // newer/minified host builds that timer is NOT reachable through
+      // paper.simulation_stopper, so cancelling the timeout is not enough —
+      // the overlay kept being wiped ~every 5 s and repainted by the watcher
+      // (visible as blinking). Swallow exactly those two auto-clear reasons
+      // while the panel is open; every other stop (error paths) passes.
+      simState.hadOwnStop = Object.prototype.hasOwnProperty.call(paper, 'simulator_stop');
+      simState.origStop = paper.simulator_stop;
+      paper.simulator_stop = function (reason) {
+        if (reason === 'Timed stop' || reason === 'Done') return;
+        return simState.origStop.apply(this, arguments);
+      };
       // HOST BUG workaround: __highlight_block_connection reads
       // inputs[i].connected_to.connection_id without a null check, so the
       // host simulator crashes on any block with an UNCONNECTED optional
@@ -876,6 +889,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.hadOwnGUI) paper.get_user_input = simState.origGUI; else delete paper.get_user_input;
       if (simState.hadOwnCb) paper.callback = simState.origCb; else delete paper.callback;
       if (simState.hadOwnHl) paper.__highlight_block_connection = simState.origHl; else delete paper.__highlight_block_connection;
+      if (simState.hadOwnStop) paper.simulator_stop = simState.origStop; else delete paper.simulator_stop;
       if (simState.origShow && W.system_dialogs && W.system_dialogs.information) {
         W.system_dialogs.information.show = simState.origShow;
       }

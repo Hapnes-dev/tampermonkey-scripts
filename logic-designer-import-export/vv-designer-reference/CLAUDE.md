@@ -575,6 +575,14 @@ Reports (process/project/usage/versions/revision), and `vv_changes.qxs` (VV chan
   fields yourself), run the step loop to `completed==steps`, and cancel the deferred stop to keep
   results on-canvas. `ALARM.sim` returns `'ALARM'`/`'FALSE'` and pushes an
   `system_dialogs.information.show` modal when the condition is true.
+- **HOST QUIRK (live-confirmed on plant 9839, 2026-07-10):** production plants run a
+  **newer/minified designer build** where the simulator's post-completion auto-clear
+  (`simulator_stop('Timed stop')`, plus `'Done'` from a stray deferred step) is scheduled through
+  a handle **not reachable via `paper.simulation_stopper`** — `clearTimeout(simulation_stopper)`
+  does NOT cancel it (it does on the older demo-plant build; the timed stop also fired at ~2–4 s
+  there, not 5). Anyone keeping sim results on-canvas must **wrap `paper.simulator_stop` and
+  swallow those two reasons** (the Import/Export Live Simulate panel does this while open;
+  error-path stops pass through).
 - **HOST BUG (live-confirmed 2026-07-09):** `__highlight_block_connection` dereferences
   `block.inputs[i].connected_to.connection_id` without a null check, so the simulator **crashes on
   any block with an unconnected optional input** (e.g. `DELAY_VARIABLE`'s false-delay pin i2 —
