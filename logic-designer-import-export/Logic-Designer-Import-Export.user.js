@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.0
+// @version      1.18.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.17.0';
+    var VERSION = '1.18.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1439,11 +1439,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
       copyBtn.textContent = '⧉ Log';
-      copyBtn.title = 'Copy the full simulation log (inputs, flow, results, blocks, wires) — paste it to an AI to debug/improve the logic';
+      copyBtn.title = 'Copy the full simulation log for debugging — input values, step-by-step flow trace, block results, wiring and any errors';
       copyBtn.addEventListener('click', function () {
         var text = buildLastSimLog();
         if (!text) { toast('Run a simulation first.'); return; }
-        if (copyTextToClipboard(text)) toast('Simulation log copied — paste it to your AI.');
+        if (copyTextToClipboard(text)) toast('Simulation log copied.');
         else toast('Could not access the clipboard.', 'error');
       });
       var replayBtn = document.createElement('button');
