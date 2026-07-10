@@ -30,6 +30,8 @@ system, the save format, the server API, and the compile/deploy lifecycle. See
 >
 > Sections 1–18 are the reference both link back into; **§21** is ground truth from a
 > 15-sketch production corpus (6 plants) — check it when unsure what real files look like.
+> Driving the client **simulator** programmatically? Start at **§13.1** — the complete recipe
+> with the four mandatory host-workaround shadows (every one maps to a live-verified failure).
 
 ---
 
@@ -596,6 +598,64 @@ Reports (process/project/usage/versions/revision), and `vv_changes.qxs` (VV chan
   installs a null-safe replacement while its panel is open; anyone else driving the simulator must
   shadow the same method or wire every optional input.
 
+### 13.1 Driving the simulator programmatically — the complete contract (for AIs)
+
+Everything above condensed into the one recipe that works on **both** host builds (old
+demo-plant and newer minified production). All four shadows are **mandatory** — each one maps
+to a live-verified failure if skipped. Shadow = assign an own property on `paper` (or the
+palette def), keep the original, restore when done.
+
+**1. Install four shadows first:**
+```js
+const p = logic_designer.paper;
+// (a) values instead of prompt() — MUST mirror all three side effects
+p.get_user_input = function (block) {
+  var v = parseFloat(myValues[block.pointer]); if (isNaN(v)) v = 0;
+  this.simulation_stack_block_values[block.pointer] = v;
+  this.simulation_user_values[block.pointer] = v;
+  this.simulation_auto_proceed = true;
+  return v;
+};
+// (b) kill the auto-wipe — clearTimeout(simulation_stopper) does NOT work on
+//     minified builds; swallowing the reasons is the only robust way
+const origStop = p.simulator_stop;
+p.simulator_stop = function (reason) {
+  if (reason === 'Timed stop' || reason === 'Done') return;
+  return origStop.apply(this, arguments);
+};
+// (c) null-safe highlight — host crashes on unconnected OPTIONAL inputs
+p.__highlight_block_connection = function (block) { /* copy of host source
+  with `if (!inputs[i].connected_to) continue;` added */ };
+// (d) FORMULA evaluates server-side (PHP) — the palette sim only prompts.
+//     Shadow paper.blocks.FORMULA.sim with a local evaluator of the §6
+//     grammar, gathering inputs BY PIN from simulation_stack.connections
+//     (booleans coerced to 1/0), or every formula becomes a manual value.
+```
+**2. Run — mirror `simulator_start` yourself** (calling it directly costs you a blocking
+`confirm()` and a deferred step you don't control):
+```js
+if (!p.syntax_check(true).ok) return;              // start silently no-ops otherwise
+var wasChanged = p.changed;                        // save() clears the dirty flag
+p.__simulation_reset(true);
+p.connections.forEach(c => c.line.attr('stroke', '#EEE'));
+p.simulation_elements = [];
+p.simulation_stack = p.save(false); p.changed = wasChanged;
+p.simulation_steps = p.simulation_stack.blocks.length;
+p.simulation_stack_block_values = {}; p.simulation_user_values = {};
+p.simulation_completed_blocks = []; p.simulation_connections = []; p.simulation_data = {};
+var guard = 0;
+while (p.simulation_stack && p.simulation_completed_blocks.length < p.simulation_steps
+       && guard++ < p.simulation_steps * 5) p.simulator_step();
+if (p.simulation_stopper) { clearTimeout(p.simulation_stopper); p.simulation_stopper = null; }
+```
+**3. Read results** from `p.simulation_stack_block_values` (keyed by pointer; booleans stay
+`true`/`false`, `ALARM` returns `'ALARM'`/`'FALSE'`). Completion order =
+`simulation_completed_blocks`. `simulation_stack === null` after the loop ⇒ a sim error path
+stopped the run.
+**4. Clean up:** `p.__simulation_reset(true)`, `p.simulation_stack = null`, restore all shadows.
+Also wrap `system_dialogs.information.show` during the run if you don't want ALARM modals, and
+`p.callback` to swallow `simulation_*` events (host progress-bar UI).
+
 ---
 
 ## 14. Practical: how to introspect the live tool
@@ -793,34 +853,42 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.4.0)** (same repo,
-`logic-designer-import-export/`): adds a **Transfer** section to the File menu — **Export**
-(file download), **Import** (panel: file / drag-drop / paste-JSON), and **Copy sketch (JSON
-text)** (clipboard — copy on plant A, paste into Import on plant B, no file; uses the
-`execCommand` fallback since `navigator.clipboard` is unavailable on plain http) — so logic can
-be moved **between plants**. A rejected import opens an **itemised error panel** (`diagnoseImport`
-mirrors the validator's rules in-browser against the live `paper.blocks` palette) — plain-language
-fixes per problem, nothing touched on the canvas. Cross-plant import offers a
-one-click **driver-id rebind** (`<src>_…` → `<target>_…` on `driver_ids`/legacy `driver_id`),
-warns about CALENDAR/TAGVALUE bindings and unknown process blocks, and clears
-`application.current_sketch` after import so Ctrl+S saves as a *new* sketch. Integration
-pattern worth reusing: it wraps `menu_main.creator.render` to append items to the `file`
-level before every rebuild (menus are re-rendered on each mode switch), and wraps
-`application.on_menu` to catch its `file_ldio_*` item ids. Live-verified end-to-end
-(export envelope → simulated foreign plant → rebind → 6 blocks/5 wires restored, syntax ok).
-v1.4.0 adds two **additive** envelope fields — `generator` (script version) and
-`requires_processes` (manifest of library-process dependencies: key/name/revision, stamped only
-when the sketch uses processes) — plus import-side normalization: omitted
-`override`/`runtime`/`properties`/`data`/`groups` get defaults and a missing `func` is filled
-from the live palette, so near-miss hand-authored files import cleanly while real exports pass
-through byte-identical. v1.3-era files are unaffected in both directions.
-v1.5.0 adds a **Live Simulate** panel (File → Simulate) that drives the host's own client
-simulator (§13) but replaces its per-block `prompt()` with a value panel, runs the whole graph
-in one pass, keeps the on-canvas result overlay (cancels the host's 5 s auto-clear), and
-re-simulates on every value change — a before-deploy test loop. It wraps/restores three host
-hooks (`get_user_input`, `system_dialogs.information.show`, `paper.callback`) and preserves the
-dirty flag, so it never marks the sketch unsaved or calls the server. Pure helpers
-(`listSimInputBlocks`/`listSimOutputBlocks`/`formatSimValue`) are `module.exports`-ed.
+**Second ecosystem script — "Logic Designer Import/Export" (v1.23.x)** (same repo,
+`logic-designer-import-export/`). Two feature areas:
+
+**Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
+paste-JSON), **Copy sketch (JSON text)** (clipboard — copy on plant A, paste into Import on
+plant B; `execCommand` fallback since `navigator.clipboard` is unavailable on plain http).
+A rejected import opens an **itemised error panel** (`diagnoseImport` mirrors the validator's
+rules in-browser against the live `paper.blocks` palette); cross-plant import offers a one-click
+**driver-id rebind** (`<src>_…` → `<target>_…`), warns about CALENDAR/TAGVALUE bindings and
+unknown processes (by display name via the envelope's `requires_processes` manifest), clears
+`application.current_sketch` so Ctrl+S saves as *new*, and **normalizes near-miss hand-authored
+files** (missing `override`/`runtime`/`properties`/`data`/`groups` defaults; missing `func`
+filled from the palette) while real exports pass through byte-identical. Export stamps two
+additive envelope fields: `generator` + `requires_processes` (§20.1).
+
+**Live Simulate** (top-bar button right of the mode toggle, also File → Simulate): drives the
+host's client simulator (§13) via the §13.1 contract — values come from a panel instead of
+`prompt()`, the whole graph runs in one pass, results **stay on the canvas until ■ Stop**
+(auto-wipe swallowed, overlay repainted if the host wipes it, boxes/colours follow block moves).
+Wires are **coloured by carried value** (green TRUE / red FALSE / blue number / grey
+unevaluated), never-evaluated blocks get a dim overlay, and **⧖ Play flow** replays the last run
+with the colour **filling each wire** source→target (delay blocks fill proportionally to their
+seconds). *auto re-run* (off by default) re-simulates on value **and canvas** changes, guarded
+by volatile-field-stripped logic/layout fingerprints so host background noise never causes
+redraw "blinking". **⧉ Log** copies a self-contained debug report (inputs, per-pin flow trace,
+results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()`. **FORMULA blocks are
+evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
+`time()`/`date()` → JS; inputs gathered by pin; un-evaluable formulas become manual rows).
+While the panel is open it shadows and restores **six host hooks**: `get_user_input`,
+`system_dialogs.information.show`, `paper.callback`, `paper.simulator_stop` (swallow
+`Timed stop`/`Done`), `__highlight_block_connection` (null-fix), `paper.blocks.FORMULA.sim`
+(local evaluator). The dirty flag is preserved everywhere — it never marks the sketch unsaved
+or calls the server. Pure helpers (`listSimInputBlocks`/`listSimOutputBlocks`/`formatSimValue`/
+`buildSimFlowLines`/`buildSimulationLog`/`phpDate`/`compileVvFormula` + the import/export set)
+are `module.exports`-ed for Node tests; console surface is `window.__LDIO` (incl. `_sim` state
+handle for debugging).
 
 ---
 
