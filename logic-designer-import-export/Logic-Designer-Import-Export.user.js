@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.23.0
+// @version      1.24.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -556,7 +556,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.23.0';
+    var VERSION = '1.24.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -589,7 +589,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-btn-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }\
       .ldio-btn { background: #2b2b2b; color: #dcdcdc; border: 1px solid rgba(255,255,255,0.16);\
         border-radius: 5px; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer;\
+        display: inline-flex; align-items: center; justify-content: center; gap: 5px; line-height: 1.2;\
         transition: background 0.15s, border-color 0.15s, opacity 0.15s; }\
+      .ldio-btn-ico { display: inline-block; font-size: 11px; line-height: 1; flex: 0 0 auto; }\
       .ldio-btn:hover:not(:disabled) { background: #3a3a3a; border-color: rgba(255,255,255,0.28); }\
       .ldio-btn:focus-visible { outline: 2px solid #4a8ecf; outline-offset: 1px; }\
       .ldio-btn:disabled { opacity: 0.45; cursor: default; }\
@@ -1580,10 +1582,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       var ctl = document.createElement('div');
       ctl.className = 'ldio-sim-ctl';
+      // Icon + text as separate spans so the glyphs (▶ ■ ⧖ ⧉) centre on the
+      // text baseline via the button's flex alignment.
+      function btnLabel(btn, ico, text) {
+        btn.textContent = '';
+        var i = document.createElement('span');
+        i.className = 'ldio-btn-ico';
+        i.textContent = ico;
+        btn.appendChild(i);
+        if (text) btn.appendChild(document.createTextNode(text));
+      }
       var runBtn = document.createElement('button');
       runBtn.type = 'button'; runBtn.className = 'ldio-btn ldio-btn-primary';
       simState.runBtnEl = runBtn;
-      runBtn.textContent = '▶ Run';
+      btnLabel(runBtn, '▶', 'Run');
       runBtn.title = 'Simulate the sketch with the values above';
       runBtn.addEventListener('click', function () { simRunOnce(); });
       var autoLabel = document.createElement('label');
@@ -1606,13 +1618,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simState.statusEl = status;
       var refreshBtn = document.createElement('button');
       refreshBtn.type = 'button'; refreshBtn.className = 'ldio-btn';
-      refreshBtn.textContent = '↻';
+      btnLabel(refreshBtn, '↻', '');
       refreshBtn.title = 'Rebuild the input list after canvas edits (values are kept per block)';
       refreshBtn.addEventListener('click', simBuildRows);
       var stopBtn = document.createElement('button');
       stopBtn.type = 'button'; stopBtn.className = 'ldio-btn';
       simState.stopBtnEl = stopBtn;
-      stopBtn.textContent = '■ Stop';
+      btnLabel(stopBtn, '■', 'Stop');
       stopBtn.title = 'Stop: cancel a pending auto re-run and clear the simulated values from the canvas';
       stopBtn.addEventListener('click', function () {
         simState.stopped = true; // suppress the live-view repaint until Run/next change
@@ -1624,7 +1636,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
-      copyBtn.textContent = '⧉ Log';
+      btnLabel(copyBtn, '⧉', 'Log');
       copyBtn.title = 'Copy the full simulation log for debugging — input values, step-by-step flow trace, block results, wiring and any errors';
       copyBtn.addEventListener('click', function () {
         var text = buildLastSimLog();
@@ -1635,7 +1647,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var replayBtn = document.createElement('button');
       replayBtn.type = 'button'; replayBtn.className = 'ldio-btn';
       simState.replayBtnEl = replayBtn;
-      replayBtn.textContent = '⧖ Play flow';
+      btnLabel(replayBtn, '⧖', 'Play flow');
       replayBtn.title = 'Play the last run step by step — watch the signal travel through the sketch (time delays fill their wire slowly). Ends with all values shown.';
       replayBtn.addEventListener('click', simReplay);
       var spring = document.createElement('div');
