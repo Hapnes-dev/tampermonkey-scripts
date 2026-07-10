@@ -565,6 +565,17 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   - **Team-bucket fallback (4.76):** no-project rows get a picker over `Team *` projects; booking there
     names the activity `<plant id> <plant name> - <activity>`; choice remembered
     (`book_fallback_project`); per-bucket dupe-guard.
+  - **Bucket SUBTASKS (4.105, Thomas's convention):** a bucket that contains a task matching
+    `BUCKET_PARENT_RE` (/oppgaver utenfor rocketlane/i — e.g. **Team Kulde Oppgaver**) books the entry
+    onto the plant's **subtask** under that container instead of a bare activity: `ensureBucketSubtask`
+    finds it by the `<plant id> -` name prefix in `rlTasks(bucket)` or creates it
+    (`POST /tasks {taskName:"<plant id> - <plant name>", project:{projectId}, parent:{taskId}}` per the
+    public API docs, one flat-shape `{projectId, parentTaskId}` retry for tenant quirks; memoised per
+    session, result pushed into `_rlTasksCache`). Falls back to the activity style when the container is
+    missing or the create fails. Dupe guards (plan-time `bucketDupe`, book-time, and the 5xx landed-check)
+    match BOTH styles: activity `<plant id> …` OR a task entry whose task name starts with the plant id.
+    ⚠ Create-shape not yet live-verified (extension was down) — first real booking confirms it; a failure
+    surfaces on the row and the entry books as an activity instead, nothing double-books.
   - **Noise filter (4.86):** `BOOK_NOISE_RE` (data_engine|sysinfo) — internal machinery never appears in
     titles/notes/matcher evidence.
   - **Fetch perf (4.85):** see §7 — batch 10, commits as pooled singles + session cache, two_versions cache.

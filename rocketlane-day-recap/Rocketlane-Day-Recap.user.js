@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.104
+// @version      4.105
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2669,6 +2669,45 @@
         _rlTasksCache[projectId] = tasks;
         return tasks;
     }
+    // ---- Team-bucket subtasks: "Oppgaver utenfor Rocketlane" (v4.105) -----------------------------
+    // Team bucket projects (Team Kulde Oppgaver, …) keep a container task with one SUBTASK per
+    // no-project plant ("6163 - COOP PRIX Undheim"). When booking a no-project plant into a bucket
+    // that has that container, the time entry belongs on the plant's subtask — found by its
+    // "<plant id> -" name prefix, or created under the container (POST /tasks with taskName +
+    // project + parent per the public API; one alternate flat-shape retry for tenant quirks).
+    // Buckets WITHOUT the container keep the old bare-activity behaviour.
+    const BUCKET_PARENT_RE = /oppgaver\s+utenfor\s+rocketlane/i;
+    const _bucketSubtaskMemo = new Map(); // `${projectId}|${plant_id}` -> taskId | null (per session)
+    async function ensureBucketSubtask(projectId, plantId, plantName) {
+        const memoKey = projectId + '|' + plantId;
+        if (_bucketSubtaskMemo.has(memoKey)) return _bucketSubtaskMemo.get(memoKey);
+        let out = null;
+        try {
+            const tasks = await rlTasks(projectId);
+            const parent = tasks.find(t => BUCKET_PARENT_RE.test(t.taskName));
+            if (parent) {
+                const pidRe = new RegExp('^\\s*' + String(plantId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–—:.]');
+                const hit = tasks.find(t => t.taskId !== parent.taskId && pidRe.test(t.taskName));
+                if (hit) out = hit.taskId;
+                else {
+                    const name = `${plantId} - ${plantName || plantId}`;
+                    let r = await rlFetch('POST', '/tasks', { taskName: name, project: { projectId }, parent: { taskId: parent.taskId } });
+                    if (!(r.status === 200 || r.status === 201))
+                        r = await rlFetch('POST', '/tasks', { taskName: name, projectId, parentTaskId: parent.taskId });
+                    const t = r.json && (r.json.taskId ? r.json : (r.json.data && r.json.data.taskId ? r.json.data : null));
+                    if ((r.status === 200 || r.status === 201) && t && t.taskId) {
+                        out = t.taskId;
+                        (_rlTasksCache[projectId] = _rlTasksCache[projectId] || []).push({ taskId: t.taskId, taskName: name, done: false, phase: '' });
+                        LOG('book: created bucket subtask', name, '→', t.taskId, 'under', parent.taskName);
+                    } else {
+                        LOG('book: bucket subtask create failed', r.status, String(r.raw || r.error || '').slice(0, 160));
+                    }
+                }
+            }
+        } catch (err) { LOG('book: bucket subtask lookup failed', String(err)); }
+        _bucketSubtaskMemo.set(memoKey, out); // a failed create memoises null → this run falls back to the activity style
+        return out;
+    }
     // Discipline detector: [name, suffix-regex, evidence-keywords]. Calibrated on 37 real plant-day cases
     // across 16 projects (v4.82 deep-dive: match rate 11→15, zero losses): device ORDER-NO prefixes carry
     // discipline (Danfoss 080Z/084B/EKC/AK-CC ⇒ refrigeration, Exhausto/OJ ⇒ ventilation, CGE/EM2 ⇒ energy).
@@ -2862,7 +2901,8 @@
                 // book-time guard always caught this, but the review UI offered a tickbox for work that
                 // was already on the sheet (v4.104, seen live after a week booking).
                 const bucketDupe = !proj && !!catId && existing.some(e => e.category && e.category.categoryId === catId
-                    && String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0);
+                    && (String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0
+                        || String((e.task && (e.task.taskName || e.task.name)) || e.taskName || '').indexOf(String(v.plant_id) + ' ') === 0));
                 // Detailed multi-line notes → the entry's Notes field (category-matched).
                 const notes = category === CAT_DRAWING ? (texts.notesDraw || texts.notesActions || '')
                     : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || texts.notesActions || ''].filter(Boolean).join('\n')
@@ -2896,10 +2936,19 @@
                 projectId = e.fallbackProjectId; taskId = null;
                 act = `${e.plant_id} ${e.plant} - ${e.activityName}`; // "<plant id> <plant name> - <activity>"
                 // Same plant already booked into this bucket+category today? Skip instead of duplicating.
+                // Matches both entry styles: bare activity ("6163 …") and subtask ("6163 - …" task name).
                 const ex = plan._existing || [];
-                if (ex.some(x => x.project && x.project.id === projectId && x.category && x.category.categoryId === e.categoryId && String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0)) {
+                const pidPfx = String(e.plant_id) + ' ';
+                if (ex.some(x => x.project && x.project.id === projectId && x.category && x.category.categoryId === e.categoryId
+                    && (String(x.activityName || '').indexOf(pidPfx) === 0
+                        || String((x.task && (x.task.taskName || x.task.name)) || x.taskName || '').indexOf(pidPfx) === 0))) {
                     e.status = 'already-booked'; onProgress && onProgress(e); continue;
                 }
+                // Bucket keeps an "Oppgaver utenfor Rocketlane" container? Then the entry goes onto the
+                // plant's SUBTASK there (found or created: "<plant id> - <plant name>") instead of a bare
+                // activity line — Thomas's convention in Team Kulde Oppgaver (v4.105).
+                taskId = await ensureBucketSubtask(projectId, e.plant_id, e.plant);
+                if (taskId) { e.taskId = taskId; e.taskName = `${e.plant_id} - ${e.plant}`; }
             }
             const body = { date: iso, minutes: e.minutes, billable: true, categoryId: e.categoryId, projectId };
             const notes = e.notes || '';
@@ -2917,7 +2966,9 @@
                 // so one appearing now can only be OUR write that the gateway failed to acknowledge.
                 const landed = now._checkOk && now.some(x => x.project && x.project.id === projectId
                     && x.category && x.category.categoryId === e.categoryId
-                    && (!isFallback || String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0));
+                    && (!isFallback
+                        || String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0
+                        || (taskId && x.task && (x.task.taskId === taskId || x.task.id === taskId))));
                 if (landed) r = { status: 201, json: null };
                 else if (now._checkOk) r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
                 // check unavailable ⇒ leave the failure — a rebuilt plan dedupes correctly later
