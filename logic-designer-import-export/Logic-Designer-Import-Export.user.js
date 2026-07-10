@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18.0
+// @version      1.19.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.18.0';
+    var VERSION = '1.19.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -764,14 +764,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // move changes layout only → we repaint at the new positions; only a
     // logic change counts as "the sketch changed".
     function simFpFromDoc(doc) {
+      // Volatile fields the host may touch on its own (runtime bookkeeping,
+      // revision refreshes) are excluded — otherwise the watcher would treat
+      // background noise as a change and re-render in a loop (visible as
+      // "blinking" value boxes on live plants).
+      var VOLATILE = { x: 1, y: 1, runtime: 1, current_revision: 1, required_plant_revision: 1 };
       var stripped = (doc.blocks || []).map(function (b) {
         var c = {};
-        for (var k in b) { if (k !== 'x' && k !== 'y') c[k] = b[k]; }
+        for (var k in b) { if (!VOLATILE[k]) c[k] = b[k]; }
         return c;
       });
       return {
         logic: JSON.stringify({ m: doc.mode, b: stripped, c: doc.connections }),
-        layout: JSON.stringify(doc),
+        layout: JSON.stringify((doc.blocks || []).map(function (b) { return [b.id, b.x, b.y]; })),
       };
     }
 
@@ -1033,6 +1038,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           simClearDashes();
           els.forEach(function (el) { try { el.show(); } catch (e) { /* ignore */ } });
           simPaintFlow(paper, results);
+          // Sync the watcher baselines so the next ticks see "unchanged" and
+          // leave the final frame alone.
+          try {
+            var fpEnd = simCanvasFingerprint(paper);
+            simState.lastLayoutFp = fpEnd.layout;
+            simState.prevPollLayout = fpEnd.layout;
+            simState.prevPollFp = fpEnd.logic;
+          } catch (e) { /* ignore */ }
           simSetBusy(false);
           simSetStatus(simRestingStatus());
           return;
@@ -1449,8 +1462,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var replayBtn = document.createElement('button');
       replayBtn.type = 'button'; replayBtn.className = 'ldio-btn';
       simState.replayBtnEl = replayBtn;
-      replayBtn.textContent = '🎬 Slow-mo';
-      replayBtn.title = 'Replay the last run in slow motion — watch the signal fill each wire, block by block (delays fill slowly)';
+      replayBtn.textContent = '⧖ Play flow';
+      replayBtn.title = 'Play the last run step by step — watch the signal travel through the sketch (time delays fill their wire slowly). Ends with all values shown.';
       replayBtn.addEventListener('click', simReplay);
       var spring = document.createElement('div');
       spring.className = 'ldio-sim-spring';
