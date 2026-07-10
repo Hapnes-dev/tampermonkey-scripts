@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.0
+// @version      1.20.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -470,7 +470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.19.0';
+    var VERSION = '1.20.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -750,7 +750,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hadOwnCb: false, origCb: null,
       stopBtnEl: null, // turns red while simulated values are on the canvas
       runBtnEl: null, replayBtnEl: null, statusEl: null, // pro controls + status chip
-      dimEls: [], replayTimer: null, dashedNodes: [], postPaintTimer: null, // flow-visualisation extras
+      dimEls: [], replayTimer: null, fillOverlays: [], postPaintTimer: null, // flow-visualisation extras
       lastRun: null, // snapshot of the latest run, for Copy log / getSimLog
       // Live-view watcher state: with auto re-run on, the flow stays on the
       // canvas — re-simulated when the canvas changes, repainted if wiped —
@@ -912,32 +912,47 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.replayBtnEl) simState.replayBtnEl.disabled = !!busy;
     }
 
-    // "Signal travels the wire": draw the wire in its value colour from the
-    // source towards the target over ms, via a stroke-dashoffset transition
-    // on the underlying SVG path. Nodes are tracked for exact cleanup.
-    function simFillWire(conn, color, ms) {
+    // "Colour fills the wire": the grey base wire stays visible while a
+    // coloured overlay path (same geometry, same stacking position) GROWS
+    // from source to target over ms via a stroke-dashoffset transition.
+    // When the fill arrives, the real wire takes the colour and the overlay
+    // is dropped. Overlays are tracked for exact cleanup.
+    function simFillWire(paper, conn, color, ms) {
       try {
         conn.line.stop();
-        conn.line.attr('stroke', color);
         var node = conn.line.node;
         var len = node && node.getTotalLength ? node.getTotalLength() : 0;
-        if (!len || ms < 120) return;
-        node.style.transition = 'none';
-        node.style.strokeDasharray = len + ' ' + len;
-        node.style.strokeDashoffset = len;
-        simState.dashedNodes.push(node);
-        void node.getBoundingClientRect(); // flush so the transition animates
-        node.style.transition = 'stroke-dashoffset ' + ms + 'ms linear';
-        node.style.strokeDashoffset = '0';
+        if (!len || ms < 120) { conn.line.attr('stroke', color); return; }
+        var overlay = paper.paper.path(node.getAttribute('d')).attr({
+          stroke: color,
+          'stroke-width': conn.line.attr('stroke-width') || 3,
+          'stroke-linecap': 'round',
+          fill: 'none',
+        });
+        var onode = overlay.node;
+        // Same stacking as the real wire, so the overlay never covers blocks.
+        try { node.parentNode.insertBefore(onode, node.nextSibling); } catch (e) { /* keep default order */ }
+        onode.style.strokeDasharray = len + ' ' + len;
+        onode.style.strokeDashoffset = len;
+        void onode.getBoundingClientRect(); // flush so the transition animates
+        onode.style.transition = 'stroke-dashoffset ' + ms + 'ms linear';
+        onode.style.strokeDashoffset = '0';
+        simState.fillOverlays.push(overlay);
+        setTimeout(function () {
+          try { conn.line.attr('stroke', color); } catch (e) { /* ignore */ }
+          try { overlay.remove(); } catch (e) { /* ignore */ }
+          var i = simState.fillOverlays.indexOf(overlay);
+          if (i !== -1) simState.fillOverlays.splice(i, 1);
+        }, ms + 40);
       } catch (e) {
         try { conn.line.attr('stroke', color); } catch (e2) { /* ignore */ }
       }
     }
     function simClearDashes() {
-      simState.dashedNodes.forEach(function (n) {
-        try { n.style.transition = ''; n.style.strokeDasharray = ''; n.style.strokeDashoffset = ''; } catch (e) { /* ignore */ }
+      simState.fillOverlays.forEach(function (o) {
+        try { o.remove(); } catch (e) { /* ignore */ }
       });
-      simState.dashedNodes = [];
+      simState.fillOverlays = [];
     }
 
     // ── Flow visualisation on the canvas ─────────────────────────────
@@ -1055,11 +1070,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         var id = order[idx];
         var dwell = simReplayDwellMs(stack, results, id);
-        // The signal FILLS the outgoing wires from source to target over the
+        // The colour FILLS the outgoing wires from source to target over the
         // dwell — a delay block's wire visibly fills slowly.
         for (var w = 0; w < paper.connections.length; w++) {
           var c = paper.connections[w];
-          if (c.user && c.user.source === id) simFillWire(c, simWireColor(results[id]), dwell - 60);
+          if (c.user && c.user.source === id) simFillWire(paper, c, simWireColor(results[id]), dwell - 60);
         }
         idx++;
         simState.replayTimer = setTimeout(stepReplay, dwell);
