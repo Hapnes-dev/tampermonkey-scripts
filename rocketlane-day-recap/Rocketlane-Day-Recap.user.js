@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.105
+// @version      4.106
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2708,6 +2708,24 @@
         _bucketSubtaskMemo.set(memoKey, out); // a failed create memoises null → this run falls back to the activity style
         return out;
     }
+    // Append one dated section to a bucket subtask's Description after booking onto it — the subtask
+    // doubles as the plant's visit log ("what did we do there, when"), since these plants have no
+    // project of their own (v4.106). PUT /tasks/{id} accepts a partial body with just taskDescription
+    // (HTML, per the public API docs). Idempotent: the exact section is never appended twice; any
+    // failure only logs — the time entry is already booked and must not be affected.
+    async function bucketSubtaskDescribe(taskId, iso, act, notes) {
+        try {
+            const g = await rlFetch('GET', `/tasks/${taskId}`);
+            const t = g.json && (g.json.taskId ? g.json : (g.json.data && g.json.data.taskId ? g.json.data : null));
+            if (!t) { LOG('book: describe skipped — no task json', g.status); return; }
+            const bits = [escapeHtml(act)].concat(String(notes || '').split('\n').filter(Boolean).map(escapeHtml));
+            const section = `<p><b>${escapeHtml(isoToNorwegianDate(iso))}</b> — ${bits.join('<br>')}</p>`;
+            const cur = String(t.taskDescription || '');
+            if (cur.includes(section)) return;
+            const r = await rlFetch('PUT', `/tasks/${taskId}`, { taskDescription: cur + section });
+            if (!(r.status === 200 || r.status === 201)) LOG('book: describe PUT failed', r.status, String(r.raw || r.error || '').slice(0, 140));
+        } catch (err) { LOG('book: describe failed', String(err)); }
+    }
     // Discipline detector: [name, suffix-regex, evidence-keywords]. Calibrated on 37 real plant-day cases
     // across 16 projects (v4.82 deep-dive: match rate 11→15, zero losses): device ORDER-NO prefixes carry
     // discipline (Danfoss 080Z/084B/EKC/AK-CC ⇒ refrigeration, Exhausto/OJ ⇒ ventilation, CGE/EM2 ⇒ energy).
@@ -2979,6 +2997,8 @@
                 const err0 = (r.json && r.json.errors && r.json.errors[0]) || {};
                 e.error = err0.errorMessage || err0.reason || (r.json && r.json.message) || ('HTTP ' + r.status);
             }
+            // Bucket-subtask entries also log the day's work into the subtask's Description (v4.106).
+            if (e.status === 'booked' && isFallback && taskId) await bucketSubtaskDescribe(taskId, iso, e.activityName, e.notes);
             onProgress && onProgress(e);
         }
         _rlWeekCache.clear(); // fresh dedupe data on the next plan build — we just changed the sheet

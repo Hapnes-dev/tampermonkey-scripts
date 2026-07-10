@@ -574,8 +574,13 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     session, result pushed into `_rlTasksCache`). Falls back to the activity style when the container is
     missing or the create fails. Dupe guards (plan-time `bucketDupe`, book-time, and the 5xx landed-check)
     match BOTH styles: activity `<plant id> …` OR a task entry whose task name starts with the plant id.
-    ⚠ Create-shape not yet live-verified (extension was down) — first real booking confirms it; a failure
-    surfaces on the row and the entry books as an activity instead, nothing double-books.
+    Create-shape confirmed live 2026-07-10 ("3242 - Bunnpris & Gourmet Fuglset" created by v4.105).
+    **Description log (4.106):** after each successful subtask booking, `bucketSubtaskDescribe` appends a
+    dated HTML section to the subtask's **Description** (`GET /tasks/{id}` → append `<p><b>date</b> —
+    activity<br>notes…</p>` → `PUT /tasks/{id}` with just `taskDescription`, partial update per the docs) —
+    the subtask doubles as the plant's visit log. Idempotent (exact section never appended twice; same-day
+    re-runs are stopped earlier by the dupe guards anyway); failures only log, the booked entry is never
+    affected.
   - **Noise filter (4.86):** `BOOK_NOISE_RE` (data_engine|sysinfo) — internal machinery never appears in
     titles/notes/matcher evidence.
   - **Fetch perf (4.85):** see §7 — batch 10, commits as pooled singles + session cache, two_versions cache.
