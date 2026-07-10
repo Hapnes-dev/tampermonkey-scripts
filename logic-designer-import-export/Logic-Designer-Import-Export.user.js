@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.22.0
+// @version      1.23.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -116,6 +116,92 @@ function listSimOutputBlocks(elements) {
   }
   rows.sort(function (a, b) { return a.pointer - b.pointer; });
   return rows;
+}
+
+// ─── Client-side FORMULA evaluator ───────────────────────────────────
+// FORMULA blocks run SERVER-SIDE (a PHP expression evaluator) — the host's
+// client simulator cannot compute them and just prompts for a value. These
+// helpers evaluate the documented grammar (§6) locally so formula chains
+// simulate from their wires: inp0..inpN-1, + - * / %, comparisons, ?: ,
+// and/or, min/max/abs/round/floor/ceil/sqrt/pow/sin/cos/tan/exp/log/log10/
+// fmod/pi()/random(), and date('<fmt>', ts)/time() with the common PHP
+// format characters.
+function phpDate(fmt, tsSeconds) {
+  var d = new Date(tsSeconds * 1000);
+  var c = String(fmt).charAt(0);
+  switch (c) {
+    case 'w': return d.getDay();                       // 0 (Sun) … 6
+    case 'N': return d.getDay() === 0 ? 7 : d.getDay(); // 1 (Mon) … 7
+    case 'G': return d.getHours();                     // 0…23, no leading zero
+    case 'H': return d.getHours();
+    case 'i': return d.getMinutes();
+    case 's': return d.getSeconds();
+    case 'j': return d.getDate();
+    case 'd': return d.getDate();
+    case 'n': return d.getMonth() + 1;
+    case 'm': return d.getMonth() + 1;
+    case 'Y': return d.getFullYear();
+    case 'y': return d.getFullYear() % 100;
+    case 'z': {
+      var start = new Date(d.getFullYear(), 0, 1);
+      return Math.floor((d - start) / 86400000);
+    }
+    case 'U': return Math.floor(d.getTime() / 1000);
+    case 'W': { // ISO-8601 week number
+      var t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+      var day = t.getUTCDay() || 7;
+      t.setUTCDate(t.getUTCDate() + 4 - day);
+      var yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+      return Math.ceil((((t - yearStart) / 86400000) + 1) / 7);
+    }
+    default: throw new Error('date format "' + c + '" not supported');
+  }
+}
+
+// Compile a VV formula string to fn(inputs[], nowSeconds?) -> number.
+// Throws when the formula uses anything outside the supported grammar —
+// callers then fall back to asking the user for the value.
+function compileVvFormula(formula, inputCount) {
+  var expr = String(formula)
+    .replace(/\band\b/gi, '&&')
+    .replace(/\bor\b/gi, '||')
+    .replace(/\bnot\b/gi, '!');
+  var FN = {
+    min: 'Math.min', max: 'Math.max', abs: 'Math.abs', round: 'Math.round',
+    floor: 'Math.floor', ceil: 'Math.ceil', sqrt: 'Math.sqrt', pow: 'Math.pow',
+    sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan', exp: 'Math.exp',
+    log10: 'Math.log10', log: 'Math.log', fmod: '__fmod', random: 'Math.random',
+    pi: '__pi', time: '__t', date: '__d',
+  };
+  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|pi|time|date)\s*\(/gi,
+    function (m, name) { return FN[name.toLowerCase()] + '('; });
+  expr = expr.replace(/\binp(\d+)\b/g, function (m, n) {
+    if (+n >= inputCount) throw new Error('inp' + n + ' has no wired input');
+    return '__I[' + n + ']';
+  });
+  var noStrings = expr.replace(/'[^']*'|"[^"]*"/g, '');
+  var ids = noStrings.match(/[A-Za-z_][A-Za-z0-9_.]*/g) || [];
+  for (var i = 0; i < ids.length; i++) {
+    var id = ids[i];
+    if (id === 'Math' || id.indexOf('Math.') === 0 || id === '__I' || id === '__t' ||
+      id === '__d' || id === '__fmod' || id === '__pi' || id === 'true' || id === 'false') continue;
+    throw new Error('unsupported token "' + id + '"');
+  }
+  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi',
+    '"use strict";return (' + expr + ');');
+  return function (inputs, nowSec) {
+    var now = (nowSec === undefined) ? Math.floor(Date.now() / 1000) : nowSec;
+    var v = raw(
+      inputs,
+      function () { return now; },
+      function (f, ts) { return phpDate(f, ts === undefined ? now : ts); },
+      function (a, b) { return a % b; },
+      function () { return Math.PI; }
+    );
+    if (v === true) return 1;
+    if (v === false) return 0;
+    return v;
+  };
 }
 
 // Render a simulated value for humans: booleans/ALARM keep their meaning.
@@ -470,7 +556,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.22.0';
+    var VERSION = '1.23.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -747,6 +833,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       values: {}, missing: [], msgs: [], debounce: null,
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
+      origFormulaSim: null, formulaCache: {}, // local FORMULA evaluation
       stopBtnEl: null, // turns red while simulated values are on the canvas
       runBtnEl: null, replayBtnEl: null, statusEl: null, // pro controls + status chip
       dimEls: [], replayTimer: null, fillOverlays: [], postPaintTimer: null, // flow-visualisation extras
@@ -848,6 +935,43 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (e && /^simulation_/.test(String(e.action))) return;
         return simState.origCb.call(this, e);
       };
+      // FORMULA blocks run server-side (PHP) — the host's client sim cannot
+      // compute them and just PROMPTS for a value (so the panel treated every
+      // formula as a manual input, silently defaulting empties to 0). Shadow
+      // the palette sim with a local evaluator of the documented grammar:
+      // inputs are gathered BY PIN INDEX from the wires, booleans coerced to
+      // 1/0 for PHP parity; anything un-evaluable falls back to the original
+      // prompt path (surfaced as a manual panel input).
+      var formulaDef = paper.blocks && paper.blocks.FORMULA;
+      if (formulaDef && typeof formulaDef.sim === 'function') {
+        simState.origFormulaSim = formulaDef.sim;
+        simState.formulaCache = {};
+        formulaDef.sim = function (block) {
+          try {
+            var f = block && block.data && block.data.formula;
+            if (typeof f === 'string') {
+              var inputs = [];
+              var conns = this.simulation_stack.connections;
+              for (var ci = 0; ci < conns.length; ci++) {
+                var c = conns[ci];
+                if (c.target && c.target.id === block.pointer) {
+                  var v = this.simulation_stack_block_values[c.source.id];
+                  inputs[c.target.put] = (v === true) ? 1 : (v === false) ? 0 : v;
+                }
+              }
+              var declared = block.properties && block.properties.input_count && block.properties.input_count.value;
+              var inputCount = Math.max(inputs.length, parseInt(declared, 10) || 0, 1);
+              var key = f + '|' + inputCount;
+              var compiled = simState.formulaCache[key] ||
+                (simState.formulaCache[key] = compileVvFormula(f, inputCount));
+              var result = compiled(inputs);
+              this.simulation_stack_block_values[block.pointer] = result;
+              return result;
+            }
+          } catch (e) { /* fall through to the host's prompt path */ }
+          return simState.origFormulaSim.apply(this, arguments);
+        };
+      }
       // HOST auto-clear killer: the simulator schedules a 'Timed stop' 5 s
       // after completion (and a 'Done' stop on a stray deferred step). On
       // newer/minified host builds that timer is NOT reachable through
@@ -889,6 +1013,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.hadOwnCb) paper.callback = simState.origCb; else delete paper.callback;
       if (simState.hadOwnHl) paper.__highlight_block_connection = simState.origHl; else delete paper.__highlight_block_connection;
       if (simState.hadOwnStop) paper.simulator_stop = simState.origStop; else delete paper.simulator_stop;
+      if (simState.origFormulaSim && paper.blocks && paper.blocks.FORMULA) {
+        paper.blocks.FORMULA.sim = simState.origFormulaSim;
+        simState.origFormulaSim = null;
+      }
       if (simState.origShow && W.system_dialogs && W.system_dialogs.information) {
         W.system_dialogs.information.show = simState.origShow;
       }
@@ -1315,8 +1443,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       simState.rowsEl.textContent = '';
       if (!paper) { simState.rowsEl.textContent = 'Designer not ready.'; return; }
       var rows = listSimInputBlocks(paper.elements || {}, paper.blocks || {});
+      // FORMULA is evaluated locally now (its sim no longer prompts), but a
+      // formula outside the supported grammar still needs a manual value.
+      for (var key in paper.elements) {
+        if (!/^\d+$/.test(key)) continue;
+        var fel = paper.elements[key];
+        if (!fel || fel.block_type !== 'FORMULA') continue;
+        var ftext = fel.data && fel.data.formula;
+        var needsManual = typeof ftext !== 'string';
+        if (!needsManual) {
+          try { compileVvFormula(ftext, 99); } catch (e) { needsManual = true; }
+        }
+        if (needsManual) {
+          var flabel = (fel.override && fel.override.alias_text) || (fel.data && fel.data.title) || 'FORMULA';
+          rows.push({ pointer: parseInt(key, 10), type: 'FORMULA (manual)', label: String(flabel) });
+        }
+      }
+      rows.sort(function (a, b) { return a.pointer - b.pointer; });
       if (rows.length === 0) {
-        simState.rowsEl.textContent = 'No input blocks need values (CONSTs use their configured value).';
+        simState.rowsEl.textContent = 'No input blocks need values (CONSTs use their configured value; formulas compute themselves).';
         return;
       }
       rows.forEach(function (r) {
@@ -1834,6 +1979,8 @@ if (typeof module !== 'undefined' && module.exports) {
     formatSimValue: formatSimValue,
     buildSimFlowLines: buildSimFlowLines,
     buildSimulationLog: buildSimulationLog,
+    phpDate: phpDate,
+    compileVvFormula: compileVvFormula,
     parseImportPayload: parseImportPayload,
     detectSourcePlantFromDriverIds: detectSourcePlantFromDriverIds,
     countRebindableDriverIds: countRebindableDriverIds,

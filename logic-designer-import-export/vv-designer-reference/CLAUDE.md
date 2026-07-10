@@ -575,6 +575,12 @@ Reports (process/project/usage/versions/revision), and `vv_changes.qxs` (VV chan
   fields yourself), run the step loop to `completed==steps`, and cancel the deferred stop to keep
   results on-canvas. `ALARM.sim` returns `'ALARM'`/`'FALSE'` and pushes an
   `system_dialogs.information.show` modal when the condition is true.
+- **HOST LIMITATION (live-confirmed 2026-07-10):** `FORMULA.sim` does NOT evaluate the formula —
+  formulas are a **server-side PHP evaluator** (§6), so the client simulator simply
+  `get_user_input`-prompts for every FORMULA block's value. Driving the simulator with formula
+  chains therefore requires either supplying every formula value manually or evaluating the
+  grammar yourself (the Import/Export Live Simulate panel compiles the documented grammar —
+  incl. `and`/`or`, `?:`, `time()`/`date()` — to JS locally, gathering inputs by pin).
 - **HOST QUIRK (live-confirmed on plant 9839, 2026-07-10):** production plants run a
   **newer/minified designer build** where the simulator's post-completion auto-clear
   (`simulator_stop('Timed stop')`, plus `'Done'` from a stray deferred step) is scheduled through
