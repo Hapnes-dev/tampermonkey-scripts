@@ -1485,11 +1485,20 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `CRITERIA` | `criterias.run` | function | `["boolean"]` | — | `{"block_func_args":{"oneshot":false}}` + the criteria in `properties.criterias` (§6) |
 | `HOURMETER` | `hourmeter.run` | function | `["integer"]` | i0 running-signal | `null` — output is accumulated seconds; production divides by 3600 in a FORMULA for hours |
 | `WEATHER` | `weather.run_by_ccp_country` | function | `["float"]` | i0 County, i1 Commune, i2 Place (optional string `CONST`s; unconnected ⇒ GPS), i3 period start, i4 period end | `{"block_func_args":{"func":"current_dew_point","period_count":1}}` + `properties.output_count` (rev ≥620) |
+| `WEATHER_SUN` | `weather_sun.run_by_place` | function | `["integer"]` | i0-i2 place (optional string `CONST`s) | `{"block_func_args":{"rise_offset":0,"set_offset":0}}` (minutes around sunrise/sunset) |
+| `DATE_TIME` | `vv_datetime.run` | function | `integer` | — | `{"units":[3]}` — indices pick outputs 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday; + matching `properties.output_count`/`output_alias_texts` (§6) |
+| `CALENDAR_2_0` | `calendar.run` | input | `["mixed"]` | — | `{"calendar":"<id>","output":"id"}` or `null` (TODO bind; rev ≥1460) |
+| `IS_WITHIN_DATES` | `is_within_date` | function | `["integer"]` | i0 value | ⚠ func is **singular** `is_within_date` |
+| `SPOT_PRICE_LOW` / `SPOT_PRICE_HIGH` | `spotprice.run_is_low_price` / `…_is_high_price` | function | `integer` | — | `{"region":"<ENTSO-E zone>","percent":"30","num_future_hours":"12"}` (string numbers; rev ≥1670) |
+| `SPOT_PRICE_NUM_HOURS` | `spotprice.run_get_num_hours` | function | `float` | — | `{"region":"<ENTSO-E zone>"}` |
+| `RESET_INPUT` | `reset_input.run` | function | `null` | i0 value | `{"trigger_value":0,"reset_value":1,"delay_unit":"min","delay_amount":1}` (rev ≥1683) |
+| `OPTIMAL_START_STOP` | `optimal_start_stop.run` | function | `["mixed"]` | per dialog | `{"block_func_args":{"map_tempstep":"tempstep","map_factor":"factor"}}` + the two transform-map tables in `properties` (§6; rev ≥1543) |
+| `VARIABLE_OUTPUT` / `VARIABLE_INPUT` | `variable_output` / `variable_input` | output / input | `null` / `["boolean","integer","float","string"]` | i0 mixed / — | OUTPUT: `null`; INPUT: `{"pointer":"<id of the VARIABLE_OUTPUT block>"}` — same-sketch feedback without a wire (§6) |
 | `ALARM` | `alarm` | output | `null` | i0 boolean | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` (pri a/b/c; dest general/ew/cw) |
 | `ALARM_OBJECT` | `alarm_object` | output | `null` | i0 condition, i1 cost | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` |
 | `VIRTUALOUT` | `virtualout` | output | `null` | i0 mixed | `{"alias_text":"…","type":"float","engineering":{"unit":""},"precision":"%.1f"}` |
 | `WRITETOUNIT` | `set_unit_value` | function | `null` | i0 value | `{"force_write":false,"delay":0,"limit_count":false,"count":1,"driver_ids":["<REAL_ID>", …]}` — several ids fan the value out to many parameters; **real hardware write; confirm with user** |
-| `TEMP_VALUE` | `tmp_value` | output | `["mixed"]` | i0 mixed | `{"alias_text":"…"}` |
+| `TEMP_VALUE` | `tmp_value` | output | `["mixed"]` | i0 mixed | `{"alias_text":"…","type":"mixed","precision":"%.1f"}` (production shape §6) |
 | `TRANSFORM_MAPPED` | `transform_mapped.run` — **`transform_mapped_custom.run` when the map is custom** | function | `"float"` | i0 value | named map: `{"block_func_args":{"map":"<§6 map key>"}}`; custom: `{"block_func_args":{"map":"__custom__"}}` + the table in `properties.custom_transform_map` (§6) |
 
 For any block not listed, pull `block_func`/`compile_type`/`inputs`/`outputs` from §4, or open
@@ -1768,7 +1777,9 @@ GENERATION PROCEDURE - follow in order
    fan out. Comparators need both pins; DELAY_VARIABLE needs a CONST seconds
    on put 1; PULSE_COUNT needs a CONST level on put 1.
 6. ENVELOPE: block_count/connection_count = the array lengths.
-   require_plant_revision: 620 if IF/WEATHER/AGE_OF_VALUE is used, else 0.
+   require_plant_revision: 620 if IF/WEATHER/AGE_OF_VALUE is used, else 0
+   (higher floors: CALENDAR_2_0 1460, OPTIMAL_START_STOP 1543,
+   SPOT_PRICE* 1670-1683, LATCH/RESET_INPUT 1683).
 7. SELF-CHECK (mandatory): mentally JSON.parse your output; ids unique
    integers; every wire endpoint exists; counts match; NONE of these keys
    anywhere: schema, steps, logic, expression, parameterBindings, inputs/

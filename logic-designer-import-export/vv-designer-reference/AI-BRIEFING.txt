@@ -110,7 +110,9 @@ rejection ("Sketch document is malformed").
 
 ALLOWLIST SEMANTICS: only the keys shown in this section and the data fields
 shown in section 4 exist. If a key is not listed here, it does not exist. Do
-not invent, rename, camelCase, or "improve" any field name.
+not invent, rename, camelCase, or "improve" any field name. This allowlist is
+validated at fleet scale: a 2026-07 scrape of ~87 plants / ~1054 production
+sketches (24,994 blocks) contained ZERO block types outside it.
 
 --------------------------------------------------------------------------------
 3. THE TYPE SYSTEM (WHY WIRES ARE ACCEPTED OR REFUSED)
@@ -141,6 +143,9 @@ READERS AND SOURCES (compile_type "input")
   set data: null and override.alias_text "TODO bind: <description>" — never
   invent an id, never emit an empty array.
   output_type: ["mixed"]
+  (When READING/analysing an existing sketch: legacy singular
+  {"driver_id": "<id>"} is the MAJORITY in the fleet — accept both forms,
+  but always GENERATE the plural array.)
 - CONST   | func "const"
   A user-editable constant (limits, setpoints, levels). data:
   {"alias_text": "<name>", "type": "integer"|"float"|"boolean"|"string",
@@ -150,7 +155,12 @@ READERS AND SOURCES (compile_type "input")
   output_type: ["boolean","integer","float","string"]
 - CALENDAR | func "calendar_value" — boolean from a plant calendar schedule.
   data: {"calendar": "<id>", "offset": 0, "post_offset": 0} or null (TODO bind).
-- CALENDAR_2_0 | func "calendar.run" — newer calendar; data null to bind later.
+- CALENDAR_2_0 | func "calendar.run" — newer calendar. Production data:
+  {"calendar": "<id>", "output": "id"} — or null to bind later.
+- DATE_TIME | func "vv_datetime.run" — clock outputs. data {"units": [<idx>...]}
+  picks which outputs exist: 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second
+  6=Weekday; add matching properties output_count + output_alias_texts
+  (e.g. {"units":[3]} + output_count 1 + ["Hour"]).
 - CRITERIA | func "criterias.run" — boolean from date/time ranges (year, month,
   week, day-of-week, hour, minute). Configure post-import (data null).
 - TOGGLE_INTERVAL | func "toggle_interval.run" | data
@@ -160,10 +170,17 @@ READERS AND SOURCES (compile_type "input")
   so "X hours every N days" is NOT expressible with this block - gate on a
   plant CALENDAR (recurring schedule) for asymmetric windows instead.
 - WEATHER | func "weather.run_by_ccp_country" and WEATHER_SUN | func
-  "weather_sun.run_by_place" — YR.no weather / day-night. Configure post-import.
-- SPOT_PRICE family (SPOT_PRICE "spotprice.run", SPOT_PRICE_LOW
-  "spotprice.run_is_low_price", SPOT_PRICE_HIGH "spotprice.run_is_high_price",
-  SPOT_PRICE_ANALYSER "spotprice.run_analyse") — electricity spot prices.
+  "weather_sun.run_by_place" — YR.no weather / day-night. WEATHER_SUN data:
+  {"block_func_args": {"rise_offset": 0, "set_offset": 0}} (minutes around
+  sunrise/sunset). WEATHER: configure post-import.
+- SPOT_PRICE family — electricity spot prices; region is an ENTSO-E zone code:
+  SPOT_PRICE "spotprice.run": {"hours": [0], "region": "10YNO-3--------J"}
+  SPOT_PRICE_LOW "spotprice.run_is_low_price" / SPOT_PRICE_HIGH
+  "spotprice.run_is_high_price" (boolean: now among the cheapest/priciest
+  percent% of the next N hours; STRING numbers):
+  {"region": "10YNO-3--------J", "percent": "30", "num_future_hours": "12"}
+  SPOT_PRICE_NUM_HOURS "spotprice.run_get_num_hours": {"region": "<zone>"}
+  SPOT_PRICE_ANALYSER "spotprice.run_analyse".
 
 COMPARATORS AND LOGIC (compile_type "function", output boolean, 2 inputs each
 unless noted, data null)
@@ -220,10 +237,16 @@ SELECTION AND MATH EXPRESSIONS
   named inputs inp0..inpN-1 (N = number of wired inputs):
   data: {"formula": "inp0*1.8+32", "output_type": "float", "title": "<name>",
          "precision": "%.1f"}
-  Allowed: + - * / % ^, comparisons, ternary ?:, and/&&/or/||, and functions
-  min max abs round floor ceil sqrt pow sin cos log log10 exp fmod pi()
-  random(). NOT allowed: if(){} blocks, named constants (pi, e), variables
-  other than inp0..inpN-1. Prefer plain arithmetic blocks for trivial math.
+  Allowed: + - * / % ^, comparisons (== for equality), ternary ?:,
+  and/&&/or/|| (uppercase AND/OR also works), null in ternary branches
+  (null result = write nothing), and functions min max abs round floor ceil
+  sqrt pow sin cos log log10 exp fmod pi() random() time()
+  date('w|W|N|G|H|i|s|j|d|n|m|Y|y|z|U'). PHP stdlib also works (the evaluator
+  IS PHP; all production-verified): intval(x), idate('H'), substr(s,a,b),
+  strpos(haystack,needle) !== false, strtotime(s), gmdate(fmt,ts).
+  NOT allowed: if(){} blocks, named constants (pi, e), variables other than
+  inp0..inpN-1. Prefer plain arithmetic blocks for trivial math; formulas
+  beyond the documented set cannot be locally simulated before deploy.
 - TRANSFORM_MAPPED "transform_mapped.run" — refrigerant conversion tables
   (pressure→temperature etc.). Configure post-import.
 
@@ -248,9 +271,15 @@ OUTPUTS (compile_type "output" unless noted)
   same value out to many parameters)
   Include this block ONLY if the user explicitly asked to write to hardware
   AND supplied/confirmed the exact target parameter. Otherwise use VIRTUALOUT.
-- TEMP_VALUE "tmp_value" — persist and pass through a value.
+- TEMP_VALUE "tmp_value" — persist and pass through a value. Production data:
+  {"alias_text": "<name>", "type": "mixed", "precision": "%.1f"}
 - VARIABLE_OUTPUT "variable_output" / VARIABLE_INPUT "variable_input" — named
-  reference pair to reuse a value elsewhere in the same sketch.
+  reference pair to reuse a value elsewhere in the same sketch (feedback
+  without a wire). VARIABLE_OUTPUT data null; VARIABLE_INPUT data:
+  {"pointer": "<id of the VARIABLE_OUTPUT block>"} (a block id as a string).
+- RESET_INPUT "reset_input.run" — when the input equals trigger_value, output
+  reset_value after a delay. data: {"trigger_value": 0, "reset_value": 1,
+  "delay_unit": "min", "delay_amount": 1}
 
 BLOCKS THAT DO NOT EXIST (all have appeared in failed AI files):
 EQUAL, EQUALS, GREATERTHAN, LESSTHAN, AND, OR, NOT, WRITE, WRITEOUTUNIT,
