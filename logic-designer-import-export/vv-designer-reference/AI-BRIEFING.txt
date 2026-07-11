@@ -122,6 +122,14 @@ LABEL EVERY BLOCK: set override.alias_text on each block you generate (what
 the block does, in the user's language). 73% of all production blocks are
 labelled - an unlabelled sketch reads as machine-generated noise.
 
+WHEN EDITING AN EXISTING SKETCH (vs generating new): block ids are NOT
+compact in production (70% of sketches have id gaps from edit history) -
+NEVER renumber existing ids; new blocks get max(id)+1. Saved wires all carry
+an "alias_text" pin label (the host stamps them on save - you may omit them
+in generated files). Non-empty "groups" (visual boxes) must be preserved.
+Hard rules production never violates: no self-loops, no duplicate wires,
+one wire per input, integer ids, non-negative x/y.
+
 --------------------------------------------------------------------------------
 3. THE TYPE SYSTEM (WHY WIRES ARE ACCEPTED OR REFUSED)
 --------------------------------------------------------------------------------
@@ -286,6 +294,11 @@ OUTPUTS (compile_type "output" unless noted)
   Stores the input as a new virtual parameter (trendable, safe). data:
   {"alias_text": "<name>", "type": "integer"|"float"|"boolean",
    "engineering": {"unit": "<unit or ''>"}}  (+ "precision" for float)
+  CROSS-SKETCH PIPELINES: a VIRTUALOUT's value becomes a plant parameter
+  other sketches read with a plain PARAMV (driver id contains _VIRTUAL_).
+  This is first-class fleet architecture: 21% of ALL production sketches
+  read another sketch's virtual output; 46% publish one. To split big logic,
+  chain sketches this way instead of building one giant sketch.
 - WRITETOUNIT | func "set_unit_value" | compile_type "function"
   WRITES TO REAL HARDWARE when deployed. data: {"force_write": false,
   "delay": 0, "limit_count": false, "count": 1,
@@ -461,6 +474,8 @@ The user will:
    (file, drag-drop, or pasted JSON text).
 3. Open each red "TODO bind" block and select the real parameter/calendar.
 4. Press F10 (syntax check), save, and decide about deployment themselves.
+   (When saving, "Smarte funksjoner" is the fleet's conventional project
+   for custom logic - 25% of all production sketches live there.)
 Deployment and hardware writes are ALWAYS the human's decision.
 
 --------------------------------------------------------------------------------

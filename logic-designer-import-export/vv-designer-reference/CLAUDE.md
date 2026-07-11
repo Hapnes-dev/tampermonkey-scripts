@@ -244,7 +244,9 @@ On OK, the dialog writes `set_block_data(id, data)` (and often `set_block_overri
 Highlights of the `data` shapes:
 
 - **CONST**: `{alias_text, type, initial_value, mode:'single'|'repeat', values, eng_unit,
-  readonly, precision?, scaling?}`. `mode:'repeat'` stores a per-key `values` map.
+  readonly, precision?, scaling?}`. `mode:'repeat'` stores a per-key `values` map — production
+  shape (fleet v8): `{alias_text:'max alarmer pr uke', initial_value:'', values:{'000:018':5,
+  'F01':5, 'K09.B1':5, …}}` — keyed by **unit id/name**, one value per stamped repeat unit.
 - **PROCESSIN**: `{alias_text, method:'parameter'|'tag'|'constant'|'calendar'|'enable',
   type, by_refference, …}` (+ tag/constant/scaling fields depending on method).
 - **TAGVALUE** (via tag_chooser): `{value:[units], tag:require_data}`; multi-select flips the
@@ -2048,3 +2050,33 @@ wrote down:
   this round). New server-side idiom worth knowing: the Legionella scheduler
   `date('d', strtotime(implode(' ', ['last sunday of', date('M')])))` — day-of-month of the
   month's last Sunday (array literal + relative strtotime; manual fallback in the sim).
+
+**Corpus v8 — ecosystem & tolerances census (2026-07-11):** 53 more plants / **205 more
+sketches (zero failures)** → combined **~297 plants / 2404 sketches / 65,906 blocks / 65,066
+wires**. This round measured where logic lives and which format rules are hard vs soft:
+
+- **Where custom logic lives — project names**: "Smarte funksjoner"/"Smarte Funksjoner"
+  ×595 (25 % of all sketches — THE conventional container for hand-built logic), then
+  "Plant Watcher" ×241, "EcoWatcher" ×113, "Dali lys" ×68, "COPonline" ×47, "Virtuelle
+  Funksjoner" ×53. When telling a user where to save an import, "Smarte funksjoner" is the
+  fleet convention.
+- **VIRTUAL pipelines are first-class architecture**: 2,321 PARAMV blocks read a
+  `_VIRTUAL_` driver — **21 % of all sketches (505) consume another sketch's output**, and
+  46 % (1,116) publish one via VIRTUALOUT. Multi-sketch pipelines are the norm, not the
+  exception (§6 VIRTUAL-driver chaining).
+- **Hard invariants (zero violations in 65,066 wires)**: no self-loop wires, no duplicate
+  wires, no string ids in wire endpoints, no negative x/y. And **every saved wire carries
+  `alias_text`** (65,066/65,066 — the host stamps pin names on save; generated files may
+  omit them, the save restores them).
+- **Soft tolerance: block ids are NOT compact** — 70 % of sketches (1,677) have id gaps
+  (edit history). Never renumber ids when editing an existing sketch; compact 0..N-1 is
+  only a generator convention.
+- **Lifecycle at scale**: `state` = PROGRESS in 2404/2404; `compile_state` 1 in 96 %.
+- **How the fleet's top processes are instantiated** (feeder profile by pin order):
+  "Kurve for 4 knekkpunkt" (`PW_HEATING_KURVE_4_KNEKKPUNKT`, ×360): pin 0 ← PARAMV (outdoor
+  temp; ×218) or TRANSFORM_MAPPED (pressure→temp; ×142), pins 1–8 ← 8 CONSTs (the four
+  x/y breakpoints). "Kurve 2P" (`29_5DBC27B48CC6D2…`, ×494): pin 0 ← TRANSFORM_MAPPED ×299 /
+  PARAMV ×121 / CONST ×74, pins 1–4 ← 4 CONSTs (two points). The canonical curve-control
+  stamp = one reading + breakpoint CONSTs → process → WRITETOUNIT.
+- **CONST repeat-mode payload captured** (§6): `values` keyed by unit id/name — one value
+  per stamped unit.

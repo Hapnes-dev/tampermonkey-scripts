@@ -2521,6 +2521,11 @@ VARIABLE_INPUT.data = {"pointer":"18"}   (the id of the VARIABLE_OUTPUT block it
 --- TEMP_VALUE (named in-sketch scratch value) ---
 {"alias_text":"drift hovedpumpe","type":"mixed","precision":"%.1f"}
 
+--- CONST in repeat mode (real production shape - per-unit values) ---
+mode "repeat" stores one value per stamped unit, keyed by unit id/name:
+{"alias_text":"max alarmer pr uke","initial_value":"",
+ "values":{"000:018":5,"000:019":5,"F01":5,"K01":5,"K09.B1":5}}
+
 --- BINDINGS: singular driver_id is HALF the fleet ---
 Older sketches store {"driver_id":"<id>"} (string); newer {"driver_ids":["<id>"]}.
 GENERATE the plural array form - but when READING/analysing sketches, accept both.
@@ -2855,6 +2860,22 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
   - DELAY_VARIABLE's delay pin is usually a CONST but 47 production sketches
     compute it with a FORMULA (dynamic delay) - allowed. PULSE_COUNT's level
     pin is CONST-only (host-enforced), 17/17 in the fleet.
+  - WHERE LOGIC LIVES: "Smarte funksjoner" is the conventional project for
+    custom logic (25% of all sketches), then "Plant Watcher", "EcoWatcher".
+  - CROSS-SKETCH PIPELINES ARE THE NORM: 21% of all sketches READ another
+    sketch's VIRTUALOUT (PARAMV with a _VIRTUAL_ driver id); 46% publish one.
+    Split big logic into chained sketches instead of one giant sketch.
+  - Block ids are NOT compact in production (70% of sketches have gaps) -
+    when editing, never renumber; new blocks take max(id)+1.
+  - Hard invariants (0 violations in 65,066 wires): no self-loops, no
+    duplicate wires, one wire per input, integer ids, non-negative x/y.
+    Every SAVED wire carries alias_text (host stamps pin names on save).
+  - HOW THE TOP CURVE PROCESSES ARE INSTANTIATED (feeder profile by pin):
+    "Kurve for 4 knekkpunkt": pin0 <- PARAMV (outdoor temp) or
+    TRANSFORM_MAPPED (pressure->temp), pins 1-8 <- 8 CONSTs (four x/y
+    breakpoints). "Kurve 2P": pin0 <- reading, pins 1-4 <- 4 CONSTs
+    (two points). Then process output -> WRITETOUNIT. That stamp is the
+    single most common production pattern.
 
 Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
 VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.
