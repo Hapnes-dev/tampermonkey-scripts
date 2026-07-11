@@ -2489,6 +2489,38 @@ The value array IS the multi-selected unit list the logic is stamped per:
 --- SPOT_PRICE (real production shape) ---
 {"hours":[0],"region":"10YNO-3--------J"}   (region = ENTSO-E bidding zone; null also occurs)
 
+--- SPOT_PRICE_LOW / _HIGH / _NUM_HOURS (real production shapes) ---
+LOW/HIGH (boolean: now among cheapest/priciest percent% of next N hours; string numbers):
+{"region":"10YNO-3--------J","percent":"30","num_future_hours":"12"}
+NUM_HOURS: {"region":"10YNO-3--------J"}
+
+--- DATE_TIME (real production shape) ---
+data.units picks which outputs exist: 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday.
+Full clock:  {"units":[0,1,2,3,4,5,6]} + properties output_count 7,
+             output_alias_texts ["Year","Month","Day","Hour","Minute","Second","Weekday"]
+Hour only:   {"units":[3]} + output_count 1, output_alias_texts ["Hour"]
+
+--- CALENDAR_2_0 (real production shape) ---
+{"calendar":"2065","output":"id"}     (vs legacy CALENDAR {calendar,offset,post_offset})
+
+--- OPTIMAL_START_STOP (real production shape) ---
+data: {"block_func_args":{"map_tempstep":"tempstep","map_factor":"factor"}}
+plus TWO transform-map tables in properties (same table shape as custom_transform_map):
+properties.optimal_start_stop_tempstep_transform_map = {alias_text, value:{inputs:[[0,7]],output:[0,210]}}
+properties.optimal_start_stop_factor_transform_map   = {alias_text, value:{inputs:[[...]],output:[...]}}
+
+--- WEATHER_SUN (real production shape) ---
+{"block_func_args":{"rise_offset":0,"set_offset":0}}   (minutes around sunrise/sunset)
+
+--- RESET_INPUT (real production shape) ---
+{"trigger_value":0,"reset_value":1,"delay_unit":"min","delay_amount":1}
+
+--- VARIABLE_INPUT / VARIABLE_OUTPUT (in-sketch feedback without a wire) ---
+VARIABLE_INPUT.data = {"pointer":"18"}   (the id of the VARIABLE_OUTPUT block it mirrors)
+
+--- TEMP_VALUE (named in-sketch scratch value) ---
+{"alias_text":"drift hovedpumpe","type":"mixed","precision":"%.1f"}
+
 --- BINDINGS: singular driver_id is HALF the fleet ---
 Older sketches store {"driver_id":"<id>"} (string); newer {"driver_ids":["<id>"]}.
 GENERATE the plural array form - but when READING/analysing sketches, accept both.
@@ -2496,7 +2528,7 @@ A VIRTUALOUT becomes a plant parameter other sketches read back via PARAMV with 
 VIRTUAL driver id (e.g. "4969_VIRTUAL_V_1_1863_5173_1863_1") - that is how
 multi-sketch pipelines pass values between sketches.
 
---- REAL PRODUCTION FORMULAS (fleet scrape, 8 plants - grammar reference) ---
+--- REAL PRODUCTION FORMULAS (fleet scrape, 87 plants / 71 unique formulas - grammar reference) ---
 All of these are deployed on live plants and use only the documented grammar:
   inp0==2                                     (mode decoder)
   inp0/3600                                   (HOURMETER seconds -> hours)
@@ -2506,6 +2538,16 @@ All of these are deployed on live plants and use only the documented grammar:
   (inp1-inp0)*inp2*inp3/3600*1000             (energy calculation)
   (inp0>=0&&inp0<=99?0:(inp0>=100&&inp0<=199?1:(inp0>=200&&inp0<=299?2:5)))
                                               (chained ternary range mapping; && works)
+The server evaluator is PHP, so production also uses PHP stdlib + null:
+  (intval(inp0) == 1) ? 0 : ((intval(inp0) == 2) ? 1 : null)   (null = write nothing)
+  strpos(inp0, inp1) !== false ? true : false                  (substring test)
+  substr(inp0, 0, 8)                                           (string slice)
+  idate("H")                                                   (current hour as int)
+  (abs(time() - strtotime(inp0)) <= inp1/2) ? 1 : 0            (timestamp freshness)
+  gmdate("H:i:s", inp0*3600)                                   (seconds -> H:i:s text)
+  inp0 == 1 AND inp1 == 0                                      (uppercase AND works)
+Server-only VV domain built-ins also exist (calendar-schema helpers - a client
+evaluator cannot resolve these): is_calendar_deviating(14), value_based_on_schema(1,0,14).
 
 --- FORMULA as a MODE DECODER (production favourite) ---
 One integer mode parameter fans out into N single-input FORMULA blocks, each
@@ -2741,10 +2783,13 @@ The largest corpus sketches are small recipes REPEATED, not new structures:
   - "init-oppsett" (28 blocks): four different library processes, each fed by
     PARAMV / CONST / CALENDAR blocks on their required inputs.
 
-Corpus-wide block frequency (15 production sketches, 310 blocks): CONST 139,
-WRITETOUNIT 49, PARAMV 45, process instances 18, FORMULA 11, IF 9,
-DELAY_VARIABLE 7, VIRTUALOUT 5 - and only 2 ALARMs. Production VV logic mostly
-CONTROLS (writes values); it does not just alarm.
+Corpus-wide block frequency (fleet scrape 2026-07-11: ~87 plants / ~1054 sketches /
+24,994 blocks): CONST 8394, PARAMV 5599, WRITETOUNIT 2875, VIRTUALOUT 1658, then
+FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs. Production VV logic mostly
+CONTROLS (writes values); it does not just alarm. ZERO block types outside the
+documented allowlist appeared in the entire fleet corpus. Binding split at scale:
+singular driver_id 3331 vs plural driver_ids 2155 on PARAMV (WRITETOUNIT 1501 vs
+1311) - legacy singular is the MAJORITY, so always READ both, GENERATE plural.
 
 ================================================================================
 FINAL CHECKLIST BEFORE DELIVERING A GENERATED FILE

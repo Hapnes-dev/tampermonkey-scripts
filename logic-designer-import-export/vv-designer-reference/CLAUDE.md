@@ -284,6 +284,30 @@ Highlights of the `data` shapes:
   repeat-mode stamps the logic per.
 - **SPOT_PRICE** (production shape): `data = {hours:[0], region:'10YNO-3--------J'}` — the region
   is an ENTSO-E bidding-zone code; `data: null` also occurs (defaults).
+- **SPOT_PRICE_LOW / SPOT_PRICE_HIGH** (production shape): `data = {region:'10YNO-3--------J',
+  percent:'30', num_future_hours:'12'}` (string numbers) — boolean-out "now is in the cheapest/
+  most-expensive `percent`% of the next `num_future_hours` hours". **SPOT_PRICE_NUM_HOURS**:
+  `data = {region}` only.
+- **DATE_TIME** (production shape): `data = {units:[0,1,2,3,4,5,6]}` — the array picks which
+  outputs exist, indexed 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday; matching
+  `properties.output_count` + `properties.output_alias_texts` (`['Year','Month',…]`). A
+  hour-only block is `{units:[3]}` with `output_count` 1 / alias `['Hour']`.
+- **CALENDAR_2_0** (production shape): `data = {calendar:'<calendar_id>', output:'id'}` —
+  vs legacy CALENDAR's `{calendar, offset, post_offset}`.
+- **OPTIMAL_START_STOP** (production shape): `data = {block_func_args:{map_tempstep:'tempstep',
+  map_factor:'factor'}}` + TWO transform-map tables in properties:
+  `properties.optimal_start_stop_tempstep_transform_map` / `…_factor_transform_map`, each
+  `{alias_text, value:{inputs:[[from,to],…], output:[from,to]}}` (same table shape as
+  `custom_transform_map`).
+- **WEATHER_SUN** (production shape): `data = {block_func_args:{rise_offset:0, set_offset:0}}`
+  (offsets in minutes around sunrise/sunset).
+- **VARIABLE_INPUT / VARIABLE_OUTPUT** (production shape): `VARIABLE_INPUT.data =
+  {pointer:'<block id>'}` — the id of the `VARIABLE_OUTPUT` block it mirrors (same-sketch
+  feedback loops without a wire); VARIABLE_OUTPUT itself needs no data.
+- **TEMP_VALUE** (production shape): `data = {alias_text, type:'mixed', precision:'%.1f'}` —
+  a named in-sketch scratch value (memory), typically written by one branch and read elsewhere.
+- **RESET_INPUT** (production-confirmed): `{trigger_value:0, reset_value:1, delay_unit:'min',
+  delay_amount:1}` — when input equals `trigger_value`, output `reset_value` after the delay.
 - **Sketch-to-sketch chaining via the VIRTUAL driver** (fleet pattern): a `VIRTUALOUT` becomes a
   plant parameter with driver id `<plant>_VIRTUAL_V_1_<proj>_<sketchid>_<proj>_<idx>`, and other
   sketches read it with a plain `PARAMV` — this is how multi-sketch pipelines (Yr data →
@@ -312,6 +336,13 @@ Highlights of the `data` shapes:
   `+ - * / % ^`, comparisons `> < >= <=` and `==` (production-verified — mode decoders like
   `inp0==2`, §21), ternary `?:`, boolean `and`/`&&`/`or`/`||`, and the
   functions `min max abs round floor ceil sqrt pow sin cos log log10 exp fmod pi() random()`.
+  Because the server evaluator is PHP, production formulas also use **PHP stdlib**:
+  `intval(inp0)`, `idate('H')`, `substr(inp0,0,8)`, `strpos(inp0,inp1) !== false`,
+  `strtotime(inp0)`, `gmdate('H:i:s', inp0*3600)`, `sort(...)`, uppercase `AND`, and `null`
+  in ternary branches (`… ? 1 : null` — null result writes nothing). Two **VV domain
+  built-ins** exist server-side (fleet-scraped 2026-07-11): `is_calendar_deviating(<days>)`
+  and `value_based_on_schema(<a>,<b>,<days>)` — calendar-schema helpers only the server can
+  resolve (the client evaluator falls back to a manual-value prompt for these).
   **Not** supported: block-statement `if(){}`, or bare named constants (`pi`, `e`, `M_PI`).
   `precision` is printf-style: `%.1f` / `%.2f` / `%.3f`. `output_type` ∈ integer/float/boolean/string.
 - **WRITETOUNIT**: `{force_write, delay, limit_count, count, driver_ids:[…]}`.
@@ -873,7 +904,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.23.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.25.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -900,7 +931,9 @@ by volatile-field-stripped logic/layout fingerprints so host background noise ne
 redraw "blinking". **⧉ Log** copies a self-contained debug report (inputs, per-pin flow trace,
 results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()`. **FORMULA blocks are
 evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
-`time()`/`date()` → JS; inputs gathered by pin; un-evaluable formulas become manual rows).
+`time()`/`date()` and the PHP stdlib subset `intval`/`idate`/`substr`/`strpos`/`strtotime`/
+`null` → JS — 67/71 of all fleet formulas compile (§21 corpus v4); inputs gathered by pin;
+un-evaluable formulas — `gmdate`, `sort`, server-only calendar built-ins — become manual rows).
 While the panel is open it shadows and restores **six host hooks**: `get_user_input`,
 `system_dialogs.information.show`, `paper.callback`, `paper.simulator_stop` (swallow
 `Timed stop`/`Done`), `__highlight_block_connection` (null-fix), `paper.blocks.FORMULA.sim`
@@ -1833,3 +1866,24 @@ without processes not counted). One representative per unseen template class was
   singular-`driver_id`-is-half-the-fleet finding.
 - **FORMULA coverage holds at scale**: 14/14 unique formulas in the combined corpus compile
   with the §13.1 evaluator grammar.
+
+**Corpus v4 — the mega-scrape (2026-07-11):** 62 more plants (30 richest by sketch count +
+an every-30th spread across the 1067-plant catalog), **all** their sketches — 1007 more,
+zero failures — bringing the combined corpus to **~87 plants / ~1054 sketches / 24,994
+blocks / 24,683 wires / 1967 `by_refference` wires**. This is ~43 % of every process-using
+sketch in the fleet. Findings:
+
+- **The §20.4 allowlist survives contact at scale: ZERO undocumented block types** across
+  24,994 blocks. Frequency head: CONST ×8394 · PARAMV ×5599 · WRITETOUNIT ×2875 ·
+  VIRTUALOUT ×1658 · FORMULA/IF/DELAY_VARIABLE next. Long-tail types now seen in production
+  (payloads → §6): CALENDAR_2_0 ×114 (10 plants) · TEMP_VALUE ×104 · OPTIMAL_START_STOP ×59 ·
+  IS_WITHIN_DATES ×16 · TOGGLE_INTERVAL ×5 · SPOT_PRICE ×5 · PULSE_COUNT ×3 · RESET_INPUT ×3 ·
+  DATE_TIME ×2 · WEATHER_SUN / SPOT_PRICE_LOW / SPOT_PRICE_HIGH / SPOT_PRICE_NUM_HOURS ×1.
+- **Binding-shape split at fleet scale**: PARAMV singular `driver_id` ×3331 vs plural
+  `driver_ids` ×2155; WRITETOUNIT ×1501 vs ×1311. Legacy singular is the MAJORITY — readers
+  must accept both; generators emit plural.
+- **FORMULA at fleet scale**: 71 unique formulas; **67/71 compile with the client evaluator**
+  (after the v1.25.0 PHP-stdlib extension: `intval idate substr strpos strtotime` + `null`).
+  The 4 remaining fall back to manual-value prompts by design: `gmdate` (multi-char format
+  strings), `sort`, and the server-only domain built-ins `is_calendar_deviating` /
+  `value_based_on_schema` (§6 FORMULA grammar).

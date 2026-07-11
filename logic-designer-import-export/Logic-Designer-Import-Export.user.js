@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.24.0
+// @version      1.25.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -172,8 +172,11 @@ function compileVvFormula(formula, inputCount) {
     sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan', exp: 'Math.exp',
     log10: 'Math.log10', log: 'Math.log', fmod: '__fmod', random: 'Math.random',
     pi: '__pi', time: '__t', date: '__d',
+    // PHP stdlib seen in fleet formulas (server = PHP evaluator)
+    intval: '__intval', idate: '__idate', substr: '__substr', strpos: '__strpos',
+    strtotime: '__strtotime',
   };
-  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|pi|time|date)\s*\(/gi,
+  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|pi|time|date|intval|idate|substr|strpos|strtotime)\s*\(/gi,
     function (m, name) { return FN[name.toLowerCase()] + '('; });
   expr = expr.replace(/\binp(\d+)\b/g, function (m, n) {
     if (+n >= inputCount) throw new Error('inp' + n + ' has no wired input');
@@ -184,10 +187,12 @@ function compileVvFormula(formula, inputCount) {
   for (var i = 0; i < ids.length; i++) {
     var id = ids[i];
     if (id === 'Math' || id.indexOf('Math.') === 0 || id === '__I' || id === '__t' ||
-      id === '__d' || id === '__fmod' || id === '__pi' || id === 'true' || id === 'false') continue;
+      id === '__d' || id === '__fmod' || id === '__pi' || id === '__intval' ||
+      id === '__idate' || id === '__substr' || id === '__strpos' || id === '__strtotime' ||
+      id === 'true' || id === 'false' || id === 'null') continue;
     throw new Error('unsupported token "' + id + '"');
   }
-  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi',
+  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi', '__intval', '__idate', '__substr', '__strpos', '__strtotime',
     '"use strict";return (' + expr + ');');
   return function (inputs, nowSec) {
     var now = (nowSec === undefined) ? Math.floor(Date.now() / 1000) : nowSec;
@@ -196,7 +201,12 @@ function compileVvFormula(formula, inputCount) {
       function () { return now; },
       function (f, ts) { return phpDate(f, ts === undefined ? now : ts); },
       function (a, b) { return a % b; },
-      function () { return Math.PI; }
+      function () { return Math.PI; },
+      function (x) { var n = parseInt(x, 10); return isNaN(n) ? 0 : n; },        // intval
+      function (f) { return phpDate(f, now); },                                   // idate
+      function (s, a, b) { return b === undefined ? String(s).substr(a) : String(s).substr(a, b); }, // substr
+      function (h, n) { var i = String(h).indexOf(String(n)); return i === -1 ? false : i; },        // strpos (false on miss, PHP-style)
+      function (s) { var t = Date.parse(String(s)); return isNaN(t) ? false : Math.floor(t / 1000); } // strtotime (subset)
     );
     if (v === true) return 1;
     if (v === false) return 0;
@@ -556,7 +566,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.24.0';
+    var VERSION = '1.25.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
