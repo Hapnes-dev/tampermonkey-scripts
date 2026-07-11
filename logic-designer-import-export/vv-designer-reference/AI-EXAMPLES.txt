@@ -2459,6 +2459,38 @@ The wires into WEATHER (real pin names in alias_text):
   }
 ]
 
+--- CRITERIA (time-of-day/weekday gate) - real production shape ---
+data carries ONLY {"block_func_args":{"oneshot":false}}; the criteria live in
+properties.criterias as keyed {id, value} entries:
+
+{
+  "data": { "block_func_args": { "oneshot": false } },
+  "properties": {
+    "criterias": {
+      "alias_text": "Criterias",
+      "value": {
+        "day_of_week_3": { "id": "day_of_week", "value": 3 },
+        "hour_of_day_3": { "id": "hour_of_day", "value": 3 }
+      }
+    }
+  }
+}
+
+--- VIRTUALOUT with optional scaling (real production shape) ---
+{"alias_text":"Dager til neste service","type":"integer","engineering":{"unit":"dager"},
+ "scaling":{"type":"clip_scale","from_min":"0","from_max":"1000","to_min":"0","to_max":"1000"}}
+
+--- REAL PRODUCTION FORMULAS (fleet scrape, 8 plants - grammar reference) ---
+All of these are deployed on live plants and use only the documented grammar:
+  inp0==2                                     (mode decoder)
+  inp0/3600                                   (HOURMETER seconds -> hours)
+  inp0/(3600*24)                              (seconds -> days)
+  (inp0*-1)+1                                 (boolean negation)
+  (date('W', time()) % 2 == 0) ? 1 : 0        (even ISO week - biweekly gating)
+  (inp1-inp0)*inp2*inp3/3600*1000             (energy calculation)
+  (inp0>=0&&inp0<=99?0:(inp0>=100&&inp0<=199?1:(inp0>=200&&inp0<=299?2:5)))
+                                              (chained ternary range mapping; && works)
+
 --- FORMULA as a MODE DECODER (production favourite) ---
 One integer mode parameter fans out into N single-input FORMULA blocks, each
 emitting a boolean for one state ("inp0==K"); each boolean then gates its own

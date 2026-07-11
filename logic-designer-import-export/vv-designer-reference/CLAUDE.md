@@ -272,6 +272,12 @@ Highlights of the `data` shapes:
   period_amount, …}}` (period ∈ `hour|day|week|month|year`).
 - **SELECTOR** (production shape): `{output_type:'integer'|'float'}` — only the output type lives
   in `data`; the two alternatives arrive as inputs (usually `CONST`s).
+- **CRITERIA** (production shape, scraped 2026-07-11): `data.block_func_args = {oneshot:false}`;
+  the actual criteria live in **`properties.criterias`** =
+  `{alias_text:'Criterias', value:{'<id>_<val>':{id:'day_of_week'|'hour_of_day'|'minute_of_hour'|…, value:N}}}`
+  (one keyed entry per criterion).
+- **VIRTUALOUT optional `scaling`** (production shape): `data.scaling =
+  {type:'clip_scale', from_min:'0', from_max:'1000', to_min:'0', to_max:'1000'}` (string values).
 - **TOGGLE_INTERVAL** (full contract — live-probed from the "Configure Toggled Interval" dialog's
   `do_ok` handler, 2026-07-09): `{block_func_args:{interval:'sec'|'min'|'hour'|'day'|'week'|'month'|'year',
   offset:<integer>}}` — exactly these two keys; the dialog labels the field **"Offset (Seconds)"**
@@ -904,6 +910,9 @@ Plant (plant_id, firmware revision)
      └─ Sketch        load_sketch_list(project_id) → [{id, name, …}]
          └─ Revision  load_history_list(sketch_id) → [{id, saved_by, date, comment}]
 ```
+- **Cross-plant scraping works from one page** (verified 2026-07-11): `load_project_list(pid)` /
+  `load_sketch_list` / `load_sketch` accept any plant's ids from any open designer session — a
+  whole fleet's sketches can be pulled without navigating per plant.
 - **`load_sketch(sketch_id, with_data)`** →
   `{sketch_id, state, compile_state, sketch_name, plant_id, project_id, project_name, sketch}`.
   **Gotcha (verified live, all three variants):** call it **without** `with_data` —
@@ -1077,6 +1086,11 @@ Prefer an existing **library process** over rebuilding common logic: search the 
 - **Mode decoder / state fan-out**: `PARAMV(mode integer)` → N× `FORMULA{formula:'inp0==K',
   output_type:'boolean'}` → each boolean gates its own branch (`SELECTOR`/`IF`/write). Production's
   way to turn one multi-state parameter into per-state logic.
+- **Run-hours / driftstid** (scraped fleet pattern): running-signal → `HOURMETER` →
+  `FORMULA{'inp0/3600'}` → `VIRTUALOUT` (hours; `/(3600*24)` for days). Deployed as its own small
+  sketch next to the control sketch — the Yr/snowmelt installations ship as a THREE-sketch
+  pipeline per plant: *data* (WEATHER + string-CONSTs → virtuals), *control* (thresholds/IF →
+  writes), *driftstid* (HOURMETER counters).
 - **Fan-out one condition to many alarms**: one comparator output connects to many inputs
   (outputs multi-connect; inputs take exactly one wire).
 
@@ -1421,6 +1435,8 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `PERIODE_VALUE` | `counter_limit.run` | function | `["float","boolean"]` | i0 param, i1 limit | `{"block_func_args":{"mode":"alarm","periode":"day","period_amount":1}}` (note key **`periode`**) |
 | `PULSE_COUNT` | `pulse_count` | function | `["integer"]` | i0 signal (by-ref), i1 level (**requires CONST**) | `{"block_func_args":{"periode":"day","type":"flank_rising_edge","periode_amount":1}}` — periode ∈ sec/min/hour/day/week/month/year; type ∈ `over_or_equal_value`/`absolute_value`/**`flank_rising_edge`**/`flank_falling_edge`/`flank_changing_edge` (⇒ native edge counting!); count resets each period |
 | `TOGGLE_INTERVAL` | `toggle_interval.run` | function | `["boolean"]` | — | `{"block_func_args":{"interval":"sec|min|hour|day|week|month|year","offset":<int seconds>}}` — **symmetric square wave only** (flips each interval boundary; no duration/duty field). "X h every N days" is NOT expressible — use a plant `CALENDAR` (§6) |
+| `CRITERIA` | `criterias.run` | function | `["boolean"]` | — | `{"block_func_args":{"oneshot":false}}` + the criteria in `properties.criterias` (§6) |
+| `HOURMETER` | `hourmeter.run` | function | `["integer"]` | i0 running-signal | `null` — output is accumulated seconds; production divides by 3600 in a FORMULA for hours |
 | `WEATHER` | `weather.run_by_ccp_country` | function | `["float"]` | i0 County, i1 Commune, i2 Place (optional string `CONST`s; unconnected ⇒ GPS), i3 period start, i4 period end | `{"block_func_args":{"func":"current_dew_point","period_count":1}}` + `properties.output_count` (rev ≥620) |
 | `ALARM` | `alarm` | output | `null` | i0 boolean | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` (pri a/b/c; dest general/ew/cw) |
 | `ALARM_OBJECT` | `alarm_object` | output | `null` | i0 condition, i1 cost | `{"alias_text":"…","pri":"c","alarm_type":"general","alarm_destination":"general"}` |
@@ -1762,3 +1778,23 @@ Findings folded into §6/§8/§19.2/§20.4 above; the headline numbers:
   and `data` either `null` or `{alias_text}` (the per-instance label lives in **data**, not
   override, for process blocks). Cross-plant these only resolve if the target plant's library
   publishes the same process key — the importer warns otherwise.
+
+**Corpus v2 — full server-side scrape (2026-07-11):** all **28 sketches from 8 plants** (3111,
+3445, 4862, 6918, 8565, 9639→9652, 9839, 9849 — 659 blocks / 665 wires) pulled via the
+cross-plant manager RPCs (§17.1). What the fleet adds beyond the export corpus:
+
+- **Fleet templates are real**: the same sketch is stamped across plants — "Termostat
+  varmluftsport" on 4 plants (13–14 blocks), "Dewp-styring vent" byte-similar on 2, the 88-block
+  switch on 2, and the Yr/snowmelt THREE-sketch pipeline (data → control → driftstid) on 2.
+  Process `29_59DF59D32D9E56…` is instantiated ×20 across 3 plants.
+- **New shapes captured** (folded into §6/§20.4): `CRITERIA` = `block_func_args{oneshot}` +
+  `properties.criterias{…}`; `VIRTUALOUT` optional `data.scaling{type:'clip_scale', from/to
+  min/max}`; `HOURMETER` (data null) powering driftstid counters.
+- **FORMULA in the wild**: 12 unique formulas — **all 12 compile with the §13.1 local
+  evaluator's grammar**. Real usage: `==`-decoders, unit math (`inp0/3600`, `inp0*60`), energy
+  `(inp1-inp0)*inp2*inp3/3600*1000`, chained ternaries for range-mapping, boolean negation
+  `(inp0*-1)+1`, `&&` used directly (not just `and`), and week-parity
+  `(date('W', time()) % 2 == 0) ? 1 : 0` — the same construct the mosjonering template needs.
+- **Lifecycle in practice**: every scraped sketch has `state = PROGRESS` (the state field is not
+  actively curated); nearly all production sketches have `compile_state = 1`. 30 wires carry
+  `by_refference` (period/age inputs).
