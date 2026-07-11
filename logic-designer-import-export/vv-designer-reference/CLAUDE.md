@@ -290,7 +290,8 @@ Highlights of the `data` shapes:
   `data = {region}` only.
 - **DATE_TIME** (production shape): `data = {units:[0,1,2,3,4,5,6]}` — the array picks which
   outputs exist, indexed 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday; matching
-  `properties.output_count` + `properties.output_alias_texts` (`['Year','Month',…]`). A
+  `properties.output_count` + `properties.output_alias_texts` (`['Year','Month',…]`), and often
+  `properties.output_types` (`{alias_text:'output Types', value:['integer']}`). An
   hour-only block is `{units:[3]}` with `output_count` 1 / alias `['Hour']`.
 - **CALENDAR_2_0** (production shape): `data = {calendar:'<calendar_id>', output:'id'}` —
   vs legacy CALENDAR's `{calendar, offset, post_offset}`.
@@ -339,7 +340,9 @@ Highlights of the `data` shapes:
   Because the server evaluator is PHP, production formulas also use **PHP stdlib**:
   `intval(inp0)`, `floatval(inp0/60.0)`, `idate('H')`, `substr(inp0,0,8)`,
   `strpos(inp0,inp1) !== false`, `stripos(inp0,'snø') !== false` (case-insensitive — weather-text
-  matching), `strtotime(inp0)`, `gmdate('H:i:s', inp0*3600)`, `sort(...)`, uppercase `AND`, and
+  matching), `strtotime(inp0)`, `rand(-10,10)` (PHP two-arg inclusive-int rand),
+  `gmdate('H:i:s', inp0*3600)`, `sort(...)`, even `json_encode(array(...))` — the server accepts
+  arbitrary PHP stdlib; exotic calls simply can't be simulated client-side. Also uppercase `AND`, and
   `null` in ternary branches (`… ? 1 : null` — null result writes nothing). **`state` magic
   variable** (fleet-scraped 2026-07-11, plant 9760): a formula may reference `state` = **its own
   previous output** — `(inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))` is a complete
@@ -376,6 +379,11 @@ Highlights of the `data` shapes:
 `format_extra` (enumeration lookup), `documentation`. In exports each **set** property is an
 `{alias_text, value}` object — e.g. `interval:{alias_text:'Interval', value:'10 sec'}` — and a
 block with no properties exports `properties: []` (PHP empty array); accept both `[]` and `{}`.
+Fleet census (§21 v6): `format_extra` is the MOST-set property (1945 of 50k blocks), then
+`input_count` 1173, `documentation` 529, `input_alias_texts`/`interval`/`interval_offset` ~357
+each; `interval` values cluster at `10 sec`/`30 sec`/`1 min` (incl. staggered odd values like
+`32 sec`). **Process instances** may additionally carry `block_id_map` (`{alias_text:'',
+value:[…]}` — internal id-remap bookkeeping; copy verbatim, never invent).
 
 ---
 
@@ -937,10 +945,10 @@ redraw "blinking". **⧉ Log** copies a self-contained debug report (inputs, per
 results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()`. **FORMULA blocks are
 evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
 `time()`/`date()`, the PHP stdlib subset `intval`/`floatval`/`idate`/`substr`/`strpos`/
-`stripos`/`strtotime`/`null`, and the `state` magic variable (previous output, persisted
-per block across runs while the panel is open) → JS — 120/124 of all fleet formulas compile
-(§21 corpus v5); inputs gathered by pin; un-evaluable formulas — `gmdate` multi-char formats,
-`sort`, server-only calendar built-ins — become manual rows).
+`stripos`/`strtotime`/`rand(min,max)`/`null`, and the `state` magic variable (previous output,
+persisted per block across runs while the panel is open) → JS — 156/161 of all fleet formulas
+compile (§21 corpus v6); inputs gathered by pin; un-evaluable formulas — `gmdate` multi-char
+formats, `sort`, `json_encode`, server-only calendar built-ins — become manual rows).
 While the panel is open it shadows and restores **six host hooks**: `get_user_input`,
 `system_dialogs.information.show`, `paper.callback`, `paper.simulator_stop` (swallow
 `Timed stop`/`Done`), `__highlight_block_connection` (null-fix), `paper.blocks.FORMULA.sim`
@@ -1954,3 +1962,38 @@ not just what's in it (motif census, graph statistics, feeder censuses over ever
   the plant-9760 changeover `(inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))`. Still
   server-only: `gmdate` multi-char formats, `sort`, `is_calendar_deviating`,
   `value_based_on_schema`.
+
+**Corpus v6 — production defaults, field-level census (2026-07-11):** 53 more plants / **381
+more sketches (zero failures)** → combined **~191 plants / 1889 sketches / 50,443 blocks /
+49,853 wires / 3,265 `by_refference`**. This round measured what values production actually
+puts in every field — the *defaults* a generator should reproduce:
+
+- **ALARM priority: `a` is the fleet norm** — pri `a` ×955 (79 %), `c` ×182, `b` ×78;
+  destination `general` ×1105 vs `ew` ×110 (no `cw` in corpus). An AI defaulting to "medium"
+  severity is out of step with production.
+- **WRITETOUNIT fields are near-constant**: `force_write:false` 4207 vs `true` only 119
+  (2.6 %); `delay` is 0 in all but two blocks; `limit_count:false`; `count:1` (a freak
+  `count:2` exists ×3). Older sketches OMIT keys entirely (`undefined` ×~570-1100 per field) —
+  readers must default missing WRITETOUNIT/CONST keys, generators emit them explicitly.
+- **CONST**: types float 9598 › integer 4488 › boolean 1473 › string 707 › mixed 364;
+  `mode:'single'` 15745 vs `repeat` only 29 (and `mode` can be absent ×856).
+- **Labelling is the norm**: 73 % of ALL blocks (36,629 of 50,443) have `override.alias_text`
+  set. Generated sketches should label every block.
+- **eng_unit vocabulary** (top): `&deg;C` (HTML entity!) 2713 › `°C` 2136 › `%` 1562 › `min`
+  569 › `K` 482 › `sek` 412 › `kWh` 325 › `ppm` 220 — both entity and literal degree forms are
+  production-real; treat them as equivalent when diffing.
+- **`by_refference` pin contract at scale** (3,265 wires): SUBTRACT→TRANSFORM_MAPPED.put0
+  ×133 (superheat into refrigerant map), comparator→DELAY/DELAY_VARIABLE.put0 ×150,
+  PARAMV→AVG/MIN/MAX_IN_PERIOD.put0 ×240, and the **OPTIMAL_START_STOP wiring**:
+  put0 ← CALENDAR_2_0 (by_ref), put2 ← PARAMV, puts 3–5 ← CONSTs (×~60 each — the stamped
+  pattern).
+- **IF's VALUE pin (put1)** is fed by FORMULA ×179, CONST ×169, curve-process outputs ×141+,
+  PARAMV ×125, SELECTOR ×103 — i.e. the gate passes a *computed* setpoint far more often than
+  a raw parameter.
+- **FORMULA**: 161 unique fleet-wide; **156/161 compile locally** after v1.27.0 added
+  `rand(min,max)`. A `json_encode(array(...))` test sketch confirms the server evaluator
+  accepts arbitrary PHP stdlib. Remaining manual-fallbacks: `gmdate`, `sort`, `json_encode`,
+  `is_calendar_deviating`, `value_based_on_schema`.
+- **New property sightings**: `block_id_map` on process instances (10 distinct processes,
+  usually `{alias_text:'', value:[]}`), `output_types` on DATE_TIME. Zero new block types —
+  the allowlist still holds at 50k blocks.

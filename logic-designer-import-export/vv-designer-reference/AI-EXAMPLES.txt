@@ -2547,6 +2547,7 @@ The server evaluator is PHP, so production also uses PHP stdlib + null:
   idate("H")                                                   (current hour as int)
   (abs(time() - strtotime(inp0)) <= inp1/2) ? 1 : 0            (timestamp freshness)
   gmdate("H:i:s", inp0*3600)                                   (seconds -> H:i:s text)
+  inp0*floatval(rand(-10,10))                                  (PHP two-arg rand)
   inp0 == 1 AND inp1 == 0                                      (uppercase AND works)
 THE state MAGIC VARIABLE - a formula can reference its OWN PREVIOUS OUTPUT:
   (inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))
@@ -2818,6 +2819,25 @@ sketches / 37,503 blocks / 36,970 wires, 2026-07-11):
     (EW_VENTILATION_ROOM_TEMPERATUR_HIGH_LIMIT) - treat any
     compile_type "process" type as an opaque key that must exist in the
     target plant's library.
+
+PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
+
+  - ALARM pri: "a" is the fleet norm (79%; c 15%, b 6%); destination
+    "general" 91%. Default to a/general unless the user says otherwise.
+  - WRITETOUNIT: force_write false (true is 2.6%), delay 0 (two exceptions
+    fleet-wide), limit_count false, count 1. Emit exactly these.
+  - CONST: float is the most common type (float > integer > boolean >
+    string); mode "single" essentially always (repeat is 29 of 15,774).
+  - LABEL EVERY BLOCK: 73% of all production blocks have override.alias_text
+    set. Older sketches may OMIT data keys entirely - when READING, treat a
+    missing key as its default; when GENERATING, write keys explicitly.
+  - eng_unit vocabulary: &deg;C (HTML entity - most common!), °C, %, min, K,
+    sek, kWh, ppm, Pa. Entity and literal degree forms are interchangeable.
+  - by_refference wires (the "read value by reference" pin flag) cluster on:
+    PARAMV -> AVG/MIN/MAX_IN_PERIOD.put0, comparator -> DELAY.put0,
+    SUBTRACT -> TRANSFORM_MAPPED.put0 (superheat into refrigerant map), and
+    OPTIMAL_START_STOP wiring: put0 <- CALENDAR_2_0 (by_ref), put2 <- PARAMV,
+    puts 3-5 <- CONSTs.
 
 Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
 VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.

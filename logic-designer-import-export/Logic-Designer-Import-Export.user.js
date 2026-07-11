@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.26.0
+// @version      1.27.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -175,8 +175,9 @@ function compileVvFormula(formula, inputCount) {
     // PHP stdlib seen in fleet formulas (server = PHP evaluator)
     intval: '__intval', idate: '__idate', substr: '__substr', strpos: '__strpos',
     strtotime: '__strtotime', stripos: '__stripos', floatval: '__floatval',
+    rand: '__rand',
   };
-  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|pi|time|date|intval|idate|substr|stripos|strpos|strtotime|floatval)\s*\(/gi,
+  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|rand|pi|time|date|intval|idate|substr|stripos|strpos|strtotime|floatval)\s*\(/gi,
     function (m, name) { return FN[name.toLowerCase()] + '('; });
   expr = expr.replace(/\binp(\d+)\b/g, function (m, n) {
     if (+n >= inputCount) throw new Error('inp' + n + ' has no wired input');
@@ -189,11 +190,11 @@ function compileVvFormula(formula, inputCount) {
     if (id === 'Math' || id.indexOf('Math.') === 0 || id === '__I' || id === '__t' ||
       id === '__d' || id === '__fmod' || id === '__pi' || id === '__intval' ||
       id === '__idate' || id === '__substr' || id === '__strpos' || id === '__strtotime' ||
-      id === '__stripos' || id === '__floatval' || id === 'state' ||
+      id === '__stripos' || id === '__floatval' || id === '__rand' || id === 'state' ||
       id === 'true' || id === 'false' || id === 'null') continue;
     throw new Error('unsupported token "' + id + '"');
   }
-  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi', '__intval', '__idate', '__substr', '__strpos', '__strtotime', '__stripos', '__floatval', 'state',
+  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi', '__intval', '__idate', '__substr', '__strpos', '__strtotime', '__stripos', '__floatval', '__rand', 'state',
     '"use strict";return (' + expr + ');');
   // `state` is a VV magic variable: the formula's own previous output
   // (hysteresis/changeover formulas hold it between limits). Callers pass the
@@ -213,6 +214,7 @@ function compileVvFormula(formula, inputCount) {
       function (s) { var t = Date.parse(String(s)); return isNaN(t) ? false : Math.floor(t / 1000); }, // strtotime (subset)
       function (h, n) { var i = String(h).toLowerCase().indexOf(String(n).toLowerCase()); return i === -1 ? false : i; }, // stripos
       function (x) { var n = parseFloat(x); return isNaN(n) ? 0 : n; },           // floatval
+      function (a, b) { return (a === undefined) ? Math.floor(Math.random() * 2147483648) : Math.floor(Math.random() * (b - a + 1)) + a; }, // rand / rand(min,max)
       (state === undefined) ? 0 : state
     );
     if (v === true) return 1;
@@ -573,7 +575,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.26.0';
+    var VERSION = '1.27.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;

@@ -111,8 +111,12 @@ rejection ("Sketch document is malformed").
 ALLOWLIST SEMANTICS: only the keys shown in this section and the data fields
 shown in section 4 exist. If a key is not listed here, it does not exist. Do
 not invent, rename, camelCase, or "improve" any field name. This allowlist is
-validated at fleet scale: a 2026-07 scrape of ~87 plants / ~1054 production
-sketches (24,994 blocks) contained ZERO block types outside it.
+validated at fleet scale: a 2026-07 scrape of ~191 plants / ~1889 production
+sketches (50,443 blocks) contained ZERO block types outside it.
+
+LABEL EVERY BLOCK: set override.alias_text on each block you generate (what
+the block does, in the user's language). 73% of all production blocks are
+labelled - an unlabelled sketch reads as machine-generated noise.
 
 --------------------------------------------------------------------------------
 3. THE TYPE SYSTEM (WHY WIRES ARE ACCEPTED OR REFUSED)
@@ -153,6 +157,9 @@ READERS AND SOURCES (compile_type "input")
    "readonly": false}
   Add "precision": "%.1f" (or %.2f/%.3f) only when type is float.
   output_type: ["boolean","integer","float","string"]
+  Common production eng_units: &deg;C (HTML entity form is the most common!),
+  °C, %, min, K, sek, kWh, ppm, Pa - both entity and literal degree forms
+  are real; '' is fine for unitless.
 - CALENDAR | func "calendar_value" — boolean from a plant calendar schedule.
   data: {"calendar": "<id>", "offset": 0, "post_offset": 0} or null (TODO bind).
 - CALENDAR_2_0 | func "calendar.run" — newer calendar. Production data:
@@ -244,7 +251,7 @@ SELECTION AND MATH EXPRESSIONS
   date('w|W|N|G|H|i|s|j|d|n|m|Y|y|z|U'). PHP stdlib also works (the evaluator
   IS PHP; all production-verified): intval(x), floatval(x), idate('H'),
   substr(s,a,b), strpos(haystack,needle) !== false, stripos(...) (case-
-  insensitive), strtotime(s), gmdate(fmt,ts). SPECIAL: the variable `state`
+  insensitive), strtotime(s), rand(min,max), gmdate(fmt,ts). SPECIAL: the variable `state`
   = the formula's own PREVIOUS output — production changeover/hysteresis in
   one block: (inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state)).
   NOT allowed: if(){} blocks, named constants (pi, e), variables other than
@@ -259,7 +266,9 @@ OUTPUTS (compile_type "output" unless noted)
          "alarm_type": "general"|"system",
          "alarm_destination": "general"|"ew"|"cw"}
   ONLY priorities a/b/c exist (a = most severe). There is no "n", no "info",
-  no "severity", no "message" field.
+  no "severity", no "message" field. Fleet norm: pri "a" is 79% of all
+  production alarms (c 15%, b 6%); destination "general" is 91%. Pick by the
+  user's intent, but "a" + "general" is the production default.
 - ALARM_OBJECT "alarm_object" (adds a cost input), ALARM_OBJECT_EXTENDED
   "alarm_object_extended" (cost/value/limit inputs) — same data shape.
 - VIRTUALOUT | func "virtualout"
@@ -270,8 +279,10 @@ OUTPUTS (compile_type "output" unless noted)
   WRITES TO REAL HARDWARE when deployed. data: {"force_write": false,
   "delay": 0, "limit_count": false, "count": 1,
   "driver_ids": ["<FULL_DRIVER_ID>"]}
-  (production always uses count 1; several driver_ids in one block fan the
-  same value out to many parameters)
+  These values ARE the fleet defaults (force_write true is 2.6% of production,
+  delay is 0 in all but two blocks fleet-wide, count is 1) - emit exactly
+  these; several driver_ids in one block fan the same value out to many
+  parameters.
   Include this block ONLY if the user explicitly asked to write to hardware
   AND supplied/confirmed the exact target parameter. Otherwise use VIRTUALOUT.
 - TEMP_VALUE "tmp_value" — persist and pass through a value. Production data:
