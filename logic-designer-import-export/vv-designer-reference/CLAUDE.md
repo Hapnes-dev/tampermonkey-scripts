@@ -278,6 +278,20 @@ Highlights of the `data` shapes:
   (one keyed entry per criterion).
 - **VIRTUALOUT optional `scaling`** (production shape): `data.scaling =
   {type:'clip_scale', from_min:'0', from_max:'1000', to_min:'0', to_max:'1000'}` (string values).
+- **TAGVALUE serialized form** (fleet scrape 2026-07-11 — the §6 repeat-mode shape): `data =
+  {tag:'<TAG_ID>', value:[{unit_id:'001:020', unit_ref:null, unit_name:'…', instances:'A',
+  order_no:'084B8022_15x1'}, …]}` — the `value` array IS the multi-selected unit list that
+  repeat-mode stamps the logic per.
+- **SPOT_PRICE** (production shape): `data = {hours:[0], region:'10YNO-3--------J'}` — the region
+  is an ENTSO-E bidding-zone code; `data: null` also occurs (defaults).
+- **Sketch-to-sketch chaining via the VIRTUAL driver** (fleet pattern): a `VIRTUALOUT` becomes a
+  plant parameter with driver id `<plant>_VIRTUAL_V_1_<proj>_<sketchid>_<proj>_<idx>`, and other
+  sketches read it with a plain `PARAMV` — this is how multi-sketch pipelines (Yr data →
+  control → driftstid) pass values between sketches.
+- **Singular `driver_id` is HALF the fleet** (91 of 168 PARAMV, 57 of 150 WRITETOUNIT in the
+  scraped corpus): older sketches store the binding as `data.driver_id` (string), newer as
+  `data.driver_ids` (array). Generators should emit the plural array; any tool READING sketches
+  must accept both (the importer/validator/rebind do).
 - **TOGGLE_INTERVAL** (full contract — live-probed from the "Configure Toggled Interval" dialog's
   `do_ok` handler, 2026-07-09): `{block_func_args:{interval:'sec'|'min'|'hour'|'day'|'week'|'month'|'year',
   offset:<integer>}}` — exactly these two keys; the dialog labels the field **"Offset (Seconds)"**
@@ -1798,3 +1812,24 @@ cross-plant manager RPCs (§17.1). What the fleet adds beyond the export corpus:
 - **Lifecycle in practice**: every scraped sketch has `state = PROGRESS` (the state field is not
   actively curated); nearly all production sketches have `compile_state = 1`. 30 wires carry
   `by_refference` (period/age inputs).
+
+**Corpus v3 — fleet catalog + stratified sample (2026-07-11):**
+`report.get_process_used_versions(false)` enumerates **every deployed sketch that uses
+processes across the whole fleet in one call**: **1067 plants / 2426 sketches** (sketches
+without processes not counted). One representative per unseen template class was scraped
+(19 more sketches, 17 new plants → combined corpus 47 sketches / 25 plants / ~1500 blocks):
+
+- **The fleet's template library, by sketch-name class**: `init setup` ×197 (EcoWatcher
+  heat-pump/CO₂ commissioning), curve control ×~80 (`kurvestyring`/`sandstadkurve` — the two
+  most-used processes in the entire fleet are **"Kurve for 4 knekkpunkt" ×227** and
+  **"Kurve 2P" ×176**), `coponline ka#` ×59, `yr.no` ×52, `smarte funksjoner` ×42,
+  `virt energi` ×42, alarm centrals (`al.center` ×27 / `vv-alarm` ×23 / "Smarta Larm"),
+  `esmelt` ×24 (Esmelt_S_V2 ×74), `ecomax` ×23, ventilation switch-overs (NOVEMA/PMGOLD
+  OpModSwi ×114), hysteresis process "Holdekrets høy alarm" ×65, `kirke_scenario_velger` ×61.
+- **Process eids can be symbolic**, not just `<lib>_<uniqid>`: `PW_HEATING_KURVE_4_KNEKKPUNKT`,
+  `EW_COMPRESSOR_12548954F193A6E5.03370809` live in production sketches.
+- **New data shapes captured** (→ §6): TAGVALUE repeat-mode `{tag, value:[unit…]}`, SPOT_PRICE
+  `{hours, region}` (ENTSO-E zone), the VIRTUAL-driver sketch-chaining pattern, and the
+  singular-`driver_id`-is-half-the-fleet finding.
+- **FORMULA coverage holds at scale**: 14/14 unique formulas in the combined corpus compile
+  with the §13.1 evaluator grammar.

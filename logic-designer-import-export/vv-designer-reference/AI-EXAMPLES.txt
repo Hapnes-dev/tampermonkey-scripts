@@ -2480,6 +2480,22 @@ properties.criterias as keyed {id, value} entries:
 {"alias_text":"Dager til neste service","type":"integer","engineering":{"unit":"dager"},
  "scaling":{"type":"clip_scale","from_min":"0","from_max":"1000","to_min":"0","to_max":"1000"}}
 
+--- TAGVALUE in repeat mode (real production shape - Al.center alarm central) ---
+The value array IS the multi-selected unit list the logic is stamped per:
+{"tag":"<TAG_ID>","value":[
+  {"unit_id":"001:020","unit_ref":null,"unit_name":"K1 Mejerikylrum-A","instances":"A","order_no":"084B8022_15x1"},
+  {"unit_id":"001:021","unit_ref":null,"unit_name":"K2 Kottkylrum-A","instances":"A","order_no":"084B8022_15x1"}]}
+
+--- SPOT_PRICE (real production shape) ---
+{"hours":[0],"region":"10YNO-3--------J"}   (region = ENTSO-E bidding zone; null also occurs)
+
+--- BINDINGS: singular driver_id is HALF the fleet ---
+Older sketches store {"driver_id":"<id>"} (string); newer {"driver_ids":["<id>"]}.
+GENERATE the plural array form - but when READING/analysing sketches, accept both.
+A VIRTUALOUT becomes a plant parameter other sketches read back via PARAMV with a
+VIRTUAL driver id (e.g. "4969_VIRTUAL_V_1_1863_5173_1863_1") - that is how
+multi-sketch pipelines pass values between sketches.
+
 --- REAL PRODUCTION FORMULAS (fleet scrape, 8 plants - grammar reference) ---
 All of these are deployed on live plants and use only the documented grammar:
   inp0==2                                     (mode decoder)
