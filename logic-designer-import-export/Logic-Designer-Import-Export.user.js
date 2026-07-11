@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.25.0
+// @version      1.26.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -174,9 +174,9 @@ function compileVvFormula(formula, inputCount) {
     pi: '__pi', time: '__t', date: '__d',
     // PHP stdlib seen in fleet formulas (server = PHP evaluator)
     intval: '__intval', idate: '__idate', substr: '__substr', strpos: '__strpos',
-    strtotime: '__strtotime',
+    strtotime: '__strtotime', stripos: '__stripos', floatval: '__floatval',
   };
-  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|pi|time|date|intval|idate|substr|strpos|strtotime)\s*\(/gi,
+  expr = expr.replace(/\b(min|max|abs|round|floor|ceil|sqrt|pow|sin|cos|tan|exp|log10|log|fmod|random|pi|time|date|intval|idate|substr|stripos|strpos|strtotime|floatval)\s*\(/gi,
     function (m, name) { return FN[name.toLowerCase()] + '('; });
   expr = expr.replace(/\binp(\d+)\b/g, function (m, n) {
     if (+n >= inputCount) throw new Error('inp' + n + ' has no wired input');
@@ -189,12 +189,16 @@ function compileVvFormula(formula, inputCount) {
     if (id === 'Math' || id.indexOf('Math.') === 0 || id === '__I' || id === '__t' ||
       id === '__d' || id === '__fmod' || id === '__pi' || id === '__intval' ||
       id === '__idate' || id === '__substr' || id === '__strpos' || id === '__strtotime' ||
+      id === '__stripos' || id === '__floatval' || id === 'state' ||
       id === 'true' || id === 'false' || id === 'null') continue;
     throw new Error('unsupported token "' + id + '"');
   }
-  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi', '__intval', '__idate', '__substr', '__strpos', '__strtotime',
+  var raw = new Function('__I', '__t', '__d', '__fmod', '__pi', '__intval', '__idate', '__substr', '__strpos', '__strtotime', '__stripos', '__floatval', 'state',
     '"use strict";return (' + expr + ');');
-  return function (inputs, nowSec) {
+  // `state` is a VV magic variable: the formula's own previous output
+  // (hysteresis/changeover formulas hold it between limits). Callers pass the
+  // prior result as the third argument; first evaluation defaults to 0.
+  return function (inputs, nowSec, state) {
     var now = (nowSec === undefined) ? Math.floor(Date.now() / 1000) : nowSec;
     var v = raw(
       inputs,
@@ -206,7 +210,10 @@ function compileVvFormula(formula, inputCount) {
       function (f) { return phpDate(f, now); },                                   // idate
       function (s, a, b) { return b === undefined ? String(s).substr(a) : String(s).substr(a, b); }, // substr
       function (h, n) { var i = String(h).indexOf(String(n)); return i === -1 ? false : i; },        // strpos (false on miss, PHP-style)
-      function (s) { var t = Date.parse(String(s)); return isNaN(t) ? false : Math.floor(t / 1000); } // strtotime (subset)
+      function (s) { var t = Date.parse(String(s)); return isNaN(t) ? false : Math.floor(t / 1000); }, // strtotime (subset)
+      function (h, n) { var i = String(h).toLowerCase().indexOf(String(n).toLowerCase()); return i === -1 ? false : i; }, // stripos
+      function (x) { var n = parseFloat(x); return isNaN(n) ? 0 : n; },           // floatval
+      (state === undefined) ? 0 : state
     );
     if (v === true) return 1;
     if (v === false) return 0;
@@ -566,7 +573,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.25.0';
+    var VERSION = '1.26.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -846,6 +853,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hooked: false, hadOwnGUI: false, origGUI: null, origShow: null,
       hadOwnCb: false, origCb: null,
       origFormulaSim: null, formulaCache: {}, // local FORMULA evaluation
+      formulaPrev: {}, // per-block previous output — feeds the `state` magic variable across runs
       stopBtnEl: null, // turns red while simulated values are on the canvas
       runBtnEl: null, replayBtnEl: null, statusEl: null, // pro controls + status chip
       dimEls: [], replayTimer: null, fillOverlays: [], postPaintTimer: null, // flow-visualisation extras
@@ -958,6 +966,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (formulaDef && typeof formulaDef.sim === 'function') {
         simState.origFormulaSim = formulaDef.sim;
         simState.formulaCache = {};
+        simState.formulaPrev = {};
         formulaDef.sim = function (block) {
           try {
             var f = block && block.data && block.data.formula;
@@ -976,7 +985,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               var key = f + '|' + inputCount;
               var compiled = simState.formulaCache[key] ||
                 (simState.formulaCache[key] = compileVvFormula(f, inputCount));
-              var result = compiled(inputs);
+              var prev = simState.formulaPrev[block.pointer];
+              var result = compiled(inputs, undefined, prev === undefined ? 0 : prev);
+              simState.formulaPrev[block.pointer] = result;
               this.simulation_stack_block_values[block.pointer] = result;
               return result;
             }

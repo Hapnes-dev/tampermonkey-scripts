@@ -337,9 +337,14 @@ Highlights of the `data` shapes:
   `inp0==2`, §21), ternary `?:`, boolean `and`/`&&`/`or`/`||`, and the
   functions `min max abs round floor ceil sqrt pow sin cos log log10 exp fmod pi() random()`.
   Because the server evaluator is PHP, production formulas also use **PHP stdlib**:
-  `intval(inp0)`, `idate('H')`, `substr(inp0,0,8)`, `strpos(inp0,inp1) !== false`,
-  `strtotime(inp0)`, `gmdate('H:i:s', inp0*3600)`, `sort(...)`, uppercase `AND`, and `null`
-  in ternary branches (`… ? 1 : null` — null result writes nothing). Two **VV domain
+  `intval(inp0)`, `floatval(inp0/60.0)`, `idate('H')`, `substr(inp0,0,8)`,
+  `strpos(inp0,inp1) !== false`, `stripos(inp0,'snø') !== false` (case-insensitive — weather-text
+  matching), `strtotime(inp0)`, `gmdate('H:i:s', inp0*3600)`, `sort(...)`, uppercase `AND`, and
+  `null` in ternary branches (`… ? 1 : null` — null result writes nothing). **`state` magic
+  variable** (fleet-scraped 2026-07-11, plant 9760): a formula may reference `state` = **its own
+  previous output** — `(inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))` is a complete
+  changeover/hysteresis in ONE block (1 above high limit, 0 below low limit, otherwise hold) —
+  the formula-level alternative to `LATCH`. Two **VV domain
   built-ins** exist server-side (fleet-scraped 2026-07-11): `is_calendar_deviating(<days>)`
   and `value_based_on_schema(<a>,<b>,<days>)` — calendar-schema helpers only the server can
   resolve (the client evaluator falls back to a manual-value prompt for these).
@@ -904,7 +909,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.25.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.26.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -931,9 +936,11 @@ by volatile-field-stripped logic/layout fingerprints so host background noise ne
 redraw "blinking". **⧉ Log** copies a self-contained debug report (inputs, per-pin flow trace,
 results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()`. **FORMULA blocks are
 evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
-`time()`/`date()` and the PHP stdlib subset `intval`/`idate`/`substr`/`strpos`/`strtotime`/
-`null` → JS — 67/71 of all fleet formulas compile (§21 corpus v4); inputs gathered by pin;
-un-evaluable formulas — `gmdate`, `sort`, server-only calendar built-ins — become manual rows).
+`time()`/`date()`, the PHP stdlib subset `intval`/`floatval`/`idate`/`substr`/`strpos`/
+`stripos`/`strtotime`/`null`, and the `state` magic variable (previous output, persisted
+per block across runs while the panel is open) → JS — 120/124 of all fleet formulas compile
+(§21 corpus v5); inputs gathered by pin; un-evaluable formulas — `gmdate` multi-char formats,
+`sort`, server-only calendar built-ins — become manual rows).
 While the panel is open it shadows and restores **six host hooks**: `get_user_input`,
 `system_dialogs.information.show`, `paper.callback`, `paper.simulator_stop` (swallow
 `Timed stop`/`Done`), `__highlight_block_connection` (null-fix), `paper.blocks.FORMULA.sim`
@@ -1898,3 +1905,52 @@ sketch in the fleet. Findings:
   The 4 remaining fall back to manual-value prompts by design: `gmdate` (multi-char format
   strings), `sort`, and the server-only domain built-ins `is_calendar_deviating` /
   `value_based_on_schema` (§6 FORMULA grammar).
+
+**Corpus v5 — the architecture deep-dive (2026-07-11):** 52 more plants / **454 more sketches
+(zero failures)** → combined corpus **~138 plants / 1508 sketches / 37,503 blocks / 36,970
+wires / 2,592 `by_refference` wires**. This round analysed *how* production logic is built,
+not just what's in it (motif census, graph statistics, feeder censuses over every wire):
+
+- **Three sketch archetypes** (composition census): **process-hub** — a library process plus
+  only feeders/outputs, no loose logic — 394 sketches (26 %); **pure block logic** (no process
+  instances at all) 579 (38 %); **mixed** 535 (35 %). All 1508 are `mode: "function"`.
+- **Production logic is SHALLOW and WIDE**: 71 % of sketches have a longest source→sink path
+  of ≤4 blocks (only 19 sketches ≥10); big sketches grow by stamping parallel rows, not deeper
+  chains. 84 % of connected outputs feed exactly one input; fan-out ≥5 exists but is rare (227).
+  Median sketch is 11–20 blocks; 337 sketches are ≤5 blocks; only 60 exceed 80.
+- **Motif census** (occurrences fleet-wide): process→WRITETOUNIT **1341** and
+  process→VIRTUALOUT **938** dominate — the single most common production pattern is
+  *"library process computes, sketch writes it out"*. Then the gated write IF→WRITETOUNIT
+  **839**, the plain parameter bridge PARAMV→WRITETOUNIT **515**, setpoint-select
+  SELECTOR→write **497**, HOURMETER counters 74, DELAY_VARIABLE→ALARM persistence 32,
+  FORMULA-decoder→IF 19, LATCH 10, TOGGLE_INTERVAL 8.
+- **IF is an enable SWITCH more than a computed gate**: of everything feeding an IF
+  condition pin, **CONST is 69 %** (574 of ~830 — a hand-flippable on/off constant), vs
+  COMP_AND 64, PARAMV 59, comparators <30 combined. Generators should reproduce this: gate
+  switchable behaviour on a labelled boolean `CONST` the customer can toggle.
+- **What feeds hardware writes** (WRITETOUNIT inputs): PROCESS 1341 › IF 839 › PARAMV 515 ›
+  SELECTOR 398 › CONST 383 — direct CONST→WRITETOUNIT force-writes are a real (if blunt)
+  production pattern.
+- **What fires alarms** (ALARM condition pin): PROCESS 192 › DELAY 125 › LIKE 124 ›
+  comparator family ~130 combined › DELAY_VARIABLE 32 — nearly every comparator-driven alarm
+  goes through a DELAY/DELAY_VARIABLE debounce first.
+- **What feeds a process instance**: CONST **10,926** + PARAMV **5,191** (the canonical hub:
+  a process pin-fed by constants and parameter reads), then TRANSFORM_MAPPED 454 (refrigerant
+  pressure→temp conversion *before* the process), CALENDAR 122, TAGVALUE 107, TEMP_VALUE 88,
+  and PROCESS→PROCESS chaining 68.
+- **Template stamping confirmed at structure level** (identical block-multiset + wire count):
+  the 44-block kurvestyring stamp ×36 across 6 plants, 63-block sandstadkurve/kurvestyring
+  stamps ×50 across 8, the 2-block PARAMV→WRITETOUNIT bridge as a named template on 13 plants
+  ("virt funksjon", "Skriv duggpunkt til undersentral"), the 10-block Yr-data sketch ×12
+  plants, an 8-block "P<n> v2" pump template ×15, scenario-selector triads
+  (`Scenario_<rom>` ×33 on 3 plants). Name families: kurvestyring/sandstadkurve ×56,
+  `init setup` ×16, `yr no` ×13, `ecomax` ×12, `esmelt`/`yr ingen kommunikasjon` ×8 each.
+- **Process eids can be PURE WORDS**: `EW_VENTILATION_ROOM_TEMPERATUR_HIGH_LIMIT`
+  (block rev 1269, 2 plants) — no `<lib>_<uniqid>` segment at all; treat any
+  `compile_type:"process"` block's `type` as an opaque key.
+- **FORMULA discoveries**: 124 unique formulas fleet-wide; **120/124 compile locally** after
+  v1.26.0 added `stripos`/`floatval` and the **`state` magic variable** (§6) — production
+  weather-text matching `stripos(inp0,'snø')!==false`, unit math `floatval(inp0/60.0)`, and
+  the plant-9760 changeover `(inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))`. Still
+  server-only: `gmdate` multi-char formats, `sort`, `is_calendar_deviating`,
+  `value_based_on_schema`.

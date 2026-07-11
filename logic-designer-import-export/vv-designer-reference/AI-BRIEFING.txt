@@ -242,11 +242,14 @@ SELECTION AND MATH EXPRESSIONS
   (null result = write nothing), and functions min max abs round floor ceil
   sqrt pow sin cos log log10 exp fmod pi() random() time()
   date('w|W|N|G|H|i|s|j|d|n|m|Y|y|z|U'). PHP stdlib also works (the evaluator
-  IS PHP; all production-verified): intval(x), idate('H'), substr(s,a,b),
-  strpos(haystack,needle) !== false, strtotime(s), gmdate(fmt,ts).
+  IS PHP; all production-verified): intval(x), floatval(x), idate('H'),
+  substr(s,a,b), strpos(haystack,needle) !== false, stripos(...) (case-
+  insensitive), strtotime(s), gmdate(fmt,ts). SPECIAL: the variable `state`
+  = the formula's own PREVIOUS output — production changeover/hysteresis in
+  one block: (inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state)).
   NOT allowed: if(){} blocks, named constants (pi, e), variables other than
-  inp0..inpN-1. Prefer plain arithmetic blocks for trivial math; formulas
-  beyond the documented set cannot be locally simulated before deploy.
+  inp0..inpN-1 and state. Prefer plain arithmetic blocks for trivial math;
+  formulas beyond the documented set cannot be locally simulated before deploy.
 - TRANSFORM_MAPPED "transform_mapped.run" — refrigerant conversion tables
   (pressure→temperature etc.). Configure post-import.
 
@@ -313,6 +316,14 @@ R2. TOGGLE ON RISING EDGE (verified live):
 R3. HYSTERESIS / HOLD UNTIL RESET:
     comparator(high) → LATCH.put0 (set); comparator(low) → LATCH.put1 (reset);
     LATCH output → downstream.
+    Formula alternative (one block, production-verified): FORMULA with
+    (inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state)) — inp0 value, inp1 high
+    limit, inp2 low limit; `state` holds the previous output between limits.
+
+R3b. ENABLE SWITCH (the fleet's most common IF usage — 69% of IF gates):
+    CONST(boolean, labelled e.g. "Aktiver styring") → IF.put0; value → IF.put1
+    → WRITETOUNIT/VIRTUALOUT. Gives the customer a hand-flippable on/off for
+    the whole behaviour. Prefer this over hardcoding always-on writes.
 
 R4. PICK SETPOINT BY CONDITION (night/eco setback, spot price):
     condition (CALENDAR / WEATHER_SUN / SPOT_PRICE_LOW) → SELECTOR.put0;

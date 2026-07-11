@@ -2541,11 +2541,18 @@ All of these are deployed on live plants and use only the documented grammar:
 The server evaluator is PHP, so production also uses PHP stdlib + null:
   (intval(inp0) == 1) ? 0 : ((intval(inp0) == 2) ? 1 : null)   (null = write nothing)
   strpos(inp0, inp1) !== false ? true : false                  (substring test)
+  stripos(inp0, 'snø')!==false?true:false                      (case-insensitive - weather text)
   substr(inp0, 0, 8)                                           (string slice)
+  floatval(inp0/60.0)                                          (kW -> kWh unit math)
   idate("H")                                                   (current hour as int)
   (abs(time() - strtotime(inp0)) <= inp1/2) ? 1 : 0            (timestamp freshness)
   gmdate("H:i:s", inp0*3600)                                   (seconds -> H:i:s text)
   inp0 == 1 AND inp1 == 0                                      (uppercase AND works)
+THE state MAGIC VARIABLE - a formula can reference its OWN PREVIOUS OUTPUT:
+  (inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))
+  = complete changeover/hysteresis in ONE formula block: output 1 when inp0 is
+  at/above the high limit (inp1), 0 when below the low limit (inp2), otherwise
+  HOLD the previous output. The formula-level alternative to a LATCH block.
 Server-only VV domain built-ins also exist (calendar-schema helpers - a client
 evaluator cannot resolve these): is_calendar_deviating(14), value_based_on_schema(1,0,14).
 
@@ -2783,13 +2790,42 @@ The largest corpus sketches are small recipes REPEATED, not new structures:
   - "init-oppsett" (28 blocks): four different library processes, each fed by
     PARAMV / CONST / CALENDAR blocks on their required inputs.
 
-Corpus-wide block frequency (fleet scrape 2026-07-11: ~87 plants / ~1054 sketches /
-24,994 blocks): CONST 8394, PARAMV 5599, WRITETOUNIT 2875, VIRTUALOUT 1658, then
-FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs. Production VV logic mostly
-CONTROLS (writes values); it does not just alarm. ZERO block types outside the
-documented allowlist appeared in the entire fleet corpus. Binding split at scale:
-singular driver_id 3331 vs plural driver_ids 2155 on PARAMV (WRITETOUNIT 1501 vs
-1311) - legacy singular is the MAJORITY, so always READ both, GENERATE plural.
+HOW PRODUCTION LOGIC IS ARCHITECTED (deep-dive census, 138 plants / 1508
+sketches / 37,503 blocks / 36,970 wires, 2026-07-11):
+
+  - Three archetypes: PROCESS-HUB (a library process + only feeders/outputs)
+    26% of sketches; PURE BLOCK LOGIC (no processes) 38%; MIXED 35%.
+  - Logic is SHALLOW and WIDE: 71% of sketches have a longest path of <= 4
+    blocks. Big sketches grow by stamping parallel rows, never deep chains.
+    84% of outputs feed exactly one input. Median sketch: 11-20 blocks.
+  - Top motifs by occurrence: process -> WRITETOUNIT (1341), process ->
+    VIRTUALOUT (938), gated write IF -> WRITETOUNIT (839), parameter bridge
+    PARAMV -> WRITETOUNIT (515), setpoint select SELECTOR -> write (497).
+  - IF is an ENABLE SWITCH more than a computed gate: 69% of IF condition
+    pins are fed by a labelled boolean CONST the customer can flip - not a
+    comparator. Reproduce this: gate switchable behaviour on a named CONST.
+  - Alarms are debounced: comparator -> DELAY/DELAY_VARIABLE -> ALARM is the
+    standard chain (direct comparator -> ALARM is rare).
+  - The canonical process hub: one process instance with pins fed by CONSTs
+    (10,926 wires fleet-wide) + PARAMVs (5,191); TRANSFORM_MAPPED converts
+    pressure -> temperature BEFORE the process pin when needed (454).
+    Processes chain process -> process (68).
+  - Templates are stamped byte-identically across plants: the 2-block
+    PARAMV -> WRITETOUNIT bridge is a named template on 13 plants; kurve-
+    styring/sandstadkurve 44-63-block stamps ~86x across 8 plants; the Yr
+    weather-data sketch on 12 plants.
+  - Process instance type keys can be PURE WORDS with no uniqid segment
+    (EW_VENTILATION_ROOM_TEMPERATUR_HIGH_LIMIT) - treat any
+    compile_type "process" type as an opaque key that must exist in the
+    target plant's library.
+
+Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
+VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.
+Production VV logic mostly CONTROLS (writes values); it does not just alarm.
+ZERO block types outside the documented allowlist appeared in the entire
+fleet corpus (37,503 blocks). Binding split at scale: singular driver_id 3331
+vs plural driver_ids 2155 on PARAMV (WRITETOUNIT 1501 vs 1311) - legacy
+singular is the MAJORITY, so always READ both, GENERATE plural.
 
 ================================================================================
 FINAL CHECKLIST BEFORE DELIVERING A GENERATED FILE
