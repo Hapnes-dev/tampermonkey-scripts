@@ -2556,6 +2556,12 @@ THE state MAGIC VARIABLE - a formula can reference its OWN PREVIOUS OUTPUT:
   HOLD the previous output. The formula-level alternative to a LATCH block.
 Server-only VV domain built-ins also exist (calendar-schema helpers - a client
 evaluator cannot resolve these): is_calendar_deviating(14), value_based_on_schema(1,0,14).
+Full-PHP wizardry is possible server-side (won't simulate locally) - the fleet's
+Legionella scheduler computes the day-of-month of the month's LAST SUNDAY:
+  date('d', strtotime(implode(' ', ['last sunday of', date('M')])))
+FORMULA INVARIANT: properties.input_count = {"alias_text":"Input count","value":N}
+where N EQUALS the wired-input count - true for 530/530 production formulas and
+enforced by validate-vv-sketch.js. Without it extra pins do not exist.
 
 --- FORMULA as a MODE DECODER (production favourite) ---
 One integer mode parameter fans out into N single-input FORMULA blocks, each
@@ -2838,6 +2844,17 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
     SUBTRACT -> TRANSFORM_MAPPED.put0 (superheat into refrigerant map), and
     OPTIMAL_START_STOP wiring: put0 <- CALENDAR_2_0 (by_ref), put2 <- PARAMV,
     puts 3-5 <- CONSTs.
+  - When READING production sketches, expect clutter: 27% of sketches contain
+    unwired helper blocks (leftover CONSTs, parked readings) - not an error.
+    Generated sketches should still wire everything.
+  - groups is [] in nearly every sketch, but NON-EMPTY groups exist (visual
+    group boxes: {id, blocks:["<string ids>"], alias_text, open, box}) -
+    preserve them when editing an existing sketch; emit [] for new ones.
+  - Sketch NAMES read like drawing labels in the plant's language:
+    "Kurvestyring", "Yr.no", "360.001 Sandstadkurve", "+01=360.009_Kurve".
+  - DELAY_VARIABLE's delay pin is usually a CONST but 47 production sketches
+    compute it with a FORMULA (dynamic delay) - allowed. PULSE_COUNT's level
+    pin is CONST-only (host-enforced), 17/17 in the fleet.
 
 Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
 VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.

@@ -58,7 +58,11 @@ no trailing commas, no placeholders outside the rules below.
   "exported_at": "<ISO8601 timestamp>",
   "source_plant_id": null,
   "source_sketch_id": null,
-  "name": "<short descriptive name>",
+  "name": "<short descriptive name>",   <- name it like a technician labels a
+                                            drawing, in the plant's language:
+                                            "Kurvestyring", "Snøsmelt styring",
+                                            optionally a drawing-number prefix
+                                            ("360.001 Kurvestyring")
   "block_count": <integer, must equal sketch.blocks.length>,
   "connection_count": <integer, must equal sketch.connections.length>,
   "sketch": {
@@ -206,8 +210,10 @@ ARITHMETIC (compile_type "function", output float, data null)
 TIME / PERSISTENCE / MEMORY
 - DELAY_VARIABLE | func "alarm_multi_delay" | data null
   "Condition must hold N seconds before output goes true." Inputs: put 0 = the
-  boolean/value; put 1 = a CONST with the delay in SECONDS (required); put 2 =
-  optional CONST delay-when-false. Best debounce block for generated logic.
+  boolean/value; put 1 = the delay in SECONDS (required) - usually a CONST,
+  but a FORMULA output is also production-valid (dynamic delay, 47 fleet-wide);
+  put 2 = optional CONST delay-when-false. Best debounce block for generated
+  logic. (PULSE_COUNT put 1 is different: CONST-only, host-enforced.)
 - DELAY | func "alarm_multi_delay" — same idea but delay set in a dialog;
   prefer DELAY_VARIABLE.
 - AGE_OF_VALUE "age_of_value", DELTA_T "delta_t" — age of a value.
@@ -257,6 +263,11 @@ SELECTION AND MATH EXPRESSIONS
   NOT allowed: if(){} blocks, named constants (pi, e), variables other than
   inp0..inpN-1 and state. Prefer plain arithmetic blocks for trivial math;
   formulas beyond the documented set cannot be locally simulated before deploy.
+  A FORMULA with more than one input MUST declare
+  properties.input_count = {"alias_text": "Input count", "value": N} where N
+  EQUALS the number of wired inputs (fleet invariant, 530/530 production
+  formulas; the validator enforces it) - without it, extra input pins do not
+  exist and wires to them are silently dropped.
 - TRANSFORM_MAPPED "transform_mapped.run" — refrigerant conversion tables
   (pressure→temperature etc.). Configure post-import.
 

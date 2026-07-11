@@ -341,6 +341,15 @@ function validateSketchDocument(doc, report) {
 
   // ── every required input pin wired? + special pin constraints ──
   for (const [id, b] of ids) {
+    // fleet invariant (530/530 production FORMULAs): declared input_count == wired inputs
+    if (b.type === 'FORMULA' && b.properties && !Array.isArray(b.properties) &&
+      b.properties.input_count && b.properties.input_count.value !== undefined) {
+      const declared = parseInt(b.properties.input_count.value, 10);
+      const wired = doc.connections.filter((c) => c.target && c.target.id === id).length;
+      if (Number.isInteger(declared) && declared !== wired) {
+        err(`block ${id} (FORMULA) properties.input_count is ${declared} but ${wired} input(s) are wired — they must match (a declared-but-unwired formula pin breaks the connect/sim contract)`);
+      }
+    }
     const need = REQUIRED_INPUTS[b.type];
     if (need === undefined) continue;
     for (let putIdx = 0; putIdx < need; putIdx++) {

@@ -261,7 +261,10 @@ Highlights of the `data` shapes:
   period_amount:5}}` — ⚠ the key is **`period`** here, while PERIODE_VALUE / PULSE_COUNT /
   CORRELATION use **`periode`**. Copy the exact key per block type.
 - **DELAY_VARIABLE**: `data: null` even in production — it needs no configuration; the
-  delays arrive via its CONST inputs (i1 true-delay, i2 optional false-delay).
+  delays arrive via its inputs (i1 true-delay, i2 optional false-delay). i1 is usually a
+  `CONST`, but **FORMULA-computed dynamic delays are production-real** (47 of 171 fleet-wide;
+  one TEMP_VALUE). Contrast `PULSE_COUNT` i1, which is CONST-only (host `require_type` —
+  17/17 in the fleet).
 - **ALARM**: `{alias_text, pri:'a'|'b'|'c', alarm_type:'general'|'system',
   alarm_destination:'general'|'ew'|'cw'}` (destination labels: General / Energy Watcher /
   Climate Watcher).
@@ -383,7 +386,13 @@ Fleet census (§21 v6): `format_extra` is the MOST-set property (1945 of 50k blo
 `input_count` 1173, `documentation` 529, `input_alias_texts`/`interval`/`interval_offset` ~357
 each; `interval` values cluster at `10 sec`/`30 sec`/`1 min` (incl. staggered odd values like
 `32 sec`). **Process instances** may additionally carry `block_id_map` (`{alias_text:'',
-value:[…]}` — internal id-remap bookkeeping; copy verbatim, never invent).
+value:[…]}` — internal id-remap bookkeeping; copy verbatim, never invent) and an
+`override.mode` (`'single'`, repeat machinery — the only override key besides `alias_text` in
+the whole fleet). `runtime` is `{}` on almost every block; when set it holds
+`require_plant_revision` (block-level stamp, ×320) or the TAGVALUE repeat machinery
+(`repeat`/`repeat_block`/`repeat_count`). **FORMULA invariant**: when
+`properties.input_count` is set it equals the number of wired inputs in **530 of 530**
+fleet blocks — generators must keep `input_count` == wired-input count.
 
 ---
 
@@ -440,6 +449,11 @@ gets persisted by `save_sketch`/`save_process` and re-hydrated by `load()`:
   ]
 }
 ```
+
+Production-verified group shape (fleet corpus v7 — 11 of 2199 sketches use groups; e.g.
+`{"id":0,"blocks":["1","2"],"alias_text":"Logic","open":true,"box":{"x1":180,"y1":60,"x2":320,
+"y2":110}}`): note `blocks` holds **string** block-ids, `open` is the expand/collapse state.
+Rare but real — tools must PRESERVE non-empty `groups` when round-tripping; generators emit `[]`.
 
 Notes:
 - **`require_plant_revision`** is computed at save time as the **max** of every used block's
@@ -1997,3 +2011,40 @@ puts in every field — the *defaults* a generator should reproduce:
 - **New property sightings**: `block_id_map` on process instances (10 distinct processes,
   usually `{alias_text:'', value:[]}`), `output_types` on DATE_TIME. Zero new block types —
   the allowlist still holds at 50k blocks.
+
+**Corpus v7 — contracts & conventions census (2026-07-11):** 53 more plants / **310 more
+sketches (zero failures)** → combined **~244 plants / 2199 sketches / 60,443 blocks / 59,687
+wires / 3,468 `by_refference`**. This round measured the invariants and conventions no one
+wrote down:
+
+- **`groups` are REAL but rare**: 11 of 2199 sketches carry non-empty `groups` — shape
+  confirmed in §8 (`blocks` = STRING ids, `open` expand/collapse, `box` coords). Tools must
+  preserve them; the old "always `[]`" claim held only for the 17-file export corpus.
+- **Orphan blocks are normal production clutter**: 2,387 non-sink blocks (5 %) have no
+  outgoing wire, spread over **604 sketches (27 %)** — leftover CONSTs, parked readings.
+  Importers/validators must NOT reject unwired helper blocks; AIs reading a sketch should
+  expect them. (Generated sketches should still wire everything.)
+- **FORMULA `input_count` == wired inputs in 530/530** — a perfect fleet invariant, now
+  enforced by `validate-vv-sketch.js`.
+- **`require_plant_revision` distribution**: 0 ×1553 (71 %) › 620 ×449 (20 %) › 1543 ×60 ›
+  604 ×36 › 1460 ×35 › 1683 ×23 › 1670 ×19 — and **missing entirely ×5** (readers must
+  tolerate an absent field; treat as 0).
+- **Pin-source contracts at scale**: DELAY_VARIABLE delay pin ← CONST 123 / **FORMULA 47**
+  (dynamic delays are real) / TEMP_VALUE 1; PULSE_COUNT level pin ← CONST 17/17 (the
+  require_type holds); SELECTOR condition ← PARAMV 122 (raw digital) › COMP_OR 96 › CONST 93
+  › comparators.
+- **Multi-output pins in use**: HOURMETER `.out1`/`.out2` (×58/×90), IF_ELSE `.out1` (the
+  else branch, ×70), and process instances with 2-3 wired outputs — generators may wire
+  `source.put > 0` on these.
+- **Naming conventions** (2199 names): short Norwegian noun phrases ("Kurvestyring",
+  "Snøsmelt styring"), often with a numeric plant-drawing prefix (`360.001 Kurvestyring`,
+  `+01=360.009_Kurve` — electrical-tag style). Name sketches the way a technician labels a
+  drawing, in the plant's language.
+- **Layout**: x columns span ~100–1200 in steps of ~100-200 (wider than the minimal 40-700
+  guidance); y rows ~120-150 apart. Follow dataflow left→right.
+- **override.mode** (`'single'`) on process instances is the only non-alias_text override
+  key fleet-wide.
+- **FORMULA**: 174 unique; 168/174 compile locally (v1.27.0 grammar — nothing new needed
+  this round). New server-side idiom worth knowing: the Legionella scheduler
+  `date('d', strtotime(implode(' ', ['last sunday of', date('M')])))` — day-of-month of the
+  month's last Sunday (array literal + relative strtotime; manual fallback in the sim).
