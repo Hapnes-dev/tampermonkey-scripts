@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.35.0
+// @version      1.35.1
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -390,11 +390,12 @@ function buildSimulationLog(run, meta) {
   var L = [];
   L.push('=== VV DESIGNER - LIVE SIMULATE LOG (LDIO v' + (meta.version || '?') + ') ===');
   L.push('Plant: ' + (meta.plantId || '?') + ' | Sketch: ' + (meta.sketchName || '(unsaved)') + ' | Mode: ' + (meta.mode || '?'));
-  L.push('This is a CLIENT-SIDE simulation of an IWMAC VV Designer function-block sketch');
-  L.push('(blocks wired output->input; format reference: vv-designer-reference/AI-BRIEFING.txt');
-  L.push('in https://github.com/hapnes-dev/tampermonkey-scripts). Values below are what each');
-  L.push('block computed with the given inputs. Please analyse whether the logic behaves as');
-  L.push('intended and point out what to change.');
+  L.push('This log documents ONE client-side simulation run of a VV Designer sketch —');
+  L.push('nothing was written to the plant. How to read it: SUMMARY says what the run');
+  L.push('means in plain language, INPUTS are the values it used, FLOW shows the');
+  L.push('evaluation step by step (which block fed which input pin with what value),');
+  L.push('and BLOCKS/WIRES describe the sketch itself. Analyse whether the logic');
+  L.push('behaves as intended and point out exactly what to change.');
   L.push('');
   var total = (run.stack && run.stack.blocks) ? run.stack.blocks.length : 0;
   if (!run.ok) {
@@ -786,7 +787,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.35.0';
+    var VERSION = '1.35.1';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
