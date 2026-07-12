@@ -757,9 +757,14 @@ palette def), keep the original, restore when done.
 **1. Install five shadows first:**
 ```js
 const p = logic_designer.paper;
-// (a) values instead of prompt() — MUST mirror all three side effects
+// (a) values instead of prompt() — MUST mirror all three side effects.
+//     Preserve STRINGS: weather-text parameters feed stripos()/substr()
+//     formulas (production pattern) — parseFloat-only turns them into 0.
 p.get_user_input = function (block) {
-  var v = parseFloat(myValues[block.pointer]); if (isNaN(v)) v = 0;
+  var raw = myValues[block.pointer], v;
+  if (raw == null || String(raw).trim() === '') v = 0;
+  else if (isFinite(raw)) v = parseFloat(raw);
+  else v = String(raw);
   this.simulation_stack_block_values[block.pointer] = v;
   this.simulation_user_values[block.pointer] = v;
   this.simulation_auto_proceed = true;
@@ -1007,7 +1012,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.31.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.32.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /

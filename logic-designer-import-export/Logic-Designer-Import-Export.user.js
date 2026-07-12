@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.31.0
+// @version      1.32.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -667,7 +667,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.31.0';
+    var VERSION = '1.32.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1032,8 +1032,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       paper.get_user_input = function (block) {
         var ptr = block && block.pointer;
         var raw = simState.values[ptr];
-        var v = parseFloat(raw);
-        if (isNaN(v)) { v = 0; if (ptr != null && simState.missing.indexOf(ptr) === -1) simState.missing.push(ptr); }
+        var v;
+        if (raw === undefined || raw === null || String(raw).trim() === '') {
+          v = 0;
+          if (ptr != null && simState.missing.indexOf(ptr) === -1) simState.missing.push(ptr);
+        } else if (isFinite(raw)) {
+          v = parseFloat(raw);
+        } else {
+          // STRING value — weather texts and other string parameters feed
+          // stripos/substr/strpos formulas and string CONST flows (fleet
+          // production pattern: stripos(inp0,'snø') on Yr text).
+          v = String(raw);
+        }
         this.simulation_stack_block_values[ptr] = v;
         this.simulation_user_values[ptr] = v;
         this.simulation_auto_proceed = true;
@@ -1667,8 +1677,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             (r.outputCount > 1 ? '. NB: this process has ' + r.outputCount + ' outputs — the client simulator carries ONE value per block, so all its outputs get this value.' : '')
           : r.label + ' (' + r.type + ')';
         var input = document.createElement('input');
-        input.type = 'number';
-        input.step = 'any';
+        // text (not number) so STRING parameters are enterable too — e.g.
+        // weather text feeding a stripos() formula; numeric entry works as
+        // before (numbers stay numbers in the run).
+        input.type = 'text';
+        input.setAttribute('inputmode', 'decimal');
         input.placeholder = '0';
         input.setAttribute('data-ptr', String(r.pointer));
         if (simState.values[r.pointer] !== undefined) input.value = simState.values[r.pointer];
@@ -2002,6 +2015,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         var sketch = diag.sketch;
         var envelope = (parsed && parsed.format === 'vv-fbx-sketch') ? parsed : null;
+        // Mode mismatch: loading a process-mode definition onto a function-
+        // mode canvas (or vice versa) renders wrong — make it explicit.
+        if (sketch.mode && paper.mode && sketch.mode !== paper.mode) {
+          if (!confirm('This sketch is "' + sketch.mode + '" mode but the canvas is in "' + paper.mode + '" mode.\n\n' +
+            'Switch mode first (Set Function/Process Mode in the top bar) for a correct import.\n\nImport anyway?')) return;
+        }
+
         // Non-fatal notes (e.g. empty driver_ids) — surface but continue.
         if (diag.warnings.length) toast(diag.warnings.length + ' note(s): ' + diag.warnings[0] + (diag.warnings.length > 1 ? ' (…)' : ''));
 
