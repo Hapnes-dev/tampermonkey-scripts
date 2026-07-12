@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.0
+// @version      1.32.1
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -667,7 +667,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.32.0';
+    var VERSION = '1.32.1';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -746,9 +746,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-sim-row:last-child { border-bottom: 0; }\
       .ldio-sim-row .ldio-sim-ptr { color: #7aa7d9; flex: 0 0 auto; font: 11px/1.2 Consolas, monospace; }\
       .ldio-sim-row .ldio-sim-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\
-      .ldio-sim-row input[type=number] { width: 70px; background: #141414; color: #e8e8e8;\
+      .ldio-sim-row input[type=number], .ldio-sim-row input[type=text] { width: 70px; flex: 0 0 70px;\
+        background: #141414; color: #e8e8e8;\
         border: 1px solid rgba(255,255,255,0.16); border-radius: 4px; padding: 4px 6px; font-size: 12px; }\
-      .ldio-sim-row input[type=number]:focus { outline: none; border-color: #3d7ab3; }\
+      .ldio-sim-row input[type=number]:focus, .ldio-sim-row input[type=text]:focus { outline: none; border-color: #3d7ab3; }\
       .ldio-sim-row input.ldio-sim-missing { border-color: #d9c07a; }\
       .ldio-sim-mini { padding: 3px 8px; font-size: 11px; border-radius: 4px; }\
       .ldio-sim-val { flex: 0 0 auto; min-width: 46px; text-align: right;\
