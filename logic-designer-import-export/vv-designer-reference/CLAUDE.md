@@ -1097,7 +1097,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.33.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.34.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -1106,7 +1106,13 @@ plant B; `execCommand` fallback since `navigator.clipboard` is unavailable on pl
 A rejected import opens an **itemised error panel** (`diagnoseImport` mirrors the validator's
 rules in-browser against the live `paper.blocks` palette, incl. the FORMULA
 input_count==wired invariant and the §9 mode gating — PROCESSIN/PROCESSOUT/AVERAGE_PERIODE
-only in process mode, PARAMV/TAGVALUE only in function mode); cross-plant import offers a one-click
+only in process mode, PARAMV/TAGVALUE only in function mode). **Modes are never mixed**:
+a mode-mismatched import offers to SWITCH the designer to the file's mode (set_mode clears
+the canvas — unsaved-work warning) or aborts — there is no "import anyway"; a process import
+also clears `application.current_process` so Save process saves as new; exports are
+prefixed `vv-process_`/`vv-sketch_`; Live Simulate titles itself "process definition" in
+process mode, rows PROCESSIN pins as "process pin", and lists PROCESSOUT in Results.
+Cross-plant import offers a one-click
 **driver-id rebind** (`<src>_…` → `<target>_…`) that **skips VIRTUAL ids** (they encode
 source project/sketch numbers — §6; the user is told to recreate the VIRTUALOUT chain),
 warns about CALENDAR/TAGVALUE bindings, **foreign-plant-prefixed ids** (they read nothing —

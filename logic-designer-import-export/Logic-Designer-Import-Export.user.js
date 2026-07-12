@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.33.0
+// @version      1.34.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -122,14 +122,15 @@ function listSimInputBlocks(elements, palette) {
 }
 
 // The sinks worth summarising after a run: output-compiled blocks + WRITETOUNIT
-// (compile_type "function" but semantically a sink).
+// (compile_type "function" but semantically a sink) + PROCESSOUT (compile_type
+// "reference" — the output pins of a process definition in process mode).
 function listSimOutputBlocks(elements) {
   var rows = [];
   for (var key in elements) {
     if (!/^\d+$/.test(key)) continue;
     var el = elements[key];
     if (!el || typeof el !== 'object') continue;
-    if (el.compile_type !== 'output' && el.block_type !== 'WRITETOUNIT') continue;
+    if (el.compile_type !== 'output' && el.block_type !== 'WRITETOUNIT' && el.block_type !== 'PROCESSOUT') continue;
     var label = (el.override && el.override.alias_text) || (el.data && el.data.alias_text) || el.alias_text || '';
     rows.push({ pointer: parseInt(key, 10), type: el.block_type, label: String(label) });
   }
@@ -668,13 +669,15 @@ function listUnknownBlockTypes(sketch, knownTypes) {
   return Object.keys(missing);
 }
 
-// Build a safe filename for the export download.
-function buildExportFilename(plantId, sketchName) {
+// Build a safe filename for the export download. Process definitions get a
+// distinct prefix so a downloads folder never mixes the two kinds.
+function buildExportFilename(plantId, sketchName, mode) {
+  var prefix = (mode === 'process') ? 'vv-process_' : 'vv-sketch_';
   var safe = String(sketchName || 'canvas').replace(/[^a-z0-9_\-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'canvas';
   var d = new Date();
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   var stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
-  return 'vv-sketch_' + (plantId || 'plant') + '_' + safe + '_' + stamp + '.json';
+  return prefix + (plantId || 'plant') + '_' + safe + '_' + stamp + '.json';
 }
 
 // Skip the browser-only body when loaded under Node for tests.
@@ -683,7 +686,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.33.0';
+    var VERSION = '1.34.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -894,12 +897,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
-        a.download = buildExportFilename(envelope.source_plant_id, envelope.name);
+        a.download = buildExportFilename(envelope.source_plant_id, envelope.name, envelope.sketch && envelope.sketch.mode);
         document.body.appendChild(a);
         a.click();
         a.remove();
         setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-        toast('Exported ' + envelope.block_count + ' blocks / ' + envelope.connection_count + ' wires → ' + a.download);
+        var kindOut = (envelope.sketch && envelope.sketch.mode === 'process') ? 'process definition' : 'sketch';
+        toast('Exported ' + kindOut + ': ' + envelope.block_count + ' blocks / ' + envelope.connection_count + ' wires → ' + a.download);
       } catch (err) {
         console.error('[' + SCRIPT_NAME + '] export failed:', err);
         toast('Export failed (see console).', 'error');
@@ -937,7 +941,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var text = JSON.stringify(envelope, null, 2);
         var ok = copyTextToClipboard(text);
         if (ok) {
-          toast('Copied ' + envelope.block_count + ' blocks / ' + envelope.connection_count + ' wires as JSON — paste into Import on the target plant.');
+          var kindCp = (envelope.sketch && envelope.sketch.mode === 'process') ? 'process definition' : 'sketch';
+          toast('Copied ' + kindCp + ': ' + envelope.block_count + ' blocks / ' + envelope.connection_count + ' wires as JSON — paste into Import on the target plant' + (kindCp === 'process definition' ? ' (in Process Mode)' : '') + '.');
         } else {
           toast('Could not access the clipboard — use Export (file) instead.', 'error');
         }
@@ -1688,11 +1693,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ptr.textContent = '(' + r.pointer + ')';
         var label = document.createElement('span');
         label.className = 'ldio-sim-label';
-        label.textContent = r.label + ' · ' + (r.isProcess ? 'process output' : r.type);
+        label.textContent = r.label + ' · ' + (r.isProcess ? 'process output' : (r.type === 'PROCESSIN' ? 'process pin' : r.type));
         label.title = r.isProcess
           ? r.label + ' (' + r.type + ') — a library process computes on the plant, not in the browser; enter the OUTPUT value it would produce' +
             (r.outputCount > 1 ? '. NB: this process has ' + r.outputCount + ' outputs — the client simulator carries ONE value per block, so all its outputs get this value.' : '')
-          : r.label + ' (' + r.type + ')';
+          : (r.type === 'PROCESSIN'
+            ? r.label + ' (PROCESSIN) — an input pin of this process definition; enter the value an instance would feed it'
+            : r.label + ' (' + r.type + ')');
         var input = document.createElement('input');
         // text (not number) so STRING parameters are enterable too — e.g.
         // weather text feeding a stripos() formula; numeric entry works as
@@ -1758,8 +1765,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var h = document.createElement('h3');
       h.className = 'ldio-sim-head';
       var title = document.createElement('span');
-      title.textContent = 'Live simulate';
-      title.title = 'Set inputs, watch the flow on the canvas. Drag the header to move; drag the bottom-right corner to resize.';
+      title.textContent = 'Live simulate' + (paper.mode === 'process' ? ' — process definition' : '');
+      title.title = (paper.mode === 'process'
+        ? 'Simulating a PROCESS DEFINITION: each Process Input pin gets a test value below (what an instance would feed it); Process Out rows show the resulting output pins. '
+        : '') + 'Set inputs, watch the flow on the canvas. Drag the header to move; drag the bottom-right corner to resize.';
       var xBtn = document.createElement('button');
       xBtn.type = 'button';
       xBtn.className = 'ldio-sim-x';
@@ -2032,11 +2041,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         var sketch = diag.sketch;
         var envelope = (parsed && parsed.format === 'vv-fbx-sketch') ? parsed : null;
-        // Mode mismatch: loading a process-mode definition onto a function-
-        // mode canvas (or vice versa) renders wrong — make it explicit.
+        // Mode mismatch: a process definition must never load onto a
+        // function-mode canvas (or vice versa). Offer to switch mode — the
+        // host's set_mode clears the canvas (§9), so warn about unsaved work.
+        // There is deliberately no "import anyway into the wrong mode".
         if (sketch.mode && paper.mode && sketch.mode !== paper.mode) {
-          if (!confirm('This sketch is "' + sketch.mode + '" mode but the canvas is in "' + paper.mode + '" mode.\n\n' +
-            'Switch mode first (Set Function/Process Mode in the top bar) for a correct import.\n\nImport anyway?')) return;
+          var kindIn = sketch.mode === 'process' ? 'a PROCESS definition' : 'a FUNCTION sketch';
+          var wantSwitch = confirm('This file is ' + kindIn + ', but the designer is in ' +
+            String(paper.mode).toUpperCase() + ' mode.\n\n' +
+            'OK = switch the designer to ' + sketch.mode + ' mode and import there' +
+            (paper.changed ? '\n     (the canvas has UNSAVED changes — switching discards them)' : '\n     (the canvas is cleared by the mode switch)') +
+            '\nCancel = abort the import (nothing is changed)');
+          if (!wantSwitch) return;
+          paper.set_mode(sketch.mode);
+          if (W.application && typeof W.application.reset === 'function') W.application.reset();
         }
 
         // Non-fatal notes (e.g. empty driver_ids) — surface but continue.
@@ -2095,14 +2113,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         paper.changed = true; // imported content is unsaved by definition
 
         // This is NEW content on this plant — make Ctrl+S open the save-as
-        // dialog instead of silently overwriting a previously open sketch.
+        // dialog instead of silently overwriting a previously open sketch
+        // (or, in process mode, a previously open process definition).
         if (W.application) {
           W.application.current_sketch = null;
           W.application.current_sketch_name = null;
+          if ('current_process' in W.application) W.application.current_process = null;
         }
 
-        toast('Imported ' + sketch.blocks.length + ' blocks / ' + sketch.connections.length + ' wires' + rebindNote +
-          '. Use File → Save sketch to store it on this plant.');
+        var importedKind = (sketch.mode === 'process') ? 'process definition' : 'sketch';
+        toast('Imported ' + importedKind + ': ' + sketch.blocks.length + ' blocks / ' + sketch.connections.length + ' wires' + rebindNote +
+          (sketch.mode === 'process'
+            ? '. Use File → Save process, then Publish process to make it a library block.'
+            : '. Use File → Save sketch to store it on this plant.'));
       } catch (err) {
         console.error('[' + SCRIPT_NAME + '] import failed:', err);
         toast('Import failed (see console).', 'error');
