@@ -2825,6 +2825,25 @@ TWO PROCESS CLASSES - important when READING sketches:
      process instance with no outgoing wires is usually an effect process,
      NOT dead logic. (Interiors publish wholesale: VIRTUALOUT is the most-
      placed inner block, and processes even fetch WEATHER data themselves.)
+MODE GATING (every palette block has a mode field - live census):
+  - PARAMV and TAGVALUE exist ONLY in function-mode sketches. A process
+    definition NEVER contains them - it reads plant data through PROCESSIN
+    pins (method parameter/tag) instead.
+  - PROCESSIN, PROCESSOUT and AVERAGE_PERIODE exist ONLY in process-mode
+    definitions. Never emit them in a mode "function" sketch (the validator
+    and the import panel both reject it).
+  - AVERAGE_PERIODE (process-only helper): func "average_periode.run",
+    inputs Parameter / Periode Enable / Collect Enable, one float output,
+    data null - gated averaging inside definitions.
+  - An enable-method PROCESSIN also carries data.enable (true|false) - the
+    pin's default state.
+LIFECYCLE (how a definition ships): save_process = one history revision
+with a comment; publish_process = the DEPLOYABLE revision (+ SVG preview)
+that instances pin via current_revision - saving never affects deployed
+instances until publish. States DONE/TEST/PROGRESS/PHASED_OUT drive the
+toolbox icon; each process also has an invoiceable billing flag. The
+designer has a REPLACE-PROCESS feature (right-click an instance) that swaps
+it for another process with a pin-mapping table and rewires connections.
 "Kurve for 4 knekkpunkt" definition = 11 blocks: Verdi:parameter pin +
 X1-X4/Y1-Y4 constant pins + interpolation + PROCESSOUT - matching exactly how
 sketches instantiate it (PARAMV on pin 0, eight CONSTs).

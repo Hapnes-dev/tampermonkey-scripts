@@ -248,7 +248,9 @@ Highlights of the `data` shapes:
   shape (fleet v8): `{alias_text:'max alarmer pr uke', initial_value:'', values:{'000:018':5,
   'F01':5, 'K09.B1':5, …}}` — keyed by **unit id/name**, one value per stamped repeat unit.
 - **PROCESSIN**: `{alias_text, method:'parameter'|'tag'|'constant'|'calendar'|'enable',
-  type, by_refference, …}` (+ tag/constant/scaling fields depending on method).
+  type, by_refference, …}` (+ tag/constant/scaling fields depending on method; an
+  `enable`-method pin also carries **`enable: true|false`** — the dialog's Default checkbox,
+  the pin's default state — §10.2).
 - **TAGVALUE** (via tag_chooser): `{value:[units], tag:require_data}`; multi-select flips the
   connected block into **repeat** runtime mode (`repeat_count`, `repeat_block`).
 - **PARAMV**: modern shape **`{driver_ids: ["<DRIVER_ID>", …]}` (plural array)** — this is
@@ -511,7 +513,22 @@ The editor has two modes (`logic_designer.paper.mode`, toggled from the menu):
   single block in the library tree (see §10). Only `PROCESSIN` blocks are valid roots for a
   process's syntax check.
 
-Switching modes clears the canvas (with a save prompt if dirty).
+**Mode-switch mechanics (live-probed 2026-07-12):** the top-bar "Set Process Mode"/"Set
+Function Mode" button calls `application.change_mode(mode)`: if `paper.changed` it first asks
+"Do you want to save…" (yes → `save_sketch()`/`save_process()` per the CURRENT mode; no →
+proceed), then `paper.set_mode(mode)` — which **clears the canvas** (`this.clear()`), sets
+`paper.mode` and fires `callback({action:'change_mode'})` — followed by `application.reset()`
+(function mode also re-shows the Get-started splash). There is no mode-preserving switch:
+changing mode always empties the canvas.
+
+**Every palette def carries a `mode` field** — the mode gating (full census of the 71 system
+blocks): **function-only: `PARAMV`, `TAGVALUE`** (plant-bound readers — a process reads plant
+data through its `PROCESSIN` pins instead, which is why no process definition in the fleet
+corpus contains a PARAMV); **process-only: `PROCESSIN`, `PROCESSOUT`, `AVERAGE_PERIODE`**;
+all 66 others are `mode:"both"` (incl. WRITETOUNIT, ALARM, VIRTUALOUT — effect blocks are
+legal inside processes, §10.1). Library-process palette entries are `mode:"function"` (an
+instance can only be placed in a function-mode sketch — processes do nest, but via the
+library, §10.1 process→process chains).
 
 ---
 
@@ -584,6 +601,67 @@ definitions (1,714 blocks) reveal:
 - Definition sketches use `require_plant_revision` 0 (×39) or 620 (×25) like ordinary
   sketches (604 ×6; missing ×1); big ones exist ("kirke_scenario_velger": 71 blocks, 18 pins,
   1 output).
+
+### 10.2 Process mode — authoring & the full lifecycle (live-probed 2026-07-12)
+
+How a process is actually built and shipped, function by function:
+
+**Entering/leaving** — see §9 mode-switch mechanics (`application.change_mode` →
+`paper.set_mode('process')`, canvas always cleared). `application.new_process()` is the same
+flow (dirty-confirm → process mode + reset → blank definition canvas).
+
+**The boundary blocks** (both `compile_type:"reference"`, both `require_configuration:true` —
+red until configured):
+
+- **`PROCESSIN`** — 0 inputs, 1 `mixed` output; each one IS one pin of the published block.
+  Its dialog (`designer_windows.show_processin` / `wnd_processin`) writes `data =
+  {alias_text, method, by_refference, type, …}` with per-method extras:
+  - `method:'parameter'` / `'tag'` — the pin expects a plant reading; the dialog's **tag
+    filter table** (`tbl_wnd_processin_tag_filter`) can pin it to a specific tag → the
+    published block's input gets `require_data` (§10 sample) so instances auto-bind.
+  - `method:'constant'` — the pin is a tweakable setting (59 % of all fleet pins, §10.1);
+    extra fields: `initial_value`, optional `scaling` (`clip_scale`/`scaling`, from/to
+    min/max), `eng_unit`, `precision` (dropdowns in the dialog).
+  - `method:'calendar'` — the pin expects a plant calendar.
+  - `method:'enable'` — an on/off pin; the dialog's **Default checkbox**
+    (`ck_wnd_processin_default`) is stored as **`data.enable`** (the pin's default state) —
+    a payload key that never appeared in §6 because it only exists on enable pins.
+  - `by_refference` checkbox → `data.by_refference` (false on every fleet pin, §10.1).
+- **`PROCESSOUT`** — 1 `mixed` input, 0 outputs; `data.alias_text` = the published block's
+  output-pin name. Zero PROCESSOUTs = an effect-class process (61 % of the library, §10.1).
+- **`AVERAGE_PERIODE`** (process-mode-ONLY helper block, absent from every function-mode
+  census): `func:"average_periode.run"`, inputs i1 *Parameter* (int/float), i2 *Periode
+  Enable* (boolean), i3 *Collect Enable* (boolean), one float output, `data:null` — a gated
+  averaging block (collect while enabled, emit per period) available only inside definitions.
+
+**Saving** — `application.save_process(save_as)`: the FIRST save (or Save-as) opens
+`show_save_process` (name, alias, description, library group); every later save prompts
+**"Please enter comment for this revision"** and calls
+`logic_designer_manager.save_process(process_name, sketch, alias_text, description, group,
+comment, cb)` — each save is one §17.2 history entry (`{saved_by, date, comment}`), which is
+where process history comments come from. `logic_designer_manager.new_process(process_group,
+process_config, process_alias_text, process_description, cb)` is the underlying create.
+
+**Publishing** — `application.publish_process()`: requires a saved process
+(`current_process` set), runs `verify_sketch(true)` (the F10 syntax check — only `PROCESSIN`
+roots are valid), then `logic_designer_manager.publish_process(process_name, sketch,
+paper.save_svg(), cb)`. Publishing is what creates the **deployable revision** instances pin
+via block-level `current_revision`, and uploads the **SVG preview** shown in the toolbox
+tooltip — `get_process_preview(process_name)` → `{ok, data:"<hash>"}` (a cache key for that
+image). Saving without publishing never affects deployed instances.
+
+**Curation RPCs** (all live-verified signatures): `rename_process(process_name, new_name,
+cb)`; `set_process_state(process_id, 'DONE'|'TEST'|'PROGRESS'|'PHASED_OUT', cb)` (the
+toolbox-tree icon, §10); `set_process_invoiceable(process_id, bool, cb)` (the per-process
+billing flag, §17.3); `get_process_state(id)` / `get_process_invoiceable(id)` read them.
+
+**Replace process** (undocumented host feature, `designer_windows.show_replace_process`):
+right-clicking a **process instance** in a function-mode sketch opens a chooser tree
+(`wnd_replace_process_chooser`) plus a **pin-mapping table**
+(`tbl_replace_process_mapping`, fed by `get_process_outputs`) — pick a replacement process,
+map old pins/outputs to new ones, and `save_replacement_process` swaps the instance while
+rewiring its connections. This is the upgrade path when a plant should move from one process
+(or revision family) to another without rebuilding the sketch.
 
 ---
 
@@ -1012,7 +1090,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.32.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.33.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -1020,7 +1098,8 @@ paste-JSON), **Copy sketch (JSON text)** (clipboard — copy on plant A, paste i
 plant B; `execCommand` fallback since `navigator.clipboard` is unavailable on plain http).
 A rejected import opens an **itemised error panel** (`diagnoseImport` mirrors the validator's
 rules in-browser against the live `paper.blocks` palette, incl. the FORMULA
-input_count==wired invariant); cross-plant import offers a one-click
+input_count==wired invariant and the §9 mode gating — PROCESSIN/PROCESSOUT/AVERAGE_PERIODE
+only in process mode, PARAMV/TAGVALUE only in function mode); cross-plant import offers a one-click
 **driver-id rebind** (`<src>_…` → `<target>_…`) that **skips VIRTUAL ids** (they encode
 source project/sketch numbers — §6; the user is told to recreate the VIRTUALOUT chain),
 warns about CALENDAR/TAGVALUE bindings, **foreign-plant-prefixed ids** (they read nothing —

@@ -155,6 +155,10 @@ Two additional constraints:
   the top-72 library definitions). 61% of the top library processes have
   ZERO outputs (the alarm/write/virtual lives INSIDE the process) - an
   instance with no outgoing wires is normal production logic, not an error.
+- MODE GATING: PROCESSIN / PROCESSOUT / AVERAGE_PERIODE exist ONLY inside
+  process-mode definitions - NEVER place them in a mode "function" sketch
+  (the validator rejects it). Conversely PARAMV / TAGVALUE exist only in
+  function mode; a process definition reads plant data via PROCESSIN pins.
 
 --------------------------------------------------------------------------------
 4. BLOCK REFERENCE — THE ALLOWLIST

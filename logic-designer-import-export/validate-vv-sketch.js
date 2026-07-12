@@ -339,6 +339,25 @@ function validateSketchDocument(doc, report) {
     }
   });
 
+  // ── mode gating (live palette census 2026-07-12): every palette def has a
+  // mode field — PROCESSIN/PROCESSOUT/AVERAGE_PERIODE exist ONLY in process
+  // mode; PARAMV/TAGVALUE exist ONLY in function mode ──
+  const MODE_GATED = {
+    PROCESSIN: 'process', PROCESSOUT: 'process', AVERAGE_PERIODE: 'process',
+    PARAMV: 'function', TAGVALUE: 'function',
+  };
+  if (typeof doc.mode === 'string') {
+    for (const [id, b] of ids) {
+      const needMode = MODE_GATED[b.type];
+      if (needMode && doc.mode !== needMode) {
+        err(`block ${id} (${b.type}) is a ${needMode}-mode-only block but sketch.mode is "${doc.mode}" — ` +
+          (needMode === 'process'
+            ? 'process pins belong in a process DEFINITION; a function-mode sketch reads plant data with PARAMV instead'
+            : 'inside a process definition, read plant data with a PROCESSIN pin (method parameter/tag), not ' + b.type));
+      }
+    }
+  }
+
   // ── every required input pin wired? + special pin constraints ──
   for (const [id, b] of ids) {
     // fleet invariant (530/530 production FORMULAs): declared input_count == wired inputs

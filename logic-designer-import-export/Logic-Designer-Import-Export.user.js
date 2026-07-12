@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.1
+// @version      1.33.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -415,6 +415,13 @@ var LDIO_NO_EQUIVALENT = {
   FLIP_FLOP: 'no flip-flop block — set/reset memory is LATCH',
 };
 
+// Every palette def carries a mode field (live census 2026-07-12): these
+// blocks exist only in ONE editor mode.
+var LDIO_MODE_GATED = {
+  PROCESSIN: 'process', PROCESSOUT: 'process', AVERAGE_PERIODE: 'process',
+  PARAMV: 'function', TAGVALUE: 'function',
+};
+
 // Diagnose a parsed import payload against the host contract and return a
 // human-readable, itemised report. Pure — knownTypes is passed in (use
 // paper.blocks in the browser so process blocks on THIS plant are recognised).
@@ -485,6 +492,15 @@ function diagnoseImport(parsed, knownTypes) {
     }
     if (typeof b.x !== 'number' || typeof b.y !== 'number')
       warnings.push(at + ' has no numeric x/y — import will auto-place it on a grid.');
+    // mode gating (live palette census): PROCESSIN/PROCESSOUT/AVERAGE_PERIODE
+    // are process-mode-only; PARAMV/TAGVALUE are function-mode-only.
+    var needMode = LDIO_MODE_GATED[b.type];
+    if (needMode && typeof doc.mode === 'string' && doc.mode !== needMode) {
+      errors.push(at + ' is a ' + needMode + '-mode-only block but sketch.mode is "' + doc.mode + '" — ' +
+        (needMode === 'process'
+          ? 'process pins belong in a process definition; a function-mode sketch reads plant data with PARAMV instead.'
+          : 'inside a process definition, read plant data with a PROCESSIN pin (method parameter/tag) instead.'));
+    }
   });
 
   var wiredCount = {};
@@ -667,7 +683,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.32.1';
+    var VERSION = '1.33.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
