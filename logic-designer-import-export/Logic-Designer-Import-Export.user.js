@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.27.0
+// @version      1.28.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -75,6 +75,13 @@ function normalizeSketchForLoad(sketchIn, palette) {
       var def = palette && palette[b.type];
       var func = def && (def.block_func || (def.data && def.data.block_func));
       if (typeof func === 'string' && func) { b.func = func; filledFuncs++; }
+    }
+    // Old documents (pre-modern templates) omit compile_type entirely on
+    // process instances — fill it from the palette when the type is known.
+    if (typeof b.compile_type !== 'string') {
+      var def2 = palette && palette[b.type];
+      var ct = def2 && (def2.compile_type || (def2.data && def2.data.compile_type));
+      if (typeof ct === 'string' && ct) { b.compile_type = ct; filledFields++; }
     }
   }
   if (!Array.isArray(sketch.groups)) { sketch.groups = []; filledFields++; }
@@ -444,6 +451,9 @@ function diagnoseImport(parsed, knownTypes) {
       if (LDIO_TYPE_ALIASES[b.type]) errors.push(at + ' — "' + b.type + '" is not a VV block; use "' + LDIO_TYPE_ALIASES[b.type] + '".');
       else if (LDIO_NO_EQUIVALENT[b.type]) errors.push(at + ' — "' + b.type + '": ' + LDIO_NO_EQUIVALENT[b.type] + '.');
       else if (manifest[b.type]) errors.push(at + ' — the library process "' + (manifest[b.type].alias_text || b.type) + '" (' + b.type + ') is not published on this plant — link/publish it in the target library first.');
+      else if (b.compile_type === 'process' ||
+        (typeof b.func === 'string' && b.func && b.func.toLowerCase() === String(b.type).toLowerCase()))
+        errors.push(at + ' — the library process "' + b.type + '" is not published on this plant (old-format instance' + (b.compile_type ? '' : ', no compile_type') + ') — link/publish it in the target library first.');
       else errors.push(at + ' — unknown block type "' + b.type + '" (not a system block, and no such process on this plant/library).');
     } else if (typeof b.func !== 'string' || !b.func) {
       warnings.push(at + ' has no "func" — import fills it from this plant\'s palette; add it for a portable file (validate-vv-sketch.js lists the correct value).');
@@ -456,6 +466,7 @@ function diagnoseImport(parsed, knownTypes) {
     }
   });
 
+  var wiredCount = {};
   doc.connections.forEach(function (c, i) {
     var at = 'wire #' + i;
     if (!c || typeof c !== 'object') { errors.push(at + ' is not an object.'); return; }
@@ -468,6 +479,23 @@ function diagnoseImport(parsed, knownTypes) {
       else if (!(s.id in ids)) errors.push(at + '.' + side + ' points at block id ' + s.id + ', which does not exist.');
       if (!Number.isInteger(s.put)) errors.push(at + '.' + side + ' needs a numeric pin index "put".');
     });
+    if (c.target && Number.isInteger(c.target.id)) wiredCount[c.target.id] = (wiredCount[c.target.id] || 0) + 1;
+  });
+
+  // Fleet invariant (530/530 production FORMULAs, mirrored from the validator):
+  // a declared input_count must equal the wired-input count — a declared-but-
+  // unwired formula pin breaks the host's connect/sim contract.
+  doc.blocks.forEach(function (b, i) {
+    if (!b || b.type !== 'FORMULA' || !b.properties || Array.isArray(b.properties)) return;
+    var ic = b.properties.input_count;
+    if (!ic || ic.value === undefined) return;
+    var declared = parseInt(ic.value, 10);
+    if (!Number.isInteger(declared)) return;
+    var wired = Number.isInteger(b.id) ? (wiredCount[b.id] || 0) : 0;
+    if (declared !== wired) {
+      errors.push('block #' + i + ' (FORMULA) properties.input_count is ' + declared + ' but ' + wired +
+        ' input(s) are wired — they must match (wires to undeclared formula pins are silently dropped).');
+    }
   });
 
   return { fatal: errors.length > 0, errors: errors, warnings: warnings, sketch: doc };
@@ -489,7 +517,16 @@ function detectSourcePlantFromDriverIds(sketch) {
   return null;
 }
 
-// Count how many driver-id strings carry the given plant prefix.
+// VIRTUAL driver ids ("<plant>_VIRTUAL_V_1_<proj>_<sketchid>_…", Norwegian
+// "VIRTUELL" too) encode the SOURCE plant's project/sketch numbers — rewriting
+// just the plant prefix produces a plausible-looking id that reads nothing on
+// the target. They must be recreated (VIRTUALOUT chain) instead of rebound.
+function isVirtualDriverId(id) {
+  return /^\d+_VIRTU(?:AL|ELL)_/i.test(String(id));
+}
+
+// Count how many driver-id strings carry the given plant prefix and are safe
+// to rebind (virtual ids are excluded — see isVirtualDriverId).
 function countRebindableDriverIds(sketch, fromPlant) {
   var prefix = fromPlant + '_';
   var count = 0;
@@ -498,55 +535,89 @@ function countRebindableDriverIds(sketch, fromPlant) {
     if (!data) continue;
     if (Array.isArray(data.driver_ids)) {
       for (var k = 0; k < data.driver_ids.length; k++) {
-        if (String(data.driver_ids[k]).indexOf(prefix) === 0) count++;
+        var s = String(data.driver_ids[k]);
+        if (s.indexOf(prefix) === 0 && !isVirtualDriverId(s)) count++;
       }
     }
-    if (typeof data.driver_id === 'string' && data.driver_id.indexOf(prefix) === 0) count++;
+    if (typeof data.driver_id === 'string' && data.driver_id.indexOf(prefix) === 0 &&
+      !isVirtualDriverId(data.driver_id)) count++;
   }
   return count;
 }
 
 // Rewrite "<fromPlant>_…" driver ids to "<toPlant>_…" on a DEEP COPY of the
 // sketch. Only touches the known binding fields (data.driver_ids[] and the
-// legacy data.driver_id string) — nothing else is modified.
-// Returns { sketch, rewritten }.
+// legacy data.driver_id string); virtual ids are skipped and counted.
+// Returns { sketch, rewritten, skippedVirtual }.
 function rebindDriverIds(sketchIn, fromPlant, toPlant) {
   var sketch = JSON.parse(JSON.stringify(sketchIn));
   var prefix = fromPlant + '_';
-  var rewritten = 0;
+  var rewritten = 0, skippedVirtual = 0;
   for (var i = 0; i < sketch.blocks.length; i++) {
     var data = sketch.blocks[i].data;
     if (!data) continue;
     if (Array.isArray(data.driver_ids)) {
       for (var k = 0; k < data.driver_ids.length; k++) {
         var id = String(data.driver_ids[k]);
-        if (id.indexOf(prefix) === 0) {
-          data.driver_ids[k] = toPlant + '_' + id.slice(prefix.length);
-          rewritten++;
-        }
+        if (id.indexOf(prefix) !== 0) continue;
+        if (isVirtualDriverId(id)) { skippedVirtual++; continue; }
+        data.driver_ids[k] = toPlant + '_' + id.slice(prefix.length);
+        rewritten++;
       }
     }
     if (typeof data.driver_id === 'string' && data.driver_id.indexOf(prefix) === 0) {
-      data.driver_id = toPlant + '_' + data.driver_id.slice(prefix.length);
-      rewritten++;
+      if (isVirtualDriverId(data.driver_id)) skippedVirtual++;
+      else {
+        data.driver_id = toPlant + '_' + data.driver_id.slice(prefix.length);
+        rewritten++;
+      }
     }
   }
-  return { sketch: sketch, rewritten: rewritten };
+  return { sketch: sketch, rewritten: rewritten, skippedVirtual: skippedVirtual };
 }
 
 // List block types in the sketch whose bindings cannot be auto-rebound across
 // plants (the user must reconfigure them via the host dialogs after import).
 function listManualRebindWarnings(sketch) {
   var warnings = [];
-  var calendars = 0, tagvalues = 0;
+  var calendars = 0, tagvalues = 0, virtuals = 0;
   for (var i = 0; i < sketch.blocks.length; i++) {
     var b = sketch.blocks[i];
     if ((b.type === 'CALENDAR' || b.type === 'CALENDAR_2_0') && b.data) calendars++;
     if (b.type === 'TAGVALUE' && b.data) tagvalues++;
+    var data = b.data;
+    if (data) {
+      var ids = Array.isArray(data.driver_ids) ? data.driver_ids
+        : (typeof data.driver_id === 'string' ? [data.driver_id] : []);
+      for (var k = 0; k < ids.length; k++) if (isVirtualDriverId(ids[k])) virtuals++;
+    }
   }
   if (calendars > 0) warnings.push(calendars + ' Calendar block(s) reference source-plant calendar ids');
   if (tagvalues > 0) warnings.push(tagvalues + ' Tag value block(s) carry source-plant unit bindings');
+  if (virtuals > 0) warnings.push(virtuals + ' VIRTUAL driver id(s) — these encode source project/sketch numbers and are never auto-rebound; recreate the source sketch\'s VIRTUALOUT on this plant and rebind by hand');
   return warnings;
+}
+
+// Group driver ids whose plant prefix is NOT in expectedPlants (fleet corpus:
+// such copied-but-never-rebound ids exist in production and silently read
+// nothing). Returns [{prefix, count}] sorted by count.
+function listForeignDriverIdPrefixes(sketch, expectedPlants) {
+  var expect = {};
+  (expectedPlants || []).forEach(function (p) { if (p) expect[String(p)] = true; });
+  var byPrefix = {};
+  for (var i = 0; i < sketch.blocks.length; i++) {
+    var data = sketch.blocks[i].data;
+    if (!data) continue;
+    var ids = Array.isArray(data.driver_ids) ? data.driver_ids
+      : (typeof data.driver_id === 'string' ? [data.driver_id] : []);
+    for (var k = 0; k < ids.length; k++) {
+      var m = /^(\d+)_/.exec(String(ids[k]));
+      if (m && !expect[m[1]]) byPrefix[m[1]] = (byPrefix[m[1]] || 0) + 1;
+    }
+  }
+  return Object.keys(byPrefix)
+    .map(function (p) { return { prefix: p, count: byPrefix[p] }; })
+    .sort(function (a, b) { return b.count - a.count; });
 }
 
 // Block types present in the document but unknown to the target designer's
@@ -575,7 +646,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.27.0';
+    var VERSION = '1.28.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1860,11 +1931,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               var rb = rebindDriverIds(sketch, String(sourcePlant), currentPlant);
               sketch = rb.sketch;
               rebindNote = ' (' + rb.rewritten + ' bindings rebound to plant ' + currentPlant + ')';
+              if (rb.skippedVirtual > 0) {
+                toast(rb.skippedVirtual + ' VIRTUAL driver id(s) NOT rebound — they encode source project/sketch numbers; recreate the source sketch\'s VIRTUALOUT on this plant and rebind by hand.', 'error');
+              }
             }
           }
           var warnings = listManualRebindWarnings(sketch);
           if (warnings.length > 0) {
             toast('Reconfigure after import: ' + warnings.join('; '), 'error');
+          }
+        }
+        // Corpus-verified failure mode: ids whose plant prefix is neither this
+        // plant nor the detected source silently read NOTHING when deployed.
+        if (currentPlant) {
+          var foreign = listForeignDriverIdPrefixes(sketch, [currentPlant]);
+          if (foreign.length > 0) {
+            var fTotal = foreign.reduce(function (s, f) { return s + f.count; }, 0);
+            toast(fTotal + ' driver id(s) belong to other plant(s) (' +
+              foreign.map(function (f) { return f.prefix + ' ×' + f.count; }).join(', ') +
+              ') — they will read nothing here; rebind or reconfigure those blocks.', 'error');
           }
         }
 
@@ -2021,6 +2106,8 @@ if (typeof module !== 'undefined' && module.exports) {
     countRebindableDriverIds: countRebindableDriverIds,
     rebindDriverIds: rebindDriverIds,
     listManualRebindWarnings: listManualRebindWarnings,
+    isVirtualDriverId: isVirtualDriverId,
+    listForeignDriverIdPrefixes: listForeignDriverIdPrefixes,
     listUnknownBlockTypes: listUnknownBlockTypes,
     buildExportFilename: buildExportFilename,
     diagnoseImport: diagnoseImport,

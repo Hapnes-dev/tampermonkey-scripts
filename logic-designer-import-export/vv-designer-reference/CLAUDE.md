@@ -992,19 +992,24 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.26.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.28.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
 paste-JSON), **Copy sketch (JSON text)** (clipboard — copy on plant A, paste into Import on
 plant B; `execCommand` fallback since `navigator.clipboard` is unavailable on plain http).
 A rejected import opens an **itemised error panel** (`diagnoseImport` mirrors the validator's
-rules in-browser against the live `paper.blocks` palette); cross-plant import offers a one-click
-**driver-id rebind** (`<src>_…` → `<target>_…`), warns about CALENDAR/TAGVALUE bindings and
-unknown processes (by display name via the envelope's `requires_processes` manifest), clears
+rules in-browser against the live `paper.blocks` palette, incl. the FORMULA
+input_count==wired invariant); cross-plant import offers a one-click
+**driver-id rebind** (`<src>_…` → `<target>_…`) that **skips VIRTUAL ids** (they encode
+source project/sketch numbers — §6; the user is told to recreate the VIRTUALOUT chain),
+warns about CALENDAR/TAGVALUE bindings, **foreign-plant-prefixed ids** (they read nothing —
+§21 v11) and unknown processes (by display name via the envelope's `requires_processes`
+manifest; old-format instances without `compile_type` are recognised as processes via
+func==lowercase(type)), clears
 `application.current_sketch` so Ctrl+S saves as *new*, and **normalizes near-miss hand-authored
 files** (missing `override`/`runtime`/`properties`/`data`/`groups` defaults; missing `func`
-filled from the palette) while real exports pass through byte-identical. Export stamps two
+and `compile_type` filled from the palette) while real exports pass through byte-identical. Export stamps two
 additive envelope fields: `generator` + `requires_processes` (§20.1).
 
 **Live Simulate** (top-bar button right of the mode toggle, also File → Simulate): drives the
