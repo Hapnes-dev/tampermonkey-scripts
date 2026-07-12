@@ -258,7 +258,17 @@ Highlights of the `data` shapes:
   when opened. Friendly name goes in `override.alias_text` as
   `"<unit_id>, <unit_name>, <param alias>"`. Driver ids look like
   `3111_IWT_IWT_1_1_0_BAT_0`; discover them programmatically via the param_chooser service
-  (§19.4).
+  (§19.4). **Fleet id anatomy** (27,860 ids, §21 v11): canonically **8 underscore-separated
+  segments** (`<plant>_<DRIVER-INSTANCE>_<device>_<…5 more>`) in 99.4 % — but 7/9/11 and even
+  106-segment ids exist (device names may contain underscores), so **split-by-underscore
+  parsing is unsafe; only the `<plant>_` prefix is contract** (what the importer rebinds).
+  The driver token is an INSTANCE name, not a fixed vocabulary: `AK3`, `AK2`, `BACNET`…
+  `BACNET10`, `MODBUS`/`MODBUS2`, `NOVAGG`, `OPC`, `KNX`, `JC`, `CORRIGO34`, `VIRTUAL`, plus
+  Norwegian `VIRTUELL`. VIRTUAL sub-shapes: `VIRTUAL_V_1_…` (sketch chaining), `VIRTUAL_YR_1_…`
+  (Yr weather driver). ⚠ **69 production ids carry a FOREIGN plant prefix** (copied sketches
+  that were never rebound — they silently read nothing); the importer's rebind warning exists
+  precisely for this. Multi-select: PARAMV is single-id in 16,362 of 16,376 blocks (multi ×14);
+  WRITETOUNIT fan-out >1 id is real (×91, up to **39 ids** in one block).
 - **AVG_IN_PERIOD** (verified from production): `{block_func_args:{period:'min',
   period_amount:5}}` — ⚠ the key is **`period`** here, while PERIODE_VALUE / PULSE_COUNT /
   CORRELATION use **`periode`**. Copy the exact key per block type.
@@ -1041,11 +1051,20 @@ Plant (plant_id, firmware revision)
   rolls back.
 - On plant 3111: one project **"test"** (id `3201`); the fleet has **1808 plants**.
 
-### 17.2 Templates (global, cross-plant)
-`load_template_list()` → `[{id, name, date}]` — a **shared, plant-independent** library
-(462 entries, newest minutes old). `load_template(id)` → `{sketch, alias_text}`. These seed
-"New sketch from template". Distinct from **processes** (§10): templates are whole starter
-sketches; processes are reusable sub-blocks.
+### 17.2 Templates (global, cross-plant) — verified live (fleet v11)
+
+`logic_designer_manager.load_template_list()` (no args) returns the **global** template
+registry — **449 templates** (`{date, id, name}`; names like "cu-kjøl", "cu-frys",
+"cu-vent-vendere", incl. duplicates by name). `load_template(id)` returns
+`{sketch, alias_text}` where `sketch` is a normal **function-mode** sketch document (0–240
+blocks seen; `require_plant_revision` preserved). Templates **may carry concrete driver ids**
+from the plant they were saved on — treat them like a cross-plant import (rebind/TODO-bind).
+`save_as_template(…)` publishes one; these seed "New sketch from template". Distinct from
+**processes** (§10): templates are whole starter sketches; processes are reusable sub-blocks.
+**Sketch history**: `load_history_list(sketch_id)` →
+`[{id, saved_by, date, comment}]` (newest entry has `id: null` = the current save;
+`comment` is the save-dialog text); `revert_to_history_entry(id)` restores one — every save
+is versioned with author attribution.
 
 ### 17.3 Authored sketch vs compiled artifact
 - **`load_sketch`** returns the **authored** graph (what you edit).
@@ -2160,6 +2179,25 @@ more sketches (zero failures)** → combined **~403 plants / 2849 sketches / 76,
   function-like vs **effect-like (zero-output)** process split (7 of 13 have no PROCESSOUT —
   alarms/writes live inside), and exact anatomies for "Kurve 2P" / "Kurve for 4 knekkpunkt"
   (matching their §21-v8 instantiation profiles pin for pin).
+
+**Corpus v11 — binding anatomy, templates & history (2026-07-12):** 53 more plants / **182
+more sketches (zero failures)** → combined **~456 plants / 3031 sketches / 80,222 blocks /
+78,119 wires**. Findings:
+
+- **Driver-id anatomy at 27,860 ids** (→ §6 PARAMV): 8 segments canonical (99.4 %) but NOT
+  parseable by underscore-split (106-segment ids exist); driver tokens are instance names
+  (`BACNET6`, `MODBUS2`, `CORRIGO34`, Norwegian `VIRTUELL`); `VIRTUAL_YR_1_…` is a second
+  virtual sub-driver (Yr weather); **69 foreign-plant-prefixed ids live in production** —
+  copied-but-never-rebound sketches; the import rebind exists for a reason.
+- **Multi-select stats**: PARAMV multi-id is rare (14 of 16,376); WRITETOUNIT fan-out >1 is
+  real (×91, max 39 ids in one block).
+- **TAGVALUE tag ids are a structured taxonomy**: `CRC_GK-GF-FF-FK_LF_TEMP_RLI_EVAPORATION`,
+  `RIN_LT_JKU_TEMP_RTN-N_SUCTION` — refrigeration tag paths; treat as opaque strings.
+- **Templates verified live** (→ §17.2): 449 global `{sketch, alias_text}` starter sketches,
+  may carry concrete driver ids (treat as cross-plant imports).
+- **History model verified** (→ §17.2): `load_history_list` → `{id, saved_by, date, comment}`
+  per save, `revert_to_history_entry` rolls back.
+- **FORMULA**: 205 unique; **199/205 compile locally** — same six server-only holdouts.
 - **Typed 3-block chain census** (74,814 wires walked) — the canonical production chains,
   by occurrence: CONST→PROCESS→WRITETOUNIT **8,176** · CONST→PROCESS→VIRTUALOUT **5,860** ·
   PARAMV→PROCESS→WRITETOUNIT **3,126** · CONST→IF→WRITETOUNIT **2,381** ·

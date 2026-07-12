@@ -167,6 +167,14 @@ READERS AND SOURCES (compile_type "input")
   (When READING/analysing an existing sketch: legacy singular
   {"driver_id": "<id>"} is the MAJORITY in the fleet — accept both forms,
   but always GENERATE the plural array.)
+  ID ANATOMY (27,860 fleet ids): usually 8 underscore-separated segments,
+  "<plant>_<DRIVER-INSTANCE>_<device>_...". Only the "<plant>_" prefix is a
+  reliable contract - device names may contain underscores, and the driver
+  token is an INSTANCE name (AK3, AK2, BACNET...BACNET10, MODBUS2, KNX, JC,
+  CORRIGO34, VIRTUAL, VIRTUELL), not a fixed vocabulary. NEVER parse,
+  construct, or "correct" an id - copy it verbatim from the user/plant.
+  An id whose plant prefix differs from the target plant reads NOTHING
+  (69 such never-rebound ids exist in production - a real failure mode).
 - CONST   | func "const"
   A user-editable constant (limits, setpoints, levels). data:
   {"alias_text": "<name>", "type": "integer"|"float"|"boolean"|"string",
