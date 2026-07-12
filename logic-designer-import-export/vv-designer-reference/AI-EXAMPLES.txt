@@ -2938,6 +2938,14 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
   - Process eids are FREE-FORM TEXT: besides <lib>_<uniqid>, pure-word eids
     exist with typos and mixed case (PW_VENTILASTION_..._M_PåDRAG_GJENV) -
     never pattern-match or "fix" them; copy verbatim.
+  - TEMPLATES (449 global starter sketches, all scraped): TODO-bind is THEIR
+    convention too - 336 of 449 ship with null-data PARAMV/WRITETOUNIT for
+    the user to bind; only 160 carry concrete ids. Templates skew big
+    (median 11-40 blocks, up to 464) and 48% instantiate processes. Themes:
+    snøsmelt/kurve/vent/alarm/energi/yr/esmelt/COP/DALI all covered.
+  - OLD-DOCUMENT TOLERANCE: very old sketches/templates OMIT compile_type
+    and current_revision on process instances - when reading, treat "type
+    not in the palette + func == lowercase(type)" as a process instance.
 
 Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
 VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.

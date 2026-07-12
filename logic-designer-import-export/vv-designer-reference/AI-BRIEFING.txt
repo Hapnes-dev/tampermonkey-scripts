@@ -505,6 +505,13 @@ The user will:
    for custom logic - 25% of all production sketches live there.)
 Deployment and hardware writes are ALWAYS the human's decision.
 
+TEMPLATES EXIST: the designer has ~449 GLOBAL starter templates ("New sketch
+from template") covering the classic domains - snøsmelt (38), kurve (26),
+ventilation switch-overs (26), alarm (22), energi (21), yr (17), esmelt (17),
+COP (11), DALI (9). If the request matches one of these classics, mention
+that a ready template may exist before generating from scratch. Templates
+use the same TODO-bind convention (null-data blocks the user binds).
+
 --------------------------------------------------------------------------------
 9. DOCUMENTED FAILURES — NEVER REPEAT THESE
 --------------------------------------------------------------------------------

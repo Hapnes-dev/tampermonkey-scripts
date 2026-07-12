@@ -490,6 +490,9 @@ Notes:
   the target input pin's name ("Condition", "Value", "Input 1", …) on every wire — informational,
   not needed on import; process-block instances carry block-level `current_revision` (string);
   CONST `data` always includes `values: null` in single mode; empty `properties` is `[]`.
+- **Old-document tolerance** (template corpus, §21 v12): very old documents may **omit
+  `compile_type` (and `current_revision`) entirely on process instances** — readers should
+  fall back to "type not in the built-in palette + `func` == lowercase(type) ⇒ process".
 - `save(exclude_configuration, include_static_linking)` can omit config for
   dynamically-linked blocks (used when publishing processes).
 - `save_svg()` exports the canvas as SVG (used when publishing a process preview image).
@@ -2198,6 +2201,25 @@ more sketches (zero failures)** → combined **~456 plants / 3031 sketches / 80,
 - **History model verified** (→ §17.2): `load_history_list` → `{id, saved_by, date, comment}`
   per save, `revert_to_history_entry` rolls back.
 - **FORMULA**: 205 unique; **199/205 compile locally** — same six server-only holdouts.
+
+**Corpus v12 — the template corpus (2026-07-12):** 53 more plants / **135 more sketches** →
+combined **~509 plants / 3166 sketches / 83,671 blocks** — plus **ALL 449 global templates
+scraped** (14,497 blocks; zero failures):
+
+- **TODO-bind IS the template convention**: 336 of 449 templates contain null-data
+  PARAMV/WRITETOUNIT blocks for the user to bind after instantiation; only 160 carry any
+  concrete driver ids (treat those as cross-plant imports). The convention we teach
+  generators is exactly how the fleet's own starter library is built.
+- **Templates skew BIGGER than sketches**: median 11–40 blocks, 26 templates >80 blocks
+  (largest: "Temp-indikator rom" ×464) — they are whole solutions, not snippets. 218 of 449
+  (48 %) instantiate library processes.
+- **Theme coverage** (by name): snøsmelt ×38, kurve ×26, ventilation ×26, alarm ×22,
+  energi ×21, temp ×20, yr ×17, esmelt ×17, COP ×11, lys/DALI ×9, spot ×5 — the classic
+  domains all have ready-made templates; when a request matches one, "File → New from
+  template" may beat generating from scratch.
+- **Old-format tolerance found**: pre-modern templates omit `compile_type`/`current_revision`
+  on process instances entirely (→ §8 reader rule); `require_plant_revision` missing ×17.
+- **FORMULA**: 212 unique fleet-wide; **206/212 compile locally** — same six holdouts.
 - **Typed 3-block chain census** (74,814 wires walked) — the canonical production chains,
   by occurrence: CONST→PROCESS→WRITETOUNIT **8,176** · CONST→PROCESS→VIRTUALOUT **5,860** ·
   PARAMV→PROCESS→WRITETOUNIT **3,126** · CONST→IF→WRITETOUNIT **2,381** ·
