@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.30.0
+// @version      1.31.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -82,6 +82,14 @@ function normalizeSketchForLoad(sketchIn, palette) {
       var def2 = palette && palette[b.type];
       var ct = def2 && (def2.compile_type || (def2.data && def2.data.compile_type));
       if (typeof ct === 'string' && ct) { b.compile_type = ct; filledFields++; }
+    }
+    // Hand-authored files sometimes omit x/y — the host would place the
+    // block at NaN (invisible). Auto-grid by index so everything is visible
+    // and draggable after import.
+    if (typeof b.x !== 'number' || typeof b.y !== 'number') {
+      b.x = 40 + (i % 5) * 220;
+      b.y = 40 + Math.floor(i / 5) * 140;
+      filledFields++;
     }
   }
   if (!Array.isArray(sketch.groups)) { sketch.groups = []; filledFields++; }
@@ -475,6 +483,8 @@ function diagnoseImport(parsed, knownTypes) {
       if ((b.type === 'PARAMV' || b.type === 'WRITETOUNIT') && Array.isArray(b.data.driver_ids) && b.data.driver_ids.length === 0)
         warnings.push(at + ' has an empty driver_ids array — it will import unconfigured; bind it after import or set data to null.');
     }
+    if (typeof b.x !== 'number' || typeof b.y !== 'number')
+      warnings.push(at + ' has no numeric x/y — import will auto-place it on a grid.');
   });
 
   var wiredCount = {};
@@ -657,7 +667,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.30.0';
+    var VERSION = '1.31.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1071,9 +1081,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               var key = f + '|' + inputCount;
               var compiled = simState.formulaCache[key] ||
                 (simState.formulaCache[key] = compileVvFormula(f, inputCount));
-              var prev = simState.formulaPrev[block.pointer];
-              var result = compiled(inputs, undefined, prev === undefined ? 0 : prev);
-              simState.formulaPrev[block.pointer] = result;
+              // `state` = the formula's own previous output. Keyed by pointer
+              // AND formula text: editing CONST values (or anything else in
+              // the sketch) keeps a held state, but a DIFFERENT formula that
+              // ends up on a reused block id never inherits it.
+              var prevEntry = simState.formulaPrev[block.pointer];
+              var prev = (prevEntry && prevEntry.f === f) ? prevEntry.v : 0;
+              var result = compiled(inputs, undefined, prev);
+              simState.formulaPrev[block.pointer] = { f: f, v: result };
               this.simulation_stack_block_values[block.pointer] = result;
               return result;
             }

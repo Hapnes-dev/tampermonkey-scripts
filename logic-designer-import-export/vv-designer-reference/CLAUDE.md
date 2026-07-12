@@ -1007,7 +1007,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.29.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.31.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -1041,8 +1041,10 @@ results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()`. **FOR
 evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
 `time()`/`date()`, the PHP stdlib subset `intval`/`floatval`/`idate`/`substr`/`strpos`/
 `stripos`/`strtotime`/`rand(min,max)`/`null`, and the `state` magic variable (previous output,
-persisted per block across runs while the panel is open) → JS — 156/161 of all fleet formulas
-compile (§21 corpus v6); inputs gathered by pin; un-evaluable formulas — `gmdate` multi-char
+persisted across runs while the panel is open — keyed by **pointer + formula text**, so
+editing CONST values keeps a held state while a different formula on a reused block id never
+inherits one) → JS — 224/230 of all fleet formulas
+compile (§21 corpus v15); inputs gathered by pin; un-evaluable formulas — `gmdate` multi-char
 formats, `sort`, `json_encode`, server-only calendar built-ins — become manual rows).
 While the panel is open it shadows and restores **seven host hooks + per-canvas process
 sims**: `get_user_input`, `system_dialogs.information.show`, `paper.callback`,
