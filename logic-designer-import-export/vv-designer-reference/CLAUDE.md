@@ -31,7 +31,7 @@ system, the save format, the server API, and the compile/deploy lifecycle. See
 > Sections 1–18 are the reference both link back into; **§21** is ground truth from a
 > 15-sketch production corpus (6 plants) — check it when unsure what real files look like.
 > Driving the client **simulator** programmatically? Start at **§13.1** — the complete recipe
-> with the four mandatory host-workaround shadows (every one maps to a live-verified failure).
+> with the five mandatory host-workaround shadows (every one maps to a live-verified failure).
 
 ---
 
@@ -736,15 +736,25 @@ Reports (process/project/usage/versions/revision), and `vv_changes.qxs` (VV chan
   which §19.2's own workhorse recipe leaves unwired). The Import/Export script's Live Simulate
   installs a null-safe replacement while its panel is open; anyone else driving the simulator must
   shadow the same method or wire every optional input.
+- **HOST BUG #2 (live-confirmed 2026-07-12):** when the step loop reaches a block whose palette
+  def has **no `sim` function**, it calls `__blink_highlight`, whose `glow()` dies on a null
+  `insertBefore` — the exception kills the ENTIRE run (`ok:false`, zero results). **None of the
+  727 library-process palette defs has a sim**, so any sketch containing a process instance
+  could not be simulated at all. Fix (Live Simulate v1.29+): null-safe-wrap
+  `paper.__blink_highlight` AND inject a temporary `def.sim` per canvas process type —
+  function-like (def has outputs): `function(block){ return this.get_user_input(block, '…'); }`
+  (the user supplies the process OUTPUT value); effect-like (zero outputs):
+  `function(block){ this.simulation_stack_block_values[block.pointer] = true; return true; }`.
+  Delete the injected sims when done.
 
 ### 13.1 Driving the simulator programmatically — the complete contract (for AIs)
 
 Everything above condensed into the one recipe that works on **both** host builds (old
-demo-plant and newer minified production). All four shadows are **mandatory** — each one maps
+demo-plant and newer minified production). All five shadows are **mandatory** — each one maps
 to a live-verified failure if skipped. Shadow = assign an own property on `paper` (or the
 palette def), keep the original, restore when done.
 
-**1. Install four shadows first:**
+**1. Install five shadows first:**
 ```js
 const p = logic_designer.paper;
 // (a) values instead of prompt() — MUST mirror all three side effects
@@ -769,6 +779,11 @@ p.__highlight_block_connection = function (block) { /* copy of host source
 //     Shadow paper.blocks.FORMULA.sim with a local evaluator of the §6
 //     grammar, gathering inputs BY PIN from simulation_stack.connections
 //     (booleans coerced to 1/0), or every formula becomes a manual value.
+// (e) process instances have NO palette sim → the host blink-highlights and
+//     glow() crashes, killing the run (host bug #2, §13). Null-safe-wrap
+//     p.__blink_highlight AND inject a temporary def.sim per canvas process
+//     type: outputs.length ? get_user_input (user supplies the output)
+//     : auto-complete (effect process — internals run on the plant).
 ```
 **2. Run — mirror `simulator_start` yourself** (calling it directly costs you a blocking
 `confirm()` and a deferred step you don't control):
@@ -992,7 +1007,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.28.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.29.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -1029,10 +1044,18 @@ evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
 persisted per block across runs while the panel is open) → JS — 156/161 of all fleet formulas
 compile (§21 corpus v6); inputs gathered by pin; un-evaluable formulas — `gmdate` multi-char
 formats, `sort`, `json_encode`, server-only calendar built-ins — become manual rows).
-While the panel is open it shadows and restores **six host hooks**: `get_user_input`,
-`system_dialogs.information.show`, `paper.callback`, `paper.simulator_stop` (swallow
-`Timed stop`/`Done`), `__highlight_block_connection` (null-fix), `paper.blocks.FORMULA.sim`
-(local evaluator). The dirty flag is preserved everywhere — it never marks the sketch unsaved
+While the panel is open it shadows and restores **seven host hooks + per-canvas process
+sims**: `get_user_input`, `system_dialogs.information.show`, `paper.callback`,
+`paper.simulator_stop` (swallow `Timed stop`/`Done`), `__highlight_block_connection`
+(null-fix), `paper.blocks.FORMULA.sim` (local evaluator), and `__blink_highlight`
+(null-safe — host bug #2, live-probed 2026-07-12: the step loop blink-highlights any block
+whose palette def lacks `.sim`, and `glow()` crashes on a null `insertBefore`, killing the
+whole run; **no library-process def has a sim**, so ANY sketch with a process instance died).
+Additionally every process type on the canvas gets a **temporary injected sim**:
+function-like (palette def has outputs) → `get_user_input` like PARAMV, i.e. a
+"process output" panel row (the process computes on the plant; the user supplies the output
+value); effect-like (zero outputs) → auto-complete with `true` (nothing downstream).
+Flow/log lines annotate both classes; injected sims are deleted on panel close. The dirty flag is preserved everywhere — it never marks the sketch unsaved
 or calls the server. Pure helpers (`listSimInputBlocks`/`listSimOutputBlocks`/`formatSimValue`/
 `buildSimFlowLines`/`buildSimulationLog`/`phpDate`/`compileVvFormula` + the import/export set)
 are `module.exports`-ed for Node tests; console surface is `window.__LDIO` (incl. `_sim` state

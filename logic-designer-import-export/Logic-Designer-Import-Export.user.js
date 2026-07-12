@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.28.0
+// @version      1.29.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -103,7 +103,10 @@ function listSimInputBlocks(elements, palette) {
     var sim = def && def.sim;
     if (typeof sim !== 'function' || String(sim).indexOf('get_user_input') === -1) continue;
     var label = (el.override && el.override.alias_text) || (el.data && el.data.alias_text) || el.alias_text || el.block_type;
-    rows.push({ pointer: parseInt(key, 10), type: el.block_type, label: String(label) });
+    rows.push({
+      pointer: parseInt(key, 10), type: el.block_type, label: String(label),
+      isProcess: !!(def && def.compile_type === 'process'),
+    });
   }
   rows.sort(function (a, b) { return a.pointer - b.pointer; });
   return rows;
@@ -260,6 +263,12 @@ function buildSimFlowLines(stack, results, order, inputValues) {
     var head = 'step ' + (i + 1) + ': ' + b.type + ' (' + id + ')' + (label ? ' "' + label + '"' : '') + ' = ' + formatSimValue(results[id]);
     var feeds = stack.connections.filter(function (c) { return c.target && c.target.id === id; });
     if (feeds.length === 0 && inputValues && (id in inputValues)) head += '   [panel input]';
+    if (b.compile_type === 'process') {
+      var hasOut = stack.connections.some(function (c) { return c.source && c.source.id === id; });
+      head += hasOut
+        ? '   [library process — output supplied in the panel; its internals run on the plant]'
+        : '   [library process, effect class — alarms/writes run INSIDE it on the plant; nothing to compute here]';
+    }
     lines.push(head);
     feeds.sort(function (a, b2) { return a.target.put - b2.target.put; }).forEach(function (c) {
       var s = byId[c.source.id];
@@ -274,7 +283,8 @@ function buildSimFlowLines(stack, results, order, inputValues) {
     lines.push('NOT EVALUATED (invalidated IF branch, or never reached):');
     notRun.forEach(function (b) {
       var l = simBlockLabel(b);
-      lines.push('  ' + b.type + ' (' + b.id + ')' + (l ? ' "' + l + '"' : ''));
+      lines.push('  ' + b.type + ' (' + b.id + ')' + (l ? ' "' + l + '"' : '') +
+        (b.compile_type === 'process' ? '   [library process — internals run on the plant]' : ''));
     });
   }
   return lines;
@@ -646,7 +656,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.28.0';
+    var VERSION = '1.29.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -927,6 +937,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hadOwnCb: false, origCb: null,
       origFormulaSim: null, formulaCache: {}, // local FORMULA evaluation
       formulaPrev: {}, // per-block previous output — feeds the `state` magic variable across runs
+      injectedProcSims: [], // palette process defs given a temporary sim while the panel is open
+      hadOwnBlink: false, origBlink: null, // null-safe __blink_highlight (host glow() bug)
       stopBtnEl: null, // turns red while simulated values are on the canvas
       runBtnEl: null, replayBtnEl: null, statusEl: null, // pro controls + status chip
       dimEls: [], replayTimer: null, fillOverlays: [], postPaintTimer: null, // flow-visualisation extras
@@ -1100,6 +1112,48 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
         }
       };
+      // HOST BUG workaround #2 (live-probed 2026-07-12): when the step loop
+      // reaches a block whose palette def has NO sim function, it calls
+      // __blink_highlight, whose glow() dies on a null insertBefore — the
+      // exception kills the whole run (ok=false, zero results). Null-safe
+      // wrap while the panel is open.
+      simState.hadOwnBlink = Object.prototype.hasOwnProperty.call(paper, '__blink_highlight');
+      simState.origBlink = paper.__blink_highlight;
+      if (typeof simState.origBlink === 'function') {
+        paper.__blink_highlight = function () {
+          try { return simState.origBlink.apply(this, arguments); }
+          catch (e) { /* host glow() null bug — highlighting only, safe to skip */ }
+        };
+      }
+      // Library-process instances: NONE of the 727 palette process defs has a
+      // sim function (fleet v13/v16), so the host cannot simulate them at all
+      // (see workaround #2). While the panel is open, inject a temporary sim
+      // per process type on the canvas: FUNCTION-like processes (palette def
+      // has outputs) prompt like PARAMV — the process computes on the plant,
+      // the user supplies its output value in the panel; EFFECT-like
+      // processes (zero outputs — 61 % of the fleet library; alarms/writes
+      // live inside) just complete, there is nothing downstream to feed.
+      simState.injectedProcSims = [];
+      var els = paper.elements || {};
+      for (var ek in els) {
+        if (!/^\d+$/.test(ek)) continue;
+        var procEl = els[ek];
+        var procDef = procEl && paper.blocks && paper.blocks[procEl.block_type];
+        if (!procDef || procDef.compile_type !== 'process' || typeof procDef.sim === 'function') continue;
+        (function (d) {
+          var funcLike = !!(d.outputs && d.outputs.length > 0);
+          d.sim = funcLike
+            ? function (block) {
+              return this.get_user_input(block, 'Library process (computes on the plant) — enter the OUTPUT value to simulate with');
+            }
+            : function (block) {
+              // effect process: nothing to compute client-side; mark complete.
+              this.simulation_stack_block_values[block.pointer] = true;
+              return true;
+            };
+          simState.injectedProcSims.push(d);
+        })(procDef);
+      }
       simState.hooked = true;
     }
 
@@ -1108,6 +1162,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (simState.hadOwnGUI) paper.get_user_input = simState.origGUI; else delete paper.get_user_input;
       if (simState.hadOwnCb) paper.callback = simState.origCb; else delete paper.callback;
       if (simState.hadOwnHl) paper.__highlight_block_connection = simState.origHl; else delete paper.__highlight_block_connection;
+      if (typeof simState.origBlink === 'function') {
+        if (simState.hadOwnBlink) paper.__blink_highlight = simState.origBlink; else delete paper.__blink_highlight;
+      }
+      if (simState.injectedProcSims && simState.injectedProcSims.length) {
+        for (var ip = 0; ip < simState.injectedProcSims.length; ip++) delete simState.injectedProcSims[ip].sim;
+        simState.injectedProcSims = [];
+      }
       if (simState.hadOwnStop) paper.simulator_stop = simState.origStop; else delete paper.simulator_stop;
       if (simState.origFormulaSim && paper.blocks && paper.blocks.FORMULA) {
         paper.blocks.FORMULA.sim = simState.origFormulaSim;
@@ -1568,8 +1629,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ptr.textContent = '(' + r.pointer + ')';
         var label = document.createElement('span');
         label.className = 'ldio-sim-label';
-        label.textContent = r.label + ' · ' + r.type;
-        label.title = r.label + ' (' + r.type + ')';
+        label.textContent = r.label + ' · ' + (r.isProcess ? 'process output' : r.type);
+        label.title = r.isProcess
+          ? r.label + ' (' + r.type + ') — a library process computes on the plant, not in the browser; enter the OUTPUT value it would produce'
+          : r.label + ' (' + r.type + ')';
         var input = document.createElement('input');
         input.type = 'number';
         input.step = 'any';
