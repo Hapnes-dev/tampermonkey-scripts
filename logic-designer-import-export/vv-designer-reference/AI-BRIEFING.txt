@@ -146,9 +146,10 @@ Two additional constraints:
   Never use TAGVALUE unless wiring a published process's pinned tag input.
 - PROCESS INSTANCES (compile_type "process"): opaque library blocks - copy
   type/func verbatim; they must exist in the target plant's library. Their
-  pins are mostly constant-settings (feed with CONSTs). Many processes have
-  ZERO outputs (the alarm/write lives INSIDE the process) - an instance with
-  no outgoing wires is normal production logic, not an error.
+  pins are mostly constant-settings (feed with CONSTs; 59% of all pins in
+  the top-72 library definitions). 61% of the top library processes have
+  ZERO outputs (the alarm/write/virtual lives INSIDE the process) - an
+  instance with no outgoing wires is normal production logic, not an error.
 
 --------------------------------------------------------------------------------
 4. BLOCK REFERENCE — THE ALLOWLIST

@@ -2810,18 +2810,21 @@ in data.alias_text, not override):
 
 --- INSIDE A LIBRARY PROCESS (definition sketches, mode "process") ---
 A process is a published sketch with mode "process". Its pins are PROCESSIN
-blocks, its outputs PROCESSOUT blocks:
+blocks, its outputs PROCESSOUT blocks (measured on the fleet's top 72
+definitions / 1,714 blocks):
   PROCESSIN data: {"alias_text":"-Room_temp_read","method":"parameter",
                    "by_refference":false,"type":"float"}
-  method is one of: constant (75% of all pins - a tweakable setting fed by a
-  CONST at instantiation) | parameter | tag | calendar | enable.
+  method census (385 pins): constant 59% (a tweakable setting fed by a CONST
+  at instantiation) | parameter 33% | tag | enable | calendar. Typical
+  process has 2-5 pins and 0-3 outputs; by_refference is never set on pins.
   PROCESSOUT data: {"alias_text":"Kalkulert settpunkt"}
 TWO PROCESS CLASSES - important when READING sketches:
   1. Function-like: has PROCESSOUT outputs ("Kurve 2P": 5 pins in, value out).
   2. Effect-like: ZERO outputs - the ALARM / VIRTUALOUT / WRITETOUNIT lives
-     INSIDE the process (7 of the fleet's 13 top processes). A process
-     instance with no outgoing wires is usually an effect process, NOT dead
-     logic.
+     INSIDE the process. This class DOMINATES: 44 of the top 72 (61%). A
+     process instance with no outgoing wires is usually an effect process,
+     NOT dead logic. (Interiors publish wholesale: VIRTUALOUT is the most-
+     placed inner block, and processes even fetch WEATHER data themselves.)
 "Kurve for 4 knekkpunkt" definition = 11 blocks: Verdi:parameter pin +
 X1-X4/Y1-Y4 constant pins + interpolation + PROCESSOUT - matching exactly how
 sketches instantiate it (PARAMV on pin 0, eight CONSTs).

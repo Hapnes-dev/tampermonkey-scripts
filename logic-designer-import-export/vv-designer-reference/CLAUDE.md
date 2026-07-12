@@ -551,31 +551,39 @@ The most important domain concept beyond raw blocks:
 - The **user library hierarchy** organises processes into folders and can be re-organised
   (see library.php methods §11). There are ~14 named libraries (ØTS, Drift, General, per-person…).
 
-### 10.1 Inside a library process — the definition sketch (fleet v10, 13 top processes loaded)
+### 10.1 Inside a library process — the definition sketch (fleet v13, 72 top processes loaded)
 
 `logic_designer_manager.load_process(process_id)` (read-only; id = the lowercase `block_func`,
 e.g. `pw_heating_kurve_4_knekkpunkt`) returns `{id, process_id, process_name, sketch}` where
-`sketch` is a normal sketch document with **`mode:'process'`**. What the fleet's most-used
-definitions reveal:
+`sketch` is a normal sketch document with **`mode:'process'`**. What the fleet's 72 most-used
+definitions (1,714 blocks) reveal:
 
 - **A pin is a `PROCESSIN` block**: `data = {alias_text, method, by_refference, type}` —
   sample `{"alias_text":"-Room_temp_read","method":"parameter","by_refference":false,
-  "type":"float"}`. **Method census across 68 pins: `constant` 51 (75 %), `parameter` 11,
-  `enable` 3, `tag` 2, `calendar` 1** — process pins are mostly tweakable *settings* (which is
-  why instantiations feed them with CONSTs, §21 v5). Types: float 39, mixed 20, integer 4,
-  boolean 4. An output is a `PROCESSOUT` block (`data.alias_text` = the output pin name).
-- **Two process classes**: *function-like* (has PROCESSOUT outputs — "Kurve 2P" 7 blocks:
-  5 PROCESSIN + interpolation + 1 PROCESSOUT "Utgangsignal"; "Kurve for 4 knekkpunkt"
-  11 blocks: Verdi:parameter + X1-X4/Y1-Y4 constants + PROCESSOUT "Kalkulert settpunkt") and
-  ***effect-like* with ZERO outputs** (7 of 13!) — the ALARM/VIRTUALOUT/WRITETOUNIT lives
-  INSIDE the process ("Timeteller uten alarm": one `enable`-method pin, HOURMETER+VIRTUALOUT
-  inside; "Suction Pressure PoA": tag+calendar pins, alarm inside). When reading a sketch, a
-  process instance with no outgoing wires is usually an effect process, not dead logic.
-- **Inner anatomy**: SELECTOR is the most-used logic block inside processes (×25 across 13),
-  then LIKE ×18, COMP_AND ×13, FORMULA ×9, IF ×7, ALARM_OBJECT_EXTENDED ×4 — processes are
-  setpoint-choosers and guarded outputs, same recipes as sketches.
-- Definition sketches use `require_plant_revision` 0 or 620 like ordinary sketches; big ones
-  exist ("kirke_scenario_velger": 71 blocks, 18 pins, 1 output).
+  "type":"float"}`. **Method census across 385 pins: `constant` 227 (59 %), `parameter` 128
+  (33 %), `tag` 16, `enable` 11, `calendar` 3** — process pins are mostly tweakable *settings*
+  (which is why instantiations feed them with CONSTs, §21 v5). Types: mixed 158, float 138,
+  integer 47, boolean 30, string 9 (and `type` MISSING on 3 — tolerate). `by_refference` is
+  **false on every pin** in the corpus; 16 pins carry the §10 `require_data`/tag pinning.
+  Typical process: **2–5 pins** (max 10), **0–3 outputs**. An output is a `PROCESSOUT` block
+  (`data.alias_text` = the output pin name).
+- **Two process classes — and effect-like DOMINATES**: *function-like* (has PROCESSOUT
+  outputs — "Kurve 2P" 7 blocks: 5 PROCESSIN + interpolation + 1 PROCESSOUT "Utgangsignal";
+  "Kurve for 4 knekkpunkt" 11 blocks: Verdi:parameter + X1-X4/Y1-Y4 constants + PROCESSOUT
+  "Kalkulert settpunkt") vs ***effect-like* with ZERO outputs — 44 of 72 (61 %)** — the
+  ALARM/VIRTUALOUT/WRITETOUNIT lives INSIDE the process ("Timeteller uten alarm": one
+  `enable`-method pin, HOURMETER+VIRTUALOUT inside). When reading a sketch, a process
+  instance with no outgoing wires is usually an effect process, not dead logic.
+- **Inner anatomy at scale**: **VIRTUALOUT ×224** is the most-placed block inside processes
+  (they publish trend values wholesale), then CONST ×160, FORMULA ×88, BIGGERTHAN ×86,
+  COMP_AND ×71, SELECTOR ×58, ALARM ×54, DELAY_VARIABLE ×39, WEATHER ×25 (processes fetch
+  Yr data themselves!), ALARM_OBJECT_EXTENDED ×19 — same recipes as sketches, plus heavy
+  virtual-publishing.
+- **All 29 unique FORMULAs inside the definitions compile with the §13.1 local evaluator**
+  (29/29) — process internals stay within the documented grammar.
+- Definition sketches use `require_plant_revision` 0 (×39) or 620 (×25) like ordinary
+  sketches (604 ×6; missing ×1); big ones exist ("kirke_scenario_velger": 71 blocks, 18 pins,
+  1 output).
 
 ---
 
@@ -2220,6 +2228,22 @@ scraped** (14,497 blocks; zero failures):
 - **Old-format tolerance found**: pre-modern templates omit `compile_type`/`current_revision`
   on process instances entirely (→ §8 reader rule); `require_plant_revision` missing ×17.
 - **FORMULA**: 212 unique fleet-wide; **206/212 compile locally** — same six holdouts.
+
+**Corpus v13 — the process-definition corpus (2026-07-12):** 53 more plants / **135 more
+sketches (zero failures)** → combined **~562 plants / 3301 sketches / 86,176 blocks / 83,397
+wires** — plus the **top-72 library-process definitions** (1,714 blocks; §10.1 rewritten with
+at-scale numbers):
+
+- **Effect-like processes dominate the library**: 44 of 72 (61 %) have ZERO outputs — the
+  typical library process is an encapsulated *behaviour* (alarm/publish/write inside), not a
+  function. Pin methods at 385 pins: `constant` 59 %, `parameter` 33 %, `tag`/`enable`/
+  `calendar` rare; `by_refference` never set on pins; `type` can be MISSING (×3).
+- **Process interiors publish wholesale**: VIRTUALOUT is the most-placed inner block (×224
+  across 72 defs); WEATHER lives inside processes too (×25) — a "process hub" sketch may
+  fetch weather and publish trends without any of it visible at sketch level.
+- **All 29 unique formulas inside the definitions compile with the local evaluator (29/29)**
+  — process internals stay within the documented grammar.
+- **FORMULA fleet-wide**: 220 unique; **214/220 compile locally** — same six holdouts.
 - **Typed 3-block chain census** (74,814 wires walked) — the canonical production chains,
   by occurrence: CONST→PROCESS→WRITETOUNIT **8,176** · CONST→PROCESS→VIRTUALOUT **5,860** ·
   PARAMV→PROCESS→WRITETOUNIT **3,126** · CONST→IF→WRITETOUNIT **2,381** ·
