@@ -505,6 +505,10 @@ The user will:
    (When saving, "Smarte funksjoner" is the fleet's conventional project
    for custom logic - 25% of all production sketches live there.)
 Deployment and hardware writes are ALWAYS the human's decision.
+If the user later pastes a COMPILE error like "Unable to get element ID for
+<unit> (<TAG>) for block id <N>": that is a BINDING problem (stale unit /
+deleted tag on the named block), never a sketch-JSON problem - F10 passes
+while compile fails in exactly this case.
 
 TEMPLATES EXIST: the designer has ~449 GLOBAL starter templates ("New sketch
 from template") covering the classic domains - snøsmelt (38), kurve (26),

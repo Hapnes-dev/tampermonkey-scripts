@@ -1077,13 +1077,29 @@ from the plant they were saved on — treat them like a cross-plant import (rebi
 `comment` is the save-dialog text); `revert_to_history_entry(id)` restores one — every save
 is versioned with author attribution.
 
-### 17.3 Authored sketch vs compiled artifact
+### 17.3 Authored sketch vs compiled artifact (expansion contract verified, fleet v14)
 - **`load_sketch`** returns the **authored** graph (what you edit).
 - **`compile_sketch_for_preview(sketch_id, parameter_values)`** → `{ok, data:{mode, blocks,
-  connections}}` — the **compiled/expanded** form the plant actually runs. In it, block ids are
-  **strings**, `properties`/`runtime` may be empty arrays, and connections can carry a
-  **`label`** (e.g. the constant value shown on the wire). This is also what the read-only
-  `?preview_sketch=<id>` view renders.
+  connections}}` — the **compiled/expanded** form the plant actually runs. This is also what
+  the read-only `?preview_sketch=<id>` view renders. Verified expansion contract (an 8-block
+  authored sketch with 4 process instances compiled to **48 blocks**):
+  - **Process instances are INLINED**: each instance's interior appears with composite string
+    ids `"<instance>-<inner>"` (`"0-3"` = instance block 0's inner block 3); plain blocks
+    keep their id as a string (`"1"`). `groups` is dropped.
+  - `runtime`/`properties` become `[]`; wire labels are objects
+    (`"label":{"text":"1"}` — the constant shown on the wire); and `data.driver_id` is
+    **normalized to the SINGULAR form** in compiled output even when authored plural.
+  - **Compile failures are binding-resolution failures**: `{ok:false, message:"Unable to get
+    element ID for 019:031 (RIN_LT_JKU_TEMP_RT0-1_SUCTION) for block id 32"}` — the compiler
+    resolves unit/tag/param bindings server-side; a stale binding (e.g. a repeat-unit that no
+    longer exists) fails with exactly this shape. A compile error means a BINDING is wrong,
+    not the sketch JSON.
+- **Binding discovery RPCs** (manager): `load_avaliable_tags(plant_id)` →
+  `{ok, data:[{tag, alias_text}]}` (the plant's tag catalog with display names);
+  `load_avaliable_calendars(plant_id)` / `load_avaliable_calendar_systems(plant_id)` → same
+  envelope (empty `data` on plants without calendars). Process metadata:
+  `get_process_state(id)` → `"DONE"|"TEST"|…`; `get_process_invoiceable(id)` → boolean (a
+  per-process **billing flag**).
 
 ### 17.4 Process library hierarchy (the toolbox tree)
 `get_process_library_hierarchy()` → one tree rooted **"VV Designer Processes"**
@@ -2244,6 +2260,22 @@ at-scale numbers):
 - **All 29 unique formulas inside the definitions compile with the local evaluator (29/29)**
   — process internals stay within the documented grammar.
 - **FORMULA fleet-wide**: 220 unique; **214/220 compile locally** — same six holdouts.
+
+**Corpus v14 — the deploy & discovery surfaces (2026-07-12):** 53 more plants / **200 more
+sketches (zero failures)** → combined **~615 plants / 3501 sketches / ~89k blocks** (well over
+half the fleet's plants sampled). This round documented the last major API surfaces (→ §17.3
+rewritten):
+
+- **The compiled artifact decoded**: process instances INLINE at compile with composite
+  `"<instance>-<inner>"` string ids (8 authored blocks → 48 compiled); `driver_id` normalizes
+  to singular; wire labels become `{text}` objects; groups dropped.
+- **Compile errors are binding errors**: exact production shape `"Unable to get element ID
+  for <unit> (<TAG>) for block id <N>"` — resolution of unit/tag/param bindings happens at
+  compile, so a stale repeat-unit binding fails compile while F10 passes.
+- **Binding discovery**: `load_avaliable_tags(plant)` returns the tag catalog with display
+  names (`{tag, alias_text}`); calendars via the sibling RPCs.
+- **Per-process billing flag exists**: `get_process_invoiceable(id)` → boolean;
+  `get_process_state(id)` → lifecycle string.
 - **Typed 3-block chain census** (74,814 wires walked) — the canonical production chains,
   by occurrence: CONST→PROCESS→WRITETOUNIT **8,176** · CONST→PROCESS→VIRTUALOUT **5,860** ·
   PARAMV→PROCESS→WRITETOUNIT **3,126** · CONST→IF→WRITETOUNIT **2,381** ·

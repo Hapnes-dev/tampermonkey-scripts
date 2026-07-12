@@ -2949,6 +2949,17 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
   - OLD-DOCUMENT TOLERANCE: very old sketches/templates OMIT compile_type
     and current_revision on process instances - when reading, treat "type
     not in the palette + func == lowercase(type)" as a process instance.
+  - WHAT COMPILE DOES (the deployed artifact vs the authored sketch):
+    process instances are INLINED with composite string ids ("0-3" =
+    instance 0's inner block 3; an 8-block sketch became 48 compiled
+    blocks); driver_id normalizes to SINGULAR; runtime/properties become
+    []; wire labels become {"text":"..."} objects; groups are dropped.
+  - COMPILE ERRORS MEAN BINDINGS, NOT JSON: the production failure shape is
+    "Unable to get element ID for <unit> (<TAG>) for block id <N>" - the
+    compiler resolves unit/tag/param bindings server-side. If a user pastes
+    that error, point them at the named block's binding (stale unit,
+    deleted tag), not at the sketch structure. F10 can pass while compile
+    fails for exactly this reason.
 
 Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
 VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.
