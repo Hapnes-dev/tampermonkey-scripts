@@ -2276,6 +2276,28 @@ rewritten):
   names (`{tag, alias_text}`); calendars via the sibling RPCs.
 - **Per-process billing flag exists**: `get_process_invoiceable(id)` → boolean;
   `get_process_state(id)` → lifecycle string.
+
+**Corpus v15 — the docs are now fleet-TESTED (2026-07-12):** 53 more plants / **117 more
+sketches (zero failures)** → combined **~668 plants / 3618 sketches / 94,163 blocks / 90,435
+wires**. Two deliverables this round:
+
+- **`audit-docs-vs-corpus.js`** (committed alongside the validator): encodes **20 invariants
+  this reference claims** (ALARM pri/dest enums, TOGGLE_INTERVAL exact keys+units, SELECTOR
+  data shape, CONST mode enum, WRITETOUNIT count, SHIFT_REGISTER mode, DELAY_VARIABLE null
+  data, the period/periode key split, one-wire-per-input, no self-loops, integer ids,
+  non-negative x/y, by_ref on target only, FORMULA input_count==wired, PULSE_COUNT
+  CONST-only level pin, mode "function", group shape) and checks them against a scraped
+  corpus. **Result: 20/20 claims hold across all 3,618 production sketches** — the reference
+  is verified against the fleet, not just written from probes. Re-run it after future host
+  updates to catch contract drift.
+- **Label-style census** (what production calls things): VIRTUALOUT names start with
+  **"Kalk"** (kalkulert) ×899 — the fleet convention for computed values — then avvik/trinn/
+  aktiv/running/drawing-numbers; CONST names are ROLE words: `delay` ×1537, `limit` ×1404,
+  curve breakpoints `x1/x2/y1/y2` ×~800 each, `highlim`/`lowlim`/`cutout` (thermostat trio),
+  `settpunkt` ×729, `bryter` ×545, `effektgrense` ×494. Generated blocks should follow:
+  VIRTUALOUT = "Kalk <hva>" / the value's name; CONST = its role ("Delay when true",
+  "Limit", "Settpunkt komfort", "X1".."Y4", "Bryter 0-Av 1-På").
+- **FORMULA fleet-wide**: 230 unique; **224/230 compile locally** — same six holdouts.
 - **Typed 3-block chain census** (74,814 wires walked) — the canonical production chains,
   by occurrence: CONST→PROCESS→WRITETOUNIT **8,176** · CONST→PROCESS→VIRTUALOUT **5,860** ·
   PARAMV→PROCESS→WRITETOUNIT **3,126** · CONST→IF→WRITETOUNIT **2,381** ·

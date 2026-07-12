@@ -121,6 +121,11 @@ sketches (50,443 blocks) contained ZERO block types outside it.
 LABEL EVERY BLOCK: set override.alias_text on each block you generate (what
 the block does, in the user's language). 73% of all production blocks are
 labelled - an unlabelled sketch reads as machine-generated noise.
+NAMING STYLE (fleet census): VIRTUALOUT = "Kalk <what>" (kalkulert - the
+fleet convention for computed values, x899) or the plain value name
+("Driftssignal vifter"); CONST = its ROLE: "Delay when true", "Limit",
+"Settpunkt komfort", curve points "X1".."Y4", "Bryter 0-Av 1-På",
+"Effektgrense". ALARM texts: "<drawing/tag> <fault>" (see ALARM entry).
 
 WHEN EDITING AN EXISTING SKETCH (vs generating new): block ids are NOT
 compact in production (70% of sketches have id gaps from edit history) -

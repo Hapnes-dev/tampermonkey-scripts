@@ -2895,6 +2895,11 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
   - LABEL EVERY BLOCK: 73% of all production blocks have override.alias_text
     set. Older sketches may OMIT data keys entirely - when READING, treat a
     missing key as its default; when GENERATING, write keys explicitly.
+  - NAMING STYLE: VIRTUALOUT labels start with "Kalk" (kalkulert, x899 -
+    THE convention for computed values) or the plain value name; CONST
+    labels are ROLE words (delay x1537, limit x1404, x1/y1 curve points,
+    highlim/lowlim/cutout, settpunkt, bryter, effektgrense). Name yours the
+    same way.
   - eng_unit vocabulary: &deg;C (HTML entity - most common!), °C, %, min, K,
     sek, kWh, ppm, Pa. Entity and literal degree forms are interchangeable.
   - by_refference wires (the "read value by reference" pin flag) cluster on:

@@ -82,6 +82,8 @@ node validate-vv-sketch.js my-sketch.json
 
 [`vv-sketch.schema.json`](vv-sketch.schema.json) is a JSON Schema (draft-07) for editor/CI validation of the same format (the validator is stricter — prefer it).
 
+[`audit-docs-vs-corpus.js`](audit-docs-vs-corpus.js) is the maintenance counterpart: it encodes 20 invariants the reference documentation claims and checks them against a locally scraped production corpus (`node audit-docs-vs-corpus.js <corpus-dir>`). As of 2026-07-12 all 20 hold across 3,618 production sketches from ~668 plants — re-run after host updates to catch contract drift. (Corpora contain customer data and stay out of the repo.)
+
 When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`vv-designer-reference/AI-BRIEFING.txt`](vv-designer-reference/AI-BRIEFING.txt) (self-contained: concepts, contract, block allowlist, recipes, a validated example, all documented AI failures as prohibitions, and a self-check) **together with [`AI-EXAMPLES.txt`](vv-designer-reference/AI-EXAMPLES.txt)** — eight complete sketches (seven verbatim production exports + an authored exercise-window template) plus notable block shapes, all in the accepted format (the briefing says what's allowed; the examples show what correct output looks like). Alternatively paste §20.0 + §20.4 + §20.6 from the reference doc.
 
 ## How it integrates
