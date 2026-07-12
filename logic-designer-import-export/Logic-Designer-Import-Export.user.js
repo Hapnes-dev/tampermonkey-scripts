@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.34.0
+// @version      1.35.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -300,6 +300,88 @@ function buildSimFlowLines(stack, results, order, inputValues) {
   return lines;
 }
 
+// Translate a host syntax-check / runtime message into plain language:
+// what it means and how to fix it. Returns null when no translation exists.
+function explainSimIssue(msg) {
+  var m = String(msg || '');
+  var x;
+  if ((x = m.match(/^(.+?)\s*\((\d+)\)\s+is not configured/i))) {
+    return x[1] + ' (block ' + x[2] + ') has no configuration — right-click it → Configure element and set it up (bind the parameter/tag/calendar, or fill in its dialog). Imported "TODO bind" blocks stay red until this is done.';
+  }
+  if ((x = m.match(/INPUT\s+(\d+)\s+is not connected/i))) {
+    return 'an input pin (put ' + x[1] + ') has no wire — every non-optional input needs exactly one wire from another block\'s output.';
+  }
+  if (/invalid\s+typ/i.test(m)) {
+    return 'a wire connects incompatible pin types — the source output\'s type is not accepted by the target input. Check the pin types (BLOCKS.md) or insert a converting block; boolean→float widens, but e.g. string into a numeric-only pin does not.';
+  }
+  if (/unable to get element id/i.test(m)) {
+    return 'a plant binding could not be resolved — the referenced unit/tag no longer exists (stale binding). Open the named block and re-bind it; this is a binding problem, not a sketch-structure problem.';
+  }
+  if (/process\s*in/i.test(m) && /root|start/i.test(m)) {
+    return 'a process definition\'s syntax check requires PROCESSIN blocks as the roots — plant data enters a process ONLY through its pins.';
+  }
+  if (/no blocks|empty/i.test(m)) {
+    return 'the canvas is empty — nothing to simulate.';
+  }
+  return null;
+}
+
+// Plain-language outcome summary of one run: what fired, what would be
+// written/published, which inputs were defaulted, what never ran.
+// Pure — takes the same run object as buildSimulationLog.
+function buildSimSummaryLines(run) {
+  var L = [];
+  var stack = run.stack || {};
+  var blocks = stack.blocks || [];
+  var results = run.results || {};
+  var order = run.order || [];
+  var byId = {};
+  blocks.forEach(function (b) { byId[b.id] = b; });
+  var ran = function (id) { return order.indexOf(id) !== -1; };
+  var name = function (b) { var l = simBlockLabel(b); return l ? '"' + l + '"' : b.type + ' (' + b.id + ')'; };
+
+  if (stack.mode === 'process') {
+    var pins = blocks.filter(function (b) { return b.type === 'PROCESSIN'; });
+    var pouts = blocks.filter(function (b) { return b.type === 'PROCESSOUT'; });
+    L.push('This is a PROCESS DEFINITION: ' + pins.length + ' input pin(s) [' +
+      pins.map(function (b) { return simBlockLabel(b) || b.id; }).join(', ') + '], ' +
+      (pouts.length ? pouts.length + ' output pin(s).' : 'NO output pins (effect class — its alarms/writes are the product).') +
+      ' Pin values below are what an instance would feed it.');
+  }
+
+  blocks.forEach(function (b) {
+    if (b.type === 'ALARM' || b.type === 'ALARM_OBJECT' || b.type === 'ALARM_OBJECT_EXTENDED') {
+      var txt = (b.data && b.data.alias_text) ? '"' + b.data.alias_text + '"' : name(b);
+      if (!ran(b.id)) L.push('Alarm ' + txt + ': not evaluated (branch never reached).');
+      else L.push('Alarm ' + txt + ': ' + (results[b.id] ? 'WOULD FIRE (condition true this run).' : 'did not fire (condition false).'));
+    }
+    if (b.type === 'WRITETOUNIT' && ran(b.id)) {
+      L.push('Hardware write ' + name(b) + ': would write ' + formatSimValue(results[b.id]) + ' (nothing is written during simulation).');
+    }
+    if (b.type === 'VIRTUALOUT' && ran(b.id)) {
+      L.push('Virtual value ' + name(b) + ' = ' + formatSimValue(results[b.id]) + '.');
+    }
+    if (b.type === 'PROCESSOUT' && ran(b.id)) {
+      L.push('Process output pin ' + name(b) + ' = ' + formatSimValue(results[b.id]) + '.');
+    }
+    if (b.compile_type === 'process') {
+      var hasOut = (stack.connections || []).some(function (c) { return c.source && c.source.id === b.id; });
+      if (hasOut && ran(b.id)) L.push('Library process ' + name(b) + ': output ' + formatSimValue(results[b.id]) + ' (value you supplied — its internals run on the plant).');
+      else if (!hasOut) L.push('Library process ' + name(b) + ': effect class — runs on the plant, nothing computed here.');
+    }
+  });
+
+  if (run.missing && run.missing.length) {
+    var missNames = run.missing.map(function (ptr) { var b = byId[ptr]; return b ? (simBlockLabel(b) || b.type) + ' (' + ptr + ')' : ptr; });
+    L.push('NB: ' + run.missing.length + ' input(s) had no value and defaulted to 0: ' + missNames.join(', ') + ' — set them in the panel if that is not intended.');
+  }
+  var notRun = blocks.filter(function (b) { return !ran(b.id); }).length;
+  if (run.ok && notRun > 0) {
+    L.push(notRun + ' block(s) were not evaluated (an IF/IF_ELSE invalidated their branch — normal; see NOT EVALUATED under FLOW).');
+  }
+  return L;
+}
+
 // Build the full, self-contained simulation log — made to be pasted to an AI
 // so it can debug/improve the logic without access to the designer.
 // run = {ok, syntaxErrors, stack, results, order, inputValues, missing, messages}
@@ -325,11 +407,29 @@ function buildSimulationLog(run, meta) {
     if (run.order && run.order.length) {
       L.push('It stopped after ' + run.order.length + '/' + total + ' blocks — the partial flow below shows how far it got.');
     }
+    // Plain-language translations of every message we recognise.
+    var issues = [].concat(run.syntaxErrors || [], run.error ? [run.error] : [], run.messages || []);
+    var explained = [];
+    issues.forEach(function (msg) {
+      var why = explainSimIssue(msg);
+      if (why) explained.push('  - "' + msg + '"\n    => ' + why);
+    });
+    if (explained.length) {
+      L.push('');
+      L.push('WHAT THE ERRORS MEAN (and how to fix them):');
+      explained.forEach(function (e) { L.push(e); });
+    }
   } else {
     L.push('RESULT: ' + (run.order.length === total ? 'COMPLETE' : 'INCOMPLETE') + ' (' + run.order.length + '/' + total + ' blocks evaluated)');
     if (run.order.length !== total) {
       L.push('(Blocks can be skipped legitimately when an IF/IF_ELSE invalidated their branch — see NOT EVALUATED under FLOW.)');
     }
+  }
+  var summary = buildSimSummaryLines(run);
+  if (summary.length) {
+    L.push('');
+    L.push('SUMMARY (what this run means):');
+    summary.forEach(function (s) { L.push('  ' + (run.ok ? '• ' : '• ') + s); });
   }
   L.push('');
   L.push('INPUTS (values set in the Live Simulate panel):');
@@ -686,7 +786,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.34.0';
+    var VERSION = '1.35.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -2255,6 +2355,8 @@ if (typeof module !== 'undefined' && module.exports) {
     formatSimValue: formatSimValue,
     buildSimFlowLines: buildSimFlowLines,
     buildSimulationLog: buildSimulationLog,
+    buildSimSummaryLines: buildSimSummaryLines,
+    explainSimIssue: explainSimIssue,
     phpDate: phpDate,
     compileVvFormula: compileVvFormula,
     parseImportPayload: parseImportPayload,

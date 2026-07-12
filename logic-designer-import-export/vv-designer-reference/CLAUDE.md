@@ -1097,7 +1097,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.34.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.35.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /
@@ -1134,7 +1134,12 @@ with the colour **filling each wire** source→target (delay blocks fill proport
 seconds). *auto re-run* (off by default) re-simulates on value **and canvas** changes, guarded
 by volatile-field-stripped logic/layout fingerprints so host background noise never causes
 redraw "blinking". **⧉ Log** copies a self-contained debug report (inputs, per-pin flow trace,
-results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()`. **FORMULA blocks are
+results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()` — opening with a
+plain-language **SUMMARY** (`buildSimSummaryLines`: alarms would-fire/didn't, would-write
+values, virtual/process-output values, defaulted inputs, dead-branch count, process-definition
+pin context) and, on failure, a **WHAT THE ERRORS MEAN** section (`explainSimIssue`: known
+host messages translated to cause + fix — not-configured, input-not-connected, invalid types,
+stale-binding). **FORMULA blocks are
 evaluated locally** (`compileVvFormula`: the §6 grammar incl. `and`/`or`, `?:`,
 `time()`/`date()`, the PHP stdlib subset `intval`/`floatval`/`idate`/`substr`/`strpos`/
 `stripos`/`strtotime`/`rand(min,max)`/`null`, and the `state` magic variable (previous output,
