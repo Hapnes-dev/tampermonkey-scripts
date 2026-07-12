@@ -356,6 +356,22 @@ OUTPUTS (compile_type "output" unless noted)
   reset_value after a delay. data: {"trigger_value": 0, "reset_value": 1,
   "delay_unit": "min", "delay_amount": 1}
 
+TOOLBOX NAME -> TYPE KEY (users speak toolbox names; the JSON needs the key —
+the non-obvious mappings; the complete 71-block table with the host's own
+per-pin help texts is BLOCKS.md in this folder):
+  "Season selector" -> IS_WITHIN_DATES (returns 0 summer / 1 winter / else 2;
+     four string CONST pins "DD.MM": summer start/end, winter start/end)
+  "Current time" -> DATE_TIME          "Differential" -> DIFF
+  "Counter Limit" -> PERIODE_VALUE     "Hour meter" -> HOURMETER
+  "Toggled value (Interval)" -> TOGGLE_INTERVAL
+  "Average in periode" -> AVERAGE_PERIODE (process-mode only)
+  "Sunrise and sunset" -> WEATHER_SUN  "Mapped transform" -> TRANSFORM_MAPPED
+  "Write to unitparameter" -> WRITETOUNIT
+  "Temp. value" -> TEMP_VALUE          "Variable Delay" -> DELAY_VARIABLE
+  "Process Input" -> PROCESSIN         "Process Out" -> PROCESSOUT
+  "And"/"Or" -> COMP_AND/COMP_OR       "Constant value" -> CONST
+  "Parameter value" -> PARAMV          "Tag value" -> TAGVALUE
+
 BLOCKS THAT DO NOT EXIST (all have appeared in failed AI files):
 EQUAL, EQUALS, GREATERTHAN, LESSTHAN, AND, OR, NOT, WRITE, WRITEOUTUNIT,
 WRITE_TO_UNIT, DIGITAL_INPUT, ANALOG_INPUT, INPUT, OUTPUT, SENSOR, READ,

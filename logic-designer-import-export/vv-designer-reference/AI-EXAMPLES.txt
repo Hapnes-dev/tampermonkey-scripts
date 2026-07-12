@@ -2550,6 +2550,12 @@ The value array IS the multi-selected unit list the logic is stamped per:
   {"unit_id":"001:020","unit_ref":null,"unit_name":"K1 Mejerikylrum-A","instances":"A","order_no":"084B8022_15x1"},
   {"unit_id":"001:021","unit_ref":null,"unit_name":"K2 Kottkylrum-A","instances":"A","order_no":"084B8022_15x1"}]}
 
+--- IS_WITHIN_DATES / "Season selector" (host contract, BLOCKS.md) ---
+Returns 0 in the summer window, 1 in the winter window, else 2. Four STRING
+CONST pins in "DD.MM" format: put0 summer start, put1 summer end, put2 winter
+start, put3 winter end. data null. func "is_within_dates" (current palette;
+legacy sketches carry singular "is_within_date" - both are valid).
+
 --- SPOT_PRICE (real production shape) ---
 {"hours":[0],"region":"10YNO-3--------J"}   (region = ENTSO-E bidding zone; null also occurs)
 

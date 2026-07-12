@@ -1,0 +1,3443 @@
+{
+ "ABSOLUTE": {
+  "alias_text": "Absolute",
+  "block_func": "absolute",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Get absolute of value",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the rounded value of the input"
+  }
+ },
+ "ADD": {
+  "alias_text": "Add",
+  "block_func": "add",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Add two values",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the sum of the inputs added together"
+  }
+ },
+ "AGE_OF_VALUE": {
+  "alias_text": "Age of value",
+  "block_func": "age_of_value",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Returns age of value in seconds",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "integer"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [
+    "Output a Numeric value"
+   ],
+   "logics": "Returns the age of the value from <b>Input 1</b>"
+  }
+ },
+ "ALARM": {
+  "alias_text": "Alarm",
+  "block_func": "alarm",
+  "compile_type": "output",
+  "mode": "both",
+  "color": "#F00",
+  "description": "Alarm",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Boolean input"
+   ],
+   "outputs": [],
+   "logics": "Creates an alarm if the value <b>Input 1</b> is true"
+  }
+ },
+ "ALARM_OBJECT": {
+  "alias_text": "Alarm Object",
+  "block_func": "alarm_object",
+  "compile_type": "output",
+  "mode": "both",
+  "color": "#F00",
+  "description": "Alarm Object",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Condition",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Cost",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Boolean input",
+    "Numeric input"
+   ],
+   "outputs": [],
+   "logics": "Creates an alarm if the value <b>Input 1</b> is true. It also saves the value from <b>Input 2</b>"
+  }
+ },
+ "ALARM_OBJECT_EXTENDED": {
+  "alias_text": "Alarm Object Extended",
+  "block_func": "alarm_object_extended",
+  "compile_type": "output",
+  "mode": "both",
+  "color": "#F00",
+  "description": "Alarm Object Extended",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i0",
+    "alias_text": "Condition",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Cost",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i3",
+    "alias_text": "Limit",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Boolean input",
+    "Numeric input"
+   ],
+   "outputs": [],
+   "logics": "Creates an alarm if the value <b>Input 1</b> is true. It also saves the values from <b>Input 2</b>, <b>Input 2</b> and <b>Input 2</b>"
+  }
+ },
+ "AVERAGE": {
+  "alias_text": "Average",
+  "block_func": "average",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Average of multiple values",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Result",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the average of the inputs"
+  }
+ },
+ "AVERAGE_PERIODE": {
+  "alias_text": "Average in periode",
+  "block_func": "average_periode.run",
+  "compile_type": "function",
+  "mode": "process",
+  "type": "internal",
+  "color": "#999",
+  "description": "Calculate average for periode",
+  "require_configuration": false,
+  "require_plant_revision": 620,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Parameter",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Periode Enable",
+    "type": "boolean",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i3",
+    "alias_text": "Collect Enable",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "float"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input",
+    "Boolean input",
+    "Boolean input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "When <b>Collect Enable</b> toggles the block returns the average off the values collected when <b>Collect Enable</b> was true"
+  }
+ },
+ "AVG_IN_PERIOD": {
+  "alias_text": "Average in period",
+  "block_func": "avg_in_period",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Returns average in period",
+  "require_configuration": true,
+  "require_plant_revision": 604,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the average of the values in the configured period"
+  }
+ },
+ "BIGGERTHAN": {
+  "alias_text": "Bigger than",
+  "block_func": "biggerthan",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if one are bigger than the other",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Boolean output"
+   ],
+   "logics": "Returns a Boolean <b>true</b> if the first input is larger than the second"
+  }
+ },
+ "BIGGERTHANOREQUAL": {
+  "alias_text": "Bigger than or equal",
+  "block_func": "biggerthanorequal",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if one are bigger than the other or Input 1 = Input 2",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric inputs",
+    "Numeric inputs"
+   ],
+   "outputs": [
+    "Boolean output"
+   ],
+   "logics": "Returns a Boolean <b>true</b> if the first input is larger or equal to the second"
+  }
+ },
+ "CALENDAR": {
+  "alias_text": "Calendar",
+  "block_func": "calendar_value",
+  "compile_type": "input",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF66CC",
+  "description": "Returns the state for a calendar",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs a boolean value based on the state of the calendar schema saved on the plant"
+   ],
+   "logics": "This block uses one of the saved schemas on the plant to return a boolean value"
+  }
+ },
+ "CALENDAR_2_0": {
+  "alias_text": "Calendar 2.0",
+  "block_func": "calendar.run",
+  "compile_type": "input",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF66CC",
+  "description": "Returns data from Calendar 2.0",
+  "require_configuration": true,
+  "require_plant_revision": 1460,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs a boolean value based on the state of the calendar schema saved on the plant"
+   ],
+   "logics": "This block uses one of the saved schemas on the plant to return a boolean value"
+  }
+ },
+ "COMP_AND": {
+  "alias_text": "And",
+  "block_func": "comp_and",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if both are TRUE",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configurable number of Boolean inputs"
+   ],
+   "outputs": [
+    "Outputs a Boolean value, <b>true</b>, if all inputs are also <b>true</b>"
+   ],
+   "logics": "Returns a boolean <b>true</b> if all inputs are <b>true/1</b>"
+  }
+ },
+ "COMP_OR": {
+  "alias_text": "Or",
+  "block_func": "comp_or",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if one are TRUE",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configurable number of Boolean inputs"
+   ],
+   "outputs": [
+    "Outputs a Boolean value, <b>true</b>, if some inputs are <b>true</b>"
+   ],
+   "logics": "Returns a boolean <b>true</b> if some inputs are <b>true/1</b>"
+  }
+ },
+ "CONST": {
+  "alias_text": "Constant value",
+  "block_func": "const",
+  "compile_type": "input",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Constant value",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "boolean",
+     "integer",
+     "float",
+     "string"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs the value specified in the configuration of the block"
+   ],
+   "logics": "This block is exposed as a parameter and is used by other logics"
+  }
+ },
+ "CORRELATION": {
+  "alias_text": "Correlation coefficient",
+  "block_func": "correlation",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Get correlation coefficient (% value, 0=No correlation, 100=Full correlation) between two values",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Parameter 1",
+    "type": "mixed",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Parameter 2",
+    "type": "mixed",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "integer",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Return how well the input values correlate in a percentage value"
+  }
+ },
+ "CRITERIA": {
+  "alias_text": "Criteria",
+  "block_func": "criterias.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Toggles a value on and of depending on criteria",
+  "require_configuration": true,
+  "require_plant_revision": 604,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "boolean"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs a boolean value based on the configured criterias"
+   ],
+   "logics": "This block outputs a boolean value based on the result of the configured criterias"
+  }
+ },
+ "DATE_TIME": {
+  "alias_text": "Current time",
+  "block_func": "vv_datetime.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Get current time",
+  "require_configuration": true,
+  "require_plant_revision": 1670,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Current date/time"
+   ],
+   "logics": "Get the current date and time"
+  }
+ },
+ "DELAY": {
+  "alias_text": "Delay",
+  "block_func": "alarm_multi_delay",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Value must be 1 x seconds before function returns 1",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "boolean"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [
+    "Output a Boolean value"
+   ],
+   "logics": "The age of the value from <b>Input 1</b> needs to be older than the configured limit before the block returns <b>true</b>"
+  }
+ },
+ "DELAY_VARIABLE": {
+  "alias_text": "Variable Delay",
+  "block_func": "alarm_multi_delay",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Value must be 1 x seconds before function returns 1",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Delay when true",
+    "type": [
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i3",
+    "alias_text": "Delay when false",
+    "type": [
+     "integer"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "boolean"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input",
+    "Numeric input used to set the limit for the age of the value when value is true",
+    "Numeric input used to set the limit for the age of the value when value is false"
+   ],
+   "outputs": [
+    "Output a Boolean value"
+   ],
+   "logics": "The age of the value from <b>Input 1</b> needs to be older than the configured limit (<b>Input 2</b>) before the block returns <b>true</b>"
+  }
+ },
+ "DELTA_T": {
+  "alias_text": "Delta T",
+  "block_func": "delta_t",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Age of last value",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "boolean",
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Time (Min)",
+    "type": [
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Boolean value"
+   ],
+   "logics": "Returns <b>true</b> if the age of the value (Input 1) exceeds the limit (Input 2)"
+  }
+ },
+ "DIFF": {
+  "alias_text": "Differential",
+  "block_func": "diff",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, output differential",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the difference between the two inputs"
+  }
+ },
+ "DIVIDE": {
+  "alias_text": "Divide",
+  "block_func": "divide",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Divide two values",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value 2",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the divided result of the inputs"
+  }
+ },
+ "FORMULA": {
+  "alias_text": "Formula",
+  "block_func": "formula",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Execute mathematical formulas",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input",
+    "type": [
+     "integer",
+     "float",
+     "boolean",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of mixed inputs"
+   ],
+   "outputs": [
+    "Outputs a mixed value"
+   ],
+   "logics": "Returns the result of the executed formula"
+  }
+ },
+ "HOURMETER": {
+  "alias_text": "Hour meter",
+  "block_func": "hourmeter.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Hourmeter",
+  "require_plant_revision": 620,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "State",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Last period",
+    "type": [
+     "float"
+    ],
+    "expandable": null
+   },
+   {
+    "id": "o2",
+    "alias_text": "Current",
+    "type": [
+     "float"
+    ],
+    "expandable": null
+   },
+   {
+    "id": "o3",
+    "alias_text": "Total",
+    "type": [
+     "float"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Boolean input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value",
+    "Outputs a Numeric value",
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the time the value (<b>Input 1</b>) has been true for <b>Last period</b>, <b>Current period</b> and since last reset"
+  }
+ },
+ "IF": {
+  "alias_text": "If",
+  "block_func": "if",
+  "compile_type": "condition",
+  "mode": "both",
+  "type": "internal",
+  "description": "Runs succeeding blocks if condition is true",
+  "require_configuration": false,
+  "require_plant_revision": 620,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Condition",
+    "type": [
+     "integer",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "mixed",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Boolean input",
+    "Mixed input"
+   ],
+   "outputs": [
+    "Outputs the value from Input 2 if condition is <b>true</b>"
+   ],
+   "logics": "This is an internal function that will prevent execution of following logics unless the condition is <b>true</b><br />If true the value (Input 2) will be used as the output"
+  }
+ },
+ "IF_ELSE": {
+  "alias_text": "If Else",
+  "block_func": "if_else",
+  "compile_type": "condition",
+  "mode": "both",
+  "type": "internal",
+  "description": "Runs succeeding blocks on output \"TRUE\" if condition is true else output \"FALSE\"",
+  "require_configuration": false,
+  "require_plant_revision": 620,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Condition",
+    "type": [
+     "integer",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Value to return if condition is true (TRUE)",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Value to return if condition is false (FALSE)",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output TRUE",
+    "type": "mixed",
+    "expandable": null
+   },
+   {
+    "id": "o1",
+    "alias_text": "Output FALSE",
+    "type": "mixed",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Boolean input",
+    "Mixed input",
+    "Mixed input"
+   ],
+   "outputs": [
+    "Outputs the value from Input 2 if condition is <b>true</b>",
+    "Outputs the value from Input 3 if condition is <b>false</b>"
+   ],
+   "logics": "This is an internal function that will run the following logics dependent on the outcome of the condition"
+  }
+ },
+ "INPUT_SELECTOR": {
+  "alias_text": "Input selector",
+  "block_func": "selector_ex.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Return value, parameter name or unit name of input with biggest value, lowest value or return value of the input with index set in first input",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed"
+   ],
+   "outputs": [
+    "Outputs a Mixed type value"
+   ],
+   "logics": "Return <b>value</b>, <b>parameter name</b> or <b>unit name</b> of input with eighter<br>* Biggest value<br>* Lowest value<br>* Value of the input at index defined in the first input"
+  }
+ },
+ "INVERT": {
+  "alias_text": "Invert",
+  "block_func": "invert",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Invert boolean value",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Boolean input"
+   ],
+   "outputs": [
+    "Outputs a Boolean value"
+   ],
+   "logics": "Returns <b>false</b> if the input is <b>true</b>"
+  }
+ },
+ "IS_WITHIN_DATES": {
+  "alias_text": "Season selector",
+  "block_func": "is_within_dates",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Returns 0 for summer, 1 for winter else 2",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Summer start date (DD.MM)",
+    "type": [
+     "string"
+    ],
+    "require_type": [
+     "CONST",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Summer end date (DD.MM)",
+    "type": [
+     "string"
+    ],
+    "require_type": [
+     "CONST",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i3",
+    "alias_text": "Winter start date (DD.MM)",
+    "type": [
+     "string"
+    ],
+    "require_type": [
+     "CONST",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i4",
+    "alias_text": "Winter end date (DD.MM)",
+    "type": [
+     "string"
+    ],
+    "require_type": [
+     "CONST",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "integer"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "String input",
+    "String input",
+    "String input",
+    "String input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Outputs <b>0</b> if the current date is within the summer date<br /><b>1</b> if the current date is within winter date<br />Else 2 is returned"
+  }
+ },
+ "LATCH": {
+  "alias_text": "Latch",
+  "block_func": "latch.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Latch",
+  "require_configuration": false,
+  "require_plant_revision": 1683,
+  "inputs": [
+   {
+    "id": "o1",
+    "alias_text": "Set",
+    "type": "integer",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "o2",
+    "alias_text": "Reset",
+    "type": "integer",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Value",
+    "type": "integer",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Set input",
+    "Reset input"
+   ],
+   "outputs": [
+    "Latched value"
+   ],
+   "logics": "If the <b>set</b> input is set to 1 then the output value will be 1. After this the output will continue to be 1 regardless of what the <b>set</b> input is changed to. The output will go back to 0 when the <b>reset</b> input is set to 1"
+  }
+ },
+ "LIKE": {
+  "alias_text": "Like",
+  "block_func": "like",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if both are similar",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "integer",
+     "float",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric inputs",
+    "Numeric inputs"
+   ],
+   "outputs": [
+    "Boolean output"
+   ],
+   "logics": "Returns a Boolean <b>true</b> if the inputs are equal"
+  }
+ },
+ "MAX": {
+  "alias_text": "Max",
+  "block_func": "comp_max",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, returns highest",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configurable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the biggest of the inputs"
+  }
+ },
+ "MAX_IN_PERIOD": {
+  "alias_text": "Max in period",
+  "block_func": "max_in_period",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Returns highest value in period",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the biggest value found in the configured period"
+  }
+ },
+ "MIN": {
+  "alias_text": "Min",
+  "block_func": "comp_min",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, returns lowest",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configurable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the smallest of the inputs"
+  }
+ },
+ "MIN_IN_PERIOD": {
+  "alias_text": "Min in period",
+  "block_func": "min_in_period",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Returns lowest value in period",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the smallest value found in the configured period"
+  }
+ },
+ "MOD": {
+  "alias_text": "Mod",
+  "block_func": "mod",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Modulus of two numbers",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value 1",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value 2",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the mudulus of the inputs"
+  }
+ },
+ "MULTIPLY": {
+  "alias_text": "Multiply",
+  "block_func": "multiply",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Multiply two values",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the multiplied result of the inputs"
+  }
+ },
+ "OPTIMAL_START_STOP": {
+  "alias_text": "Optimal Start Stop",
+  "block_func": "optimal_start_stop.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#1eff16",
+  "description": "Optimal Start Stop using Calendar 2.0",
+  "require_configuration": true,
+  "require_plant_revision": 1543,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Calendar Id",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Indoor",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i3",
+    "alias_text": "Outdoor",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i4",
+    "alias_text": "Setpoint",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i5",
+    "alias_text": "Setpoint",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Calendar 2.0 id",
+    "Current indoor temperature",
+    "Current outdoor temperature",
+    "Setpoint for calendar state 1",
+    "Setpoint for calendar state 2",
+    "...etc (configurable no of inputs)"
+   ],
+   "outputs": [
+    "Current set point according to calendar and OSS function"
+   ],
+   "logics": "Outputs next set point prior to Calendar 2.0 state change so that set point is already reached when state changes.<br/>Expect Calendar 2.0 id as input 1. <br/>Expect indoor and outdoor temperatures as input 2 and 3. <br/>Expects input 4, 5 etc to be setpoints to match calendar states 0, 1, 2 etc.<br/> E.g.: for calendar state 4 the setpoint at input 7 is used as OSS output.<br/>Calendar state 0 defined as calendar OFF state (outside active state)."
+  }
+ },
+ "PARAMV": {
+  "alias_text": "Parameter value",
+  "block_func": "paramv",
+  "compile_type": "input",
+  "mode": "function",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Parameter value",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs a parameter for the next logics to use"
+   ],
+   "logics": "This is an internal block used to point to parameters"
+  }
+ },
+ "PERIODE_VALUE": {
+  "alias_text": "Counter Limit",
+  "block_func": "counter_limit.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Alarm mode, return true if value is over limit, Value mode, return the counter value for configured period",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Parameter",
+    "type": "mixed",
+    "require_type": [
+     "TAGVALUE",
+     "PARAMV",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Limit",
+    "type": [
+     "integer"
+    ],
+    "require_type": [
+     "CONST",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "float",
+     "boolean"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Boolean value in Alarm mode, and a Numeric value in Value mode"
+   ],
+   "logics": "<b>Alarm mode: </b>Returns <b>true</b> if the value exceeds the limit<br /><b>Value mode:</b> Returns the difference in a counter value for the configured period"
+  }
+ },
+ "PID_CONTROLLER": {
+  "alias_text": "PID Controller",
+  "block_func": "pid_controller.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "PID Controller",
+  "require_configuration": false,
+  "require_plant_revision": 1683,
+  "inputs": [
+   {
+    "id": "o1",
+    "alias_text": "Input Value",
+    "type": "float",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "o2",
+    "alias_text": "Target value",
+    "type": "float",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "o3",
+    "alias_text": "P factor",
+    "type": "float",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "o4",
+    "alias_text": "I factor",
+    "type": "float",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "o5",
+    "alias_text": "D factor",
+    "type": "float",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "o6",
+    "alias_text": "Reset",
+    "type": "integer",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Correction",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Current value",
+    "Target value",
+    "Proportional gain factor",
+    "Integral factor",
+    "Derivative factor",
+    "Reset historical values"
+   ],
+   "outputs": [
+    "Correction value"
+   ],
+   "logics": "PID Controller. See <a href='https://en.wikipedia.org/wiki/PID_controller' TARGET='_vv_pid_wiki_'>Wikipedia</A> for how a PID controller works.<br> - setting the reset value to 1 will clear history values"
+  }
+ },
+ "PROCESSIN": {
+  "alias_text": "Process Input",
+  "block_func": "processin",
+  "compile_type": "reference",
+  "mode": "process",
+  "type": "internal",
+  "color": "#FF66CC",
+  "description": "Process Input",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configurable"
+   ],
+   "outputs": [],
+   "logics": "Use this block to create an exposed input for a process block"
+  }
+ },
+ "PROCESSOUT": {
+  "alias_text": "Process Out",
+  "block_func": "processout",
+  "compile_type": "reference",
+  "mode": "process",
+  "type": "internal",
+  "color": "#999966",
+  "description": "Process Out",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Configurable"
+   ],
+   "logics": "Use this block to create an exposed output for a process block"
+  }
+ },
+ "PULSE_COUNT": {
+  "alias_text": "Pulse count",
+  "block_func": "pulse_count",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Get pulse count in periode",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Parameter",
+    "type": "mixed",
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Logic True Level",
+    "type": [
+     "integer"
+    ],
+    "require_type": [
+     "CONST",
+     "PROCESSIN"
+    ],
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "integer"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Return how many times the value has been over the configured level in the configured period"
+  }
+ },
+ "RESET_INPUT": {
+  "alias_text": "Reset Input value",
+  "block_func": "reset_input.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Reset input value",
+  "require_configuration": true,
+  "require_plant_revision": 1683,
+  "inputs": [
+   {
+    "id": "o1",
+    "alias_text": "Input",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [],
+   "logics": "Reset the input value to 'reset value' when the input value is 'trigger value'<br><b>Configuration</b><br><table><tr><td style='min-width:80px'>- <i>trigger value</i></td><td> The value the reset function will trigger on</td></tr><tr><td>- <i>reset value</i> </td><td> The value to reset the input to</td></tr><tr><td>- <i>delay unit</i></td><td> Unit of delay (minute/hour/day...)</td></tr><tr><td>- <i>delay amount</i></td><td> Amount of time to delay before resetting the value (0 = immediately)/td></tr</table>"
+  }
+ },
+ "SELECTOR": {
+  "alias_text": "Selector",
+  "block_func": "selector",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Returns Alternative 1 if true, Alternative 2 if false, else null",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Alternative 1 (Value==true)",
+    "type": [
+     "integer",
+     "float",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i3",
+    "alias_text": "Alternative 2 (Value==false)",
+    "type": [
+     "integer",
+     "float",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Boolean input",
+    "Numeric input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Outputs the value from <b>Input 2</b> if the value (<b>Input 1</b>) is true, else output value from <b>Input 3</b>"
+  }
+ },
+ "SHIFT_REGISTER": {
+  "alias_text": "Shift register",
+  "block_func": "iw_shift_register.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Shift register that shifts all input values one position on each pulse",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Pulse input",
+    "type": [
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Register",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configurable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the current register"
+  }
+ },
+ "SMALLERTHAN": {
+  "alias_text": "Smaller than",
+  "block_func": "smallerthan",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if one are smaller than the other",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric inputs",
+    "Numeric inputs"
+   ],
+   "outputs": [
+    "Boolean output"
+   ],
+   "logics": "Returns a Boolean <b>true</b> if the first input is smaller than the second"
+  }
+ },
+ "SMALLERTHANOREQUAL": {
+  "alias_text": "Smaller than or equal",
+  "block_func": "smallerthanorequal",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if one are smaller than the other or Input 1 = Input 2",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "float",
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric inputs",
+    "Numeric inputs"
+   ],
+   "outputs": [
+    "Boolean output"
+   ],
+   "logics": "Returns a Boolean <b>true</b> if the first input is smaller or equal to the second"
+  }
+ },
+ "SPOT_PRICE": {
+  "alias_text": "Spot Price",
+  "block_func": "spotprice.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Get future spot prices, remember to update the region for the plant in iw_sys_plant_settings",
+  "require_configuration": true,
+  "require_plant_revision": 1670,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Spot price hourly output"
+   ],
+   "logics": "Get current and future spot prices"
+  }
+ },
+ "SPOT_PRICE_ANALYSER": {
+  "alias_text": "Spot Price Analyser",
+  "block_func": "spotprice.run_analyse",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Analyse spot prices",
+  "require_configuration": true,
+  "require_plant_revision": 1683,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Number of future hours to analyse",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Number of future hours to check against"
+   ],
+   "outputs": [
+    "Result(s) for the configured function(s)"
+   ],
+   "logics": "Analyses current spot price against a given number of future spot prices:<br><br><table style='border-collapse: collapse;'><tr style='vertical-align:top; border-bottom: 1pt solid #DDD;'><td style='min-width:80px'>- <i>min</i></td><td>The lowest price in the period (including current hour)</td></tr><tr style='vertical-align:top; border-bottom: 1pt solid #DDD;'><td>- <i>max</i></td><td>The highest price in the period (including current hour)</td></tr><tr style='vertical-align:top; border-bottom: 1pt solid #DDD;'><td>- <i>average</i></td><td>The average price in the period (including current hour)</td></tr><tr style='vertical-align:top'><td>- <i>percent</i></td><td>How the current price compares to future prices. <br><ul><li>0% - current price is the lowest</li><li>100% - current price is the highest</li><li>50% - current price is exaclty between lowest and higest price</li><li>and so on...</li></ul></td></tr</table>"
+  }
+ },
+ "SPOT_PRICE_HIGH": {
+  "alias_text": "Spot Price high price",
+  "block_func": "spotprice.run_is_high_price",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Get if current price is high",
+  "require_configuration": true,
+  "require_plant_revision": 1670,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "integer",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Current price is high"
+   ],
+   "logics": "Checks if the price for current hour is high (in percent) compared to the given number of future prices"
+  }
+ },
+ "SPOT_PRICE_LOW": {
+  "alias_text": "Spot Price low price",
+  "block_func": "spotprice.run_is_low_price",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Get if current price is low",
+  "require_configuration": true,
+  "require_plant_revision": 1670,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "integer",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Current price is low"
+   ],
+   "logics": "Checks if the price for current hour is low (in percent) compared to the given number of future prices"
+  }
+ },
+ "SPOT_PRICE_NUM_HOURS": {
+  "alias_text": "Spot Price Num Hours",
+  "block_func": "spotprice.run_get_num_hours",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Get number of hours with future spot prices",
+  "require_configuration": true,
+  "require_plant_revision": 1670,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Num hours of future spot prices"
+   ],
+   "logics": "Get the number of hours of future spot prices"
+  }
+ },
+ "SUBTRACT": {
+  "alias_text": "Subtract",
+  "block_func": "subtract",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Subtract two values",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Configureable number of Numeric inputs"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the sum of the inputs subtracted from eachother"
+  }
+ },
+ "SUM": {
+  "alias_text": "Sum",
+  "block_func": "multi_sum",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Returns sum of values",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the sum of the values found in the configured period"
+  }
+ },
+ "SUM_IN_PERIOD": {
+  "alias_text": "Sum in period",
+  "block_func": "sum_in_period",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Returns sum of values in period",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "Returns the sum of the values found in the configured period"
+  }
+ },
+ "TAGVALUE": {
+  "alias_text": "Tag value",
+  "block_func": "tagvalue",
+  "compile_type": "input",
+  "mode": "function",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Tag value",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs one/multiple parameters for the next logics to use"
+   ],
+   "logics": "This is an internal block used to point to parameters"
+  }
+ },
+ "TEMP_VALUE": {
+  "alias_text": "Temp. value",
+  "block_func": "tmp_value",
+  "compile_type": "output",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Temp value",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "o1",
+    "alias_text": "Input",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "mixed"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [
+    "Mixed output"
+   ],
+   "logics": "Save the value from <b>Input 1</b> to a autogenerated parameter and output the same value for further processing"
+  }
+ },
+ "TIME_SINCE_VALUE_LIMIT": {
+  "alias_text": "Time since value/limit",
+  "block_func": "time_since_value_limit.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#999",
+  "description": "Returns time in seconds since value was over/under limit",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Limit",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "float"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input",
+    "Numeric input"
+   ],
+   "outputs": [
+    "Output a Numeric value"
+   ],
+   "logics": "Returns the time in seconds since the value (<b>Input 1</b> exceeded the limit (<b>Input 2</b>)"
+  }
+ },
+ "TOGGLE_INTERVAL": {
+  "alias_text": "Toggled value (Interval)",
+  "block_func": "toggle_interval.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Toggles a value on and of with the given interval",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "boolean"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Outputs a boolean value toggled by the configured interval"
+   ],
+   "logics": "This block outputs a boolean value that toggles on/off based on the configured interval"
+  }
+ },
+ "TRANSFORM_MAPPED": {
+  "alias_text": "Mapped transform",
+  "block_func": "transform_mapped.run",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Transform value using a value-map",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Value",
+    "type": [
+     "integer",
+     "float"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "float",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [
+    "Outputs a Numeric value"
+   ],
+   "logics": "This block runs the value from <b>Input 1</b> through a conversion lookup-table"
+  }
+ },
+ "UNLIKE": {
+  "alias_text": "Unlike",
+  "block_func": "unlike",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "description": "Compare inputs, TRUE if both are not similar",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i2",
+    "alias_text": "Input 2",
+    "type": [
+     "integer",
+     "float",
+     "string"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": "boolean",
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "Numeric inputs",
+    "Numeric inputs"
+   ],
+   "outputs": [
+    "Boolean output"
+   ],
+   "logics": "Returns a Boolean <b>true</b> if the inputs are not equal"
+  }
+ },
+ "VARIABLE_INPUT": {
+  "alias_text": "Variable input",
+  "block_func": "variable_input",
+  "compile_type": "input",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Variable input",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "boolean",
+     "integer",
+     "float",
+     "string"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [],
+   "outputs": [
+    "Mixed output"
+   ],
+   "logics": "This block is used to reference other <b>Variable Output</b> blocks and make variables avaliable multiple locations in a sketch.</br>The block needs to be configured to point to a <b>Variable Output</b> block"
+  }
+ },
+ "VARIABLE_OUTPUT": {
+  "alias_text": "Variable output",
+  "block_func": "variable_output",
+  "compile_type": "output",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Variable output",
+  "require_configuration": false,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [],
+   "logics": "This block is used together with <b>Variable Input</b> to create a reference between multiple parameters in a sketch"
+  }
+ },
+ "VIRTUALOUT": {
+  "alias_text": "Virtual Output",
+  "block_func": "virtualout",
+  "compile_type": "output",
+  "mode": "both",
+  "type": "internal",
+  "color": "#F00",
+  "description": "Write to virtual output",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "mixed"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [],
+   "logics": "Save the value from <b>Input 1</b> to an autogenerated parameter"
+  }
+ },
+ "WEATHER": {
+  "alias_text": "Weather",
+  "block_func": "weather.run_by_ccp_country",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Returns lookups from YR.no based on entered location (optional), plant_id (baf) or gps-coordinates (plant settings)",
+  "require_configuration": true,
+  "require_plant_revision": 620,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Optional: County (Fylke) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Optional: Commune (Kommune)) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Optional: Place (Sted)) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Period start (0-23)",
+    "type": [
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Period end (0-24)",
+    "type": [
+     "integer"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Optional: Place Country | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "float"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "String input",
+    "String input",
+    "String input",
+    "Numeric input",
+    "Numeric input",
+    "String input"
+   ],
+   "outputs": [
+    "Output a Numeric value"
+   ],
+   "logics": "<b>Returns weather related data based on location.</b><br>Location can be either of:<br> 1. Entered County, Commune, Place<br> 2. GPS pos from plants settings (ALL: latitude, longitude)<br> 3. Lookup of plants address in baf<br><br><b>GPS coordinates in plant settings (owner ALL):</b><br>latitude=63.3761761895047<br>longitude=10.350543469704675)"
+  }
+ },
+ "WEATHER_SUN": {
+  "alias_text": "Sunrise and sunset",
+  "block_func": "weather_sun.run_by_place",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#FF5500",
+  "description": "Returns daytime (0) or nighttime (1) based on data from YR.no",
+  "require_configuration": true,
+  "require_plant_revision": 1365,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Optional: County (Fylke) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Optional: Commune (Kommune) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Optional: Place (Sted) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   },
+   {
+    "id": "i1",
+    "alias_text": "Optional: Country (Land) | not connected | \"GPS\"",
+    "type": [
+     "string"
+    ],
+    "require_type": null,
+    "optional": true,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [
+   {
+    "id": "o1",
+    "alias_text": "Output",
+    "type": [
+     "integer"
+    ],
+    "expandable": null
+   }
+  ],
+  "documentation": {
+   "inputs": [
+    "String input",
+    "String input",
+    "String input",
+    "String input"
+   ],
+   "outputs": [
+    "Output a Numeric value"
+   ],
+   "logics": "<b>Returns day (0) or night (1) based on the location.</b><br>Location can be either of:<br> 1. Entered County, Commune, Place<br> 2. GPS pos from plants settings (ALL: latitude, longitude)<br> 3. Lookup of plants address in baf<br><br><b>GPS coordinates in plant settings (owner ALL):</b><br>latitude=63.3761761895047<br>longitude=10.350543469704675)"
+  }
+ },
+ "WRITETOUNIT": {
+  "alias_text": "Write to unitparameter",
+  "block_func": "set_unit_value",
+  "compile_type": "function",
+  "mode": "both",
+  "type": "internal",
+  "color": "#F00",
+  "description": "Write to a unit parameter",
+  "require_configuration": true,
+  "require_plant_revision": null,
+  "inputs": [
+   {
+    "id": "i1",
+    "alias_text": "Input 1",
+    "type": [
+     "integer",
+     "float",
+     "boolean"
+    ],
+    "require_type": null,
+    "optional": null,
+    "eng_unit": null,
+    "expandable": null
+   }
+  ],
+  "outputs": [],
+  "documentation": {
+   "inputs": [
+    "Mixed input"
+   ],
+   "outputs": [],
+   "logics": "Save the value from <b>Input 1</b> to the configured parameter"
+  }
+ }
+}

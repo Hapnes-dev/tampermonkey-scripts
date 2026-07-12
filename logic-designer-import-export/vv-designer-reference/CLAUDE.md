@@ -132,6 +132,13 @@ mode shows it), `type` (`internal`), `compile_type` (see §5), `alias_text`, `bl
 `glyph` (icon), optional `config` (expandable puts), optional **`require_plant_revision`**
 (min plant firmware revision), a `sim` function (client simulation), and `documentation`.
 
+> **The complete host-extracted palette reference is [`BLOCKS.md`](BLOCKS.md)** (generated
+> from a live `paper.blocks` dump 2026-07-12): all 71 blocks with the toolbox **?**-help
+> verbatim — one-line description + per-pin documentation — plus the full **toolbox-name ↔
+> `type`-key ↔ `func` ↔ mode** table (a user says "Season selector", the JSON says
+> `IS_WITHIN_DATES`). Raw dump: `reference_data/palette-reference.json`. The sections below
+> summarise; BLOCKS.md is authoritative for names, pins and help texts.
+
 ### 4.1 Basic Inputs (9) — sources, `compile_type: input`/`reference`
 | Type | Alias | Notes |
 |---|---|---|
@@ -1720,7 +1727,7 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `WEATHER_SUN` | `weather_sun.run_by_place` | function | `["integer"]` | i0-i2 place (optional string `CONST`s) | `{"block_func_args":{"rise_offset":0,"set_offset":0}}` (minutes around sunrise/sunset) |
 | `DATE_TIME` | `vv_datetime.run` | function | `integer` | — | `{"units":[3]}` — indices pick outputs 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday; + matching `properties.output_count`/`output_alias_texts` (§6) |
 | `CALENDAR_2_0` | `calendar.run` | input | `["mixed"]` | — | `{"calendar":"<id>","output":"id"}` or `null` (TODO bind; rev ≥1460) |
-| `IS_WITHIN_DATES` | `is_within_date` | function | `["integer"]` | i0 value | ⚠ func is **singular** `is_within_date` |
+| `IS_WITHIN_DATES` ("Season selector") | `is_within_dates` (current palette) / `is_within_date` (legacy — ×63 vs ×9 in the fleet; validator accepts both) | function | `["integer"]` | i0–i3 = Summer start, Summer end, Winter start, Winter end — **string `CONST`s "DD.MM"** | `data:null` — **returns 0 in the summer window, 1 in the winter window, else 2** (BLOCKS.md) |
 | `SPOT_PRICE_LOW` / `SPOT_PRICE_HIGH` | `spotprice.run_is_low_price` / `…_is_high_price` | function | `integer` | — | `{"region":"<ENTSO-E zone>","percent":"30","num_future_hours":"12"}` (string numbers; rev ≥1670) |
 | `SPOT_PRICE_NUM_HOURS` | `spotprice.run_get_num_hours` | function | `float` | — | `{"region":"<ENTSO-E zone>"}` |
 | `RESET_INPUT` | `reset_input.run` | function | `null` | i0 value | `{"trigger_value":0,"reset_value":1,"delay_unit":"min","delay_amount":1}` (rev ≥1683) |
