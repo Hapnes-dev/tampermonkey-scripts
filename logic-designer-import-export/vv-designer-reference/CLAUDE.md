@@ -333,7 +333,9 @@ Highlights of the `data` shapes:
 - **WEATHER** (production shape): `{block_func_args:{func:'current_dew_point', period_count:1}}` +
   `properties.output_count`. The geo lookup arrives as **string-`CONST` inputs**, not in `data`:
   put 0 County, put 1 Commune, put 2 Place (all optional — unconnected ⇒ GPS), put 3/4 period
-  start/end hour.
+  start/end hour. **`func` vocabulary in production** (fleet v9): `current_temperature`,
+  `current_precipitation`, `current_dew_point`, `current_humidity`, `highest_temperature`,
+  `lowest_temperature`, `symbol_text`, `symbol_number`, `current_wind`, `forecast`.
 - **FORMULA**: `{formula, title, output_type, eng_unit, precision?, scaling?}` — the formula is
   **server-verified** (`verify_math(formula, input_count)`) before save; changing output type
   prunes now-incompatible connections (with a confirm). **Grammar** (a server-side **PHP
@@ -360,7 +362,8 @@ Highlights of the `data` shapes:
   `precision` is printf-style: `%.1f` / `%.2f` / `%.3f`. `output_type` ∈ integer/float/boolean/string.
 - **WRITETOUNIT**: `{force_write, delay, limit_count, count, driver_ids:[…]}`.
 - **RESET_INPUT**: `{trigger_value, reset_value, delay_unit, delay_amount}`.
-- **CALENDAR**: `{calendar, offset, post_offset}`.
+- **CALENDAR**: `{calendar, offset, post_offset}` — fleet v9: offsets are `0/0` in **252 of
+  252** configured production blocks; generators keep them 0.
 
 **Value scaling** (`add_datatype_values`): numeric blocks may carry
 `scaling:{type:'scaling'|'clip_scale', from_min,from_max,to_min,to_max}` and `precision`
@@ -373,7 +376,9 @@ Highlights of the `data` shapes:
 `func: 'transform_mapped_custom.run'` — same `type: 'TRANSFORM_MAPPED'`, different `func` — with
 `data.block_func_args.map = '__custom__'` and the table in
 `properties.custom_transform_map = {alias_text, value:{inputs:[[from,to],…], output:[from,to]}}`
-(+ `properties.input_count`/`input_alias_texts`).
+(+ `properties.input_count`/`input_alias_texts`). **Custom IS the norm** (fleet v9):
+`__custom__` ×380 vs ALL named refrigerant maps combined ×18 (`co2_enthalpy` 5, `cop_350_he` 4,
+`co2_svg` 2, …); a rare `__file__` map source also exists (×2).
 
 **Criteria** (`available_criterias`): `year (1970–2099)`, `month_of_year (1–12)`,
 `week_of_year (1–52)`, `day_of_year (1–365)`, `day_of_month (1–31)`, `day_of_week (1–7)`,
@@ -384,6 +389,13 @@ Highlights of the `data` shapes:
 `format_extra` (enumeration lookup), `documentation`. In exports each **set** property is an
 `{alias_text, value}` object — e.g. `interval:{alias_text:'Interval', value:'10 sec'}` — and a
 block with no properties exports `properties: []` (PHP empty array); accept both `[]` and `{}`.
+**`format_extra` decoded** (fleet v9 — set on CONST ×1962 / VIRTUALOUT ×453): the value is a
+**JSON *string*** holding an enumeration label map —
+`{"rev":"1","type":"num","v":{"0":{"t":"Kjøl"},"1":{"t":"Frys"},"2":{"t":"Ikke aktivert"}}}` —
+this is how integer mode values get human-readable labels in the UI. `documentation` in
+production holds **machine tags**, not prose: `#ew.value` (PARAMV) / `#ew.config` (CONST) —
+EcoWatcher pin-tagging. The `interval` property's dominant production use is a
+**hardware-write throttle**: `WRITETOUNIT` + `interval:'10 sec'` ×978 (then 30/20 sec).
 Fleet census (§21 v6): `format_extra` is the MOST-set property (1945 of 50k blocks), then
 `input_count` 1173, `documentation` 529, `input_alias_texts`/`interval`/`interval_offset` ~357
 each; `interval` values cluster at `10 sec`/`30 sec`/`1 min` (incl. staggered odd values like
@@ -2080,3 +2092,34 @@ wires**. This round measured where logic lives and which format rules are hard v
   stamp = one reading + breakpoint CONSTs → process → WRITETOUNIT.
 - **CONST repeat-mode payload captured** (§6): `values` keyed by unit id/name — one value
   per stamped unit.
+
+**Corpus v9 — configuration payloads in the wild (2026-07-12):** 53 more plants / **214 more
+sketches (zero failures)** → combined **~350 plants / 2618 sketches / 70,829 blocks / 69,593
+wires** — a third of the fleet. This round decoded what production actually puts in the
+configuration surfaces:
+
+- **`format_extra` decoded** (→ §6): a JSON-*string* enum-label map
+  (`{"rev":"1","type":"num","v":{"0":{"t":"Kjøl"},…}}`) on mode CONSTs (×1962) and
+  VIRTUALOUTs (×453) — how integer modes get human-readable labels.
+- **TRANSFORM_MAPPED: custom is the norm** (→ §6): `__custom__` ×380 vs all named
+  refrigerant maps ×18 combined; `__file__` exists (×2).
+- **WEATHER `func` vocabulary** (→ §6): temperature/precipitation/dew-point/humidity/
+  high-low/symbol/wind/forecast.
+- **CRITERIA in practice**: `day_of_week` ×58, `hour_of_day` ×54, `minute_of_hour` ×46 —
+  time-of-week gates; `month_of_year`/`second_of_minute`/`day_of_month` are rare.
+- **CALENDAR offsets are never used**: 0/0 in 252/252 (→ §6).
+- **`interval` is a write throttle**: `WRITETOUNIT` + `10 sec` ×978 dominates all interval
+  usage (→ §6) — generated hardware writes may carry it; not required.
+- **`documentation` = machine tags**: `#ew.value` / `#ew.config` (EcoWatcher pin tagging),
+  not prose (→ §6).
+- **ALARM text style** (1,609 texts): `<drawing number> <fault description>` in the plant's
+  language — "360.003 Ingen Kommunikasjon I/O Modul Nr.3", "320.01-OE53 Lekasjealarm",
+  "Høyt diff.trykk RD40 320.01". Alarm texts should read like drawing-referenced fault
+  messages, not sentences.
+- **Process ecosystem**: library ids 29/31/22/0/39/9/27 carry most instances; **symbolic
+  (non-`<lib>_<uniqid>`) eids are ×600 fleet-wide** — a second pure-words eid surfaced:
+  `PW_VENTILASTION_VIRKNINGSGRAD4_AVTREKK__AVKAST_INNTAK_M_PåDRAG_GJENV` (note the typo and
+  the lowercase `å` — eids are free-form text; NEVER pattern-match them). `current_revision`
+  present on 85 % of process instances (readers tolerate its absence).
+- **FORMULA**: 194 unique fleet-wide; **188/194 compile locally** — the six holdouts are the
+  known server-only set. No evaluator change needed.

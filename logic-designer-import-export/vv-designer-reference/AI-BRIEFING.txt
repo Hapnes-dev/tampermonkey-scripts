@@ -191,7 +191,10 @@ READERS AND SOURCES (compile_type "input")
 - WEATHER | func "weather.run_by_ccp_country" and WEATHER_SUN | func
   "weather_sun.run_by_place" — YR.no weather / day-night. WEATHER_SUN data:
   {"block_func_args": {"rise_offset": 0, "set_offset": 0}} (minutes around
-  sunrise/sunset). WEATHER: configure post-import.
+  sunrise/sunset). WEATHER data: {"block_func_args": {"func": "<one of:
+  current_temperature | current_precipitation | current_dew_point |
+  current_humidity | highest_temperature | lowest_temperature | symbol_text
+  | symbol_number | current_wind | forecast>", "period_count": 1}}.
 - SPOT_PRICE family — electricity spot prices; region is an ENTSO-E zone code:
   SPOT_PRICE "spotprice.run": {"hours": [0], "region": "10YNO-3--------J"}
   SPOT_PRICE_LOW "spotprice.run_is_low_price" / SPOT_PRICE_HIGH
@@ -276,8 +279,13 @@ SELECTION AND MATH EXPRESSIONS
   EQUALS the number of wired inputs (fleet invariant, 530/530 production
   formulas; the validator enforces it) - without it, extra input pins do not
   exist and wires to them are silently dropped.
-- TRANSFORM_MAPPED "transform_mapped.run" — refrigerant conversion tables
-  (pressure→temperature etc.). Configure post-import.
+- TRANSFORM_MAPPED "transform_mapped.run" — value-mapping tables. In
+  production 95% use a CUSTOM table (func becomes
+  "transform_mapped_custom.run", data.block_func_args.map = "__custom__",
+  table in properties.custom_transform_map = {alias_text, value:
+  {inputs:[[from,to],...], output:[from,to]}}); named refrigerant maps
+  (co2_enthalpy, suva_404a, ...) are rare. Typical use: superheat/pressure
+  -> temperature before a curve process.
 
 OUTPUTS (compile_type "output" unless noted)
 - ALARM | func "alarm"
@@ -288,6 +296,10 @@ OUTPUTS (compile_type "output" unless noted)
   no "severity", no "message" field. Fleet norm: pri "a" is 79% of all
   production alarms (c 15%, b 6%); destination "general" is 91%. Pick by the
   user's intent, but "a" + "general" is the production default.
+  ALARM TEXT STYLE (1,609 fleet texts): "<drawing/tag number> <fault>", in
+  the plant's language - "360.003 Ingen Kommunikasjon I/O Modul Nr.3",
+  "Høyt diff.trykk RD40 320.01". Short fault statements, not sentences;
+  include the user's equipment/drawing reference when given.
 - ALARM_OBJECT "alarm_object" (adds a cost input), ALARM_OBJECT_EXTENDED
   "alarm_object_extended" (cost/value/limit inputs) — same data shape.
 - VIRTUALOUT | func "virtualout"
@@ -306,7 +318,9 @@ OUTPUTS (compile_type "output" unless noted)
   These values ARE the fleet defaults (force_write true is 2.6% of production,
   delay is 0 in all but two blocks fleet-wide, count is 1) - emit exactly
   these; several driver_ids in one block fan the same value out to many
-  parameters.
+  parameters. Production often throttles writes with the block-level
+  property interval = {"alias_text": "Interval", "value": "10 sec"} (978
+  fleet blocks) - optional, add when the user wants periodic rewriting.
   Include this block ONLY if the user explicitly asked to write to hardware
   AND supplied/confirmed the exact target parameter. Otherwise use VIRTUALOUT.
 - TEMP_VALUE "tmp_value" — persist and pass through a value. Production data:

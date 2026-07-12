@@ -2521,6 +2521,12 @@ VARIABLE_INPUT.data = {"pointer":"18"}   (the id of the VARIABLE_OUTPUT block it
 --- TEMP_VALUE (named in-sketch scratch value) ---
 {"alias_text":"drift hovedpumpe","type":"mixed","precision":"%.1f"}
 
+--- format_extra: enum labels for a mode value (real production shape) ---
+Set on a mode CONST (or VIRTUALOUT) to give integer values readable labels.
+NOTE: properties.format_extra.value is a JSON *STRING*, not an object:
+properties.format_extra = {"alias_text":"",
+ "value":"{\"rev\":\"1\",\"type\":\"num\",\"v\":{\"0\":{\"t\":\"Kjøl\"},\"1\":{\"t\":\"Frys\"},\"2\":{\"t\":\"Ikke aktivert\"}}}"}
+
 --- CONST in repeat mode (real production shape - per-unit values) ---
 mode "repeat" stores one value per stamped unit, keyed by unit id/name:
 {"alias_text":"max alarmer pr uke","initial_value":"",
@@ -2876,6 +2882,18 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
     breakpoints). "Kurve 2P": pin0 <- reading, pins 1-4 <- 4 CONSTs
     (two points). Then process output -> WRITETOUNIT. That stamp is the
     single most common production pattern.
+  - TRANSFORM_MAPPED: 95% of production uses a __custom__ table (see the
+    custom-map example above); named refrigerant maps are the exception.
+  - ALARM TEXT STYLE: "<drawing/tag number> <fault>", plant language -
+    "360.003 Ingen Kommunikasjon I/O Modul Nr.3", "Høyt diff.trykk RD40".
+  - WRITETOUNIT write-throttle: production often sets the block property
+    interval = {"alias_text":"Interval","value":"10 sec"} (978 blocks).
+  - CALENDAR offsets are 0/0 in every configured production block (252/252).
+  - CRITERIA in practice = time-of-week gates: day_of_week + hour_of_day +
+    minute_of_hour cover nearly all use.
+  - Process eids are FREE-FORM TEXT: besides <lib>_<uniqid>, pure-word eids
+    exist with typos and mixed case (PW_VENTILASTION_..._M_PåDRAG_GJENV) -
+    never pattern-match or "fix" them; copy verbatim.
 
 Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
 VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.
