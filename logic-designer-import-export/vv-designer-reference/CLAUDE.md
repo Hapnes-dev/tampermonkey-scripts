@@ -282,7 +282,15 @@ Highlights of the `data` shapes:
   period_amount:5}}` — ⚠ the key is **`period`** here, while PERIODE_VALUE / PULSE_COUNT /
   CORRELATION use **`periode`**. Copy the exact key per block type.
 - **DELAY_VARIABLE**: `data: null` even in production — it needs no configuration; the
-  delays arrive via its inputs (i1 true-delay, i2 optional false-delay). i1 is usually a
+  delays arrive via its inputs (i1 true-delay, i2 optional false-delay). ⚠ the delay CONST
+  must be **`type:"integer"`** (the host rejects a float seconds value).
+- **DELAY** (the configured sibling — `require_configuration:true`): its delay lives in
+  **`data.block_func_args`**, either `{delay_on:N, delay_off:N}` (production, plant 2889) or
+  `{delay:N}` (plant 2096). A **flat `{delay:N}` or any data without `block_func_args`
+  CRASHES the designer on load** — `Cannot read properties of undefined (reading 'delay_on')`.
+  Generators should PREFER `DELAY_VARIABLE` (no config, delay via a CONST input) and never
+  emit a hand-guessed DELAY payload. (Validator + import panel now reject the malformed shape,
+  v1.36.0.) i1 is usually a
   `CONST`, but **FORMULA-computed dynamic delays are production-real** (47 of 171 fleet-wide;
   one TEMP_VALUE). Contrast `PULSE_COUNT` i1, which is CONST-only (host `require_type` —
   17/17 in the fleet).
@@ -1097,7 +1105,7 @@ manipulates the in-memory canvas; the user still saves/deploys through the host.
 > fragile assumptions are the selection **string-vs-number** keys and the `connected_to`
 > **side asymmetry** — both are load-bearing and both have bitten past revisions.
 
-**Second ecosystem script — "Logic Designer Import/Export" (v1.35.x)** (same repo,
+**Second ecosystem script — "Logic Designer Import/Export" (v1.36.x)** (same repo,
 `logic-designer-import-export/`). Two feature areas:
 
 **Transfer** (File menu): **Export** (file download), **Import** (panel: file / drag-drop /

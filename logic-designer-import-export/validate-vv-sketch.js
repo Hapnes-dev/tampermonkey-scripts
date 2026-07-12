@@ -286,6 +286,18 @@ function validateSketchDocument(doc, report) {
         const m = String(d.formula).match(/\binp(\d+)\b/g);
         if (!m) warn(`${at} (FORMULA) formula references no inp0…inpN-1 inputs`);
       }
+      // DELAY is a CONFIGURED block: its data must be {block_func_args:{delay_on,
+      // delay_off}} (or {block_func_args:{delay}}). A flat {delay:N} — or any data
+      // without block_func_args — makes the designer CRASH on load
+      // ("Cannot read properties of undefined (reading 'delay_on')").
+      if (b.type === 'DELAY') {
+        const bfa = d.block_func_args;
+        const okShape = bfa && typeof bfa === 'object' &&
+          ('delay' in bfa || ('delay_on' in bfa && 'delay_off' in bfa));
+        if (!okShape) {
+          err(`${at} (DELAY).data must be {"block_func_args":{"delay_on":N,"delay_off":N}} (or {"block_func_args":{"delay":N}}) — a bare ${JSON.stringify(d)} CRASHES the designer on load (reading 'delay_on'). Simpler: use DELAY_VARIABLE (data null) and wire a CONST with the seconds into its put 1.`);
+        }
+      }
       if (NEEDS_BLOCK_FUNC_ARGS.includes(b.type) && !('block_func_args' in d)) {
         err(`${at} (${b.type}).data must be {"block_func_args":{…}} — e.g. PULSE_COUNT: {"block_func_args":{"periode":"day","type":"flank_rising_edge","periode_amount":1}}`);
       } else if ('block_func_args' in d && REQUIRED_BFA_KEYS[b.type]) {
@@ -367,6 +379,21 @@ function validateSketchDocument(doc, report) {
       const wired = doc.connections.filter((c) => c.target && c.target.id === id).length;
       if (Number.isInteger(declared) && declared !== wired) {
         err(`block ${id} (FORMULA) properties.input_count is ${declared} but ${wired} input(s) are wired — they must match (a declared-but-unwired formula pin breaks the connect/sim contract)`);
+      }
+    }
+    // A FORMULA that references inpK must have that pin fed: the highest inpK in
+    // the formula string requires at least K+1 wired inputs. Referencing inp2
+    // with one wire (the classic "wired inp0, forgot the CONSTs") reads an
+    // undefined input on the server. `state` is NOT an input — it's the block's
+    // own previous output, so it never needs a wire.
+    if (b.type === 'FORMULA' && b.data && b.data.formula) {
+      const refs = String(b.data.formula).match(/\binp(\d+)\b/g) || [];
+      if (refs.length) {
+        const maxInp = Math.max.apply(null, refs.map((r) => parseInt(r.slice(3), 10)));
+        const wired = doc.connections.filter((c) => c.target && c.target.id === id).length;
+        if (maxInp + 1 > wired) {
+          err(`block ${id} (FORMULA) uses inp${maxInp} but only ${wired} input(s) are wired — it needs ${maxInp + 1}. Wire the missing inputs (e.g. the CONST limits) into puts 0…${maxInp}${b.properties && b.properties.input_count ? '' : ', and set properties.input_count to ' + (maxInp + 1)}.`);
+        }
       }
     }
     const need = REQUIRED_INPUTS[b.type];

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.35.1
+// @version      1.36.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -592,6 +592,24 @@ function diagnoseImport(parsed, knownTypes) {
       if ((b.type === 'PARAMV' || b.type === 'WRITETOUNIT') && Array.isArray(b.data.driver_ids) && b.data.driver_ids.length === 0)
         warnings.push(at + ' has an empty driver_ids array — it will import unconfigured; bind it after import or set data to null.');
     }
+    // DELAY needs {block_func_args:{delay_on,delay_off}} (or {…{delay}}). Any
+    // other shape (e.g. a flat {delay:N}) CRASHES the designer on load
+    // ("Cannot read properties of undefined (reading 'delay_on')").
+    if (b.type === 'DELAY') {
+      var bfaD = b.data && b.data.block_func_args;
+      var okD = bfaD && typeof bfaD === 'object' && ('delay' in bfaD || ('delay_on' in bfaD && 'delay_off' in bfaD));
+      if (!okD) errors.push(at + ' (DELAY) data must be {"block_func_args":{"delay_on":N,"delay_off":N}} (or {"block_func_args":{"delay":N}}) — any other shape crashes the designer on load. Simpler: use DELAY_VARIABLE (data null) with a CONST seconds wired into put 1.');
+    }
+    // A FORMULA referencing inpK needs K+1 wired inputs (state is not an input).
+    if (b.type === 'FORMULA' && b.data && b.data.formula) {
+      var refsF = String(b.data.formula).match(/\binp(\d+)\b/g);
+      if (refsF && refsF.length) {
+        var maxF = 0;
+        for (var ri = 0; ri < refsF.length; ri++) maxF = Math.max(maxF, parseInt(refsF[ri].slice(3), 10));
+        var wiredF = doc.connections.filter(function (c) { return c.target && c.target.id === b.id; }).length;
+        if (maxF + 1 > wiredF) errors.push(at + ' (FORMULA) uses inp' + maxF + ' but only ' + wiredF + ' input(s) are wired — it needs ' + (maxF + 1) + '. Wire the missing inputs (e.g. the CONST limits) into puts 0…' + maxF + '.');
+      }
+    }
     if (typeof b.x !== 'number' || typeof b.y !== 'number')
       warnings.push(at + ' has no numeric x/y — import will auto-place it on a grid.');
     // mode gating (live palette census): PROCESSIN/PROCESSOUT/AVERAGE_PERIODE
@@ -787,7 +805,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.35.1';
+    var VERSION = '1.36.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
