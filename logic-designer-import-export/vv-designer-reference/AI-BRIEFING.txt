@@ -501,6 +501,27 @@ all 7 wires connect, and the syntax check flags only the two intentional
 "TODO bind" blocks. That is the target state for anything you produce.
 
 --------------------------------------------------------------------------------
+7b. GENERATING A PROCESS instead of a function sketch
+--------------------------------------------------------------------------------
+Everything above builds a FUNCTION sketch (the normal request). If the user
+asks for a reusable PROCESS (a library block parametrised by pins), three
+things change - full contract + a verified example in AI-EXAMPLES.txt
+(EXAMPLE 9) and CLAUDE.md 20.11:
+- envelope sketch.mode is "process" (not "function"); import in Process Mode.
+- NO PARAMV / TAGVALUE (illegal in process mode). Read plant data through a
+  PROCESSIN pin: {alias_text, method:"parameter"|"tag", by_refference:false,
+  type} (func "processin", compile_type "reference", output_type ["mixed"]).
+  A tweakable setting is method:"constant" with eng_unit + initial_value (a
+  STRING, even for numbers) + optional precision/scaling; an on/off pin is
+  method:"enable" {…, type:"boolean", enable:true} (no by_refference);
+  method:"calendar" is just {alias_text, method:"calendar"}.
+- outputs are PROCESSOUT pins: {alias_text, type} (func "processout",
+  compile_type "reference", output_type null). ZERO PROCESSOUTs is valid and
+  common (effect process - keep ALARM/VIRTUALOUT/WRITETOUNIT inside).
+Interior blocks are the same function blocks. After import + F10 the user
+does Save process -> Publish process to make it a library block.
+
+--------------------------------------------------------------------------------
 8. WORKFLOW AFTER YOU ANSWER
 --------------------------------------------------------------------------------
 The user will:

@@ -3,16 +3,18 @@ VV DESIGNER - REAL SKETCH EXAMPLES (vv-fbx-sketch format)
 ================================================================================
 
 WHAT THIS IS
-  Eight complete sketch files - seven real production exports (2026-07-08, via
-  the Logic Designer Import/Export userscript) plus one authored, validated
-  template (example 8) - and the notable single-block shapes from larger
+  Nine complete sketch files - seven real production exports (2026-07-08, via
+  the Logic Designer Import/Export userscript), one authored validated template
+  (example 8), and one authored PROCESS-MODE definition (example 9,
+  syntax-verified live) - plus the notable single-block shapes from larger
   production sketches, combined into one file so an AI agent can learn the
   EXACT structure of a valid VV sketch.
 
   Every JSON document under an "EXAMPLE n" heading passes validate-vv-sketch.js
   (examples 1-7 are verbatim production data): save one as a .json file and it
   imports as-is (File -> Transfer -> Import sketch (JSON) on the VV Designer,
-  internal.iwmac.local/vv_fbx.qxs).
+  internal.iwmac.local/vv_fbx.qxs). Examples 1-8 are FUNCTION-mode sketches;
+  example 9 is a PROCESS-mode definition (import in Process Mode - see 20.11).
 
 HOW TO USE THIS FILE (for an AI generating a sketch)
   1. Read AI-BRIEFING.txt (same folder) for the full rules. This file shows
@@ -2325,6 +2327,68 @@ The complete file, verbatim:
     "groups": []
   }
 }
+================================================================================
+EXAMPLE 9 - A PROCESS-MODE DEFINITION (reusable library process, effect class)
+================================================================================
+
+A PROCESS (not a function sketch): mode "process", parametrised through
+PROCESSIN pins, no plant bindings of its own. This one is EFFECT class (no
+PROCESSOUT - the ALARM lives inside): "alarm if a value exceeds a limit for
+15 min, when enabled". Import in PROCESS MODE (Set Process Mode first).
+SYNTAX-VERIFIED on the live designer (syntax_check ok, zero errors).
+Full process-generation contract: CLAUDE.md section 20.11.
+
+{
+  "format": "vv-fbx-sketch", "version": 1, "exported_at": "2026-07-12T00:00:00.000Z",
+  "source_plant_id": null, "source_sketch_id": null,
+  "name": "Hoytemp alarm (prosess)", "block_count": 8, "connection_count": 7,
+  "sketch": {
+    "mode": "process", "require_plant_revision": 620,
+    "blocks": [
+      {"id":0,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Temperatur","method":"parameter","by_refference":false,"type":"float"},"override":{"alias_text":"Temperatur"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":40},
+      {"id":1,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Grense","method":"constant","by_refference":false,"type":"float","eng_unit":"&deg;C","initial_value":"8","precision":"%.1f"},"override":{"alias_text":"Grense"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":160},
+      {"id":2,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Aktiver","method":"enable","type":"boolean","enable":true},"override":{"alias_text":"Aktiver"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":280},
+      {"id":3,"type":"BIGGERTHAN","func":"biggerthan","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"boolean","x":300,"y":90},
+      {"id":4,"type":"COMP_AND","func":"comp_and","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"boolean","x":470,"y":150},
+      {"id":5,"type":"CONST","func":"const","compile_type":"input","data":{"alias_text":"Forsinkelse","type":"integer","initial_value":900,"values":null,"mode":"single","eng_unit":"sek","readonly":false},"override":{"alias_text":"Forsinkelse 900 sek"},"runtime":{},"properties":{},"output_type":["boolean","integer","float","string"],"x":470,"y":300},
+      {"id":6,"type":"DELAY_VARIABLE","func":"alarm_multi_delay","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"boolean","x":660,"y":180},
+      {"id":7,"type":"ALARM","func":"alarm","compile_type":"output","data":{"alias_text":"Temp over grense","pri":"a","alarm_type":"general","alarm_destination":"general"},"override":{},"runtime":{},"properties":{},"output_type":null,"x":860,"y":180}
+    ],
+    "connections": [
+      {"source":{"id":0,"put":0},"target":{"id":3,"put":0}},
+      {"source":{"id":1,"put":0},"target":{"id":3,"put":1}},
+      {"source":{"id":3,"put":0},"target":{"id":4,"put":0}},
+      {"source":{"id":2,"put":0},"target":{"id":4,"put":1}},
+      {"source":{"id":4,"put":0},"target":{"id":6,"put":0}},
+      {"source":{"id":5,"put":0},"target":{"id":6,"put":1}},
+      {"source":{"id":6,"put":0},"target":{"id":7,"put":0}}
+    ], "groups": []
+  }
+}
+
+PROCESS vs FUNCTION - what changes (full contract: CLAUDE.md 20.11):
+  - envelope sketch.mode is "process" (not "function")
+  - NO PARAMV / TAGVALUE (illegal in process mode) - read plant data through
+    a PROCESSIN pin (method "parameter" or "tag") instead
+  - PROCESSIN = one input pin: func "processin", compile_type "reference",
+    output_type ["mixed"]. data by method:
+      parameter: {alias_text, method:"parameter", by_refference:false, type}
+      constant:  {alias_text, method:"constant", by_refference:false, type,
+                  eng_unit, initial_value:"<STRING>", precision?, scaling?}
+      tag:       {alias_text, method:"tag", by_refference:false, type:"mixed", tag}
+      enable:    {alias_text, method:"enable", type:"boolean", enable:true}  (no by_refference)
+      calendar:  {alias_text, method:"calendar"}   (minimal)
+    initial_value is a STRING even for numbers.
+  - PROCESSOUT = one output pin: func "processout", compile_type "reference",
+    output_type null, data {alias_text, type}. ZERO PROCESSOUTs is valid and
+    common (61% - effect processes keep ALARM/VIRTUALOUT/WRITETOUNIT inside).
+  - AVERAGE_PERIODE (process-only): func "average_periode.run", data null -
+    Parameter / Periode Enable / Collect Enable -> float.
+  - interior blocks are the SAME function blocks (comparators, FORMULA, IF,
+    DELAY_VARIABLE, CONST, ALARM, VIRTUALOUT, WRITETOUNIT, process instances).
+  - after import + F10: Save process -> Publish process (section 10.2) makes it
+    a library block; publishing creates the deployable revision.
+
 ================================================================================
 NOTABLE REAL BLOCK SHAPES (lifted verbatim from larger production sketches)
 ================================================================================

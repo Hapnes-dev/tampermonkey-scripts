@@ -2032,6 +2032,79 @@ Regenerate from the reference material on every attempt - do not patch your
 own previous draft; models drift back to invented formats between attempts.
 ```
 
+### 20.11 Generating a PROCESS-mode sketch (a reusable library process)
+
+Everything in §20 applies, with three differences — **verified end-to-end 2026-07-12**: an
+authored process document loaded on the designer, passed `syntax_check(true)` with zero errors
+(both a function-like and an effect-like example), and round-tripped through `save()` unchanged;
+the validator accepts it (exit 0) and rejects mode violations.
+
+**1. The envelope carries `mode:"process"`** (everything else identical):
+```json
+{"format":"vv-fbx-sketch","version":1,"exported_at":"<ISO8601>","source_plant_id":null,
+ "source_sketch_id":null,"name":"<process name>","block_count":N,"connection_count":M,
+ "sketch":{"mode":"process","require_plant_revision":0,"blocks":[…],"connections":[…],"groups":[]}}
+```
+Import while the canvas is in **process mode** (Set Process Mode first — the panel warns on a
+mode mismatch). `require_plant_revision`: 620 if IF/WEATHER/AGE_OF_VALUE is used, else 0.
+
+**2. Boundary blocks replace PARAMV/WRITETOUNIT** (a process has no plant bindings of its own —
+it is parametrised through pins). **PARAMV and TAGVALUE are ILLEGAL in process mode**; a
+process reads plant data through a `PROCESSIN` pin instead.
+
+- **`PROCESSIN`** — `func:"processin"`, `compile_type:"reference"`, **`output_type:["mixed"]`**,
+  0 inputs, 1 output. One PROCESSIN = one pin of the finished block. `data` by method (exact
+  fleet shapes, 385 pins):
+  - **parameter** (a plant reading): `{"alias_text":"Value","method":"parameter",
+    "by_refference":false,"type":"float"}` (type mixed/float/integer/boolean).
+  - **constant** (a tweakable setting — 59 % of all pins): `{"alias_text":"Offset",
+    "method":"constant","by_refference":false,"type":"float","eng_unit":"°C",
+    "initial_value":"5","precision":"%.1f"}` — **`initial_value` is a STRING even for numbers**
+    (`"900"`, `"8"`); `eng_unit` always present (may be `""`); `precision` optional; `scaling`
+    optional (`{type,from_min,from_max,to_min,to_max}`).
+  - **tag** (pinned to a specific plant tag): `{"alias_text":"…","method":"tag",
+    "by_refference":false,"type":"mixed","tag":"<TAG_ID>"}`.
+  - **enable** (on/off pin): `{"alias_text":"Aktiver","method":"enable","type":"boolean",
+    "enable":true}` — **no `by_refference`**; `enable` is the pin's default state.
+  - **calendar**: `{"alias_text":"Kalender","method":"calendar"}` — minimal, no other keys.
+- **`PROCESSOUT`** — `func:"processout"`, `compile_type:"reference"`, `output_type:null`,
+  1 input, 0 outputs. `data = {"alias_text":"Result","type":"float"}` (type float/integer/
+  boolean/mixed). One PROCESSOUT = one output pin. **Zero PROCESSOUTs is valid and common**
+  (61 % of the fleet library — an *effect* process whose ALARM/VIRTUALOUT/WRITETOUNIT lives
+  inside; the effect blocks are `mode:"both"`, legal here).
+- **`AVERAGE_PERIODE`** (process-mode-only helper): `func:"average_periode.run"`,
+  `compile_type:"function"`, `data:null` — i0 Parameter (int/float), i1 Periode Enable
+  (boolean), i2 Collect Enable (boolean), one float output.
+
+**3. Interior = ordinary function blocks** (all `mode:"both"`): comparators, FORMULA,
+SELECTOR, IF, DELAY_VARIABLE, CONST, ALARM, VIRTUALOUT, WRITETOUNIT, library-process
+instances (process→process nesting) — wired exactly as in a function sketch. Every wire still
+carries `alias_text` on real exports (the host stamps it; a generator may omit it).
+
+**Verified worked example — function-like process "value + offset"** (imports + F10-clean):
+```json
+{"format":"vv-fbx-sketch","version":1,"exported_at":"2026-07-12T00:00:00.000Z",
+ "source_plant_id":null,"source_sketch_id":null,"name":"Value plus offset",
+ "block_count":4,"connection_count":3,
+ "sketch":{"mode":"process","require_plant_revision":0,"blocks":[
+  {"id":0,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Value","method":"parameter","by_refference":false,"type":"float"},"override":{"alias_text":"Value"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":40},
+  {"id":1,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Offset","method":"constant","by_refference":false,"type":"float","eng_unit":"","initial_value":"5","precision":"%.1f"},"override":{"alias_text":"Offset"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":160},
+  {"id":2,"type":"ADD","func":"add","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"float","x":300,"y":100},
+  {"id":3,"type":"PROCESSOUT","func":"processout","compile_type":"reference","data":{"alias_text":"Result","type":"float"},"override":{"alias_text":"Result"},"runtime":{},"properties":{},"output_type":null,"x":560,"y":100}
+ ],"connections":[
+  {"source":{"id":0,"put":0},"target":{"id":2,"put":0}},
+  {"source":{"id":1,"put":0},"target":{"id":2,"put":1}},
+  {"source":{"id":2,"put":0},"target":{"id":3,"put":0}}
+ ],"groups":[]}}
+```
+An **effect-like** process (no PROCESSOUT) — threshold alarm with an enable pin — is in
+[`AI-EXAMPLES.txt`](AI-EXAMPLES.txt) (EXAMPLE 9); both were syntax-verified on the live designer.
+
+**Deploy note for the user** (a process ≠ a sketch): after import + F10, use **Save process**
+then **Publish process** (§10.2) to make it a library block; publishing creates the deployable
+revision. Function-mode sketches then consume it as one block. The AI cannot pick the library
+folder or the process name/state — surface those as user choices.
+
 ---
 
 ## 21. Ground truth — a 15-sketch production corpus (2026-07-08)
