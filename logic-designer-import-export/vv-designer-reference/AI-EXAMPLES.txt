@@ -2794,6 +2794,24 @@ in data.alias_text, not override):
   "current_revision": "18300"
 }
 
+--- INSIDE A LIBRARY PROCESS (definition sketches, mode "process") ---
+A process is a published sketch with mode "process". Its pins are PROCESSIN
+blocks, its outputs PROCESSOUT blocks:
+  PROCESSIN data: {"alias_text":"-Room_temp_read","method":"parameter",
+                   "by_refference":false,"type":"float"}
+  method is one of: constant (75% of all pins - a tweakable setting fed by a
+  CONST at instantiation) | parameter | tag | calendar | enable.
+  PROCESSOUT data: {"alias_text":"Kalkulert settpunkt"}
+TWO PROCESS CLASSES - important when READING sketches:
+  1. Function-like: has PROCESSOUT outputs ("Kurve 2P": 5 pins in, value out).
+  2. Effect-like: ZERO outputs - the ALARM / VIRTUALOUT / WRITETOUNIT lives
+     INSIDE the process (7 of the fleet's 13 top processes). A process
+     instance with no outgoing wires is usually an effect process, NOT dead
+     logic.
+"Kurve for 4 knekkpunkt" definition = 11 blocks: Verdi:parameter pin +
+X1-X4/Y1-Y4 constant pins + interpolation + PROCESSOUT - matching exactly how
+sketches instantiate it (PARAMV on pin 0, eight CONSTs).
+
 ================================================================================
 HOW BIG PRODUCTION SKETCHES ARE BUILT
 ================================================================================
@@ -2819,6 +2837,18 @@ sketches / 37,503 blocks / 36,970 wires, 2026-07-11):
   - Top motifs by occurrence: process -> WRITETOUNIT (1341), process ->
     VIRTUALOUT (938), gated write IF -> WRITETOUNIT (839), parameter bridge
     PARAMV -> WRITETOUNIT (515), setpoint select SELECTOR -> write (497).
+  - THE CANONICAL 3-BLOCK CHAINS (typed walk over 74,814 wires) - generated
+    logic should normally land in one of these:
+      CONST > PROCESS > WRITETOUNIT      (8176)  the curve/plugin stamp
+      CONST > PROCESS > VIRTUALOUT       (5860)
+      PARAMV > PROCESS > WRITETOUNIT     (3126)
+      CONST > IF > WRITETOUNIT           (2381)  enable-gated write
+      CONST > SELECTOR > WRITETOUNIT     (1155)  setpoint pick
+      FORMULA > IF > WRITETOUNIT          (875)  mode-decoder gate
+      CONST > WEATHER > VIRTUALOUT        (693)  weather pipeline
+      PARAMV > MULTIPLY > VIRTUALOUT      (600)  unit-scaling KPI
+      PARAMV/CONST > LIKE > ALARM       (~1076)  state-mismatch alarm
+      PARAMV > FORMULA > VIRTUALOUT       (496)  computed KPI
   - IF is an ENABLE SWITCH more than a computed gate: 69% of IF condition
     pins are fed by a labelled boolean CONST the customer can flip - not a
     comparator. Reproduce this: gate switchable behaviour on a named CONST.

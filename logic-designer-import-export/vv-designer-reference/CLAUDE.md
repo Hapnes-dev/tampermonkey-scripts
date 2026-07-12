@@ -538,6 +538,32 @@ The most important domain concept beyond raw blocks:
 - The **user library hierarchy** organises processes into folders and can be re-organised
   (see library.php methods §11). There are ~14 named libraries (ØTS, Drift, General, per-person…).
 
+### 10.1 Inside a library process — the definition sketch (fleet v10, 13 top processes loaded)
+
+`logic_designer_manager.load_process(process_id)` (read-only; id = the lowercase `block_func`,
+e.g. `pw_heating_kurve_4_knekkpunkt`) returns `{id, process_id, process_name, sketch}` where
+`sketch` is a normal sketch document with **`mode:'process'`**. What the fleet's most-used
+definitions reveal:
+
+- **A pin is a `PROCESSIN` block**: `data = {alias_text, method, by_refference, type}` —
+  sample `{"alias_text":"-Room_temp_read","method":"parameter","by_refference":false,
+  "type":"float"}`. **Method census across 68 pins: `constant` 51 (75 %), `parameter` 11,
+  `enable` 3, `tag` 2, `calendar` 1** — process pins are mostly tweakable *settings* (which is
+  why instantiations feed them with CONSTs, §21 v5). Types: float 39, mixed 20, integer 4,
+  boolean 4. An output is a `PROCESSOUT` block (`data.alias_text` = the output pin name).
+- **Two process classes**: *function-like* (has PROCESSOUT outputs — "Kurve 2P" 7 blocks:
+  5 PROCESSIN + interpolation + 1 PROCESSOUT "Utgangsignal"; "Kurve for 4 knekkpunkt"
+  11 blocks: Verdi:parameter + X1-X4/Y1-Y4 constants + PROCESSOUT "Kalkulert settpunkt") and
+  ***effect-like* with ZERO outputs** (7 of 13!) — the ALARM/VIRTUALOUT/WRITETOUNIT lives
+  INSIDE the process ("Timeteller uten alarm": one `enable`-method pin, HOURMETER+VIRTUALOUT
+  inside; "Suction Pressure PoA": tag+calendar pins, alarm inside). When reading a sketch, a
+  process instance with no outgoing wires is usually an effect process, not dead logic.
+- **Inner anatomy**: SELECTOR is the most-used logic block inside processes (×25 across 13),
+  then LIKE ×18, COMP_AND ×13, FORMULA ×9, IF ×7, ALARM_OBJECT_EXTENDED ×4 — processes are
+  setpoint-choosers and guarded outputs, same recipes as sketches.
+- Definition sketches use `require_plant_revision` 0 or 620 like ordinary sketches; big ones
+  exist ("kirke_scenario_velger": 71 blocks, 18 pins, 1 output).
+
 ---
 
 ## 11. Server API (two transports: JSON-RPC services + the qxs PHP bridge)
@@ -2123,3 +2149,23 @@ configuration surfaces:
   present on 85 % of process instances (readers tolerate its absence).
 - **FORMULA**: 194 unique fleet-wide; **188/194 compile locally** — the six holdouts are the
   known server-only set. No evaluator change needed.
+
+**Corpus v10 — inside the processes + chain census (2026-07-12):** 53 more plants / **231
+more sketches (zero failures)** → combined **~403 plants / 2849 sketches / 76,622 blocks /
+74,814 wires**. Two new dimensions this round:
+
+- **The fleet's 13 most-used library-process DEFINITIONS scraped** via
+  `load_process(process_id)` (read-only) — full findings in **§10.1**: PROCESSIN pin shape
+  `{alias_text, method, by_refference, type}`, method census (`constant` 75 %!), the
+  function-like vs **effect-like (zero-output)** process split (7 of 13 have no PROCESSOUT —
+  alarms/writes live inside), and exact anatomies for "Kurve 2P" / "Kurve for 4 knekkpunkt"
+  (matching their §21-v8 instantiation profiles pin for pin).
+- **Typed 3-block chain census** (74,814 wires walked) — the canonical production chains,
+  by occurrence: CONST→PROCESS→WRITETOUNIT **8,176** · CONST→PROCESS→VIRTUALOUT **5,860** ·
+  PARAMV→PROCESS→WRITETOUNIT **3,126** · CONST→IF→WRITETOUNIT **2,381** ·
+  CONST→SELECTOR→WRITETOUNIT **1,155** · FORMULA→IF→WRITETOUNIT **875** (decoder-gated
+  write) · CONST→WEATHER→VIRTUALOUT **693** (weather pipeline) · PARAMV→MULTIPLY→VIRTUALOUT
+  **600** (unit-scaling KPI) · PARAMV/CONST→LIKE→ALARM **~1,076** (state-mismatch alarm) ·
+  PARAMV→FORMULA→VIRTUALOUT **496**. An AI building "normal-looking" logic should land in
+  one of these chains.
+- **FORMULA**: 198 unique; **192/198 compile locally** — same six server-only holdouts.

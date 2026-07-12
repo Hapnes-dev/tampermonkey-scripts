@@ -144,6 +144,11 @@ Two additional constraints:
 - TAGVALUE blocks can ONLY feed process blocks (their output carries
   require_type "process"). For ordinary logic, the general reader is PARAMV.
   Never use TAGVALUE unless wiring a published process's pinned tag input.
+- PROCESS INSTANCES (compile_type "process"): opaque library blocks - copy
+  type/func verbatim; they must exist in the target plant's library. Their
+  pins are mostly constant-settings (feed with CONSTs). Many processes have
+  ZERO outputs (the alarm/write lives INSIDE the process) - an instance with
+  no outgoing wires is normal production logic, not an error.
 
 --------------------------------------------------------------------------------
 4. BLOCK REFERENCE — THE ALLOWLIST
