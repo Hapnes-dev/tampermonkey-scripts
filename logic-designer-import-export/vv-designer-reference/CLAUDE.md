@@ -1055,7 +1055,10 @@ Additionally every process type on the canvas gets a **temporary injected sim**:
 function-like (palette def has outputs) → `get_user_input` like PARAMV, i.e. a
 "process output" panel row (the process computes on the plant; the user supplies the output
 value); effect-like (zero outputs) → auto-complete with `true` (nothing downstream).
-Flow/log lines annotate both classes; injected sims are deleted on panel close. The dirty flag is preserved everywhere — it never marks the sketch unsaved
+Injection is **idempotent and re-run before every simulation** (a process dropped in while
+the panel is open gets its sim too); injected sims are marked (`__ldioInjected`) and only
+those are deleted on panel close. Flow/log lines annotate both classes; multi-output
+processes get a tooltip note (the client sim carries ONE value per block). The dirty flag is preserved everywhere — it never marks the sketch unsaved
 or calls the server. Pure helpers (`listSimInputBlocks`/`listSimOutputBlocks`/`formatSimValue`/
 `buildSimFlowLines`/`buildSimulationLog`/`phpDate`/`compileVvFormula` + the import/export set)
 are `module.exports`-ed for Node tests; console surface is `window.__LDIO` (incl. `_sim` state

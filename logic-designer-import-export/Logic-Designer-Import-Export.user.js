@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.29.0
+// @version      1.30.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -106,6 +106,7 @@ function listSimInputBlocks(elements, palette) {
     rows.push({
       pointer: parseInt(key, 10), type: el.block_type, label: String(label),
       isProcess: !!(def && def.compile_type === 'process'),
+      outputCount: (def && def.outputs && def.outputs.length) || 0,
     });
   }
   rows.sort(function (a, b) { return a.pointer - b.pointer; });
@@ -656,7 +657,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.29.0';
+    var VERSION = '1.30.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1125,24 +1126,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           catch (e) { /* host glow() null bug — highlighting only, safe to skip */ }
         };
       }
-      // Library-process instances: NONE of the 727 palette process defs has a
-      // sim function (fleet v13/v16), so the host cannot simulate them at all
-      // (see workaround #2). While the panel is open, inject a temporary sim
-      // per process type on the canvas: FUNCTION-like processes (palette def
-      // has outputs) prompt like PARAMV — the process computes on the plant,
-      // the user supplies its output value in the panel; EFFECT-like
-      // processes (zero outputs — 61 % of the fleet library; alarms/writes
-      // live inside) just complete, there is nothing downstream to feed.
       simState.injectedProcSims = [];
+      simInjectProcessSims(paper);
+      simState.hooked = true;
+    }
+
+    // Library-process instances: NONE of the 727 palette process defs has a
+    // sim function (fleet v13/v16), so the host cannot simulate them at all
+    // (host bug #2 kills the run). While the panel is open, inject a
+    // temporary sim per process type on the canvas: FUNCTION-like processes
+    // (palette def has outputs) prompt like PARAMV — the process computes on
+    // the plant, the user supplies its output value in the panel; EFFECT-like
+    // processes (zero outputs — 61 % of the fleet library; alarms/writes live
+    // inside) just complete, there is nothing downstream to feed.
+    // IDEMPOTENT and re-run before every simulation so a process block added
+    // WHILE the panel is open (watcher/auto re-run picks it up) also gets a
+    // sim — only sims marked as ours are ever added twice-guarded/removed.
+    function simInjectProcessSims(paper) {
       var els = paper.elements || {};
       for (var ek in els) {
         if (!/^\d+$/.test(ek)) continue;
         var procEl = els[ek];
         var procDef = procEl && paper.blocks && paper.blocks[procEl.block_type];
-        if (!procDef || procDef.compile_type !== 'process' || typeof procDef.sim === 'function') continue;
+        if (!procDef || procDef.compile_type !== 'process') continue;
+        if (typeof procDef.sim === 'function') continue; // host's own, or already ours
         (function (d) {
           var funcLike = !!(d.outputs && d.outputs.length > 0);
-          d.sim = funcLike
+          var sim = funcLike
             ? function (block) {
               return this.get_user_input(block, 'Library process (computes on the plant) — enter the OUTPUT value to simulate with');
             }
@@ -1151,10 +1161,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               this.simulation_stack_block_values[block.pointer] = true;
               return true;
             };
+          sim.__ldioInjected = true;
+          d.sim = sim;
           simState.injectedProcSims.push(d);
         })(procDef);
       }
-      simState.hooked = true;
     }
 
     function simRemoveHooks(paper) {
@@ -1166,7 +1177,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (simState.hadOwnBlink) paper.__blink_highlight = simState.origBlink; else delete paper.__blink_highlight;
       }
       if (simState.injectedProcSims && simState.injectedProcSims.length) {
-        for (var ip = 0; ip < simState.injectedProcSims.length; ip++) delete simState.injectedProcSims[ip].sim;
+        for (var ip = 0; ip < simState.injectedProcSims.length; ip++) {
+          var pd = simState.injectedProcSims[ip];
+          if (pd && pd.sim && pd.sim.__ldioInjected) delete pd.sim; // only remove OUR sims
+        }
         simState.injectedProcSims = [];
       }
       if (simState.hadOwnStop) paper.simulator_stop = simState.origStop; else delete paper.simulator_stop;
@@ -1407,6 +1421,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!simState.panel || !simState.resultEl) { openSimPanel(); if (!simState.panel) return; }
       simState.stopped = false;
       simState.resultEl.textContent = '';
+      // A process block dropped in AFTER the panel opened needs its sim too
+      // (idempotent — already-injected types are skipped).
+      simInjectProcessSims(paper);
       var blockCount = Object.keys(paper.elements || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
       if (blockCount === 0) {
         simResultLine('Canvas is empty — nothing to simulate.');
@@ -1631,7 +1648,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         label.className = 'ldio-sim-label';
         label.textContent = r.label + ' · ' + (r.isProcess ? 'process output' : r.type);
         label.title = r.isProcess
-          ? r.label + ' (' + r.type + ') — a library process computes on the plant, not in the browser; enter the OUTPUT value it would produce'
+          ? r.label + ' (' + r.type + ') — a library process computes on the plant, not in the browser; enter the OUTPUT value it would produce' +
+            (r.outputCount > 1 ? '. NB: this process has ' + r.outputCount + ' outputs — the client simulator carries ONE value per block, so all its outputs get this value.' : '')
           : r.label + ' (' + r.type + ')';
         var input = document.createElement('input');
         input.type = 'number';
