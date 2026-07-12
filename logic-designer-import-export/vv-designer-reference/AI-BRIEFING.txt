@@ -545,12 +545,53 @@ The user will:
    (mechanical validator; exit 0 = importable, otherwise numbered errors —
    if the user pastes errors back to you, fix EXACTLY what they say).
 2. Import via File → Transfer → Import sketch (JSON) in the designer
-   (file, drag-drop, or pasted JSON text).
+   (file, drag-drop, or pasted JSON text). Mode is handled for them: if your
+   file is a process definition and the designer is in function mode (or
+   vice versa), the import offers to switch mode automatically.
 3. Open each red "TODO bind" block and select the real parameter/calendar.
 4. Press F10 (syntax check), save, and decide about deployment themselves.
    (When saving, "Smarte funksjoner" is the fleet's conventional project
-   for custom logic - 25% of all production sketches live there.)
+   for custom logic - 25% of all production sketches live there. A process
+   is saved with Save process, then Publish process.)
 Deployment and hardware writes are ALWAYS the human's decision.
+When unsure about a block's exact pins, types or what its toolbox name maps
+to, consult BLOCKS.md (same folder): all 71 blocks with the designer's own
+help texts and the toolbox-name -> type-key table.
+
+--------------------------------------------------------------------------------
+8b. THE FEEDBACK LOOP — reading the LIVE SIMULATE LOG the user pastes back
+--------------------------------------------------------------------------------
+After importing, the user can simulate your sketch (Live Simulate) and paste
+its ⧉ Log to you. The log is SELF-CONTAINED; its sections:
+
+  RESULT     COMPLETE / INCOMPLETE / FAILED, with the raw cause.
+  SUMMARY    plain-language outcomes: which alarms WOULD FIRE / did not
+             (condition true/false), what each WRITETOUNIT would write
+             (nothing is written during simulation), virtual and
+             process-output values, inputs that DEFAULTED TO 0 (named),
+             dead-branch count — and for a process definition, its pin list
+             and class (effect class = no output pins by design).
+  WHAT THE ERRORS MEAN   (failed runs) every recognised error already
+             translated to cause + fix.
+  INPUTS     the panel values the run actually used.
+  FLOW       evaluation order; "inN <- TYPE (id) = value" lines show exactly
+             what fed every input pin of every block.
+  BLOCKS / WIRES   the CURRENT sketch: every block with data, every wire
+             with pin names. This is the source of truth for what is on the
+             canvas right now.
+
+How to respond to a pasted log:
+  1. FAILED run -> apply the WHAT-THE-ERRORS-MEAN fixes verbatim (bind the
+     named block, wire the named pin, fix the named type). Do not guess
+     beyond what is named.
+  2. Completed run but wrong behaviour -> find the wrong sink in SUMMARY,
+     then walk FLOW backwards from it, pin by pin, until the first
+     unexpected value; the defect is at that block or wire.
+  3. Inputs listed as "defaulted to 0" usually mean the USER forgot a panel
+     value — point that out before changing any logic.
+  4. Answer with ONE corrected, complete JSON file (section 2 shape),
+     regenerated FROM the log's BLOCKS/WIRES dump — never a diff, never a
+     patch of your earlier draft.
 If the user later pastes a COMPILE error like "Unable to get element ID for
 <unit> (<TAG>) for block id <N>": that is a BINDING problem (stale unit /
 deleted tag on the named block), never a sketch-JSON problem - F10 passes

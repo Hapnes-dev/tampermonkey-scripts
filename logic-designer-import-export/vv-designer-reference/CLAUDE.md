@@ -1976,13 +1976,19 @@ failed by inventing formats - the rules below are a binding contract.
 
 REFERENCE MATERIAL (read before generating; binding)
 1. AI-BRIEFING.txt - the rules: concepts, the full block allowlist with exact
-   data payloads, recipes, prohibitions.
-2. AI-EXAMPLES.txt - eight sketches (seven real production exports + an
-   exercise-window template): what correct output looks like. Pattern-match
-   the request to the closest example and keep its structure.
+   data payloads, recipes, prohibitions, the process-mode contract (7b) and
+   how to read a pasted Live Simulate log (8b).
+2. AI-EXAMPLES.txt - nine sketches (seven real production exports, an
+   exercise-window template, and a verified PROCESS-mode definition): what
+   correct output looks like. Pattern-match the request to the closest
+   example and keep its structure.
+3. BLOCKS.md - the complete host-extracted palette: every block with the
+   designer's own help text, exact pin names/types, and the toolbox-name ->
+   type-key table (what the user CALLS a block vs what the JSON needs).
 Raw URLs (fetch if you can; otherwise ask the user to paste the contents):
 https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/vv-designer-reference/AI-BRIEFING.txt
 https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/vv-designer-reference/AI-EXAMPLES.txt
+https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/vv-designer-reference/BLOCKS.md
 
 THE ONE MENTAL MODEL
 A sketch is a dataflow graph: BLOCKS (typed nodes) + CONNECTIONS (wires
@@ -2045,6 +2051,19 @@ GENERATION PROCEDURE - follow in order
 IF INFORMATION IS MISSING
 Ask once for the plant id and exact parameter/driver ids. If the user cannot
 provide them, generate TODO-bind blocks (data null) instead of guessing.
+
+TWO KINDS OF FILE
+A normal request = a FUNCTION sketch (mode "function", the shape above). A
+request for a reusable PROCESS = mode "process" with PROCESSIN/PROCESSOUT
+pins and NO PARAMV/TAGVALUE - follow briefing section 7b / EXAMPLE 9. The
+import dialog switches the designer to the file's mode automatically.
+
+THE FEEDBACK LOOP
+The user may paste back the Live Simulate log: SUMMARY states outcomes
+(alarms would-fire, would-write values, defaulted inputs), WHAT THE ERRORS
+MEAN states fixes (apply exactly those), FLOW traces every input pin, and
+BLOCKS/WIRES is the current sketch - regenerate your corrected file from it
+(briefing section 8b).
 
 Regenerate from the reference material on every attempt - do not patch your
 own previous draft; models drift back to invented formats between attempts.
