@@ -1139,7 +1139,9 @@ host's client simulator (§13) via the §13.1 contract — values come from a pa
 Wires are **coloured by carried value** (green TRUE / red FALSE / blue number / grey
 unevaluated), never-evaluated blocks get a dim overlay, and **⧖ Play flow** replays the last run
 with the colour **filling each wire** source→target (delay blocks fill proportionally to their
-seconds). *auto re-run* (off by default) re-simulates on value **and canvas** changes, guarded
+seconds; the sketch stays visible-but-dimmed during playback — never blanked — and total replay
+time is capped at ~9 s; fill-arrival timeouts are tracked so a mid-replay ■ Stop leaves no ghost
+wire colours; v1.38). *auto re-run* (off by default) re-simulates on value **and canvas** changes, guarded
 by volatile-field-stripped logic/layout fingerprints so host background noise never causes
 redraw "blinking". **⧉ Log** copies a self-contained debug report (inputs, per-pin flow trace,
 results, BLOCKS/WIRES, plain-text FAILED causes) — `__LDIO.getSimLog()` — opening with a

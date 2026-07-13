@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.37.0
+// @version      1.38.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -860,7 +860,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.37.0';
+    var VERSION = '1.38.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -1470,20 +1470,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         void onode.getBoundingClientRect(); // flush so the transition animates
         onode.style.transition = 'stroke-dashoffset ' + ms + 'ms linear';
         onode.style.strokeDashoffset = '0';
-        simState.fillOverlays.push(overlay);
-        setTimeout(function () {
+        // The arrival timeout is tracked WITH the overlay: Stop/clear mid-fill
+        // must cancel it, or it recolours the wire on a canvas that was just
+        // cleared (ghost-coloured wires with no value boxes after ■ Stop).
+        var rec = { el: overlay, t: null };
+        rec.t = setTimeout(function () {
           try { conn.line.attr('stroke', color); } catch (e) { /* ignore */ }
           try { overlay.remove(); } catch (e) { /* ignore */ }
-          var i = simState.fillOverlays.indexOf(overlay);
+          var i = simState.fillOverlays.indexOf(rec);
           if (i !== -1) simState.fillOverlays.splice(i, 1);
         }, ms + 40);
+        simState.fillOverlays.push(rec);
       } catch (e) {
         try { conn.line.attr('stroke', color); } catch (e2) { /* ignore */ }
       }
     }
     function simClearDashes() {
-      simState.fillOverlays.forEach(function (o) {
-        try { o.remove(); } catch (e) { /* ignore */ }
+      simState.fillOverlays.forEach(function (rec) {
+        try { clearTimeout(rec.t); } catch (e) { /* ignore */ }
+        try { rec.el.remove(); } catch (e) { /* ignore */ }
       });
       simState.fillOverlays = [];
     }
@@ -1548,15 +1553,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return base + Math.min(4000, secs * 80);
     }
 
-    // Replay the LAST run visually: reveal each block's value box in
-    // evaluation order; its outgoing wires ANIMATE into their value colour
-    // over the block's dwell time (delays flow slowly). Pure playback —
-    // nothing is re-simulated.
+    // Replay the LAST run visually: the whole flow stays VISIBLE but dimmed
+    // and lights up block by block in evaluation order; outgoing wires
+    // ANIMATE into their value colour over the block's dwell time (delays
+    // flow slowly). Pure playback — nothing is re-simulated. The canvas is
+    // never blanked (boxes hidden + near-white wires used to read as "the
+    // flow is gone" after Stop → Play flow, especially on big sketches where
+    // the playback starts outside the visible viewport), and the total
+    // duration is capped so sketches with several long delays still finish
+    // in seconds instead of 20 s+.
     function simReplay() {
       var paper = simPaper();
       if (!paper) { toast('Designer not ready.', 'error'); return; }
       var fpNow;
-      try { fpNow = simCanvasFingerprint(paper); } catch (e) { return; }
+      try { fpNow = simCanvasFingerprint(paper); }
+      catch (e) { toast('The designer is busy — could not read the canvas. Try again.', 'error'); return; }
       if (!paper.simulation_stack || fpNow.logic !== simState.lastRunFp || !simState.lastRun || !simState.lastRun.ok) {
         simRunOnce(); // need a fresh, matching run to play back
         if (!paper.simulation_stack || !simState.lastRun || !simState.lastRun.ok) return;
@@ -1569,13 +1580,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var order = simState.lastRun.order || [];
       var results = simState.lastRun.results || {};
       var stack = simState.lastRun.stack;
-      if (!els.length || !order.length) return;
+      if (!order.length) { toast('Nothing to play back — the last run evaluated no blocks.'); return; }
       simSetBusy(true);
       simSetStatus('replaying');
-      els.forEach(function (el) { try { el.hide(); } catch (e) { /* ignore */ } });
+      // Base frame: value boxes DIMMED (not hidden) and wires in a clearly
+      // visible neutral grey — the whole flow stays readable from the very
+      // first frame of the playback.
+      els.forEach(function (el) { try { el.show(); el.attr({ opacity: 0.15 }); } catch (e) { /* ignore */ } });
       for (var i = 0; i < paper.connections.length; i++) {
-        try { paper.connections[i].line.stop(); paper.connections[i].line.attr('stroke', '#EEE'); } catch (e) { /* ignore */ }
+        try { paper.connections[i].line.stop(); paper.connections[i].line.attr('stroke', '#C9C9C9'); } catch (e) { /* ignore */ }
       }
+      // Duration cap: scale every dwell so the whole playback fits ~9 s.
+      var dwells = [];
+      var total = 0;
+      for (var d = 0; d < order.length; d++) {
+        var dw = simReplayDwellMs(stack, results, order[d]);
+        dwells.push(dw);
+        total += dw;
+      }
+      var scale = total > 9000 ? 9000 / total : 1;
       var perBlock = Math.max(1, Math.floor(els.length / order.length));
       var idx = 0;
       function stepReplay() {
@@ -1584,7 +1607,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // value box visible — and nothing scheduled that could repaint.
           simState.replayTimer = null;
           simClearDashes();
-          els.forEach(function (el) { try { el.show(); } catch (e) { /* ignore */ } });
+          els.forEach(function (el) { try { el.show(); el.attr({ opacity: 1 }); } catch (e) { /* ignore */ } });
           simPaintFlow(paper, results);
           // Sync the watcher baselines so the next ticks see "unchanged" and
           // leave the final frame alone.
@@ -1599,10 +1622,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return;
         }
         for (var k = idx * perBlock; k < (idx + 1) * perBlock && k < els.length; k++) {
-          try { els[k].show(); } catch (e) { /* ignore */ }
+          try { els[k].attr({ opacity: 1 }); } catch (e) { /* ignore */ }
         }
         var id = order[idx];
-        var dwell = simReplayDwellMs(stack, results, id);
+        var dwell = Math.max(140, Math.round(dwells[idx] * scale));
         // The colour FILLS the outgoing wires from source to target over the
         // dwell — a delay block's wire visibly fills slowly.
         for (var w = 0; w < paper.connections.length; w++) {
@@ -2051,7 +2074,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       replayBtn.type = 'button'; replayBtn.className = 'ldio-btn';
       simState.replayBtnEl = replayBtn;
       btnLabel(replayBtn, '⧖', 'Play flow');
-      replayBtn.title = 'Play the last run step by step — watch the signal travel through the sketch (time delays fill their wire slowly). Ends with all values shown.';
+      replayBtn.title = 'Play the last run step by step — the sketch dims and lights up in evaluation order (time delays fill their wire slowly; total capped at ~9 s). Ends with all values shown.';
       replayBtn.addEventListener('click', simReplay);
       var spring = document.createElement('div');
       spring.className = 'ldio-sim-spring';
