@@ -208,6 +208,7 @@ function validateSketchDocument(doc, report) {
 
   // ── blocks ──
   const ids = new Map(); // id -> block
+  let documented = 0; // blocks carrying properties.documentation
   doc.blocks.forEach((b, i) => {
     const at = `blocks[${i}]`;
     if (!b || typeof b !== 'object') { err(`${at} is not an object`); return; }
@@ -252,6 +253,21 @@ function validateSketchDocument(doc, report) {
     if (!('override' in b)) warn(`${at} missing "override" — use {} or {"alias_text":"…"}`);
     if (!('properties' in b)) warn(`${at} missing "properties" — use {}`);
     if (!('runtime' in b)) warn(`${at} missing "runtime" — use {}`);
+
+    // Per-block documentation (right-click → Edit documentation) is the block
+    // property {"documentation":{"alias_text":"","value":"<text>"}} — the same
+    // {alias_text,value} shape as input_count (host set_block_property, probed
+    // 2026-07-13). A wrong shape silently shows an empty dialog, so flag it.
+    if (b.properties && !Array.isArray(b.properties) && 'documentation' in b.properties) {
+      const bdoc = b.properties.documentation;
+      if (typeof bdoc === 'string') {
+        err(`${at} properties.documentation must be {"alias_text":"","value":"<text>"} — a bare string renders an EMPTY Edit-documentation dialog`);
+      } else if (!bdoc || typeof bdoc !== 'object' || typeof bdoc.value !== 'string') {
+        err(`${at} properties.documentation.value must be a string — the shape is {"alias_text":"","value":"<text>"}`);
+      } else if (bdoc.value.trim() !== '') {
+        documented++;
+      }
+    }
 
     // per-type data checks
     const d = b.data;
@@ -326,6 +342,10 @@ function validateSketchDocument(doc, report) {
       if (needsCfg.includes(b.type)) warn(`${at} (${b.type}) data is null — imports UNCONFIGURED (red); fine only if the user is meant to bind it after import`);
     }
   });
+
+  if (doc.blocks.length > 0 && documented < doc.blocks.length) {
+    warn(`${doc.blocks.length - documented} of ${doc.blocks.length} block(s) have no properties.documentation — fill it on EVERY block: {"documentation":{"alias_text":"","value":"what the block does in THIS sketch, why this limit/delay, what to bind"}} (shows under right-click → Edit documentation)`);
+  }
 
   // ── connections ──
   const wiredInputs = new Set();

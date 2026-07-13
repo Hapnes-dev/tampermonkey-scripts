@@ -2984,6 +2984,13 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
   - LABEL EVERY BLOCK: 73% of all production blocks have override.alias_text
     set. Older sketches may OMIT data keys entirely - when READING, treat a
     missing key as its default; when GENERATING, write keys explicitly.
+  - DOCUMENT EVERY BLOCK: properties.documentation =
+    {"alias_text": "", "value": "<1-2 sentences>"} - what the block does in
+    THIS sketch, why the limit/delay value, what to bind. Shows under
+    right-click -> Edit documentation. The fleet rarely fills this (its 529
+    uses are #ew.* machine tags - keep those verbatim when regenerating an
+    existing sketch); GENERATED sketches must fill it on every block anyway,
+    so the import is self-documenting.
   - NAMING STYLE: VIRTUALOUT labels start with "Kalk" (kalkulert, x899 -
     THE convention for computed values) or the plain value name; CONST
     labels are ROLE words (delay x1537, limit x1404, x1/y1 curve points,

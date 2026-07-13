@@ -100,6 +100,15 @@ rejection ("Sketch document is malformed").
 - "func" is applied verbatim on load; omitting it breaks the compiled sketch.
 - Lay out x/y left-to-right by dataflow: sources x≈40, logic x≈260-500,
   outputs x≈700; stack parallel branches ~150 px apart vertically.
+- DOCUMENT EVERY BLOCK: properties.documentation =
+  {"alias_text": "", "value": "<1-2 sentences>"} — write what the block does
+  in THIS sketch, why this limit/delay value, and what the user must bind.
+  The text shows in the designer under right-click -> Edit documentation, so
+  an imported sketch explains itself. The {alias_text,value} wrapper is
+  REQUIRED (a bare string renders an empty dialog). Exception: when
+  regenerating an EXISTING sketch, keep any #ew.* documentation values
+  verbatim (EcoWatcher machine tags — replacing them with prose breaks the
+  pinning).
 
 <connection> — every wire has EXACTLY this shape:
 
@@ -673,6 +682,9 @@ node-graph JSON formats — this format is what it is.
     AVG_IN_PERIOD: period/period_amount).
 [ ] driver_ids: only real, user-confirmed ids; otherwise data null + TODO
     label. No WRITETOUNIT unless explicitly requested with a confirmed target.
+[ ] Every block has properties.documentation = {"alias_text":"","value":"…"}
+    with 1-2 real sentences (role in this sketch, why the limit/delay, what
+    to bind); existing #ew.* tag values kept verbatim on regeneration.
 [ ] block_count and connection_count equal the actual array lengths.
 [ ] Tell the user: validate → import → bind red blocks → F10 → save; deploy
     is their call.

@@ -435,6 +435,20 @@ the whole fleet). `runtime` is `{}` on almost every block; when set it holds
 `properties.input_count` is set it equals the number of wired inputs in **530 of 530**
 fleet blocks — generators must keep `input_count` == wired-input count.
 
+**Per-block documentation (right-click → Edit documentation)** — probed 2026-07-13: the
+dialog pre-fills from `get_block_property_value(id,'documentation')` and OK writes
+`set_block_property(id,'documentation', text)` (empty text → `remove_block_property`), so the
+on-disk shape is exactly `properties.documentation = {"alias_text":"","value":"<free text>"}`
+— the same `{alias_text,value}` wrapper as every other property. It round-trips through
+export/import untouched, `syntax_check` ignores it, and æøå/°C survive. **Generators must
+fill it on EVERY block** (1–2 sentences: the block's role in THIS sketch, why this
+limit/delay, what the user must bind) so imported sketches are self-documenting — the fleet
+never does this (the 529 production uses are `#ew.*` machine tags, not prose), so when
+regenerating an EXISTING sketch preserve any `#ew.*` documentation values verbatim
+(EcoWatcher parses them; replacing with prose breaks the pinning). `validate-vv-sketch.js`
+warns when blocks lack documentation and errors on wrong shapes (a bare string renders an
+empty dialog).
+
 ---
 
 ## 7. Syntax check (validation) — `syntax_check(check_configuration)`
@@ -1567,7 +1581,8 @@ OUTPUT = one pure-JSON file (no comments, no trailing commas):
             "compile_type": "<from table>",
             "data": <object per table> | null,   // null ⇒ imports unconfigured (red)
             "override": {} | {"alias_text":"<canvas label>"},
-            "runtime": {}, "properties": {},
+            "runtime": {},
+            "properties": {"documentation":{"alias_text":"","value":"<1-2 sentences>"}},
             "output_type": <from table>, "x": <number>, "y": <number> }
 
 <connection> = { "source": {"id": <block id>, "put": <output pin index, 0-based>},
@@ -1617,6 +1632,12 @@ HARD RULES (violating ANY one breaks the import):
     CONST source).
 10. Before answering, self-check: parse your own JSON; verify rules 1–9; verify every
     connection's ids exist and block_count/connection_count match the arrays.
+
+DOCUMENT EVERY BLOCK (quality bar, not import-breaking): properties.documentation =
+{"alias_text":"","value":"<1-2 sentences: the block's role in THIS sketch, why this
+limit/delay, what to bind>"} — it shows under right-click → Edit documentation after
+import. When regenerating an existing sketch, preserve #ew.* machine-tag values
+verbatim (EcoWatcher parses them).
 ```
 
 **Mechanical enforcement (don't skip):**
@@ -1677,6 +1698,11 @@ Exactly the §8 `paper.save()` shape:
   "x": 220, "y": 80                   // canvas position (px)
 }
 ```
+> **Document every block you generate:** set `"properties": {"documentation":
+> {"alias_text": "", "value": "<1–2 sentences: what this block does in THIS sketch, why the
+> limit/delay, what to bind>"}}`. The text appears under right-click → **Edit documentation**
+> after import, making the sketch self-documenting (§6 has the probed mechanics). When
+> regenerating an existing sketch, keep `#ew.*` machine-tag values verbatim.
 **Connection object** — one per wire (source **output** → target **input**):
 ```jsonc
 { "source": { "id": 0, "put": 0 }, "target": { "id": 2, "put": 0 } }
@@ -1704,8 +1730,11 @@ one wire**. On import the host connects with `force=true`, so author only valid 
    `CALENDAR` ids), **leave `data: null`** — the block imports **unconfigured (red title)** and
    the user binds it via the normal dialog after import. Never invent a real driver id.
 5. **Add connections** per the recipe.
-6. **Compute `require_plant_revision`** (20.5) and the counts; stamp `name`/`exported_at`.
-7. **Write the file** (e.g. `vv-sketch_<desc>.json`) and tell the user to Import it, then
+6. **Document every block**: `properties.documentation = {"alias_text":"","value":"…"}` —
+   1–2 sentences on the block's role in this sketch, why the chosen limit/delay, and what the
+   user must bind (right-click → Edit documentation shows it after import).
+7. **Compute `require_plant_revision`** (20.5) and the counts; stamp `name`/`exported_at`.
+8. **Write the file** (e.g. `vv-sketch_<desc>.json`) and tell the user to Import it, then
    configure any red (unbound) input blocks, F10, save, and deploy when ready.
 
 ### 20.4 Block generation reference (the common set) — ALLOWLIST
@@ -1838,6 +1867,8 @@ so a hand-authored file behaves identically to a `paper.save()` one.)
 - [ ] `block_count`/`connection_count` match the arrays; `require_plant_revision` = max floor.
 - [ ] Real hardware bindings (`WRITETOUNIT`) and real driver ids are present **only** if the
       user supplied them; otherwise left `null`/placeholder and flagged.
+- [ ] Every block carries `properties.documentation` (`{"alias_text":"","value":"…"}`) —
+      role in this sketch, why the limit/delay, what to bind.
 - [ ] You told the user: Import → configure red blocks → F10 → Save → deploy is their call.
 
 ### 20.8 Anti-pattern: a real rejected file and its fix
