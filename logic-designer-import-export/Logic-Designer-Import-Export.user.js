@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.36.0
+// @version      1.37.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -598,7 +598,7 @@ function diagnoseImport(parsed, knownTypes) {
     if (b.type === 'DELAY') {
       var bfaD = b.data && b.data.block_func_args;
       var okD = bfaD && typeof bfaD === 'object' && ('delay' in bfaD || ('delay_on' in bfaD && 'delay_off' in bfaD));
-      if (!okD) errors.push(at + ' (DELAY) data must be {"block_func_args":{"delay_on":N,"delay_off":N}} (or {"block_func_args":{"delay":N}}) — any other shape crashes the designer on load. Simpler: use DELAY_VARIABLE (data null) with a CONST seconds wired into put 1.');
+      if (!okD) errors.push(at + ' — data must be {"block_func_args":{"delay_on":N,"delay_off":N}} (or {"block_func_args":{"delay":N}}) — any other shape crashes the designer on load. Simpler: use DELAY_VARIABLE (data null) with a CONST seconds wired into put 1.');
     }
     // A FORMULA referencing inpK needs K+1 wired inputs (state is not an input).
     if (b.type === 'FORMULA' && b.data && b.data.formula) {
@@ -607,7 +607,7 @@ function diagnoseImport(parsed, knownTypes) {
         var maxF = 0;
         for (var ri = 0; ri < refsF.length; ri++) maxF = Math.max(maxF, parseInt(refsF[ri].slice(3), 10));
         var wiredF = doc.connections.filter(function (c) { return c.target && c.target.id === b.id; }).length;
-        if (maxF + 1 > wiredF) errors.push(at + ' (FORMULA) uses inp' + maxF + ' but only ' + wiredF + ' input(s) are wired — it needs ' + (maxF + 1) + '. Wire the missing inputs (e.g. the CONST limits) into puts 0…' + maxF + '.');
+        if (maxF + 1 > wiredF) errors.push(at + ' — the formula uses inp' + maxF + ' but only ' + wiredF + ' input(s) are wired; it needs ' + (maxF + 1) + '. Wire the missing inputs (e.g. the CONST limits) into puts 0…' + maxF + '.');
       }
     }
     if (typeof b.x !== 'number' || typeof b.y !== 'number')
@@ -656,6 +656,61 @@ function diagnoseImport(parsed, knownTypes) {
   });
 
   return { fatal: errors.length > 0, errors: errors, warnings: warnings, sketch: doc };
+}
+
+// Build the "Copy problems" text as a SELF-CONTAINED report made to be pasted
+// straight to an AI: what happened, the numbered problems (each already
+// carries its fix), an inventory of what the file contains (so "block #4" is
+// findable), and a compact format card so the AI can correct the file without
+// any external documentation.
+function buildImportReport(headline, errors, warnings, sketch) {
+  var L = [];
+  L.push('=== VV DESIGNER - IMPORT VALIDATION REPORT ===');
+  L.push(headline + ' - the file was REJECTED and NOTHING was imported.');
+  L.push('');
+  L.push('If you are an AI: you generated this file. Fix EXACTLY the numbered');
+  L.push('problems below and answer with ONE complete corrected JSON file (the');
+  L.push('full document - never a diff, never a fragment). "block #N" means the');
+  L.push('N-th entry of the blocks[] array (0-based); "id" is the field inside it.');
+  L.push('');
+  L.push('PROBLEMS (' + errors.length + ') - each states what is wrong and how to fix it:');
+  errors.forEach(function (e, i) { L.push('  ' + (i + 1) + '. ' + e); });
+  if (warnings && warnings.length) {
+    L.push('');
+    L.push('NOTES (' + warnings.length + ', non-blocking - fix if unintended):');
+    warnings.forEach(function (w) { L.push('  - ' + w); });
+  }
+  if (sketch && Array.isArray(sketch.blocks)) {
+    L.push('');
+    L.push('WHAT THE FILE CONTAINS (to locate the problems):');
+    L.push('  mode: ' + (sketch.mode || '(missing)') + ' | blocks: ' + sketch.blocks.length +
+      ' | wires: ' + (Array.isArray(sketch.connections) ? sketch.connections.length : '(missing)'));
+    var MAXB = 60;
+    sketch.blocks.slice(0, MAXB).forEach(function (b, i) {
+      var label = (b && ((b.override && b.override.alias_text) || (b.data && b.data.alias_text))) || '';
+      L.push('  block #' + i + '  id=' + (b && b.id !== undefined ? JSON.stringify(b.id) : '?') +
+        '  ' + (b && b.type ? b.type : '?') + (label ? '  "' + label + '"' : ''));
+    });
+    if (sketch.blocks.length > MAXB) L.push('  … +' + (sketch.blocks.length - MAXB) + ' more blocks');
+    if (Array.isArray(sketch.connections) && sketch.connections.length) {
+      var wireBits = sketch.connections.slice(0, 80).map(function (c) {
+        var s = c && c.source, t = c && c.target;
+        return (s ? s.id + ':' + s.put : '?') + '->' + (t ? t.id + ':' + t.put : '?');
+      });
+      L.push('  wires (source.id:put->target.id:put): ' + wireBits.join('  ') +
+        (sketch.connections.length > 80 ? '  … +' + (sketch.connections.length - 80) + ' more' : ''));
+    }
+  }
+  L.push('');
+  L.push('FORMAT CARD (the contract your corrected file must match):');
+  L.push('  envelope: {"format":"vv-fbx-sketch","version":1,"exported_at":"<ISO8601>","source_plant_id":null,"source_sketch_id":null,"name":"<short name>","block_count":N,"connection_count":M,"sketch":{...}}');
+  L.push('  sketch:   {"mode":"function"|"process","require_plant_revision":0,"blocks":[...],"connections":[...],"groups":[]}');
+  L.push('  block:    {"id":<int>,"type":"<UPPERCASE type>","func":"<exact func>","compile_type":"<per type>","data":<object|null>,"override":{"alias_text":"<label>"},"runtime":{},"properties":{},"output_type":<per type>,"x":<int>,"y":<int>}');
+  L.push('  wire:     {"source":{"id":<int>,"put":<int>},"target":{"id":<int>,"put":<int>}}   (put = 0-based pin index)');
+  L.push('  Rules: integer unique block ids; ONE wire per input pin; wire every non-optional input;');
+  L.push('  no from/to/wires/pins/label/name keys; block_count/connection_count equal the array lengths;');
+  L.push('  pure JSON - no comments, no trailing commas.');
+  return L.join('\n');
 }
 
 // Detect the plant prefix used by parameter bindings in a sketch document.
@@ -805,7 +860,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.36.0';
+    var VERSION = '1.37.0';
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -919,7 +974,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // ─── Error panel — itemised import problems (with fixes) ─────────
-    function showErrorPanel(headline, errors, warnings) {
+    function showErrorPanel(headline, errors, warnings, sketch) {
       var overlay = document.createElement('div');
       overlay.className = 'ldio-overlay';
       var panel = document.createElement('div');
@@ -963,12 +1018,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button'; copyBtn.className = 'ldio-btn';
       copyBtn.textContent = 'Copy problems';
+      copyBtn.title = 'Copies a self-contained report made to be pasted to an AI: the numbered problems with fixes, an inventory of the file, and the format contract.';
       copyBtn.addEventListener('click', function () {
-        var text = headline + '\n' + errors.map(function (e) { return '- ' + e; }).join('\n') +
-          (warnings.length ? '\n' + warnings.map(function (w) { return '(note) ' + w; }).join('\n') : '');
+        var text = buildImportReport(headline, errors, warnings, sketch);
         var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
         document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); toast('Problem list copied.'); } catch (e) { /* ignore */ }
+        try { document.execCommand('copy'); toast('Report copied — paste it to the AI that generated the file.'); } catch (e) { /* ignore */ }
         ta.remove();
       });
       var okBtn = document.createElement('button');
@@ -2155,7 +2210,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Rich diagnostics: itemised, host-contract-aware, with fixes.
         var diag = diagnoseImport(parsed, paper.blocks || {});
         if (diag.fatal) {
-          showErrorPanel('This file can\'t be imported', diag.errors, diag.warnings);
+          showErrorPanel('This file can\'t be imported', diag.errors, diag.warnings, diag.sketch);
           return;
         }
         var sketch = diag.sketch;
@@ -2388,5 +2443,6 @@ if (typeof module !== 'undefined' && module.exports) {
     listUnknownBlockTypes: listUnknownBlockTypes,
     buildExportFilename: buildExportFilename,
     diagnoseImport: diagnoseImport,
+    buildImportReport: buildImportReport,
   };
 }
