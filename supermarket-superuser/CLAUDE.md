@@ -295,14 +295,17 @@ rules. Export respects visibility: all-params view → its filtered rows (all gr
 native view → visible rows of the current group. Download via temporary object-URL `<a>`.
 
 Since v4.7 the sheets are styled and structured (COM-verified against real Excel).
-Sheet order (v4.10): **`Settings (read-write)` first**, `Measurements (read)` second —
-Excel opens on sheet 1, and users read "no Read/write anywhere" when they land on the
-all-read Measurements sheet (exactly that support case prompted the reorder).
+Sheet layout (v4.11): **one combined `Parameters` sheet** — measurements and settings
+together, writable rows first within each group, the Access column varying per row.
+(v4.7–4.10 shipped two per-side sheets; users kept landing on a tab where every row had
+the same Access and read it as "the column is broken" — two support cases in one day
+prompted the merge.)
 
-- Sheet rows are model objects `{cells, style, outline}`. `buildGroupedExportRows` maps
-  flat `[group, name, value, unit, driverId]` rows into: header row (style 1) → per
-  group a band row `Group name (count)` (style 2) → the group's rows at `outlineLevel=1`.
-  The Group column stays on every data row so AutoFilter sort/filter keeps working.
+- Sheet rows are model objects `{cells, style, outline}`. `buildCombinedExportRows`
+  merges both sides' enriched 7-column rows into one sheet: header row (style 1) → per
+  group a band row `Group name (count)` (style 2) → the group's settings rows, then its
+  measurement rows, at `outlineLevel=1`. The Group column stays on every data row so
+  AutoFilter sort/filter keeps working.
 - `xlsxStylesXml` ships 3 `cellXfs`: 0 default, 1 = bold white on `#1976D2` (header),
   2 = bold `#0D47A1` on `#E3F2FD` (group band). Wired via a content-type override + a
   `rIdStyles` workbook relationship.
@@ -428,5 +431,5 @@ select, `Esc` close. Filter inputs: `Esc` clears that filter. All bound in
 | Batch & cross-unit | `openPlantPriBatchModal`, `openScaleMarkedModal`, `applyChangesToMarkedParameters`, `applyMarkedChangesToOtherUnits`, `applyChangesAcrossUnits`, `openUnitPickerModal`, `deleteOverridesForMarkedParameters`, `verifyBatchChanges` |
 | SQL/API | `settingsRpc`, `executeBatchSqlCommands`, `buildDriverParameterSql`, `buildDeleteOverrideSql`, `resolveDriverParameterRequests`, `fetchDriverParameterRowsByAliasSql`, `fetchDriverParameterRowsByDriverIds`, `fetchFullDriverParameterRowByDriverId`, `sqlQuote` |
 | Native menu | `getPotentialContextMenus`, `addBatchContextMenuItems`, `scheduleBatchContextMenuAugment` |
-| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildGroupedExportRows`, `fetchNativeGroupDriverIds`, `enrichExportRowsWithAccess`, `accessLabelFromAtt`, `allowedValuesText`, `formatExtraOptionsText`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
+| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildCombinedExportRows`, `fetchNativeGroupDriverIds`, `enrichExportRowsWithAccess`, `accessLabelFromAtt`, `allowedValuesText`, `formatExtraOptionsText`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
 | Misc | `showHint`, `showHelpModal`, `setupDraggablePocModal`, `mapWithConcurrency`, `fetchWithTimeout`, `getPlantId`, `getUnitId`, `escapeHtml` |

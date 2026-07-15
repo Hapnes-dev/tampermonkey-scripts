@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.10
+// @version      4.11
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.10';
+    const SCRIPT_VERSION = '4.11';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4570,9 +4570,9 @@
                         <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only active when you have unsaved changes.</li>
                         <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
                         <li><span class="sm-poc-help-btnref">Export Excel</span> – downloads the visible parameters as an
-                        Excel (.xlsx) file with a <em>Settings (read-write)</em> sheet first and a
-                        <em>Measurements (read)</em> sheet second
-                        (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID).
+                        Excel (.xlsx) file with one <em>Parameters</em> sheet
+                        (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID) —
+                        every row is marked Read or Read/write, and writable rows come first within each group.
                         The header row is styled, frozen and carries sort/filter dropdowns, and each parameter group is a
                         collapsible block (+/- buttons in the left margin, group name + count on the band row).
                         <strong>Access</strong> shows Read vs Read/write, and writable rows list the accepted values in
@@ -4875,22 +4875,27 @@
     const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit', 'Access', 'Allowed values', 'Driver ID'];
     const EXPORT_COL_WIDTHS = [24, 46, 14, 10, 13, 34, 36];
 
-    // One collapsible block per parameter group: a styled band row (with the
-    // +/- outline button) followed by its parameters at outlineLevel 1. The
-    // Group column is repeated on every data row so AutoFilter sorting and
-    // filtering keep working on the flat data.
-    function buildGroupedExportRows(dataRows) {
+    // ONE sheet for everything: one collapsible block per parameter group (a
+    // styled band row with the +/- outline button, parameters at outlineLevel
+    // 1). Within a group the writable (Read/write) rows come first, then the
+    // read-only ones — the Access column tells them apart per row. The Group
+    // column is repeated on every data row so AutoFilter sorting and filtering
+    // keep working on the flat data.
+    function buildCombinedExportRows(measurements, settings) {
         const rows = [{ cells: EXPORT_HEADER, style: XLSX_STYLE_HEADER }];
         const groups = new Map();
-        dataRows.forEach((dataRow) => {
-            const key = normalizeExportText(dataRow[0]) || '-';
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key).push(dataRow);
-        });
+        const bucket = (dataRow, sideKey) => {
+            const groupKey = normalizeExportText(dataRow[0]) || '-';
+            if (!groups.has(groupKey)) groups.set(groupKey, { settings: [], measurements: [] });
+            groups.get(groupKey)[sideKey].push(dataRow);
+        };
+        settings.forEach((row) => bucket(row, 'settings'));
+        measurements.forEach((row) => bucket(row, 'measurements'));
         groups.forEach((members, groupName) => {
-            const bandCells = [`${groupName} (${members.length})`, ...Array(EXPORT_HEADER.length - 1).fill('')];
+            const all = [...members.settings, ...members.measurements];
+            const bandCells = [`${groupName} (${all.length})`, ...Array(EXPORT_HEADER.length - 1).fill('')];
             rows.push({ cells: bandCells, style: XLSX_STYLE_GROUP });
-            members.forEach((member) => rows.push({ cells: member, outline: 1 }));
+            all.forEach((member) => rows.push({ cells: member, outline: 1 }));
         });
         return rows;
     }
@@ -5057,11 +5062,8 @@
             { rows: settings, side: 'settings' }
         ]);
         try {
-            // Settings first: Excel opens on sheet 1, and that is the sheet
-            // where Access/Allowed values actually carry information.
             const blob = buildXlsxBlob([
-                { name: 'Settings (read-write)', rows: buildGroupedExportRows(settings) },
-                { name: 'Measurements (read)', rows: buildGroupedExportRows(measurements) }
+                { name: 'Parameters', rows: buildCombinedExportRows(measurements, settings) }
             ]);
             triggerXlsxDownload(blob, `${exportFileBase()}.xlsx`);
             const writableCount = [...measurements, ...settings]
@@ -5968,7 +5970,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.10 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.11 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6212,5 +6214,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.10 loaded');
+    console.log('[Supermarket Superuser] v4.11 loaded');
 })();
