@@ -72,7 +72,7 @@ working; the toolbar hint says exactly that). Five fixed-position, `inset:0`,
 | `sm-poc-ghost-portal` | one `.sm-poc-ghost-host` per pane (pending-move ghost rows) |
 | `sm-poc-unit-portal` | the searchable unit combo (positioned over the hidden native select) |
 | `sm-poc-all-params-portal` | the `Show all parameters` button + full-page view |
-| *(body-level)* | modals (`.sm-poc-batch-modal`), context menu, `#sm-poc-hint`, toolbar |
+| *(body-level)* | modals (`.sm-poc-batch-modal`), context menu, `#sm-poc-hint`, toolbar (fixed, aligned over the Kiona bar by `positionToolbar` — see gotcha 13) |
 
 All portals (and the all-params view) register `stopPropagation()` for
 pointerdown/mousedown/mouseup/click/dblclick/focusin/keydown/keyup — the SPA must never
@@ -234,7 +234,8 @@ inline `display` in a dataset — **the `undefined` check there is load-bearing*
 comment) and renders two `.sm-poc-all-pane`s: separate header + scroll tables (header
 width shrunk by scrollbar gap in `syncAllParamsHeaderScrollbarGap`), sortable headers
 (`allParamsSort`), per-column filters (`allParamsFilters`), row data both on
-`row.__smPocAllParam` and `dataset` (driverId, aliasText, groupName, menu). Wheel events
+`row.__smPocAllParam` and `dataset` (driverId, aliasText, groupName, menu) —
+NB: that `menu` is the RPC **group-id hash**, not the DB `menu` column (gotcha 14). Wheel events
 are manually routed to the pane scroller (portal is fixed → default scroll would hit the
 page). Native group-button clicks and pointer-downs deactivate the view. Scroll positions
 are carried across re-renders.
@@ -257,7 +258,13 @@ renders async.
 it → `.sm-poc-used-in-graphics` (green).
 
 ### Driver details modal
-`fetchAllParamsDriverDetailsResponse` (toolbox details action, raw-SQL fallback) →
+`fetchAllParamsDriverDetailsResponse` is **driver_id-first** (v4.6): rows that
+carry a `driver_id` (every all-params row) are fetched via
+`fetchFullDriverParameterRowByDriverId` — raw SQL `SELECT p.*` with a
+`LEFT JOIN …_override o` aliasing all 13 editable fields to `override_<field>`,
+the same shape the toolbox details action returns. Only rows without a
+driver_id go through the toolbox details action + alias-SQL fallback (which
+needs alias+menu to match the DB — impossible for all-params rows, gotcha 14) →
 multiple matches open a chooser first. The form covers alias_text, plant_pri, eng_unit,
 format (`%.0f…%.4f`, `%e`, `%X`, `%s`, `%d`, `%i`, `%u`), range_min/max, scale
 (1 scale-only / 2 format-only / 3 scale+format+clipping), raw/eng min/max, att
@@ -333,6 +340,24 @@ select, `Esc` close. Filter inputs: `Esc` clears that filter. All bound in
 12. **The native context-menu augmentation is heuristic** (§7) — if IWMAC renames
     "Get Driver Parameter Details"/"Legg til parameter" etc., `getPotentialContextMenus`'
     regex needs updating.
+13. **Never insert DOM into framework-rendered containers — above all
+    `.top_bar_kiona`.** A foreign child desyncs the app's vdom↔DOM diff, and the
+    next top-bar re-render (e.g. opening the language dropdown) dies in an
+    uncaught `Cannot read properties of undefined (reading 'childNodes')` storm,
+    leaving the bar dead until reload (the ≤4.5 toolbar bug, live-debugged on
+    plant 6918). The toolbar therefore floats `position:fixed` over the bar
+    (`positionToolbar`, class `sm-poc-toolbar-kiona`). The one remaining
+    structural mutation of page-owned DOM is the native context-menu
+    augmentation (§7) — no crashes observed (that menu looks imperatively
+    rendered), but treat it as prime suspect if right-click breaks after an
+    IWMAC update.
+14. **All-params `menu` ≠ DB `menu`.** `parseSettingsParameterCsv` stores the RPC
+    group id (an MD5-ish hash) as `menu`; the DB column is a menu *name* (often
+    empty on AK3 plants, whose aliases also carry `051:1`-style bus-address
+    prefixes). Alias+menu DB matching with all-params row data therefore finds
+    nothing — that's why the details fetch is driver_id-first (v4.6). Cross-unit
+    copy from such a modal matches on the DB row's real alias/menu (returned by
+    the driver_id lookup), never the hash.
 
 ## 10. Constants quick-ref
 
@@ -354,14 +379,14 @@ select, `Esc` close. Filter inputs: `Esc` clears that filter. All bound in
 | Area | Functions |
 |---|---|
 | Lifecycle | `startContentWatcher`, `refreshPoc`, `scheduleReinit`, `sleepPoc`, `computeContentSignature`, `isPocNode`, `isSettingsPage` |
-| Overlays | `getFilterPortal`/`getGhostPortal`/`getUnitPortal`/`getAllParamsPortal`, `positionAllFilterHosts`, `setContainerTopPadding`, `getStableHostRect` |
+| Overlays | `getFilterPortal`/`getGhostPortal`/`getUnitPortal`/`getAllParamsPortal`, `positionAllFilterHosts`, `positionToolbar`, `setContainerTopPadding`, `getStableHostRect` |
 | Filters | `ensurePaneFilters`, `buildFilterGrid`, `applyFilters`, `filterTextMatches`, `normalizeFilterText`, `updateUnitFilterDatalist`, `persistFiltersFromDom` |
 | Unit combo | `ensureSearchableUnitDropdown`, `selectNativeUnit`, `stepUnitSelection`, `renderUnitOptions` |
 | Edit mode | `applyMoveMode`, `handleRowClick`, `bindSelectionOnTable`, `bindDragOnTable`, `bindDropZone`, `moveRowsToSettings`/`moveRowsToMeasurements`, `registerPendingAttChange`, `renderPendingVisualRows`, `savePendingAttChanges`, `requestNativeParameterRedraw` |
 | All params | `activateAllParamsView`, `fetchAllGroupParameters`, `renderAllParamsView`, `createAllParamsPane`, `filterAllParamsView`, `deactivateAllParamsView`, `setNativeParameterPanesHidden` |
 | Details modal | `openAllParamsDriverDetails`, `showAllParamsDriverParameterModal`, `computeDriverFormChanges`, `saveAllParamsDriverParameterChanges`, `markDriverOverrideFields`, `getScalePresets`, `engFromRaw` |
 | Batch & cross-unit | `openPlantPriBatchModal`, `openScaleMarkedModal`, `applyChangesToMarkedParameters`, `applyMarkedChangesToOtherUnits`, `applyChangesAcrossUnits`, `openUnitPickerModal`, `deleteOverridesForMarkedParameters`, `verifyBatchChanges` |
-| SQL/API | `settingsRpc`, `executeBatchSqlCommands`, `buildDriverParameterSql`, `buildDeleteOverrideSql`, `resolveDriverParameterRequests`, `fetchDriverParameterRowsByAliasSql`, `fetchDriverParameterRowsByDriverIds`, `sqlQuote` |
+| SQL/API | `settingsRpc`, `executeBatchSqlCommands`, `buildDriverParameterSql`, `buildDeleteOverrideSql`, `resolveDriverParameterRequests`, `fetchDriverParameterRowsByAliasSql`, `fetchDriverParameterRowsByDriverIds`, `fetchFullDriverParameterRowByDriverId`, `sqlQuote` |
 | Native menu | `getPotentialContextMenus`, `addBatchContextMenuItems`, `scheduleBatchContextMenuAugment` |
 | Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
 | Misc | `showHint`, `showHelpModal`, `setupDraggablePocModal`, `mapWithConcurrency`, `fetchWithTimeout`, `getPlantId`, `getUnitId`, `escapeHtml` |

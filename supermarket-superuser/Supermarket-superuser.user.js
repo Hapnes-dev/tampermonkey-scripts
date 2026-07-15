@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.5
+// @version      4.6
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.5';
+    const SCRIPT_VERSION = '4.6';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -117,26 +117,25 @@
                 width: auto; max-width: calc(100vw - 24px);
                 box-sizing: border-box; box-shadow: 0 2px 8px rgba(0,0,0,0.18);
             }
-            .top_bar_kiona #sm-poc-toolbar {
-                position: static; transform: none; z-index: auto;
-                margin: 0 10px 0 auto; padding: 3px 6px; gap: 6px;
+            #sm-poc-toolbar.sm-poc-toolbar-kiona {
+                transform: none; padding: 3px 6px; gap: 6px;
                 max-width: none; box-shadow: none;
                 background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18);
-                color: #fff; border-radius: 3px; flex: 0 0 auto;
+                color: #fff; border-radius: 3px;
             }
             .sm-poc-move-toggle {
                 padding: 6px 12px; font-weight: 600; cursor: pointer;
                 border: 1px solid #1976d2; border-radius: 4px; background: #fff;
                 color: #1565c0;
             }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-move-toggle {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-move-toggle {
                 padding: 4px 8px; border-color: rgba(255,255,255,0.32);
                 background: rgba(255,255,255,0.10); color: #fff; border-radius: 3px;
             }
             .sm-poc-move-toggle.sm-poc-active {
                 background: #1976d2; color: #fff;
             }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-move-toggle.sm-poc-active {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-move-toggle.sm-poc-active {
                 background: #1976d2; border-color: #64b5f6; color: #fff;
             }
             .sm-poc-zero-toggle {
@@ -144,14 +143,14 @@
                 border: 1px solid #607d8b; border-radius: 4px; background: #fff;
                 color: #455a64;
             }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-zero-toggle {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-zero-toggle {
                 padding: 4px 8px; border-color: rgba(255,255,255,0.32);
                 background: rgba(255,255,255,0.10); color: #fff; border-radius: 3px;
             }
             .sm-poc-zero-toggle.sm-poc-active {
                 background: #455a64; color: #fff;
             }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-zero-toggle.sm-poc-active {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-zero-toggle.sm-poc-active {
                 background: #455a64; border-color: #90a4ae; color: #fff;
             }
             .sm-poc-save-btn {
@@ -159,18 +158,18 @@
                 border: 1px solid #2e7d32; border-radius: 4px; background: #fff;
                 color: #2e7d32;
             }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-save-btn {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-save-btn {
                 padding: 4px 8px; border-color: rgba(129,199,132,0.75);
                 background: rgba(255,255,255,0.10); color: #c8e6c9; border-radius: 3px;
             }
             .sm-poc-save-btn:disabled { opacity: 0.45; cursor: default; }
             .sm-poc-save-count { color: #2e7d32; font-weight: 600; }
             .sm-poc-toolbar-hint { color: #546e7a; font-size: 11px; }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-save-count,
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-toolbar-hint {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-save-count,
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-toolbar-hint {
                 color: rgba(255,255,255,0.78);
             }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-toolbar-hint { display: none; }
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-toolbar-hint { display: none; }
             .sm-poc-unit-native-hidden {
                 visibility: hidden !important;
             }
@@ -481,7 +480,7 @@
                 background: #e8f5e9; color: #1b5e20; font-weight: 600; cursor: pointer;
             }
             .sm-poc-export-btn:hover { background: #c8e6c9; }
-            .top_bar_kiona #sm-poc-toolbar .sm-poc-export-btn {
+            #sm-poc-toolbar.sm-poc-toolbar-kiona .sm-poc-export-btn {
                 margin-left: 0; padding: 4px 8px; border-color: rgba(255,255,255,0.32);
                 background: rgba(255,255,255,0.10); color: #fff; border-radius: 3px;
             }
@@ -1840,6 +1839,26 @@
         const request = getDataFromRow(row);
         if (!plantId || !unitId) {
             throw new Error('Cannot find unit_id or plant_id.');
+        }
+
+        // Rows from "Show all parameters" carry the exact driver_id — look the
+        // parameter up by it directly. The unit+alias+menu route fails on
+        // these rows: their "menu" is the RPC group-id hash (not the DB menu
+        // column) and AK3-style aliases carry bus-address prefixes, so the
+        // lookup finds nothing.
+        if (request.driver_id) {
+            const fullRow = await fetchFullDriverParameterRowByDriverId(request.driver_id, plantId).catch(() => null);
+            if (fullRow?.driver_id) {
+                return {
+                    success: true,
+                    plant_id: plantId,
+                    unit_id: fullRow.unit_id || unitId,
+                    alias_text: fullRow.alias_text || request.alias_text,
+                    total_parameters_found: 1,
+                    has_multiple_parameters: false,
+                    data: fullRow
+                };
+            }
         }
 
         const fd = new FormData();
@@ -4327,6 +4346,7 @@
         positionUnitComboHost();
         positionAllParamsButton();
         positionAllParamsView();
+        positionToolbar();
     }
 
     function createFilterInput(col, key, label) {
@@ -4969,17 +4989,35 @@
     }
 
     function mountToolbar(bar) {
-        const topBar = document.querySelector('.top_bar_kiona');
-        const rightSection = topBar?.querySelector('.top_bar_right_section');
-        if (topBar && rightSection) {
-            if (bar.parentElement !== topBar || bar.nextElementSibling !== rightSection) {
-                topBar.insertBefore(bar, rightSection);
-            }
-            return;
-        }
+        // NEVER insert the toolbar into .top_bar_kiona: the bar is framework-
+        // rendered, and a foreign child crashes its DOM diff (a storm of
+        // "Cannot read properties of undefined (reading 'childNodes')") on the
+        // next re-render — which is exactly what opening the language dropdown
+        // does. Float a fixed toolbar over the bar's free space instead.
         if (bar.parentElement !== document.body) {
             document.body.appendChild(bar);
         }
+        positionToolbar(bar);
+    }
+
+    function positionToolbar(bar) {
+        bar = bar || document.getElementById('sm-poc-toolbar');
+        if (!bar) return;
+        const topBar = document.querySelector('.top_bar_kiona');
+        const barRect = topBar?.getBoundingClientRect();
+        if (!topBar || !barRect?.width || !barRect?.height) {
+            // No (visible) Kiona bar — fall back to the fixed top-center look.
+            bar.classList.remove('sm-poc-toolbar-kiona');
+            bar.style.left = '';
+            bar.style.top = '';
+            return;
+        }
+        bar.classList.add('sm-poc-toolbar-kiona');
+        const rightRect = topBar.querySelector('.top_bar_right_section')?.getBoundingClientRect();
+        const ownRect = bar.getBoundingClientRect();
+        const rightEdge = rightRect?.width ? rightRect.left : barRect.right;
+        bar.style.left = `${Math.max(Math.round(rightEdge - ownRect.width - 10), 8)}px`;
+        bar.style.top = `${Math.round(barRect.top + Math.max((barRect.height - ownRect.height) / 2, 0))}px`;
     }
 
     function updatePendingUi() {
@@ -5176,6 +5214,37 @@
             if (found) return found;
         }
         return null;
+    }
+
+    // Full parameter row incl. override_<field> columns — the same shape the
+    // toolbox details action returns — for rows that already know their
+    // driver_id (all-params rows always do). driver_id is unique, so no
+    // alias/menu matching is involved.
+    async function fetchFullDriverParameterRowByDriverId(driverId, plantId) {
+        const overrideColumns = ['alias_text', 'plant_pri', 'eng_unit', 'format', 'format_extra', 'range_min', 'range_max', 'scale', 'raw_min', 'raw_max', 'eng_min', 'eng_max', 'att']
+            .map((field) => `o.\`${field}\` AS override_${field}`)
+            .join(', ');
+        const fd = new FormData();
+        fd.append('plant_id', plantId);
+        fd.append('sql_command', [
+            `SELECT p.*, ${overrideColumns}`,
+            'FROM iw_plant_server3.iw_gen_driver_parameters p',
+            'LEFT JOIN iw_plant_server3.iw_gen_driver_parameters_override o ON o.driver_id = p.driver_id',
+            `WHERE p.\`driver_id\` = '${sqlQuote(driverId)}'`,
+            'LIMIT 1'
+        ].join(' '));
+        fd.append('_cache_bust', Date.now());
+
+        const response = await fetchWithTimeout('http://toolbox.iwmac.local/oets/api/index2.php', {
+            method: 'POST',
+            body: fd,
+            cache: 'no-cache'
+        });
+        const data = await response.json();
+        if (!data?.success) {
+            throw new Error(data?.error || `Driver_id not found: ${driverId}`);
+        }
+        return findFirstObjectWithDriverId(data);
     }
 
     async function fetchDriverParameterDetailsByDriverId(driverId, plantId) {
@@ -5714,7 +5783,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.5 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.6 Init OK', computeContentSignature());
         return true;
     }
 
@@ -5958,5 +6027,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.5 loaded');
+    console.log('[Supermarket Superuser] v4.6 loaded');
 })();

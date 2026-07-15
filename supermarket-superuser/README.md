@@ -23,7 +23,7 @@ The script injects on any `/supermarket/` page but only *activates* on the **`/s
 
 ## Toolbar
 
-Mounts inside the Kiona top bar (`.top_bar_kiona`, just before the right section) when present, otherwise as a fixed top-center bar:
+Floats as a fixed overlay aligned into the Kiona top bar's free space (ending just left of the language/user controls) when the bar exists, otherwise as a fixed top-center bar. Since v4.6 it is **never inserted into the bar's DOM** — the bar is framework-rendered, and a foreign child crashed its re-render, which is what used to kill the language dropdown:
 
 | Control | What it does |
 |---|---|
@@ -48,7 +48,7 @@ Select rows (click, `Shift`+click range, `Ctrl`+click toggle, `Ctrl`+`Shift`+`A`
 A `Show all parameters` button is injected next to the native group buttons (pixel-styled from a real group button). It fetches **every group** of the selected unit through the page's own `settings.php` JSON-RPC (6 groups in parallel, per-unit 30 s cache, progressive rendering) and shows a two-pane, sortable, per-column-filterable table with a Group badge per row. Edit-mode drag-move works here too. Right-click a row for: **Highlight used_in_graphics** (marks rows used in plant graphics green, via toolbox `get_unit_menu.php`), **Get Driver Parameter Details**, and — in Edit mode — the batch actions.
 
 ### Driver parameter details
-A full editor for one `iw_gen_driver_parameters` row: alias_text, plant_pri (A/B/C/N/blank), eng_unit, format (`%.1f` …), range min/max, scale mode (1 scale / 2 format / 3 scale+format+clipping), raw/eng min/max, att (`r`/`rw`/`vr`/`vrw`), format_extra (with a large-textarea editor). Fields that have data in the override table get a blue border. Extras: **Scaling Presets** (Invert, x0.1…x1000, Kelvin→Celsius, L/h↔m³/h, CT ratios … with live preview), **Copy Meter ID** (`plant_id;unit_id;element_id`), **Delete Override**, **Apply to other units…**.
+A full editor for one `iw_gen_driver_parameters` row: alias_text, plant_pri (A/B/C/N/blank), eng_unit, format (`%.1f` …), range min/max, scale mode (1 scale / 2 format / 3 scale+format+clipping), raw/eng min/max, att (`r`/`rw`/`vr`/`vrw`), format_extra (with a large-textarea editor). Fields that have data in the override table get a blue border. Rows that already know their `driver_id` (every Show-all-parameters row) are fetched by driver_id directly (v4.6) — the unit+alias+menu route fails on AK3-style plants, where display aliases carry bus-address prefixes and the all-params "menu" is the RPC group hash. Extras: **Scaling Presets** (Invert, x0.1…x1000, Kelvin→Celsius, L/h↔m³/h, CT ratios … with live preview), **Copy Meter ID** (`plant_id;unit_id;element_id`), **Delete Override**, **Apply to other units…**.
 
 ### Batch on marked + Apply to other units
 With rows marked in Edit mode (works in the native panes *and* Show all parameters; the entries are also injected into IWMAC's own right-click menu):
