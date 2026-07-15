@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.7
+// @version      4.8
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.7';
+    const SCRIPT_VERSION = '4.8';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4570,9 +4570,12 @@
                         <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only active when you have unsaved changes.</li>
                         <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
                         <li><span class="sm-poc-help-btnref">Export Excel</span> – downloads the visible parameters as an
-                        Excel (.xlsx) file with a <em>Measurements</em> and a <em>Settings</em> sheet (columns Group, Name, Value, Unit, Driver ID).
+                        Excel (.xlsx) file with a <em>Measurements</em> and a <em>Settings</em> sheet
+                        (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID).
                         The header row is styled, frozen and carries sort/filter dropdowns, and each parameter group is a
                         collapsible block (+/- buttons in the left margin, group name + count on the band row).
+                        <strong>Access</strong> shows Read vs Read/write, and writable rows list the accepted values in
+                        <strong>Allowed values</strong> — enum options like <code>0 = Off / 1 = On</code>, or the min–max write range.
                         Exports all groups when <span class="sm-poc-help-btnref">Show all parameters</span> is open, otherwise the
                         current group (driver IDs are then fetched via the same API the page uses).
                         Column filters are respected, so you can filter first and export just those rows.</li>
@@ -4868,8 +4871,8 @@
         return `parameters_${plant}_${unit}_${stamp}`;
     }
 
-    const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit', 'Driver ID'];
-    const EXPORT_COL_WIDTHS = [24, 46, 14, 10, 36];
+    const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit', 'Access', 'Allowed values', 'Driver ID'];
+    const EXPORT_COL_WIDTHS = [24, 46, 14, 10, 13, 34, 36];
 
     // One collapsible block per parameter group: a styled band row (with the
     // +/- outline button) followed by its parameters at outlineLevel 1. The
@@ -4884,13 +4887,85 @@
             groups.get(key).push(dataRow);
         });
         groups.forEach((members, groupName) => {
-            rows.push({
-                cells: [`${groupName} (${members.length})`, '', '', '', ''],
-                style: XLSX_STYLE_GROUP
-            });
+            const bandCells = [`${groupName} (${members.length})`, ...Array(EXPORT_HEADER.length - 1).fill('')];
+            rows.push({ cells: bandCells, style: XLSX_STYLE_GROUP });
             members.forEach((member) => rows.push({ cells: member, outline: 1 }));
         });
         return rows;
+    }
+
+    function accessLabelFromAtt(att) {
+        const value = String(att || '').trim().toLowerCase();
+        if (value === 'rw') return 'Read/write';
+        if (value === 'vrw') return 'Read/write (virtual)';
+        if (value === 'vr') return 'Read (virtual)';
+        if (value === 'r') return 'Read';
+        return value;
+    }
+
+    // format_extra is JSON like {"type":"num","v":{"0":{"t":"Off"},"1":{"t":"On"}}}
+    // — the v map lists the values the parameter accepts. Render "0 = Off / 1 = On";
+    // labels that already embed the value ("1-Start") are kept as-is.
+    function formatExtraOptionsText(formatExtra) {
+        let parsed;
+        try {
+            parsed = JSON.parse(String(formatExtra || ''));
+        } catch (error) {
+            return '';
+        }
+        const valueMap = parsed?.v;
+        if (!valueMap || typeof valueMap !== 'object' || Array.isArray(valueMap)) return '';
+        const keys = Object.keys(valueMap).sort((a, b) => {
+            const an = Number(a);
+            const bn = Number(b);
+            if (isFinite(an) && isFinite(bn)) return an - bn;
+            return a.localeCompare(b, 'en', { numeric: true });
+        });
+        if (!keys.length) return '';
+        const parts = keys.map((key) => {
+            const label = String(valueMap[key]?.t ?? '').replace(/\s+/g, ' ').trim();
+            if (!label || label === key) return key;
+            if (label.startsWith(`${key}-`) || label.startsWith(`${key} `)) return label;
+            return `${key} = ${label}`;
+        });
+        const shown = parts.slice(0, 10);
+        const suffix = parts.length > shown.length ? ` / ... (${parts.length} values)` : '';
+        return shown.join(' / ') + suffix;
+    }
+
+    function allowedValuesText(dbRow, att) {
+        if (!/w/.test(String(att || ''))) return '';
+        const options = formatExtraOptionsText(dbRow?.format_extra);
+        if (options) return options;
+        const min = String(dbRow?.range_min ?? '').trim();
+        const max = String(dbRow?.range_max ?? '').trim();
+        if (min !== '' && max !== '') return `${min} to ${max}`;
+        if (min !== '') return `min ${min}`;
+        if (max !== '') return `max ${max}`;
+        return '';
+    }
+
+    // Look up att/range/format_extra for every exported driver_id so the sheet
+    // shows Read vs Read/write and, for writable rows, the accepted values.
+    // Failures degrade to side-based Access and a blank Allowed values column.
+    async function enrichExportRowsWithAccess(sheets) {
+        const ids = [...new Set(sheets.flatMap(({ rows }) => rows.map((row) => row[4])).filter(Boolean))];
+        const plantId = getPlantId();
+        let byId = new Map();
+        if (ids.length && plantId) {
+            try {
+                showHint(`Fetching access/range info for ${ids.length} parameters...`);
+                const dbRows = await fetchDriverParameterRowsByDriverIds(ids, plantId);
+                byId = new Map(dbRows.map((row) => [String(row.driver_id || ''), row]));
+            } catch (error) {
+                console.log('[Supermarket Parameters POC] export access lookup failed:', error);
+            }
+        }
+        return sheets.map(({ rows, side }) => rows.map((row) => {
+            const dbRow = byId.get(String(row[4] || ''));
+            const att = dbRow?.att || sideToAtt(side);
+            return [row[0], row[1], row[2], row[3], accessLabelFromAtt(att), allowedValuesText(dbRow, att), row[4]];
+        }));
     }
 
     function normalizeExportText(value) {
@@ -4973,6 +5048,10 @@
             showHint('No parameters to export.');
             return;
         }
+        [measurements, settings] = await enrichExportRowsWithAccess([
+            { rows: measurements, side: 'measurements' },
+            { rows: settings, side: 'settings' }
+        ]);
         try {
             const blob = buildXlsxBlob([
                 { name: 'Measurements', rows: buildGroupedExportRows(measurements) },
@@ -5236,7 +5315,7 @@
             const fd = new FormData();
             fd.append('plant_id', plantId);
             fd.append('sql_command', [
-                'SELECT driver_id, plant_pri, scale, raw_min, raw_max, eng_min, eng_max, `format`, att',
+                'SELECT driver_id, plant_pri, scale, raw_min, raw_max, eng_min, eng_max, `format`, att, range_min, range_max, format_extra',
                 'FROM iw_plant_server3.iw_gen_driver_parameters',
                 `WHERE \`driver_id\` IN (${quotedIds})`,
                 `LIMIT ${chunk.length}`
@@ -5870,7 +5949,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.7 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.8 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6114,5 +6193,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.7 loaded');
+    console.log('[Supermarket Superuser] v4.8 loaded');
 })();

@@ -310,10 +310,20 @@ Since v4.7 the sheets are styled and structured (COM-verified against real Excel
   `sheetData` → `autoFilter ref="A1:E<last>"` (sort/filter dropdowns).
 - **No merged cells** on the band rows on purpose — merged cells inside an AutoFilter
   range break Excel sorting.
-- The 5th column is **Driver ID**: all-params rows carry it in `dataset`; the native
-  single-group export calls `fetchNativeGroupDriverIds` (get_groups → match selected
-  group button text → get_parameters → alias→driver_id map, §5 RPC) and leaves blanks on
-  failure. `exportParametersToExcel` is async because of this.
+- Columns 5–7 are **Access / Allowed values / Driver ID** (v4.8). Driver ID: all-params
+  rows carry it in `dataset`; the native single-group export calls
+  `fetchNativeGroupDriverIds` (get_groups → match selected group button text →
+  get_parameters → alias→driver_id map, §5 RPC) and leaves blanks on failure.
+  `enrichExportRowsWithAccess` then batch-fetches `att`/`range_min`/`range_max`/
+  `format_extra` for every exported driver_id via `fetchDriverParameterRowsByDriverIds`
+  (its SELECT gained those columns in v4.8; extra columns are harmless to
+  `verifyBatchChanges`, its other caller). **Access** renders the real `att`
+  (`accessLabelFromAtt`: r/rw/vr/vrw → Read / Read/write / … — side-based fallback when
+  the toolbox lookup fails). Writable rows (`att` contains `w`) get `allowedValuesText`:
+  enum options parsed from format_extra's JSON `v` map (`formatExtraOptionsText`, capped
+  at 10 options — format_extra is `{"rev","type":"num","v":{"0":{"t":"Off",…},…}}`), else
+  `range_min to range_max` / `min …` / `max …`. `exportParametersToExcel` is async
+  because of these lookups.
 
 ## 8. Keyboard map
 
@@ -409,5 +419,5 @@ select, `Esc` close. Filter inputs: `Esc` clears that filter. All bound in
 | Batch & cross-unit | `openPlantPriBatchModal`, `openScaleMarkedModal`, `applyChangesToMarkedParameters`, `applyMarkedChangesToOtherUnits`, `applyChangesAcrossUnits`, `openUnitPickerModal`, `deleteOverridesForMarkedParameters`, `verifyBatchChanges` |
 | SQL/API | `settingsRpc`, `executeBatchSqlCommands`, `buildDriverParameterSql`, `buildDeleteOverrideSql`, `resolveDriverParameterRequests`, `fetchDriverParameterRowsByAliasSql`, `fetchDriverParameterRowsByDriverIds`, `fetchFullDriverParameterRowByDriverId`, `sqlQuote` |
 | Native menu | `getPotentialContextMenus`, `addBatchContextMenuItems`, `scheduleBatchContextMenuAugment` |
-| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildGroupedExportRows`, `fetchNativeGroupDriverIds`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
+| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildGroupedExportRows`, `fetchNativeGroupDriverIds`, `enrichExportRowsWithAccess`, `accessLabelFromAtt`, `allowedValuesText`, `formatExtraOptionsText`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
 | Misc | `showHint`, `showHelpModal`, `setupDraggablePocModal`, `mapWithConcurrency`, `fetchWithTimeout`, `getPlantId`, `getUnitId`, `escapeHtml` |
