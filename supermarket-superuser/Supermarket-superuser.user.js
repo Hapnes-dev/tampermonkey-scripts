@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.9
+// @version      4.10
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.9';
+    const SCRIPT_VERSION = '4.10';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4570,7 +4570,8 @@
                         <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only active when you have unsaved changes.</li>
                         <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
                         <li><span class="sm-poc-help-btnref">Export Excel</span> – downloads the visible parameters as an
-                        Excel (.xlsx) file with a <em>Measurements</em> and a <em>Settings</em> sheet
+                        Excel (.xlsx) file with a <em>Settings (read-write)</em> sheet first and a
+                        <em>Measurements (read)</em> sheet second
                         (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID).
                         The header row is styled, frozen and carries sort/filter dropdowns, and each parameter group is a
                         collapsible block (+/- buttons in the left margin, group name + count on the band row).
@@ -5056,9 +5057,11 @@
             { rows: settings, side: 'settings' }
         ]);
         try {
+            // Settings first: Excel opens on sheet 1, and that is the sheet
+            // where Access/Allowed values actually carry information.
             const blob = buildXlsxBlob([
-                { name: 'Measurements', rows: buildGroupedExportRows(measurements) },
-                { name: 'Settings', rows: buildGroupedExportRows(settings) }
+                { name: 'Settings (read-write)', rows: buildGroupedExportRows(settings) },
+                { name: 'Measurements (read)', rows: buildGroupedExportRows(measurements) }
             ]);
             triggerXlsxDownload(blob, `${exportFileBase()}.xlsx`);
             const writableCount = [...measurements, ...settings]
@@ -5965,7 +5968,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.9 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.10 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6209,5 +6212,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.9 loaded');
+    console.log('[Supermarket Superuser] v4.10 loaded');
 })();

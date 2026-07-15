@@ -294,7 +294,10 @@ Excel) and inline strings otherwise. Sheet names are sanitised to Excel's 31-cha
 rules. Export respects visibility: all-params view → its filtered rows (all groups);
 native view → visible rows of the current group. Download via temporary object-URL `<a>`.
 
-Since v4.7 the sheets are styled and structured (COM-verified against real Excel):
+Since v4.7 the sheets are styled and structured (COM-verified against real Excel).
+Sheet order (v4.10): **`Settings (read-write)` first**, `Measurements (read)` second —
+Excel opens on sheet 1, and users read "no Read/write anywhere" when they land on the
+all-read Measurements sheet (exactly that support case prompted the reorder).
 
 - Sheet rows are model objects `{cells, style, outline}`. `buildGroupedExportRows` maps
   flat `[group, name, value, unit, driverId]` rows into: header row (style 1) → per
