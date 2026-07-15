@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.13
+// @version      4.14
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.13';
+    const SCRIPT_VERSION = '4.14';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4551,6 +4551,7 @@
                     <a data-goto="sm-help-unit">Unit selector</a>
                     <a data-goto="sm-help-move">Edit mode</a>
                     <a data-goto="sm-help-all">All parameters</a>
+                    <a data-goto="sm-help-export">Excel export</a>
                     <a data-goto="sm-help-details">Parameter details</a>
                     <a data-goto="sm-help-batch">Batch on marked</a>
                     <a data-goto="sm-help-xunit">Apply to other units</a>
@@ -4572,20 +4573,9 @@
                         <li><span class="sm-poc-help-btnref">Hide 0.0</span> – hides rows where Value is 0 or 0.0. Click again to show them.</li>
                         <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only active when you have unsaved changes.</li>
                         <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
-                        <li><span class="sm-poc-help-btnref">Export all units</span> (toolbar) – asks for confirmation, then fetches
-                        EVERY unit on the plant and downloads one Excel file: a collapsible block per unit with the group blocks inside
-                        (columns Unit, Group, Name, Value, Eng unit, Access, Allowed values, Driver ID).
-                        Can take several minutes on large plants.</li>
-                        <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Show all parameters) – downloads the
-                        open unit's parameters as one <em>Parameters</em> sheet
-                        (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID) —
-                        every row marked Read or Read/write, writable rows first within each group.
-                        Column filters are respected, so you can filter first and export just those rows.</li>
-                        <li>In both exports the header row is styled, frozen and carries sort/filter dropdowns, and the unit/group
-                        bands are collapsible (+/- buttons in the left margin). <strong>Access</strong> shows Read vs Read/write, and
-                        <strong>Allowed values</strong> lists the possible values — enum options like <code>0 = Off / 1 = On</code>,
-                        or the min–max range. For writable rows that is what you can change the value to; for read-only rows it
-                        describes the possible states.</li>
+                        <li><span class="sm-poc-help-btnref">Export all units</span> – exports <strong>every unit on the plant</strong>
+                        to one Excel file. Shows a warning first and can take several minutes — see the
+                        <a data-goto="sm-help-export">Excel export</a> section for what the file contains.</li>
                         <li><span class="sm-poc-help-btnref">Help</span> – opens this guide.</li>
                     </ul>
 
@@ -4624,11 +4614,40 @@
                     <h3 id="sm-help-all">Show all parameters</h3>
                     <p><span class="sm-poc-help-btnref">Show all parameters</span> shows parameters from all groups in the selected unit, in two panes
                     (Measurements and Settings) with the columns Group, Name, Value and Unit. Click a column header to sort.</p>
+                    <p>The view's own toolbar has <span class="sm-poc-help-btnref">Show single group</span> (back to the normal view)
+                    and <span class="sm-poc-help-btnref">Export unit (Excel)</span> (export just this unit — see
+                    <a data-goto="sm-help-export">Excel export</a>).</p>
                     <p><strong>Right-click</strong> a row for a menu:</p>
                     <ul>
                         <li><strong>Highlight used_in_graphics</strong> – highlights rows used in graphics (green).</li>
                         <li><strong>Get Driver Parameter Details</strong> – opens the details window for the parameter.</li>
                         <li>In Edit mode additionally: <strong>Change Plant pri for marked</strong>, <strong>Scale all marked</strong> and <strong>Clear marking</strong>.</li>
+                    </ul>
+
+                    <h3 id="sm-help-export">Excel export</h3>
+                    <p>Two export buttons with different scope:</p>
+                    <ul>
+                        <li><span class="sm-poc-help-btnref">Export all units</span> (main toolbar) – shows a warning first, then fetches
+                        <strong>every unit on the plant</strong> and downloads one file. Can take several minutes on large plants —
+                        progress is shown at the bottom, and units that fail are skipped and counted in the final message.
+                        The <em>All units</em> sheet has a collapsible block per unit with the group blocks inside — use Excel's
+                        <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> outline buttons (top-left corner) to collapse the whole plant to unit rows.
+                        Columns: Unit, Group, Name, Value, Eng unit, Access, Allowed values, Driver ID.</li>
+                        <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Show all parameters) – downloads the open
+                        unit only, as one <em>Parameters</em> sheet (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID),
+                        with the writable rows first within each group. Column filters are respected — filter first to export just those rows.</li>
+                    </ul>
+                    <p>Both files are real <code>.xlsx</code> workbooks:</p>
+                    <ul>
+                        <li>Styled, frozen header row with sort/filter dropdowns (AutoFilter) on every column;
+                        group/unit bands collapse with the +/- buttons in the left margin.</li>
+                        <li><strong>Access</strong> – Read or Read/write (the parameter's real <code>att</code>, override-aware,
+                        fetched per driver_id at export time).</li>
+                        <li><strong>Allowed values</strong> – the possible values: enum options like <code>0 = Off / 1 = On</code> or the
+                        min–max range. For writable rows that is what you can change the value to; for read-only rows it describes
+                        the possible states.</li>
+                        <li>Numeric values are real Excel numbers (sortable/summable), and the final message tells you how many of the
+                        exported parameters are writable.</li>
                     </ul>
 
                     <h3 id="sm-help-details">Parameter details</h3>
@@ -6098,7 +6117,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.13 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.14 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6342,5 +6361,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.13 loaded');
+    console.log('[Supermarket Superuser] v4.14 loaded');
 })();
