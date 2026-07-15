@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.8
+// @version      4.9
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.8';
+    const SCRIPT_VERSION = '4.9';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4935,10 +4935,10 @@
 
     function allowedValuesText(dbRow, att) {
         if (!/w/.test(String(att || ''))) return '';
-        const options = formatExtraOptionsText(dbRow?.format_extra);
+        const options = formatExtraOptionsText(dbRow?.format_extra_effective ?? dbRow?.format_extra);
         if (options) return options;
-        const min = String(dbRow?.range_min ?? '').trim();
-        const max = String(dbRow?.range_max ?? '').trim();
+        const min = String(dbRow?.range_min_effective ?? dbRow?.range_min ?? '').trim();
+        const max = String(dbRow?.range_max_effective ?? dbRow?.range_max ?? '').trim();
         if (min !== '' && max !== '') return `${min} to ${max}`;
         if (min !== '') return `min ${min}`;
         if (max !== '') return `max ${max}`;
@@ -4963,7 +4963,10 @@
         }
         return sheets.map(({ rows, side }) => rows.map((row) => {
             const dbRow = byId.get(String(row[4] || ''));
-            const att = dbRow?.att || sideToAtt(side);
+            let att = dbRow?.att_effective || dbRow?.att || sideToAtt(side);
+            // The page's own read/write split is authoritative for what IWMAC
+            // lets you write — never downgrade a row served in the write list.
+            if (side === 'settings' && !/w/.test(att)) att = 'rw';
             return [row[0], row[1], row[2], row[3], accessLabelFromAtt(att), allowedValuesText(dbRow, att), row[4]];
         }));
     }
@@ -5058,7 +5061,12 @@
                 { name: 'Settings', rows: buildGroupedExportRows(settings) }
             ]);
             triggerXlsxDownload(blob, `${exportFileBase()}.xlsx`);
-            showHint(`Exported ${measurements.length + settings.length} parameters to Excel.`);
+            const writableCount = [...measurements, ...settings]
+                .filter((row) => /write/i.test(String(row[4] || ''))).length;
+            const writableNote = writableCount
+                ? ` (${writableCount} writable)`
+                : ' (no writable parameters on this unit)';
+            showHint(`Exported ${measurements.length + settings.length} parameters to Excel${writableNote}.`);
         } catch (error) {
             console.log('[Supermarket Parameters POC] Excel export error:', error);
             alert('Could not export to Excel: ' + error.message);
@@ -5314,10 +5322,18 @@
             const quotedIds = chunk.map((id) => `'${sqlQuote(id)}'`).join(', ');
             const fd = new FormData();
             fd.append('plant_id', plantId);
+            // p.* fields keep verifyBatchChanges semantics (compare the main
+            // table); the *_effective aliases are override-aware (override
+            // wins when set) for the Excel export's Access/Allowed values.
             fd.append('sql_command', [
-                'SELECT driver_id, plant_pri, scale, raw_min, raw_max, eng_min, eng_max, `format`, att, range_min, range_max, format_extra',
-                'FROM iw_plant_server3.iw_gen_driver_parameters',
-                `WHERE \`driver_id\` IN (${quotedIds})`,
+                'SELECT p.driver_id, p.plant_pri, p.scale, p.raw_min, p.raw_max, p.eng_min, p.eng_max, p.`format`, p.att,',
+                "COALESCE(NULLIF(o.att, ''), p.att) AS att_effective,",
+                "COALESCE(NULLIF(o.range_min, ''), p.range_min) AS range_min_effective,",
+                "COALESCE(NULLIF(o.range_max, ''), p.range_max) AS range_max_effective,",
+                "COALESCE(NULLIF(o.format_extra, ''), p.format_extra) AS format_extra_effective",
+                'FROM iw_plant_server3.iw_gen_driver_parameters p',
+                'LEFT JOIN iw_plant_server3.iw_gen_driver_parameters_override o ON o.driver_id = p.driver_id',
+                `WHERE p.\`driver_id\` IN (${quotedIds})`,
                 `LIMIT ${chunk.length}`
             ].join(' '));
             fd.append('_cache_bust', Date.now());
@@ -5949,7 +5965,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.8 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.9 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6193,5 +6209,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.8 loaded');
+    console.log('[Supermarket Superuser] v4.9 loaded');
 })();

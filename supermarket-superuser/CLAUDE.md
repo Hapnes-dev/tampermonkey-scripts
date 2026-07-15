@@ -315,11 +315,17 @@ Since v4.7 the sheets are styled and structured (COM-verified against real Excel
   `fetchNativeGroupDriverIds` (get_groups → match selected group button text →
   get_parameters → alias→driver_id map, §5 RPC) and leaves blanks on failure.
   `enrichExportRowsWithAccess` then batch-fetches `att`/`range_min`/`range_max`/
-  `format_extra` for every exported driver_id via `fetchDriverParameterRowsByDriverIds`
-  (its SELECT gained those columns in v4.8; extra columns are harmless to
-  `verifyBatchChanges`, its other caller). **Access** renders the real `att`
-  (`accessLabelFromAtt`: r/rw/vr/vrw → Read / Read/write / … — side-based fallback when
-  the toolbox lookup fails). Writable rows (`att` contains `w`) get `allowedValuesText`:
+  `format_extra` for every exported driver_id via `fetchDriverParameterRowsByDriverIds`.
+  Since v4.9 that SELECT LEFT JOINs the override table and exposes **override-aware
+  `*_effective` aliases** (`COALESCE(NULLIF(o.x,''), p.x)`) used by the export, while the
+  plain `p.*` fields keep `verifyBatchChanges` (its other caller) comparing the main
+  table. **Access** renders the resolved `att` (`accessLabelFromAtt`: r/rw/vr/vrw →
+  Read / Read/write / … — side-based fallback when the toolbox lookup fails), and rows
+  the page serves in the **write list are never downgraded** below Read/write (the
+  page's split is authoritative for writability). The export hint appends
+  `(N writable)` — or `(no writable parameters on this unit)`, which is the *normal*
+  result for SM 850 / driver-system units (e.g. 6918 unit 000:000: all 184 params are
+  `att='r'` in the DB). Writable rows get `allowedValuesText`:
   enum options parsed from format_extra's JSON `v` map (`formatExtraOptionsText`, capped
   at 10 options — format_extra is `{"rev","type":"num","v":{"0":{"t":"Off",…},…}}`), else
   `range_min to range_max` / `min …` / `max …`. `exportParametersToExcel` is async
