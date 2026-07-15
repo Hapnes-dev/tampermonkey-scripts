@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.11
+// @version      4.12
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.11';
+    const SCRIPT_VERSION = '4.12';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4575,8 +4575,9 @@
                         every row is marked Read or Read/write, and writable rows come first within each group.
                         The header row is styled, frozen and carries sort/filter dropdowns, and each parameter group is a
                         collapsible block (+/- buttons in the left margin, group name + count on the band row).
-                        <strong>Access</strong> shows Read vs Read/write, and writable rows list the accepted values in
-                        <strong>Allowed values</strong> — enum options like <code>0 = Off / 1 = On</code>, or the min–max write range.
+                        <strong>Access</strong> shows Read vs Read/write, and <strong>Allowed values</strong> lists the
+                        possible values — enum options like <code>0 = Off / 1 = On</code>, or the min–max range.
+                        For writable rows that is what you can change the value to; for read-only rows it describes the possible states.
                         Exports all groups when <span class="sm-poc-help-btnref">Show all parameters</span> is open, otherwise the
                         current group (driver IDs are then fetched via the same API the page uses).
                         Column filters are respected, so you can filter first and export just those rows.</li>
@@ -4939,8 +4940,9 @@
         return shown.join(' / ') + suffix;
     }
 
-    function allowedValuesText(dbRow, att) {
-        if (!/w/.test(String(att || ''))) return '';
+    // For writable rows this is "what you can change it to"; for read-only
+    // rows the same enum/range describes the possible states — show it too.
+    function allowedValuesText(dbRow) {
         const options = formatExtraOptionsText(dbRow?.format_extra_effective ?? dbRow?.format_extra);
         if (options) return options;
         const min = String(dbRow?.range_min_effective ?? dbRow?.range_min ?? '').trim();
@@ -4973,7 +4975,7 @@
             // The page's own read/write split is authoritative for what IWMAC
             // lets you write — never downgrade a row served in the write list.
             if (side === 'settings' && !/w/.test(att)) att = 'rw';
-            return [row[0], row[1], row[2], row[3], accessLabelFromAtt(att), allowedValuesText(dbRow, att), row[4]];
+            return [row[0], row[1], row[2], row[3], accessLabelFromAtt(att), allowedValuesText(dbRow), row[4]];
         }));
     }
 
@@ -5970,7 +5972,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.11 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.12 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6214,5 +6216,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.11 loaded');
+    console.log('[Supermarket Superuser] v4.12 loaded');
 })();

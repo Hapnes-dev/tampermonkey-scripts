@@ -331,7 +331,8 @@ prompted the merge.)
   page's split is authoritative for writability). The export hint appends
   `(N writable)` — or `(no writable parameters on this unit)`, which is the *normal*
   result for SM 850 / driver-system units (e.g. 6918 unit 000:000: all 184 params are
-  `att='r'` in the DB). Writable rows get `allowedValuesText`:
+  `att='r'` in the DB). Every row gets `allowedValuesText` (v4.12 — read-only rows too;
+  the same enum/range describes their possible states):
   enum options parsed from format_extra's JSON `v` map (`formatExtraOptionsText`, capped
   at 10 options — format_extra is `{"rev","type":"num","v":{"0":{"t":"Off",…},…}}`), else
   `range_min to range_max` / `min …` / `max …`. `exportParametersToExcel` is async
