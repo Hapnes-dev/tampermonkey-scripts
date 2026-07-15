@@ -25,6 +25,7 @@ tampermonkey-scripts/
 ├── rocketlane-project-notes/     # Writable Note column on the Rocketlane Projects list (SQL-persisted)
 ├── rocketlane-younium-status/    # ☄️ Younium button on the Rocketlane project nav → plant Younium order/subscription status modal
 ├── sql-equipment-import/         # phpMyAdmin panel: load a driver-template .sql, edit units/Modbus, emit SQL
+├── supermarket-superuser/        # IWMAC Supermarket parameters page power-tools: filters, edit/move mode (att r⇄rw), batch driver-parameter editing + cross-unit copy, xlsx export (ØTS/MATS/Hapnes)
 └── younium-order-to-quote/       # 📦 Copy from order button on Younium quote pages → copies an order's products (qty + discount %) onto the quote
 ```
 
