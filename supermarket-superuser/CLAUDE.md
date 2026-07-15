@@ -301,6 +301,21 @@ together, writable rows first within each group, the Access column varying per r
 the same Access and read it as "the column is broken" — two support cases in one day
 prompted the merge.)
 
+**All-units export (v4.13):** the toolbar button runs `exportAllUnitsToExcel` — a
+`window.confirm` warning first (unit count + can-take-minutes), then every unit from
+`getAllUnitOptions()` **sequentially** (the plant server degrades under parallel load,
+§the v3.2 profile) through `fetchGroupParametersForUnit` (the parameterized core that
+`fetchAllGroupParameters` now wraps) + `exportRowsFromFetchedParams` (RPC rows → export
+rows, no DOM) + the same `enrichExportRowsWithAccess`. `buildAllUnitsExportRows` emits a
+**two-level outline**: unit band (style 3, gray-blue `#455A64`) → group bands
+(outline 1) → parameters (outline 2); header `Unit | Group | Name | Value | Eng unit |
+Access | Allowed values | Driver ID` (the device column is 'Unit', so the engineering
+unit is renamed 'Eng unit' here), `ALL_UNITS_COL_WIDTHS`, sheet `All units`, filename
+`parameters_<plant>_all-units_<stamp>.xlsx`. Failed units are skipped + counted in the
+final hint; empty units are silently dropped. `xlsxSheetXml` takes per-sheet
+`colWidths` and computes `outlineLevelRow` dynamically for this. Measured on plant 2341:
+37 units / 8 221 params ≈ 3 min, 5.5 MB (store-only ZIP — no compression).
+
 - Sheet rows are model objects `{cells, style, outline}`. `buildCombinedExportRows`
   merges both sides' enriched 7-column rows into one sheet: header row (style 1) → per
   group a band row `Group name (count)` (style 2) → the group's settings rows, then its
@@ -432,5 +447,5 @@ select, `Esc` close. Filter inputs: `Esc` clears that filter. All bound in
 | Batch & cross-unit | `openPlantPriBatchModal`, `openScaleMarkedModal`, `applyChangesToMarkedParameters`, `applyMarkedChangesToOtherUnits`, `applyChangesAcrossUnits`, `openUnitPickerModal`, `deleteOverridesForMarkedParameters`, `verifyBatchChanges` |
 | SQL/API | `settingsRpc`, `executeBatchSqlCommands`, `buildDriverParameterSql`, `buildDeleteOverrideSql`, `resolveDriverParameterRequests`, `fetchDriverParameterRowsByAliasSql`, `fetchDriverParameterRowsByDriverIds`, `fetchFullDriverParameterRowByDriverId`, `sqlQuote` |
 | Native menu | `getPotentialContextMenus`, `addBatchContextMenuItems`, `scheduleBatchContextMenuAugment` |
-| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildCombinedExportRows`, `fetchNativeGroupDriverIds`, `enrichExportRowsWithAccess`, `accessLabelFromAtt`, `allowedValuesText`, `formatExtraOptionsText`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
+| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildCombinedExportRows`, `buildAllUnitsExportRows`, `exportAllUnitsToExcel`, `fetchGroupParametersForUnit`, `exportRowsFromFetchedParams`, `fetchNativeGroupDriverIds`, `enrichExportRowsWithAccess`, `accessLabelFromAtt`, `allowedValuesText`, `formatExtraOptionsText`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows`, `exportTimeStamp` |
 | Misc | `showHint`, `showHelpModal`, `setupDraggablePocModal`, `mapWithConcurrency`, `fetchWithTimeout`, `getPlantId`, `getUnitId`, `escapeHtml` |

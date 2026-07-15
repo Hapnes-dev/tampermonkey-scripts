@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.12
+// @version      4.13
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.12';
+    const SCRIPT_VERSION = '4.13';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -1258,7 +1258,10 @@
         if (!plantId || !unitId) {
             throw new Error('Could not find plant_id or unit_id.');
         }
+        return fetchGroupParametersForUnit(plantId, unitId, onProgress, shouldContinue);
+    }
 
+    async function fetchGroupParametersForUnit(plantId, unitId, onProgress, shouldContinue = () => true) {
         const groups = await settingsRpc('get_groups', {
             plant: Number(plantId),
             unit_id: unitId,
@@ -1662,7 +1665,7 @@
         view.innerHTML = `
             <div class="sm-poc-all-toolbar">
                 <button type="button" data-action="close">Show single group</button>
-                <button type="button" class="sm-poc-all-export-btn" data-action="export">Export Excel</button>
+                <button type="button" class="sm-poc-all-export-btn" data-action="export" title="Export this unit's parameters to an Excel file">Export unit (Excel)</button>
                 <span class="sm-poc-all-status"></span>
                 ${failedText}
             </div>
@@ -4569,18 +4572,20 @@
                         <li><span class="sm-poc-help-btnref">Hide 0.0</span> – hides rows where Value is 0 or 0.0. Click again to show them.</li>
                         <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only active when you have unsaved changes.</li>
                         <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
-                        <li><span class="sm-poc-help-btnref">Export Excel</span> – downloads the visible parameters as an
-                        Excel (.xlsx) file with one <em>Parameters</em> sheet
+                        <li><span class="sm-poc-help-btnref">Export all units</span> (toolbar) – asks for confirmation, then fetches
+                        EVERY unit on the plant and downloads one Excel file: a collapsible block per unit with the group blocks inside
+                        (columns Unit, Group, Name, Value, Eng unit, Access, Allowed values, Driver ID).
+                        Can take several minutes on large plants.</li>
+                        <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Show all parameters) – downloads the
+                        open unit's parameters as one <em>Parameters</em> sheet
                         (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID) —
-                        every row is marked Read or Read/write, and writable rows come first within each group.
-                        The header row is styled, frozen and carries sort/filter dropdowns, and each parameter group is a
-                        collapsible block (+/- buttons in the left margin, group name + count on the band row).
-                        <strong>Access</strong> shows Read vs Read/write, and <strong>Allowed values</strong> lists the
-                        possible values — enum options like <code>0 = Off / 1 = On</code>, or the min–max range.
-                        For writable rows that is what you can change the value to; for read-only rows it describes the possible states.
-                        Exports all groups when <span class="sm-poc-help-btnref">Show all parameters</span> is open, otherwise the
-                        current group (driver IDs are then fetched via the same API the page uses).
+                        every row marked Read or Read/write, writable rows first within each group.
                         Column filters are respected, so you can filter first and export just those rows.</li>
+                        <li>In both exports the header row is styled, frozen and carries sort/filter dropdowns, and the unit/group
+                        bands are collapsible (+/- buttons in the left margin). <strong>Access</strong> shows Read vs Read/write, and
+                        <strong>Allowed values</strong> lists the possible values — enum options like <code>0 = Off / 1 = On</code>,
+                        or the min–max range. For writable rows that is what you can change the value to; for read-only rows it
+                        describes the possible states.</li>
                         <li><span class="sm-poc-help-btnref">Help</span> – opens this guide.</li>
                     </ul>
 
@@ -4793,9 +4798,10 @@
     const XLSX_STYLE_DEFAULT = 0;
     const XLSX_STYLE_HEADER = 1;   // bold white on blue
     const XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
+    const XLSX_STYLE_UNIT = 3;     // bold white on gray-blue (unit band, all-units export)
 
     function xlsxStylesXml() {
-        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FF0D47A1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1976D2"/><bgColor rgb="FF1976D2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3F2FD"/><bgColor rgb="FFE3F2FD"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FF0D47A1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1976D2"/><bgColor rgb="FF1976D2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3F2FD"/><bgColor rgb="FFE3F2FD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF455A64"/><bgColor rgb="FF455A64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
     }
 
     function xlsxCell(ref, value, style = XLSX_STYLE_DEFAULT) {
@@ -4813,8 +4819,9 @@
     // Row 1 is frozen, the whole range gets an AutoFilter (sort/filter
     // dropdowns), and outline:1 rows collapse under the row above them
     // (outlinePr summaryBelow=0 puts the +/- button on the group row).
-    function xlsxSheetXml(modelRows) {
+    function xlsxSheetXml(modelRows, colWidths = EXPORT_COL_WIDTHS) {
         const colCount = modelRows.reduce((max, row) => Math.max(max, row.cells.length), 1);
+        const maxOutline = Math.max(modelRows.reduce((max, row) => Math.max(max, row.outline || 0), 0), 1);
         const lastCell = `${xlsxColumnRef(colCount - 1)}${Math.max(modelRows.length, 1)}`;
         const body = modelRows.map((row, rowIndex) => {
             const cellsXml = row.cells.map((value, colIndex) => (
@@ -4823,17 +4830,18 @@
             const outline = row.outline ? ` outlineLevel="${row.outline}"` : '';
             return `<row r="${rowIndex + 1}"${outline}>${cellsXml}</row>`;
         }).join('');
-        const colsXml = EXPORT_COL_WIDTHS.slice(0, colCount)
+        const colsXml = colWidths.slice(0, colCount)
             .map((width, i) => `<col min="${i + 1}" max="${i + 1}" width="${width}" customWidth="1"/>`)
             .join('');
-        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:${lastCell}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15" outlineLevelRow="1"/><cols>${colsXml}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${lastCell}"/></worksheet>`;
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:${lastCell}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15" outlineLevelRow="${maxOutline}"/><cols>${colsXml}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${lastCell}"/></worksheet>`;
     }
 
     function buildXlsxBlob(sheets) {
         const encoder = new TextEncoder();
         const safeSheets = sheets.map((sheet, index) => ({
             name: (sheet.name || `Sheet${index + 1}`).replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || `Sheet${index + 1}`,
-            rows: sheet.rows
+            rows: sheet.rows,
+            colWidths: sheet.colWidths
         }));
         const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${safeSheets.map((unused, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
         const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
@@ -4848,7 +4856,7 @@
             { name: 'xl/styles.xml', data: encoder.encode(xlsxStylesXml()) }
         ];
         safeSheets.forEach((sheet, i) => {
-            files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: encoder.encode(xlsxSheetXml(sheet.rows)) });
+            files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: encoder.encode(xlsxSheetXml(sheet.rows, sheet.colWidths || EXPORT_COL_WIDTHS)) });
         });
         return xlsxZip(files);
     }
@@ -4864,13 +4872,16 @@
         setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
 
+    function exportTimeStamp() {
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+    }
+
     function exportFileBase() {
         const plant = getPlantId() || 'plant';
         const unit = (getUnitId() || 'unit').replace(/[\\/?*\[\]:]/g, '-');
-        const now = new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
-        return `parameters_${plant}_${unit}_${stamp}`;
+        return `parameters_${plant}_${unit}_${exportTimeStamp()}`;
     }
 
     const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit', 'Access', 'Allowed values', 'Driver ID'];
@@ -4899,6 +4910,51 @@
             all.forEach((member) => rows.push({ cells: member, outline: 1 }));
         });
         return rows;
+    }
+
+    const ALL_UNITS_EXPORT_HEADER = ['Unit', 'Group', 'Name', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Driver ID'];
+    const ALL_UNITS_COL_WIDTHS = [26, 22, 42, 12, 10, 13, 32, 34];
+
+    // All-units workbook: two-level outline — a gray-blue unit band per unit
+    // (collapse a whole unit), light-blue group bands inside it (outline 1),
+    // parameters at outline 2. The Unit column is repeated on every data row
+    // so AutoFilter keeps working plant-wide.
+    function buildAllUnitsExportRows(unitBlocks) {
+        const pad = (label) => [label, ...Array(ALL_UNITS_EXPORT_HEADER.length - 1).fill('')];
+        const rows = [{ cells: ALL_UNITS_EXPORT_HEADER, style: XLSX_STYLE_HEADER }];
+        unitBlocks.forEach((block) => {
+            const total = block.settings.length + block.measurements.length;
+            rows.push({ cells: pad(`${block.unitText} (${total})`), style: XLSX_STYLE_UNIT });
+            const groups = new Map();
+            const bucket = (dataRow, sideKey) => {
+                const groupKey = normalizeExportText(dataRow[0]) || '-';
+                if (!groups.has(groupKey)) groups.set(groupKey, { settings: [], measurements: [] });
+                groups.get(groupKey)[sideKey].push(dataRow);
+            };
+            block.settings.forEach((row) => bucket(row, 'settings'));
+            block.measurements.forEach((row) => bucket(row, 'measurements'));
+            groups.forEach((members, groupName) => {
+                const all = [...members.settings, ...members.measurements];
+                const bandCells = pad('');
+                bandCells[1] = `${groupName} (${all.length})`;
+                rows.push({ cells: bandCells, style: XLSX_STYLE_GROUP, outline: 1 });
+                all.forEach((member) => rows.push({ cells: [block.unitText, ...member], outline: 2 }));
+            });
+        });
+        return rows;
+    }
+
+    // The all-units export gets its rows straight from the RPC data (no DOM
+    // involved) — same [group, name, value, unit, driverId] shape the DOM
+    // collectors produce.
+    function exportRowsFromFetchedParams(paramRows) {
+        return paramRows.map((row) => [
+            normalizeExportText(row.groupName),
+            normalizeExportText(row.aliasText),
+            normalizeExportText(stripHtmlToText(row.valueHtml)),
+            normalizeExportText(stripHtmlToText(row.unitHtml)),
+            normalizeExportText(row.driverId || '')
+        ]);
     }
 
     function accessLabelFromAtt(att) {
@@ -5080,6 +5136,76 @@
         }
     }
 
+    // Toolbar export: EVERY unit on the plant, sequentially (the plant server
+    // degrades under parallel load — see ALL_GROUPS_FETCH_CONCURRENCY), with a
+    // confirm dialog up front because this can run for minutes on big plants.
+    async function exportAllUnitsToExcel() {
+        const plantId = getPlantId();
+        const units = getAllUnitOptions();
+        if (!plantId || !units.length) {
+            showHint('Cannot find plant_id or the unit list.');
+            return;
+        }
+        const ok = window.confirm([
+            `Export ALL ${units.length} units on plant ${plantId} to one Excel file?`,
+            '',
+            'This fetches every parameter from every unit and can take several',
+            'minutes on large plants. The file gets one collapsible block per',
+            'unit (group blocks inside), plus Access and Allowed values.',
+            '',
+            'Continue?'
+        ].join('\n'));
+        if (!ok) return;
+
+        const blocks = [];
+        const failedUnits = [];
+        for (let i = 0; i < units.length; i++) {
+            const unit = units[i];
+            const label = `Unit ${i + 1}/${units.length} (${unit.text})`;
+            showHint(`${label}: fetching groups...`);
+            try {
+                const data = await fetchGroupParametersForUnit(plantId, unit.value, (unused, done, total) => {
+                    showHint(`${label}: ${done}/${total} groups...`);
+                });
+                if (data.failed?.length) throw new Error(`${data.failed.length} group(s) failed`);
+                let measurements = exportRowsFromFetchedParams(data.measurements);
+                let settings = exportRowsFromFetchedParams(data.settings);
+                if (!measurements.length && !settings.length) continue;
+                [measurements, settings] = await enrichExportRowsWithAccess([
+                    { rows: measurements, side: 'measurements' },
+                    { rows: settings, side: 'settings' }
+                ]);
+                blocks.push({ unitText: unit.text, measurements, settings });
+            } catch (error) {
+                console.log('[Supermarket Parameters POC] all-units export failed for unit:', unit.text, error);
+                failedUnits.push(unit.text);
+            }
+        }
+
+        if (!blocks.length) {
+            alert('All-units export: could not fetch parameters for any unit.'
+                + (failedUnits.length ? ` Failed units: ${failedUnits.slice(0, 5).join(', ')}` : ''));
+            return;
+        }
+        try {
+            const blob = buildXlsxBlob([{
+                name: 'All units',
+                rows: buildAllUnitsExportRows(blocks),
+                colWidths: ALL_UNITS_COL_WIDTHS
+            }]);
+            triggerXlsxDownload(blob, `parameters_${plantId}_all-units_${exportTimeStamp()}.xlsx`);
+            const total = blocks.reduce((sum, block) => sum + block.measurements.length + block.settings.length, 0);
+            const writable = blocks.reduce((sum, block) => (
+                sum + [...block.measurements, ...block.settings].filter((row) => /write/i.test(String(row[4] || ''))).length
+            ), 0);
+            const failNote = failedUnits.length ? `, ${failedUnits.length} unit(s) failed` : '';
+            showHint(`Exported ${total} parameters from ${blocks.length} units (${writable} writable${failNote}).`);
+        } catch (error) {
+            console.log('[Supermarket Parameters POC] all-units export error:', error);
+            alert('Could not export to Excel: ' + error.message);
+        }
+    }
+
     function buildToolbar() {
         let bar = document.getElementById('sm-poc-toolbar');
         const isPolluted = bar && (
@@ -5145,9 +5271,9 @@
         const exportBtn = document.createElement('button');
         exportBtn.type = 'button';
         exportBtn.className = 'sm-poc-export-btn';
-        exportBtn.textContent = 'Export Excel';
-        exportBtn.title = 'Export the visible parameters to an Excel (.xlsx) file. Exports all groups when "Show all parameters" is open, otherwise the current group.';
-        exportBtn.addEventListener('click', exportParametersToExcel);
+        exportBtn.textContent = 'Export all units';
+        exportBtn.title = 'Export EVERY unit on this plant to one Excel file (asks for confirmation first — can take several minutes). For just the open unit, use the Export unit button inside "Show all parameters".';
+        exportBtn.addEventListener('click', exportAllUnitsToExcel);
         bar.appendChild(exportBtn);
 
         const helpBtn = document.createElement('button');
@@ -5972,7 +6098,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.12 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.13 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6216,5 +6342,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.12 loaded');
+    console.log('[Supermarket Superuser] v4.13 loaded');
 })();
