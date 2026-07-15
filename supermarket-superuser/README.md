@@ -60,7 +60,14 @@ With rows marked in Edit mode (works in the native panes *and* Show all paramete
 Every batch write is **verified**: the rows are re-selected from the DB afterwards and each field compared, with a written/failed report. **Apply to other units…** opens a unit picker and repeats the change per unit, re-matching parameters by **alias + menu** (never by `driver_id`, which is unique per unit) — per-unit results show written / not found / error.
 
 ### Excel export
-A genuine `.xlsx` is built from scratch in the page (store-only ZIP + CRC32 + minimal SpreadsheetML — the script runs `@grant none`, so no GM APIs or libraries). Numeric-looking values become real numbers so Excel can sum/sort. Sheets `Measurements` and `Settings`, columns Group/Name/Value/Unit, filename `parameters_<plant>_<unit>_<YYYY-MM-DD_HHMM>.xlsx`. Respects the active filters; exports all groups when Show all parameters is open, otherwise the current group.
+A genuine `.xlsx` is built from scratch in the page (store-only ZIP + CRC32 + minimal SpreadsheetML + styles — the script runs `@grant none`, so no GM APIs or libraries). Sheets `Measurements` and `Settings`, columns **Group / Name / Value / Unit / Driver ID**, filename `parameters_<plant>_<unit>_<YYYY-MM-DD_HHMM>.xlsx`. The workbook is styled and interactive (v4.7):
+
+- Bold white-on-blue **header row**, frozen while scrolling, with **AutoFilter** sort/filter dropdowns on every column.
+- One **collapsible block per parameter group**: a light-blue band row (`Group name (count)`) with a +/− outline button in the left margin and the group's parameters indented under it.
+- Numeric-looking values become real numbers so Excel can sum/sort them.
+- **Driver ID** comes straight from the all-params data; the single-group export fetches the ids through the same `settings.php` RPC the page itself uses (left blank if that fails).
+
+Respects the active filters; exports all groups when Show all parameters is open, otherwise the current group.
 
 ## How it works (short)
 

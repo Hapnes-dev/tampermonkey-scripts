@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.6
+// @version      4.7
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.6';
+    const SCRIPT_VERSION = '4.7';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4570,9 +4570,12 @@
                         <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only active when you have unsaved changes.</li>
                         <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
                         <li><span class="sm-poc-help-btnref">Export Excel</span> – downloads the visible parameters as an
-                        Excel (.xlsx) file with a <em>Measurements</em> and a <em>Settings</em> sheet (columns Group, Name, Value, Unit).
+                        Excel (.xlsx) file with a <em>Measurements</em> and a <em>Settings</em> sheet (columns Group, Name, Value, Unit, Driver ID).
+                        The header row is styled, frozen and carries sort/filter dropdowns, and each parameter group is a
+                        collapsible block (+/- buttons in the left margin, group name + count on the band row).
                         Exports all groups when <span class="sm-poc-help-btnref">Show all parameters</span> is open, otherwise the
-                        current group. Column filters are respected, so you can filter first and export just those rows.</li>
+                        current group (driver IDs are then fetched via the same API the page uses).
+                        Column filters are respected, so you can filter first and export just those rows.</li>
                         <li><span class="sm-poc-help-btnref">Help</span> – opens this guide.</li>
                     </ul>
 
@@ -4781,22 +4784,44 @@
         return ref;
     }
 
-    function xlsxCell(ref, value) {
+    // Cell style indexes into xlsxStylesXml()'s cellXfs.
+    const XLSX_STYLE_DEFAULT = 0;
+    const XLSX_STYLE_HEADER = 1;   // bold white on blue
+    const XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
+
+    function xlsxStylesXml() {
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FF0D47A1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1976D2"/><bgColor rgb="FF1976D2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3F2FD"/><bgColor rgb="FFE3F2FD"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+    }
+
+    function xlsxCell(ref, value, style = XLSX_STYLE_DEFAULT) {
         const text = value == null ? '' : String(value);
+        const styleAttr = style ? ` s="${style}"` : '';
         // Numeric-looking values become real numbers so Excel can sum/sort them;
         // everything else (OFF, On, alarm texts, ...) stays an inline string.
         if (text !== '' && /^-?\d+(?:\.\d+)?$/.test(text)) {
-            return `<c r="${ref}"><v>${text}</v></c>`;
+            return `<c r="${ref}"${styleAttr}><v>${text}</v></c>`;
         }
-        return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${escapeHtml(text)}</t></is></c>`;
+        return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t xml:space="preserve">${escapeHtml(text)}</t></is></c>`;
     }
 
-    function xlsxSheetXml(rows) {
-        const body = rows.map((cells, rowIndex) => {
-            const cellsXml = cells.map((value, colIndex) => xlsxCell(`${xlsxColumnRef(colIndex)}${rowIndex + 1}`, value)).join('');
-            return `<row r="${rowIndex + 1}">${cellsXml}</row>`;
+    // rows: [{ cells: [...], style?: cellXfs index, outline?: 1 }, ...].
+    // Row 1 is frozen, the whole range gets an AutoFilter (sort/filter
+    // dropdowns), and outline:1 rows collapse under the row above them
+    // (outlinePr summaryBelow=0 puts the +/- button on the group row).
+    function xlsxSheetXml(modelRows) {
+        const colCount = modelRows.reduce((max, row) => Math.max(max, row.cells.length), 1);
+        const lastCell = `${xlsxColumnRef(colCount - 1)}${Math.max(modelRows.length, 1)}`;
+        const body = modelRows.map((row, rowIndex) => {
+            const cellsXml = row.cells.map((value, colIndex) => (
+                xlsxCell(`${xlsxColumnRef(colIndex)}${rowIndex + 1}`, value, row.style || XLSX_STYLE_DEFAULT)
+            )).join('');
+            const outline = row.outline ? ` outlineLevel="${row.outline}"` : '';
+            return `<row r="${rowIndex + 1}"${outline}>${cellsXml}</row>`;
         }).join('');
-        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`;
+        const colsXml = EXPORT_COL_WIDTHS.slice(0, colCount)
+            .map((width, i) => `<col min="${i + 1}" max="${i + 1}" width="${width}" customWidth="1"/>`)
+            .join('');
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:${lastCell}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15" outlineLevelRow="1"/><cols>${colsXml}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${lastCell}"/></worksheet>`;
     }
 
     function buildXlsxBlob(sheets) {
@@ -4805,16 +4830,17 @@
             name: (sheet.name || `Sheet${index + 1}`).replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || `Sheet${index + 1}`,
             rows: sheet.rows
         }));
-        const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${safeSheets.map((unused, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
+        const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${safeSheets.map((unused, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
         const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
         const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${safeSheets.map((sheet, i) => `<sheet name="${escapeHtml(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`;
-        const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${safeSheets.map((unused, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}</Relationships>`;
+        const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${safeSheets.map((unused, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
 
         const files = [
             { name: '[Content_Types].xml', data: encoder.encode(contentTypes) },
             { name: '_rels/.rels', data: encoder.encode(rootRels) },
             { name: 'xl/workbook.xml', data: encoder.encode(workbook) },
-            { name: 'xl/_rels/workbook.xml.rels', data: encoder.encode(workbookRels) }
+            { name: 'xl/_rels/workbook.xml.rels', data: encoder.encode(workbookRels) },
+            { name: 'xl/styles.xml', data: encoder.encode(xlsxStylesXml()) }
         ];
         safeSheets.forEach((sheet, i) => {
             files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: encoder.encode(xlsxSheetXml(sheet.rows)) });
@@ -4842,7 +4868,30 @@
         return `parameters_${plant}_${unit}_${stamp}`;
     }
 
-    const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit'];
+    const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit', 'Driver ID'];
+    const EXPORT_COL_WIDTHS = [24, 46, 14, 10, 36];
+
+    // One collapsible block per parameter group: a styled band row (with the
+    // +/- outline button) followed by its parameters at outlineLevel 1. The
+    // Group column is repeated on every data row so AutoFilter sorting and
+    // filtering keep working on the flat data.
+    function buildGroupedExportRows(dataRows) {
+        const rows = [{ cells: EXPORT_HEADER, style: XLSX_STYLE_HEADER }];
+        const groups = new Map();
+        dataRows.forEach((dataRow) => {
+            const key = normalizeExportText(dataRow[0]) || '-';
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(dataRow);
+        });
+        groups.forEach((members, groupName) => {
+            rows.push({
+                cells: [`${groupName} (${members.length})`, '', '', '', ''],
+                style: XLSX_STYLE_GROUP
+            });
+            members.forEach((member) => rows.push({ cells: member, outline: 1 }));
+        });
+        return rows;
+    }
 
     function normalizeExportText(value) {
         return String(value || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
@@ -4857,21 +4906,57 @@
                 normalizeExportText(row.dataset.smPocGroupName || row.cells[0]?.textContent),
                 normalizeExportText(row.dataset.smPocAliasText || row.cells[1]?.textContent),
                 normalizeExportText(row.cells[2]?.textContent),
-                normalizeExportText(row.cells[3]?.textContent)
+                normalizeExportText(row.cells[3]?.textContent),
+                normalizeExportText(row.dataset.smPocDriverId || '')
             ]);
     }
 
-    function collectNativeExportRows(tbody, groupName) {
+    function collectNativeExportRows(tbody, groupName, driverIdByAlias) {
         if (!tbody) return [];
-        return getVisibleRows(tbody).map((row) => [
-            groupName,
-            normalizeExportText(row.cells[0]?.textContent),
-            normalizeExportText(row.cells[1]?.textContent),
-            normalizeExportText(row.cells[2]?.textContent)
-        ]);
+        return getVisibleRows(tbody).map((row) => {
+            const name = normalizeExportText(row.cells[0]?.textContent);
+            return [
+                groupName,
+                name,
+                normalizeExportText(row.cells[1]?.textContent),
+                normalizeExportText(row.cells[2]?.textContent),
+                driverIdByAlias?.get(name) || ''
+            ];
+        });
     }
 
-    function exportParametersToExcel() {
+    // The native tables don't carry driver_ids in the DOM — re-fetch the
+    // selected group through the same settings.php RPC the page used and map
+    // alias text -> driver_id. Failures just leave the Driver ID column blank.
+    async function fetchNativeGroupDriverIds() {
+        const plantId = getPlantId();
+        const unitId = getUnitId();
+        const groupLabel = normalizeExportText(getSelectedGroupButton()?.textContent);
+        if (!plantId || !unitId || !groupLabel) return new Map();
+        const groups = await settingsRpc('get_groups', {
+            plant: Number(plantId),
+            unit_id: unitId,
+            preffered_group: ''
+        }) || [];
+        const group = groups.find((item) => normalizeExportText(item.alias_text) === groupLabel);
+        if (!group) return new Map();
+        const result = await settingsRpc('get_parameters', {
+            plant: Number(plantId),
+            unit_id: unitId,
+            group: group.id,
+            preffered_group: ''
+        }) || {};
+        const map = new Map();
+        [
+            ...parseSettingsParameterCsv(result.read, group, 'measurements'),
+            ...parseSettingsParameterCsv(result.write, group, 'settings')
+        ].forEach((row) => {
+            if (row.driverId) map.set(normalizeExportText(row.aliasText), row.driverId);
+        });
+        return map;
+    }
+
+    async function exportParametersToExcel() {
         let measurements;
         let settings;
         if (allParamsActive && document.getElementById(ALL_PARAMS_VIEW_ID)) {
@@ -4879,8 +4964,10 @@
             settings = collectAllParamsExportRows('settings');
         } else {
             const groupName = normalizeExportText(getSelectedGroupButton()?.textContent);
-            measurements = collectNativeExportRows(measurementsTable, groupName);
-            settings = collectNativeExportRows(settingsTable, groupName);
+            showHint('Fetching driver IDs for the export...');
+            const driverIdByAlias = await fetchNativeGroupDriverIds().catch(() => new Map());
+            measurements = collectNativeExportRows(measurementsTable, groupName, driverIdByAlias);
+            settings = collectNativeExportRows(settingsTable, groupName, driverIdByAlias);
         }
         if (!measurements.length && !settings.length) {
             showHint('No parameters to export.');
@@ -4888,8 +4975,8 @@
         }
         try {
             const blob = buildXlsxBlob([
-                { name: 'Measurements', rows: [EXPORT_HEADER, ...measurements] },
-                { name: 'Settings', rows: [EXPORT_HEADER, ...settings] }
+                { name: 'Measurements', rows: buildGroupedExportRows(measurements) },
+                { name: 'Settings', rows: buildGroupedExportRows(settings) }
             ]);
             triggerXlsxDownload(blob, `${exportFileBase()}.xlsx`);
             showHint(`Exported ${measurements.length + settings.length} parameters to Excel.`);
@@ -5783,7 +5870,7 @@
         refreshPoc();
         if (!measurementsTable?.isConnected) return false;
         showHint('IWMAC header untouched. Filters overlay the tables.');
-        console.log('[Supermarket Parameters POC] v4.6 Init OK', computeContentSignature());
+        console.log('[Supermarket Parameters POC] v4.7 Init OK', computeContentSignature());
         return true;
     }
 
@@ -6027,5 +6114,5 @@
         scheduleReinit();
     }
 
-    console.log('[Supermarket Superuser] v4.6 loaded');
+    console.log('[Supermarket Superuser] v4.7 loaded');
 })();

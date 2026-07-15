@@ -287,12 +287,33 @@ FAIL lookups and warns when >500 commands split into multiple transactions) or
 
 ### Excel (.xlsx) export
 `@grant none` → no GM_download, no libraries. `buildXlsxBlob` hand-builds a minimal OOXML
-package: `[Content_Types].xml`, `_rels/.rels`, `xl/workbook.xml(+rels)`, one
-`sheet<N>.xml` per sheet — zipped **store-only** (no compression) with a local CRC32
+package: `[Content_Types].xml`, `_rels/.rels`, `xl/workbook.xml(+rels)`, `xl/styles.xml`,
+one `sheet<N>.xml` per sheet — zipped **store-only** (no compression) with a local CRC32
 table (`xlsxZip`). `xlsxCell` emits `<v>` for `/^-?\d+(\.\d+)?$/` values (real numbers in
 Excel) and inline strings otherwise. Sheet names are sanitised to Excel's 31-char/charset
 rules. Export respects visibility: all-params view → its filtered rows (all groups);
 native view → visible rows of the current group. Download via temporary object-URL `<a>`.
+
+Since v4.7 the sheets are styled and structured (COM-verified against real Excel):
+
+- Sheet rows are model objects `{cells, style, outline}`. `buildGroupedExportRows` maps
+  flat `[group, name, value, unit, driverId]` rows into: header row (style 1) → per
+  group a band row `Group name (count)` (style 2) → the group's rows at `outlineLevel=1`.
+  The Group column stays on every data row so AutoFilter sort/filter keeps working.
+- `xlsxStylesXml` ships 3 `cellXfs`: 0 default, 1 = bold white on `#1976D2` (header),
+  2 = bold `#0D47A1` on `#E3F2FD` (group band). Wired via a content-type override + a
+  `rIdStyles` workbook relationship.
+- Worksheet extras in **schema order** (Excel rejects out-of-order children):
+  `sheetPr/outlinePr summaryBelow="0"` (+/− button sits on the band row above the
+  details) → `dimension` → `sheetViews/pane ySplit="1" state="frozen"` (frozen header) →
+  `sheetFormatPr outlineLevelRow="1"` → `cols` (widths from `EXPORT_COL_WIDTHS`) →
+  `sheetData` → `autoFilter ref="A1:E<last>"` (sort/filter dropdowns).
+- **No merged cells** on the band rows on purpose — merged cells inside an AutoFilter
+  range break Excel sorting.
+- The 5th column is **Driver ID**: all-params rows carry it in `dataset`; the native
+  single-group export calls `fetchNativeGroupDriverIds` (get_groups → match selected
+  group button text → get_parameters → alias→driver_id map, §5 RPC) and leaves blanks on
+  failure. `exportParametersToExcel` is async because of this.
 
 ## 8. Keyboard map
 
@@ -388,5 +409,5 @@ select, `Esc` close. Filter inputs: `Esc` clears that filter. All bound in
 | Batch & cross-unit | `openPlantPriBatchModal`, `openScaleMarkedModal`, `applyChangesToMarkedParameters`, `applyMarkedChangesToOtherUnits`, `applyChangesAcrossUnits`, `openUnitPickerModal`, `deleteOverridesForMarkedParameters`, `verifyBatchChanges` |
 | SQL/API | `settingsRpc`, `executeBatchSqlCommands`, `buildDriverParameterSql`, `buildDeleteOverrideSql`, `resolveDriverParameterRequests`, `fetchDriverParameterRowsByAliasSql`, `fetchDriverParameterRowsByDriverIds`, `fetchFullDriverParameterRowByDriverId`, `sqlQuote` |
 | Native menu | `getPotentialContextMenus`, `addBatchContextMenuItems`, `scheduleBatchContextMenuAugment` |
-| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
+| Excel | `buildXlsxBlob`, `xlsxZip`, `xlsxCell`, `xlsxStylesXml`, `xlsxSheetXml`, `buildGroupedExportRows`, `fetchNativeGroupDriverIds`, `exportParametersToExcel`, `collectAllParamsExportRows`, `collectNativeExportRows` |
 | Misc | `showHint`, `showHelpModal`, `setupDraggablePocModal`, `mapWithConcurrency`, `fetchWithTimeout`, `getPlantId`, `getUnitId`, `escapeHtml` |
