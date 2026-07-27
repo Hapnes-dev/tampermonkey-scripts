@@ -1,0 +1,3087 @@
+================================================================================
+VV DESIGNER - REAL SKETCH EXAMPLES (vv-fbx-sketch format)
+================================================================================
+
+WHAT THIS IS
+  Nine complete sketch files - seven real production exports (2026-07-08, via
+  the Logic Designer Import/Export userscript), one authored validated template
+  (example 8), and one authored PROCESS-MODE definition (example 9,
+  syntax-verified live) - plus the notable single-block shapes from larger
+  production sketches, combined into one file so an AI agent can learn the
+  EXACT structure of a valid VV sketch.
+
+  Every JSON document under an "EXAMPLE n" heading passes validate-vv-sketch.js
+  (examples 1-7 are verbatim production data): save one as a .json file and it
+  imports as-is (File -> Transfer -> Import sketch (JSON) on the VV Designer,
+  internal.iwmac.local/vv_fbx.qxs). Examples 1-8 are FUNCTION-mode sketches;
+  example 9 is a PROCESS-mode definition (import in Process Mode - see 20.11).
+
+HOW TO USE THIS FILE (for an AI generating a sketch)
+  1. Read AI-BRIEFING.txt (same folder) for the full rules. This file shows
+     what correct output LOOKS like; the briefing says what is allowed.
+  2. Pattern-match the request to the closest EXAMPLE below and copy its
+     structure. Change only ids/coordinates/data values/driver ids - never
+     invent new field names, block types, or a different overall shape.
+  3. Emit PURE JSON: no comments, no trailing commas, integer block ids.
+  4. Validate before delivering:
+       node logic-designer-import-export/validate-vv-sketch.js <your-file>.json
+     Exit 0 = importable. Fix every reported error.
+
+THE ENVELOPE (annotated skeleton - the comments here are ILLUSTRATION ONLY;
+a real file must be pure JSON with no comments)
+
+  { "format": "vv-fbx-sketch",          <- required marker, exactly this string
+    "version": 1,
+    "exported_at": "<ISO 8601>",
+    "source_plant_id": "5290" | null,   <- null for generated files
+    "source_sketch_id": "6959" | null,
+    "name": "<short name>",
+    "block_count": N,                   <- must equal sketch.blocks.length
+    "connection_count": M,              <- must equal sketch.connections.length
+    "sketch": {
+      "mode": "function",               <- REQUIRED ("process" only for reusable sub-sketches)
+      "require_plant_revision": 0,      <- 620 if IF / WEATHER / AGE_OF_VALUE used
+      "blocks": [ ... ],                <- see block anatomy below
+      "connections": [ ... ],
+      "groups": [] } }                  <- [] in every production file
+
+BLOCK ANATOMY (every block has ALL of these keys)
+
+  { "id": 0,                            <- INTEGER, unique, 0,1,2,...
+    "func": "paramv",                   <- exact lowercase block_func; copy from an example of the same type
+    "type": "PARAMV",                   <- exact UPPERCASE palette key
+    "compile_type": "input",            <- input | function | condition | output | process
+    "data": { ... } | null,             <- per-type snake_case payload; null = user configures after import
+    "override": {"alias_text":"label"} | {},   <- the on-canvas label lives HERE
+    "runtime": {},
+    "properties": [],                   <- [] when empty; set entries are {"<name>":{"alias_text":"...","value":...}}
+    "output_type": ["mixed"],           <- copy from a same-type example
+    "x": 90, "y": 90 }                  <- canvas px; lay out left->right by dataflow
+
+CONNECTION ANATOMY
+
+  { "source": { "id": 0, "put": 0 },    <- source block id + its OUTPUT pin index (0-based)
+    "target": { "id": 1, "put": 0 },    <- target block id + its INPUT pin index (0-based)
+    "alias_text": "Input 1" }           <- optional; real exports carry the target pin's name.
+                                           Period/age blocks add "by_refference": true on target.
+
+TEN THINGS EVERY REAL FILE SHOWS (check your output against each)
+   1. Block ids are integers - never strings. Pins are numeric indices - never names.
+      Ids need only be UNIQUE - production files have gaps from deleted blocks
+      (see example 6); generated files should just use 0,1,2,...
+   2. Every block carries "func", and it exactly matches its "type".
+   3. All data fields are snake_case host names: driver_ids, initial_value,
+      alias_text, force_write, block_func_args, alarm_destination, ...
+   4. PARAMV/WRITETOUNIT bind via FULL parameter driver ids, pattern
+      <plant>_<driverType>_<unit>_..._<param> (e.g. "10111_AKPC420_CC350_0_110_0_4_2001").
+      NEVER invent one. If the user did not supply it: "data": null +
+      "override": {"alias_text":"TODO bind: <what>"} - the block imports red and
+      the user binds it in the designer.
+   5. WRITETOUNIT writes REAL hardware. data always {"force_write":false,"delay":0,
+      "limit_count":false,"count":1,"driver_ids":[...]}; several ids fan the same
+      value out to many parameters. Only include this block when the user asked to write.
+   6. CONST data always carries "values": null, plus "type" + "initial_value"
+      (+ "precision" like "%.1f" for floats; string CONSTs have a string initial_value).
+   7. One wire max per input pin; outputs fan out freely.
+   8. override/runtime empty are {}; properties empty is [] (host style; {} also accepted).
+   9. sketch.groups is [] in every production file.
+  10. Every operation is a block + wires. There is NO expression language, NO steps,
+      NO parameterBindings - the only expression-like string in VV is INSIDE a
+      FORMULA block's data.formula (inputs inp0, inp1, ...).
+
+================================================================================
+EXAMPLE 1 - PARAMETER BRIDGE (the most common production sketch: 2 blocks, 1 wire)
+================================================================================
+
+Source: vv-sketch_10111_Lysbryter-til-Disker_20260708-1028.txt (plant 10111), 2 blocks / 1 wires.
+Copies a light-switch digital input onto two case controllers.
+
+What it teaches:
+  - The smallest valid file: one PARAMV read wired straight into one WRITETOUNIT.
+  - WRITETOUNIT with TWO driver_ids = the same value written to many parameters ("Multiple parameters").
+  - PARAMV data is exactly {"driver_ids":["<full driver id>"]} - nothing else.
+  - WRITETOUNIT data is exactly {"force_write":false,"delay":0,"limit_count":false,"count":1,"driver_ids":[...]}.
+
+Blocks:
+  id 0: PARAMV "U110, Maskinrom, u10 DI1 status  "
+  id 1: WRITETOUNIT "Multiple parameters"
+Wiring (source output -> target input):
+  PARAMV(0) out0 -> in0 WRITETOUNIT(1)   pin name: "Input 1"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T08:28:18.046Z",
+  "source_plant_id": "10111",
+  "source_sketch_id": "8648",
+  "name": "Lysbryter til Disker",
+  "block_count": 2,
+  "connection_count": 1,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "10111_AKPC420_CC350_0_110_0_4_2001"
+          ]
+        },
+        "override": {
+          "alias_text": "U110, Maskinrom, u10 DI1 status  "
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "mixed"
+        ],
+        "x": 90,
+        "y": 90
+      },
+      {
+        "id": 1,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": {
+          "force_write": false,
+          "delay": 0,
+          "limit_count": false,
+          "count": 1,
+          "driver_ids": [
+            "10111_AKCC210_AKCC210_0_45_0_4_2057",
+            "10111_AKCC210_AKCC210_0_46_0_4_2057"
+          ]
+        },
+        "override": {
+          "alias_text": "Multiple parameters"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": null,
+        "x": 410,
+        "y": 90
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 1,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 2 - GATED WRITE / ENABLE SWITCH (the production pattern for every switchable write)
+================================================================================
+
+Source: vv-sketch_5290_utetemp-til-varmevifte_20260708-1443.txt (plant 5290), 4 blocks / 3 wires.
+Writes the outdoor temperature to a fan heater - but only while a boolean CONST is true.
+
+What it teaches:
+  - IF block: in0 = Condition (boolean), in1 = Value; data is null; output passes Value through only while Condition is true.
+  - A boolean CONST as a hand-operated enable switch (flip it in the designer to stop the write without deleting logic).
+  - IF requires plant revision 620 -> sketch require_plant_revision is 620.
+  - Boolean CONST: {"type":"boolean","initial_value":1,...} - 0/1, not true/false.
+
+Blocks:
+  id 0: PARAMV "U003, Undersentral 3, 320.03-RT902 Verdi"
+  id 1: IF  (data: null)
+  id 2: WRITETOUNIT "LW2, Varmluftvifte, Outdoor temperature        "
+  id 3: CONST "skriv utetemp til LW2 varmevifte on/off"
+Wiring (source output -> target input):
+  CONST(3) out0 -> in0 IF(1)   pin name: "Condition"
+  PARAMV(0) out0 -> in1 IF(1)   pin name: "Value"
+  IF(1) out0 -> in0 WRITETOUNIT(2)   pin name: "Input 1"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T12:43:18.084Z",
+  "source_plant_id": "5290",
+  "source_sketch_id": "7308",
+  "name": "utetemp til varmevifte",
+  "block_count": 4,
+  "connection_count": 3,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 620,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "5290_BACNET_40013flaskerom_0_40013_0_1_85"
+          ]
+        },
+        "override": {
+          "alias_text": "U003, Undersentral 3, 320.03-RT902 Verdi"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "mixed"
+        ],
+        "x": 100,
+        "y": 90
+      },
+      {
+        "id": 1,
+        "func": "if",
+        "type": "IF",
+        "compile_type": "condition",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "mixed",
+        "x": 200,
+        "y": 70,
+        "required_plant_revision": 620
+      },
+      {
+        "id": 2,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": {
+          "force_write": false,
+          "delay": 0,
+          "limit_count": false,
+          "count": 1,
+          "driver_ids": [
+            "5290_MODBUS2_fricosire_1_1_0_3_1"
+          ]
+        },
+        "override": {
+          "alias_text": "LW2, Varmluftvifte, Outdoor temperature        "
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": null,
+        "x": 460,
+        "y": 90
+      },
+      {
+        "id": 3,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "skriv utetemp til LW2 varmevifte on/off",
+          "initial_value": 1,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "boolean",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "skriv utetemp til LW2 varmevifte on/off"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 90,
+        "y": 10
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 3,
+          "put": 0
+        },
+        "target": {
+          "id": 1,
+          "put": 0
+        },
+        "alias_text": "Condition"
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 1,
+          "put": 1
+        },
+        "alias_text": "Value"
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 2,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 3 - WATCHDOG / HEARTBEAT (alternating signal written on a fixed interval)
+================================================================================
+
+Source: vv-sketch_5290_watchdog_20260708-1443.txt (plant 5290), 4 blocks / 3 wires.
+Pushes a toggling value to a battery-pack watchdog parameter every 10 seconds.
+
+What it teaches:
+  - TOGGLE_INTERVAL data: {"block_func_args":{"interval":"min","offset":0}}.
+  - The "properties" field in use: {"interval":{"alias_text":"Interval","value":"10 sec"},"interval_offset":{...}} - each SET property is an {alias_text, value} object (empty properties export as []).
+  - Same gated-write IF shape as example 2, with the toggle as the Value.
+
+Blocks:
+  id 0: TOGGLE_INTERVAL
+  id 1: CONST "watchdog enable"
+  id 2: IF  (data: null)
+  id 3: WRITETOUNIT "U01, Batteripakke, Watchdog (RW)"
+Wiring (source output -> target input):
+  CONST(1) out0 -> in0 IF(2)   pin name: "Condition"
+  TOGGLE_INTERVAL(0) out0 -> in1 IF(2)   pin name: "Value"
+  IF(2) out0 -> in0 WRITETOUNIT(3)   pin name: "Input 1"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T12:43:49.719Z",
+  "source_plant_id": "5290",
+  "source_sketch_id": "6524",
+  "name": "watchdog",
+  "block_count": 4,
+  "connection_count": 3,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 620,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "toggle_interval.run",
+        "type": "TOGGLE_INTERVAL",
+        "compile_type": "function",
+        "data": {
+          "block_func_args": {
+            "interval": "min",
+            "offset": 0
+          }
+        },
+        "override": {},
+        "runtime": {},
+        "properties": {
+          "interval": {
+            "alias_text": "Interval",
+            "value": "10 sec"
+          },
+          "interval_offset": {
+            "alias_text": "Interval Offset",
+            "value": 0
+          }
+        },
+        "output_type": [
+          "boolean"
+        ],
+        "x": 140,
+        "y": 140
+      },
+      {
+        "id": 1,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "watchdog enable",
+          "initial_value": 0,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "boolean",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "watchdog enable"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 140,
+        "y": 80
+      },
+      {
+        "id": 2,
+        "func": "if",
+        "type": "IF",
+        "compile_type": "condition",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "mixed",
+        "x": 260,
+        "y": 130,
+        "required_plant_revision": 620
+      },
+      {
+        "id": 3,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": {
+          "force_write": false,
+          "delay": 0,
+          "limit_count": false,
+          "count": 1,
+          "driver_ids": [
+            "5290_EKODA_EKODA_0_1_0_3_99.15"
+          ]
+        },
+        "override": {
+          "alias_text": "U01, Batteripakke, Watchdog (RW)"
+        },
+        "runtime": {},
+        "properties": {
+          "interval": {
+            "alias_text": "Interval",
+            "value": "10 sec"
+          },
+          "interval_offset": {
+            "alias_text": "Interval Offset",
+            "value": 0
+          }
+        },
+        "output_type": null,
+        "x": 320,
+        "y": 140
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 2,
+          "put": 0
+        },
+        "alias_text": "Condition"
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 2,
+          "put": 1
+        },
+        "alias_text": "Value"
+      },
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 3,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 4 - BOOLEAN COMBINE (OR of two readings -> one write)
+================================================================================
+
+Source: vv-sketch_8602_isvannsmaskin_on_off_20260708-1428.txt (plant 8602), 4 blocks / 3 wires.
+Turns an ice-water machine on when either of two cooling-demand signals is active.
+
+What it teaches:
+  - COMP_OR (and COMP_AND) at their 2-input default: data null, boolean output.
+  - Fan-in: two PARAMV sources, one wire per input pin (in0 and in1).
+
+Blocks:
+  id 0: PARAMV "V01, 360.02 Ventilasjon Obs Bygg, Cooling relay 1 - Kjøling aktiv"
+  id 1: PARAMV "T01, 360.01 Ventilasjon, [adi4_7] Sirkpumpe kjøling JP42"
+  id 2: COMP_OR "Kjølebehov OR"  (data: null)
+  id 3: WRITETOUNIT "U02, AQUACIAT LD800V, On/Off 1=on"
+Wiring (source output -> target input):
+  PARAMV(0) out0 -> in0 COMP_OR(2)   pin name: "Input"
+  PARAMV(1) out0 -> in1 COMP_OR(2)   pin name: "Input"
+  COMP_OR(2) out0 -> in0 WRITETOUNIT(3)   pin name: "Input 1"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T12:28:01.821Z",
+  "source_plant_id": "8602",
+  "source_sketch_id": "8665",
+  "name": "test",
+  "block_count": 4,
+  "connection_count": 3,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "8602_NOVAGG_NOVEMA_0_1_0_2_31"
+          ]
+        },
+        "override": {
+          "alias_text": "V01, 360.02 Ventilasjon Obs Bygg, Cooling relay 1 - Kjøling aktiv"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "mixed"
+        ],
+        "x": 150,
+        "y": 100
+      },
+      {
+        "id": 1,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "8602_JC_FX16_1_1_6_03_01.7"
+          ]
+        },
+        "override": {
+          "alias_text": "T01, 360.01 Ventilasjon, [adi4_7] Sirkpumpe kjøling JP42"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "mixed"
+        ],
+        "x": 160,
+        "y": 260
+      },
+      {
+        "id": 2,
+        "func": "comp_or",
+        "type": "COMP_OR",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "Kjølebehov OR"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 370,
+        "y": 170
+      },
+      {
+        "id": 3,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": {
+          "force_write": false,
+          "delay": 0,
+          "limit_count": false,
+          "count": 1,
+          "driver_ids": [
+            "8602_EM270_CIAT_0_2_2_512_0"
+          ]
+        },
+        "override": {
+          "alias_text": "U02, AQUACIAT LD800V, On/Off 1=on"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": null,
+        "x": 630,
+        "y": 180
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 2,
+          "put": 0
+        },
+        "alias_text": "Input"
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 2,
+          "put": 1
+        },
+        "alias_text": "Input"
+      },
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 3,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 5 - FORMULA + VIRTUALOUT (compute a value and store it as a virtual parameter)
+================================================================================
+
+Source: vv-sketch_9652_Driftmode-360-01_20260708-1450.txt (plant 9652), 3 blocks / 2 wires.
+Maps a ventilation operating-mode parameter through a formula and stores the result.
+
+What it teaches:
+  - FORMULA data: {"formula":"...","title":"...","output_type":"integer","eng_unit":""} - inputs are inp0, inp1, ... inside the formula string. This is the ONLY place anything expression-like exists in VV.
+  - VIRTUALOUT data: {"alias_text":"...","type":"integer","engineering":{"unit":""}} - the safe output block (creates a trendable virtual parameter, writes no hardware).
+
+Blocks:
+  id 0: PARAMV "V01, 360.01 Ventilasjon, DriftMode [ Current DriftMode 000-099:Agg Stop 100-199:Agg Lo Speed 200-299 ]"
+  id 1: FORMULA "Driftmode"
+  id 2: VIRTUALOUT "360.01 Driftmode"
+Wiring (source output -> target input):
+  PARAMV(0) out0 -> in0 FORMULA(1)   pin name: "Input"
+  FORMULA(1) out0 -> in0 VIRTUALOUT(2)   pin name: "Input 1"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T12:50:15.709Z",
+  "source_plant_id": "9652",
+  "source_sketch_id": "7161",
+  "name": "Driftmode 360.01",
+  "block_count": 3,
+  "connection_count": 2,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "9652_BACNET_10100excon_0_10100_0_0_85"
+          ]
+        },
+        "override": {
+          "alias_text": "V01, 360.01 Ventilasjon, DriftMode [ Current DriftMode 000-099:Agg Stop 100-199:Agg Lo Speed 200-299 ]"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "mixed"
+        ],
+        "x": 50,
+        "y": 40
+      },
+      {
+        "id": 1,
+        "func": "formula",
+        "type": "FORMULA",
+        "compile_type": "function",
+        "data": {
+          "formula": "(inp0>=0&&inp0<=99?0:(inp0>=100&&inp0<=199?1:(inp0>=200&&inp0<=299?2:5)))",
+          "title": "Driftmode",
+          "output_type": "integer",
+          "eng_unit": ""
+        },
+        "override": {
+          "alias_text": "Driftmode"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": "integer",
+        "x": 130,
+        "y": 80
+      },
+      {
+        "id": 2,
+        "func": "virtualout",
+        "type": "VIRTUALOUT",
+        "compile_type": "output",
+        "data": {
+          "alias_text": "360.01 Driftmode",
+          "type": "integer",
+          "engineering": {
+            "unit": ""
+          }
+        },
+        "override": {
+          "alias_text": "360.01 Driftmode"
+        },
+        "runtime": {},
+        "properties": {
+          "format_extra": {
+            "alias_text": "",
+            "value": "{\"rev\":\"1\",\"type\":\"num\",\"v\":{\"0\":{\"t\":\"Stopp\"},\"1\":{\"t\":\"Lav hastighet\"},\"2\":{\"t\":\"Høy hastighet\"},\"5\":{\"t\":\"Ukjent input\"}}}"
+          }
+        },
+        "output_type": null,
+        "x": 290,
+        "y": 50
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 1,
+          "put": 0
+        },
+        "alias_text": "Input"
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 2,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 6 - MONITORING CHAINS -> VIRTUAL VALUES (comparators + OR, two independent chains)
+================================================================================
+
+Source: vv-sketch_6918_Pumpe_20260708-1505.json (plant 6918), 11 blocks / 10 wires.
+Watches a pump: chain 1 sets a virtual boolean when a reading is above a limit OR exactly equals a value; chain 2 independently stores a second above-limit flag.
+
+What it teaches:
+  - Block ids may have GAPS (0,1,5,9,10,...) - deleting blocks in the designer leaves holes. Ids only need to be UNIQUE integers; a generated file can simply use 0..N-1.
+  - One PARAMV output fans out to several comparators (outputs multi-connect).
+  - LIKE is the equality block (there is no EQUAL); it compares in0 against in1.
+  - Two independent chains happily coexist in one sketch.
+  - VIRTUALOUT stores booleans too - the safe alternative to writing hardware.
+  - This sketch was exported twice - via Export (file) and via Copy sketch (JSON text) - and the two are byte-identical: file and clipboard carry the same format.
+
+Blocks:
+  id 0: PARAMV "000:081, Advansor MT LT, Control status MT"
+  id 1: CONST "3"
+  id 5: BIGGERTHAN  (data: null)
+  id 9: LIKE  (data: null)
+  id 10: CONST "1"
+  id 11: COMP_OR  (data: null)
+  id 12: VIRTUALOUT "Pumpe"
+  id 13: CONST "8"
+  id 14: BIGGERTHAN  (data: null)
+  id 15: VIRTUALOUT "AC Ventil"
+  id 16: PARAMV "000:081, Advansor MT LT, AC status"
+Wiring (source output -> target input):
+  PARAMV(0) out0 -> in0 BIGGERTHAN(5)   pin name: "Input 1"
+  CONST(1) out0 -> in1 BIGGERTHAN(5)   pin name: "Input 2"
+  PARAMV(0) out0 -> in0 LIKE(9)   pin name: "Input 1"
+  CONST(10) out0 -> in1 LIKE(9)   pin name: "Input 2"
+  LIKE(9) out0 -> in0 COMP_OR(11)   pin name: "Input"
+  BIGGERTHAN(5) out0 -> in1 COMP_OR(11)   pin name: "Input"
+  COMP_OR(11) out0 -> in0 VIRTUALOUT(12)   pin name: "Input 1"
+  PARAMV(16) out0 -> in0 BIGGERTHAN(14)   pin name: "Input 1"
+  CONST(13) out0 -> in1 BIGGERTHAN(14)   pin name: "Input 2"
+  BIGGERTHAN(14) out0 -> in0 VIRTUALOUT(15)   pin name: "Input 1"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T13:05:35.144Z",
+  "source_plant_id": "6918",
+  "source_sketch_id": "7042",
+  "name": "Pumpe",
+  "block_count": 11,
+  "connection_count": 10,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 0,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "6918_AK3_AKC_0_81_0_761_6"
+          ]
+        },
+        "override": {
+          "alias_text": "000:081, Advansor MT LT, Control status MT"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "mixed"
+        ],
+        "x": 170,
+        "y": 410
+      },
+      {
+        "id": 1,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "3",
+          "initial_value": 3,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": true
+        },
+        "override": {
+          "alias_text": "3"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 170,
+        "y": 470
+      },
+      {
+        "id": 5,
+        "func": "biggerthan",
+        "type": "BIGGERTHAN",
+        "compile_type": "function",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "boolean",
+        "x": 280,
+        "y": 440
+      },
+      {
+        "id": 9,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "boolean",
+        "x": 280,
+        "y": 370
+      },
+      {
+        "id": 10,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "1",
+          "initial_value": 1,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": true
+        },
+        "override": {
+          "alias_text": "1"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 170,
+        "y": 360
+      },
+      {
+        "id": 11,
+        "func": "comp_or",
+        "type": "COMP_OR",
+        "compile_type": "function",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "boolean",
+        "x": 380,
+        "y": 410
+      },
+      {
+        "id": 12,
+        "func": "virtualout",
+        "type": "VIRTUALOUT",
+        "compile_type": "output",
+        "data": {
+          "alias_text": "Pumpe",
+          "type": "boolean",
+          "engineering": {
+            "unit": ""
+          }
+        },
+        "override": {
+          "alias_text": "Pumpe"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": null,
+        "x": 490,
+        "y": 420
+      },
+      {
+        "id": 13,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "8",
+          "initial_value": 8,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": true
+        },
+        "override": {
+          "alias_text": "8"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 280,
+        "y": 580
+      },
+      {
+        "id": 14,
+        "func": "biggerthan",
+        "type": "BIGGERTHAN",
+        "compile_type": "function",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "boolean",
+        "x": 380,
+        "y": 550
+      },
+      {
+        "id": 15,
+        "func": "virtualout",
+        "type": "VIRTUALOUT",
+        "compile_type": "output",
+        "data": {
+          "alias_text": "AC Ventil",
+          "type": "boolean",
+          "engineering": {
+            "unit": ""
+          }
+        },
+        "override": {
+          "alias_text": "AC Ventil"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": null,
+        "x": 490,
+        "y": 560
+      },
+      {
+        "id": 16,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": {
+          "driver_ids": [
+            "6918_AK3_AKC_0_81_0_763_441"
+          ]
+        },
+        "override": {
+          "alias_text": "000:081, Advansor MT LT, AC status"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "mixed"
+        ],
+        "x": 280,
+        "y": 540
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 5,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 5,
+          "put": 1
+        },
+        "alias_text": "Input 2"
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      },
+      {
+        "source": {
+          "id": 10,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 1
+        },
+        "alias_text": "Input 2"
+      },
+      {
+        "source": {
+          "id": 9,
+          "put": 0
+        },
+        "target": {
+          "id": 11,
+          "put": 0
+        },
+        "alias_text": "Input"
+      },
+      {
+        "source": {
+          "id": 5,
+          "put": 0
+        },
+        "target": {
+          "id": 11,
+          "put": 1
+        },
+        "alias_text": "Input"
+      },
+      {
+        "source": {
+          "id": 11,
+          "put": 0
+        },
+        "target": {
+          "id": 12,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      },
+      {
+        "source": {
+          "id": 16,
+          "put": 0
+        },
+        "target": {
+          "id": 14,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      },
+      {
+        "source": {
+          "id": 13,
+          "put": 0
+        },
+        "target": {
+          "id": 14,
+          "put": 1
+        },
+        "alias_text": "Input 2"
+      },
+      {
+        "source": {
+          "id": 14,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 7 - SELECTOR + GATED DUAL WRITE (pick A/B, gate it, write to two units)
+================================================================================
+
+Source: vv-sketch_9839_Lysstyring_20260708-1504.txt (plant 9839), 8 blocks / 7 wires.
+Light control: a SELECTOR picks between two CONST alternatives, an IF gates the result behind an enable CONST, and the value is written to two units.
+
+What it teaches:
+  - SELECTOR fully wired: in0 Value (the boolean condition), in1 "Alternative 1 (Value==true)", in2 "Alternative 2 (Value==false)"; data is {"output_type":"integer"}.
+  - IF output fans out to TWO WRITETOUNIT blocks - one gate, many writes.
+  - The same gated-write IF idiom as examples 2-3 (require_plant_revision 620).
+
+Blocks:
+  id 1: IF  (data: null)
+  id 2: CONST "Lysstyringsfunksjon on/off"
+  id 9: WRITETOUNIT "Multiple parameters"
+  id 10: WRITETOUNIT "000:002, AKCC350 avtrekk/lys, o39 Light Remote"
+  id 15: SELECTOR
+  id 16: CONST "Alternative 2 (Value==false)"
+  id 17: CONST "Alternative 1 (Value==true)"
+  id 19: CONST "Kalender lysstyring"
+Wiring (source output -> target input):
+  CONST(2) out0 -> in0 IF(1)   pin name: "Condition"
+  SELECTOR(15) out0 -> in1 IF(1)   pin name: "Value"
+  IF(1) out0 -> in0 WRITETOUNIT(9)   pin name: "Input 1"
+  IF(1) out0 -> in0 WRITETOUNIT(10)   pin name: "Input 1"
+  CONST(19) out0 -> in0 SELECTOR(15)   pin name: "Value"
+  CONST(17) out0 -> in1 SELECTOR(15)   pin name: "Alternative 1 (Value==true)"
+  CONST(16) out0 -> in2 SELECTOR(15)   pin name: "Alternative 2 (Value==false)"
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-08T13:04:14.771Z",
+  "source_plant_id": "9839",
+  "source_sketch_id": "6956",
+  "name": "Lysstyring",
+  "block_count": 8,
+  "connection_count": 7,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 620,
+    "blocks": [
+      {
+        "id": 1,
+        "func": "if",
+        "type": "IF",
+        "compile_type": "condition",
+        "data": null,
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": "mixed",
+        "x": 310,
+        "y": 90,
+        "required_plant_revision": 620
+      },
+      {
+        "id": 2,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Lysstyringsfunksjon on/off",
+          "initial_value": 0,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "boolean",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Lysstyringsfunksjon on/off"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 140,
+        "y": 40
+      },
+      {
+        "id": 9,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": {
+          "force_write": false,
+          "delay": 0,
+          "limit_count": false,
+          "count": 1,
+          "driver_ids": [
+            "9839_AK3_AKC_0_38_0_0_2058",
+            "9839_AK3_AKC_0_39_0_0_2058"
+          ]
+        },
+        "override": {
+          "alias_text": "Multiple parameters"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": null,
+        "x": 460,
+        "y": 110
+      },
+      {
+        "id": 10,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": {
+          "force_write": false,
+          "delay": 0,
+          "limit_count": false,
+          "count": 1,
+          "driver_ids": [
+            "9839_AK3_AKC_0_2_0_0_2058"
+          ]
+        },
+        "override": {
+          "alias_text": "000:002, AKCC350 avtrekk/lys, o39 Light Remote"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": null,
+        "x": 460,
+        "y": 70
+      },
+      {
+        "id": 15,
+        "func": "selector",
+        "type": "SELECTOR",
+        "compile_type": "function",
+        "data": {
+          "output_type": "integer"
+        },
+        "override": {},
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "integer",
+          "float"
+        ],
+        "x": 220,
+        "y": 120
+      },
+      {
+        "id": 16,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Alternative 2 (Value==false)",
+          "initial_value": 0,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "float",
+          "readonly": true,
+          "precision": "%.1f"
+        },
+        "override": {
+          "alias_text": "Alternative 2 (Value==false)"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 80,
+        "y": 250
+      },
+      {
+        "id": 17,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Alternative 1 (Value==true)",
+          "initial_value": 1,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "float",
+          "readonly": true,
+          "precision": "%.1f"
+        },
+        "override": {
+          "alias_text": "Alternative 1 (Value==true)"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 90,
+        "y": 190
+      },
+      {
+        "id": 19,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Kalender lysstyring",
+          "initial_value": 0,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "boolean",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Kalender lysstyring"
+        },
+        "runtime": {},
+        "properties": [],
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 90,
+        "y": 100
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 1,
+          "put": 0
+        },
+        "alias_text": "Condition"
+      },
+      {
+        "source": {
+          "id": 15,
+          "put": 0
+        },
+        "target": {
+          "id": 1,
+          "put": 1
+        },
+        "alias_text": "Value"
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 10,
+          "put": 0
+        },
+        "alias_text": "Input 1"
+      },
+      {
+        "source": {
+          "id": 19,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 0
+        },
+        "alias_text": "Value"
+      },
+      {
+        "source": {
+          "id": 17,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 1
+        },
+        "alias_text": "Alternative 1 (Value==true)"
+      },
+      {
+        "source": {
+          "id": 16,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 2
+        },
+        "alias_text": "Alternative 2 (Value==false)"
+      }
+    ],
+    "groups": []
+  }
+}
+
+================================================================================
+EXAMPLE 8 - RECURRING EXERCISE WINDOW / "MOSJONERING" (authored template: calendar-gated run + LATCH restore)
+================================================================================
+
+Authored template (validated with validate-vv-sketch.js, not a plant export), 22 blocks / 29 wires.
+Exercise a pump on a recurring window (e.g. 1 hour every 14 days): write On inside
+the window; afterwards restore Off - but only if the pump was Off before the window.
+A manual Auto outside the window clears that memory at once; a manual On clears it
+after 60 s (deliberate compromise to tell manual On apart from the exercise override).
+
+What it teaches:
+  - The window MUST come from a plant CALENDAR (recurring schedule, bound after
+    import). TOGGLE_INTERVAL cannot do this: it is a symmetric square wave with
+    ONLY {"interval","offset"} - no duration/duty field exists.
+  - Read-back + write to the SAME switch point: PARAMV reads the state, LIKE
+    blocks decode it against tweakable CONSTs (2=Av, 3=Paa, 1=Auto here - VERIFY
+    the numeric states against the actual driver before deploying).
+  - LATCH as an off-memory: set = Av AND outside-window; reset = (Auto outside)
+    OR (manual Paa outside, persisted 60 s through DELAY_VARIABLE <- CONST).
+  - LATCH outputs an INTEGER - compare BIGGERTHAN <- CONST(0) to get a boolean
+    before feeding COMP_OR (boolean inputs accept only booleans).
+  - The gated-write idiom at the end: IF(condition = window OR memory,
+    value = SELECTOR(window ? Paa : Av)) -> WRITETOUNIT. No condition, no write.
+  - All three plant bindings are data: null "TODO bind" - calendar, read point,
+    write point. require_plant_revision 1683 (LATCH).
+
+Blocks:
+  id 0: CALENDAR "TODO bind: mosjoneringskalender (f.eks. 1 t hver 14. dag)"  (data: null)
+  id 1: PARAMV "TODO bind: pumpens bryterpunkt (lese)"  (data: null)
+  id 2: CONST "Bryterverdi Av (2) - verifiser mot driveren"
+  id 3: CONST "Bryterverdi Paa (3) - verifiser mot driveren"
+  id 4: CONST "Bryterverdi Auto (1) - verifiser mot driveren"
+  id 5: LIKE "staar i Av?"  (data: null)
+  id 6: LIKE "staar i Paa?"  (data: null)
+  id 7: LIKE "staar i Auto?"  (data: null)
+  id 8: INVERT "utenfor vinduet"  (data: null)
+  id 9: COMP_AND "Av utenfor vindu => sett minne"  (data: null)
+  id 10: COMP_AND "manuell Paa utenfor vindu"  (data: null)
+  id 11: COMP_AND "Auto utenfor vindu => nullstill"  (data: null)
+  id 12: CONST "Reset-forsinkelse manuell Paa"
+  id 13: DELAY_VARIABLE "manuell Paa i 60 s => nullstill"  (data: null)
+  id 14: COMP_OR "nullstill minne"  (data: null)
+  id 15: LATCH "av-minne (pumpen var Av)"  (data: null)
+  id 16: CONST "null (terskel for minne)"
+  id 17: BIGGERTHAN "minne aktivt?"  (data: null)
+  id 18: COMP_OR "skal vi skrive?"  (data: null)
+  id 19: SELECTOR "i vindu: Paa, ellers: Av"
+  id 20: IF "gated skriving"  (data: null)
+  id 21: WRITETOUNIT "TODO bind: pumpens bryterpunkt (skrive)"  (data: null)
+Wiring (source output -> target input):
+  PARAMV(1) out0 -> in0 LIKE(5)
+  CONST(2) out0 -> in1 LIKE(5)
+  PARAMV(1) out0 -> in0 LIKE(6)
+  CONST(3) out0 -> in1 LIKE(6)
+  PARAMV(1) out0 -> in0 LIKE(7)
+  CONST(4) out0 -> in1 LIKE(7)
+  CALENDAR(0) out0 -> in0 INVERT(8)
+  LIKE(5) out0 -> in0 COMP_AND(9)
+  INVERT(8) out0 -> in1 COMP_AND(9)
+  LIKE(6) out0 -> in0 COMP_AND(10)
+  INVERT(8) out0 -> in1 COMP_AND(10)
+  LIKE(7) out0 -> in0 COMP_AND(11)
+  INVERT(8) out0 -> in1 COMP_AND(11)
+  COMP_AND(10) out0 -> in0 DELAY_VARIABLE(13)
+  CONST(12) out0 -> in1 DELAY_VARIABLE(13)
+  COMP_AND(11) out0 -> in0 COMP_OR(14)
+  DELAY_VARIABLE(13) out0 -> in1 COMP_OR(14)
+  COMP_AND(9) out0 -> in0 LATCH(15)
+  COMP_OR(14) out0 -> in1 LATCH(15)
+  LATCH(15) out0 -> in0 BIGGERTHAN(17)
+  CONST(16) out0 -> in1 BIGGERTHAN(17)
+  CALENDAR(0) out0 -> in0 COMP_OR(18)
+  BIGGERTHAN(17) out0 -> in1 COMP_OR(18)
+  CALENDAR(0) out0 -> in0 SELECTOR(19)
+  CONST(3) out0 -> in1 SELECTOR(19)
+  CONST(2) out0 -> in2 SELECTOR(19)
+  COMP_OR(18) out0 -> in0 IF(20)
+  SELECTOR(19) out0 -> in1 IF(20)
+  IF(20) out0 -> in0 WRITETOUNIT(21)
+
+The complete file, verbatim:
+
+{
+  "format": "vv-fbx-sketch",
+  "version": 1,
+  "exported_at": "2026-07-09T00:00:00.000Z",
+  "source_plant_id": null,
+  "source_sketch_id": null,
+  "name": "Mosjonering pumpe - kalendergated m/ av-minne (TEMPLATE)",
+  "block_count": 22,
+  "connection_count": 29,
+  "sketch": {
+    "mode": "function",
+    "require_plant_revision": 1683,
+    "blocks": [
+      {
+        "id": 0,
+        "func": "calendar_value",
+        "type": "CALENDAR",
+        "compile_type": "input",
+        "data": null,
+        "override": {
+          "alias_text": "TODO bind: mosjoneringskalender (f.eks. 1 t hver 14. dag)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "mixed"
+        ],
+        "x": 40,
+        "y": 60
+      },
+      {
+        "id": 1,
+        "func": "paramv",
+        "type": "PARAMV",
+        "compile_type": "input",
+        "data": null,
+        "override": {
+          "alias_text": "TODO bind: pumpens bryterpunkt (lese)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "mixed"
+        ],
+        "x": 40,
+        "y": 200
+      },
+      {
+        "id": 2,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Bryterverdi Av (2) - verifiser mot driveren",
+          "initial_value": 2,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Bryterverdi Av (2) - verifiser mot driveren"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 40,
+        "y": 340
+      },
+      {
+        "id": 3,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Bryterverdi Paa (3) - verifiser mot driveren",
+          "initial_value": 3,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Bryterverdi Paa (3) - verifiser mot driveren"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 40,
+        "y": 470
+      },
+      {
+        "id": 4,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Bryterverdi Auto (1) - verifiser mot driveren",
+          "initial_value": 1,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Bryterverdi Auto (1) - verifiser mot driveren"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 40,
+        "y": 600
+      },
+      {
+        "id": 5,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "staar i Av?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 220
+      },
+      {
+        "id": 6,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "staar i Paa?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 360
+      },
+      {
+        "id": 7,
+        "func": "like",
+        "type": "LIKE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "staar i Auto?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 500
+      },
+      {
+        "id": 8,
+        "func": "invert",
+        "type": "INVERT",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "utenfor vinduet"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 280,
+        "y": 80
+      },
+      {
+        "id": 9,
+        "func": "comp_and",
+        "type": "COMP_AND",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "Av utenfor vindu => sett minne"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 520,
+        "y": 140
+      },
+      {
+        "id": 10,
+        "func": "comp_and",
+        "type": "COMP_AND",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "manuell Paa utenfor vindu"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 520,
+        "y": 320
+      },
+      {
+        "id": 11,
+        "func": "comp_and",
+        "type": "COMP_AND",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "Auto utenfor vindu => nullstill"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 520,
+        "y": 500
+      },
+      {
+        "id": 12,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "Reset-forsinkelse manuell Paa",
+          "initial_value": 60,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "s",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "Reset-forsinkelse manuell Paa"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 520,
+        "y": 640
+      },
+      {
+        "id": 13,
+        "func": "alarm_multi_delay",
+        "type": "DELAY_VARIABLE",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "manuell Paa i 60 s => nullstill"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean"
+        ],
+        "x": 720,
+        "y": 380
+      },
+      {
+        "id": 14,
+        "func": "comp_or",
+        "type": "COMP_OR",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "nullstill minne"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 900,
+        "y": 440
+      },
+      {
+        "id": 15,
+        "func": "latch.run",
+        "type": "LATCH",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "av-minne (pumpen var Av)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "integer",
+        "x": 1080,
+        "y": 260
+      },
+      {
+        "id": 16,
+        "func": "const",
+        "type": "CONST",
+        "compile_type": "input",
+        "data": {
+          "alias_text": "null (terskel for minne)",
+          "initial_value": 0,
+          "values": null,
+          "mode": "single",
+          "eng_unit": "",
+          "type": "integer",
+          "readonly": false
+        },
+        "override": {
+          "alias_text": "null (terskel for minne)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "boolean",
+          "integer",
+          "float",
+          "string"
+        ],
+        "x": 1080,
+        "y": 420
+      },
+      {
+        "id": 17,
+        "func": "biggerthan",
+        "type": "BIGGERTHAN",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "minne aktivt?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 1260,
+        "y": 340
+      },
+      {
+        "id": 18,
+        "func": "comp_or",
+        "type": "COMP_OR",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "skal vi skrive?"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "boolean",
+        "x": 1440,
+        "y": 160
+      },
+      {
+        "id": 19,
+        "func": "selector",
+        "type": "SELECTOR",
+        "compile_type": "function",
+        "data": {
+          "output_type": "integer"
+        },
+        "override": {
+          "alias_text": "i vindu: Paa, ellers: Av"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": [
+          "integer",
+          "float"
+        ],
+        "x": 1440,
+        "y": 420
+      },
+      {
+        "id": 20,
+        "func": "if",
+        "type": "IF",
+        "compile_type": "condition",
+        "data": null,
+        "override": {
+          "alias_text": "gated skriving"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": "mixed",
+        "x": 1640,
+        "y": 300,
+        "required_plant_revision": 620
+      },
+      {
+        "id": 21,
+        "func": "set_unit_value",
+        "type": "WRITETOUNIT",
+        "compile_type": "function",
+        "data": null,
+        "override": {
+          "alias_text": "TODO bind: pumpens bryterpunkt (skrive)"
+        },
+        "runtime": {},
+        "properties": {},
+        "output_type": null,
+        "x": 1820,
+        "y": 300
+      }
+    ],
+    "connections": [
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 5,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 5,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 6,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 3,
+          "put": 0
+        },
+        "target": {
+          "id": 6,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 1,
+          "put": 0
+        },
+        "target": {
+          "id": 7,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 4,
+          "put": 0
+        },
+        "target": {
+          "id": 7,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 8,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 5,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 8,
+          "put": 0
+        },
+        "target": {
+          "id": 9,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 6,
+          "put": 0
+        },
+        "target": {
+          "id": 10,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 8,
+          "put": 0
+        },
+        "target": {
+          "id": 10,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 7,
+          "put": 0
+        },
+        "target": {
+          "id": 11,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 8,
+          "put": 0
+        },
+        "target": {
+          "id": 11,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 10,
+          "put": 0
+        },
+        "target": {
+          "id": 13,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 12,
+          "put": 0
+        },
+        "target": {
+          "id": 13,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 11,
+          "put": 0
+        },
+        "target": {
+          "id": 14,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 13,
+          "put": 0
+        },
+        "target": {
+          "id": 14,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 9,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 14,
+          "put": 0
+        },
+        "target": {
+          "id": 15,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 15,
+          "put": 0
+        },
+        "target": {
+          "id": 17,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 16,
+          "put": 0
+        },
+        "target": {
+          "id": 17,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 18,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 17,
+          "put": 0
+        },
+        "target": {
+          "id": 18,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 0,
+          "put": 0
+        },
+        "target": {
+          "id": 19,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 3,
+          "put": 0
+        },
+        "target": {
+          "id": 19,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 2,
+          "put": 0
+        },
+        "target": {
+          "id": 19,
+          "put": 2
+        }
+      },
+      {
+        "source": {
+          "id": 18,
+          "put": 0
+        },
+        "target": {
+          "id": 20,
+          "put": 0
+        }
+      },
+      {
+        "source": {
+          "id": 19,
+          "put": 0
+        },
+        "target": {
+          "id": 20,
+          "put": 1
+        }
+      },
+      {
+        "source": {
+          "id": 20,
+          "put": 0
+        },
+        "target": {
+          "id": 21,
+          "put": 0
+        }
+      }
+    ],
+    "groups": []
+  }
+}
+================================================================================
+EXAMPLE 9 - A PROCESS-MODE DEFINITION (reusable library process, effect class)
+================================================================================
+
+A PROCESS (not a function sketch): mode "process", parametrised through
+PROCESSIN pins, no plant bindings of its own. This one is EFFECT class (no
+PROCESSOUT - the ALARM lives inside): "alarm if a value exceeds a limit for
+15 min, when enabled". Import in PROCESS MODE (Set Process Mode first).
+SYNTAX-VERIFIED on the live designer (syntax_check ok, zero errors).
+Full process-generation contract: CLAUDE.md section 20.11.
+
+{
+  "format": "vv-fbx-sketch", "version": 1, "exported_at": "2026-07-12T00:00:00.000Z",
+  "source_plant_id": null, "source_sketch_id": null,
+  "name": "Hoytemp alarm (prosess)", "block_count": 8, "connection_count": 7,
+  "sketch": {
+    "mode": "process", "require_plant_revision": 620,
+    "blocks": [
+      {"id":0,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Temperatur","method":"parameter","by_refference":false,"type":"float"},"override":{"alias_text":"Temperatur"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":40},
+      {"id":1,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Grense","method":"constant","by_refference":false,"type":"float","eng_unit":"&deg;C","initial_value":"8","precision":"%.1f"},"override":{"alias_text":"Grense"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":160},
+      {"id":2,"type":"PROCESSIN","func":"processin","compile_type":"reference","data":{"alias_text":"Aktiver","method":"enable","type":"boolean","enable":true},"override":{"alias_text":"Aktiver"},"runtime":{},"properties":{},"output_type":["mixed"],"x":40,"y":280},
+      {"id":3,"type":"BIGGERTHAN","func":"biggerthan","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"boolean","x":300,"y":90},
+      {"id":4,"type":"COMP_AND","func":"comp_and","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"boolean","x":470,"y":150},
+      {"id":5,"type":"CONST","func":"const","compile_type":"input","data":{"alias_text":"Forsinkelse","type":"integer","initial_value":900,"values":null,"mode":"single","eng_unit":"sek","readonly":false},"override":{"alias_text":"Forsinkelse 900 sek"},"runtime":{},"properties":{},"output_type":["boolean","integer","float","string"],"x":470,"y":300},
+      {"id":6,"type":"DELAY_VARIABLE","func":"alarm_multi_delay","compile_type":"function","data":null,"override":{},"runtime":{},"properties":{},"output_type":"boolean","x":660,"y":180},
+      {"id":7,"type":"ALARM","func":"alarm","compile_type":"output","data":{"alias_text":"Temp over grense","pri":"a","alarm_type":"general","alarm_destination":"general"},"override":{},"runtime":{},"properties":{},"output_type":null,"x":860,"y":180}
+    ],
+    "connections": [
+      {"source":{"id":0,"put":0},"target":{"id":3,"put":0}},
+      {"source":{"id":1,"put":0},"target":{"id":3,"put":1}},
+      {"source":{"id":3,"put":0},"target":{"id":4,"put":0}},
+      {"source":{"id":2,"put":0},"target":{"id":4,"put":1}},
+      {"source":{"id":4,"put":0},"target":{"id":6,"put":0}},
+      {"source":{"id":5,"put":0},"target":{"id":6,"put":1}},
+      {"source":{"id":6,"put":0},"target":{"id":7,"put":0}}
+    ], "groups": []
+  }
+}
+
+PROCESS vs FUNCTION - what changes (full contract: CLAUDE.md 20.11):
+  - envelope sketch.mode is "process" (not "function")
+  - NO PARAMV / TAGVALUE (illegal in process mode) - read plant data through
+    a PROCESSIN pin (method "parameter" or "tag") instead
+  - PROCESSIN = one input pin: func "processin", compile_type "reference",
+    output_type ["mixed"]. data by method:
+      parameter: {alias_text, method:"parameter", by_refference:false, type}
+      constant:  {alias_text, method:"constant", by_refference:false, type,
+                  eng_unit, initial_value:"<STRING>", precision?, scaling?}
+      tag:       {alias_text, method:"tag", by_refference:false, type:"mixed", tag}
+      enable:    {alias_text, method:"enable", type:"boolean", enable:true}  (no by_refference)
+      calendar:  {alias_text, method:"calendar"}   (minimal)
+    initial_value is a STRING even for numbers.
+  - PROCESSOUT = one output pin: func "processout", compile_type "reference",
+    output_type null, data {alias_text, type}. ZERO PROCESSOUTs is valid and
+    common (61% - effect processes keep ALARM/VIRTUALOUT/WRITETOUNIT inside).
+  - AVERAGE_PERIODE (process-only): func "average_periode.run", data null -
+    Parameter / Periode Enable / Collect Enable -> float.
+  - interior blocks are the SAME function blocks (comparators, FORMULA, IF,
+    DELAY_VARIABLE, CONST, ALARM, VIRTUALOUT, WRITETOUNIT, process instances).
+  - after import + F10: Save process -> Publish process (section 10.2) makes it
+    a library block; publishing creates the deployable revision.
+
+================================================================================
+NOTABLE REAL BLOCK SHAPES (lifted verbatim from larger production sketches)
+================================================================================
+
+The fragments below are single blocks / wires, NOT complete files. Use them as
+the data-shape reference when a request needs one of these block types.
+
+--- WEATHER (YR.no lookup) - geography arrives as string-CONST INPUTS, not in data ---
+Pins: in0 County, in1 Commune, in2 Place (all optional string CONSTs; unconnected =>
+GPS), in3 period start hour, in4 period end hour. The weather function to compute
+(here: current dew point) is selected in data.block_func_args.func. Requires plant
+revision 620. (The stray characters in this real override are mojibake that exists
+on the plant itself; units elsewhere use HTML entities like &deg;C.)
+
+{
+  "id": 11,
+  "func": "weather.run_by_ccp_country",
+  "type": "WEATHER",
+  "compile_type": "function",
+  "data": {
+    "block_func_args": {
+      "func": "current_dew_point",
+      "period_count": 1
+    }
+  },
+  "override": {
+    "alias_text": "Current dew point (ï¿½C)"
+  },
+  "runtime": {},
+  "properties": {
+    "output_count": {
+      "alias_text": "Output Count",
+      "value": 1
+    }
+  },
+  "output_type": [
+    "float"
+  ],
+  "x": 560,
+  "y": 420,
+  "required_plant_revision": 620
+}
+
+One of its geo inputs - a STRING CONST (note the string initial_value):
+
+{
+  "id": 1,
+  "func": "const",
+  "type": "CONST",
+  "compile_type": "input",
+  "data": {
+    "alias_text": "County",
+    "initial_value": "Vestfold og Telemark",
+    "values": null,
+    "mode": "single",
+    "eng_unit": "",
+    "type": "string",
+    "readonly": false
+  },
+  "override": {
+    "alias_text": "County"
+  },
+  "runtime": {},
+  "properties": [],
+  "output_type": [
+    "boolean",
+    "integer",
+    "float",
+    "string"
+  ],
+  "x": 350,
+  "y": 90
+}
+
+The wires into WEATHER (real pin names in alias_text):
+
+[
+  {
+    "source": {
+      "id": 1,
+      "put": 0
+    },
+    "target": {
+      "id": 11,
+      "put": 0
+    },
+    "alias_text": "Optional: County (Fylke) | not connected | \"GPS\""
+  },
+  {
+    "source": {
+      "id": 2,
+      "put": 0
+    },
+    "target": {
+      "id": 11,
+      "put": 1
+    },
+    "alias_text": "Optional: Commune (Kommune)) | not connected | \"GPS\""
+  },
+  {
+    "source": {
+      "id": 3,
+      "put": 0
+    },
+    "target": {
+      "id": 11,
+      "put": 2
+    },
+    "alias_text": "Optional: Place (Sted)) | not connected | \"GPS\""
+  },
+  {
+    "source": {
+      "id": 12,
+      "put": 0
+    },
+    "target": {
+      "id": 11,
+      "put": 3
+    },
+    "alias_text": "Period start (0-23)"
+  },
+  {
+    "source": {
+      "id": 13,
+      "put": 0
+    },
+    "target": {
+      "id": 11,
+      "put": 4
+    },
+    "alias_text": "Period end (0-24)"
+  }
+]
+
+--- CRITERIA (time-of-day/weekday gate) - real production shape ---
+data carries ONLY {"block_func_args":{"oneshot":false}}; the criteria live in
+properties.criterias as keyed {id, value} entries:
+
+{
+  "data": { "block_func_args": { "oneshot": false } },
+  "properties": {
+    "criterias": {
+      "alias_text": "Criterias",
+      "value": {
+        "day_of_week_3": { "id": "day_of_week", "value": 3 },
+        "hour_of_day_3": { "id": "hour_of_day", "value": 3 }
+      }
+    }
+  }
+}
+
+--- VIRTUALOUT with optional scaling (real production shape) ---
+{"alias_text":"Dager til neste service","type":"integer","engineering":{"unit":"dager"},
+ "scaling":{"type":"clip_scale","from_min":"0","from_max":"1000","to_min":"0","to_max":"1000"}}
+
+--- TAGVALUE in repeat mode (real production shape - Al.center alarm central) ---
+The value array IS the multi-selected unit list the logic is stamped per:
+{"tag":"<TAG_ID>","value":[
+  {"unit_id":"001:020","unit_ref":null,"unit_name":"K1 Mejerikylrum-A","instances":"A","order_no":"084B8022_15x1"},
+  {"unit_id":"001:021","unit_ref":null,"unit_name":"K2 Kottkylrum-A","instances":"A","order_no":"084B8022_15x1"}]}
+
+--- IS_WITHIN_DATES / "Season selector" (host contract, BLOCKS.md) ---
+Returns 0 in the summer window, 1 in the winter window, else 2. Four STRING
+CONST pins in "DD.MM" format: put0 summer start, put1 summer end, put2 winter
+start, put3 winter end. data null. func "is_within_dates" (current palette;
+legacy sketches carry singular "is_within_date" - both are valid).
+
+--- SPOT_PRICE (real production shape) ---
+{"hours":[0],"region":"10YNO-3--------J"}   (region = ENTSO-E bidding zone; null also occurs)
+
+--- SPOT_PRICE_LOW / _HIGH / _NUM_HOURS (real production shapes) ---
+LOW/HIGH (boolean: now among cheapest/priciest percent% of next N hours; string numbers):
+{"region":"10YNO-3--------J","percent":"30","num_future_hours":"12"}
+NUM_HOURS: {"region":"10YNO-3--------J"}
+
+--- DATE_TIME (real production shape) ---
+data.units picks which outputs exist: 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday.
+Full clock:  {"units":[0,1,2,3,4,5,6]} + properties output_count 7,
+             output_alias_texts ["Year","Month","Day","Hour","Minute","Second","Weekday"]
+Hour only:   {"units":[3]} + output_count 1, output_alias_texts ["Hour"]
+
+--- CALENDAR_2_0 (real production shape) ---
+{"calendar":"2065","output":"id"}     (vs legacy CALENDAR {calendar,offset,post_offset})
+
+--- OPTIMAL_START_STOP (real production shape) ---
+data: {"block_func_args":{"map_tempstep":"tempstep","map_factor":"factor"}}
+plus TWO transform-map tables in properties (same table shape as custom_transform_map):
+properties.optimal_start_stop_tempstep_transform_map = {alias_text, value:{inputs:[[0,7]],output:[0,210]}}
+properties.optimal_start_stop_factor_transform_map   = {alias_text, value:{inputs:[[...]],output:[...]}}
+
+--- WEATHER_SUN (real production shape) ---
+{"block_func_args":{"rise_offset":0,"set_offset":0}}   (minutes around sunrise/sunset)
+
+--- RESET_INPUT (real production shape) ---
+{"trigger_value":0,"reset_value":1,"delay_unit":"min","delay_amount":1}
+
+--- VARIABLE_INPUT / VARIABLE_OUTPUT (in-sketch feedback without a wire) ---
+VARIABLE_INPUT.data = {"pointer":"18"}   (the id of the VARIABLE_OUTPUT block it mirrors)
+
+--- TEMP_VALUE (named in-sketch scratch value) ---
+{"alias_text":"drift hovedpumpe","type":"mixed","precision":"%.1f"}
+
+--- format_extra: enum labels for a mode value (real production shape) ---
+Set on a mode CONST (or VIRTUALOUT) to give integer values readable labels.
+NOTE: properties.format_extra.value is a JSON *STRING*, not an object:
+properties.format_extra = {"alias_text":"",
+ "value":"{\"rev\":\"1\",\"type\":\"num\",\"v\":{\"0\":{\"t\":\"Kjøl\"},\"1\":{\"t\":\"Frys\"},\"2\":{\"t\":\"Ikke aktivert\"}}}"}
+
+--- CONST in repeat mode (real production shape - per-unit values) ---
+mode "repeat" stores one value per stamped unit, keyed by unit id/name:
+{"alias_text":"max alarmer pr uke","initial_value":"",
+ "values":{"000:018":5,"000:019":5,"F01":5,"K01":5,"K09.B1":5}}
+
+--- BINDINGS: singular driver_id is HALF the fleet ---
+Older sketches store {"driver_id":"<id>"} (string); newer {"driver_ids":["<id>"]}.
+GENERATE the plural array form - but when READING/analysing sketches, accept both.
+A VIRTUALOUT becomes a plant parameter other sketches read back via PARAMV with a
+VIRTUAL driver id (e.g. "4969_VIRTUAL_V_1_1863_5173_1863_1") - that is how
+multi-sketch pipelines pass values between sketches. (A VIRTUAL_YR_1_... form
+also exists: the Yr weather virtual driver.)
+
+--- DRIVER-ID ANATOMY (27,860 fleet ids) ---
+Canonical: 8 underscore-separated segments "<plant>_<DRIVER>_<device>_<5 more>":
+  10218_AK3_AKC_0_50_0_0_100          2005_AK2_080Z0200_1_1_0_178_32
+  2069_BACNET_651007bio007_0_651007_4_1_85   4509_KNX_KNX_0_1_9_1_11
+  10218_MODBUS_THESSNE_0_1_0_4_31109  8388_CORRIGO34_REGIN_1_1_0_3_367
+BUT device names may contain underscores (7 to 106 segments seen) - NEVER
+split/parse/construct ids; only the "<plant>_" prefix is contract (it is what
+cross-plant rebind rewrites). The driver token is an instance NAME, not a
+type enum. 69 production ids have a FOREIGN plant prefix (copied sketches
+never rebound - they silently read nothing); always rebind on import.
+Multi-id: PARAMV nearly always has exactly 1 id (multi-select = 14 blocks
+fleet-wide); WRITETOUNIT fan-out >1 is normal (up to 39 ids in one block).
+
+--- REAL PRODUCTION FORMULAS (fleet scrape, 87 plants / 71 unique formulas - grammar reference) ---
+All of these are deployed on live plants and use only the documented grammar:
+  inp0==2                                     (mode decoder)
+  inp0/3600                                   (HOURMETER seconds -> hours)
+  inp0/(3600*24)                              (seconds -> days)
+  (inp0*-1)+1                                 (boolean negation)
+  (date('W', time()) % 2 == 0) ? 1 : 0        (even ISO week - biweekly gating)
+  (inp1-inp0)*inp2*inp3/3600*1000             (energy calculation)
+  (inp0>=0&&inp0<=99?0:(inp0>=100&&inp0<=199?1:(inp0>=200&&inp0<=299?2:5)))
+                                              (chained ternary range mapping; && works)
+The server evaluator is PHP, so production also uses PHP stdlib + null:
+  (intval(inp0) == 1) ? 0 : ((intval(inp0) == 2) ? 1 : null)   (null = write nothing)
+  strpos(inp0, inp1) !== false ? true : false                  (substring test)
+  stripos(inp0, 'snø')!==false?true:false                      (case-insensitive - weather text)
+  substr(inp0, 0, 8)                                           (string slice)
+  floatval(inp0/60.0)                                          (kW -> kWh unit math)
+  idate("H")                                                   (current hour as int)
+  (abs(time() - strtotime(inp0)) <= inp1/2) ? 1 : 0            (timestamp freshness)
+  gmdate("H:i:s", inp0*3600)                                   (seconds -> H:i:s text)
+  inp0*floatval(rand(-10,10))                                  (PHP two-arg rand)
+  inp0 == 1 AND inp1 == 0                                      (uppercase AND works)
+THE state MAGIC VARIABLE - a formula can reference its OWN PREVIOUS OUTPUT:
+  (inp0 >= inp1 ? 1 : (inp0 < inp2 ? 0 : state))
+  = complete changeover/hysteresis in ONE formula block: output 1 when inp0 is
+  at/above the high limit (inp1), 0 when below the low limit (inp2), otherwise
+  HOLD the previous output. The formula-level alternative to a LATCH block.
+Server-only VV domain built-ins also exist (calendar-schema helpers - a client
+evaluator cannot resolve these): is_calendar_deviating(14), value_based_on_schema(1,0,14).
+Full-PHP wizardry is possible server-side (won't simulate locally) - the fleet's
+Legionella scheduler computes the day-of-month of the month's LAST SUNDAY:
+  date('d', strtotime(implode(' ', ['last sunday of', date('M')])))
+FORMULA INVARIANT: properties.input_count = {"alias_text":"Input count","value":N}
+where N EQUALS the wired-input count - true for 530/530 production formulas and
+enforced by validate-vv-sketch.js. Without it extra pins do not exist.
+
+--- FORMULA as a MODE DECODER (production favourite) ---
+One integer mode parameter fans out into N single-input FORMULA blocks, each
+emitting a boolean for one state ("inp0==K"); each boolean then gates its own
+branch. Real data payloads from one sketch:
+
+  {"formula":"inp0==0","title":"=Av","output_type":"boolean","eng_unit":""}
+  {"formula":"inp0==2","title":"=På","output_type":"boolean","eng_unit":""}
+  {"formula":"inp0==1","title":"=Auto-yr","output_type":"boolean","eng_unit":""}
+  {"formula":"inp0*60","title":"min-sec","output_type":"integer","eng_unit":""}
+  {"formula":"inp0==4","title":"= Auto-Snøostat","output_type":"boolean","eng_unit":""}
+
+--- ALARM + DELAY_VARIABLE (alarm with persistence) ---
+ALARM data: alias_text is the alarm text; pri is ONLY "a"|"b"|"c"; alarm_type
+"general"|"system"; alarm_destination "general"|"ew"|"cw". DELAY_VARIABLE has
+data null - its delay arrives as a CONST (seconds) wired to in1 ("Delay when
+true"; optional in2 = "Delay when false"). The canonical chain is
+reader -> comparator <- limit -> DELAY_VARIABLE <- CONST(seconds) -> ALARM
+(full worked file: CLAUDE.md section 20.6 / AI-BRIEFING.txt).
+
+{
+  "id": 57,
+  "func": "alarm",
+  "type": "ALARM",
+  "compile_type": "output",
+  "data": {
+    "alias_text": "Sjekk Yr_funksjon varmekabel_snøsmelt",
+    "pri": "a",
+    "alarm_type": "general",
+    "alarm_destination": "general"
+  },
+  "override": {},
+  "runtime": {},
+  "properties": [],
+  "output_type": null,
+  "x": 440,
+  "y": 820
+}
+
+{
+  "id": 61,
+  "func": "alarm_multi_delay",
+  "type": "DELAY_VARIABLE",
+  "compile_type": "function",
+  "data": null,
+  "override": {},
+  "runtime": {},
+  "properties": [],
+  "output_type": [
+    "boolean"
+  ],
+  "x": 480,
+  "y": 140
+}
+
+The wires into DELAY_VARIABLE (note the real pin names):
+
+[
+  {
+    "source": {
+      "id": 10,
+      "put": 0
+    },
+    "target": {
+      "id": 61,
+      "put": 0,
+      "by_refference": true
+    },
+    "alias_text": "Value"
+  },
+  {
+    "source": {
+      "id": 62,
+      "put": 0
+    },
+    "target": {
+      "id": 61,
+      "put": 1
+    },
+    "alias_text": "Delay when true"
+  },
+  {
+    "source": {
+      "id": 64,
+      "put": 0
+    },
+    "target": {
+      "id": 61,
+      "put": 2
+    },
+    "alias_text": "Delay when false"
+  }
+]
+
+--- AGE_OF_VALUE + a by_refference wire ---
+Age/period blocks take their value input by reference - the flag sits on the
+connection TARGET:
+
+{
+  "id": 53,
+  "func": "age_of_value",
+  "type": "AGE_OF_VALUE",
+  "compile_type": "function",
+  "data": null,
+  "override": {},
+  "runtime": {},
+  "properties": [],
+  "output_type": [
+    "integer"
+  ],
+  "x": 250,
+  "y": 800
+}
+
+{
+  "source": {
+    "id": 54,
+    "put": 0
+  },
+  "target": {
+    "id": 53,
+    "put": 0,
+    "by_refference": true
+  },
+  "alias_text": "Value"
+}
+
+--- TRANSFORM_MAPPED with a CUSTOM map ---
+A user-defined mapping table flips func to "transform_mapped_custom.run" (same
+type), data.block_func_args.map becomes "__custom__", and the table lives in
+properties.custom_transform_map. Named refrigerant maps instead use
+func "transform_mapped.run" with block_func_args.map = "<map key>".
+
+{
+  "id": 8,
+  "func": "transform_mapped_custom.run",
+  "type": "TRANSFORM_MAPPED",
+  "compile_type": "function",
+  "data": {
+    "block_func_args": {
+      "map": "__custom__"
+    }
+  },
+  "override": {},
+  "runtime": {
+    "require_plant_revision": null
+  },
+  "properties": {
+    "custom_transform_map": {
+      "alias_text": "",
+      "value": {
+        "inputs": [
+          [
+            0,
+            1000
+          ]
+        ],
+        "output": [
+          0,
+          1000
+        ]
+      }
+    },
+    "input_count": {
+      "alias_text": "Input Count",
+      "value": 1
+    },
+    "input_alias_texts": {
+      "alias_text": "Input Alias Texts",
+      "value": [
+        "Input"
+      ]
+    }
+  },
+  "output_type": "float",
+  "x": 440,
+  "y": 150
+}
+
+--- PROCESS INSTANCES (published library blocks used inside a sketch) ---
+type = the UPPERCASE library process key, func = the same lowercased,
+compile_type "process", block-level current_revision = the published revision
+used. These only import on a plant whose library publishes the same process key
+- the importer warns otherwise. Do NOT generate process instances unless the
+user names one that exists on the target plant; compose system blocks instead.
+
+{
+  "id": 0,
+  "func": "27_5f68429fd7c8c1.64467588",
+  "type": "27_5F68429FD7C8C1.64467588",
+  "compile_type": "process",
+  "data": null,
+  "override": {},
+  "runtime": {},
+  "properties": [],
+  "output_type": null,
+  "x": 500,
+  "y": 150,
+  "current_revision": "9596"
+}
+
+A process instance with a per-instance label (for process blocks the label lives
+in data.alias_text, not override):
+
+{
+  "id": 11,
+  "func": "10_560e6aec189bc2.50557155",
+  "type": "10_560E6AEC189BC2.50557155",
+  "compile_type": "process",
+  "data": {
+    "alias_text": "Varmluftsport E101"
+  },
+  "override": {},
+  "runtime": {},
+  "properties": [],
+  "output_type": null,
+  "x": 530,
+  "y": 110,
+  "current_revision": "18300"
+}
+
+--- INSIDE A LIBRARY PROCESS (definition sketches, mode "process") ---
+A process is a published sketch with mode "process". Its pins are PROCESSIN
+blocks, its outputs PROCESSOUT blocks (measured on the fleet's top 72
+definitions / 1,714 blocks):
+  PROCESSIN data: {"alias_text":"-Room_temp_read","method":"parameter",
+                   "by_refference":false,"type":"float"}
+  method census (385 pins): constant 59% (a tweakable setting fed by a CONST
+  at instantiation) | parameter 33% | tag | enable | calendar. Typical
+  process has 2-5 pins and 0-3 outputs; by_refference is never set on pins.
+  PROCESSOUT data: {"alias_text":"Kalkulert settpunkt"}
+TWO PROCESS CLASSES - important when READING sketches:
+  1. Function-like: has PROCESSOUT outputs ("Kurve 2P": 5 pins in, value out).
+  2. Effect-like: ZERO outputs - the ALARM / VIRTUALOUT / WRITETOUNIT lives
+     INSIDE the process. This class DOMINATES: 44 of the top 72 (61%). A
+     process instance with no outgoing wires is usually an effect process,
+     NOT dead logic. (Interiors publish wholesale: VIRTUALOUT is the most-
+     placed inner block, and processes even fetch WEATHER data themselves.)
+MODE GATING (every palette block has a mode field - live census):
+  - PARAMV and TAGVALUE exist ONLY in function-mode sketches. A process
+    definition NEVER contains them - it reads plant data through PROCESSIN
+    pins (method parameter/tag) instead.
+  - PROCESSIN, PROCESSOUT and AVERAGE_PERIODE exist ONLY in process-mode
+    definitions. Never emit them in a mode "function" sketch (the validator
+    and the import panel both reject it).
+  - AVERAGE_PERIODE (process-only helper): func "average_periode.run",
+    inputs Parameter / Periode Enable / Collect Enable, one float output,
+    data null - gated averaging inside definitions.
+  - An enable-method PROCESSIN also carries data.enable (true|false) - the
+    pin's default state.
+LIFECYCLE (how a definition ships): save_process = one history revision
+with a comment; publish_process = the DEPLOYABLE revision (+ SVG preview)
+that instances pin via current_revision - saving never affects deployed
+instances until publish. States DONE/TEST/PROGRESS/PHASED_OUT drive the
+toolbox icon; each process also has an invoiceable billing flag. The
+designer has a REPLACE-PROCESS feature (right-click an instance) that swaps
+it for another process with a pin-mapping table and rewires connections.
+"Kurve for 4 knekkpunkt" definition = 11 blocks: Verdi:parameter pin +
+X1-X4/Y1-Y4 constant pins + interpolation + PROCESSOUT - matching exactly how
+sketches instantiate it (PARAMV on pin 0, eight CONSTs).
+
+================================================================================
+HOW BIG PRODUCTION SKETCHES ARE BUILT
+================================================================================
+
+The largest corpus sketches are small recipes REPEATED, not new structures:
+
+  - "switch-funksjon" (88 blocks / 80 wires): the same stamp eight times - one
+    library process fed by seven CONSTs, its outputs into three WRITETOUNITs.
+  - "switch-endedisker" (44 blocks): the identical stamp four times.
+  - "COPonline-KA1" (22 blocks): ONE process + 15 PARAMV readings + 6 CONSTs
+    wired into its pinned inputs.
+  - "init-oppsett" (28 blocks): four different library processes, each fed by
+    PARAMV / CONST / CALENDAR blocks on their required inputs.
+
+HOW PRODUCTION LOGIC IS ARCHITECTED (deep-dive census, 138 plants / 1508
+sketches / 37,503 blocks / 36,970 wires, 2026-07-11):
+
+  - Three archetypes: PROCESS-HUB (a library process + only feeders/outputs)
+    26% of sketches; PURE BLOCK LOGIC (no processes) 38%; MIXED 35%.
+  - Logic is SHALLOW and WIDE: 71% of sketches have a longest path of <= 4
+    blocks. Big sketches grow by stamping parallel rows, never deep chains.
+    84% of outputs feed exactly one input. Median sketch: 11-20 blocks.
+  - Top motifs by occurrence: process -> WRITETOUNIT (1341), process ->
+    VIRTUALOUT (938), gated write IF -> WRITETOUNIT (839), parameter bridge
+    PARAMV -> WRITETOUNIT (515), setpoint select SELECTOR -> write (497).
+  - THE CANONICAL 3-BLOCK CHAINS (typed walk over 74,814 wires) - generated
+    logic should normally land in one of these:
+      CONST > PROCESS > WRITETOUNIT      (8176)  the curve/plugin stamp
+      CONST > PROCESS > VIRTUALOUT       (5860)
+      PARAMV > PROCESS > WRITETOUNIT     (3126)
+      CONST > IF > WRITETOUNIT           (2381)  enable-gated write
+      CONST > SELECTOR > WRITETOUNIT     (1155)  setpoint pick
+      FORMULA > IF > WRITETOUNIT          (875)  mode-decoder gate
+      CONST > WEATHER > VIRTUALOUT        (693)  weather pipeline
+      PARAMV > MULTIPLY > VIRTUALOUT      (600)  unit-scaling KPI
+      PARAMV/CONST > LIKE > ALARM       (~1076)  state-mismatch alarm
+      PARAMV > FORMULA > VIRTUALOUT       (496)  computed KPI
+  - IF is an ENABLE SWITCH more than a computed gate: 69% of IF condition
+    pins are fed by a labelled boolean CONST the customer can flip - not a
+    comparator. Reproduce this: gate switchable behaviour on a named CONST.
+  - Alarms are debounced: comparator -> DELAY/DELAY_VARIABLE -> ALARM is the
+    standard chain (direct comparator -> ALARM is rare).
+  - The canonical process hub: one process instance with pins fed by CONSTs
+    (10,926 wires fleet-wide) + PARAMVs (5,191); TRANSFORM_MAPPED converts
+    pressure -> temperature BEFORE the process pin when needed (454).
+    Processes chain process -> process (68).
+  - Templates are stamped byte-identically across plants: the 2-block
+    PARAMV -> WRITETOUNIT bridge is a named template on 13 plants; kurve-
+    styring/sandstadkurve 44-63-block stamps ~86x across 8 plants; the Yr
+    weather-data sketch on 12 plants.
+  - Process instance type keys can be PURE WORDS with no uniqid segment
+    (EW_VENTILATION_ROOM_TEMPERATUR_HIGH_LIMIT) - treat any
+    compile_type "process" type as an opaque key that must exist in the
+    target plant's library.
+
+PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
+
+  - ALARM pri: "a" is the fleet norm (79%; c 15%, b 6%); destination
+    "general" 91%. Default to a/general unless the user says otherwise.
+  - WRITETOUNIT: force_write false (true is 2.6%), delay 0 (two exceptions
+    fleet-wide), limit_count false, count 1. Emit exactly these.
+  - CONST: float is the most common type (float > integer > boolean >
+    string); mode "single" essentially always (repeat is 29 of 15,774).
+  - LABEL EVERY BLOCK: 73% of all production blocks have override.alias_text
+    set. Older sketches may OMIT data keys entirely - when READING, treat a
+    missing key as its default; when GENERATING, write keys explicitly.
+  - DOCUMENT EVERY BLOCK: properties.documentation =
+    {"alias_text": "", "value": "<1-2 sentences>"} - what the block does in
+    THIS sketch, why the limit/delay value, what to bind. Shows under
+    right-click -> Edit documentation. The fleet rarely fills this (its 529
+    uses are #ew.* machine tags - keep those verbatim when regenerating an
+    existing sketch); GENERATED sketches must fill it on every block anyway,
+    so the import is self-documenting.
+  - NAMING STYLE: VIRTUALOUT labels start with "Kalk" (kalkulert, x899 -
+    THE convention for computed values) or the plain value name; CONST
+    labels are ROLE words (delay x1537, limit x1404, x1/y1 curve points,
+    highlim/lowlim/cutout, settpunkt, bryter, effektgrense). Name yours the
+    same way.
+  - eng_unit vocabulary: &deg;C (HTML entity - most common!), °C, %, min, K,
+    sek, kWh, ppm, Pa. Entity and literal degree forms are interchangeable.
+  - by_refference wires (the "read value by reference" pin flag) cluster on:
+    PARAMV -> AVG/MIN/MAX_IN_PERIOD.put0, comparator -> DELAY.put0,
+    SUBTRACT -> TRANSFORM_MAPPED.put0 (superheat into refrigerant map), and
+    OPTIMAL_START_STOP wiring: put0 <- CALENDAR_2_0 (by_ref), put2 <- PARAMV,
+    puts 3-5 <- CONSTs.
+  - When READING production sketches, expect clutter: 27% of sketches contain
+    unwired helper blocks (leftover CONSTs, parked readings) - not an error.
+    Generated sketches should still wire everything.
+  - groups is [] in nearly every sketch, but NON-EMPTY groups exist (visual
+    group boxes: {id, blocks:["<string ids>"], alias_text, open, box}) -
+    preserve them when editing an existing sketch; emit [] for new ones.
+  - Sketch NAMES read like drawing labels in the plant's language:
+    "Kurvestyring", "Yr.no", "360.001 Sandstadkurve", "+01=360.009_Kurve".
+  - DELAY_VARIABLE's delay pin is usually a CONST but 47 production sketches
+    compute it with a FORMULA (dynamic delay) - allowed. PULSE_COUNT's level
+    pin is CONST-only (host-enforced), 17/17 in the fleet.
+  - WHERE LOGIC LIVES: "Smarte funksjoner" is the conventional project for
+    custom logic (25% of all sketches), then "Plant Watcher", "EcoWatcher".
+  - CROSS-SKETCH PIPELINES ARE THE NORM: 21% of all sketches READ another
+    sketch's VIRTUALOUT (PARAMV with a _VIRTUAL_ driver id); 46% publish one.
+    Split big logic into chained sketches instead of one giant sketch.
+  - Block ids are NOT compact in production (70% of sketches have gaps) -
+    when editing, never renumber; new blocks take max(id)+1.
+  - Hard invariants (0 violations in 65,066 wires): no self-loops, no
+    duplicate wires, one wire per input, integer ids, non-negative x/y.
+    Every SAVED wire carries alias_text (host stamps pin names on save).
+  - HOW THE TOP CURVE PROCESSES ARE INSTANTIATED (feeder profile by pin):
+    "Kurve for 4 knekkpunkt": pin0 <- PARAMV (outdoor temp) or
+    TRANSFORM_MAPPED (pressure->temp), pins 1-8 <- 8 CONSTs (four x/y
+    breakpoints). "Kurve 2P": pin0 <- reading, pins 1-4 <- 4 CONSTs
+    (two points). Then process output -> WRITETOUNIT. That stamp is the
+    single most common production pattern.
+  - TRANSFORM_MAPPED: 95% of production uses a __custom__ table (see the
+    custom-map example above); named refrigerant maps are the exception.
+  - ALARM TEXT STYLE: "<drawing/tag number> <fault>", plant language -
+    "360.003 Ingen Kommunikasjon I/O Modul Nr.3", "Høyt diff.trykk RD40".
+  - WRITETOUNIT write-throttle: production often sets the block property
+    interval = {"alias_text":"Interval","value":"10 sec"} (978 blocks).
+  - CALENDAR offsets are 0/0 in every configured production block (252/252).
+  - CRITERIA in practice = time-of-week gates: day_of_week + hour_of_day +
+    minute_of_hour cover nearly all use.
+  - Process eids are FREE-FORM TEXT: besides <lib>_<uniqid>, pure-word eids
+    exist with typos and mixed case (PW_VENTILASTION_..._M_PåDRAG_GJENV) -
+    never pattern-match or "fix" them; copy verbatim.
+  - TEMPLATES (449 global starter sketches, all scraped): TODO-bind is THEIR
+    convention too - 336 of 449 ship with null-data PARAMV/WRITETOUNIT for
+    the user to bind; only 160 carry concrete ids. Templates skew big
+    (median 11-40 blocks, up to 464) and 48% instantiate processes. Themes:
+    snøsmelt/kurve/vent/alarm/energi/yr/esmelt/COP/DALI all covered.
+  - OLD-DOCUMENT TOLERANCE: very old sketches/templates OMIT compile_type
+    and current_revision on process instances - when reading, treat "type
+    not in the palette + func == lowercase(type)" as a process instance.
+  - WHAT COMPILE DOES (the deployed artifact vs the authored sketch):
+    process instances are INLINED with composite string ids ("0-3" =
+    instance 0's inner block 3; an 8-block sketch became 48 compiled
+    blocks); driver_id normalizes to SINGULAR; runtime/properties become
+    []; wire labels become {"text":"..."} objects; groups are dropped.
+  - COMPILE ERRORS MEAN BINDINGS, NOT JSON: the production failure shape is
+    "Unable to get element ID for <unit> (<TAG>) for block id <N>" - the
+    compiler resolves unit/tag/param bindings server-side. If a user pastes
+    that error, point them at the named block's binding (stale unit,
+    deleted tag), not at the sketch structure. F10 can pass while compile
+    fails for exactly this reason.
+
+Corpus-wide block frequency: CONST 8394+, PARAMV 5599+, WRITETOUNIT 2875+,
+VIRTUALOUT 1658+, then FORMULA / IF / DELAY_VARIABLE - and almost no ALARMs.
+Production VV logic mostly CONTROLS (writes values); it does not just alarm.
+ZERO block types outside the documented allowlist appeared in the entire
+fleet corpus (37,503 blocks). Binding split at scale: singular driver_id 3331
+vs plural driver_ids 2155 on PARAMV (WRITETOUNIT 1501 vs 1311) - legacy
+singular is the MAJORITY, so always READ both, GENERATE plural.
+
+================================================================================
+FINAL CHECKLIST BEFORE DELIVERING A GENERATED FILE
+================================================================================
+
+  [ ] Shape matches the envelope skeleton exactly (or a bare {mode,blocks,connections}).
+  [ ] Pure JSON - parses with JSON.parse, no comments, no trailing commas.
+  [ ] Every block has integer id, correct func, snake_case data per the examples.
+  [ ] Every non-optional input pin is wired; one wire max per input.
+  [ ] No invented driver ids; unbindable blocks use data null + "TODO bind" label.
+  [ ] block_count / connection_count match the arrays.
+  [ ] node logic-designer-import-export/validate-vv-sketch.js <file> exits 0.
+
+More: AI-BRIEFING.txt (the contract), CLAUDE.md (the full reference; section 20
+is the machine contract, section 21 documents this corpus), reference_data/
+(raw captured payloads).
