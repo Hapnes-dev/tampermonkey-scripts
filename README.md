@@ -22,10 +22,6 @@ A collection of Tampermonkey userscripts. Click an install link below to add a s
 | [Logic Designer Import/Export](logic-designer-import-export/) | Adds Export/Import sketch (JSON) + a Live Simulate panel to the VV Designer — move logic between plants with one-click driver-id rebinding (`3111_…` → `10112_…`), warnings for calendar/tag bindings and unknown process blocks, overwrite-safe save-as on the target plant, and a client-side simulator that runs the whole sketch on the canvas (values you set, FORMULA blocks evaluated locally, flow replay, AI-ready log) | [Install](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/logic-designer-import-export/Logic-Designer-Import-Export.user.js) |
 | [Supermarket Superuser](supermarket-superuser/) | Power-tools for the IWMAC Supermarket parameters page (`/settings/regulators`): per-column filters, searchable unit selector, Hide 0.0, Edit mode that drag-moves parameters between Measurements ⇄ Settings (`att` r ⇄ rw) with batched save, a cross-group "Show all parameters" view, driver-parameter details editor with scaling presets, batch Plant-pri/scaling on marked rows with post-write verification, one-click copy of changes to other units, and a real .xlsx export. By ØTS/MATS/Hapnes | [Install](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/supermarket-superuser/Supermarket-superuser.user.js) |
 
-## Also in this repo
+## Related
 
-Not a userscript, but it lives alongside one:
-
-| | Description | Install |
-|---|---|---|
-| [`vv-designer-sketch`](logic-designer-import-export/claude-skill/) | A **Claude agent skill** that generates, validates and debugs VV Designer sketch JSON. Packages the block reference, the nine worked examples and `validate-vv-sketch.js` from [`logic-designer-import-export/`](logic-designer-import-export/), so Claude loads them automatically when you describe plant logic — and checks its own output against the validator before answering | [Instructions](logic-designer-import-export/claude-skill/README.md) |
+The VV Designer reference material in [`logic-designer-import-export/`](logic-designer-import-export/) is also packaged as a Claude agent skill — **[`vv-designer-sketch`](https://github.com/Hapnes-dev/agent-skills/tree/main/vv-designer-sketch)** in [Hapnes-dev/agent-skills](https://github.com/Hapnes-dev/agent-skills) — so Claude loads it automatically when you describe plant logic, and validates its own output before answering. This repo stays the source of truth for the docs it bundles.
