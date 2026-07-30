@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.107
+// @version      4.108
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.107';
+    const SCRIPT_VERSION   = '4.108';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2665,6 +2665,7 @@
             .map(t => ({
                 taskId: t.taskId, taskName: String(t.taskName), done: !!t.completedAt, // done ⇒ ticked off in the plan
                 phase: String((t.projectPhase && t.projectPhase.projectPhaseName) || ''), // category/phase carries the discipline for bare-named tasks
+                parentTask: t.parentTask || (t.parentTaskObject && t.parentTaskObject.taskId) || null, // v1 tenant shape: FLAT id (+ a redundant object) — see ensureBucketSubtask
             }));
         _rlTasksCache[projectId] = tasks;
         return tasks;
@@ -2673,9 +2674,22 @@
     // Team bucket projects (Team Kulde Oppgaver, …) keep a container task with one SUBTASK per
     // no-project plant ("6163 - COOP PRIX Undheim"). When booking a no-project plant into a bucket
     // that has that container, the time entry belongs on the plant's subtask — found by its
-    // "<plant id> -" name prefix, or created under the container (POST /tasks with taskName +
-    // project + parent per the public API; one alternate flat-shape retry for tenant quirks).
+    // "<plant id> -" name prefix, or created under the container.
     // Buckets WITHOUT the container keep the old bare-activity behaviour.
+    //
+    // ⚠ TWO APIs, TWO PARENT FIELD NAMES (the v4.108 fix). The public docs at
+    // developer.rocketlane.com describe `https://api.rocketlane.com/api/1.0` where a task's parent is
+    // NESTED: `parent: { taskId }`. This script talks to the TENANT api
+    // (`kiona.api.rocketlane.com/api/v1`), whose task objects carry a FLAT `parentTask` integer (plus a
+    // redundant `parentTaskObject`) — verified on all 32 hand-made subtasks of the Team Kulde container.
+    // Unknown body fields are silently DROPPED, never rejected (measured across 5 shapes, all HTTP 200,
+    // all no-ops). So ≤4.107 posted only the public shape, got a 201 back, logged "created … under
+    // <container>" — and created a task with `parentTask: null`, floating at the top level of the
+    // project. Everything else worked (booking, Description log), which is why it went unnoticed.
+    // Fix: send EVERY spelling in one body, then READ THE TASK BACK and log whether it stuck. The
+    // read-back is the point — `PUT /tasks/{id}` has no parent field at all (13 documented body params,
+    // none of them a parent), so a detached task can only be repaired by dragging it in the Rocketlane
+    // UI. Saying so in the console beats another silent success.
     const BUCKET_PARENT_RE = /oppgaver\s+utenfor\s+rocketlane/i;
     const _bucketSubtaskMemo = new Map(); // `${projectId}|${plant_id}` -> taskId | null (per session)
     async function ensureBucketSubtask(projectId, plantId, plantName) {
@@ -2686,19 +2700,24 @@
             const tasks = await rlTasks(projectId);
             const parent = tasks.find(t => BUCKET_PARENT_RE.test(t.taskName));
             if (parent) {
+                const pid = parent.taskId;
                 const pidRe = new RegExp('^\\s*' + String(plantId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–—:.]');
-                const hit = tasks.find(t => t.taskId !== parent.taskId && pidRe.test(t.taskName));
+                const cand = tasks.filter(t => t.taskId !== pid && pidRe.test(t.taskName));
+                // Prefer a real child of the container over a same-named stray left top-level by ≤4.107.
+                const hit = cand.find(t => String(t.parentTask || '') === String(pid)) || cand[0];
                 if (hit) out = hit.taskId;
                 else {
                     const name = `${plantId} - ${plantName || plantId}`;
-                    let r = await rlFetch('POST', '/tasks', { taskName: name, project: { projectId }, parent: { taskId: parent.taskId } });
+                    let r = await rlFetch('POST', '/tasks', { taskName: name, project: { projectId }, parent: { taskId: pid }, parentTask: pid, parentTaskId: pid });
                     if (!(r.status === 200 || r.status === 201))
-                        r = await rlFetch('POST', '/tasks', { taskName: name, projectId, parentTaskId: parent.taskId });
+                        r = await rlFetch('POST', '/tasks', { taskName: name, projectId, parentTask: pid, parentTaskId: pid });
                     const t = r.json && (r.json.taskId ? r.json : (r.json.data && r.json.data.taskId ? r.json.data : null));
                     if ((r.status === 200 || r.status === 201) && t && t.taskId) {
                         out = t.taskId;
-                        (_rlTasksCache[projectId] = _rlTasksCache[projectId] || []).push({ taskId: t.taskId, taskName: name, done: false, phase: '' });
+                        const rec = { taskId: t.taskId, taskName: name, done: false, phase: '', parentTask: null };
+                        (_rlTasksCache[projectId] = _rlTasksCache[projectId] || []).push(rec);
                         LOG('book: created bucket subtask', name, '→', t.taskId, 'under', parent.taskName);
+                        rec.parentTask = await verifyBucketSubtaskParent(t.taskId, pid, name, parent.taskName);
                     } else {
                         LOG('book: bucket subtask create failed', r.status, String(r.raw || r.error || '').slice(0, 160));
                     }
@@ -2707,6 +2726,24 @@
         } catch (err) { LOG('book: bucket subtask lookup failed', String(err)); }
         _bucketSubtaskMemo.set(memoKey, out); // a failed create memoises null → this run falls back to the activity style
         return out;
+    }
+    // Read a freshly created subtask back and report whether the parent actually attached (v4.108).
+    // A 201 proves only that the row exists; see the field-name note above. Never throws and never
+    // affects the booking — the task is usable either way, it just sits in the wrong place.
+    async function verifyBucketSubtaskParent(taskId, parentId, name, parentName) {
+        try {
+            const g = await rlFetch('GET', `/tasks/${taskId}`);
+            const t = g.json && (g.json.taskId ? g.json
+                : g.json.data && g.json.data.taskId ? g.json.data
+                : g.json.task && g.json.task.taskId ? g.json.task : null);
+            if (!t) { LOG('book: subtask parent unverified — no task json', g.status); return null; }
+            const got = t.parentTask || (t.parentTaskObject && t.parentTaskObject.taskId) || null;
+            if (String(got || '') === String(parentId)) { LOG('book: bucket subtask parent OK', taskId, '→', parentId); return got; }
+            LOG('book: bucket subtask NOT ATTACHED —', taskId, name, 'came back parentTask=' + JSON.stringify(got) +
+                '; it is top-level. Drag it under "' + parentName + '" in Rocketlane — PUT /tasks cannot re-parent.');
+            return got;
+        } catch (err) { LOG('book: subtask parent check failed', String(err)); }
+        return null;
     }
     // Append one dated section to a bucket subtask's Description after booking onto it — the subtask
     // doubles as the plant's visit log ("what did we do there, when"), since these plants have no

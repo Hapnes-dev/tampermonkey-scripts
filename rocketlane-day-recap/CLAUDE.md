@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.107**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.108**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -463,6 +463,13 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.105–4.108** team-bucket **subtasks** + their Description visit-log, and the parent-attachment fix.
+  Detail lives with the feature under *Book day* → "Bucket SUBTASKS" below, since it is all one mechanism.
+  Short version: 4.105 books no-project plants onto a per-plant subtask of the "Oppgaver utenfor Rocketlane"
+  container; 4.106 logs what you did that day into that subtask's Description; 4.107 backfills the ones
+  already booked; **4.108** makes the subtask actually attach to the container (the tenant API wants a flat
+  `parentTask`, not the public API's nested `parent:{taskId}`, and drops unknown fields silently) and reads
+  the task back so a failure says so instead of logging success.
 - **4.98–4.104** Book week hardening (all from live use on 2026-07-06):
   - **Full-scan gate (4.101, Thomas's rule):** Book week must stand on FULL-scan data — quick scans miss
     plant-admin/designer visits and would mis-distribute the 7,5 h. `weekEnsureFullScan` checks every
@@ -574,7 +581,10 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     session, result pushed into `_rlTasksCache`). Falls back to the activity style when the container is
     missing or the create fails. Dupe guards (plan-time `bucketDupe`, book-time, and the 5xx landed-check)
     match BOTH styles: activity `<plant id> …` OR a task entry whose task name starts with the plant id.
-    Create-shape confirmed live 2026-07-10 ("3242 - Bunnpris & Gourmet Fuglset" created by v4.105).
+    ~~Create-shape confirmed live 2026-07-10~~ — **that claim was wrong, see 4.108 below.** The task was
+    created, so the 201 looked like proof; the `parent` half of the body was silently discarded and the
+    subtask landed at the top level of the project. Only the create side was ever verified, never the
+    resulting task's parent.
     **Description log (4.106):** after each successful subtask booking, `bucketSubtaskDescribe` appends a
     dated HTML section to the subtask's **Description** (`GET /tasks/{id}` → append `<p><b>date</b> —
     activity<br>notes…</p>` → `PUT /tasks/{id}` with just `taskDescription`, partial update per the docs) —
@@ -596,6 +606,31 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     `book: description +`. Also re-synced `SCRIPT_VERSION` (stale at '4.104' through two releases — console
     tags said v4.104 while 4.106 was installed, derailing installed-version debugging exactly as the 4.61
     note warned).
+    **Parent attachment (4.108) — the subtasks were never actually subtasks.** Investigating why the
+    container task showed an empty Description turned up the real defect: every subtask v4.105–4.107
+    created sat **top-level** in the project (`parentTask: null`), not under the container. Root cause is
+    two APIs with two different field names. The **public** docs (`api.rocketlane.com/api/1.0`) nest the
+    parent as `parent: {taskId}`; the **tenant** API this script actually calls
+    (`kiona.api.rocketlane.com/api/v1`) carries a **flat `parentTask` integer** plus a redundant
+    `parentTaskObject` — confirmed on all 32 hand-made subtasks of container 35145920. And the tenant API
+    **silently drops unknown body fields rather than rejecting them** (measured: five different parent
+    spellings on `PUT`, all HTTP 200, all no-ops), so ≤4.107 got a 201 and logged "created … under
+    <container>" while creating an orphan. Fix: `ensureBucketSubtask` now posts **every** spelling in one
+    body (`parent:{taskId}` + `parentTask` + `parentTaskId`) and then **reads the task back**
+    (`verifyBucketSubtaskParent`), logging `bucket subtask parent OK` or a loud `NOT ATTACHED` naming the
+    task and the drag needed. `rlTasks` maps `parentTask` through, so reuse now prefers a genuine child of
+    the container over a same-named stray. **Deliberately NOT done:** no second create shape on a failed
+    read-back (it would duplicate the task), and no `PUT` re-parent — `PUT /tasks/{id}` has **no parent
+    field at all** (its 13 documented body params are taskName, taskDescription, taskPrivateNote,
+    startDate, dueDate, effortInMinutes, progress, atRisk, type, fields, status, externalReferenceId,
+    private). **Re-parenting is impossible through the API; existing orphans must be dragged in the
+    Rocketlane UI.** Three exist today in project 1106229 — 41499104, 41499105, 41500225. Also confirmed
+    this pass, by live probe: a partial `PUT /tasks/{id} {taskDescription}` really does work (200,
+    persists, leaves taskName/assignee/timeEntryMinutes intact), so the 4.106/4.107 write path is sound;
+    subtask-style timesheet entries carry `task` set and **`activityName: null`** (that is what makes the
+    4.107 backfill able to find them), whereas pre-4.105 activity-style entries have `task: null` and are
+    not healable by design. And note the CORS correction at §"4.62–4.73" — page-context `fetch` to the
+    tenant API is *not* blocked, which is how all of the above was measured against live data.
   - **Noise filter (4.86):** `BOOK_NOISE_RE` (data_engine|sysinfo) — internal machinery never appears in
     titles/notes/matcher evidence.
   - **Fetch perf (4.85):** see §7 — batch 10, commits as pooled singles + session cache, two_versions cache.
@@ -604,8 +639,11 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     (4.75 — response wrapping varies per backend node).
 - **4.62–4.73** ⤴ **Book day** — one click writes the split into the Rocketlane timesheet via Rocketlane's own API.
   New module before `renderVisits`: `rlCreds` (api-key + userId from `localStorage.__api_key`, same as the
-  chat-bridge), `rlFetch` (GM_xmlhttpRequest, origin-pinned to `kiona.api.rocketlane.com/api/v1` — page fetch is
-  CORS-blocked, the app tunnels through a comlink iframe), `rlProjects` (paginated `GET /projects?pageSize=100&page=N`,
+  chat-bridge), `rlFetch` (GM_xmlhttpRequest, origin-pinned to `kiona.api.rocketlane.com/api/v1` — the app itself
+  tunnels through a comlink iframe; ~~page fetch is CORS-blocked~~ **corrected 4.108: it is not** — a plain
+  page-context `fetch` to that origin with the `api-key` header works fine, which is how this session
+  debugged the API live. `GM_xmlhttpRequest` stays anyway: the script also runs on `tools.iwmac.local`
+  and `*.plants.iwmac.local`, where it genuinely is needed), `rlProjects` (paginated `GET /projects?pageSize=100&page=N`,
   cached 24 h in `rl_projects_cache`), `rlFindProject` (name starts with `<plant_id> -`), `rlCategories`
   (`GET /timesheets/categories`), `rlEntriesOn` (weekly `GET /users/{id}/timesheets/{monday}` → that date's entries,
   the dedupe source), `bookTexts` (activity texts from the newest ≤`BOOK_MAX_COMMITS` triggered commits:
