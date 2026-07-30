@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.104**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.107**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -578,9 +578,24 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
     **Description log (4.106):** after each successful subtask booking, `bucketSubtaskDescribe` appends a
     dated HTML section to the subtask's **Description** (`GET /tasks/{id}` → append `<p><b>date</b> —
     activity<br>notes…</p>` → `PUT /tasks/{id}` with just `taskDescription`, partial update per the docs) —
-    the subtask doubles as the plant's visit log. Idempotent (exact section never appended twice; same-day
-    re-runs are stopped earlier by the dupe guards anyway); failures only log, the booked entry is never
-    affected.
+    the subtask doubles as the plant's visit log. Failures only log, the booked entry is never affected.
+    **Description backfill (4.107, the "no task description being added" fix):** 4.106 fused the describe to
+    the moment a FRESH entry was created (`status==='booked'` only) — but every entry booked by ≤4.105 (or
+    whose describe once failed) plans as ⏭ `already-booked`, which skips the loop body, so those subtasks
+    could never gain a Description afterwards: the dupe guards protecting the time entries also permanently
+    blocked the visit log (seen live on task 35145920, Team Kulde Oppgaver). Now
+    `backfillBucketDescriptions(plan, iso)` runs fire-and-forget whenever a plan is REVIEWED (day flow after
+    render, week flow per built day) plus in the book-time dupe guard: each ⏭ bucket row locates the subtask
+    via the existing entry's `task.taskId` (plant-id name-prefix match, category-checked when present) and
+    re-runs the idempotent describe. Idempotence is per **date + category prefix** (`<b>date</b> — Integration`)
+    rather than exact-section match, so regenerated text that drifted (commit correlation is not byte-stable)
+    skips instead of near-duplicating; category prefix is safe because one plan row = one plant×category and
+    every activity starts with its category tag. All description writes serialize through `_describeChain`
+    (concurrent week-flow backfills on the same subtask would lost-update each other's GET-then-PUT). GET
+    parse also accepts a `{task:{…}}` wrapper and logs response keys when unparseable; appended sections log
+    `book: description +`. Also re-synced `SCRIPT_VERSION` (stale at '4.104' through two releases — console
+    tags said v4.104 while 4.106 was installed, derailing installed-version debugging exactly as the 4.61
+    note warned).
   - **Noise filter (4.86):** `BOOK_NOISE_RE` (data_engine|sysinfo) — internal machinery never appears in
     titles/notes/matcher evidence.
   - **Fetch perf (4.85):** see §7 — batch 10, commits as pooled singles + session cache, two_versions cache.

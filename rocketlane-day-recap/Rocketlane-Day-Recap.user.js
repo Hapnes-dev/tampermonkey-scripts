@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.106
+// @version      4.107
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,7 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.104';
+    const SCRIPT_VERSION   = '4.107';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2711,20 +2711,58 @@
     // Append one dated section to a bucket subtask's Description after booking onto it — the subtask
     // doubles as the plant's visit log ("what did we do there, when"), since these plants have no
     // project of their own (v4.106). PUT /tasks/{id} accepts a partial body with just taskDescription
-    // (HTML, per the public API docs). Idempotent: the exact section is never appended twice; any
-    // failure only logs — the time entry is already booked and must not be affected.
-    async function bucketSubtaskDescribe(taskId, iso, act, notes) {
+    // (HTML, per the public API docs). Idempotent per date+category (v4.107): the activity always
+    // starts with its category tag ("Integration: …"), so re-running a day whose generated text
+    // drifted (commit correlation is not byte-stable) updates nothing instead of near-duplicating.
+    // Any failure only logs — the time entry is already booked and must not be affected.
+    // Returns true only when a section was actually appended.
+    async function _bucketSubtaskDescribeNow(taskId, iso, act, notes) {
         try {
             const g = await rlFetch('GET', `/tasks/${taskId}`);
-            const t = g.json && (g.json.taskId ? g.json : (g.json.data && g.json.data.taskId ? g.json.data : null));
-            if (!t) { LOG('book: describe skipped — no task json', g.status); return; }
+            const t = g.json && (g.json.taskId ? g.json
+                : g.json.data && g.json.data.taskId ? g.json.data
+                : g.json.task && g.json.task.taskId ? g.json.task : null);
+            if (!t) { LOG('book: describe skipped — no task json', g.status, g.json ? 'keys: ' + Object.keys(g.json).join(',') : String(g.error || g.raw || '').slice(0, 80)); return false; }
+            const dateNo = escapeHtml(isoToNorwegianDate(iso));
             const bits = [escapeHtml(act)].concat(String(notes || '').split('\n').filter(Boolean).map(escapeHtml));
-            const section = `<p><b>${escapeHtml(isoToNorwegianDate(iso))}</b> — ${bits.join('<br>')}</p>`;
+            const section = `<p><b>${dateNo}</b> — ${bits.join('<br>')}</p>`;
             const cur = String(t.taskDescription || '');
-            if (cur.includes(section)) return;
+            // One section per booking = per date + category prefix ("<b>30/07/2026</b> — Integration").
+            if (cur.includes(`<b>${dateNo}</b> — ${escapeHtml(String(act || '').split(':')[0])}`)) return false;
             const r = await rlFetch('PUT', `/tasks/${taskId}`, { taskDescription: cur + section });
-            if (!(r.status === 200 || r.status === 201)) LOG('book: describe PUT failed', r.status, String(r.raw || r.error || '').slice(0, 140));
+            if (r.status === 200 || r.status === 201) { LOG('book: description +', taskId, isoToNorwegianDate(iso), act); return true; }
+            LOG('book: describe PUT failed', r.status, String(r.raw || r.error || '').slice(0, 140));
         } catch (err) { LOG('book: describe failed', String(err)); }
+        return false;
+    }
+    // All description writes go through one chain: two concurrent describes on the SAME subtask
+    // (e.g. week-flow backfills of two days hitting one plant) would lost-update each other's
+    // GET-then-PUT. Serializing globally costs nothing at this volume (v4.107).
+    let _describeChain = Promise.resolve();
+    function bucketSubtaskDescribe(taskId, iso, act, notes) {
+        const p = _describeChain.then(() => _bucketSubtaskDescribeNow(taskId, iso, act, notes));
+        _describeChain = p.catch(() => {});
+        return p;
+    }
+    // Heal missing Description logs whenever a day's plan is reviewed (v4.107). Bucket rows that
+    // plan as ⏭ already-booked never reach the book loop — their entry exists (booked before
+    // v4.106, or the describe failed that day) — so the visit log would stay missing forever.
+    // The existing subtask entry names the task; re-run the idempotent describe on it.
+    async function backfillBucketDescriptions(plan, iso) {
+        let added = 0;
+        try {
+            const ex = plan._existing || [];
+            for (const e of plan) {
+                if (e.status !== 'already-booked' || e.projectId) continue; // bucket rows only
+                const pidPfx = String(e.plant_id) + ' ';
+                const hit = ex.find(x => x.task && (x.task.taskId || x.task.id)
+                    && String(x.task.taskName || x.task.name || '').indexOf(pidPfx) === 0
+                    && (!e.categoryId || !x.category || x.category.categoryId === e.categoryId));
+                if (hit && await bucketSubtaskDescribe(hit.task.taskId || hit.task.id, iso, e.activityName, e.notes)) added++;
+            }
+        } catch (err) { LOG('book: describe backfill failed', String(err)); }
+        if (added) LOG('book: describe backfill added', added, 'section(s) for', iso);
+        return added;
     }
     // Discipline detector: [name, suffix-regex, evidence-keywords]. Calibrated on 37 real plant-day cases
     // across 16 projects (v4.82 deep-dive: match rate 11→15, zero losses): device ORDER-NO prefixes carry
@@ -2957,10 +2995,14 @@
                 // Matches both entry styles: bare activity ("6163 …") and subtask ("6163 - …" task name).
                 const ex = plan._existing || [];
                 const pidPfx = String(e.plant_id) + ' ';
-                if (ex.some(x => x.project && x.project.id === projectId && x.category && x.category.categoryId === e.categoryId
+                const prior = ex.find(x => x.project && x.project.id === projectId && x.category && x.category.categoryId === e.categoryId
                     && (String(x.activityName || '').indexOf(pidPfx) === 0
-                        || String((x.task && (x.task.taskName || x.task.name)) || x.taskName || '').indexOf(pidPfx) === 0))) {
-                    e.status = 'already-booked'; onProgress && onProgress(e); continue;
+                        || String((x.task && (x.task.taskName || x.task.name)) || x.taskName || '').indexOf(pidPfx) === 0));
+                if (prior) {
+                    e.status = 'already-booked';
+                    // The entry exists but its Description log may not (booked pre-v4.106) — heal it (v4.107).
+                    if (prior.task && (prior.task.taskId || prior.task.id)) await bucketSubtaskDescribe(prior.task.taskId || prior.task.id, iso, e.activityName, e.notes);
+                    onProgress && onProgress(e); continue;
                 }
                 // Bucket keeps an "Oppgaver utenfor Rocketlane" container? Then the entry goes onto the
                 // plant's SUBTASK there (found or created: "<plant id> - <plant name>") instead of a bare
@@ -3032,6 +3074,7 @@
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
+            backfillBucketDescriptions(plan, iso); // ⏭ bucket rows: heal missing Description logs in the background (v4.107)
             function wire() {
                 const updateGo = () => {
                     const n = [...box.querySelectorAll('.bookplan-cb')].filter(c => c.checked).length;
@@ -3235,6 +3278,7 @@
                     const plan = visits.length ? await buildBookingPlan(visits, iso,
                         (n, total, v) => say(`reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
                     days.push({ iso, wd: WD[i], plan });
+                    if (plan.length) backfillBucketDescriptions(plan, iso); // heal ⏭ bucket rows; serialized internally (v4.107)
                 } catch (err) {
                     days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err) });
                 }
