@@ -40,10 +40,12 @@ a real file must be pure JSON with no comments)
     "connection_count": M,              <- must equal sketch.connections.length
     "sketch": {
       "mode": "function",               <- REQUIRED ("process" only for reusable sub-sketches)
-      "require_plant_revision": 0,      <- 620 if IF / WEATHER / AGE_OF_VALUE used
+      "require_plant_revision": 0,      <- MAX required_plant_revision of the blocks used
+                                        <- (620 for IF / WEATHER / AGE_OF_VALUE), else 0
       "blocks": [ ... ],                <- see block anatomy below
       "connections": [ ... ],
-      "groups": [] } }                  <- [] in every production file
+      "groups": [] } }                  <- [] in nearly every file; emit [] for new
+                                        <- sketches (non-empty groups exist - see below)
 
 BLOCK ANATOMY (every block has ALL of these keys)
 
@@ -2981,16 +2983,20 @@ PRODUCTION DEFAULTS (field-level census, 191 plants / 50,443 blocks):
     fleet-wide), limit_count false, count 1. Emit exactly these.
   - CONST: float is the most common type (float > integer > boolean >
     string); mode "single" essentially always (repeat is 29 of 15,774).
-  - LABEL EVERY BLOCK: 73% of all production blocks have override.alias_text
-    set. Older sketches may OMIT data keys entirely - when READING, treat a
-    missing key as its default; when GENERATING, write keys explicitly.
-  - DOCUMENT EVERY BLOCK: properties.documentation =
+  - LABEL EVERY BLOCK: 74.32% of all production blocks have
+    override.alias_text set (108,447 of 145,911). Older sketches may OMIT
+    data keys entirely - when READING, treat a missing key as its default;
+    when GENERATING, write keys explicitly.
+  - DOCUMENT THE BLOCKS THAT CARRY MEANING: properties.documentation =
     {"alias_text": "", "value": "<1-2 sentences>"} - what the block does in
     THIS sketch, why the limit/delay value, what to bind. Shows under
-    right-click -> Edit documentation. The fleet rarely fills this (its 529
-    uses are #ew.* machine tags - keep those verbatim when regenerating an
-    existing sketch); GENERATED sketches must fill it on every block anyway,
-    so the import is self-documenting.
+    right-click -> Edit documentation. The fleet rarely fills this: 3,931 of
+    145,911 blocks (2.69%), and 3,875 of those are #ew.* machine tags - only
+    56 carry anything else, and most of those 56 are placeholders or test
+    strings ("VALUE", "CONFIG", "DOC1"), not prose. Keep #ew.* values
+    verbatim when regenerating an existing sketch. Documenting a generated
+    block is a RECOMMENDATION so the import is self-explanatory, not a fleet
+    convention to imitate.
   - NAMING STYLE: VIRTUALOUT labels start with "Kalk" (kalkulert, x899 -
     THE convention for computed values) or the plain value name; CONST
     labels are ROLE words (delay x1537, limit x1404, x1/y1 curve points,

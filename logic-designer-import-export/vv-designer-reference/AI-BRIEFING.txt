@@ -98,15 +98,23 @@ rejection ("Sketch document is malformed").
 - override, runtime, properties are BLOCK-LEVEL fields, siblings of "data".
   They NEVER appear inside data.
 - "func" is applied verbatim on load; omitting it breaks the compiled sketch.
-- Lay out x/y left-to-right by dataflow: sources x≈40, logic x≈260-500,
-  outputs x≈700; stack parallel branches ~150 px apart vertically.
-- DOCUMENT EVERY BLOCK: properties.documentation =
+- Lay out x/y left-to-right BY DATAFLOW: order blocks so every wire runs
+  from a lower x to a higher x (99.12% of the fleet's 136,435 wires do).
+  There is NO fixed column ladder — the "sources x≈40 / logic x≈260-500 /
+  outputs x≈700" rule this briefing used to give holds for 0.8% of
+  production input blocks. Snap x and y to a 10 px grid (the fleet's grid
+  quantum) and stack rows 40-50 px apart in y.
+- DOCUMENT THE BLOCKS THAT CARRY MEANING: properties.documentation =
   {"alias_text": "", "value": "<1-2 sentences>"} — write what the block does
   in THIS sketch, why this limit/delay value, and what the user must bind.
   The text shows in the designer under right-click -> Edit documentation, so
   an imported sketch explains itself. The {alias_text,value} wrapper is
-  REQUIRED (a bare string renders an empty dialog). Exception: when
-  regenerating an EXISTING sketch, keep any #ew.* documentation values
+  REQUIRED (a bare string renders an empty dialog). This is a GENERATOR
+  RECOMMENDATION, not a fleet convention: production carries documentation on
+  2.69% of blocks (3,931 of 145,911), and 3,875 of those 3,931 are #ew.*
+  machine tags — only 56 blocks carry anything else, and most of those 56 are
+  placeholders or test strings ("VALUE", "CONFIG", "DOC1"), not prose.
+  Exception: when regenerating an EXISTING sketch, keep any #ew.* values
   verbatim (EcoWatcher machine tags — replacing them with prose breaks the
   pinning).
 
@@ -128,8 +136,9 @@ validated at fleet scale: a 2026-07 scrape of ~191 plants / ~1889 production
 sketches (50,443 blocks) contained ZERO block types outside it.
 
 LABEL EVERY BLOCK: set override.alias_text on each block you generate (what
-the block does, in the user's language). 73% of all production blocks are
-labelled - an unlabelled sketch reads as machine-generated noise.
+the block does, in the user's language). 74.32% of all production blocks are
+labelled (108,447 of 145,911) - an unlabelled sketch reads as
+machine-generated noise.
 NAMING STYLE (fleet census): VIRTUALOUT = "Kalk <what>" (kalkulert - the
 fleet convention for computed values, x899) or the plain value name
 ("Driftssignal vifter"); CONST = its ROLE: "Delay when true", "Limit",
@@ -664,7 +673,11 @@ node-graph JSON formats — this format is what it is.
 [ ] Output is pure JSON: no comments, no trailing commas, parses cleanly.
 [ ] Top level: "format":"vv-fbx-sketch" + "sketch" (or a bare
     {mode,blocks,connections} document). No other envelope keys invented.
-[ ] sketch.mode = "function". groups = []. require_plant_revision present.
+[ ] sketch.mode = "function". groups = []. require_plant_revision present —
+    set it to the MAX required_plant_revision of the blocks used (620 for
+    IF/WEATHER/AGE_OF_VALUE), else 0. That max-of-blocks rule is a fleet law
+    (holds on all 1,382 revision-bearing sketches); 12 distinct numeric
+    values occur fleet-wide, so do not assume only 0 or 620.
 [ ] Every block has integer unique id, a type from section 4, its exact func,
     compile_type, data per section 4 (or null), override/runtime/properties
     at BLOCK level, numeric x and y.
@@ -682,9 +695,11 @@ node-graph JSON formats — this format is what it is.
     AVG_IN_PERIOD: period/period_amount).
 [ ] driver_ids: only real, user-confirmed ids; otherwise data null + TODO
     label. No WRITETOUNIT unless explicitly requested with a confirmed target.
-[ ] Every block has properties.documentation = {"alias_text":"","value":"…"}
-    with 1-2 real sentences (role in this sketch, why the limit/delay, what
-    to bind); existing #ew.* tag values kept verbatim on regeneration.
+[ ] Blocks that carry meaning have properties.documentation =
+    {"alias_text":"","value":"…"} with 1-2 real sentences (role in this
+    sketch, why the limit/delay, what to bind); existing #ew.* tag values
+    kept verbatim on regeneration. Recommended for generated sketches — the
+    fleet itself documents only 2.69% of blocks.
 [ ] block_count and connection_count equal the actual array lengths.
 [ ] Tell the user: validate → import → bind red blocks → F10 → save; deploy
     is their call.
