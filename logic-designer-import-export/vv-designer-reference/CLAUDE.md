@@ -345,9 +345,11 @@ Highlights of the `data` shapes:
   plant parameter with driver id `<plant>_VIRTUAL_V_1_<proj>_<sketchid>_<proj>_<idx>`, and other
   sketches read it with a plain `PARAMV` — this is how multi-sketch pipelines (Yr data →
   control → driftstid) pass values between sketches.
-- **Singular `driver_id` is HALF the fleet** (91 of 168 PARAMV, 57 of 150 WRITETOUNIT in the
-  scraped corpus): older sketches store the binding as `data.driver_id` (string), newer as
-  `data.driver_ids` (array). Generators should emit the plural array; any tool READING sketches
+- **Singular `driver_id` is TWO-THIRDS of the fleet** (v16, measured over 7,959 bound blocks:
+  PARAMV **3,320 singular vs 1,469 plural = 69 %**; WRITETOUNIT **2,015 vs 1,155 = 64 %**):
+  older sketches store the binding as `data.driver_id` (string), newer as `data.driver_ids`
+  (array). **The two keys NEVER co-occur** — it is strictly one or the other, so there is no
+  fallback chain to rely on. Generators should emit the plural array; any tool READING sketches
   must accept both (the importer/validator/rebind do).
 - **TOGGLE_INTERVAL** (full contract — live-probed from the "Configure Toggled Interval" dialog's
   `do_ok` handler, 2026-07-09): `{block_func_args:{interval:'sec'|'min'|'hour'|'day'|'week'|'month'|'year',
@@ -359,8 +361,11 @@ Highlights of the `data` shapes:
   time-of-day/day-of-week windows but has no every-N-days period either).
 - **WEATHER** (production shape): `{block_func_args:{func:'current_dew_point', period_count:1}}` +
   `properties.output_count`. The geo lookup arrives as **string-`CONST` inputs**, not in `data`:
-  put 0 County, put 1 Commune, put 2 Place (all optional — unconnected ⇒ GPS), put 3/4 period
-  start/end hour. **`func` vocabulary in production** (fleet v9): `current_temperature`,
+  put 0 County (Fylke), put 1 Commune (Kommune), put 2 Place (Sted), put 3/4 period start/end
+  hour, **put 5 Place Country** (all the geo pins optional — unconnected ⇒ GPS). **Six input
+  pins, not five** — put 5 was missing here until v16 measured it wired ×10 in production
+  (BLOCKS.md had it right all along). Up to **13 outputs** (0..12). **`func` vocabulary in
+  production** (fleet v9): `current_temperature`,
   `current_precipitation`, `current_dew_point`, `current_humidity`, `highest_temperature`,
   `lowest_temperature`, `symbol_text`, `symbol_number`, `current_wind`, `forecast`.
 - **FORMULA**: `{formula, title, output_type, eng_unit, precision?, scaling?}` — the formula is
@@ -1773,7 +1778,7 @@ GREATERTHAN→BIGGERTHAN, AND→COMP_AND, NOT→INVERT, …).
 | `TOGGLE_INTERVAL` | `toggle_interval.run` | function | `["boolean"]` | — | `{"block_func_args":{"interval":"sec|min|hour|day|week|month|year","offset":<int seconds>}}` — **symmetric square wave only** (flips each interval boundary; no duration/duty field). "X h every N days" is NOT expressible — use a plant `CALENDAR` (§6) |
 | `CRITERIA` | `criterias.run` | function | `["boolean"]` | — | `{"block_func_args":{"oneshot":false}}` + the criteria in `properties.criterias` (§6) |
 | `HOURMETER` | `hourmeter.run` | function | `["integer"]` | i0 running-signal | `null` — output is accumulated seconds; production divides by 3600 in a FORMULA for hours |
-| `WEATHER` | `weather.run_by_ccp_country` | function | `["float"]` | i0 County, i1 Commune, i2 Place (optional string `CONST`s; unconnected ⇒ GPS), i3 period start, i4 period end | `{"block_func_args":{"func":"current_dew_point","period_count":1}}` + `properties.output_count` (rev ≥620) |
+| `WEATHER` | `weather.run_by_ccp_country` | function | `["float"]` | i0 County, i1 Commune, i2 Place, **i5 Place Country** (optional string `CONST`s; unconnected ⇒ GPS), i3 period start, i4 period end — **6 pins**; up to 13 outputs (0..12) | `{"block_func_args":{"func":"current_dew_point","period_count":1}}` + `properties.output_count` (rev ≥620) |
 | `WEATHER_SUN` | `weather_sun.run_by_place` | function | `["integer"]` | i0-i2 place (optional string `CONST`s) | `{"block_func_args":{"rise_offset":0,"set_offset":0}}` (minutes around sunrise/sunset) |
 | `DATE_TIME` | `vv_datetime.run` | function | `integer` | — | `{"units":[3]}` — indices pick outputs 0=Year 1=Month 2=Day 3=Hour 4=Minute 5=Second 6=Weekday; + matching `properties.output_count`/`output_alias_texts` (§6) |
 | `CALENDAR_2_0` | `calendar.run` | input | `["mixed"]` | — | `{"calendar":"<id>","output":"id"}` or `null` (TODO bind; rev ≥1460) |
@@ -2575,3 +2580,120 @@ wires**. Two deliverables this round:
   PARAMV→FORMULA→VIRTUALOUT **496**. An AI building "normal-looking" logic should land in
   one of these chains.
 - **FORMULA**: 198 unique; **192/198 compile locally** — same six server-only holdouts.
+
+**Corpus v16 — the fleet-wide random-sample audit (2026-08-01):** a *fresh, independent*
+scrape rather than another 53-plant increment — the full sketch index was enumerated first
+(`load_plants` → `load_sketches_for_plants` in chunks of 120), giving the fleet's true size:
+**5,900 sketches across 1,570 plants (of 1,813 plants total)**. From that index a stratified
+sample of **1,211 sketches / 469 plants / 24,285 blocks / 22,257 wires** was fetched (zero
+failures, zero missing docs): every test-named sketch, every sketch of the 12 largest plants,
+every 11th sketch fleet-wide, and **all 98 `ok=false` sketches** (the broken/legacy shapes the
+earlier sequential rounds would never have reached). `audit-docs-vs-corpus.js` scores
+**19/20** — see the one failure below. Findings, all new:
+
+- **⚠️ Negative x/y IS production-real — the v8 "hard invariant" is now soft.** One violation
+  in 24,285 blocks: `CALENDAR` at **x=-40, y=100** (plant 5053, sketch 1174). The host accepts
+  it and the sketch is live. Readers and validators must NOT reject negative coordinates;
+  generators should still keep everything ≥0.
+- **The type census, split by origin** (334 distinct types): **67 core palette types /
+  22,009 blocks**, **235 numeric plant-scoped process keys (`<lib>_<HEX>.<frac>`) / 2,086
+  blocks**, and **32 *named* process keys / 190 blocks**. The validator's core allowlist is
+  **complete** — every one of the 32 types it doesn't recognise is a process key, not a
+  missing palette block.
+- **Named process keys form four prefix families** (undocumented until now):
+  **`PW_`** (Plant Watcher, 9 distinct — `PW_HEATING_KURVE_4_KNEKKPUNKT` ×87 is the fleet's
+  most-instantiated named process), **`EW_`** (EcoWatcher, 14 — compressor/aircooler
+  analytics), **`GEN_`** (7 — generic/customer-specific), **`IOC_`** (2 — I/O controller temp).
+  Some carry a trailing uniqid (`EW_COMPRESSOR_12548954F193A6E5.03370809`), some are pure
+  words. **Never pattern-match a process key** — see the `å` bug below.
+- **🐛 `vv-sketch.schema.json` rejected five live production blocks.** `block.type`'s
+  pattern `^[A-Z0-9_.:]+$` cannot match the lowercase Norwegian **`å`** in
+  `PW_VENTILASTION_TEST_OM_BRYTER_STåR_I_AUTO` (×3) and
+  `PW_VENTILASTION_VIRKNINGSGRAD4_AVTREKK__AVKAST_INNTAK_M_PåDRAG_GJENV` (×2) — nor the
+  **lowercase-hex** process key `22_603a95656b7e48.25839159`, the case-twin of an uppercase
+  key in the same fleet. Now `^[A-Za-z0-9_.:À-ÿ]+$`, re-tested against all 24,285 corpus
+  blocks (0 rejections). The schema file carries no version of its own — `version: 1` is the
+  *envelope* format version and did not change. §21-v9 already warned eids are free-form
+  text; the schema hadn't caught up.
+- **🐛 `validate-vv-sketch.js` rejected 494 valid production blocks.** Running it over all
+  1,211 sketches surfaced four false-positive classes, every one now fixed and re-verified:
+  **(1) `CONST.data.type "mixed"`** is a real host value (337 blocks — the 4th most common,
+  after float 4081 / integer 1952 / boolean 1073, ahead of string 293). It means "accepts
+  whatever arrives". The host also writes the **array** form `["integer","float","boolean"]`
+  (×2). The validator's 4-value allowlist called all 341 invalid.
+  **(2) `CONST` with `mode:"repeat"`** has **no `initial_value`** — it carries a
+  `values{}` calendar map instead (`"090:025": "7"` … keyed by unit id), 36 blocks.
+  **(3) `CONST` with `method:"constant"`** (212 blocks, always with `by_refference:false`)
+  is a by-reference CONST and legitimately omits both `initial_value` and `mode`.
+  **(4) `data.value` is REAL on `TAGVALUE`** (76 blocks) — the unit-selection array
+  `[{unit_id, unit_name, instances, order_no}]`, paired with `data.tag`. It is only a mistake
+  on the blocks that use `initial_value`. The blanket "no such field" rule was wrong.
+  After the fix: **26 of 1,211 files carry errors** (down from 152), and every survivor is a
+  genuinely incomplete production config, not a false positive.
+- **📊 CONST `data` key census** (7,740 configured): `alias_text` and `eng_unit` on 100 %,
+  `type` 7738, `initial_value` 7663, `mode` 7528, `readonly` 7002, `values` 7000,
+  `precision` 3965, `method`/`by_refference` 212, `scaling` 180. Note `values` sits on
+  **7,000 single-mode blocks too** — it is not exclusive to `mode:"repeat"`.
+- **⚠️ An unwired input pin does NOT mean the sketch failed to compile.** 5 sketches with
+  `compile_state: "1"` (a current, successful compile) still have unwired pins — mostly
+  `VIRTUALOUT` put 0, plus one `DELAY` and one `WRITETOUNIT`. So the validator's
+  "syntax check will fail" error is a strong signal but not an absolute one; the host
+  tolerates some dangling sinks. The correlation is still real: 15 of the 26 error files are
+  `compile_state: "0"`, against 111 such files overall.
+- **📊 `block_func_args` key shapes differ per period block** and the split is not cosmetic:
+  `AVG_IN_PERIOD`/`MIN_`/`MAX_`/`SUM_IN_PERIOD` use `{period, period_amount}`;
+  `PERIODE_VALUE` uses `{periode, period_amount, mode}`; `PULSE_COUNT` uses
+  `{periode, periode_amount, type}` — three different spellings of the same two concepts.
+  `CORRELATION` was documented as `{periode, period_amount}` and its single corpus instance
+  carries only `periode`, so that block is under-sampled — treat its shape as unconfirmed.
+- **📝 CORRECTION — `type` → `func` is NOT 1:1.** Five core types carry two `func` values in
+  production, so a reader keyed on `func` alone will mis-handle real sketches:
+  `DELAY` and `DELAY_VARIABLE` both ↔ `delayed_output` | `alarm_multi_delay` (the two blocks
+  are interchangeable at the func level!) · `TRANSFORM_MAPPED` ↔ `transform_mapped_custom.run`
+  | `transform_mapped.run` · `IS_WITHIN_DATES` ↔ `is_within_dates` | `is_within_date` (already
+  documented) · `DATE_TIME` ↔ `vv_datetime.run` | `datetime.run`. Process keys additionally
+  vary by **case** (`22_603A95656B7E48.25839159` vs `…603a95656b7e48…`) — compare process
+  types and funcs **case-insensitively**.
+- **📝 CORRECTION — `CALENDAR` has TWO compile_types**: `input` *and* `function`. It is the
+  only type in the corpus that does. Accept both on import.
+- **Multi-output pin ceilings** (max wired output put, core types): **SPOT_PRICE 0..35** ·
+  **WEATHER 0..12** · **PARAMV 0..12** · **DATE_TIME 0..6** · SPOT_PRICE_ANALYSER 0..3 ·
+  HOURMETER 0..2 · IF_ELSE 0..1. Processes reach 0..3. PARAMV having 13 outputs is the
+  surprise — a multi-driver PARAMV exposes one pin per bound driver.
+- **📝 CORRECTION — singular `driver_id` is ~⅔ of the fleet, not "half"** (the §6 line said
+  91/168). Measured at scale: PARAMV **3,320 singular vs 1,469 plural (69 % singular)**;
+  WRITETOUNIT **2,015 vs 1,155 (64 %)**. And in 7,959 bound blocks the two keys **never
+  co-occur** — it is strictly one or the other. Generators emit plural; readers must accept
+  both, and must not expect a fallback chain.
+- **📝 RESOLVED — `WEATHER` has SIX inputs, not five.** The reference §6/§20.4 listed put 0–4;
+  BLOCKS.md listed a **put 5 "Optional: Place Country"**, and production wires it (×10, e.g.
+  `CONST "Norge"` and a `PARAMV` reading a virtual). **BLOCKS.md was right**; §6 and §20.4 are
+  corrected. Host pin aliases stamped on save: put 0 County (Fylke), 1 Commune (Kommune),
+  2 Place (Sted), 3 Period start (0-23), 4 Period end (0-24), 5 Place Country.
+- **Three undocumented block fields, all reader-tolerable**:
+  **`group`** (176 blocks) — an ad-hoc grouping tag that is a **string *or* a number** (`0`,
+  `"0"`, `"1"`, `"3"`, `"process"`), and is unrelated to the sketch-level `groups[]` array
+  (which totals just **9** across the whole sample). **`required_plant_revision`** (664
+  blocks, a number) — the *per-block* twin of the sketch-level `require_plant_revision`,
+  concentrated on the rev-620 family (`IF` ×381, `AVG_IN_PERIOD` ×74, `WEATHER` ×50,
+  `CALENDAR_2_0` ×36, `CRITERIA` ×32). **`current_revision`** (2,014) — **process instances
+  only** (1,869 of 2,276 process blocks carry it, 407 don't), always a plain string here.
+  Preserve all three on round-trip; never require them.
+- **Structural shape of a real sketch**: blocks/sketch **min 0 · median 10 · p95 66 · max
+  242**. **26 sketches have zero connections** (scaffolding/parked work) and **156 blocks are
+  orphans** (wired to nothing) — an importer must not treat either as corruption.
+  **Zero dangling wire endpoints** in 22,257 wires: every endpoint resolves to a block in the
+  same sketch, which remains a genuinely hard invariant.
+- **Key presence at scale** — sketch: `mode`/`blocks`/`connections` 1211/1211,
+  `require_plant_revision` **1191 (absent ×20)**, `groups` 1019. Block: `id`/`func`/`type`/
+  `data`/`override`/`runtime`/`output_type`/`x`/`y`/`compile_type` on **all** 24,285;
+  `properties` on 24,229 (absent ×56). Connection: `source`/`target`/`alias_text` on **all**
+  22,257 — the v8 finding that *every saved wire carries `alias_text`* holds at a second,
+  independent sample. The only extra target key is **`by_refference` ×1,155**;
+  `override` carries only **`alias_text` ×18,282** and **`mode` ×25**.
+- **`mode` is `function` in 1211/1211.** No `process`-mode sketch reached the sample — mode
+  `process` remains a real but rare shape (process *definitions* are fetched by
+  `load_process`, not `load_sketch`).
+- **Project-name convention re-confirmed independently**: "Smarte funksjoner" ×152 +
+  "Smarte Funksjoner" ×79 = 19 % of sampled sketches, then Plant Watcher ×46, EcoWatcher ×39,
+  Dali lys ×22. Save imports into "Smarte funksjoner".

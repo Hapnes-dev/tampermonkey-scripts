@@ -70,7 +70,7 @@
       "required": ["id", "type", "func", "x", "y"],
       "properties": {
         "id": { "type": "integer", "minimum": 0, "description": "Numeric block id, unique within the sketch. NEVER a string." },
-        "type": { "type": "string", "pattern": "^[A-Z0-9_.:]+$", "description": "UPPERCASE palette key (e.g. PARAMV, CONST, BIGGERTHAN, ALARM) or a published process key. EQUAL and WRITEOUTUNIT do not exist — use LIKE and WRITETOUNIT." },
+        "type": { "type": "string", "pattern": "^[A-Za-z0-9_.:À-ÿ]+$", "description": "UPPERCASE palette key (e.g. PARAMV, CONST, BIGGERTHAN, ALARM) or a published process key. EQUAL and WRITEOUTUNIT do not exist — use LIKE and WRITETOUNIT. Palette keys are always uppercase, but process keys are free-form text: production contains lowercase-hex keys (22_603a95656b7e48.25839159, the same process as its uppercase twin — compare case-insensitively) and lowercase accented letters (PW_..._STåR_I_AUTO). Never pattern-match a process key beyond this." },
         "func": { "type": "string", "description": "The block_func for this type — copy verbatim from the reference table (e.g. paramv, const, biggerthan, alarm)." },
         "compile_type": { "enum": ["input", "reference", "function", "condition", "output", "process"] },
         "data": { "type": ["object", "null"], "description": "Per-type config payload (snake_case host fields: driver_ids[], initial_value, pri, alarm_type, …) or null to import unconfigured." },
@@ -78,8 +78,11 @@
         "runtime": { "type": ["object", "array"] },
         "properties": { "type": ["object", "array"] },
         "output_type": {},
-        "x": { "type": "number" },
-        "y": { "type": "number" }
+        "group": { "type": ["string", "number"], "description": "Ad-hoc grouping tag stamped by the host on some blocks. String OR number (\"0\", 0, \"process\" all occur). Unrelated to the sketch-level groups[] array. Preserve on round-trip; never require." },
+        "required_plant_revision": { "type": "number", "description": "Per-block twin of the sketch-level require_plant_revision, mostly on the rev-620 family (IF, AVG_IN_PERIOD, WEATHER, CALENDAR_2_0, CRITERIA). Preserve on round-trip; never require." },
+        "current_revision": { "type": ["string", "object", "null"], "description": "Process instances only — the library revision the instance was stamped at. Present on ~82% of process blocks; readers tolerate its absence." },
+        "x": { "type": "number", "description": "Canvas x. Negative values are production-real (a live CALENDAR sits at x=-40); generators should still keep everything >= 0." },
+        "y": { "type": "number", "description": "Canvas y. Negative values are accepted by the host — do not reject them on import." }
       },
       "not": {
         "anyOf": [

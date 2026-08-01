@@ -93,6 +93,29 @@ const SYSTEM_BLOCKS = {
 };
 
 // Wrong names other AIs have actually invented (or predictably will) → real type.
+// type -> func is NOT 1:1 in production (corpus v16, 24,285 blocks). These
+// alternate funcs are all live in the fleet and must not be flagged. DELAY and
+// DELAY_VARIABLE share BOTH funcs — the host does not distinguish them here.
+const ALT_FUNCS = {
+  IS_WITHIN_DATES: ['is_within_date'],
+  TRANSFORM_MAPPED: ['transform_mapped_custom.run'],
+  DELAY: ['delayed_output'],
+  DELAY_VARIABLE: ['delayed_output'],
+  DATE_TIME: ['datetime.run'],
+};
+
+// CALENDAR is the one type that carries two compile_types in production
+// (corpus v16): 'input' on most instances, 'function' on some. Accept both.
+const ALT_COMPILE_TYPES = {
+  CALENDAR: ['function'],
+};
+
+// CONST data.type values seen in production (corpus v16, 7,740 configured
+// CONSTs). "mixed" is a real host value — it means "accepts whatever arrives"
+// and is the 4th most common. The host also writes the array form
+// ["integer","float","boolean"] on a few blocks.
+const CONST_TYPES = ['integer', 'float', 'boolean', 'string', 'mixed'];
+
 const TYPE_ALIASES = {
   EQUAL: 'LIKE', EQUALS: 'LIKE', EQ: 'LIKE', COMPARE_EQUAL: 'LIKE',
   NOTEQUAL: 'UNLIKE', NOT_EQUAL: 'UNLIKE', NEQ: 'UNLIKE',
@@ -241,10 +264,11 @@ function validateSketchDocument(doc, report) {
       const def = SYSTEM_BLOCKS[b.type];
       if (b.func === undefined) {
         err(`${at} (${b.type}) missing "func" — must be "${def.func}" (paper.load applies it verbatim; omitting breaks compile)`);
-      } else if (b.func !== def.func && !(b.type === 'IS_WITHIN_DATES' && b.func === 'is_within_date') && !(b.type === 'TRANSFORM_MAPPED' && b.func === 'transform_mapped_custom.run')) {
+      } else if (b.func !== def.func && !(ALT_FUNCS[b.type] || []).includes(b.func)) {
         err(`${at} (${b.type}) func "${b.func}" wrong — must be "${def.func}"`);
       }
-      if (b.compile_type !== undefined && b.compile_type !== def.compile_type && def.compile_type !== null) {
+      if (b.compile_type !== undefined && b.compile_type !== def.compile_type &&
+          def.compile_type !== null && !(ALT_COMPILE_TYPES[b.type] || []).includes(b.compile_type)) {
         warn(`${at} (${b.type}) compile_type "${b.compile_type}" — expected "${def.compile_type}"`);
       }
     }
@@ -273,6 +297,10 @@ function validateSketchDocument(doc, report) {
     const d = b.data;
     if (d && typeof d === 'object') {
       for (const k of Object.keys(FORBIDDEN_DATA_KEYS)) {
+        // v16: data.value IS real on TAGVALUE — it is the unit-selection array
+        // [{unit_id,unit_name,instances,order_no}] paired with data.tag. It is
+        // only a mistake on the value-carrying blocks that use initial_value.
+        if (k === 'value' && b.type === 'TAGVALUE') continue;
         if (k in d) err(`${at}.data.${k} is not a real field — ${FORBIDDEN_DATA_KEYS[k]}`);
       }
       if (b.type === 'PARAMV' || b.type === 'WRITETOUNIT') {
@@ -286,10 +314,18 @@ function validateSketchDocument(doc, report) {
         if (b.type === 'WRITETOUNIT') warn(`${at} WRITETOUNIT writes to REAL hardware when deployed — confirm this is intended`);
       }
       if (b.type === 'CONST') {
-        if (!('initial_value' in d)) err(`${at} (CONST).data needs "initial_value"`);
-        if (!('type' in d)) err(`${at} (CONST).data needs "type" ("integer"|"float"|"boolean"|"string")`);
-        else if (!['integer', 'float', 'boolean', 'string'].includes(d.type)) err(`${at} (CONST).data.type "${d.type}" invalid`);
-        if (!('mode' in d)) warn(`${at} (CONST).data missing "mode" — use "single"`);
+        // v16: mode "repeat" replaces initial_value with a values{} calendar map
+        // ("HHH:MMM" → value). mode "single" is the normal case. The 212 blocks
+        // carrying method:"constant" (a by-reference CONST) also omit
+        // initial_value legitimately.
+        const isRepeat = d.mode === 'repeat' || (d.values && typeof d.values === 'object' && !('initial_value' in d));
+        if (!('initial_value' in d) && !isRepeat && d.method !== 'constant')
+          err(`${at} (CONST).data needs "initial_value"`);
+        if (!('type' in d)) err(`${at} (CONST).data needs "type"`);
+        else if (!CONST_TYPES.includes(d.type) &&
+                 !(Array.isArray(d.type) && d.type.every((t) => CONST_TYPES.includes(t))))
+          err(`${at} (CONST).data.type ${JSON.stringify(d.type)} invalid — one of ${CONST_TYPES.join('|')}, or an array of those`);
+        if (!('mode' in d) && d.method !== 'constant') warn(`${at} (CONST).data missing "mode" — use "single"`);
       }
       if (b.type === 'ALARM' || b.type === 'ALARM_OBJECT' || b.type === 'ALARM_OBJECT_EXTENDED') {
         if (!d.pri) err(`${at} (${b.type}).data needs "pri" ("a"|"b"|"c")`);
