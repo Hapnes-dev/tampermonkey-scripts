@@ -49,7 +49,7 @@ const cPvKey = claim('PERIODE_VALUE uses key "periode" (not "period")', '§6 PER
 const cOneWire = claim('each input pin has at most one wire', '§2/§20.0');
 const cSelfLoop = claim('no self-loop wires', '§21 v8 hard invariants');
 const cIntIds = claim('block ids are integers', '§8');
-const cNegXY = claim('x/y are non-negative', '§21 v8 hard invariants');
+const cCoordinates = claim('x/y are finite numbers (negative values are production-valid)', '§21 v16 correction');
 const cByRefTarget = claim('by_refference sits on the target endpoint only', '§8');
 const cFormulaIC = claim('FORMULA input_count (when set) equals wired inputs', '§21 v7 / validator');
 const cPulseConst = claim('PULSE_COUNT input 1 is fed by CONST/PROCESSIN', '§20.4');
@@ -68,7 +68,7 @@ for (const f of files) {
   for (const b of sk.blocks) {
     const d = b.data;
     cIntIds(Number.isInteger(b.id), at + ' id=' + JSON.stringify(b.id));
-    if (typeof b.x === 'number' && typeof b.y === 'number') cNegXY(b.x >= 0 && b.y >= 0, at + ' #' + b.id);
+    cCoordinates(Number.isFinite(b.x) && Number.isFinite(b.y), at + ' #' + b.id + ' x=' + JSON.stringify(b.x) + ' y=' + JSON.stringify(b.y));
     if ((b.type === 'ALARM' || b.type === 'ALARM_OBJECT' || b.type === 'ALARM_OBJECT_EXTENDED') && d) {
       if (d.pri !== undefined) cAlarmPri(['a', 'b', 'c'].includes(String(d.pri).toLowerCase()), at + ' pri=' + d.pri);
       if (d.alarm_destination !== undefined) cAlarmDest(['general', 'ew', 'cw'].includes(String(d.alarm_destination)), at + ' dest=' + d.alarm_destination);

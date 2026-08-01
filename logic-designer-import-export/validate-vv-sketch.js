@@ -102,6 +102,10 @@ const ALT_FUNCS = {
   DELAY: ['delayed_output'],
   DELAY_VARIABLE: ['delayed_output'],
   DATE_TIME: ['datetime.run'],
+  // v17: one live WEATHER instance (of 195) predates the _country suffix and
+  // still compiles. Legacy, not a target for new sketches — write
+  // weather.run_by_ccp_country.
+  WEATHER: ['weather.run_by_ccp'],
 };
 
 // CALENDAR is the one type that carries two compile_types in production
@@ -152,11 +156,30 @@ const NEEDS_BLOCK_FUNC_ARGS = ['PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'A
 // Verified inner keys of block_func_args per type — note the periode/period
 // spelling differences ARE the host contract, not typos.
 const REQUIRED_BFA_KEYS = {
-  PULSE_COUNT: ['periode', 'type', 'periode_amount'],
-  PERIODE_VALUE: ['mode', 'periode', 'period_amount'],
-  CORRELATION: ['periode', 'period_amount'],
-  AVG_IN_PERIOD: ['period', 'period_amount'],
+  PULSE_COUNT: ['periode', 'type'],
+  PERIODE_VALUE: ['mode', 'periode'],
+  CORRELATION: ['periode'],
+  AVG_IN_PERIOD: ['period'],
+  MIN_IN_PERIOD: ['period'],
+  MAX_IN_PERIOD: ['period'],
+  SUM_IN_PERIOD: ['period'],
   TOGGLE_INTERVAL: ['interval', 'offset'],
+};
+
+// The "how many of that period" key is OPTIONAL — corpus v17 (5,900 sketches,
+// the whole fleet) has 47 blocks that omit it and every one of them carries
+// compile_state "1", i.e. the host compiled them. The host treats a missing
+// amount as 1. Omission does NOT correlate with the period unit (PULSE_COUNT:
+// 31 "day" without vs 44 with). Emit a warning so a generator still writes it
+// explicitly, but never an error. Spelling follows the type, as above.
+const OPTIONAL_BFA_KEYS = {
+  PULSE_COUNT: ['periode_amount'],
+  PERIODE_VALUE: ['period_amount'],
+  CORRELATION: ['period_amount'],
+  AVG_IN_PERIOD: ['period_amount'],
+  MIN_IN_PERIOD: ['period_amount'],
+  MAX_IN_PERIOD: ['period_amount'],
+  SUM_IN_PERIOD: ['period_amount'],
 };
 
 // TOGGLE_INTERVAL is a SYMMETRIC square wave (live-probed dialog contract):
@@ -357,6 +380,10 @@ function validateSketchDocument(doc, report) {
         const missing = REQUIRED_BFA_KEYS[b.type].filter((k) => !(k in bfa));
         if (missing.length) {
           err(`${at} (${b.type}).data.block_func_args missing key(s): ${missing.join(', ')} — required: {${REQUIRED_BFA_KEYS[b.type].join(', ')}}`);
+        }
+        const missingOpt = (OPTIONAL_BFA_KEYS[b.type] || []).filter((k) => !(k in bfa));
+        if (missingOpt.length) {
+          warn(`${at} (${b.type}).data.block_func_args omits ${missingOpt.join(', ')} — the host defaults it to 1 and still compiles, but write it explicitly`);
         }
         if (b.type === 'PULSE_COUNT' && 'mode' in bfa) {
           err(`${at} (PULSE_COUNT).block_func_args has no "mode" — the level/flank selector key is "type" (values: over_or_equal_value|absolute_value|flank_rising_edge|flank_falling_edge|flank_changing_edge). "mode" belongs to PERIODE_VALUE.`);

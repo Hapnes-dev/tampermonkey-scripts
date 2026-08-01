@@ -2558,7 +2558,7 @@ wires**. Two deliverables this round:
   this reference claims** (ALARM pri/dest enums, TOGGLE_INTERVAL exact keys+units, SELECTOR
   data shape, CONST mode enum, WRITETOUNIT count, SHIFT_REGISTER mode, DELAY_VARIABLE null
   data, the period/periode key split, one-wire-per-input, no self-loops, integer ids,
-  non-negative x/y, by_ref on target only, FORMULA input_count==wired, PULSE_COUNT
+  finite numeric x/y (negative values accepted), by_ref on target only, FORMULA input_count==wired, PULSE_COUNT
   CONST-only level pin, mode "function", group shape) and checks them against a scraped
   corpus. **Result: 20/20 claims hold across all 3,618 production sketches** — the reference
   is verified against the fleet, not just written from probes. Re-run it after future host
@@ -2610,8 +2610,9 @@ earlier sequential rounds would never have reached). `audit-docs-vs-corpus.js` s
   pattern `^[A-Z0-9_.:]+$` cannot match the lowercase Norwegian **`å`** in
   `PW_VENTILASTION_TEST_OM_BRYTER_STåR_I_AUTO` (×3) and
   `PW_VENTILASTION_VIRKNINGSGRAD4_AVTREKK__AVKAST_INNTAK_M_PåDRAG_GJENV` (×2) — nor the
-  **lowercase-hex** process key `22_603a95656b7e48.25839159`, the case-twin of an uppercase
-  key in the same fleet. Now `^[A-Za-z0-9_.:À-ÿ]+$`, re-tested against all 24,285 corpus
+  **lowercase-hex** process key `22_603a95656b7e48.25839159`. *(v17 corrects the attribution:
+  that lowercase-hex string is a **`func`**, not a `type` — and it has no "case-twin"; see
+  the ASCII-uppercase law in v17 below.)* Now `^[A-Za-z0-9_.:À-ÿ]+$`, re-tested against all 24,285 corpus
   blocks (0 rejections). The schema file carries no version of its own — `version: 1` is the
   *envelope* format version and did not change. §21-v9 already warned eids are free-form
   text; the schema hadn't caught up.
@@ -2653,7 +2654,10 @@ earlier sequential rounds would never have reached). `audit-docs-vs-corpus.js` s
   | `transform_mapped.run` · `IS_WITHIN_DATES` ↔ `is_within_dates` | `is_within_date` (already
   documented) · `DATE_TIME` ↔ `vv_datetime.run` | `datetime.run`. Process keys additionally
   vary by **case** (`22_603A95656B7E48.25839159` vs `…603a95656b7e48…`) — compare process
-  types and funcs **case-insensitively**.
+  **funcs** case-insensitively. *(v17 correction: that variance is confined to `func`.
+  `type` is always the ASCII-uppercase of `func` and never collides on case, so a `type`
+  must be compared **exactly** — see the law in v17 below. v16's "types and funcs" was
+  wrong on the `type` half.)*
 - **📝 CORRECTION — `CALENDAR` has TWO compile_types**: `input` *and* `function`. It is the
   only type in the corpus that does. Accept both on import.
 - **Multi-output pin ceilings** (max wired output put, core types): **SPOT_PRICE 0..35** ·
@@ -2697,3 +2701,86 @@ earlier sequential rounds would never have reached). `audit-docs-vs-corpus.js` s
 - **Project-name convention re-confirmed independently**: "Smarte funksjoner" ×152 +
   "Smarte Funksjoner" ×79 = 19 % of sampled sketches, then Plant Watcher ×46, EcoWatcher ×39,
   Dali lys ×22. Save imports into "Smarte funksjoner".
+
+**Corpus v17 — the COMPLETE FLEET (2026-08-01):** the sample became a census. Every
+sketch the host will serve was fetched: **5,900 sketches across 1,570 plants —
+145,911 blocks and 136,435 connections**, up 4.9× from v16's 1,211/469. Retrieval was
+ordered round-robin by plant (zero-coverage plants first) across 37 batches of 130;
+**4,689 new files, 0 failures, 0 skips**. Read-only `load_sketch` throughout. Because this
+is now a population and not a sample, a count of **0 here means "does not exist in
+production"**, not "we did not see one" — that is what makes the findings below stronger
+than their v16 equivalents, and it is why two long-standing open questions could finally
+be closed.
+
+- **🔬 LAW — `type` is the ASCII-uppercase of `func`, on every process block.** Tested
+  `type === func.replace(/[a-z]/g, c => c.toUpperCase())` across all **13,247 process
+  blocks: 13,247 hold, 0 fail.** This single rule explains three things previously written
+  up as unrelated oddities, and it **corrects v16**, which reported the case variance on
+  `type` and told readers to compare *process types* case-insensitively:
+  **(1)** `type` is never lowercase-hex — all 468 distinct process `type` values are
+  uppercase. The lowercase-hex form (`22_603a95656b7e48.25839159`) is the **`func`**, and
+  the two live side by side on the *same block*. v16 read a `func` and filed it as a
+  `type`. **(2)** There is **no such thing as a process-type case-twin pair** — 468 distinct
+  process types fold to 468, so no two library processes differ only by case. All 16 case collisions are in
+  `func` (`47_69c3a76176d3a3…` vs `47_69C3A76176D3A3…`), i.e. one process key written both
+  ways by different host versions. **(3)** The Norwegian **`ø`/`å`** survive uppercasing
+  *because JS `[a-z]` does not match them* — `…_STåR_I_AUTO` is exactly what an ASCII-only
+  uppercase of `…_står_i_auto` produces. The accented keys are not free-form sloppiness;
+  they are this rule applied to a Norwegian process name. All 13 accented keys obey it.
+  **Practical rule: compare process `func` case-insensitively; compare `type` exactly.**
+  Only 70 blocks (21 keys) carry an already-uppercase `func`, and the law holds there too.
+- **🐛 `validate-vv-sketch.js` rejected 47 more valid production blocks — the `*_amount`
+  keys are OPTIONAL.** Every period-family block that omits its amount key
+  (`periode_amount` / `period_amount`) carries **`compile_state: "1"`** — the host compiled
+  all 47, defaulting a missing amount to 1. Omission does **not** track the period unit
+  (`PULSE_COUNT`: 31 `"day"` without vs 44 with), so it is genuinely optional rather than
+  unit-implied. Split into `REQUIRED_BFA_KEYS` (the unit/mode keys) plus a new
+  `OPTIONAL_BFA_KEYS` that only **warns**. The distinction is load-bearing: the one genuine
+  failure in this family has **no `block_func_args` at all** and is `compile_state: "0"` —
+  still an error. `MIN_`/`MAX_`/`SUM_IN_PERIOD` were also missing from the table entirely.
+  Files with errors: **51 → 34 (0.58 % of 5,900)**, and all 34 survivors were inspected and
+  are genuinely incomplete production configs (unwired pins, empty/unbound `driver_ids`,
+  2 `CONST`s with no `type`) — no false positives left.
+- **🐛 `WEATHER` has a second, legacy `func`.** 194 instances use `weather.run_by_ccp_country`
+  and **exactly 1** uses `weather.run_by_ccp` (`compile_state: "1"`). Added to `ALT_FUNCS`.
+  Legacy-but-valid — accept on import, never emit; new sketches write the `_country` form.
+  This lifts the v16 `type`→`func` correction from five multi-func types to six.
+- **✅ All four v16 validator fixes held at 4.9× scale** — `CONST.data.type "mixed"`,
+  `mode:"repeat"`, `method:"constant"` and `TAGVALUE.data.value` produced **zero** new
+  false positives across 145,911 blocks.
+- **✅ The schema pattern is exactly right — 0 rejections in 145,911 blocks.**
+  `^[A-Za-z0-9_.:À-ÿ]+$` matched every live `type`. The only non-ASCII characters in any
+  `type` fleet-wide are **`å` (U+00E5) and `ø` (U+00F8)** — so v16's `À-ÿ` widening is
+  sufficient and not over-broad. **The `block.type` description was corrected**:
+  the lowercase-hex key is a process `func`, not a `type`, and process `type` has no
+  case-twin; the schema now states both points explicitly (see the law above).
+- **✅ Key census — the schema's key set is COMPLETE. No unknown key anywhere.**
+  Sketch: `mode`/`blocks`/`connections` 5900, `require_plant_revision` 5808, `groups` 5328.
+  Block: the 9 core keys at 145911, `properties` 145428, `current_revision` 11322,
+  `required_plant_revision` 3910, `group` 1353. Connection: `source`/`target` 136435,
+  `alias_text` 136383. Endpoint: `id`/`put` 136435 both sides, `target.by_refference` 5887.
+  `compile_type` distribution: **input 80432 · function 35670 · output 14040 · process
+  13247 · condition 2522**.
+- **✅ The `SYSTEM_BLOCKS` allowlist has no gaps.** 68 distinct palette types live in
+  production, **0 of them unknown** to the 71-entry allowlist. The 3 never-instantiated
+  entries are `PROCESSIN`/`PROCESSOUT` (process-mode only — see the mode note below) and
+  **`AVERAGE_PERIODE`, which has no alias entry and 0 instances fleet-wide**; treat it as
+  suspect legacy and prefer `AVG_IN_PERIOD`. Alongside them, **468 distinct process keys**
+  in five families: hex-form 380 · `EW_` 34 · `PW_` 29 · `GEN_` 23 · `IOC_` 2.
+- **📊 The unwired-pin correlation is weak in BOTH directions** — v16 saw 5 exceptions; the
+  census quantifies it. Contingency over 5,900: unwired+compile0 **16** · unwired+compile1
+  **14** · clean+compile0 **170** · clean+compile1 **5,700**. So **~47 % of sketches with an
+  unwired pin compile anyway**, and **170 sketches fail to compile with no unwired pin at
+  all**. Keep the validator error as a strong hint; never read it as "the host will reject
+  this", and never read a clean wiring pass as "this will compile".
+- **⚠️ `CORRELATION` is STILL n=1 — 4.9× more data did not settle it.** The single fleet
+  instance carries only `periode`, not the documented `{periode, period_amount}`. With a
+  complete census this is no longer "under-sampled" but *definitive*: production contains
+  exactly one `CORRELATION` block. Its shape remains **unconfirmed** — one instance cannot
+  distinguish the block's contract from one engineer's config. Do not generate one from
+  this evidence.
+- **📊 Fleet compile health: 5,714 of 5,900 (96.8 %) carry `compile_state "1"`.**
+  `mode` is **`function` in 5,900/5,900** — v16 called process-mode "rare"; the census
+  shows `load_sketch` **never** returns one. Process *definitions* live behind
+  `load_process`, which is why `PROCESSIN`/`PROCESSOUT` show 0 instances. That is a
+  retrieval-path artifact, not evidence the blocks are unused.
