@@ -121,6 +121,36 @@ A connection is **rejected** (unless `force`) if any of:
 > (`type: ['float']`) and the **block-identity requirement** (`require_type: ['TAGVALUE','PARAMV']`).
 > Both must pass. `require_data` pins the input to a *specific tag/parameter id*.
 
+### 3.3 Graph invariants — measured on the complete fleet (§21 v18)
+
+The rules above are what `__connect` *rejects*. These are what production actually *contains*,
+measured across **136,435 wires in all 5,900 sketches** — a population, so a count of 0 means
+"does not exist", not "not sampled". A generator that violates any of them is emitting
+something the fleet has no example of.
+
+| Invariant | Evidence | Consequence for a generator |
+|---|---|---|
+| **Fan-in is at most 1** — every *wired* input put is fed by exactly one wire; inputs may also be left unwired | distribution is literally `1=136435`; 0 duplicate wires | to combine signals use `ADD`/`COMP_OR`/`SELECTOR`/`FORMULA`; never wire two sources at one pin |
+| **Fan-out is freely many** — one output feeds any number of inputs | `1=101086 · 2=8189 · 3=1450 · …` up to **189** | reuse an output rather than duplicating the block |
+| **The graph is acyclic** | 0 cyclic sketches, 0 self-loops | feedback needs an explicit stateful block (`DELAY`, `SHIFT_REGISTER`, `HOURMETER`), never a wire back |
+| **Every endpoint resolves** | 0 dangling endpoints | never emit a wire to an id that isn't in `blocks` |
+| **`put` is always a JS number** | 272,870/272,870 | emit `0`, not `"0"` |
+| **Connection keys are only `source`/`target`/`alias_text`** | no other key fleet-wide | endpoints carry `id`/`put`, plus `by_refference` on the target only |
+
+Two things are *not* invariants and must not be enforced: **orphan blocks are normal**
+(203 blocks are touched by no wire; 7 sketches have blocks and zero connections), and
+`source.put === target.put` on 61,725 wires is a coincidence of most blocks using put 0
+(132,932 of 136,435 source puts), not a rule.
+
+**Depth is shallow.** Longest chain per sketch: `1=1646 · 2=1979 · 3=898 · 4=548 · 5=379`,
+tailing to 17. Production logic is wide and flat, not deep — if a generated sketch needs a
+12-deep chain, the shape is probably wrong.
+
+**Pin counts go much higher than the palette suggests.** Max input put observed:
+`INPUT_SELECTOR` **70**, `SHIFT_REGISTER` **49**, `FORMULA` **34**, and `MIN`/`MAX`/`AVERAGE`
+**23**. Max output put: `SPOT_PRICE` **35**, `WEATHER` **23**, `PARAMV` **12**. Never
+hard-code a variadic block's pin ceiling.
+
 ---
 
 ## 4. The block library (the palette)
@@ -436,9 +466,16 @@ value:[…]}` — internal id-remap bookkeeping; copy verbatim, never invent) an
 `override.mode` (`'single'`, repeat machinery — the only override key besides `alias_text` in
 the whole fleet). `runtime` is `{}` on almost every block; when set it holds
 `require_plant_revision` (block-level stamp, ×320) or the TAGVALUE repeat machinery
-(`repeat`/`repeat_block`/`repeat_count`). **FORMULA invariant**: when
-`properties.input_count` is set it equals the number of wired inputs in **530 of 530**
-fleet blocks — generators must keep `input_count` == wired-input count.
+(`repeat`/`repeat_block`/`repeat_count`). **The `input_count` invariant** (generalised from
+FORMULA to every variadic block, §21 v18): when `properties.input_count` is set it equals the
+number of wired inputs — **2,925 of 2,927 fleet-wide across 16 block types**, and
+**2,862/2,862 in every sketch that compiles** (2,862 of the 2,927 live in a compiling sketch).
+Both exceptions are isolated `MAX` blocks in one
+abandoned WIP sketch (`p8388_s3499.json`, `compile_state "0"`). The value is **always the
+`{alias_text:"Input Count", value:N}` object form, 2,927/2,927 — never a bare number.**
+Generators must keep `input_count` == wired-input count on FORMULA, TRANSFORM_MAPPED, ADD,
+COMP_OR, COMP_AND, INPUT_SELECTOR, OPTIMAL_START_STOP, MAX, IS_WITHIN_DATES, AVERAGE, SUBTRACT,
+MULTIPLY, SUM, SHIFT_REGISTER, MIN and DIVIDE alike.
 
 **Per-block documentation (right-click → Edit documentation)** — probed 2026-07-13: the
 dialog pre-fills from `get_block_property_value(id,'documentation')` and OK writes
@@ -518,12 +555,28 @@ Rare but real — tools must PRESERVE non-empty `groups` when round-tripping; ge
 Notes:
 - **`require_plant_revision`** is computed at save time as the **max** of every used block's
   requirement — this is how the system knows the minimum plant firmware needed to run the sketch.
-- **`by_refference`** on a connection means the consumer wants the *reference* (address) of the
-  value, not just its computed value (used by period/aggregation/delay blocks). It sits on the
-  **target** endpoint: `"target":{"id":53,"put":0,"by_refference":true}` (production example:
-  `AGE_OF_VALUE`'s value input).
+- **`by_refference`** on a connection marks the target pin as taking the *reference* (address) of
+  the value rather than its computed value (used by period/aggregation/delay blocks). It sits on
+  the **target** endpoint: `"target":{"id":53,"put":0,"by_refference":true}` (production example:
+  `AGE_OF_VALUE`'s value input). **It is a property of the target PIN, not a choice the author
+  makes** — fleet-wide (§21 v18) it appears on 5,887 of 136,435 wires. Only **15 block types**
+  take it, every one `compile_type: "function"`; across those 15 types production shows **154
+  distinct `(target type, put)` pins, and 153 of them are all-or-nothing** — given the block type
+  and the pin index, whether the flag belongs is determined. (150 of the 154 ever carry the flag
+  at all; the other 4 are pins on a by-reference-capable type that are always plain.) So a
+  generator does not decide `by_refference`; it looks the pin up. The by-pin table:
+  - **all inputs by reference** — `INPUT_SELECTOR` (puts 0-70), `SHIFT_REGISTER` (0-49),
+    `OPTIMAL_START_STOP` (0-13), `TRANSFORM_MAPPED` (0-2), `CORRELATION` (0-1),
+    and the single-input `AGE_OF_VALUE`, `AVG_IN_PERIOD`, `MIN_IN_PERIOD`, `MAX_IN_PERIOD`,
+    `SUM_IN_PERIOD`, `DELAY` (put 0)
+  - **put 0 only, later puts plain** — `DELAY_VARIABLE` (0 by ref; the delay pin 1 and pin 2
+    are not), `PULSE_COUNT` (0 by ref, level pin 1 not), `DELTA_T` (0 by ref, 1 not)
+  - **the one outlier**: `RESET_INPUT` put 0 is by-reference on 37 wires and plain on **1**
+    (`p5311_s5774.json`, `state: "PROGRESS"`, fed by a `CONST` — the target endpoint has only
+    `["id","put"]`). Emit it *with* the flag; accept either on import.
 - **Real exports additionally carry** (production corpus, §21): a connection **`alias_text`** =
-  the target input pin's name ("Condition", "Value", "Input 1", …) on every wire — informational,
+  the target input pin's name ("Condition", "Value", "Input 1", …) on 136,383 of 136,435 wires
+  (99.96 %, §21 v18 — 52 production wires legitimately omit it) — informational,
   not needed on import; process-block instances carry block-level `current_revision` (string);
   CONST `data` always includes `values: null` in single mode; empty `properties` is `[]`.
 - **Old-document tolerance** (template corpus, §21 v12): very old documents may **omit
@@ -2190,7 +2243,13 @@ folder or the process name/state — surface those as user choices.
 
 ---
 
-## 21. Ground truth — a 15-sketch production corpus (2026-07-08)
+## 21. Ground truth — the production corpus (v1 15 sketches 2026-07-08 → v18 the complete fleet)
+
+> **Read the last entry first.** This section grew by increments: v1-v15 were sampling rounds,
+> **v17 turned the sample into a census** (all 5,900 sketches / 1,570 plants), and **v18 did the
+> same for the 136,435 wires**. From v17 onward a count of **0 means "does not exist in
+> production"**, which is why later entries *correct* earlier ones rather than merely extending
+> them. Where they disagree, the higher version number wins — corrections are annotated inline.
 
 15 real sketches exported (via the Import/Export userscript) from **six production plants**
 (4862, 5290, 8565, 8602, 9652, 10111) — **310 blocks / 285 wires** — were analysed and run
@@ -2384,7 +2443,9 @@ wrote down:
   Importers/validators must NOT reject unwired helper blocks; AIs reading a sketch should
   expect them. (Generated sketches should still wire everything.)
 - **FORMULA `input_count` == wired inputs in 530/530** — a perfect fleet invariant, now
-  enforced by `validate-vv-sketch.js`.
+  enforced by `validate-vv-sketch.js`. *(v18: this is not a FORMULA property at all — it holds
+  across all 16 variadic types, 2,925/2,927 fleet-wide and 2,862/2,862 in compiling sketches.
+  See §21 v18.)*
 - **`require_plant_revision` distribution**: 0 ×1553 (71 %) › 620 ×449 (20 %) › 1543 ×60 ›
   604 ×36 › 1460 ×35 › 1683 ×23 › 1670 ×19 — and **missing entirely ×5** (readers must
   tolerate an absent field; treat as 0).
@@ -2784,3 +2845,96 @@ be closed.
   shows `load_sketch` **never** returns one. Process *definitions* live behind
   `load_process`, which is why `PROCESSIN`/`PROCESSOUT` show 0 instances. That is a
   retrieval-path artifact, not evidence the blocks are unused.
+
+**Corpus v18 — the WIRES (2026-08-01):** every census up to v17 measured **blocks**. The
+connection rules in §3 were read out of host source (`__connect`) and the composition idioms in
+§19/§20 were generalised from the original 15-sketch corpus — neither had ever been checked
+against production. This round walks the **136,435 connections of all 5,900 sketches** on the
+same complete-population footing as v17, so a 0 below means "does not exist in production".
+Findings are folded into **§3.3** (new), the `by_refference` note in §8, and the `input_count`
+paragraph in §6; this entry is the evidence.
+
+- **🔬 LAW — fan-in is at most 1, fleet-wide.** The distribution of "wires arriving at one
+  input put" is literally **`1=136435`** — not a mode, the entire distribution. Zero exact
+  duplicate wires. Checked two ways (keying by `id:put` and by whole-connection identity) to
+  rule out a keying artifact. The census measures *wired* pins, so the law is "no pin takes a
+  second wire", not "every pin is wired" — optional and unwired inputs are ordinary.
+  **Fan-out is the opposite and effectively unbounded**: `1=101086 · 2=8189 ·
+  3=1450 · 4=547 · 5=179 · …` with a long tail to **189** consumers on one output — a finite
+  census cannot prove there is no ceiling, but no single-consumer restriction is observable. This
+  asymmetry is the single most useful thing to know when generating a sketch: to *combine*
+  signals you need a combining block (`ADD`, `COMP_OR`, `SELECTOR`, `FORMULA`); to *reuse* one
+  you just wire it again. The validator's pre-existing one-wire-per-input error is therefore not
+  a heuristic — it is a fleet law.
+- **🔬 LAW — the connection graph is acyclic.** **0 cyclic sketches, 0 self-loops** in 5,900.
+  Feedback is expressed with explicit stateful blocks (`DELAY`, `SHIFT_REGISTER`, `HOURMETER`),
+  never by wiring a block back into itself or its ancestors. `validate-vv-sketch.js` now detects
+  both (self-loop directly; genuine cycles via an iterative DFS that reports the closing path).
+- **🔬 `by_refference` is a property of the PIN, not a choice.** 5,887 wires carry it, on
+  **15 target block types, all `compile_type: "function"`**. Across those 15 types production
+  shows **154 distinct `(type, put)` pins, of which 153 are all-or-nothing** — given block type
+  and pin index, whether the flag belongs is determined. (The universe is every observed pin on
+  a by-reference-capable type; only 150 of the 154 ever carry the flag, and 149 of *those* are
+  uniform. Quoting the narrower 150 would hide the 4 always-plain pins, which a generator still
+  has to get right.) The mixed types split cleanly by index rather than by author
+  taste: `DELAY_VARIABLE` put 0 by reference / puts 1-2 plain; `PULSE_COUNT` 0 by reference /
+  level pin 1 plain; `DELTA_T` 0 / 1. The **one** genuine outlier fleet-wide is `RESET_INPUT`
+  put 0 — by reference on 37 wires, plain on 1 (`p5311_s5774.json`, `state "PROGRESS"`). The
+  full table is in §8. This retires the old framing "the consumer wants the reference": nobody
+  is choosing.
+- **📊 The `input_count` invariant was never a FORMULA rule.** §21 v7 recorded it as
+  "FORMULA `input_count` == wired inputs in 530/530". Tested across every block that sets the
+  property: **2,927 blocks in 16 types, 2,925 match**. Both mismatches are isolated `MAX` blocks
+  (#18, #19) in one sketch with `compile_state "0"` / `state "PROGRESS"` — abandoned WIP whose
+  pins were grown and never wired. So the invariant is **2,862/2,862 in every sketch that
+  compiles** — 2,862 of the 2,927 blocks sit in one of the 5,714 compiling sketches, and every
+  one of them matches. The two counts measure different populations: don't read 2,925 and 2,862
+  as a contradiction. Type breakdown of all 2,927: FORMULA 1043 · TRANSFORM_MAPPED 755 · ADD 329 · COMP_OR 218 · COMP_AND 158
+  · INPUT_SELECTOR 99 · OPTIMAL_START_STOP 61 · MAX 58 · IS_WITHIN_DATES 54 · AVERAGE 44 ·
+  SUBTRACT 37 · MULTIPLY 28 · SUM 21 · SHIFT_REGISTER 12 · MIN 9 · DIVIDE 1. **`input_count` is
+  always the `{alias_text:"Input Count", value:N}` object form — 2,927/2,927, never a bare
+  number.** `output_count` behaves similarly but is *not* a law: WEATHER 168/168 and
+  SPOT_PRICE 13/13 hold, but DATE_TIME is 22/23 and PARAMV 17/19 — a `PARAMV` bound to two
+  parameters legitimately leaves one output unwired. Enforce `input_count`; only warn on
+  `output_count`.
+- **📊 Structural roles are absolute.** Types that are **never** a wire source: `WRITETOUNIT`
+  (16,347), `VIRTUALOUT` (9,815), `ALARM` (3,584) — 100 % pure sinks. **282 further types are
+  pure sinks too**, but they are not a catalogue to code against: every one is a hash-named
+  published process (`31_5EA0303C95A423.04051389`, `EW_COMPRESSOR_…`), 7,053 instances in all,
+  and 56 of them occur exactly once fleet-wide. Treat "never a source" as a property to read off
+  the block's own `compile_type: "process"` and pin set, not as a type list to hardcode; only
+  the three named types above are stable enough to assert by name. Types that are **never** a
+  wire target: `CONST` (45,819), `PARAMV` (32,155),
+  `CALENDAR` (1,306), `TAGVALUE` (956), `CALENDAR_2_0`, `CRITERIA` — 100 % pure sources. A
+  generated sketch that wires *into* a CONST or *out of* a WRITETOUNIT has no production
+  precedent at all.
+- **📊 Production logic is wide and flat.** Longest chain per sketch: `1=1646 · 2=1979 ·
+  3=898 · 4=548 · 5=379 · 6=176`, tailing to 17. (The 26 sketches at depth 0 are **19 that are
+  completely empty** plus the **7 that have blocks but no connections** noted below.) Most real
+  logic is 2-4 blocks deep. **2,123 blocks use more than one distinct output put.** Variadic
+  pin counts run far higher than the palette implies — max input put `INPUT_SELECTOR` **70**,
+  `SHIFT_REGISTER` **49**, `FORMULA` **34**; max output put `SPOT_PRICE` **35**, `WEATHER` 23,
+  `PARAMV` 12. Never hard-code a ceiling.
+- **📊 `alias_text` on a wire is effectively mandatory: 136,383 / 136,435 (99.96 %).** Only 52
+  wires omit it. It is the target input pin's name and it is what makes a sketch readable on
+  canvas — the validator now **warns** (never errors) when a generated wire has none. The
+  connection object has **no other keys** fleet-wide; endpoints carry only `id`/`put`, plus
+  `by_refference` on the target. `put` is a JS **number** in 272,870/272,870 endpoints.
+- **✅ Orphans are normal — do not "fix" them.** 203 blocks are touched by no wire at all and
+  **7 sketches contain blocks but zero connections**. Consistent with v7's orphan finding;
+  importers and validators must tolerate both. Likewise `source.put === target.put` on 61,725
+  wires is *not* a rule — it falls out of 132,932 of 136,435 source puts being put 0.
+- **✅ The three new checks cost nothing on real data.** Re-running the v18 validator over the
+  full corpus: **5,900 files, 34 failing, 173 errors — identical to the v17 baseline**;
+  warnings 37,258 → 37,310, exactly +52, matching the 52 empty `alias_text` wires. **0 new
+  fan-in errors, 0 new cycle errors**, as the laws above predict. Each check was confirmed to
+  fire on a purpose-built negative control, so the zeros are evidence rather than dead code.
+- **🧭 Method note — the shape trap that produced a silent zero.** The first wiring census
+  reported `sketches 0 · wires 0` and looked like a legitimate empty result. Cause: corpus files
+  are **envelopes** (`{plant_id, sketch_id, …, sketch:{blocks, connections}}`), so `blocks` is
+  *not* at the JSON root. This is the same failure class as the v17 harness that missed
+  `PASS — no issues.` because it emits no `RESULT:` line. Every census script now carries
+  explicit `parseFail`/`shapeFail` counters and prints an **`ACCOUNTED YES/NO`** line asserting
+  `sketches + parseFail + shapeFail === files`. **A zero from an unasserted harness is not a
+  finding.** Note also that the validator CLI accepts an import envelope or a bare sketch — not
+  a census envelope; extract `.sketch` before feeding it one.

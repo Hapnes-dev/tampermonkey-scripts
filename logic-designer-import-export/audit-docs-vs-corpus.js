@@ -55,6 +55,16 @@ const cFormulaIC = claim('FORMULA input_count (when set) equals wired inputs', '
 const cPulseConst = claim('PULSE_COUNT input 1 is fed by CONST/PROCESSIN', '§20.4');
 const cMode = claim('project sketches are mode "function"', '§9/§21 v5');
 const cGroupShape = claim('non-empty groups carry {id, blocks[], alias_text, open, box}', '§8');
+const cAcyclic = claim('connection graph is acyclic', '§3.3 / §21 v18');
+const cEndpointBlocks = claim('every wire endpoint resolves to a block in the same sketch', '§3.3');
+const cPutNumbers = claim('connection put values are JS numbers', '§3.3');
+const cConnectionKeys = claim('connection objects carry only source/target/alias_text', '§3.3');
+const cEndpointKeys = claim('wire endpoints carry only id/put (+ by_refference on target)', '§3.3');
+const cVariadicIC = claim('input_count (when set) equals wired inputs on every variadic type, in compiling sketches', '§21 v18');
+const cInputCountShape = claim('properties.input_count is always the {alias_text,value} object form, never a bare number', '§21 v18');
+const cOutputNotSource = claim('WRITETOUNIT / VIRTUALOUT / ALARM are never a wire source', '§21 v18');
+const cInputNotTarget = claim('CONST / PARAMV / CALENDAR / TAGVALUE / CALENDAR_2_0 / CRITERIA are never a wire target', '§21 v18');
+const cByRefFunction = claim('by_refference targets are function-compile_type blocks only', '§21 v18');
 
 for (const f of files) {
   const doc = JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8'));
@@ -103,6 +113,19 @@ for (const f of files) {
       const wired = sk.connections.filter((c) => c.target && c.target.id === b.id).length;
       if (Number.isInteger(declared)) cFormulaIC(declared === wired, at + ' #' + b.id + ' ' + declared + ' vs ' + wired);
     }
+    const inputCount = b.properties && !Array.isArray(b.properties) ? b.properties.input_count : undefined;
+    if (inputCount !== undefined) {
+      cInputCountShape(inputCount !== null && typeof inputCount === 'object' && !Array.isArray(inputCount) &&
+        'alias_text' in inputCount && 'value' in inputCount, at + ' #' + b.id + ' input_count=' + JSON.stringify(inputCount));
+      // Non-compiling WIP sketches can retain stale input_count values, so this
+      // fleet law deliberately applies only to sketches that compile.
+      if (doc.compile_state === '1') {
+        const declared = parseInt(inputCount && inputCount.value, 10);
+        const wired = new Set(sk.connections.filter((c) => c.target && c.target.id === b.id)
+          .map((c) => c.target.put)).size;
+        cVariadicIC(Number.isInteger(declared) && declared === wired, at + ' #' + b.id + ' ' + declared + ' vs ' + wired);
+      }
+    }
     if (b.type === 'PULSE_COUNT') {
       const feeder = sk.connections.find((c) => c.target && c.target.id === b.id && c.target.put === 1);
       if (feeder && byId.has(feeder.source.id)) {
@@ -114,13 +137,72 @@ for (const f of files) {
 
   const seen = new Set();
   for (const c of sk.connections) {
+    const connectionKeys = c && typeof c === 'object' ? Object.keys(c) : [];
+    cConnectionKeys(c && typeof c === 'object' && connectionKeys.every((k) => ['source', 'target', 'alias_text'].includes(k)),
+      at + ' keys=' + connectionKeys.join(','));
+    cEndpointBlocks(Boolean(c && c.source && c.target && byId.has(c.source.id) && byId.has(c.target.id)),
+      at + ' source=' + JSON.stringify(c && c.source && c.source.id) + ' target=' + JSON.stringify(c && c.target && c.target.id));
+    cPutNumbers(Boolean(c && c.source && c.target && typeof c.source.put === 'number' && typeof c.target.put === 'number'),
+      at + ' source.put=' + JSON.stringify(c && c.source && c.source.put) + ' target.put=' + JSON.stringify(c && c.target && c.target.put));
+    const sourceKeys = c && c.source && typeof c.source === 'object' ? Object.keys(c.source) : [];
+    const targetKeys = c && c.target && typeof c.target === 'object' ? Object.keys(c.target) : [];
+    cEndpointKeys(Boolean(c && c.source && c.target &&
+      sourceKeys.every((k) => ['id', 'put'].includes(k)) &&
+      targetKeys.every((k) => ['id', 'put', 'by_refference'].includes(k))),
+    at + ' source keys=' + sourceKeys.join(',') + ' target keys=' + targetKeys.join(','));
     if (!c.source || !c.target) continue;
     const key = c.target.id + ':' + c.target.put;
     cOneWire(!seen.has(key), at + ' ' + key);
     seen.add(key);
     cSelfLoop(c.source.id !== c.target.id, at + ' #' + c.source.id);
     if (c.source.by_refference) cByRefTarget(false, at + ' by_ref on source');
+    if (byId.has(c.source.id)) {
+      const src = byId.get(c.source.id);
+      cOutputNotSource(!['WRITETOUNIT', 'VIRTUALOUT', 'ALARM'].includes(src.type), at + ' #' + src.id + ' source=' + src.type);
+    }
+    if (byId.has(c.target.id)) {
+      const target = byId.get(c.target.id);
+      cInputNotTarget(!['CONST', 'PARAMV', 'CALENDAR', 'TAGVALUE', 'CALENDAR_2_0', 'CRITERIA'].includes(target.type), at + ' #' + target.id + ' target=' + target.type);
+      if (c.target.by_refference === true) {
+        cByRefFunction(target.compile_type === 'function', at + ' #' + target.id + ' compile_type=' + JSON.stringify(target.compile_type));
+      }
+    } else if (c.target.by_refference === true) {
+      cByRefFunction(false, at + ' unresolved target=' + JSON.stringify(c.target.id));
+    }
   }
+
+  const adjacency = new Map(sk.blocks.map((b) => [b.id, []]));
+  for (const c of sk.connections) {
+    if (c && c.source && c.target && adjacency.has(c.source.id) && adjacency.has(c.target.id)) {
+      adjacency.get(c.source.id).push(c.target.id);
+    }
+  }
+  const colors = new Map();
+  let closingEdge = null;
+  for (const startId of adjacency.keys()) {
+    if ((colors.get(startId) || 0) !== 0) continue;
+    colors.set(startId, 1);
+    const stack = [{ id: startId, next: 0 }];
+    while (stack.length && !closingEdge) {
+      const frame = stack[stack.length - 1];
+      const nextIds = adjacency.get(frame.id);
+      if (frame.next >= nextIds.length) {
+        colors.set(frame.id, 2);
+        stack.pop();
+        continue;
+      }
+      const nextId = nextIds[frame.next++];
+      const nextColor = colors.get(nextId) || 0;
+      if (nextColor === 1) {
+        closingEdge = [frame.id, nextId];
+      } else if (nextColor === 0) {
+        colors.set(nextId, 1);
+        stack.push({ id: nextId, next: 0 });
+      }
+    }
+    if (closingEdge) break;
+  }
+  cAcyclic(!closingEdge, at + ' closing edge #' + (closingEdge && closingEdge[0]) + ' -> #' + (closingEdge && closingEdge[1]));
 
   if (sk.groups && Array.isArray(sk.groups) && sk.groups.length) {
     for (const g of sk.groups) {

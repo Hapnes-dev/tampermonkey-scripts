@@ -150,6 +150,10 @@ const NO_EQUIVALENT = {
   PULSE: 'no PULSE block — counting pulses/edges = PULSE_COUNT (flank_* modes); generating a timed pulse = TOGGLE_INTERVAL.',
 };
 
+// Shared by the self-loop and cycle diagnostics so the corpus evidence is
+// stated in exactly one place (corpus v18: 0 cyclic sketches in 5,900).
+const ACYCLIC_RULE = 'a VV Designer connection graph must be acyclic (0/5900 production sketches are cyclic)';
+
 // Blocks whose non-null data must carry block_func_args (period-family).
 const NEEDS_BLOCK_FUNC_ARGS = ['PULSE_COUNT', 'PERIODE_VALUE', 'CORRELATION', 'AVG_IN_PERIOD', 'MIN_IN_PERIOD', 'MAX_IN_PERIOD', 'SUM_IN_PERIOD', 'TOGGLE_INTERVAL'];
 
@@ -411,10 +415,14 @@ function validateSketchDocument(doc, report) {
   }
 
   // ── connections ──
-  const wiredInputs = new Set();
+  const wiredInputs = new Map(); // target id:put -> first connection
+  const connectionGraph = new Map(); // source id -> [{target, index}]
   doc.connections.forEach((c, i) => {
     const at = `connections[${i}]`;
     if (!c || typeof c !== 'object') { err(`${at} is not an object`); return; }
+    if (typeof c.alias_text !== 'string' || c.alias_text.trim() === '') {
+      warn(`${at}.alias_text is missing/empty — alias_text is the wire's canvas label (136383/136435 production wires carry one); write a short label describing the signal`);
+    }
     if ('from' in c || 'to' in c) {
       err(`${at} uses from/to — the host contract is {"source":{"id":<int>,"put":<int>},"target":{"id":<int>,"put":<int>}}`);
       return;
@@ -427,12 +435,65 @@ function validateSketchDocument(doc, report) {
       else if (!ids.has(s.id)) err(`${at}.${side}.id ${s.id} does not exist in blocks[]`);
       if (!Number.isInteger(s.put) || s.put < 0) err(`${at}.${side}.put must be a 0-based integer pin index (got ${JSON.stringify(s.put)})`);
     }
+    if (c.source && c.target && Number.isInteger(c.source.id) && Number.isInteger(c.target.id)) {
+      if (c.source.id === c.target.id) {
+        err(`${at} is a self-loop on block ${c.source.id} — ${ACYCLIC_RULE}; use an explicit stateful block instead of wiring a block to itself`);
+      } else {
+        if (!connectionGraph.has(c.source.id)) connectionGraph.set(c.source.id, []);
+        if (!connectionGraph.has(c.target.id)) connectionGraph.set(c.target.id, []);
+        connectionGraph.get(c.source.id).push({ target: c.target.id, index: i });
+      }
+    }
     if (c.target && Number.isInteger(c.target.id) && Number.isInteger(c.target.put)) {
       const key = c.target.id + ':' + c.target.put;
-      if (wiredInputs.has(key)) err(`${at} target input ${key} already has a wire — each INPUT pin takes exactly one`);
-      wiredInputs.add(key);
+      if (wiredInputs.has(key)) {
+        const first = wiredInputs.get(key);
+        const firstSourceId = first && first.source ? first.source.id : undefined;
+        const secondSourceId = c.source ? c.source.id : undefined;
+        err(`${at} target input ${key} already has a wire — each INPUT pin takes exactly one. Fed by source blocks ${firstSourceId} and ${secondSourceId} (136435/136435 production wires respect this); combine the signals with a combining block and wire that block's output here instead of adding a second wire to the same put`);
+      } else {
+        wiredInputs.set(key, c);
+      }
     }
   });
+
+  // Iterative depth-first search: colour 1 is on the active path, colour 2 is
+  // complete. Self-loops were reported above and omitted here for a clearer
+  // dedicated diagnostic.
+  const colour = new Map();
+  const parent = new Map();
+  let cycleReported = false;
+  for (const start of connectionGraph.keys()) {
+    if (colour.has(start)) continue;
+    colour.set(start, 1);
+    parent.delete(start);
+    const stack = [{ node: start, next: 0, edges: connectionGraph.get(start) }];
+    while (stack.length && !cycleReported) {
+      const frame = stack[stack.length - 1];
+      if (frame.next >= frame.edges.length) {
+        colour.set(frame.node, 2);
+        stack.pop();
+        continue;
+      }
+      const edge = frame.edges[frame.next++];
+      const targetColour = colour.get(edge.target);
+      if (targetColour === undefined) {
+        colour.set(edge.target, 1);
+        parent.set(edge.target, frame.node);
+        stack.push({ node: edge.target, next: 0, edges: connectionGraph.get(edge.target) || [] });
+      } else if (targetColour === 1) {
+        const cycle = [frame.node];
+        while (cycle[cycle.length - 1] !== edge.target) {
+          cycle.push(parent.get(cycle[cycle.length - 1]));
+        }
+        cycle.reverse();
+        cycle.push(edge.target);
+        err(`connections[${edge.index}] closes a cycle ${cycle.join(' → ')} — ${ACYCLIC_RULE}; break the feedback path and use an explicit stateful block if state is intended`);
+        cycleReported = true;
+      }
+    }
+    if (cycleReported) break;
+  }
 
   // ── mode gating (live palette census 2026-07-12): every palette def has a
   // mode field — PROCESSIN/PROCESSOUT/AVERAGE_PERIODE exist ONLY in process
@@ -455,7 +516,10 @@ function validateSketchDocument(doc, report) {
 
   // ── every required input pin wired? + special pin constraints ──
   for (const [id, b] of ids) {
-    // fleet invariant (530/530 production FORMULAs): declared input_count == wired inputs
+    // Fleet invariant: declared input_count == wired inputs. The v18 census shows
+    // this holds across all 16 types that set the property (2,862/2,862 in
+    // compiling sketches), not just FORMULA — but only FORMULA is enforced here.
+    // Widening it is a behaviour change that needs its own regression baseline.
     if (b.type === 'FORMULA' && b.properties && !Array.isArray(b.properties) &&
       b.properties.input_count && b.properties.input_count.value !== undefined) {
       const declared = parseInt(b.properties.input_count.value, 10);
