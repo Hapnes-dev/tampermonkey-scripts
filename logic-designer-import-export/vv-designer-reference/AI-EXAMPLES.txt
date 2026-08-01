@@ -86,7 +86,9 @@ TEN THINGS EVERY REAL FILE SHOWS (check your output against each)
       (+ "precision" like "%.1f" for floats; string CONSTs have a string initial_value).
    7. One wire max per input pin; outputs fan out freely.
    8. override/runtime empty are {}; properties empty is [] (host style; {} also accepted).
-   9. sketch.groups is [] in every production file.
+   9. sketch.groups is [] in nearly every production file (the key is absent on
+      572 of 5,900 and non-empty on a handful - only 83 group entries fleet-wide).
+      Preserve non-empty groups when editing an existing sketch; emit [] for new.
   10. Every operation is a block + wires. There is NO expression language, NO steps,
       NO parameterBindings - the only expression-like string in VV is INSIDE a
       FORMULA block's data.formula (inputs inp0, inp1, ...).
@@ -198,7 +200,7 @@ Writes the outdoor temperature to a fan heater - but only while a boolean CONST 
 What it teaches:
   - IF block: in0 = Condition (boolean), in1 = Value; data is null; output passes Value through only while Condition is true.
   - A boolean CONST as a hand-operated enable switch (flip it in the designer to stop the write without deleting logic).
-  - IF requires plant revision 620 -> sketch require_plant_revision is 620.
+  - IF requires plant revision 620, and it is the only revision-bearing block here, so the sketch's require_plant_revision (the MAX over its blocks) is 620.
   - Boolean CONST: {"type":"boolean","initial_value":1,...} - 0/1, not true/false.
 
 Blocks:
