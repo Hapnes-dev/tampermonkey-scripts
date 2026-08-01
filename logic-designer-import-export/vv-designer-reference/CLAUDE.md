@@ -482,10 +482,10 @@ dialog pre-fills from `get_block_property_value(id,'documentation')` and OK writ
 `set_block_property(id,'documentation', text)` (empty text → `remove_block_property`), so the
 on-disk shape is exactly `properties.documentation = {"alias_text":"","value":"<free text>"}`
 — the same `{alias_text,value}` wrapper as every other property. It round-trips through
-export/import untouched, `syntax_check` ignores it, and æøå/°C survive. **Generators must
-fill it on EVERY block** (1–2 sentences: the block's role in THIS sketch, why this
-limit/delay, what the user must bind) so imported sketches are self-documenting — the fleet
-never does this (the 529 production uses are `#ew.*` machine tags, not prose), so when
+export/import untouched, `syntax_check` ignores it, and æøå/°C survive. **Recommended on generated blocks
+that carry meaning** (1–2 sentences: the block's role in THIS sketch, why this
+limit/delay, what the user must bind) so imported sketches are self-documenting — see §20.3
+step 6; the fleet mostly does not do this (2.69 % of blocks) (the 529 production uses are `#ew.*` machine tags, not prose), so when
 regenerating an EXISTING sketch preserve any `#ew.*` documentation values verbatim
 (EcoWatcher parses them; replacing with prose breaks the pinning). `validate-vv-sketch.js`
 warns when blocks lack documentation and errors on wrong shapes (a bare string renders an
@@ -529,8 +529,8 @@ gets persisted by `save_sketch`/`save_process` and re-hydrated by `load()`:
       "compile_type": "input",
       "data": { … } | null,           // per-type configuration (§6)
       "override": { "alias_text": … },// display overrides
-      "runtime": { … },               // e.g. repeat/repeat_count for multi-tag
-      "properties": { … },            // interval, transformations, format_extra, documentation
+      "runtime": { … } | [],          // e.g. repeat/repeat_count for multi-tag; `[]` when unset
+      "properties": { … } | [],       // §8.1 — OBJECT when set, EMPTY ARRAY when not
       "output_type": ["boolean","integer","float","string"] | "boolean" | null,
       "x": 40, "y": 40,               // canvas position
       "current_revision": "…",        // (process blocks) published revision used
@@ -551,6 +551,41 @@ Production-verified group shape (fleet corpus v7 — 11 of 2199 sketches use gro
 `{"id":0,"blocks":["1","2"],"alias_text":"Logic","open":true,"box":{"x1":180,"y1":60,"x2":320,
 "y2":110}}`): note `blocks` holds **string** block-ids, `open` is the expand/collapse state.
 Rare but real — tools must PRESERVE non-empty `groups` when round-tripping; generators emit `[]`.
+
+### 8.1 `properties` has TWO shapes — array when empty, object when set
+
+This is the single most common way a hand-written parser breaks on real data. Censused over all
+145,911 fleet blocks (corpus v19):
+
+| shape | blocks | share | meaning |
+|---|---|---|---|
+| **`[]` empty array** | 130,477 | **89.42 %** | nothing set — **every single array is empty** |
+| **`{…}` object** | 14,951 | **10.25 %** | at least one property; **never empty** |
+| absent | 483 | 0.33 % | key omitted altogether |
+
+There is no third case: **0 non-empty arrays and 0 empty objects fleet-wide.** So
+`Array.isArray(properties)` is a reliable "unset" test, and `properties.foo` on the array form
+is simply `undefined` rather than an error — which is why the mistake survives review.
+`typeof properties === 'object'` is **true for both** and must not be used to distinguish them.
+Treat `[]`, `{}` and absent as equivalent on read; **emit `[]`** when there is nothing to set.
+
+Every value is the same envelope — **`{alias_text, value}`, all 19,867 of them**, no exceptions.
+The 16 keys that exist fleet-wide, with the blocks carrying each:
+
+`format_extra` 5,016 · `documentation` 3,931 · `interval` 2,928 · `input_count` 2,927 ·
+`interval_offset` 2,906 · `input_alias_texts` 811 · `custom_transform_map` 751 ·
+`output_count` 227 · `criterias` 133 · `block_id_map` 68 ·
+`optimal_start_stop_tempstep_transform_map` 56 · `optimal_start_stop_factor_transform_map` 56 ·
+`output_alias_texts` 23 · `output_types` 17 · `transformations` 14 ·
+`custom_transform_file_map` 3.
+
+They cluster by `compile_type`, though only three keys are strictly exclusive:
+`format_extra` is `input` ×3,982 / `output` ×1,034 · `documentation` is `input` ×3,827 /
+`function` ×64 / `output` ×34 / `process` ×6 · `interval` is `function` ×2,475 / `output` ×453
+(`interval_offset` splits 2,459/447 the same way) · `input_count` and `input_alias_texts` are
+**`function`-only** (2,927 and 811) · `block_id_map` is **`process`-only** (68).
+A generator emitting `input_count` on an input block is producing something the fleet has never
+produced — but do not read the majority holder as the only legal one except where marked "-only".
 
 Notes:
 - **`require_plant_revision`** is computed at save time as the **max** of every used block's
@@ -1756,7 +1791,9 @@ Exactly the §8 `paper.save()` shape:
   "x": 220, "y": 80                   // canvas position (px)
 }
 ```
-> **Document every block you generate:** set `"properties": {"documentation":
+> **Document the generated blocks that carry meaning** (§20.3 step 6 — production sets this on
+> only 2.69 % of blocks, so this is a generator recommendation, not a fleet convention): set
+> `"properties": {"documentation":
 > {"alias_text": "", "value": "<1–2 sentences: what this block does in THIS sketch, why the
 > limit/delay, what to bind>"}}`. The text appears under right-click → **Edit documentation**
 > after import, making the sketch self-documenting (§6 has the probed mechanics). When
@@ -1780,17 +1817,31 @@ one wire**. On import the host connects with `force=true`, so author only valid 
 1. **Map the description to a recipe** (§19.1/§19.2). Most requests are the threshold-alarm
    shape: `reader → comparator ← limit → [gate] → [delay] → output`.
 2. **Assign block ids** 0,1,2,… in any order; keep them unique.
-3. **Lay out `x`/`y`** left→right by dataflow so the imported graph is readable: sources
-   `x≈40`, comparators/logic `x≈240`, delay/mid `x≈480`, outputs `x≈700`; stack parallel
-   inputs ~120 px apart in `y`.
+3. **Lay out `x`/`y`** left→right **by dataflow** — that ordering is the whole rule, and it is
+   the one thing production actually obeys: **135,231 of 136,435 wires (99.12 %) run to a
+   greater `x`** (corpus v19). There is **no fixed column ladder**; earlier revisions of this
+   section prescribed `x≈40 / 240 / 480 / 700`, which matches **675 of 80,432** input blocks
+   (**0.84 %**) and is not a convention. Snap both coordinates to a **10 px grid**
+   (98.4 % of x, 99.2 % of y; 20 px holds for only ~49 %, so 10 is the real quantum), keep the
+   whole sketch in **x 0…~1000, y 0…~1000** (median bounding box 600 × 370), and step columns
+   by whatever the block widths need — the modal adjacent-column gap is **10 px**, not 200.
+   Stack parallel inputs **40–50 px** apart in `y`, not 120: those two gaps alone are 49,923 of
+   the measured row gaps. Never place two blocks at the same `(x,y)` — 18 collisions exist
+   fleet-wide and they are bugs, not a pattern.
 4. **Fill `data`** from the 20.4 table. For values the user gave (limits, delays, priorities),
    author them fully. For **plant-specific bindings you can't know** (real `PARAMV` driver ids,
    `CALENDAR` ids), **leave `data: null`** — the block imports **unconfigured (red title)** and
    the user binds it via the normal dialog after import. Never invent a real driver id.
 5. **Add connections** per the recipe.
-6. **Document every block**: `properties.documentation = {"alias_text":"","value":"…"}` —
-   1–2 sentences on the block's role in this sketch, why the chosen limit/delay, and what the
-   user must bind (right-click → Edit documentation shows it after import).
+6. **Document the blocks that carry meaning** — `properties.documentation =
+   {"alias_text":"","value":"…"}`, 1–2 sentences on the block's role in this sketch, why the
+   chosen limit/delay, and what the user must bind (right-click → Edit documentation shows it
+   after import). **This is a recommendation for generated sketches, not a fleet convention:**
+   only **3,931 of 145,911** production blocks (**2.69 %**) carry it, and **3,827 of those are
+   `input` blocks** (function 64, output 34, process 6) — in practice the field is used to
+   explain *what a reader is bound to*, not to annotate logic. Prioritise it there. Note
+   `alias_text` is **empty on all 3,931** — the label is fixed by the UI, so emit `""` and put
+   the whole text in `value`; a non-empty `alias_text` would be unlike anything in production.
 7. **Compute `require_plant_revision`** (20.5) and the counts; stamp `name`/`exported_at`.
 8. **Write the file** (e.g. `vv-sketch_<desc>.json`) and tell the user to Import it, then
    configure any red (unbound) input blocks, F10, save, and deploy when ready.
@@ -1852,11 +1903,33 @@ For any block not listed, pull `block_func`/`compile_type`/`inputs`/`outputs` fr
 it once in the live designer and read `get_block_data(ref)` (§19.4).
 
 ### 20.5 `require_plant_revision`
-Set it to the **max** minimum-revision of the blocks used (0 if none apply). Common floors:
-`IF`/`IF_ELSE`/`CRITERIA`/`AVG_IN_PERIOD`/`WEATHER`/`HOURMETER` **620** (`CRITERIA`/`AVG` 604),
+Set it to the **max** `required_plant_revision` of the blocks used. Where any block declares one
+that is an exact law, censused in v19: on all **1,382 sketches** containing at least one
+revision-bearing block, `sketch.require_plant_revision === max(block.required_plant_revision)`,
+**1,382/1,382, delta 0 every time**. Where **no** block declares one, 0 is the sensible default
+but **not** a law — **31 sketches** carry a nonzero stamp with no revision-bearing block. Note the spelling difference: the sketch key is
+`require_plant_revision`, the per-block key is `requir**ed**_plant_revision`, and only **2.68 %**
+of blocks declare one at all.
+
+Common floors: `IF`/`IF_ELSE`/`WEATHER`/`HOURMETER` **620** (`CRITERIA`/`AVG_IN_PERIOD` **604**),
 `CALENDAR_2_0` **1460**, `OPTIMAL_START_STOP` **1543**, `SPOT_PRICE*` **1670–1683**,
-`RESET_INPUT`/`PID_CONTROLLER`/`LATCH` **1683**. If unsure, 0 is safe (the plant just needs to
-meet whatever the blocks actually require at compile).
+`RESET_INPUT`/`PID_CONTROLLER`/`LATCH` **1683**.
+
+The full fleet distribution — **12 numeric values plus absent**, so do not treat any shorter list as closed:
+
+| value | sketches | | value | sketches |
+|---|---|---|---|---|
+| **0** | 4,395 (74.49 %) | | 1460 | 49 |
+| **620** | 1,079 (18.29 %) | | 1365 | 29 |
+| *absent* | 92 (1.56 %) | | 1670 | 28 |
+| 604 | 92 (1.56 %) | | 1030 | 13 |
+| 1543 | 62 (1.05 %) | | 1660 | 4 |
+| 1683 | 53 (0.90 %) | | 1646 | 3 |
+| | | | 1457 | 1 |
+
+**The key may be absent entirely** (92 sketches) — importers must treat missing as 0 rather than
+failing. If unsure, 0 is safe: the plant only needs to meet what the blocks actually require at
+compile.
 
 ### 20.6 Worked example — the file for "Alarm if room temp > 8 °C for 15 min during opening hours"
 A complete, ready-to-import file (leave `PARAMV`/`CALENDAR` unbound for the user to pick):
@@ -1925,8 +1998,9 @@ so a hand-authored file behaves identically to a `paper.save()` one.)
 - [ ] `block_count`/`connection_count` match the arrays; `require_plant_revision` = max floor.
 - [ ] Real hardware bindings (`WRITETOUNIT`) and real driver ids are present **only** if the
       user supplied them; otherwise left `null`/placeholder and flagged.
-- [ ] Every block carries `properties.documentation` (`{"alias_text":"","value":"…"}`) —
-      role in this sketch, why the limit/delay, what to bind.
+- [ ] Blocks that carry meaning have `properties.documentation`
+      (`{"alias_text":"","value":"…"}`) — role in this sketch, why the limit/delay, what to
+      bind. (§20.3 step 6; a recommendation, not a fleet convention.)
 - [ ] You told the user: Import → configure red blocks → F10 → Save → deploy is their call.
 
 ### 20.8 Anti-pattern: a real rejected file and its fix
@@ -2119,9 +2193,10 @@ GENERATION PROCEDURE - follow in order
    EQUAL, WRITEOUTUNIT, DIGITAL_INPUT, RISING_EDGE, TOGGLE do not exist - use
    the briefing's translation table (LIKE, WRITETOUNIT, PARAMV, PULSE_COUNT
    flank modes, PULSE_COUNT+MOD+CONST(2)).
-3. IDS AND LAYOUT: ids 0..N-1 (unique integers). x/y left-to-right by
-   dataflow: sources x~40, logic x~260-500, outputs x~700; parallel rows
-   120-150 px apart in y.
+3. IDS AND LAYOUT: ids 0..N-1 (unique integers). Order x by DATAFLOW so
+   every wire runs left-to-right (99.12% of the fleet does); there is no
+   fixed column ladder. Snap x and y to a 10 px grid; stack rows 40-50 px
+   apart in y.
 4. DATA: values the user gave (limits, delays, alarm priority/text) are
    authored fully - tweakable limits/delays as CONST blocks. Plant bindings
    you do not know (PARAMV/WRITETOUNIT driver ids, CALENDAR ids): data null +
@@ -2182,7 +2257,8 @@ the validator accepts it (exit 0) and rejects mode violations.
  "sketch":{"mode":"process","require_plant_revision":0,"blocks":[…],"connections":[…],"groups":[]}}
 ```
 Import while the canvas is in **process mode** (Set Process Mode first — the panel warns on a
-mode mismatch). `require_plant_revision`: 620 if IF/WEATHER/AGE_OF_VALUE is used, else 0.
+mode mismatch). `require_plant_revision`: the **max** `required_plant_revision` of the blocks used (620 for
+IF/WEATHER/AGE_OF_VALUE, but see the full §20.5 table — 12 values occur), else 0.
 
 **2. Boundary blocks replace PARAMV/WRITETOUNIT** (a process has no plant bindings of its own —
 it is parametrised through pins). **PARAMV and TAGVALUE are ILLEGAL in process mode**; a
@@ -2269,8 +2345,10 @@ Findings folded into §6/§8/§19.2/§20.4 above; the headline numbers:
   (`TOGGLE_INTERVAL → IF → WRITETOUNIT`), and mode-decoder (`FORMULA "inp0==K"`) recipes —
   the smallest production sketch is literally `PARAMV → WRITETOUNIT` (2 blocks, 1 wire).
 - **Envelope/format**: every export uses the v1 envelope; `groups` is `[]` in all 17 files;
-  sketch-level `require_plant_revision` is only ever **0 or 620** in the corpus (620 = IF/
-  WEATHER/AGE_OF_VALUE present).
+  sketch-level `require_plant_revision` was **0 or 620** in *these 17 files* (620 = IF/
+  WEATHER/AGE_OF_VALUE present). ⚠️ **Do not read that as a closed set** — it is a property of a
+  17-file sample, not of the fleet. The v19 census over all 5,900 sketches finds **12 distinct numeric
+  values** plus 92 sketches with the key absent; see §20.5 for the full distribution.
 - **Field shapes confirmed at scale**: `properties: []` when empty, `{alias_text, value}` entries
   when set (`interval`, `format_extra`, `documentation`, `input_count`, `output_count`,
   `custom_transform_map`); connection `alias_text` on **every** wire; CONST always carries
@@ -2938,3 +3016,85 @@ paragraph in §6; this entry is the evidence.
   `sketches + parseFail + shapeFail === files`. **A zero from an unasserted harness is not a
   finding.** Note also that the validator CLI accepts an import envelope or a bare sketch — not
   a census envelope; extract `.sketch` before feeding it one.
+
+**Corpus v19 — the AUTHORING PROCEDURE (2026-08-01):** v17 censused what blocks *are*, v18 how
+they are *wired*. Neither touched what §20 tells a generator to emit **besides** type and
+wiring — **where blocks sit, what `properties` holds, and the metadata stamp**. That matters
+more than it sounds: **§20.3 is the section an AI actually reads before generating a sketch**,
+and three census scripts over all 5,900 sketches / 145,911 blocks say it was not merely thin
+there — it was **wrong**. This round rewrites **§20.3 steps 3 and 6**, **§20.5**, the stale
+sample-derived claim at the end of the v1 entry, and adds **§8.1**; this entry is the evidence.
+Deliberately out of scope and deferred to v20: the per-type `data` payload census and the
+`driver_ids` census.
+
+- **🔬 LAW — `require_plant_revision` is exactly `max(block.required_plant_revision)`.** On all
+  **1,382 sketches** containing at least one revision-bearing block, sketch value equals the
+  block max — **1,382/1,382, delta 0, zero exceptions**. §8 asserted this as a design note; it
+  is now measured. Two spellings, easily confused: sketch `require_plant_revision`, block
+  `requir**ed**_plant_revision`. Only **3,910 of 145,911** blocks (2.68 %) declare one.
+- **🔬 LAW — `properties` is array-or-object and nothing else, and the array is always empty.**
+  **130,477 `[]` (89.42 %) · 14,951 `{…}` (10.25 %) · 483 absent (0.33 %)** — with **0 non-empty
+  arrays and 0 empty objects**. §8 documented only the array, so a reader could conclude the
+  object form was malformed. Every one of the **19,867** property values is `{alias_text, value}`
+  — no exceptions — across exactly **16 keys**. Folded into new **§8.1**.
+- **📊 CONVENTION — dataflow runs left→right, and that is the only layout rule.** **135,231 of 136,435
+  wires (99.12 %) end at a greater `x`**; 19 same-column, 1,185 backwards. The backwards 0.87 %
+  is real (feedback and hand-dragged blocks), so this is a strong convention, **not** something
+  a validator should enforce — §20.3 now states the ordering and the validator is untouched.
+- **❌ CORRECTION — §20.3's column ladder was invented and production does not use it.** The
+  prescribed `x≈40 / 240 / 480 / 700` holds for **675 of 80,432 input blocks (0.84 %)**,
+  **247 of 35,670 function blocks (0.69 %)**, **154 of 14,040 output blocks (1.10 %)**. Even the
+  generous reading (|x−40| ≤ 20) reaches only **6.59 %**. There is no column ladder; x is
+  continuous over **−40…3,380**. Replaced with the measured convention.
+- **❌ CORRECTION — the grid quantum is 10 px, not 20, and the row pitch is 40–50 px, not 120.**
+  **98.43 % of x and 99.20 % of y are divisible by 10**; at 20 it collapses to ~49 %, which is
+  what chance gives you. The modal **adjacent-column** gap is **10 px** (15,122 occurrences,
+  next is 20 at 5,419) and the modal **adjacent-row-within-a-column** gap is **40 px** (29,027)
+  then **50** (20,896) — together 49,923 of all row gaps. §20.3's "~120 px apart" ranks **10th**
+  (1,360 occurrences), behind 40/50/60/30/70/80/90/100/45.
+- **❌ CORRECTION — "document every block" is not the fleet convention.** `properties.documentation`
+  is on **3,931 of 145,911 blocks — 2.69 %**, and **3,827 of those are `input` blocks** (function
+  64, output 34, process 6). Production uses it to explain *what a reader is bound to*, not to
+  annotate logic. Kept as a **recommendation for generated sketches**, no longer stated as what
+  production does. Also: **`alias_text` is empty on all 3,931** — emit `""` and put the text in
+  `value`.
+- **❌ CORRECTION — `require_plant_revision` is not "only ever 0 or 620".** That claim (v1 entry,
+  §20.5) came from a **17-file sample**; §21 v7 already contradicted it with 7 values. Settled:
+  **12 distinct numeric values plus absent** over 5,900 sketches — 0 ×4,395 · 620 ×1,079 · **absent ×92** · 604 ×92 ·
+  1543 ×62 · 1683 ×53 · 1460 ×49 · 1365 ×29 · 1670 ×28 · 1030 ×13 · 1660 ×4 · 1646 ×3 · 1457 ×1.
+  **The key can be absent entirely** — importers must read missing as 0, not fail. Full table in
+  §20.5, and the v1 line is now marked as sample-scoped rather than deleted.
+- **📊 Sketch geometry, fleet-wide.** x **−40…3,380** (exactly **one** negative x, zero negative
+  y); y **0…29,170**. Median bounding box **600 × 370**, max **3,360 × 29,110** — so a generated
+  sketch fitting in ~1000 × 1000 is comfortably normal, and the giant outliers are hand-grown.
+  **18 exact `(x,y)` collisions** exist fleet-wide across 145,911 blocks: overlap is a bug, not
+  a pattern, but it is not host-rejected either.
+- **📊 Block population by `compile_type`** (the denominators every percentage above uses):
+  `input` **80,432** · `function` **35,670** · `output` **14,040** · `process` **13,247** ·
+  `condition` **2,522**. Property keys cluster by type, but only three are strictly exclusive:
+  `input_count` (function ×2,927), `input_alias_texts` (function ×811) and `block_id_map`
+  (process ×68). The rest are majorities, not laws — `format_extra` is input ×3,982 but also
+  output ×1,034; `interval`/`interval_offset` are function ×2,475/2,459 and output ×453/447;
+  `documentation` spans all four. Emitting one of the three exclusive keys outside its
+  `compile_type` produces something the fleet has never produced.
+- **📊 Sketch naming.** **5,893 of 5,900 named** (7 empty, 0 absent), median length **17**, max
+  106. **74.68 % contain a space**, 42.34 % a digit, 12.13 % a dash, 5.06 % an underscore, and
+  only **2.10 % are ALL CAPS**. Free-form human labels — `init` ×215, `virt` ×144, `yr` ×99 lead
+  the first-word ranking. There is no naming scheme to conform to; a readable sentence fragment
+  is the convention.
+- **📊 Envelope invariants confirmed at full scale.** Every sketch carries all seven envelope
+  keys; `mode` is **`function` 5,900/5,900** (re-confirming v18); `state` is **`PROGRESS`
+  5,900/5,900** — `load_sketch` never returns another state, so any state-machine reasoning
+  built on this corpus is unsupported. `groups` is **absent on 572 sketches** and present-but-
+  usually-empty on 5,328, with only **83 group entries in the entire fleet**. 1,570 plants,
+  2,640 distinct projects.
+- **🧭 Method note — two scouting figures did not survive re-derivation.** The plan for this
+  round was scoped from a subagent's scan, which reported the `properties` object-shape count as
+  **14,951 of 145,911** and documentation coverage as **3,931**. Both re-derived exactly — but
+  its "modal adjacent-column gap 10 px" was reported without the runner-up, and the ×2.8 margin
+  over 20 px turned out to be the load-bearing fact for the §20.3 rewrite; and its grid-quantum
+  claim had no 20 px comparison at all, which is what turns "blocks are on a grid" into "the
+  grid is 10, not 20". **A subagent's number is a claim; the census script is the evidence** —
+  every figure in this entry was re-derived by `geometry-census.js`, `properties-census.js` and
+  `metadata-census.js`, each of which asserts `ACCOUNTED YES · files 5900 · parseFail 0 ·
+  shapeFail 0` before printing anything.

@@ -25,9 +25,12 @@ if (!DIR || !fs.existsSync(DIR)) {
 const files = fs.readdirSync(DIR).filter((f) => /^[px]\d+_s\d+\.json$/.test(f));
 const claims = [];
 const claim = (name, ref) => {
-  const c = { name, ref, violations: 0, samples: [] };
+  // `evals` makes the vacuity probe part of the tool rather than a separate script:
+  // a claim whose predicate never fires passes trivially, and a 0 here is the tell.
+  const c = { name, ref, violations: 0, evals: 0, samples: [] };
   claims.push(c);
   return (cond, sample) => {
+    c.evals++;
     if (!cond) {
       c.violations++;
       if (c.samples.length < 3) c.samples.push(sample);
@@ -65,6 +68,10 @@ const cInputCountShape = claim('properties.input_count is always the {alias_text
 const cOutputNotSource = claim('WRITETOUNIT / VIRTUALOUT / ALARM are never a wire source', '§21 v18');
 const cInputNotTarget = claim('CONST / PARAMV / CALENDAR / TAGVALUE / CALENDAR_2_0 / CRITERIA are never a wire target', '§21 v18');
 const cByRefFunction = claim('by_refference targets are function-compile_type blocks only', '§21 v18');
+const cPropsShape = claim('properties is an array, an object, or absent — never another type', '§8.1 / §21 v19');
+const cPropsEmptyArray = claim('an array-shaped properties is always EMPTY; an object-shaped one is always non-empty', '§8.1 / §21 v19');
+const cPropsEnvelope = claim('every properties value is the {alias_text, value} object envelope', '§8.1 / §21 v19');
+const cRprFloor = claim('sketch require_plant_revision equals max(block required_plant_revision) where any block declares one', '§20.5 / §21 v19');
 
 for (const f of files) {
   const doc = JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8'));
@@ -74,11 +81,37 @@ for (const f of files) {
   cMode(sk.mode === 'function', at + ' mode=' + sk.mode);
   const byId = new Map();
   for (const b of sk.blocks) byId.set(b.id, b);
+  // NOTE the two spellings: the sketch key is `require_plant_revision`,
+  // the block key is `requirED_plant_revision`.
+  let maxBlockRpr = null;
 
   for (const b of sk.blocks) {
     const d = b.data;
     cIntIds(Number.isInteger(b.id), at + ' id=' + JSON.stringify(b.id));
     cCoordinates(Number.isFinite(b.x) && Number.isFinite(b.y), at + ' #' + b.id + ' x=' + JSON.stringify(b.x) + ' y=' + JSON.stringify(b.y));
+    if (b.properties !== undefined) {
+      const isArray = Array.isArray(b.properties);
+      const isObject = b.properties !== null && typeof b.properties === 'object' && !isArray;
+      cPropsShape(isArray || isObject, at + ' #' + b.id + ' properties=' + JSON.stringify(b.properties).slice(0, 40));
+      // The two shapes carry disjoint meaning: `[]` is "unset", `{…}` is "set".
+      // A non-empty array or an empty object would break that reading.
+      if (isArray) cPropsEmptyArray(b.properties.length === 0, at + ' #' + b.id + ' non-empty array');
+      if (isObject) {
+        const keys = Object.keys(b.properties);
+        cPropsEmptyArray(keys.length > 0, at + ' #' + b.id + ' empty object');
+        for (const k of keys) {
+          const v = b.properties[k];
+          // Exactly {alias_text, value} — a permissive `'value' in v` would pass
+          // {alias_text, value, extra}, which the corpus never produces.
+          const vKeys = v !== null && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v).sort().join(',') : null;
+          cPropsEnvelope(vKeys === 'alias_text,value', at + ' #' + b.id + ' ' + k + '=' + JSON.stringify(v).slice(0, 40));
+        }
+      }
+    }
+    if (typeof b.required_plant_revision === 'number' &&
+      (maxBlockRpr === null || b.required_plant_revision > maxBlockRpr)) {
+      maxBlockRpr = b.required_plant_revision;
+    }
     if ((b.type === 'ALARM' || b.type === 'ALARM_OBJECT' || b.type === 'ALARM_OBJECT_EXTENDED') && d) {
       if (d.pri !== undefined) cAlarmPri(['a', 'b', 'c'].includes(String(d.pri).toLowerCase()), at + ' pri=' + d.pri);
       if (d.alarm_destination !== undefined) cAlarmDest(['general', 'ew', 'cw'].includes(String(d.alarm_destination)), at + ' dest=' + d.alarm_destination);
@@ -135,6 +168,14 @@ for (const f of files) {
     }
   }
 
+  // Gate on the BLOCK side only. Gating on the sketch value being numeric too
+  // would let a revision-bearing sketch with a missing/string stamp skip the
+  // check silently while other sketches keep the claim non-vacuous.
+  if (maxBlockRpr !== null) {
+    cRprFloor(sk.require_plant_revision === maxBlockRpr,
+      at + ' sketch=' + JSON.stringify(sk.require_plant_revision) + ' maxBlock=' + maxBlockRpr);
+  }
+
   const seen = new Set();
   for (const c of sk.connections) {
     const connectionKeys = c && typeof c === 'object' ? Object.keys(c) : [];
@@ -155,7 +196,9 @@ for (const f of files) {
     cOneWire(!seen.has(key), at + ' ' + key);
     seen.add(key);
     cSelfLoop(c.source.id !== c.target.id, at + ' #' + c.source.id);
-    if (c.source.by_refference) cByRefTarget(false, at + ' by_ref on source');
+    // Evaluated on EVERY wire, not only on a violation — an assert-on-violation
+    // can never fire against a clean corpus, so its PASS would be vacuous.
+    cByRefTarget(!('by_refference' in c.source), at + ' #' + c.source.id + ' by_ref on source');
     if (byId.has(c.source.id)) {
       const src = byId.get(c.source.id);
       cOutputNotSource(!['WRITETOUNIT', 'VIRTUALOUT', 'ALARM'].includes(src.type), at + ' #' + src.id + ' source=' + src.type);
@@ -212,12 +255,24 @@ for (const f of files) {
 }
 
 let failed = 0;
+let vacuous = 0;
 console.log('audited', files.length, 'sketches\n');
 for (const c of claims) {
   const ok = c.violations === 0;
   if (!ok) failed++;
-  console.log((ok ? 'PASS  ' : 'FAIL  ') + c.name + '   [' + c.ref + ']' + (ok ? '' : '  — ' + c.violations + ' violation(s)'));
+  if (c.evals === 0) vacuous++;
+  const status = c.evals === 0 ? 'VACUOUS' : ok ? 'PASS  ' : 'FAIL  ';
+  console.log(status + ' ' + c.name + '   [' + c.ref + ']  ' + c.evals + ' eval(s)' +
+    (ok ? '' : '  — ' + c.violations + ' violation(s)'));
   if (!ok) c.samples.forEach((s) => console.log('        e.g. ' + s));
 }
-console.log('\n' + (claims.length - failed) + '/' + claims.length + ' documented claims hold');
-process.exit(failed ? 1 : 0);
+// A vacuous claim is not a holding claim — count it against the total too, or the
+// tally reads "34/34 hold" on the same run that reports a vacuity failure.
+console.log('\n' + (claims.length - failed - vacuous) + '/' + claims.length +
+  ' documented claims hold' + (vacuous ? ' (' + vacuous + ' vacuous)' : ''));
+// A claim that never evaluated passed trivially — that is a defect in the audit,
+// not evidence about the fleet, so it fails the run just like a violation does.
+console.log(vacuous
+  ? 'VACUITY PROBE FAILED — ' + vacuous + ' claim(s) never evaluated'
+  : 'vacuity probe: every claim evaluated at least once');
+process.exit(failed || vacuous ? 1 : 0);
