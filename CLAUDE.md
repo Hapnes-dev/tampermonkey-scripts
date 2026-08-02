@@ -2,9 +2,14 @@
 
 ## Repo overview
 
-Public GitHub repo: `https://github.com/hapnes-dev/tampermonkey-scripts`
-Local path: `C:\Users\ThomasKvalvåg\Documents\ak3 scan`
-Owner: hapnes-dev
+Public GitHub repo: `https://github.com/Hapnes-dev/tampermonkey-scripts`
+Local path: `C:\Users\Thomas\Documents\Claude\repos\tampermonkey-scripts`
+Owner: Hapnes-dev
+
+> **This file is not auto-loaded.** Sessions open `C:\Users\Thomas\Documents\Claude`
+> (see that folder's `CLAUDE.md`), and Claude Code reads `CLAUDE.md` from the
+> working directory and its parents — never from subdirectories. Read this file
+> explicitly before changing anything here.
 
 A collection of Tampermonkey userscripts with auto-update support. Each script lives in its own subfolder.
 
@@ -53,7 +58,7 @@ https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/<folder>/
 
 **IMPORTANT:** NEVER edit old local copies (e.g. `Ak3.js.txt`). ALWAYS edit files inside their subfolder (e.g. `ak3-autoscan/AK3-Autoscan.user.js`).
 
-**IMPORTANT:** Before editing OR committing a `.user.js`, scan `C:\Users\ThomasKvalvåg\Downloads\` for a Tampermonkey export of that script (filename pattern: `<Script Name>-<version>.txt`). If the export's `@version` is HIGHER than the repo's, sync that file into the repo FIRST — convert LF → CRLF to match the repo's existing line endings — otherwise editing/pushing the repo version will downgrade the user's installed script on Tampermonkey auto-update.
+**IMPORTANT:** Before editing OR committing a `.user.js`, scan `C:\Users\Thomas\Downloads\` for a Tampermonkey export of that script (filename pattern: `<Script Name>-<version>.txt`). If the export's `@version` is HIGHER than the repo's, sync that file into the repo FIRST — convert LF → CRLF to match the repo's existing line endings — otherwise editing/pushing the repo version will downgrade the user's installed script on Tampermonkey auto-update.
 
 ### 1. Edit the script
 Make changes to the `.user.js` file in the correct subfolder.
@@ -68,13 +73,35 @@ If workflow steps changed, update the AI reference README in the same folder.
 
 ### 4. Commit and push (ALWAYS do this)
 ```bash
-cd "C:\Users\ThomasKvalvåg\Documents\ak3 scan"
+cd "C:\Users\Thomas\Documents\Claude\repos\tampermonkey-scripts"
 git add <changed-files>
 git commit -m "Description of changes"
 git push
 ```
 
-The `gh` CLI is installed and authenticated as `hapnes-dev`.
+The `gh` CLI is installed and authenticated as `Hapnes-dev`.
+
+Committing here fires the repo's `post-commit` hook, which rebuilds
+`graphify-out/` automatically. That covers **this repository only** — the
+combined graph at `repos/graphify-out/` needs an explicit
+`graphify merge-graphs`, and the Obsidian vault needs its pin and counts
+refreshed in the same pass. See "After the push" below.
+
+### 5. After the push — keep the knowledge layers honest
+
+The vault at `Documents\KnowledgeVault` pins this repo to a specific commit and
+quotes its Graphify counts. A push falsifies both. In the same pass:
+
+- Re-pin `wiki/sources/GitHub - tampermonkey-scripts.md` to the new commit, and
+  supersede the old snapshot claim in the claim ledger rather than overwriting
+  it — a superseded claim stays true of its own date.
+- Fix any statement the change falsified (e.g. version numbers, line counts, or
+  the `Tampermonkey Userscript Catalog` table). A claim that was *wrong when
+  written* is corrected in place; one *overtaken by a newer snapshot* is
+  superseded.
+- Re-merge the combined graph if the counts are quoted anywhere.
+- Vault writes go through the reviewed `claude-obsidian` transaction workflow
+  under WSL 2 — never a direct file overwrite.
 
 ## Adding a new script
 
