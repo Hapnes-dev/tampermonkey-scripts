@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Section Copy/Paste
 // @namespace    https://logic-designer-section.local
-// @version      1.7.0
+// @version      1.7.29
 // @description  Copy/paste selected node subgraphs (with internal wires and variable bindings) in the iwmac logic designer.
 // @author       Henrik Monge
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -289,7 +289,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // ═══════════════════════════════════════════════════════════════
 
     const SCRIPT_NAME = 'Logic Designer Section Copy/Paste';
-    const VERSION = '1.7.0';
+    const VERSION = '1.7.29';
     const LOAD_FLAG = '__LDSCP_LOADED';
     const STORE_KEY = 'ldscp:clipboard:v1';
     const PASTE_OFFSET = { x: 40, y: 40 };
@@ -357,6 +357,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const REMOVE_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>';
     // Tag/label icon for the Paste tags menu entry.
     const TAG_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>';
+    // Four-swatch grid icon for the Type colors toggle.
+    const TYPECOLOR_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
+    // Open-folder icon for the Switch project menu entry.
+    const FOLDER_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg>';
 
     // ═══════════════════════════════════════════════════════════════
     //  Host adapter — ONLY module that touches unsafeWindow / host.
@@ -823,6 +827,39 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return null;
       }
 
+      function getAllWires() {
+        // Resolve EVERY connection on the paper → endpoint record plus the
+        // wire's SVG path node (for geometric hit-testing in remove mode).
+        // Orphan wires (input side already cleared) get to.pin = -1, same
+        // convention as getWireAtTarget; disconnectWire cleans those up.
+        const paper = getPaper();
+        const conns = paper?.connections || [];
+        const out = [];
+        for (const c of conns) {
+          if (!c?.user) continue;
+          const srcRef = c.user.source;
+          const tgtRef = c.user.target;
+          if (typeof srcRef !== 'number' || typeof tgtRef !== 'number') continue;
+          const tgtEl = paper.elements?.[tgtRef];
+          if (!tgtEl?.inputs) continue;
+          let toPin = -1;
+          for (let i = 0; i < tgtEl.inputs.length; i++) {
+            if (tgtEl.inputs[i]?.connected_to?.connection_id === c.id) {
+              toPin = i;
+              break;
+            }
+          }
+          const fromPin = toPin >= 0 ? (tgtEl.inputs[toPin]?.connected_to?.put_id ?? 0) : 0;
+          out.push({
+            connectionId: c.id,
+            from: { node: srcRef, pin: fromPin },
+            to: { node: tgtRef, pin: toPin },
+            pathNode: c.line?.node || c.bg?.node || null,
+          });
+        }
+        return out;
+      }
+
       function getWiresInSelection(selectedRefs) {
         // Returns wires where BOTH endpoint blocks are in selectedRefs.
         // Used by Remove-mode marquee gesture.
@@ -891,7 +928,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       return {
         getSelection, getNodeType, getNodePosition, getNodeData, getInternalWires, getWiresTouchingNodes, getPinAtTarget,
-        getWireAtTarget, getWiresInSelection, getWiresTouchingNode,
+        getWireAtTarget, getAllWires, getWiresInSelection, getWiresTouchingNode,
         createNode, createWire, setSelection, deleteNode, disconnectWire, setBlockInputCount,
       };
     })();
@@ -997,7 +1034,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       function onKeyDown(event) {
         if (!isDeleteKey(event)) return;
-        if (isEditingText(event.target)) return;
+        if (isEditingText(event.target)) {
+          // Typing in a field: Delete must stay plain text editing. The
+          // host's shortcut handler doesn't check for text focus and eats
+          // the key (Backspace works, Delete doesn't). We run in capture
+          // phase before it — stop propagation so it never sees the key.
+          // No preventDefault: the browser's forward-delete still runs.
+          event.stopPropagation();
+          return;
+        }
 
         const sel = HostAdapter.getSelection();
         if (!sel || sel.length === 0) return; // nothing to capture; host no-ops too
@@ -1046,7 +1091,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       function setBanner(text) {
         if (!bannerEl) {
           bannerEl = document.createElement('div');
-          bannerEl.className = 'ldscp-mode-banner';
+          bannerEl.className = 'ldscp-mode-banner ldscp-mode-banner-wire';
           document.body.appendChild(bannerEl);
         }
         bannerEl.textContent = text;
@@ -1061,7 +1106,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       function updateBanner() {
         const n = sources.length;
-        const prefix = mode === 'fill' ? 'Multi-wire (fill mode — no expansion)' : 'Multi-wire';
+        const prefix = mode === 'fill' ? 'Multi-wire (fill mode — no expansion)'
+          : mode === 'all' ? 'Multi-wire (all pins — includes connected outputs)'
+          : 'Multi-wire';
         if (n === 0) {
           setBanner(`${prefix}: pick pins to connect. (Esc to cancel)`);
           return;
@@ -1150,7 +1197,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
 
       function observeSelectionPoll() {
-        if (mode !== 'collecting' && mode !== 'fill') return;
+        if (mode === 'inactive') return;
         const sel = readSelection();
         const fingerprint = JSON.stringify(sel);
         if (fingerprint === lastObservedSelection) return;
@@ -1194,9 +1241,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (sources.length === 0) {
           // All source-only → add their outputs as sources.
           if (targetOnly.length === 0 && sourceOnly.length + bidirectional.length > 0) {
-            sourceSide = 'output';
-            for (const ref of sourceOnly) addAllPinsOfBlock(ref, 'output');
-            for (const ref of bidirectional) addAllPinsOfBlock(ref, 'output');
+            addOutputsOrWarn([...sourceOnly, ...bidirectional]);
             return;
           }
           // All target-only → add their inputs as sources, await source gesture.
@@ -1207,8 +1252,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           // Mix of source-only AND exactly one target-only → auto-finalize.
           if (sourceOnly.length > 0 && targetOnly.length === 1 && bidirectional.length === 0) {
-            sourceSide = 'output';
-            for (const ref of sourceOnly) addAllPinsOfBlock(ref, 'output');
+            if (!addOutputsOrWarn(sourceOnly)) return;
             // Finalize against the single target-only block.
             const snapshot = sources.map((s) => ({ blockRef: s.blockRef, pinIndex: s.pinIndex, side: s.side, y: s.y }));
             const targets = [{ blockRef: targetOnly[0], startPin: 0, side: 'input', isPinClick: false, noExpand }];
@@ -1223,9 +1267,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (sourceOnly.length > 0 && targetOnly.length > 1) {
             // Pre-compute source-pin count: each source-only block contributes
             // its output pin count (1 per pin); we count the total pins, not blocks.
+            // Count only the pins the bulk-add below would actually add
+            // (connected outputs are filtered outside 'all' mode).
             const sourcePinCount = sourceOnly.reduce((acc, ref) => {
-              const b = paper.elements[ref];
-              return acc + (Array.isArray(b?.outputs) ? b.outputs.length : 0);
+              const outs = paper.elements[ref]?.outputs;
+              if (!Array.isArray(outs)) return acc;
+              return acc + outs.filter((p) => mode === 'all' || !p?.connected).length;
             }, 0);
             const totalTargetCapacity = targetOnly.reduce((acc, ref) => {
               const b = paper.elements[ref];
@@ -1238,8 +1285,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
             if (totalTargetCapacity >= sourcePinCount && maxSingleTargetCapacity < sourcePinCount) {
               // Distribute. Add all source pins, then dispatch a multi-target op.
-              sourceSide = 'output';
-              for (const ref of sourceOnly) addAllPinsOfBlock(ref, 'output');
+              if (!addOutputsOrWarn(sourceOnly)) return;
               const snapshot = sources.map((s) => ({ blockRef: s.blockRef, pinIndex: s.pinIndex, side: s.side, y: s.y }));
               const targets = targetOnly.map((ref) => {
                 // Use pin-derived y (matches sources' pinWorldY), not b.matrix
@@ -1260,8 +1306,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
 
             // Capacity rule didn't fire — add sources, await user click.
-            sourceSide = 'output';
-            for (const ref of sourceOnly) addAllPinsOfBlock(ref, 'output');
+            if (!addOutputsOrWarn(sourceOnly)) return;
             toast('Pick a target to pair into.');
             return;
           }
@@ -1358,12 +1403,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const pins = side === 'output' ? block?.outputs : block?.inputs;
         if (!Array.isArray(pins)) return;
         for (let i = 0; i < pins.length; i++) {
+          // Marquee bulk-add skips outputs already feeding something, unless
+          // in 'all' mode. Explicit pin clicks don't route through here, so
+          // a connected output can still be picked deliberately.
+          if (side === 'output' && mode !== 'all' && pins[i]?.connected) continue;
           addSourcePin(blockRef, i, side);
         }
       }
 
+      // Step-1 marquee helper: set output side, bulk-add, and reset with a
+      // hint when the connected-output filter left nothing to add.
+      function addOutputsOrWarn(refs) {
+        sourceSide = 'output';
+        for (const ref of refs) addAllPinsOfBlock(ref, 'output');
+        if (sources.length === 0) {
+          sourceSide = null;
+          toast('All outputs already connected — cycle Shift+F to all-pins mode to include them.');
+          return false;
+        }
+        return true;
+      }
+
       function enter() {
-        if (mode === 'collecting' || mode === 'fill') return;
+        if (mode !== 'inactive') return;
         // Mutually exclusive with remove-mode and ghost-paste.
         if (typeof RemoveConnectorsMode !== 'undefined' && RemoveConnectorsMode.isActive()) {
           RemoveConnectorsMode.exit();
@@ -1378,13 +1440,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         startPolling();
       }
 
-      function toFillMode() {
-        // Flip from auto-expand to fill-only. Sources and sourceSide preserved.
-        // Polling continues (no restart needed).
-        if (mode !== 'collecting') return;
-        mode = 'fill';
-        updateBanner();
-      }
 
       function exit() {
         if (mode === 'inactive') return;
@@ -1399,23 +1454,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
 
       function toggle() {
-        // Cycle: inactive → collecting (auto) → fill → inactive
+        // Cycle: inactive → collecting (skips wired outputs) → fill → all pins → inactive.
+        // Sources and sourceSide survive mode flips; polling keeps running.
         if (mode === 'inactive') {
           enter();
         } else if (mode === 'collecting') {
-          toFillMode();
+          mode = 'fill';
+          updateBanner();
+        } else if (mode === 'fill') {
+          mode = 'all';
+          updateBanner();
         } else {
-          // mode === 'fill'
+          // mode === 'all'
           exit();
         }
       }
 
       function isActive() {
-        return mode === 'collecting' || mode === 'fill';
+        return mode !== 'inactive';
       }
 
       function onMouseDown(event) {
-        if (mode !== 'collecting' && mode !== 'fill') return;
+        if (mode === 'inactive') return;
         if (event.shiftKey) return;
         const pin = HostAdapter.getPinAtTarget(event.target);
 
@@ -1502,7 +1562,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       function setBanner(text) {
         if (!bannerEl) {
           bannerEl = document.createElement('div');
-          bannerEl.className = 'ldscp-mode-banner';
+          bannerEl.className = 'ldscp-mode-banner ldscp-mode-banner-remove';
           document.body.appendChild(bannerEl);
         }
         bannerEl.textContent = text;
@@ -1564,18 +1624,84 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
       }
 
+      const WIRE_HIT_PX = 6;    // max screen-px distance from cursor path to count as a hit
+      const WIRE_SAMPLE_PX = 8; // spacing of pre-sampled points along each wire path
+
+      function buildHitIndex() {
+        // Pre-sample every wire's SVG path into screen coords, once per
+        // gesture. Sweeps then hit-test geometrically (segment distance)
+        // instead of via elementFromPoint, which steps right over ~2px
+        // strokes and randomly missed crossings — the "ignored first wire".
+        // ponytail: built at mousedown, never refreshed — zooming/scrolling
+        // the canvas mid-drag stales it; release and press again to recover.
+        const entries = [];
+        for (const wire of HostAdapter.getAllWires()) {
+          const node = wire.pathNode;
+          if (!node?.getTotalLength || !node.getScreenCTM) continue;
+          let len; let ctm;
+          try {
+            len = node.getTotalLength();
+            ctm = node.getScreenCTM();
+          } catch { continue; }
+          if (!ctm || !len) continue;
+          const pts = [];
+          for (let d = 0; ; d += WIRE_SAMPLE_PX) {
+            const at = Math.min(d, len);
+            const p = node.getPointAtLength(at);
+            pts.push({ x: ctm.a * p.x + ctm.c * p.y + ctm.e, y: ctm.b * p.x + ctm.d * p.y + ctm.f });
+            if (at >= len) break;
+          }
+          entries.push({ wire, pts, removed: false });
+        }
+        return entries;
+      }
+
+      function distToSegmentSq(p, a, b) {
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const lenSq = abx * abx + aby * aby;
+        let t = lenSq === 0 ? 0 : ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        const dx = p.x - (a.x + t * abx);
+        const dy = p.y - (a.y + t * aby);
+        return dx * dx + dy * dy;
+      }
+
+      function sweepRemove(a, b) {
+        // Remove every not-yet-removed wire whose sampled path passes within
+        // WIRE_HIT_PX of the swept segment a→b. With samples ≤ WIRE_SAMPLE_PX
+        // apart, any true crossing has a sample within half that of the
+        // segment, so no crossed wire can be skipped at any drag speed.
+        const hitSq = WIRE_HIT_PX * WIRE_HIT_PX;
+        for (const entry of dragSession.hitIndex) {
+          if (entry.removed) continue;
+          let hit = false;
+          for (const p of entry.pts) {
+            if (distToSegmentSq(p, a, b) <= hitSq) { hit = true; break; }
+          }
+          if (!hit) continue;
+          entry.removed = true;
+          const w = entry.wire;
+          if (dragSession.wiresRemoved.some((r) => r.connectionId === w.connectionId)) continue;
+          const ok = removeWireSilent(w);
+          if (ok) dragSession.wiresRemoved.push({ from: w.from, to: w.to, connectionId: w.connectionId });
+        }
+      }
+
       function onMouseDown(event) {
         if (mode !== 'active') return;
         if (event.altKey || event.shiftKey) return;
         if (event.button !== 0) return;
 
-        // Wire hit-test first.
+        const pt = { x: event.clientX, y: event.clientY };
+
+        // Wire hit-test first (exact browser hit-test on the stroke).
         const wire = HostAdapter.getWireAtTarget(event.target);
         if (wire) {
           event.preventDefault();
           event.stopPropagation();
           const ok = removeWireSilent(wire);
-          dragSession = { wiresRemoved: [] };
+          dragSession = { wiresRemoved: [], lastPt: pt, hitIndex: buildHitIndex() };
           if (ok) dragSession.wiresRemoved.push({ from: wire.from, to: wire.to, connectionId: wire.connectionId });
           return;
         }
@@ -1597,21 +1723,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return;
         }
 
-        // Empty canvas — start an empty drag session for paint-on-drag.
-        dragSession = { wiresRemoved: [] };
+        // Empty canvas — start a drag session for paint-on-drag. Swallow the
+        // event so the host never starts its marquee rectangle. The press
+        // point itself counts as a degenerate sweep: wires are thin, so a
+        // press within WIRE_HIT_PX of one removes it even though
+        // event.target missed the stroke.
+        event.preventDefault();
+        event.stopPropagation();
+        dragSession = { wiresRemoved: [], lastPt: pt, hitIndex: buildHitIndex() };
+        sweepRemove(pt, pt);
       }
 
       function onMouseMove(event) {
         if (!dragSession) return;
         if (mode !== 'active') return;
-        const wire = HostAdapter.getWireAtTarget(event.target);
-        if (!wire) return;
-        // Dedupe: skip if already removed this session.
-        for (const w of dragSession.wiresRemoved) {
-          if (w.connectionId === wire.connectionId) return;
-        }
-        const ok = removeWireSilent(wire);
-        if (ok) dragSession.wiresRemoved.push({ from: wire.from, to: wire.to, connectionId: wire.connectionId });
+        const cur = { x: event.clientX, y: event.clientY };
+        sweepRemove(dragSession.lastPt, cur);
+        dragSession.lastPt = cur;
       }
 
       function onMouseUp() {
@@ -1689,7 +1817,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       function setBanner(text) {
         if (!bannerEl) {
           bannerEl = document.createElement('div');
-          bannerEl.className = 'ldscp-mode-banner';
+          bannerEl.className = 'ldscp-mode-banner ldscp-mode-banner-paste';
           document.body.appendChild(bannerEl);
         }
         bannerEl.textContent = text;
@@ -3059,22 +3187,162 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         .ldscp-toast-error { background: rgba(140, 30, 30, 0.92); }
         .ldscp-mode-banner {
           position: fixed;
-          top: 12px;
+          top: 14px;
           left: 50%;
           transform: translateX(-50%);
           z-index: 99999;
-          padding: 6px 14px;
-          background: rgba(20, 20, 20, 0.92);
-          color: #d4d4d4;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 4px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-          font: 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          padding: 11px 26px;
+          background: rgba(12, 12, 12, 0.95);
+          color: #ffffff;
+          border: 2px solid #ffa500;
+          border-radius: 7px;
+          box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55), 0 0 0 4px rgba(255, 165, 0, 0.16);
+          font: 600 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           pointer-events: none;
+          animation: ldscp-banner-in 0.18s ease-out;
+        }
+        @keyframes ldscp-banner-in {
+          from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+          to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        .ldscp-mode-banner-remove {
+          border-color: #ff5555;
+          box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55), 0 0 0 4px rgba(255, 85, 85, 0.18);
+        }
+        .ldscp-mode-banner-paste {
+          border-color: #7ab3ff;
+          box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55), 0 0 0 4px rgba(122, 179, 255, 0.18);
+        }
+        .ldscp-formula-ta {
+          display: block;
+          font: 13px/1.45 Consolas, "Courier New", monospace;
+          padding: 4px 6px;
+          border: 1px solid #7f9db9;
+          resize: vertical;
+          box-sizing: border-box;
+          min-height: 70px;
+        }
+        .ldscp-formula-helper {
+          font: 11px/1.4 sans-serif;
+          color: #555;
+          margin: 3px 0 2px;
+        }
+        .ldscp-formula-funcs {
+          font: 10px/1.5 sans-serif;
+          color: #777;
+          margin-top: 3px;
+        }
+        .ldscp-formula-help-btn {
+          font: bold 10px/1 sans-serif;
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          border: 1px solid #999;
+          background: #f4f4f4;
+          color: #333;
+          cursor: pointer;
+          padding: 0;
+          vertical-align: middle;
+        }
+        .ldscp-formula-help-btn:hover { background: #e2e2e2; }
+        .ldscp-formula-pop {
+          position: fixed;
+          z-index: 999999;
+          background: #fff;
+          border: 1px solid #aaa;
+          border-radius: 4px;
+          box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+          padding: 8px 12px;
+          font: 11px/1.55 sans-serif;
+          color: #333;
+          max-height: 70vh;
+          overflow-y: auto;
+        }
+        .ldscp-formula-pop-h {
+          font-weight: 700;
+          margin: 7px 0 2px;
+          color: #222;
+        }
+        .ldscp-formula-pop-h:first-child { margin-top: 0; }
+        .ldscp-formula-pop-line { margin-left: 2px; }
+        .ldscp-formula-helper-warn {
+          color: #b3261e;
+          font-weight: 600;
+        }
+        .ldscp-formula-helper-ok {
+          color: #1a7f37;
+          font-weight: 600;
+        }
+        .ldscp-formula-verify {
+          font: 11px/1.2 sans-serif;
+          padding: 2px 10px;
+          margin-top: 2px;
+          cursor: pointer;
+        }
+        .ldscp-sketchinfo {
+          position: fixed;
+          top: 5px;
+          right: 185px;
+          z-index: 99998;
+          font: 11px/1.3 sans-serif;
+          color: #333;
+          background: rgba(255, 255, 255, 0.88);
+          border: 1px solid #c9c9c9;
+          border-radius: 3px;
+          padding: 2px 8px;
+          cursor: pointer;
+          user-select: none;
+          white-space: nowrap;
+        }
+        .ldscp-sketchinfo-list {
+          position: fixed;
+          top: 27px;
+          right: 185px;
+          z-index: 99999;
+          background: #fff;
+          border: 1px solid #bbb;
+          box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+          font: 11px/1.6 sans-serif;
+          color: #333;
+          padding: 6px 10px;
+          max-height: 300px;
+          overflow-y: auto;
+          min-width: 240px;
+        }
+        .ldscp-sketchinfo-list div {
+          white-space: nowrap;
         }
         .ldscp-wire-hover {
           stroke: #ff5555 !important;
           opacity: 0.85;
+        }
+        .ldscp-typelegend {
+          position: fixed;
+          top: 5px;
+          right: 185px;
+          z-index: 99998;
+          display: inline-flex;
+          align-items: center;
+          gap: 9px;
+          padding: 2px 8px;
+          background: rgba(255, 255, 255, 0.88);
+          color: #333;
+          border: 1px solid #c9c9c9;
+          border-radius: 3px;
+          font: 11px/1.3 sans-serif;
+          white-space: nowrap;
+          pointer-events: none;
+        }
+        .ldscp-typelegend-item {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+        .ldscp-typelegend-dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          display: inline-block;
         }
         .ldscp-ghost-overlay,
         .ldscp-ghost-overlay * {
@@ -3253,10 +3521,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         RemoveConnectorsMode.toggle();
       });
       menu.appendChild(removeItem);
+      const typeColorsItem = makeMenuItem(TYPECOLOR_ICON, 'Type colors', null, () => {
+        closeMenu();
+        TypeColorMode.toggle();
+        toast(`Type colors: ${TypeColorMode.stateLabel()}.`);
+      });
+      menu.appendChild(typeColorsItem);
       const pasteTagsItem = makeMenuItem(TAG_ICON, 'Paste tags', null, () => {
         openPasteTagsPanel();
       });
       menu.appendChild(pasteTagsItem);
+      const switchProjectItem = makeMenuItem(FOLDER_ICON, 'Switch project', null, () => {
+        closeMenu();
+        // Re-show the host's own "Get started!" project selector — it is
+        // hidden (not destroyed) after startup, and its Ok handler runs the
+        // same native project-open path as page load. Unsaved sketch changes
+        // are the user's to save first, same as before a reload.
+        const wnd = W.application_windows?.wnd_splash;
+        if (wnd && typeof wnd.show_modal === 'function') {
+          try {
+            wnd.show_modal();
+          } catch (err) {
+            console.error(`[${SCRIPT_NAME}] Switch project show_modal failed:`, err);
+            toast('Could not open the project selector (see console).', 'error');
+          }
+        } else {
+          toast('Project selector not reachable on this host build.', 'error');
+        }
+      });
+      menu.appendChild(switchProjectItem);
 
       // Build the Paste-tags panel ONCE as a hidden child of the menu.
       // Toggled by openPasteTagsPanel / closeMenu; never destroyed.
@@ -4068,10 +4361,745 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     })();
 
     // ═══════════════════════════════════════════════════════════════
+    //  FormulaDialogHelper — the host "Configure formula" dialog edits
+    //  formulas in a single-line <input>. We wrap the host's opener,
+    //  designer_windows.show_formula(block, data) (probed 2026-07-10:
+    //  every open path routes through it), and swap the input
+    //  #comp_designer_windows_inp_wnd_formula_formula for a synced
+    //  multi-line monospace textarea. Edits mirror back through the
+    //  component's own set_value(), so the Ok handler's get_value()
+    //  reads exactly what was typed. A Verify button runs the same
+    //  logic_designer_manager.verify_math RPC the Ok button runs —
+    //  live validation without closing the dialog. Read-only helper;
+    //  nothing is saved or synced by it.
+    // ═══════════════════════════════════════════════════════════════
+    const FormulaDialogHelper = (() => {
+      const INPUT_ID = 'comp_designer_windows_inp_wnd_formula_formula';
+
+      // Full quick-reference shown by the "?" button. Contents verified
+      // against the VV runtime implementation (2026-07-10): formulas are
+      // interpreted as PHP expressions; function calls pass a
+      // function_exists gate at deploy (any PHP function + the IWMAC helper
+      // functions below). verify_math runs the same parser with that gate
+      // disabled — hence "syntax only". Runtime failures raise
+      // VIRTUAL_VALUES_FORMULA_ERROR alarms (visible in the Errors pill).
+      const HELP_SECTIONS = [
+        ['Inputs', 'inp0 … inpN (the block\'s input pins) · constants: true, false, null'],
+        ['Functions', [
+          'Any PHP function works: round, abs, min, max, floor, ceil, sqrt, pow, exp, log, time, date, strtotime, …',
+          { text: 'Full list: php.net function index ↗', href: 'https://www.php.net/manual/en/indexes.functions.php' },
+        ]],
+        ['Operators', '+ - * / % · == != < <= > >= · a>b ? x : y · && || · (int) (float) casts'],
+        ['Examples', [
+          '(inp0 + inp1) / 2 — average of two inputs',
+          'inp0 > 25 ? 1 : 0 — 1 when inp0 is above 25, else 0',
+          'round(inp0 * 1.8 + 32, 1) — °C to °F with one decimal',
+          'abs(time() - strtotime(inp0)) <= 150 ? 1 : 0 — 1 if timestamp inp0 is within 150 s of now',
+          'date("H") >= 7 && date("H") < 23 ? 1 : 0 — 1 during daytime (07–23)',
+          'alarm_delay(600, inp0) — alarm only after inp0 has held 1 for 10 minutes',
+        ]],
+        ['Watch out', [
+          'Returning null (or false!) writes NOTHING — the output is skipped that cycle. Use cond ? 1048 : null for write-once gating; use 1 : 0 when you mean zero',
+          '^ is bitwise XOR — use pow(x,y) for powers',
+          'Unary minus only works on plain numbers — write 0-inp0, not -inp0',
+          'No if(…) — use the ternary form: a>b ? x : y',
+          'avg, sum, ln do not exist in PHP — Verify passes, but the plant raises a formula error alarm',
+          'Decimal point, not comma (0.5, not 0,5)',
+          'Verify checks syntax only — a wrong function name fails first at deploy (formula error alarm)',
+        ]],
+        ['IWMAC helpers', [
+          'alarm_delay(sec, ref) — 1 once ref has held 1 for sec seconds (alarm on-delay)',
+          'alarm_delay_min(min, ref) — same, delay in minutes',
+          'alarm_multi_delay(ref, onSec, offSec) — separate on- and off-delays',
+          'multi_delay(ref, delays) — general delayed output switching (advanced)',
+          'check_value_higher(ref, limit, min) — 1 if the value stayed ≥ limit for the last min minutes',
+          'check_value_lower(ref, limit, min) — 1 if it stayed ≤ limit for the last min minutes',
+          'check_value_updated(sec, ref) — 1 if ref has NOT updated within sec seconds',
+          'vv_event(name) — trigger event-driven lines in other VV threads',
+        ]],
+      ];
+
+      let helpPopEl = null;
+
+      function hostInput() {
+        return document.getElementById(INPUT_ID);
+      }
+
+      function buildHelpPop() {
+        const pop = document.createElement('div');
+        pop.className = 'ldscp-formula-pop';
+        for (const [title, body] of HELP_SECTIONS) {
+          const h = document.createElement('div');
+          h.className = 'ldscp-formula-pop-h';
+          h.textContent = title;
+          pop.appendChild(h);
+          for (const line of (Array.isArray(body) ? body : [body])) {
+            const d = document.createElement('div');
+            d.className = 'ldscp-formula-pop-line';
+            if (typeof line === 'object' && line.href) {
+              const a = document.createElement('a');
+              a.textContent = line.text;
+              a.href = line.href;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              d.appendChild(a);
+            } else {
+              d.textContent = line;
+            }
+            pop.appendChild(d);
+          }
+        }
+        // Clicks inside must not reach the document-level close listener.
+        pop.addEventListener('click', (e) => e.stopPropagation());
+        return pop;
+      }
+
+      function closeHelpPop() {
+        if (helpPopEl) {
+          helpPopEl.remove();
+          helpPopEl = null;
+        }
+      }
+
+      function toggleHelpPop(anchorBtn) {
+        if (helpPopEl) { closeHelpPop(); return; }
+        helpPopEl = buildHelpPop();
+        document.body.appendChild(helpPopEl);
+        const w = Math.min(420, window.innerWidth - 24);
+        helpPopEl.style.width = `${w}px`;
+        // Attach beside the Configure-formula dialog window — right side if
+        // it fits, else left. Falls back to below the ? button if the dialog
+        // element can't be found.
+        const dlg = document.getElementById('comp_designer_windows_wnd_edit_formula');
+        const dr = dlg?.getBoundingClientRect();
+        let left; let top;
+        if (dr && dr.width > 0) {
+          top = Math.max(8, dr.top);
+          left = (dr.right + 8 + w <= window.innerWidth - 8)
+            ? dr.right + 8
+            : Math.max(8, dr.left - w - 8);
+        } else {
+          const r = anchorBtn.getBoundingClientRect();
+          left = Math.max(8, Math.min(r.left, window.innerWidth - w - 12));
+          top = r.bottom + 6;
+        }
+        helpPopEl.style.left = `${left}px`;
+        helpPopEl.style.top = `${Math.max(8, Math.min(top, window.innerHeight - helpPopEl.offsetHeight - 12))}px`;
+        setTimeout(() => document.addEventListener('click', closeHelpPop, { once: true }), 0);
+      }
+
+      function currentInputCount() {
+        // Same lookup the host's Ok handler uses.
+        try {
+          const blk = W.designer_windows?.current_block;
+          if (blk == null) return 0;
+          const inputs = W.logic_designer?.paper?.get_block_inputs?.(blk, true);
+          return Array.isArray(inputs) ? inputs.length : 0;
+        } catch {
+          return 0;
+        }
+      }
+
+      function flatten(v) {
+        // The host parser sees one expression regardless of textarea wrapping.
+        return v.replace(/\s*\n\s*/g, ' ').trim();
+      }
+
+      function mirror(v) {
+        const flat = flatten(v);
+        const comp = W.designer_windows?.inp_wnd_formula_formula;
+        if (comp?.set_value) {
+          comp.set_value(flat);
+        } else {
+          const input = hostInput();
+          if (input) input.value = flat;
+        }
+      }
+
+      function setStatus(ta, text, kind) {
+        // Not ta.nextElementSibling — the funcs cheat-sheet sits between
+        // the textarea and the status line.
+        const helper = document.querySelector('div.ldscp-formula-helper');
+        if (!helper) return;
+        helper.textContent = text;
+        helper.classList.toggle('ldscp-formula-helper-warn', kind === 'warn');
+        helper.classList.toggle('ldscp-formula-helper-ok', kind === 'ok');
+      }
+
+      function refreshHelper(ta) {
+        const count = Number(ta.dataset.ldscpInputs || 0);
+        const names = count > 0
+          ? Array.from({ length: count }, (_, i) => `inp${i}`).join(', ')
+          : 'inp0, inp1, …';
+        const bad = [];
+        if (count > 0) {
+          for (const m of ta.value.matchAll(/inp(\d+)/g)) {
+            const n = Number(m[1]);
+            if (n >= count && !bad.includes(`inp${n}`)) bad.push(`inp${n}`);
+          }
+        }
+        if (bad.length > 0) {
+          setStatus(ta, `⚠ ${bad.join(', ')} not on this block — available: ${names}`, 'warn');
+        } else {
+          setStatus(ta, `Inputs: ${names}`, '');
+        }
+      }
+
+      function verifyNow(ta) {
+        const count = Number(ta.dataset.ldscpInputs || 0);
+        const mgr = W.logic_designer_manager;
+        if (!mgr?.verify_math) {
+          setStatus(ta, 'Verify unavailable (no logic_designer_manager).', 'warn');
+          return;
+        }
+        setStatus(ta, 'Verifying…', '');
+        try {
+          mgr.verify_math(flatten(ta.value), Math.max(count, 1), (reply, error) => {
+            if (reply && reply.ok === true && reply.data === true) {
+              // verify_math is syntax-only; the nuance lives in the "?" popup.
+              setStatus(ta, '✓ Syntax OK.', 'ok');
+            } else {
+              const msg = (reply && reply.message) || String(error || 'invalid');
+              setStatus(ta, `✗ ${msg}`, 'warn');
+            }
+          });
+        } catch (err) {
+          setStatus(ta, `✗ Verify failed: ${err.message}`, 'warn');
+        }
+      }
+
+      function enhance() {
+        const input = hostInput();
+        if (!input) return;
+
+        let ta = document.querySelector('textarea.ldscp-formula-ta');
+        if (!ta) {
+          ta = document.createElement('textarea');
+          ta.className = 'ldscp-formula-ta';
+          ta.rows = 4;
+          ta.spellcheck = false;
+          if (input.offsetWidth > 0) ta.style.width = `${input.offsetWidth}px`;
+          // One short line; the "?" popup carries the full reference.
+          const funcs = document.createElement('div');
+          funcs.className = 'ldscp-formula-funcs';
+          const funcsText = document.createElement('span');
+          funcsText.textContent = 'ƒ Runs as PHP — any PHP function + IWMAC helpers ';
+          const helpBtn = document.createElement('button');
+          helpBtn.type = 'button';
+          helpBtn.className = 'ldscp-formula-help-btn';
+          helpBtn.textContent = '?';
+          helpBtn.title = 'Formula quick reference';
+          helpBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleHelpPop(helpBtn);
+          });
+          funcs.appendChild(funcsText);
+          funcs.appendChild(helpBtn);
+          const helper = document.createElement('div');
+          helper.className = 'ldscp-formula-helper';
+          const verifyBtn = document.createElement('button');
+          verifyBtn.type = 'button';
+          verifyBtn.className = 'ldscp-formula-verify';
+          verifyBtn.textContent = 'Verify';
+          verifyBtn.title = 'Check the formula on the server (same check as Ok) without closing the dialog';
+          verifyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            verifyNow(ta);
+          });
+          ta.addEventListener('input', () => {
+            mirror(ta.value);
+            refreshHelper(ta);
+          });
+          // Keep Enter/keys in the textarea away from host shortcut handlers.
+          ta.addEventListener('keydown', (e) => e.stopPropagation());
+          input.insertAdjacentElement('afterend', ta);
+          ta.insertAdjacentElement('afterend', funcs);
+          funcs.insertAdjacentElement('afterend', helper);
+          helper.insertAdjacentElement('afterend', verifyBtn);
+          input.style.display = 'none';
+        }
+
+        // (Re)sync for this open: host's show_formula already prefilled the
+        // input via set_value before our wrapper runs.
+        ta.value = input.value;
+        ta.dataset.ldscpInputs = String(currentInputCount());
+        refreshHelper(ta);
+      }
+
+      function install() {
+        const dw = W.designer_windows;
+        if (!dw || typeof dw.show_formula !== 'function') {
+          // Host not ready yet — retry; harmless if it never appears.
+          setTimeout(install, 1000);
+          return;
+        }
+        const orig = dw.show_formula;
+        dw.show_formula = function (block, data) {
+          const result = orig.apply(this, arguments);
+          try {
+            enhance();
+          } catch (err) {
+            console.error(`[${SCRIPT_NAME}] FormulaDialogHelper enhance failed:`, err);
+          }
+          return result;
+        };
+      }
+
+      return { install };
+    })();
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SketchInfoWidget — compact pill in the top bar (left of the
+    //  IWMAC logo / green stream indicator) showing the open sketch's
+    //  last-saved and last-deployed dates, plus who, from
+    //  load_history_list. Click for the recent history entries.
+    //  Ids are captured by wrapping load_sketch (no global holds the
+    //  current sketch id — probed 2026-07-10); save_sketch's callback
+    //  is wrapped to auto-refresh. STRICTLY READ-ONLY: only load_*
+    //  RPCs are called, never revert/save/publish.
+    // ═══════════════════════════════════════════════════════════════
+    const SketchInfoWidget = (() => {
+      let pillEl = null;
+      let listEl = null;
+      let current = null; // { sketchId, projectId, name }
+      let state = {};     // { savedDate, deployDate, who, hist }
+      let loggedSample = false;
+
+      const short = (d) => (typeof d === 'string' && d.length >= 16) ? d.slice(0, 16) : (d || '—');
+
+      function fieldWho(entry) {
+        for (const [k, v] of Object.entries(entry || {})) {
+          if (!/user|author|by|name/i.test(k)) continue;
+          if (typeof v === 'string' && v && !/^\d{4}-\d{2}-\d{2}/.test(v) && !/^\d+$/.test(v)) return v;
+        }
+        return null;
+      }
+
+      function fieldDate(entry) {
+        for (const v of Object.values(entry || {})) {
+          if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v;
+        }
+        return null;
+      }
+
+      function render() {
+        if (!pillEl) {
+          pillEl = document.createElement('div');
+          pillEl.className = 'ldscp-sketchinfo';
+          pillEl.title = 'Last saved / last deployed (click for history)';
+          pillEl.addEventListener('click', toggleHistory);
+          document.body.appendChild(pillEl);
+        }
+        const who = state.who ? ` by ${state.who}` : '';
+        const n = state.hist?.length;
+        pillEl.textContent = `💾 ${short(state.savedDate)}${who} · 🚀 ${short(state.deployDate)}`
+          + (n ? ` · 🕘${n}` : '');
+      }
+
+      function closeList() {
+        if (listEl) {
+          listEl.remove();
+          listEl = null;
+        }
+      }
+
+      function toggleHistory(e) {
+        e.stopPropagation();
+        if (listEl) { closeList(); return; }
+        listEl = document.createElement('div');
+        listEl.className = 'ldscp-sketchinfo-list';
+        const hist = state.hist || [];
+        if (hist.length === 0) {
+          listEl.textContent = 'No history entries.';
+        } else {
+          for (const h of hist.slice(0, 12)) {
+            const row = document.createElement('div');
+            const date = fieldDate(h);
+            const who = fieldWho(h);
+            // One extra string field (comment/label), if the entry has one.
+            const extra = Object.values(h).find((v) =>
+              typeof v === 'string' && v && v !== date && v !== who
+              && !/^\d+$/.test(v) && !/^\d{4}-\d{2}-\d{2}/.test(v));
+            row.textContent = `${short(date)} — ${who || '?'}${extra ? ' — ' + extra : ''}`;
+            listEl.appendChild(row);
+          }
+        }
+        document.body.appendChild(listEl);
+        setTimeout(() => document.addEventListener('click', closeList, { once: true }), 0);
+      }
+
+      function refresh() {
+        if (!current) return;
+        const M = W.logic_designer_manager;
+        if (!M) return;
+        state = {};
+        closeList();
+        if (current.projectId != null) {
+          try {
+            M.load_sketch_list(String(current.projectId), (list) => {
+              const e = Array.isArray(list)
+                ? list.find((s) => String(s.id) === String(current.sketchId)) : null;
+              if (!e) return;
+              state.savedDate = e.date;
+              state.deployDate = e.compile_date;
+              render();
+            });
+          } catch (err) {
+            console.error(`[${SCRIPT_NAME}] SketchInfoWidget sketch_list failed:`, err);
+          }
+        }
+        try {
+          M.load_history_list(String(current.sketchId), (hist) => {
+            state.hist = Array.isArray(hist) ? hist : [];
+            state.who = fieldWho(state.hist[0]);
+            if (!loggedSample && state.hist[0]) {
+              loggedSample = true;
+              console.debug(`[${SCRIPT_NAME}] history_list sample entry:`, state.hist[0]);
+            }
+            render();
+          });
+        } catch (err) {
+          console.error(`[${SCRIPT_NAME}] SketchInfoWidget history_list failed:`, err);
+        }
+      }
+
+      function install() {
+        const M = W.logic_designer_manager;
+        if (!M || typeof M.load_sketch !== 'function') {
+          setTimeout(install, 1000);
+          return;
+        }
+        const origLoad = M.load_sketch;
+        M.load_sketch = function (id, cb) {
+          return origLoad.call(this, id, function (env) {
+            try {
+              const o = typeof env === 'string' ? JSON.parse(env) : env;
+              current = {
+                sketchId: o?.sketch_id ?? id,
+                projectId: o?.project_id ?? null,
+                name: o?.sketch_name ?? '',
+              };
+            } catch {
+              current = { sketchId: id, projectId: null, name: '' };
+            }
+            setTimeout(refresh, 500);
+            return cb.apply(this, arguments);
+          });
+        };
+        if (typeof M.save_sketch === 'function') {
+          const origSave = M.save_sketch;
+          M.save_sketch = function (...args) {
+            const last = args.length - 1;
+            if (typeof args[last] === 'function') {
+              const scb = args[last];
+              args[last] = function () {
+                setTimeout(refresh, 800);
+                return scb.apply(this, arguments);
+              };
+            } else {
+              setTimeout(refresh, 1500);
+            }
+            return origSave.apply(this, args);
+          };
+        }
+      }
+
+      return { install };
+    })();
+
+    // ═══════════════════════════════════════════════════════════════
+    //  TypeColorMode — recolor wires (stroke) and block bodies (fill)
+    //  by resolved type (bool / int / float / string, distinct colors).
+    //  Launcher-menu toggle cycles off → wires only → wires + blocks;
+    //  the chosen mode persists per user (GM storage). Purely visual:
+    //  inline styles only, everything restored on toggle-off. Untyped
+    //  blocks/wires keep their original look. ponytail: a 1.5s repaint
+    //  interval + post-interaction quick repaint cover moved blocks,
+    //  new wires and host select/deselect fill-wipes.
+    // ═══════════════════════════════════════════════════════════════
+    const TypeColorMode = (() => {
+      const PREF_KEY = 'ldscp:typecolors:v1'; // 'off' | 'wires' | 'full' (older builds stored a boolean)
+      let mode = 'off';
+      let running = false;
+      let timer = null;
+      let legendEl = null;
+
+      function persistPref() {
+        try { GM_setValue(PREF_KEY, mode); } catch { /* ignore */ }
+      }
+
+      const TYPES = [
+        { re: /bool/i, color: '#9b5de5', label: 'bool' },
+        { re: /int/i, color: '#1d7fd6', label: 'int' },
+        { re: /float|double|real|analog/i, color: '#2a9d34', label: 'float' },
+        { re: /string|text/i, color: '#f77f00', label: 'string' },
+      ];
+
+      function colorFor(outputType) {
+        // Probed shapes: a string ('boolean', 'mixed') OR an array of
+        // possible types (['integer'], ['integer','float'], all four for
+        // pass-through blocks). Only a single definite type maps directly;
+        // multi-type / 'mixed' return null (callers infer via inputs).
+        let t = outputType;
+        if (Array.isArray(t)) {
+          if (t.length !== 1) return null;
+          t = t[0];
+        }
+        t = String(t ?? '');
+        if (!t || /mixed/i.test(t)) return null;
+        for (const ty of TYPES) {
+          if (ty.re.test(t)) return ty.color;
+        }
+        return null;
+      }
+
+      function configuredColor(el) {
+        // Blocks like CONST declare ALL types in output_type; the actually
+        // configured type (dialog "Input type"/"Output type") lives in the
+        // block's data. Known field names first, then any data value that
+        // IS a type name (accepts the rare false hit of a string constant
+        // whose literal value is e.g. "float").
+        const d = el?.data;
+        if (!d || typeof d !== 'object') return null;
+        for (const cand of [d.input_type, d.output_type, d.type, d.data_type]) {
+          const c = colorFor(cand);
+          if (c) return c;
+        }
+        for (const v of Object.values(d)) {
+          if (typeof v === 'string' && /^(boolean|integer|float|string)$/i.test(v)) {
+            return colorFor(v);
+          }
+        }
+        return null;
+      }
+
+      function effectiveColor(ref, seen = new Set()) {
+        // Resolution order: definite declared output_type → configured type
+        // in block data (CONST, configured Selector) → trace the
+        // bottom-most CONNECTED input's source, recursively (pass-through
+        // blocks: the VALUE arrives on the bottom input — user-confirmed
+        // for If; pin order = input index order). `seen` guards wire cycles.
+        const paper = W.logic_designer?.paper;
+        const el = paper?.elements?.[ref];
+        if (!el || seen.has(ref)) return null;
+        seen.add(ref);
+        const own = colorFor(el.output_type);
+        if (own) return own;
+        const conf = configuredColor(el);
+        if (conf) return conf;
+        if (!Array.isArray(el.inputs)) return null;
+        for (let i = el.inputs.length - 1; i >= 0; i--) {
+          const inp = el.inputs[i];
+          if (inp?.connected && typeof inp.connected_to?.ref === 'number') {
+            return effectiveColor(inp.connected_to.ref, seen);
+          }
+        }
+        return null;
+      }
+
+      function paintWires() {
+        const paper = W.logic_designer?.paper;
+        if (!paper?.connections) return;
+        for (const c of paper.connections) {
+          const node = c?.line?.node;
+          if (!node) continue;
+          const color = effectiveColor(c?.user?.source);
+          if (!color) continue;
+          if (!node.dataset.ldscpTypePrev) {
+            node.dataset.ldscpTypePrev = node.style.stroke || '-';
+          }
+          node.style.stroke = color;
+        }
+      }
+
+      function unpaintWires() {
+        for (const node of document.querySelectorAll('[data-ldscp-type-prev]')) {
+          const prev = node.dataset.ldscpTypePrev;
+          node.style.stroke = prev === '-' ? '' : prev;
+          delete node.dataset.ldscpTypePrev;
+        }
+      }
+
+      function unpaintNode(node) {
+        const prev = node.dataset.ldscpTypePrevFill;
+        if (prev === undefined) return;
+        node.style.fill = prev === '-' ? '' : prev;
+        delete node.dataset.ldscpTypePrevFill;
+      }
+
+      function paintBlocks() {
+        // Recolor the block BODY (the main Raphael shape) via inline
+        // style.fill — beats the SVG fill attribute/gradient, and removing
+        // the inline style restores the original look exactly. Host
+        // select/deselect wipes the inline style; quickRefresh reapplies
+        // right after, so blocks stay type-colored while selected.
+        const paper = W.logic_designer?.paper;
+        if (!paper?.elements) return;
+        for (const [key, el] of Object.entries(paper.elements)) {
+          if (!/^\d+$/.test(key)) continue;
+          const node = el?.set?.items?.[0]?.node;
+          if (!node) continue;
+          const color = effectiveColor(Number(key));
+          if (!color) continue;
+          if (!node.dataset.ldscpTypePrevFill) {
+            node.dataset.ldscpTypePrevFill = node.style.fill || '-';
+          }
+          node.style.fill = color;
+        }
+      }
+
+      function unpaintBlocks() {
+        for (const node of document.querySelectorAll('[data-ldscp-type-prev-fill]')) {
+          unpaintNode(node);
+        }
+      }
+
+      function refresh() {
+        paintWires();
+        if (mode === 'full') paintBlocks();
+        positionLegend();
+      }
+
+      function positionLegend() {
+        // Dock the legend just left of the sketch-info pill in the top bar;
+        // the pill's width varies (dates/user), so measure it live.
+        if (!legendEl) return;
+        const pill = document.querySelector('.ldscp-sketchinfo');
+        const right = pill
+          ? Math.round(window.innerWidth - pill.getBoundingClientRect().left + 8)
+          : 185;
+        legendEl.style.right = `${right}px`;
+      }
+
+      function showLegend() {
+        if (legendEl) return;
+        legendEl = document.createElement('div');
+        legendEl.className = 'ldscp-typelegend';
+        for (const ty of TYPES) {
+          const item = document.createElement('span');
+          item.className = 'ldscp-typelegend-item';
+          const dot = document.createElement('span');
+          dot.className = 'ldscp-typelegend-dot';
+          dot.style.background = ty.color;
+          item.appendChild(dot);
+          item.appendChild(document.createTextNode(ty.label));
+          legendEl.appendChild(item);
+        }
+        document.body.appendChild(legendEl);
+        positionLegend();
+      }
+
+      let quickTimer = null;
+
+      function quickRefresh() {
+        // Host select/deselect re-fills blocks (wiping our inline style,
+        // which showed as a blue flash until the next interval tick).
+        // Repaint right after any interaction instead.
+        if (!running) return;
+        if (quickTimer) clearTimeout(quickTimer);
+        quickTimer = setTimeout(() => {
+          quickTimer = null;
+          refresh();
+        }, 80);
+      }
+
+      function start() {
+        if (running) return;
+        running = true;
+        showLegend();
+        timer = setInterval(refresh, 1500);
+        document.addEventListener('mouseup', quickRefresh, true);
+        document.addEventListener('keyup', quickRefresh, true);
+      }
+
+      function stop() {
+        if (!running) return;
+        running = false;
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+        if (quickTimer) {
+          clearTimeout(quickTimer);
+          quickTimer = null;
+        }
+        document.removeEventListener('mouseup', quickRefresh, true);
+        document.removeEventListener('keyup', quickRefresh, true);
+        unpaintWires();
+        unpaintBlocks();
+        if (legendEl) {
+          legendEl.remove();
+          legendEl = null;
+        }
+      }
+
+      function setMode(next) {
+        mode = next;
+        persistPref();
+        if (mode === 'off') {
+          stop();
+          return;
+        }
+        start();
+        if (mode === 'wires') unpaintBlocks();
+        refresh();
+      }
+
+      function toggle() {
+        // Cycle: off → wires only → wires + blocks → off.
+        setMode(mode === 'off' ? 'wires' : mode === 'wires' ? 'full' : 'off');
+      }
+
+      function isActive() {
+        return mode !== 'off';
+      }
+
+      function stateLabel() {
+        return mode === 'wires' ? 'wires only' : mode === 'full' ? 'wires + blocks' : 'off';
+      }
+
+      function install() {
+        // Restore the per-user preference. Older builds stored a boolean —
+        // true maps to the previous behavior (wires + blocks).
+        try {
+          let saved = GM_getValue(PREF_KEY, 'off');
+          if (saved === true) saved = 'full';
+          if (saved === 'wires' || saved === 'full') setMode(saved);
+        } catch { /* ignore */ }
+      }
+
+      return { toggle, isActive, stateLabel, setMode, install };
+    })();
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Stray-selection guard — dragging a text selection from the side
+    //  panels into the canvas leaves the pale-blue ::selection highlight
+    //  stuck over canvas elements: the host preventDefaults canvas
+    //  mousedowns, so the browser never collapses the selection on the
+    //  next click. Clear any non-editing text selection whenever the
+    //  mouse presses or releases on the canvas SVG.
+    // ═══════════════════════════════════════════════════════════════
+    function installStraySelectionGuard() {
+      const clearIfOnCanvas = (event) => {
+        if (event.button !== 0) return;
+        if (isEditingText(event.target)) return;
+        if (event.target?.namespaceURI !== 'http://www.w3.org/2000/svg') return;
+        const sel = window.getSelection?.();
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+        try { sel.removeAllRanges(); } catch { /* ignore */ }
+      };
+      document.addEventListener('mousedown', clearIfOnCanvas, true);
+      document.addEventListener('mouseup', clearIfOnCanvas, true);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     //  Bootstrap
     // ═══════════════════════════════════════════════════════════════
 
     mountLauncher();
+    installStraySelectionGuard();
     installCursorTracker();
     installKeyboardShortcuts();
     SelectionInterceptor.install();
@@ -4083,6 +5111,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     MoveObserver.install();
     SketchQuickOpen.install();
     AlarmHighlight.install();
+    FormulaDialogHelper.install();
+    SketchInfoWidget.install();
+    TypeColorMode.install();
 
   })();
 }

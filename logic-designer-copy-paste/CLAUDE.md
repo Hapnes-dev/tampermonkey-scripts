@@ -5,7 +5,7 @@ re-reading the entire file. Repo-wide rules (including version bumping, commit, 
 **root `CLAUDE.md`** and are not repeated here.
 
 > Single file: `logic-designer-copy-paste/Logic-Designer-Section-Copy-Paste.user.js` — pure helpers plus
-> one browser IIFE. Current `@version`: **1.7.0**. Grants: `unsafeWindow`, `GM_setValue`, `GM_getValue`,
+> one browser IIFE. Current `@version`: **1.7.29**. Grants: `unsafeWindow`, `GM_setValue`, `GM_getValue`,
 > and `GM_addStyle`.
 
 ---
@@ -14,8 +14,10 @@ re-reading the entire file. Repo-wide rules (including version bumping, commit, 
 
 This script extends IWMAC's VV Designer with selection-aware section copy/paste, cursor-positioned ghost
 paste, session undo, multi-wire creation, bulk connector removal, bulk driver-tag assignment, sketch
-quick-open, and alarm-to-block highlighting. Canvas changes are made against the host's in-memory
-`logic_designer.paper`; the user still saves or deploys through the host UI.
+quick-open, alarm-to-block highlighting, formula-dialog assistance, sketch history/status, and optional
+type-based wire/block colors. Canvas changes are made against the host's in-memory
+`logic_designer.paper`; the user still saves or deploys through the host UI. The launcher can also
+re-open the host's project selector, but does not itself save or load a project.
 
 - `@match http://internal.iwmac.local/vv_fbx.qxs*`
 - `@match https://internal.iwmac.local/vv_fbx.qxs*`
@@ -26,10 +28,11 @@ quick-open, and alarm-to-block highlighting. Canvas changes are made against the
 - §`getPlantId` prefers `unsafeWindow.plant_id`, then the `plant_id` query parameter.
   Other features do not parse plant/project/sketch identity from the URL.
 
-The README says the script “never calls the server.” That is true only in the narrow sense that the
-userscript has no network grant and creates no `fetch`/XHR itself. §`ensureProjects` and
-§`ensureSketches` call the host's `logic_designer_manager.load_project_list` and
-`load_sketch_list` RPC client, so sketch quick-open does cause host-managed reads.
+The userscript has no network grant and creates no `fetch`/XHR itself, but several features call the
+host's RPC client. §`ensureProjects` / §`ensureSketches` use `load_project_list` / `load_sketch_list`;
+`SketchInfoWidget` also uses `load_sketch_list` and `load_history_list`; and
+`FormulaDialogHelper`'s Verify button calls `verify_math`. These are host-managed requests, not purely
+local operations.
 
 ---
 
@@ -42,13 +45,17 @@ set is exactly §`buildSnapshot`, §`createUndoHistory`, §`pairSourcesToTargets
 §`formatSketchEntry`, §`isRowProcessed`, §`parseAlarmToken`, and §`distinctPointers`.
 
 Inside the IIFE, `W` is `unsafeWindow` when available and otherwise `window`. `W.__LDSCP_LOADED` is set
-before feature bootstrap; a second evaluation returns immediately. The bootstrap order is:
+before feature bootstrap; a second evaluation returns immediately. The exact bootstrap order is:
 
-1. §`mountLauncher`, §`installCursorTracker`, §`installKeyboardShortcuts`
+1. §`mountLauncher`, §`installStraySelectionGuard`, §`installCursorTracker`,
+   §`installKeyboardShortcuts`
 2. `SelectionInterceptor.install()` and `DeleteInterceptor.install()`
 3. `MultiWireMode.install()`, `RemoveConnectorsMode.install()`, `GhostPasteMode.install()`
 4. `WireObserver.install()` and `MoveObserver.install()`
 5. `SketchQuickOpen.install()` and `AlarmHighlight.install()`
+6. `FormulaDialogHelper.install()`, `SketchInfoWidget.install()`, and `TypeColorMode.install()`
+
+That is **12** `.install()` calls, plus the four direct bootstrap functions in step 1.
 
 The main runtime components are deliberately different kinds of integration:
 
@@ -64,11 +71,16 @@ The main runtime components are deliberately different kinds of integration:
 | `MoveObserver` | Coalesce host block moves into undo batches | Wraps `__move_block`; records only |
 | `SketchQuickOpen` | Augment splash dialog and drive native open flow | Host RPC reads and synthetic UI events |
 | `AlarmHighlight` | Scrape alarm rows and draw temporary SVG outlines | Read-only toward host state |
+| `FormulaDialogHelper` | Replace the formula input with a synced textarea, validation, and help | Wraps `show_formula`; `verify_math` RPC on demand |
+| `SketchInfoWidget` | Show save/deploy dates and recent history | Wraps load/save callbacks; host RPC reads |
+| `TypeColorMode` | Repaint typed wires and optionally block bodies | Inline SVG styles only; GM preference |
+| §`installStraySelectionGuard` | Collapse browser text selection on SVG mouse gestures | Selection API only |
 
 Most modules install event listeners immediately. `WireObserver` polls until `paper.initialized === true`;
 `MoveObserver.install` retries every **500 ms** until `__move_block` is ready; `AlarmHighlight.install`
-retries every **1000 ms** until its window exists. Other UI and interceptors do not have a readiness
-gate, so their handlers must tolerate an unavailable paper.
+retries every **1000 ms** until its window exists. `FormulaDialogHelper` and `SketchInfoWidget` each
+retry installation every **1000 ms** until their host method exists. Other UI and interceptors do not
+have a readiness gate, so their handlers must tolerate an unavailable paper.
 
 ---
 
@@ -90,6 +102,7 @@ walking every block's `el.set.items[].node` and testing identity/containment.
 | Wires touching deleted nodes | scan every live block's inputs; keep either endpoint in the deletion set |
 | Pin hit | compare event target with `el.set[pin.set_id].node` |
 | Wire hit | compare event target with `connection.bg.node` / `connection.line.node` |
+| All sweepable wires | §`getAllWires` resolves every `connection.user` endpoint and returns its line/background SVG path node |
 
 `paper.connections` is not trusted to supply pin indexes. Healthy wire reads derive the target pin by
 matching `connection_id` in the destination inputs and derive the source pin from that input's
@@ -209,18 +222,23 @@ redraws them. `uninstall` methods exist for both observers but bootstrap never c
 
 ## 6. Multi-wire state machine and pairing algorithms
 
-`MultiWireMode` cycles `inactive → collecting → fill → inactive` through Shift+F or the menu. `collecting`
-allows expandable target inputs; `fill` sets `noExpand` and uses only current pins. Entry cancels remove
-and ghost-paste modes. Sources are `{blockRef, pinIndex, side, y, overlayEl}` and all must share the first
-chosen side. Orange SVG rings mark them. Clicking a chosen source again toggles it off.
+`MultiWireMode` cycles `inactive → collecting → fill → all → inactive` through Shift+F or the menu.
+`collecting` permits input expansion but skips already-connected outputs during block/marquee bulk-add;
+`fill` keeps that filter and sets `noExpand`; `all` includes connected outputs in bulk-add and permits
+input expansion again. Explicit pin clicks bypass the bulk-add filter, so a connected output can be
+chosen deliberately in any active phase. Entry cancels remove and ghost-paste modes. Sources are
+`{blockRef, pinIndex, side, y, overlayEl}` and all must share the first chosen side. Orange SVG rings
+mark them. Clicking a chosen source again toggles it off.
 
-The mode polls `paper.selected_blocks` every **150 ms**. §`processMarqueeSelection` classifies blocks as
-`source-only`, `target-only`, `bidirectional`, or `none` from their input/output counts, then either adds
-all pins, finalizes against one opposite-side target, fans one source out to multiple targets, or
-distributes sources over multiple targets. Distribution occurs only when total target capacity fits all
-sources and no single target can absorb the full source set. §`distributeSourcesAcrossTargets` sorts by
-visual Y and splits `N` sources across `M` targets as `floor(N/M)`, giving one extra to the first `N % M`
-targets.
+The mode polls `paper.selected_blocks` every **150 ms** in all three active phases.
+§`processMarqueeSelection` classifies blocks as `source-only`, `target-only`, `bidirectional`, or `none`
+from their input/output counts, then either bulk-adds pins, finalizes against one opposite-side target,
+fans one source out to multiple targets, or distributes sources over multiple targets. Output bulk-adds
+route through §`addOutputsOrWarn`; when filtering leaves no sources it resets `sourceSide` and toasts how
+to reach all-pins mode. The multi-target capacity calculation uses the same filtered output count.
+Distribution occurs only when total target capacity fits all sources and no single target can absorb the
+full source set. §`distributeSourcesAcrossTargets` sorts by visual Y and splits `N` sources across `M`
+targets as `floor(N/M)`, giving one extra to the first `N % M` targets.
 
 For each target, §`doMultiWire`:
 
@@ -247,25 +265,34 @@ output is the actual wire source.
 
 ## 7. Remove-connectors implementation
 
-Shift+D or the menu toggles `RemoveConnectorsMode`; entry cancels multi-wire and ghost paste. Its actual
+Shift+D or the menu toggles `RemoveConnectorsMode`; entry cancels multi-wire and ghost paste. Its
 implemented gestures are:
 
-- left-click a wire: remove it and begin a drag session;
-- drag across further wire hit targets: remove each distinct `connectionId` once;
+- left-click an exact wire hit: remove it and begin a drag session;
+- left-press empty canvas: consume the host gesture, build the sweep index, and run a zero-length sweep
+  at the press point;
+- drag: sweep the segment from the previous pointer position to the current one and remove each indexed
+  `connectionId` at most once;
 - release: push one `remove-batch` for the drag and toast the count;
 - click a block body: §`removeAllWiresOfBlock` removes every healthy wire touching that ref and pushes one
   batch immediately;
 - click a pin: consume the click without changing it;
 - press Escape or Ctrl+Z while active: cancel the mode.
 
-§`removeWireSilent` pre-registers observer suppression and delegates to §`disconnectWire`; the caller
-owns undo batching. Empty-canvas mousedown starts an empty paint session and is not prevented, so the
-host may still perform its own canvas gesture while the mode hit-tests wires under mousemove.
+§`buildHitIndex` calls §`getAllWires` once per drag and pre-samples each usable SVG path at
+`WIRE_SAMPLE_PX = 8` path-length units, transforming the samples to screen coordinates with
+`getScreenCTM()`. §`sweepRemove` tests those points against each pointer segment with a
+`WIRE_HIT_PX = 6` screen-pixel radius. The index is not refreshed during the gesture. This replaces the
+old mousemove reliance on `event.target`, which could step over thin wire strokes.
 
-The README promises a connector-removal “marquee.” The source defines §`getWiresInSelection`, but no
-runtime call site uses it, and remove mode never reads `paper.selected_blocks`; therefore selection-based
-marquee removal is not implemented in version 1.7.0. §`onMouseOver` and §`onMouseOut` are also placeholders,
-so the `.ldscp-wire-hover` style is never applied by this script.
+§`removeWireSilent` pre-registers observer suppression and delegates to §`disconnectWire`; the caller
+owns undo batching. Empty-canvas mousedown now calls `preventDefault` / `stopPropagation`, so the host's
+own selection marquee does not start while sweep-cutting.
+
+Selection-based connector removal is still not a runtime path: §`getWiresInSelection` remains exported
+from `HostAdapter` but unused, and remove mode does not read `paper.selected_blocks`. §`onMouseOver` and
+§`onMouseOut` also remain placeholders, so `.ldscp-wire-hover` is not applied by this script. The current
+README describes drag-paint sweeping rather than promising this unused selection path.
 
 ---
 
@@ -290,8 +317,10 @@ a prior `null` alias is not explicitly written back.
 ## 9. Launcher, keyboard, selection, and mode arbitration
 
 §`mountLauncher` creates a fixed bottom-right `⋯` button and menu entries for copy, paste, undo,
-multi-wire, remove connectors, and paste tags. Undo's disabled state is refreshed only when the menu
-opens. Icons are hardcoded inline SVG; dynamic labels use `textContent`. §`toast` messages last **3000 ms**.
+multi-wire, remove connectors, type colors, paste tags, and switch project. Undo's disabled state is
+refreshed only when the menu opens. Icons are hardcoded inline SVG; dynamic labels use `textContent`.
+§`toast` messages last **3000 ms**. Active-mode banners share a larger animated top-center style;
+multi-wire uses the default orange border, remove mode uses red, and ghost paste uses blue.
 
 | Action | Shortcut | Guard/behavior |
 |---|---|---|
@@ -299,7 +328,7 @@ opens. Icons are hardcoded inline SVG; dynamic labels use `textContent`. §`toas
 | Paste | Ctrl/Cmd+V | Same guards |
 | Ghost paste | Ctrl/Cmd+B | Same guards; toggles mode |
 | Undo | Ctrl/Cmd+Z | Ignore editable targets; cancel an active mode before touching history |
-| Multi-wire | Shift+F | Shift-only; cycles auto-expand/fill/off |
+| Multi-wire | Shift+F | Shift-only; cycles collecting/fill/all-pins/off |
 | Remove | Shift+D | Shift-only; toggles |
 | Cancel mode | Escape | Priority: multi-wire, then remove, then ghost paste |
 
@@ -307,7 +336,18 @@ opens. Icons are hardcoded inline SVG; dynamic labels use `textContent`. §`toas
 resolved numeric ref in `paper.selected_blocks`, then best-effort calls `paper.__select_block(ref, event)`
 for visuals and consumes the event. `DeleteInterceptor` listens earlier than the host's normal Delete
 handler, snapshots selected blocks plus **all** touching wires, pushes `delete`, and intentionally does
-not prevent the host deletion.
+not prevent the host deletion. When Delete/Del originates in an input, textarea, select, or contenteditable
+target, the interceptor instead stops propagation without preventing default; browser forward-delete
+continues, while the host's canvas shortcut does not see the key.
+
+The “Switch project” entry closes the launcher and calls
+`W.application_windows.wnd_splash.show_modal()` when available. It only reopens the host's existing
+project selector; it performs no unsaved-change check and does not call a load RPC directly.
+
+§`installStraySelectionGuard` listens to capture-phase left-button `mousedown` and `mouseup`. If the
+event target is an SVG element and the browser selection is noncollapsed, it calls `removeAllRanges()`;
+editable targets are excluded. The implementation checks the SVG namespace only—it does not verify that
+the SVG belongs to `logic_designer.paper`.
 
 ---
 
@@ -382,7 +422,7 @@ open canvas; pointer lookup alone decides which block flashes.
 > `wire-create` records. Other wire undo paths explicitly suppress their inverse calls.
 
 > ⚠️ **Undo is destructive on failure.** §`doUndo` pops before attempting a reversal; partial or failed
-> undo is not retried or re-pushed. There is no redo. A sketch swap detected only by a large count drop,
+> undo is not retried or re-pushed. There is no redo. A sketch swap is detected only by a large count drop,
 > so a swap to a similarly sized sketch can leave stale ref-based records on the stack.
 
 > ⚠️ **Captured payload is broader than restored payload.** See §4: `config`, `compile_type`, `runtime`,
@@ -397,14 +437,34 @@ open canvas; pointer lookup alone decides which block flashes.
 > `__connect` and `__disconnect_output` only. Input clearing is observed indirectly through the paired
 > output-side host call.
 
-> ⚠️ **The README's remove-mode marquee and hover feedback are not present in 1.7.0.**
-> §`getWiresInSelection` is unused, remove mode does not inspect selected blocks, and its mouseover/out
-> handlers are placeholders. “Gesture handlers land in Tasks 10-11” is also stale task-era prose.
+> ⚠️ **The sweep index is a gesture-time snapshot.** §`buildHitIndex` converts wire samples to screen
+> coordinates only on mousedown. Scrolling, zooming, or otherwise moving the canvas during the same drag
+> leaves those coordinates stale until mouseup and a new press. Also, `WIRE_SAMPLE_PX` is passed to SVG
+> `getPointAtLength`, so the nominal 8-unit spacing is not guaranteed to remain eight screen pixels under
+> a scaled CTM.
+
+> ⚠️ **Selection removal and hover styling are still dead paths.** §`getWiresInSelection` has no runtime
+> caller, remove mode does not inspect `paper.selected_blocks`, and §`onMouseOver` / §`onMouseOut` are
+> placeholders. Version 1.7.29 does implement geometric drag-paint sweeping; these remnants are separate
+> from that working gesture.
 
 > ⚠️ **One-to-one tag writes are not atomic.** §`applyTagPaste` calls `set_block_data` and then
 > `set_block_override` inside one `try`, but appends the undo entry only after both succeed. If the data
 > write succeeds and the alias write throws, the new `driver_ids` remain while that block is absent from
 > the `tag-paste` undo payload.
+
+> ⚠️ **Type-color repaint skips unresolved types without unpainting them.** §`paintWires` and
+> §`paintBlocks` simply `continue` when §`effectiveColor` becomes `null`. A block or wire that was colored
+> earlier can therefore retain that inline color after a live type/configuration change until the mode is
+> turned off (or another host repaint overwrites it).
+
+> ⚠️ **The stray-selection guard is broader than its name.** It clears a noncollapsed browser selection
+> for a left press/release on any SVG target in the document, not specifically the designer canvas. SVG
+> controls elsewhere on the page can therefore trigger the same clearing.
+
+> ⚠️ **Sketch history attribution is heuristic.** `SketchInfoWidget` takes `who` from the first history
+> entry and accepts the first string field whose key resembles user/author/by/name. The source does not
+> establish that this field is the actor responsible for the displayed `load_sketch_list.date` value.
 
 - `paper.element_pointer` must be advanced after manual `__render_block` or later host nodes can reuse a
   ref. §`bumpRefCounter` is load-bearing.
@@ -429,26 +489,35 @@ open canvas; pointer lookup alone decides which block flashes.
 | Identifier / key | Exact value | Purpose |
 |---|---|---|
 | `SCRIPT_NAME` | `Logic Designer Section Copy/Paste` | Log prefix/title |
-| `VERSION` | `1.7.0` | Runtime constant; duplicates `@version` |
+| `VERSION` | `1.7.29` | Runtime constant; duplicates `@version` |
 | `LOAD_FLAG` | `__LDSCP_LOADED` | Duplicate-load guard on `unsafeWindow` |
-| `STORE_KEY` | `ldscp:clipboard:v1` | Only GM storage key; JSON clipboard snapshot |
+| `STORE_KEY` | `ldscp:clipboard:v1` | GM storage key for the JSON clipboard snapshot |
+| `PREF_KEY` (inside `TypeColorMode`) | `ldscp:typecolors:v1` | GM storage key: `off`, `wires`, or `full` |
 | `PASTE_OFFSET` | `{ x: 40, y: 40 }` | Ctrl+V translation |
 | `SHORTCUTS.MULTIWIRE` | `{ key: 'f', label: 'Shift+F' }` | Multi-wire cycle |
 | `SHORTCUTS.REMOVE` | `{ key: 'd', label: 'Shift+D' }` | Remove toggle |
 | `SHORTCUTS.PASTE_PLACE` | `{ key: 'b', label: 'Ctrl+B', ctrl: true }` | Ghost paste |
 | `FLUSH_MS` | `50` ms | Move-batch coalescing inside `MoveObserver` |
 | Multi-wire poll | `150` ms | Selection observation |
+| `WIRE_HIT_PX` | `6` screen px | Sweep point-to-segment hit radius |
+| `WIRE_SAMPLE_PX` | `8` SVG path-length units | Sweep-index sample step before CTM transform |
 | `WireObserver` poll | `500` ms normal / `1500` ms after error | Readiness and stability gate |
+| Type-color repaint | `1500` ms interval / `80` ms quick refresh | Repaint new or host-repainted SVG elements |
 | Toast lifetime | `3000` ms | UI notification removal |
 | Quick-open `pollFor` defaults | `tries=40`, `delayMs=50` | About 2 s per wait |
+| Formula/SketchInfo install retry | `1000` ms | Wait for lazy host methods |
+| SketchInfo refresh delays | `500` ms after load / `800` ms after save callback / `1500` ms without callback | Deferred metadata reload |
 | Alarm fade/remove | `1600` / `2050` ms | Highlight lifecycle |
 | Alarm install retry | `1000` ms | Wait for lazy host dialog |
 | `ROW_SEL` | `#comp_application_windows_tbl_wnd_splash_projects tr.qxsTable_tr` | Project rows inside `SketchQuickOpen` |
 | `ALARM_DIALOG_ID` | `comp_application_window_problems_tbl_wnd_vv_alarms` | Visible alarm table |
 | `ALARM_WINDOW_ID` | `comp_application_window_problems_wnd_vv_alarms` | Style-observed window |
 
-No state other than the clipboard is persisted. Undo records, quick-open caches, active alarms, current
-modes, latest cursor, and selection refs are page-session memory.
+Only the clipboard snapshot and type-color preference are persisted. `TypeColorMode.install` migrates a
+legacy stored boolean `true` to `full`; `false` and unrecognized values leave the default `off`. Undo
+records, quick-open and sketch-info state, active alarms, the multi-wire/remove/ghost interaction modes,
+latest cursor, and selection refs are page-session memory. The persisted type-color preference is
+reapplied on each page.
 
 ---
 
@@ -457,16 +526,121 @@ modes, latest cursor, and selection refs are page-session memory.
 §`buildSnapshot` (portable local-id clipboard graph) · §`doCopy` / §`ClipboardStore.load` /
 §`applySnapshotAt` / §`doPaste` (clipboard pipeline) · §`clientToSvgWorld` and
 `GhostPasteMode` (§`chooseAnchor`, §`buildOverlay`, §`onClickGhost`) (cursor paste) · `HostAdapter`
-(§`getSelection`, §`getNodeData`, §`getInternalWires`, §`createNode`, §`createWire`, §`disconnectWire`,
+(§`getSelection`, §`getNodeData`, §`getInternalWires`, §`getAllWires`, §`createNode`, §`createWire`, §`disconnectWire`,
 §`deleteNode`) (host model boundary) · `SelectionInterceptor` / `DeleteInterceptor` (capture-phase host
 gesture augmentation) · §`createUndoHistory`, §`doUndo`, and the `undo*` functions (session history) ·
 `WireObserver` (§`buildPinCountFingerprint`, §`tick`, §`recordCreateFromArgs`,
 §`recordRemoveBeforeCall`) (native wire observation) · `MoveObserver` (§`record`, §`flush`, §`snap`)
 (50-ms drag coalescing) · `MultiWireMode` (§`processMarqueeSelection`, §`addSourcePin`,
-§`finalizeOnPin`, §`finalizeOnBlock`) plus §`pairSourcesToTargets`,
+§`addOutputsOrWarn`, §`finalizeOnPin`, §`finalizeOnBlock`) plus §`pairSourcesToTargets`,
 §`distributeSourcesAcrossTargets`, and §`doMultiWire` (multi-connect algorithm) ·
-`RemoveConnectorsMode` (§`removeWireSilent`, §`removeAllWiresOfBlock`, mouse handlers) (bulk teardown) ·
+`RemoveConnectorsMode` (§`buildHitIndex`, §`sweepRemove`, §`removeWireSilent`,
+§`removeAllWiresOfBlock`, mouse handlers) (bulk teardown) ·
 §`applyTagPaste` / §`undoTagPaste` (driver IDs) · §`mountLauncher` /
-§`installKeyboardShortcuts` (UI and chords) · `SketchQuickOpen` (§`ensureProjects`, §`ensureSketches`,
+§`installKeyboardShortcuts` / §`installStraySelectionGuard` (UI, chords, and selection cleanup) ·
+`SketchQuickOpen` (§`ensureProjects`, §`ensureSketches`,
 §`attachArrow`, §`toggleList`, §`openSketch`) (splash augmentation) · `AlarmHighlight`
-(§`scrapeAlarms`, §`refByPointer`, §`flash`, §`renderPill`) (alarm mapping and overlays).
+(§`scrapeAlarms`, §`refByPointer`, §`flash`, §`renderPill`) (alarm mapping and overlays) ·
+`FormulaDialogHelper` (§`enhance`, §`mirror`, §`refreshHelper`, §`verifyNow`, §`toggleHelpPop`) (formula
+textarea/validation/help) · `SketchInfoWidget` (§`refresh`, §`render`, §`toggleHistory`) (current-sketch
+metadata) · `TypeColorMode` (§`effectiveColor`, §`paintWires`, §`paintBlocks`, §`quickRefresh`,
+§`setMode`) (visual type coloring).
+
+---
+
+## 15. Formula dialog helper
+
+`FormulaDialogHelper` waits for `W.designer_windows.show_formula`, retrying every **1000 ms**, then
+replaces that function with a wrapper. The wrapper calls the original first and runs §`enhance`
+afterward, so the host has already populated
+`#comp_designer_windows_inp_wnd_formula_formula` before the userscript reads it.
+
+On the first open, §`enhance` inserts `textarea.ldscp-formula-ta` immediately after the host input and
+hides the input. The textarea is reused on later opens and resynchronized from `input.value`. Its input
+handler calls §`mirror`, which collapses each newline and surrounding whitespace to one space, trims the
+result, and writes it through `designer_windows.inp_wnd_formula_formula.set_value()`; direct assignment
+to the hidden input is only the fallback. The host's existing Ok handler therefore continues reading its
+own component rather than a parallel userscript-only value. Textarea keydown propagation is stopped so
+host shortcuts do not consume formula editing keys.
+
+The helper UI has three independent pieces:
+
+| Piece | Implementation |
+|---|---|
+| Input hint | §`currentInputCount` calls `paper.get_block_inputs(current_block, true)`; §`refreshHelper` lists available `inpN` names and warns for referenced indexes beyond that count |
+| Verify | §`verifyNow` calls `logic_designer_manager.verify_math(flattenedFormula, Math.max(inputCount, 1), callback)`; only `reply.ok === true && reply.data === true` renders “Syntax OK” |
+| `?` popup | §`toggleHelpPop` renders `HELP_SECTIONS` beside the dialog when possible, links to the PHP function index, and closes on the next outside click |
+
+The popup presents the source's quick reference for inputs, PHP/IWMAC functions, operators, examples,
+and caveats; those claims are UI copy embedded in this userscript, not independently verified by this
+repository. The popup itself warns that Verify is syntax-only. The module does not save a formula, but
+pressing Verify does issue the host-managed `verify_math` request.
+
+---
+
+## 16. Sketch info widget
+
+`SketchInfoWidget` discovers the current ids by wrapping `logic_designer_manager.load_sketch`; the source
+notes that no probed global exposed the current sketch id. The wrapped callback parses a string envelope
+as JSON when needed, captures `sketch_id`, `project_id`, and `sketch_name` (falling back to the requested
+id and a null project), schedules §`refresh` after **500 ms**, and then invokes the original callback.
+The captured `name` is retained in `current` but is not displayed or otherwise read by this module.
+
+§`refresh` clears the prior widget state and starts up to two host reads:
+
+| RPC/source | Fields consumed | UI result |
+|---|---|---|
+| `load_sketch_list(String(projectId), cb)` | matching entry's `date` and `compile_date` | 💾 saved date and 🚀 deploy date |
+| `load_history_list(String(sketchId), cb)` | history array; first-entry heuristic §`fieldWho` | actor suffix, entry count, and click-open history list |
+
+§`fieldDate` accepts the first string value beginning `YYYY-MM-DD`. §`fieldWho` accepts the first
+non-date, nonnumeric string whose key matches `user|author|by|name`. The dropdown renders at most the
+first **12** entries and heuristically chooses one additional string as a comment/label. Dates are
+shortened to their first 16 characters. A sample of the first history entry is logged once at debug
+level per page session.
+
+Installation retries every **1000 ms** until `load_sketch` exists. If `save_sketch` exists at that time,
+it is also wrapped: a supplied callback is allowed to run and §`refresh` follows after **800 ms**;
+without a callback, refresh is scheduled after **1500 ms**. The wrapper does not inspect whether the save
+reply represents success. The widget itself calls only `load_sketch_list` and `load_history_list`; it
+never initiates save, publish, deploy, or history revert.
+
+---
+
+## 17. Type color mode
+
+`TypeColorMode` is a visual overlay that colors a connection from its source block's resolved type and,
+in full mode, colors each numeric block's main Raphael shape (`el.set.items[0].node`) the same way.
+Untyped elements are skipped. The fixed palette is:
+
+| Resolved family | Accepted declared strings | Color |
+|---|---|---|
+| bool | `/bool/i` | `#9b5de5` |
+| int | `/int/i` | `#1d7fd6` |
+| float | `/float|double|real|analog/i` | `#2a9d34` |
+| string | `/string|text/i` | `#f77f00` |
+
+§`effectiveColor` resolves in this exact order (its `seen` argument defaults to a new Set):
+
+1. §`colorFor(el.output_type)` when the declaration is one definite value. Arrays must contain exactly
+   one entry; empty, multi-type, and `mixed` declarations do not resolve.
+2. §`configuredColor(el)`: `data.input_type`, `data.output_type`, `data.type`, then `data.data_type`,
+   followed by any data string exactly matching `boolean|integer|float|string`.
+3. Recursively follow the source ref of the bottom-most connected input, scanning inputs from last to
+   first. The `seen` Set stops cycles.
+
+The launcher cycles through three persisted states:
+
+| Mode | Wires | Block bodies | Bulk-paint lifecycle |
+|---|---:|---:|---|
+| `off` | original | original | timer/listeners removed; stored inline styles restored |
+| `wires` | colored | original | 1500-ms refresh plus 80-ms post-mouseup/keyup refresh |
+| `full` | colored | colored | same refresh strategy |
+
+§`paintWires` stores the prior inline `stroke` in `data-ldscp-type-prev`; §`paintBlocks` similarly stores
+inline `fill` in `data-ldscp-type-prev-fill`. Turning off restores those saved values. A legend containing
+the four swatches is shown while either active mode runs and is positioned immediately left of the
+measured sketch-info pill when that pill exists.
+
+The second GM key, `ldscp:typecolors:v1`, stores `off`, `wires`, or `full`. On install, the legacy boolean
+`true` migrates to `full`; the code has no explicit `false` branch, so `false` leaves the default `off`.
