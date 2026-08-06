@@ -46,7 +46,10 @@ Reply with RAW JSON only. No markdown fences, no comments, no trailing text.
   }
 }
 
-counts.single_objects MUST equal the real array length.
+counts.single_objects MUST equal the real array length. counts.containers
+is 0 and panel.containers stays [] in every panel type EXCEPT list panels
+(section 7c), where each table row is a container and counts.containers
+MUST equal that array's real length.
 
 BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
 (picked file beats image_svg beats image_data):
@@ -159,6 +162,12 @@ exhaust = avtrekk/avkast; all pipes are dummies - never linked):
   number_v3_R_45px_no_conn_tag_up_left | 46 x 22 | box, caption above-left (room sensors)
   V3_led_16px_circ_grey_yellow | 16 x 16 | B-alarm LED; V3_led_18px_circ_grey_red | 18 x 18 | smoke/fire LED
 
+LIST/TABLE SET (spjeldliste and other full-screen lists - section 7c):
+  previous_page_tekn_box_no       | 1570 x 57 | top banner with built-in back-to-previous-panel navigation (catalogue default 116 x 76 - always stretch to table width)
+  number_v3_label_12px_bold_white | 50 x 20   | white title text placed ON the banner
+  number_v3_header_grey50         | stretch   | grey highlight stripe (e.g. 1570 x 20 behind a group's first row)
+  number_v3_header_appgrey        | stretch   | divider line: 3 x table-height vertical at each column boundary, 11 x table-height between the two half-tables
+
 NEVER invent an obj_id. If it is not in this list (or in the full catalogue
 files when provided), do not use it. An unknown obj_id renders as a broken
 grey box.
@@ -166,6 +175,10 @@ grey box.
 5. LAYOUT RULES
 ---------------
 - Canvas 1400 x 750. Keep everything inside x 20..1380, y 10..730.
+  EXCEPTION: list panels (section 7c) overflow on purpose - the real
+  production spjeldliste runs rows to y 4646 and content to x 1585 on a
+  nominal 1400x750 panel; the plant view scrolls. Only list panels may
+  do this.
 - Organize in section columns roughly 300 px wide (x = 20, 320, 640, 960).
 - Each section: header bar (number_v3_header_grey75, W 260-280) then rows
   every 28-30 px starting ~35 px below the header.
@@ -187,7 +200,8 @@ grey box.
   (e.g. "Pc discharge pressure", "MT compressor 2 run status"). Set it on
   every value/status/equipment object. Take the names from the source
   document (P and ID sensor names like Po, Pc, Prec, Sgc, Sd, Ss, Shr2).
-- containers/graphics: always empty arrays in AI output (v1 contract).
+- containers: empty array EXCEPT in list panels (section 7c), where every
+  table row is one objects_container. graphics: always empty.
 - No background image: background_embedded false, org_image_name "".
 
 7. RECIPES
@@ -256,7 +270,9 @@ plants (755 is the designer's own preset), 1280 x 1024 on the older fleet.
 ALWAYS match the plant's existing panels; default to 1400 x 750 for new work.
 
 Containers appear on only 3 of 194 panels and graphics on 0 of 194 - your
-output keeping containers/graphics empty IS the house style. Older plants
+output keeping containers/graphics empty IS the house style. The exception
+is the LIST PANEL (spjeldliste, section 7c), which is container-built by
+design. Older plants
 contain legacy V2 object ids (alarm_anim.gif, number6, red_led_small,
 sub_page_1); they still render but are NOT modern style - never emit them.
 
@@ -294,6 +310,75 @@ fans, filters, and number_v3_R_45px_con_* boxes whose connector lines point
 at the duct. Condenser/gas-cooler fans often appear as two fans stacked
 vertically 27 px apart.
 
+7c. LIST PANELS (SPJELDLISTE) - MODE C
+--------------------------------------
+When the user asks for a "spjeldliste" (damper list) or any long tabular
+listing, the house style is a full-width TABLE - the one panel type built
+from CONTAINERS. Normative reference: reference_data/
+real-spjeldliste-example.json (a real production 360.004 Spjeldliste,
+plant masked: 383 scaffold objects + 208 row containers, 21 system groups).
+
+SCAFFOLDING (single_objects; the ONE place zIndex is NOT "default" -
+layering matters: stripes "3" under container rows 4 under dividers "5"
+under text "900"):
+- previous_page_tekn_box_no 1570x57 at x 15 y 50, zIndex "155": top banner
+  with back navigation. Put number_v3_label_12px_bold_white title labels
+  ON it (y ~63) - one per half-table.
+- Column headers: number_v3_label_12px_bold at y ~90: Spjeldnr. x 83,
+  Romnr. x 259, Prosj. min. m3/h x 330, Prosj. maks. m3/h x 433,
+  Erverdi x 555, SP.paadrag m3/h x 614, Spjeldvinkel % x 710; the same
+  set repeated for the right half-table at x +780.
+- Vertical dividers: number_v3_header_appgrey, zIndex "5", 3 px wide by
+  table height (e.g. 3 x 4580) at each column boundary (x 232, 321, 427,
+  543, 605, 703 and mirrored right half), and an 11 px one at x 790
+  separating the two half-tables.
+- Group highlight: ONE number_v3_header_grey50 1570x20, zIndex "3", behind
+  the FIRST row of each system group (2 px above the row top).
+- Optional dotted row separators: number_v3_label_8px_norm whose tag_text
+  is a long run of dots, one per row line.
+
+ROWS - one container per damper, EXACT template (all fields, note zIndex
+is a NUMBER on the container but a STRING on items):
+{
+  "id": "objects_container",
+  "unique_id": "custom_0",
+  "name": "objects_container_0",
+  "type": "container_c",
+  "container_type": "objects_container",
+  "className": "objects_container",
+  "header_footer": [],
+  "linked": "0",
+  "linked_to": "0",
+  "width": 1544, "height": 23,
+  "left": 19, "top": 106,
+  "zIndex": 4,
+  "items": [ ...cell objects... ],
+  "title": "Objects Container"
+}
+unique_id/name index sequential (custom_0, custom_1, ... - Insert renumbers
+to avoid collisions). top: first row 106, +20 per row, +40 extra between
+system groups (one group per ventilation system / building section).
+
+CELLS (container items): number_v3_label_12px_bold 50x20, posTop 3,
+zIndex "900", posLeft RELATIVE to the container: 0 = damper tag
+("1101H7=360.004-SQ401" style), 239 = room number ("7.062", omit if
+unknown), 342 = prosjektert min m3/h, 445 = prosjektert maks m3/h.
+Right half-table cells: 786 / 1031 / 1131 / 1234. Production groups
+supply-side dampers (400-series SQ4xx/SK4xx) in the left half and
+extract-side (500-series SQ5xx/SK5xx) in the right half, same row band.
+Static text goes in tag_text; keep driver_id "driver_id", linked "false",
+alias_text "new text" (nothing in these rows is linked).
+The Erverdi / SP.paadrag / Spjeldvinkel % columns exist only as headers -
+production leaves those cells unpopulated for later hand-linking. If the
+user explicitly wants live cells, add number_v3_value_only 50x20 items at
+posLeft ~540 / ~600 / ~700 (+786 right) with the standard unlinked
+convention and the damper name in alias_text.
+
+DO NOT IMITATE two author artifacts you will see in the real file:
+14 identical grey50 stripes stacked per group (emit ONE), and
+driver_id "#c1"/"#c2" + linked "true" on the static min/maks cells (a
+bookkeeping convention the designer merely round-trips).
+
 8. WORKFLOW AFTER YOU ANSWER
 ----------------------------
 The user saves your JSON as a .json file, opens the IWMAC Designer on the
@@ -308,7 +393,10 @@ a listed reason.
 [] format iwmac-designer-panel, version 1, counts match array length
 [] every obj_id is from the allowlist / catalogue - none invented
 [] every object has ALL 17 template fields, driver_id = "driver_id"
-[] positions inside the canvas, no overlaps, integer pixels
+[] positions inside the canvas (list panels 7c excepted), no overlaps,
+   integer pixels
 [] tag_text on text objects, alias_text on linkable objects, ASCII only
-[] containers [] and graphics [] empty
+[] graphics [] empty; containers [] too UNLESS this is a list panel (7c),
+   then counts.containers equals the containers array length and every
+   container follows the 7c template exactly
 [] raw JSON only - no fences, no commentary
