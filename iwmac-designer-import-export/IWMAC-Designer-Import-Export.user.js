@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.1.0';
+var IWDIE_VERSION = '1.2.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -251,6 +251,39 @@ function iwdieBuildExportFilename(plantId, panelName, now) {
   function p(n) { return (n < 10 ? '0' : '') + n; }
   var stamp = '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
   return 'iwmac-panel_' + (plantId || 'plant') + '_' + iwdieSanitizeName(panelName) + '_' + stamp + '.json';
+}
+
+/**
+ * Raw SVG markup -> a data: URL the designer accepts as a background
+ * (verified live: CSS background + Image() both load it at full size).
+ * This is what lets an AI *author* the artwork — SVG is just text, so no
+ * base64 step is required of the model.
+ */
+function iwdieSvgToDataUrl(svg) {
+  var s = String(svg == null ? '' : svg).trim();
+  if (s.indexOf('<svg') !== 0) return null;
+  var b64;
+  if (typeof Buffer !== 'undefined' && Buffer.from) {
+    b64 = Buffer.from(s, 'utf8').toString('base64');
+  } else if (typeof btoa === 'function') {
+    b64 = btoa(unescape(encodeURIComponent(s)));
+  } else {
+    return null;
+  }
+  return 'data:image/svg+xml;base64,' + b64;
+}
+
+/** Structural sanity for AI-authored background SVG. */
+function iwdieValidateSvg(svg) {
+  var errors = [];
+  var s = String(svg == null ? '' : svg).trim();
+  if (s.indexOf('<svg') !== 0) { errors.push('"image_svg" must start with <svg.'); return errors; }
+  if (s.indexOf('</svg>') < 0) errors.push('"image_svg" has no closing </svg> tag.');
+  if (!/viewBox\s*=/.test(s) && !(/width\s*=/.test(s) && /height\s*=/.test(s))) {
+    errors.push('"image_svg" needs a viewBox (or width+height) so it scales to the panel.');
+  }
+  if (/<script/i.test(s)) errors.push('"image_svg" must not contain <script>.');
+  return errors;
 }
 
 /** Attach a background image (data: URL) to a panel document the host-native
@@ -596,6 +629,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!hostReady()) { showErrors(['IWMAC Designer host functions are not available (page not fully loaded?).']); return; }
 
       var doc = iwdieNormalizeDoc(res.doc);
+      // AI-authored artwork: panel.image_svg (raw SVG text) -> embedded background.
+      // A file picked in the modal takes precedence over the JSON's SVG.
+      if (!pendingBg && doc.image_svg) {
+        var svgErrors = iwdieValidateSvg(doc.image_svg);
+        if (svgErrors.length) { showErrors(svgErrors, v.warnings); return; }
+        var svgUrl = iwdieSvgToDataUrl(doc.image_svg);
+        if (svgUrl) { doc = iwdieAttachBackground(doc, svgUrl, doc.org_image_name || 'ai-background.svg'); }
+      }
+      delete doc.image_svg;
       if (pendingBg) { doc = iwdieAttachBackground(doc, pendingBg.dataUrl, pendingBg.name); }
       var target = currentPlantId();
       var source = iwdieDetectSourcePlant(doc);
@@ -694,6 +736,8 @@ if (typeof module !== 'undefined' && module.exports) {
     validateDoc: iwdieValidateDoc,
     normalizeDoc: iwdieNormalizeDoc,
     attachBackground: iwdieAttachBackground,
+    svgToDataUrl: iwdieSvgToDataUrl,
+    validateSvg: iwdieValidateSvg,
     detectSourcePlant: iwdieDetectSourcePlant,
     eachDriverId: iwdieEachDriverId,
     countRebindable: iwdieCountRebindable,

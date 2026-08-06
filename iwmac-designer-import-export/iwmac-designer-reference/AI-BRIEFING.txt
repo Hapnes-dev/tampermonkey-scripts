@@ -48,16 +48,28 @@ Reply with RAW JSON only. No markdown fences, no comments, no trailing text.
 
 counts.single_objects MUST equal the real array length.
 
-BACKGROUND IMAGE (optional): the artwork can travel inside the same file.
-Add to the "panel" object:
-    "converted": "true",
-    "image_data": "data:image/png;base64,<the whole PNG base64>"
-and set the envelope's "background_embedded": true. This is the designer's
-own embedded-image format - on insert it is applied straight to the canvas.
-Only do this when the user actually supplies image data; you cannot invent
-artwork. If the user has the PNG on disk instead, leave the fields out and
-tell them to attach it in the Insert dialog's background-image picker
-(userscript v1.1.0+), which embeds it for them.
+BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
+(picked file beats image_svg beats image_data):
+
+1. YOU CAN DRAW IT YOURSELF (v1.2.0+): put raw SVG markup in the panel
+   object as "image_svg". Rules: the string starts with <svg, carries
+   viewBox="0 0 1400 750" (match the panel size), NO <script> tags, and
+   its coordinates line up with your object positions (same pixel space).
+   Insert validates it, converts it to a data-URL and embeds it as the
+   background - so one file delivers artwork AND objects.
+   What to draw (keep it schematic, like the production PNGs):
+   - a light page background (#eef1f4-ish) and a tinted side/section zone
+   - a rounded-rect aggregate/machine enclosure with a small title text
+   - soft duct-band shadows BEHIND where your pipe objects run
+     (supply tinted blue, extract tinted warm), airflow arrows
+   - dashed zone boxes (VGV cross-over, coil sections)
+   Never cover the canvas in dark colors, never draw values or symbols the
+   OBJECTS already provide (no fake numbers, LEDs or fans in the SVG).
+2. If the user supplies ready image data, put it in "image_data" as a
+   data:image/png;base64,... string with "converted": "true".
+3. If they only have a file on disk, leave the fields out - the Insert
+   dialog's background picker (v1.1.0+) embeds it for them.
+Set the envelope's "background_embedded": true when 1 or 2 is used.
 
 3. THE OBJECT ENTRY - COPY THIS TEMPLATE EXACTLY
 ------------------------------------------------

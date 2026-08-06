@@ -56,7 +56,7 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
-**The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `panel.image_data: "data:image/png;base64,…"` — the designer's own embedded-image format), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly — that's how you pair an AI-generated panel with your floor-plan or AHU drawing in one operation. An AI can also embed the image itself by setting those two fields in `panel`.
+**The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `panel.image_data: "data:image/png;base64,…"` — the designer's own embedded-image format), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 
 ## AI-generated panels (Copilot)
 
