@@ -168,6 +168,27 @@ LIST/TABLE SET (spjeldliste and other full-screen lists - section 7c):
   number_v3_header_grey50         | stretch   | grey highlight stripe (e.g. 1570 x 20 behind a group's first row)
   number_v3_header_appgrey        | stretch   | divider line: 3 x table-height vertical at each column boundary, 11 x table-height between the two half-tables
 
+ROOM-CONTROL SET (romkontroll floor plans, tappevann, teknisk - section 7d;
+all value boxes 61 x 21, signal in alias_text):
+  number_v3_rc_box                | 150 x 200 | titled frame card (room); 133 x 138 as 'Malepunkt' measure-point card; title in tag_text
+  number_v3_rc_temp_60 / number_v3_rc_temp_sp_60 | 61 x 21 | temperature / temp setpoint
+  number_v3_rc_co2_60 / number_v3_rc_co2_sp_60   | 61 x 21 | CO2 / CO2 setpoint
+  number_v3_rc_air_flow_val_60    | 61 x 21 | airflow m3/h
+  number_v3_rc_load_vav_60 / number_v3_rc_load_vav_in_60 | 61 x 21 | VAV damper position, supply / extract
+  number_v3_rc_air_radiator_val_60| 61 x 21 | heating output %
+  number_v3_rc_temp_ute           | 66 x 48 | outdoor-temperature block
+
+NAVIGATION SET (multi-panel plants - section 7d; a nav object's driver_id
+holds the TARGET PANEL's numeric id, e.g. "6" - not a driver parameter):
+  sub_page_4                      | 80 x 40 (also 74x28, 32x32) | grey nav pill
+  previous_page_4                 | 80 x 40 | back pill (top-left of satellite panels)
+  sub_page_link_btn_left / _home / _right | 38 x 38 | bottom nav triple (y ~649)
+  sub_page_360_ventilation / sub_page_565_room_control / sub_page_320_heating_plant | 120 x 80 | icon menu tiles for the Oversikt hub
+  sub_page_80_24_kurver_btn       | 80 x 24 | small "kurver" button
+  sub_page_v3_header_link_grey75  | 100 x 20 | header-bar-shaped link
+
+HOTEL VENT EXTRAS (seen in production on the 7d plant): V3_horis_damper_flow-right_nrm and _flow-left_nrm 36x26 duct damper; V3_compressor_21x21_up_nrm; number_360_cb 37x70 compressor box; number_360_room 100x339 room symbol; number_v3_cooler_2way_long / number_v3_heater_2way_long 40x66 coils; V3_led_21px_circ_grey_red/_grey_yellow/_grey_green/_green_grey 21x21; V3_R_38px_circular_alarm_nrm 38x38; number_v3_R_80px_no_conn_tag_up_left 82x22 energy box; number_v3_R_45px_no_conn_bott_center 46x22; number_v3_3Way_textbox_left 100x21 valve box; numberV3_outside_temp 79x50; number_v3_100x100_info_box; labels _9px_norm/_10px_norm/_11px_norm/_12px_norm; dummy decor family (Arrow_Left/Right/ZigZag, Line pieces, resirc_damp_vert 70x40, 2way/3way motors, shutoff valves, 21x21_1x_pump).
+
 NEVER invent an obj_id. If it is not in this list (or in the full catalogue
 files when provided), do not use it. An unknown obj_id renders as a broken
 grey box.
@@ -380,6 +401,93 @@ DO NOT IMITATE two author artifacts you will see in the real file:
 14 identical grey50 stripes stacked per group (emit ONE), and
 driver_id "#c1"/"#c2" + linked "true" on the static min/maks cells (a
 bookkeeping convention the designer merely round-trips).
+
+7d. HOTELS / MULTI-BUILDING PLANTS (NAV HUBS, ROMKONTROLL, TAPPEVANN)
+---------------------------------------------------------------------
+Normative reference: reference_data/hotel-panelset-anatomy.json - a full
+69-panel production hotel surveyed panel by panel. Older fleet: everything
+is 1280 x 1024 EXCEPT the newer Romkontroll floor plans (1400 x 750).
+
+ORGANIZATION. Only the main Oversikt is visible=1; every other panel is
+visible=4 and reached through navigation objects. The panel list is
+grouped by 0-object separator panels named "----- Ventilasjon -----".
+Each vent system gets satellites: "360.NNN kurvestyring" (or Kurver),
+"360.NNN Ur" (3 nav buttons), "360.NNN Reserve 1"/"Reserve 2" (EMPTY
+placeholder panels - reserved slots are house style).
+
+NAVIGATION. A sub_page/previous_page object's driver_id = the numeric id
+of the panel it opens ("6", "39") - taken from the plant's panel list,
+NOT from a parameter dump. When generating, leave it "driver_id" unless
+the user supplies the target panel ids. Satellites carry previous_page_4
+top-left; systems page between each other with the bottom nav triple
+sub_page_link_btn_left/home/right at y ~649.
+
+OVERSIKT AS NAV HUB (46 objects): an 8-column grid (x 42,192,...,1081 -
+150 px pitch). Per section: a label_12px_bold section title
+("Ventilasjon", "Varme-/kjoleanlegg", "Romkontroll"), a label_12px_bold
+building name per column, an icon tile per target panel
+(sub_page_360_ventilation etc., 120 x 80), and a header_grey75 116 x 30
+caption under each tile with the target's full name ("360.001 Hotellrom
+1-9 etg"). Sections top-to-bottom: Ventilasjon, Varme/kjol (incl. a
+150 x 120 Tappevann tile), Kjol og frys, Romkontroll floor plans.
+
+HOTEL VENTILASJON PANEL (~100 objects, one BACnet/Swegon aggregate):
+right column x1150 has THREE header_grey75 250x20 sections - "Status og
+vendere" (Driftsmodus custom_json_obj 230x20, Systemvender 60px_json_obj,
+Alarmkvittering + A/B/C LED row of led_21px_circ red/red/yellow/yellow,
+Sesong Su/Wi, Aktiv temp.reg.), "Vifteregulering" (Tilluft x1260 /
+Avtrekk x1330 columns of 60px_dark_no_conn, rows Sp. steg 1/2/3 m3/h) and
+"Temperaturregulering" (Sp. temp, min/maks tilluft, utetemp sommer/
+vinter, offset). Center: the usual two duct runs (extract top
+right-to-left, supply below left-to-right) PLUS number_360_vg_rot across
+both, number_360_cb + compressor_21x21 pair (integrated heat pump) with
+con_left "Varme %"/"Kjoling %", number_360_room at the right end,
+horis_damper symbols with 8px "KA401/KA501" labels, fire = led_18px red +
+"RY401" + anim alarm bell. Filter tags here use RD ("RD401 Pa").
+
+KURVESTYRING (the curve satellite, ~110 objects on a curve-grid
+background): previous_page_4 top-left; two mirrored halves (extract RT501
+left, supply RT401 right): title label_12px_bold_white, actual temp
+60px_no_conn, FOUR Y setpoints 60px_dark_no_conn stacked (~50 px pitch),
+Kalk.SP 60px_no_conn, FOUR X setpoints in a row (~82 px pitch), shared
+RT900 outdoor box; fan-curve section with active-curve LEDs
+(led_21px_circ green) and Kalk SP JV-temp/-CO2 boxes; a free-text
+explanation column of label_11px_norm lines at x1129;
+V3_81x21_enebled_disabled_nrm "Skriving til US" write-enable top-left.
+XML-era variant "Kurver": X1-X8/Y1-Y8 60px_dark_no_conn_no_tag on a
+Regin curve background.
+
+VARME (320.NNN, ~53 objects on a drawn schematic): outside_temp RT901
+top-left; right column "Status og vendere" (pump switches 60px_json_obj)
++ "Settpunkt" + kurver button; on-schematic tur/retur pairs as
+con_right/con_left "RT4xx/RT5xx C" pointing at pipes; per energy meter:
+con_down "Tur C" + con_top "Retur C" + R_80px_tag_up_left "OEnnn Energy"
++ tag_up_left "Effekt kW"; pumps 21px with an alarm bell each and AO
+output boxes; sub_page_4 links to consumer systems.
+
+TAPPEVANN (310.NNN, ~53 objects on a plant-room photo): TOP = a row of
+rc_box 133 x 138 cards "Malepunkt 1..6" (131 px pitch), each holding two
+rc_temp_60 rows (tur forbruksvann y+37, sirkulasjon y+69) with
+label_12px_norm placement notes; BOTTOM = schematic with con_down RT401/
+RT501, a 3-way valve, JP501 pump + alarm bell, VV/KV/VVC 10px markers,
+tank labels NT00x. The rc_* boxes are reused here as generic
+measure-point cards.
+
+ROMKONTROLL FLOOR PLAN (1400 x 750 on a floor-plan PNG): supply pipe
+1000 x 18 across the top (arrow right), one connector_up drop per room;
+on the drop: rc_load_vav_60 "Posisjon %" + dummy_resirc_damp_vert +
+rc_air_flow_val_60 "Luft m3/h". THE ROOM CARD: rc_box 150 x 200 titled
+with the room name, inside three rows of 61x21 pairs at (dx14,dy51)/
+(dx77,dy51), (14,93)/(77,93), (14,135)/(77,135): [rc_temp_60 Temperatur +
+rc_co2_60], [rc_temp_sp_60 Settpunkt + rc_co2_sp_60], [rc_temp_60 Arb.SP
++ rc_air_radiator_val_60 Varme]. Below the card the extract mirror
+(rc_load_vav_in_60 + damper + flow) into an exhaust pipe along the bottom
+(zigzag arrow left). alias pattern: "Analoge inn/ut,-<Room>_<Signal>"
+("Rom1_Temp_lest", "Rom1_Co2_Setpkt", "Rom1_paadrag_varme").
+
+MINI STATUS PANEL (cold rooms on a floor plan): per room a 3-object
+cluster - V3_R_38px_circular_alarm_nrm ("Hoy temp rom NNN") +
+60px_no_conn actual temp + 60px_dark_no_conn "Settpunkt".
 
 8. WORKFLOW AFTER YOU ANSWER
 ----------------------------
