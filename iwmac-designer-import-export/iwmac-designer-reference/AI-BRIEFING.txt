@@ -160,16 +160,26 @@ pipes; filter symbols; setpoint + measured value pairs.
 
 7b. HOW PANELS ARE DRAWN TODAY (PRODUCTION CONVENTIONS)
 -------------------------------------------------------
-Mined from 39 real compiled panels on 15 plants (reference_data/
+Mined from 194 real compiled panels on 59 plants (reference_data/
 panel-conventions.json). Follow these so your output matches house style.
 
 Panel inventory per plant (use these names): Oversikt (store floor plan),
 Maskin (machine room / rack), Energi (energy meters, small panel),
 Ventilasjon 360.NNN (one per ventilation system, keep the system number),
-VGV (heat recovery), Waterloop, Kondenssystem.
+VGV (heat recovery), Waterloop, Kondenssystem. Also seen: Varmesentral /
+Varmeanlegg 320.NNN (heating), Torrkjoler, Isvannsystem, Gatevarme,
+Tappevann, Kurver, Fordampere Frys/Kjol, and multi-part overviews
+(Oversikt del 1 / del 2, Oversikt Plan 1A/1B/2) on big sites. Swedish
+stores use Oversikt Butik / Larmoversikt, Danish use Overblik Butik.
 
-Size: 1400 x 750 is the standard (77 percent of panels). Some plants run
-1280 x 1024 - if told, use that for every panel on that plant.
+Size: three standards in production - 1400 x 750 and 1400 x 755 on newer
+plants (755 is the designer's own preset), 1280 x 1024 on the older fleet.
+ALWAYS match the plant's existing panels; default to 1400 x 750 for new work.
+
+Containers appear on only 3 of 194 panels and graphics on 0 of 194 - your
+output keeping containers/graphics empty IS the house style. Older plants
+contain legacy V2 object ids (alarm_anim.gif, number6, red_led_small,
+sub_page_1); they still render but are NOT modern style - never emit them.
 
 Backgrounds: every FINISHED production panel sits on a custom PNG (floor
 plan or schematic) with objects placed on top. You cannot generate that PNG,
@@ -183,8 +193,10 @@ so you have two modes:
   name. The human inserts your file, then drags each cluster onto the floor
   plan. Do not try to guess floor-plan coordinates.
 
-THE CASE CLUSTER (the standard Oversikt pattern, one per disk/rom - offsets
-from the cluster's top-left, all four link to the same case controller):
+THE CASE CLUSTER (the standard Oversikt pattern, one per disk/rom - 28
+occurrences mined across 16 stores; offsets from the cluster's top-left,
+all four link to the same case controller; a 3-member variant without the
+cooling symbol is also common on freezer rooms):
   V3_R_34px_circular_alarm_nrm   at dx 12, dy 0    (alarm bell)
   number_v3_40px_no_conn_no_tag  at dx 7,  dy 22   (air temperature)
   V3_R_28px_circular_cooling_nrm at dx 10, dy 35   (cooling relay)
