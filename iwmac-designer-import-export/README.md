@@ -65,4 +65,6 @@ Insert also accepts a **bare** panel document and the server's array-of-one wrap
 - Clipboard uses `GM_setClipboard` (the host is plain http, so `navigator.clipboard` is unavailable) with a textarea/`execCommand` fallback.
 - Console surface: `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `_collect`). Pure helpers are `module.exports`-ed for Node unit checks.
 
-See [iwmac-designer-reference/](iwmac-designer-reference/) for the full host internals reference (`CLAUDE.md` + probe artifacts in `reference_data/`).
+See [iwmac-designer-reference/](iwmac-designer-reference/) for the full host internals reference (`CLAUDE.md` + probe artifacts in `reference_data/`, including the **complete object catalogues** — all 820 palette entries and all 1769 render definitions — the live toolbar registry, and the persisted round-trip verification log).
+
+**Round-trip verified live:** export → insert on a fresh panel → host Compile → server fetch-back came back field-identical for every object, background included; the copy loaded 1:1 after a full reload. (One host quirk found: newly compiled panels always land `visible=1` — the save popup's Visible field is ignored on insert.)
