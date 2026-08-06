@@ -24,7 +24,7 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 
 | Concern | Behaviour |
 |---|---|
-| Background image | Base64-embedded into the export (the host's own `converted`/`image_data` format), re-applied on insert |
+| Background image | Base64-embedded into the export (the host's own `converted`/`image_data` format), re-applied on insert; or attach a PNG/JPG in the Insert dialog to give an image-less panel its artwork |
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | Name collisions on insert | Canvas object names renumbered after append (same policy as the designer's own paste) |
 | Empty canvas / not-a-panel-file / VV sketch file | Blocked with an itemised error panel, canvas untouched |
@@ -55,6 +55,8 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
+
+**The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `panel.image_data: "data:image/png;base64,…"` — the designer's own embedded-image format), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly — that's how you pair an AI-generated panel with your floor-plan or AHU drawing in one operation. An AI can also embed the image itself by setting those two fields in `panel`.
 
 ## AI-generated panels (Copilot)
 

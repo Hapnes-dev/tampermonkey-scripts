@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.1.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.0.0';
+var IWDIE_VERSION = '1.1.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -253,6 +253,16 @@ function iwdieBuildExportFilename(plantId, panelName, now) {
   return 'iwmac-panel_' + (plantId || 'plant') + '_' + iwdieSanitizeName(panelName) + '_' + stamp + '.json';
 }
 
+/** Attach a background image (data: URL) to a panel document the host-native
+ *  way — renderPanel/iw_set_base_image consume converted:"true" + image_data. */
+function iwdieAttachBackground(doc, dataUrl, fileName) {
+  var d = JSON.parse(JSON.stringify(doc));
+  d.converted = 'true';
+  d.image_data = String(dataUrl);
+  if (fileName && !d.org_image_name) d.org_image_name = String(fileName);
+  return d;
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
@@ -471,11 +481,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       panel.innerHTML = [
         '<h3>Insert panel JSON</h3>',
         '<div>Objects are <b>added</b> to the current canvas (nothing is deleted). On an empty panel this recreates the exported panel 1:1. Nothing is saved to the server until you use the designer’s own Save buttons.</div>',
+        '<label>Optional: background image (PNG/JPG) — pick it BEFORE the .json</label>',
+        '<input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
         '<label>Pick the exported .json file</label>',
         '<input type="file" id="iwdie_file" accept=".json,application/json">',
         '<div class="iwdie-drop" id="iwdie_drop">…or drop the file here</div>',
         '<label>…or paste the JSON text</label>',
-        '<textarea id="iwdie_paste" spellcheck="false" placeholder="{"format": "iwmac-designer-panel", …}"></textarea>',
+        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Lim inn / paste the JSON here…"></textarea>',
         '<div>',
         '  <button class="iwdie-btn" id="iwdie_paste_btn">Insert pasted JSON</button>',
         '  <button class="iwdie-btn iwdie-secondary" id="iwdie_cancel_btn">Cancel</button>',
@@ -561,7 +573,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /** Read the optional background image picked in the modal (null if none). */
+    function readPendingBackground(cb) {
+      var inp = importOverlay ? importOverlay.querySelector('#iwdie_bgfile') : null;
+      var f = inp && inp.files && inp.files[0];
+      if (!f) { cb(null); return; }
+      var fr = new FileReader();
+      fr.onload = function () { cb({ dataUrl: String(fr.result), name: f.name }); };
+      fr.onerror = function () { toast('Could not read the background image — inserting without it.', true); cb(null); };
+      fr.readAsDataURL(f);
+    }
+
     function applyImport(parsed) {
+      readPendingBackground(function (bg) { applyImportCore(parsed, bg); });
+    }
+
+    function applyImportCore(parsed, pendingBg) {
       var res = iwdieParsePayload(parsed);
       if (res.errors) { showErrors(res.errors); return; }
       var v = iwdieValidateDoc(res.doc);
@@ -569,6 +596,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!hostReady()) { showErrors(['IWMAC Designer host functions are not available (page not fully loaded?).']); return; }
 
       var doc = iwdieNormalizeDoc(res.doc);
+      if (pendingBg) { doc = iwdieAttachBackground(doc, pendingBg.dataUrl, pendingBg.name); }
       var target = currentPlantId();
       var source = iwdieDetectSourcePlant(doc);
       var rebindNote = '';
@@ -665,6 +693,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parsePayload: iwdieParsePayload,
     validateDoc: iwdieValidateDoc,
     normalizeDoc: iwdieNormalizeDoc,
+    attachBackground: iwdieAttachBackground,
     detectSourcePlant: iwdieDetectSourcePlant,
     eachDriverId: iwdieEachDriverId,
     countRebindable: iwdieCountRebindable,

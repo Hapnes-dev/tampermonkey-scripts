@@ -196,7 +196,7 @@ Produced by **`getPanelDataFromDOM(plantId, panelName, imageName, savedBy)`** (c
 - `image_name` at :2276 is computed (blank when `org_image_name` exists) and then **discarded** — line :2283 stores the raw `imageName` argument.
 - `panel_width/panel_height/org_image_name/image_name` are assigned without `var` → leak to globals.
 - **Storage is array-of-one:** `V3_add_designpanel_data` pushes the doc into `DesignPanelArray` and posts that array (container_tool.js:2029-2046) — `V3load_design_panel` therefore replies `[{…doc}]`.
-- **Embedded background extension:** `iw_load_from_db` synthesizes `converted:"true"` + `image_data:<dataURI>` + `org_image_name` onto the doc client-side (iw_graph_designer_js.php:614-623) and `renderPanel` consumes them (V3scripts.js:719-723) — the doc format natively supports a base64 background even though the store keeps the image separately.
+- **Embedded background extension:** `iw_load_from_db` synthesizes `converted:"true"` + `image_data:<dataURI>` + `org_image_name` onto the doc client-side (iw_graph_designer_js.php:614-623) and `renderPanel` consumes them (V3scripts.js:719-723) — the doc format natively supports a base64 background even though the store keeps the image separately. **The userscript rides this both ways**: Export always embeds the canvas background into `panel.image_data`, and since v1.1.0 the Insert dialog has a background-image picker whose file is embedded via `iwdieAttachBackground()` before the objects are applied (live-verified: PNG + AI-generated JSON inserted in one go, `converted="true"`, filename carried into `org_image_name`, re-export carries the 53 KB image inside the JSON). An AI can set the same two fields directly.
 
 ## 9. Save paths
 

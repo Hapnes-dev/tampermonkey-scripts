@@ -48,6 +48,17 @@ Reply with RAW JSON only. No markdown fences, no comments, no trailing text.
 
 counts.single_objects MUST equal the real array length.
 
+BACKGROUND IMAGE (optional): the artwork can travel inside the same file.
+Add to the "panel" object:
+    "converted": "true",
+    "image_data": "data:image/png;base64,<the whole PNG base64>"
+and set the envelope's "background_embedded": true. This is the designer's
+own embedded-image format - on insert it is applied straight to the canvas.
+Only do this when the user actually supplies image data; you cannot invent
+artwork. If the user has the PNG on disk instead, leave the fields out and
+tell them to attach it in the Insert dialog's background-image picker
+(userscript v1.1.0+), which embeds it for them.
+
 3. THE OBJECT ENTRY - COPY THIS TEMPLATE EXACTLY
 ------------------------------------------------
 Change ONLY: obj_id, name index, posWidth/posHeight/posLeft/posTop, tag_text,
@@ -242,6 +253,8 @@ plan or schematic) with objects placed on top. You cannot generate that PNG,
 so you have two modes:
   MODE A - BLANK PANEL (default): table-style sections on the empty canvas,
   like generated-panel-example.json. Immediately usable.
+  (If the user pastes a data:image/... string, embed it per section 2 and
+  you get MODE A with real artwork in one file.)
   MODE B - CLUSTER KIT (when the user says the panel will get a background
   image, or gives a list of cooling positions): emit one CASE CLUSTER per
   position, laid out in a tidy grid (90 px column pitch, 90 px row pitch,
