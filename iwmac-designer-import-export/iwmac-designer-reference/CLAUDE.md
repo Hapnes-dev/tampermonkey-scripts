@@ -376,7 +376,7 @@ controls['V3_R_34px_circular_alarm_nrm']
 // container registry / object cache
 designContainers.designcontainerList; objectList.objectList
 ```
-The userscript also exposes `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `_collect`).
+The userscript also exposes `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `doExportBackgroundAi`, `_collect`). `doExportBackgroundAi` (v1.3.0) reads the canvas background the same way `embedBackground` does (`#main_image` computed `background-image`), then: raster → lossless single-page PDF named `.ai` (hand-built, raw-RGB `CompressionStream('deflate')`, artboard = panel px; Illustrator opens any PDF), SVG → the raw `.svg` (already vector; a PDF wrap would rasterize it). On this plain-http host Chrome may flag the `.ai` download — "Keep" saves it.
 
 ## 19. Gotchas (the real footguns)
 

@@ -1,6 +1,6 @@
 # IWMAC Designer Import/Export
 
-Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with three buttons — **Export JSON**, **Copy JSON**, **Insert JSON…** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one. The designer itself has no way to move a panel between plants; this script adds it.
+Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four buttons — **Export JSON**, **Copy JSON**, **Insert JSON…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, and the background artwork can be handed to Adobe Illustrator for editing. The designer itself has no way to do either; this script adds both.
 
 Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5").
 
@@ -58,6 +58,15 @@ Insert also accepts a **bare** panel document and the server's array-of-one wrap
 
 **The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `panel.image_data: "data:image/png;base64,…"` — the designer's own embedded-image format), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 
+## Background → Illustrator (v1.3.0)
+
+The fourth button exports the **current panel's background image as a file Adobe Illustrator edits directly**:
+
+- **PNG/JPG background** → a single-page **`.ai`** file. Modern `.ai` is PDF-based and Illustrator opens any PDF as editable artwork, so the script hand-builds a minimal PDF (no external libraries): artboard = panel size (1 px = 1 pt), the image placed 1:1 and **losslessly** re-encoded (raw RGB deflated with the browser's native `CompressionStream`; automatic JPEG fallback on very old Chrome). Verified with a real PDF engine: 1400×750 artboard, image intact.
+- **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.
+
+Filename: `iwmac-bg_<plant>_<panel>_<stamp>.ai` (or `.svg`). Note: because the designer runs on plain `http`, Chrome may flag the download ("can't be downloaded securely") — choose **Keep**; the file still lands in Downloads on default settings.
+
 ## AI-generated panels (Copilot)
 
 Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or system description and insert it, then link the objects by hand. The ready-to-use kit is in [iwmac-designer-reference/](iwmac-designer-reference/): `AI-BRIEFING.txt` (knowledge file for any AI), `AI-AGENT-INSTRUCTIONS.txt` (paste into the M365 Copilot Studio instructions field — 7,994 chars, no `<`/`>`), and the example answers in `reference_data/`: `generated-panel-example.json` (CO₂ rack overview from an Advansor ValuePack P&ID, insert-verified 73/73), `generated-vent-example.json` (Ventilasjon incl. AI-drawn SVG background, insert-verified 79/79), plus two **real production exports as style ground truth** — `real-vent-panel-example.json` (360.001 Ventilasjon) and `real-spjeldliste-example.json` (360.004 Spjeldliste damper list: the container-built table pattern, 208 rows). The kit also teaches **linking**: hand the agent a plant's `iw_gen_driver_parameters` .sql dump and it fills in `driver_id`/`unit_id` per object (briefing §8b; worked pair: `real-vent-panel-linked-example.json` + `driver-parameters-sample.sql`). Attach the briefing + examples as the agent's knowledge files.
@@ -69,7 +78,7 @@ Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or
 - **Insert** drives the host's own loaders (`DesignPanelHandler.load_new_ver_objects` / `load_new_ver_containers` — the code path behind the designer's template insert), then renumbers `object_N` names from the live child index (the same policy as the designer's `Duplicator` paste) and runs `UpdateObjectWorker()`.
 - Background embed/apply uses the host's own `converted:"true"` + `image_data` document format consumed by `renderPanel`/`iw_set_base_image`.
 - Clipboard uses `GM_setClipboard` (the host is plain http, so `navigator.clipboard` is unavailable) with a textarea/`execCommand` fallback.
-- Console surface: `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `_collect`). Pure helpers are `module.exports`-ed for Node unit checks.
+- Console surface: `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `doExportBackgroundAi`, `_collect`). Pure helpers are `module.exports`-ed for Node unit checks (incl. `buildImagePdf` — the PDF writer is pure/synchronous and structurally unit-tested: header, MediaBox, stream lengths, xref offsets).
 
 See [iwmac-designer-reference/](iwmac-designer-reference/) for the full host internals reference (`CLAUDE.md` + probe artifacts in `reference_data/`, including the **complete object catalogues** — all 820 palette entries and all 1769 render definitions — the live toolbar registry, and the persisted round-trip verification log).
 

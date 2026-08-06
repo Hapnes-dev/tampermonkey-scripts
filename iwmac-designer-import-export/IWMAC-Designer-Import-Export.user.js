@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.3.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.2.0';
+var IWDIE_VERSION = '1.3.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -296,6 +296,86 @@ function iwdieAttachBackground(doc, dataUrl, fileName) {
   return d;
 }
 
+/* ---- background → Illustrator export helpers (v1.3.0) ----
+   Modern .ai files are PDF-based and Illustrator opens any PDF as editable
+   artwork on an artboard, so a hand-built single-page PDF named .ai is the
+   dependency-free way to hand a raster background to Illustrator. SVG
+   backgrounds are already vector — Illustrator opens .svg natively, and
+   rasterizing them into a PDF would destroy the very thing worth editing,
+   so those are exported as .svg instead. */
+
+/** data: URL -> { mime, bytes(Uint8Array) }. Handles base64 and URL-encoded. */
+function iwdieParseDataUrl(dataUrl) {
+  var m = /^data:([^;,]*)?(;base64)?,([\s\S]*)$/.exec(String(dataUrl == null ? '' : dataUrl));
+  if (!m) return null;
+  var bin, i;
+  if (m[2]) {
+    if (typeof atob === 'function') bin = atob(m[3]);
+    else if (typeof Buffer !== 'undefined') bin = Buffer.from(m[3], 'base64').toString('binary');
+    else return null;
+  } else {
+    try { bin = decodeURIComponent(m[3]); } catch (e) { bin = m[3]; }
+  }
+  var bytes = new Uint8Array(bin.length);
+  for (i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+  return { mime: m[1] || 'application/octet-stream', bytes: bytes };
+}
+
+/** Is this background URL / mime an SVG? */
+function iwdieIsSvgBackground(mimeOrUrl) {
+  var s = String(mimeOrUrl == null ? '' : mimeOrUrl).toLowerCase();
+  return s.indexOf('image/svg') !== -1 || /\.svg(\?|#|$)/.test(s);
+}
+
+/**
+ * Build a minimal single-page PDF containing one image XObject — the file
+ * Illustrator opens as an artboard (1 px = 1 pt) with the image placed 1:1.
+ * opts: { width, height, filter: 'FlateDecode' (raw RGB deflated) or
+ *         'DCTDecode' (JPEG bytes as-is), data: Uint8Array }
+ * Returns a Uint8Array. Pure + synchronous so Node can unit-test it.
+ */
+function iwdieBuildImagePdf(opts) {
+  var w = Math.max(1, Math.round(opts.width));
+  var h = Math.max(1, Math.round(opts.height));
+  var filter = opts.filter === 'DCTDecode' ? 'DCTDecode' : 'FlateDecode';
+  function enc(s) { var u = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 0xff; return u; }
+  var parts = [], pos = 0, offsets = [];
+  function push(u8) { parts.push(u8); pos += u8.length; }
+  function pushStr(s) { push(enc(s)); }
+
+  pushStr('%PDF-1.4\n%âãÏÓ\n');
+  offsets[1] = pos; pushStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  offsets[2] = pos; pushStr('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+  offsets[3] = pos; pushStr('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + w + ' ' + h + '] ' +
+    '/Resources << /XObject << /Im0 4 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n');
+  offsets[4] = pos;
+  pushStr('4 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + w + ' /Height ' + h +
+    ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /' + filter +
+    ' /Length ' + opts.data.length + ' >>\nstream\n');
+  push(opts.data);
+  pushStr('\nendstream\nendobj\n');
+  var content = 'q\n' + w + ' 0 0 ' + h + ' 0 0 cm\n/Im0 Do\nQ\n';
+  offsets[5] = pos;
+  pushStr('5 0 obj\n<< /Length ' + content.length + ' >>\nstream\n' + content + 'endstream\nendobj\n');
+  var xrefPos = pos;
+  function pad10(n) { var s = String(n); while (s.length < 10) s = '0' + s; return s; }
+  var xref = 'xref\n0 6\n0000000000 65535 f \n';
+  for (var i = 1; i <= 5; i++) xref += pad10(offsets[i]) + ' 00000 n \n';
+  pushStr(xref + 'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + xrefPos + '\n%%EOF\n');
+
+  var out = new Uint8Array(pos), o = 0;
+  for (var k = 0; k < parts.length; k++) { out.set(parts[k], o); o += parts[k].length; }
+  return out;
+}
+
+/** iwmac-bg_<plant>_<panel>_<stamp>.<ext> */
+function iwdieBuildBackgroundFilename(plantId, panelName, ext, now) {
+  var d = now || new Date();
+  function p(n) { return (n < 10 ? '0' : '') + n; }
+  var stamp = '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+  return 'iwmac-bg_' + (plantId || 'plant') + '_' + iwdieSanitizeName(panelName) + '_' + stamp + '.' + (ext || 'ai');
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
@@ -367,6 +447,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
         "    <button id='iwdie_copy_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doCopyJson()\">Copy JSON</button>",
         "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
+        "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
         '  </fieldset>',
         '</div>'].join('\n');
       w7.insertAdjacentHTML('afterend', html);
@@ -491,6 +572,95 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (ok) hostOk('Panel JSON copied to clipboard (' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + ')');
         else toast('Clipboard copy failed on this browser — use Export JSON instead.', true);
       });
+    }
+
+    /* ---------- background → Illustrator (.ai / .svg) ---------- */
+    function downloadBytes(bytes, name, mime) {
+      var blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+    }
+
+    function grabBackgroundUrl() {
+      var bg = '';
+      try { bg = W.$('#main_image').css('background-image') || ''; } catch (e) {}
+      var m = /url\("?(.*?)"?\)/.exec(bg);
+      return m && m[1] ? m[1] : '';
+    }
+
+    /* raw deflate via the browser's native zlib (Chrome 80+) */
+    function deflateBytes(u8) {
+      if (typeof CompressionStream === 'undefined') return Promise.reject(new Error('CompressionStream unavailable'));
+      var stream = new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate'));
+      return new Response(stream).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+    }
+
+    function doExportBackgroundAi() {
+      if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
+      var url = grabBackgroundUrl();
+      if (!url) { toast('This panel has no background image. Load a panel with one (Retrieve → Load) first.', true); return; }
+      var plant = currentPlantId(), panel = currentPanelName();
+
+      /* SVG background: already vector — hand Illustrator the .svg itself
+         (File → Open edits it natively; a PDF re-wrap would rasterize it). */
+      if (iwdieIsSvgBackground(url)) {
+        var deliverSvg = function (bytes) {
+          var name = iwdieBuildBackgroundFilename(plant, panel, 'svg');
+          downloadBytes(bytes, name, 'image/svg+xml');
+          hostOk('Background is SVG — vector already. Saved ' + name + '; open it directly in Illustrator (File → Open).');
+        };
+        if (url.indexOf('data:') === 0) {
+          var parsed = iwdieParseDataUrl(url);
+          if (parsed) { deliverSvg(parsed.bytes); return; }
+          toast('Could not decode the SVG background data URL.', true);
+          return;
+        }
+        fetch(url, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.arrayBuffer();
+        }).then(function (ab) { deliverSvg(new Uint8Array(ab)); })
+          .catch(function (e) { toast('Could not fetch the SVG background: ' + e, true); });
+        return;
+      }
+
+      /* Raster background: rebuild as a single-page PDF named .ai —
+         Illustrator opens it as an artboard (panel-sized) with the image. */
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        if (!w || !h) { toast('Background image has no size?', true); return; }
+        var canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h); // composite any alpha onto white
+        ctx.drawImage(img, 0, 0);
+        var rgba, rgb, i, j;
+        try { rgba = ctx.getImageData(0, 0, w, h).data; } catch (e) { rgba = null; }
+        var name = iwdieBuildBackgroundFilename(plant, panel, 'ai');
+        var finish = function (pdf, note) {
+          downloadBytes(pdf, name, 'application/pdf');
+          hostOk('Background exported for Illustrator → ' + name + ' (' + w + '×' + h + note + '). Open it in Illustrator like any .ai/PDF.');
+        };
+        var jpegFallback = function () {
+          var parsed = iwdieParseDataUrl(canvas.toDataURL('image/jpeg', 0.95));
+          if (!parsed) { toast('Could not encode the background.', true); return; }
+          finish(iwdieBuildImagePdf({ width: w, height: h, filter: 'DCTDecode', data: parsed.bytes }), ', JPEG');
+        };
+        if (!rgba) { jpegFallback(); return; }
+        rgb = new Uint8Array(w * h * 3);
+        for (i = 0, j = 0; i < rgba.length; i += 4) { rgb[j++] = rgba[i]; rgb[j++] = rgba[i + 1]; rgb[j++] = rgba[i + 2]; }
+        deflateBytes(rgb).then(function (flated) {
+          finish(iwdieBuildImagePdf({ width: w, height: h, filter: 'FlateDecode', data: flated }), ', lossless');
+        }).catch(jpegFallback);
+      };
+      img.onerror = function () { toast('Could not load the background image (' + String(url).slice(0, 80) + '…)', true); };
+      img.src = url;
     }
 
     /* ---------- import modal ---------- */
@@ -712,6 +882,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       doCopyJson: doCopyJson,
       openImportPanel: openImportPanel,
       applyImport: applyImport,
+      doExportBackgroundAi: doExportBackgroundAi,
       _collect: collectCurrentDoc
     };
 
@@ -745,6 +916,10 @@ if (typeof module !== 'undefined' && module.exports) {
     listForeignDriverIds: iwdieListForeignDriverIds,
     summarize: iwdieSummarize,
     sanitizeName: iwdieSanitizeName,
-    buildExportFilename: iwdieBuildExportFilename
+    buildExportFilename: iwdieBuildExportFilename,
+    parseDataUrl: iwdieParseDataUrl,
+    isSvgBackground: iwdieIsSvgBackground,
+    buildImagePdf: iwdieBuildImagePdf,
+    buildBackgroundFilename: iwdieBuildBackgroundFilename
   };
 }
