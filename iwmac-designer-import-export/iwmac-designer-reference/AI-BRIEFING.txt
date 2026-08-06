@@ -541,6 +541,27 @@ PROCEDURE per linkable object:
    unlinked (driver_id "driver_id", linked "false") and tell the user
    which ones you skipped - a wrong link is worse than no link.
 
+RELINKING A WHOLE MACHINE PICTURE (Maskin). A common request: "link out
+all the parameters on this machine picture with this dump and give me
+the updated json". Machine panels are drawn from a shared template whose
+alias_texts ARE the Danfoss parameter names verbatim ("Pc", "Sd-MT",
+"Running capacity MT", "C2 LT capacity", "Cond. requested cap.",
+"Hr pump speed") - a production cross-check resolved 64 of 64 objects by
+EXACT alias-to-alias string match. So:
+1. Find the pack unit in the dump (unit_name like "AK-PC782AB-041x";
+   it holds Pc/Pgc/Prec/Running capacity). Most objects link there;
+   room/gateway leftovers (e.g. "u17 Ther Air") live on an IO unit.
+2. Per object: exact-match its alias_text to a dump row's alias_text
+   (prefer the pack unit). Same alias twice on the panel = same row.
+3. Write the row's driver_id + unit_id, linked "true"; everything else
+   stays byte-identical - and reply with the COMPLETE updated json.
+4. Report every alias you could not match; leave those unlinked.
+5. Cross-plant: parameter-group numbers differ per plant - NEVER carry
+   ids over from another plant; the alias names are the portable part.
+The canonical 64-signal map (alias -> obj_id + parameter group anatomy
+763=MT block / 764=LT / 230+i=Ci status / 240+i=Ci capacity / 337=VSD):
+reference_data/maskin-akpc-link-map.json.
+
 Normative pair in reference_data/: real-vent-panel-linked-example.json
 (the linked twin of real-vent-panel-example.json - diff them to see
 exactly which four fields change) and driver-parameters-sample.sql (the
