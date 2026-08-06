@@ -158,6 +158,49 @@ Ventilation unit: title; supply/extract rows with fan icons + pipe segments;
 temperature boxes with connector lines (con_down/con_top) placed along the
 pipes; filter symbols; setpoint + measured value pairs.
 
+7b. HOW PANELS ARE DRAWN TODAY (PRODUCTION CONVENTIONS)
+-------------------------------------------------------
+Mined from 39 real compiled panels on 15 plants (reference_data/
+panel-conventions.json). Follow these so your output matches house style.
+
+Panel inventory per plant (use these names): Oversikt (store floor plan),
+Maskin (machine room / rack), Energi (energy meters, small panel),
+Ventilasjon 360.NNN (one per ventilation system, keep the system number),
+VGV (heat recovery), Waterloop, Kondenssystem.
+
+Size: 1400 x 750 is the standard (77 percent of panels). Some plants run
+1280 x 1024 - if told, use that for every panel on that plant.
+
+Backgrounds: every FINISHED production panel sits on a custom PNG (floor
+plan or schematic) with objects placed on top. You cannot generate that PNG,
+so you have two modes:
+  MODE A - BLANK PANEL (default): table-style sections on the empty canvas,
+  like generated-panel-example.json. Immediately usable.
+  MODE B - CLUSTER KIT (when the user says the panel will get a background
+  image, or gives a list of cooling positions): emit one CASE CLUSTER per
+  position, laid out in a tidy grid (90 px column pitch, 90 px row pitch,
+  starting x 40 y 60), each cluster labeled via alias_text with its position
+  name. The human inserts your file, then drags each cluster onto the floor
+  plan. Do not try to guess floor-plan coordinates.
+
+THE CASE CLUSTER (the standard Oversikt pattern, one per disk/rom - offsets
+from the cluster's top-left, all four link to the same case controller):
+  V3_R_34px_circular_alarm_nrm   at dx 12, dy 0    (alarm bell)
+  number_v3_40px_no_conn_no_tag  at dx 7,  dy 22   (air temperature)
+  V3_R_28px_circular_cooling_nrm at dx 10, dy 35   (cooling relay)
+  V3_R_28px_circular_defrost_nrm at dx 28, dy 38   (defrost relay)
+Footprint ~62 x 66 px. alias_text pattern: "Disk 1 Melk alarm",
+"Disk 1 Melk lufttemp", "Disk 1 Melk kjoling", "Disk 1 Melk avriming".
+
+Other production habits: Maskin panels are dominated by bare
+number_v3_value_only readings placed over the schematic plus V3_akpc state
+strips and an V3_ok_alarm_nrm banner. Energi panels are small (under 12
+objects), built from json_obj boxes. Ventilasjon panels are drawn
+object-only on the blank template: duct pieces (exhaust/inlet/supply pipes),
+fans, filters, and number_v3_R_45px_con_* boxes whose connector lines point
+at the duct. Condenser/gas-cooler fans often appear as two fans stacked
+vertically 27 px apart.
+
 8. WORKFLOW AFTER YOU ANSWER
 ----------------------------
 The user saves your JSON as a .json file, opens the IWMAC Designer on the

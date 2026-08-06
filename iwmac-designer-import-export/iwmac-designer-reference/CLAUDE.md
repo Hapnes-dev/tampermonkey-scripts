@@ -351,6 +351,8 @@ The Insert JSON path accepts **AI-authored** panels, which makes "P&ID → panel
 
 The contract's load-bearing rules, all live-verified: exact allowlist obj_ids only (unknown ids render as broken `undefined`-class boxes, §4); `driver_id` stays the literal placeholder `"driver_id"` — the human links via the param selector afterwards (alias_text is what guides them, §13b); **ASCII-only text** (the page is ISO-8859-1 — `°`/æøå mojibake, verified); `zIndex "default"`; empty `containers`/`graphics` in v1; raw JSON output only.
 
+**Production drawing conventions** ([reference_data/panel-conventions.json](reference_data/panel-conventions.json) — mined from 39 compiled panels on 15 plants): standard panel inventory per plant is Oversikt / Maskin / Energi / Ventilasjon 360.NNN / VGV / Waterloop / Kondenssystem; 1400×750 is the standard size (a minority of plants run 1280×1024 throughout); **every finished panel sits on a custom background PNG** (`<plant>_<type>-vN_<date>.png`, blanks `00-blank[-sidebar]-1400x750` for object-drawn Ventilasjon panels; images freely reused across sister stores); finished panels are 88–100% driver-linked, `link_tag` is rare except on Energi panels (energy-meter tags); production alias_text is the linked param's name (`u58 Comp1/LLSV`). The signature Oversikt pattern is the **case cluster** — one per cooling position, 12 clean occurrences mined: alarm bell (dx12,dy0) + temp box 42×22 (dx7,dy22) + cooling 28px (dx10,dy35) + defrost 28px (dx28,dy38), ~62×66 px footprint, all four linked to the same case controller. AI mode A = blank table-style panel; mode B = a **cluster kit** grid the human drags onto the floor plan after insert (the briefing §7b documents both).
+
 ## 18. How to introspect live
 
 ```js
