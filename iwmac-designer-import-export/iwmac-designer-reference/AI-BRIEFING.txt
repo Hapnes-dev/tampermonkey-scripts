@@ -356,8 +356,10 @@ is a NUMBER on the container but a STRING on items):
   "title": "Objects Container"
 }
 unique_id/name index sequential (custom_0, custom_1, ... - Insert renumbers
-to avoid collisions). top: first row 106, +20 per row, +40 extra between
-system groups (one group per ventilation system / building section).
+to avoid collisions). top: first row 106, +20 per row; a new system group
+starts at the PREVIOUS ROW's top + 40 (exactly one blank row slot as the
+gap - not +40 on top of the usual +20). One group per ventilation system /
+building section.
 
 CELLS (container items): number_v3_label_12px_bold 50x20, posTop 3,
 zIndex "900", posLeft RELATIVE to the container: 0 = damper tag
@@ -388,11 +390,63 @@ guides that), and finally uses Compile Panel for Plant + Sync. Nothing you
 generate can write to the server - a bad file at worst fails validation with
 a listed reason.
 
+8b. LINKING (WHEN GIVEN THE DRIVER-PARAMETERS DUMP)
+---------------------------------------------------
+Normally the human links objects by hand after insert. But if the user
+attaches an iw_gen_driver_parameters .sql (a phpMyAdmin dump of the
+plant's driver/parameter table - the real ones are several MB, ~7000
+rows) and asks you to link a panel json, you can fill the links in.
+
+THE DUMP: one row per parameter. Columns that matter:
+- driver_id: the FULL parameter string (e.g. NNNNN_OJEXHAUST_OJ_1_1_0_4_19).
+  This exact string goes into the panel object's driver_id. COPY IT
+  VERBATIM - never construct or edit one (the digit groups differ per
+  driver type; on the OJ vent driver _4_ = Analog values and _2_ =
+  Digital IO, but AKC/EM drivers use other group digits).
+- unit_id + unit_name: the unit ("V01" / "360.001 Ventilasjon"). Match
+  unit_name against the panel's system number to pick the right unit.
+- alias_text: the parameter description ("Actual supply temperature...",
+  "Supply motor ON/OFF") - your matching target.
+- application: "Analog values" (readings/setpoints) vs "Digital IO"
+  (status, alarms) - value boxes need analog rows, LEDs/bells/state
+  objects digital rows.
+- att: r = read-only, rw = writable (setpoint boxes want rw rows).
+- eng_unit (degC, %, Pa, m3/h) and format_extra (enum value map).
+
+PROCEDURE per linkable object:
+1. Find the unit: unit_name matches the panel's system (360.001 ->
+   "360.001 Ventilasjon") - fixes unit_id and the driver prefix.
+2. Find the row whose alias_text matches the object's signal (use the
+   object's alias_text/tag_text: "RT401 gr C" -> "Actual supply
+   temperature", fan JV401 -> "Supply motor ON/OFF", QD401 -> supply
+   filter, alarm bell -> the component's alarm row).
+3. Write into the object: driver_id = the row's driver_id (verbatim),
+   unit_id = the row's unit_id, linked = "true", alias_text = the row's
+   alias_text (production panels show the selector's "Menu,-Description"
+   form, e.g. "Most Used,-Actual supply air temperature" - the plain row
+   text is accepted).
+4. Touch NOTHING else: id stays literally "driver_id", link_name,
+   link_tag, unit_ref, positions and obj_id are unchanged.
+5. Dummies never link: pipes, connectors, arrows, labels, headers,
+   stripes, banner, spjeldliste text cells.
+6. Only link matches you are CONFIDENT about. Leave uncertain objects
+   unlinked (driver_id "driver_id", linked "false") and tell the user
+   which ones you skipped - a wrong link is worse than no link.
+
+Normative pair in reference_data/: real-vent-panel-linked-example.json
+(the linked twin of real-vent-panel-example.json - diff them to see
+exactly which four fields change) and driver-parameters-sample.sql (the
+dump format, trimmed). Driver ids are plant-prefixed: always link from
+the TARGET plant's dump.
+
 9. SELF-CHECK BEFORE ANSWERING
 ------------------------------
 [] format iwmac-designer-panel, version 1, counts match array length
 [] every obj_id is from the allowlist / catalogue - none invented
-[] every object has ALL 17 template fields, driver_id = "driver_id"
+[] every object has ALL 17 template fields; driver_id = "driver_id" and
+   linked = "false" - UNLESS the user supplied the parameters dump for
+   linking (8b): then linked objects carry the dump's driver_id +
+   unit_id + linked "true", and id STILL says "driver_id"
 [] positions inside the canvas (list panels 7c excepted), no overlaps,
    integer pixels
 [] tag_text on text objects, alias_text on linkable objects, ASCII only
