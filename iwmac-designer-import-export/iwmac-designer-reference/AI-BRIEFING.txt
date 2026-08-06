@@ -87,6 +87,7 @@ VALUES (reading appears after linking; describe signal in alias_text):
   number_v3_40px_no_conn_no_tag      | 42 x 22 | framed number box
   number_v3_60px_no_conn_no_tag      | 62 x 22 | wider framed box
   number_v3_60px_dark_no_conn_no_tag | 62 x 22 | dark framed box
+  number_v3_60px_dark_no_conn        | 62 x 22 | dark box with caption above (tag_text) - the standard SETPOINT box on vent panels
   number_v3_R_40px_no_conn_tag_up_center | 42 x 22 | box, caption above (tag_text)
   number_v3_R_45px_no_conn_tag_up_center | 46 x 22 | box, caption above (tag_text)
   number_v3_R_60px_no_conn_tag_up_center | 62 x 22 | wide box, caption above
@@ -154,9 +155,17 @@ strip); receiver section (Prec + temp); heat recovery section (Shr rows).
 See generated-panel-example.json - a complete, insert-verified rack overview
 generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 
-Ventilation unit: title; supply/extract rows with fan icons + pipe segments;
-temperature boxes with connector lines (con_down/con_top) placed along the
-pipes; filter symbols; setpoint + measured value pairs.
+Ventilation unit (the corpus says: con boxes dominate - 135 con_down + 95
+con_top uses across 39 vent panels; production panels usually hang them on
+an AHU background image): title + alarm bell; TWO horizontal duct runs of
+pipe segments (supply left-to-right on top, extract right-to-left below);
+con_down boxes ABOVE the supply duct (connector stem points down onto it)
+at each station (Ute, e.VGV, Tilluft); con_top boxes BELOW the extract duct
+(Avtrekk, e.VGV, Avkast); filter symbols and fans ON the ducts; vertical
+pipe pair between the runs as the VGV cross-over with a VGV percent dark
+box; a DRIFT / SETTPUNKT column at the right (run LEDs, SP dark boxes,
+paadrag and kanaltrykk values). See generated-vent-example.json - a
+complete insert-verified MODE A example.
 
 7b. HOW PANELS ARE DRAWN TODAY (PRODUCTION CONVENTIONS)
 -------------------------------------------------------
