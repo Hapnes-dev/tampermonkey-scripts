@@ -1,0 +1,178 @@
+IWMAC DESIGNER PANEL GENERATION - AI BRIEFING
+==============================================
+Self-contained contract for any AI (Copilot agent, Claude, GPT) that generates
+an "iwmac-designer-panel" .json file. The file is inserted into the IWMAC
+Designer with the "Insert JSON..." button (IWMAC Designer Import/Export
+userscript, Panel JSON section under Manage Files). Give this briefing plus
+generated-panel-example.json to the AI as knowledge. The complete object
+catalogues (reference_data/all-design-objects.json and controls-registry.json)
+are optional extra knowledge - the allowlist in section 4 is enough for most
+panels.
+
+1. WHAT YOU ARE MAKING
+----------------------
+A plant-view panel: absolutely positioned objects on a 1400 x 750 canvas.
+Objects are either TEXT (headers, labels), VALUE displays (numbers that show a
+live reading once linked), STATUS symbols (LEDs, alarm bells, state strips) or
+EQUIPMENT icons (fans, pumps, valves, pipes). You lay them out and describe
+each signal in alias_text. A HUMAN links each object to a real driver
+afterwards inside the designer - you NEVER invent driver ids.
+
+2. THE OUTPUT FILE - EXACT SHAPE (NORMATIVE)
+--------------------------------------------
+Reply with RAW JSON only. No markdown fences, no comments, no trailing text.
+
+{
+  "format": "iwmac-designer-panel",
+  "version": 1,
+  "generator": "your-agent-name",
+  "source_plant_id": "PLANT_ID_OR_EMPTY",
+  "panel_name": "PanelName",
+  "panel_width": "1400px",
+  "panel_height": "750px",
+  "counts": { "single_objects": N, "containers": 0, "graphics": 0 },
+  "background_embedded": false,
+  "panel": {
+    "plant_id": "PLANT_ID_OR_EMPTY",
+    "panel_name": "PanelName",
+    "panel_width": "1400px",
+    "panel_height": "750px",
+    "org_image_name": "",
+    "image_name": "",
+    "saved_by": "copilot",
+    "single_objects": [ OBJECT, OBJECT, ... ],
+    "containers": [],
+    "graphics": []
+  }
+}
+
+counts.single_objects MUST equal the real array length.
+
+3. THE OBJECT ENTRY - COPY THIS TEMPLATE EXACTLY
+------------------------------------------------
+Change ONLY: obj_id, name index, posWidth/posHeight/posLeft/posTop, tag_text,
+alias_text. Everything else stays literally as written here:
+
+{
+  "obj_id": "number_v3_value_only",
+  "name": "object_0",
+  "id": "driver_id",
+  "posWidth": 50, "posHeight": 20, "posLeft": 100, "posTop": 100,
+  "zIndex": "default",
+  "tag_text": "",
+  "linked": "false",
+  "link_name": "", "link_tag": "", "sub_group": "",
+  "driver_id": "driver_id",
+  "unit_id": "", "unit_ref": "",
+  "alias_text": "Po MT suction pressure"
+}
+
+- name: "object_0", "object_1", ... sequential (renumbered on insert anyway).
+- driver_id: ALWAYS the literal string "driver_id". linked: ALWAYS "false".
+- zIndex: ALWAYS "default".
+- positions/sizes: plain integers (pixels).
+
+4. OBJECT ALLOWLIST (production-proven; obj_id | W x H | role)
+--------------------------------------------------------------
+TEXT (text goes in tag_text; alias_text empty):
+  number_v3_header_grey75      | set W 250-300 x 20 | grey section header bar
+  number_v3_label_12px_bold    | W as needed x 20   | page title
+  number_v3_label_11px_bold    | W as needed x 20   | sub heading
+  number_v3_label_11px_norm    | W as needed x 20   | row label
+  number_v3_label_10px_bold    | W as needed x 20   | small bold label
+  number_v3_label_8px_norm     | W as needed x 20   | footnote
+VALUES (reading appears after linking; describe signal in alias_text):
+  number_v3_value_only               | 50 x 20 | bare number, most used object
+  number_v3_white_value_only         | 50 x 20 | bare number, white text
+  number_v3_40px_no_conn_no_tag      | 42 x 22 | framed number box
+  number_v3_60px_no_conn_no_tag      | 62 x 22 | wider framed box
+  number_v3_60px_dark_no_conn_no_tag | 62 x 22 | dark framed box
+  number_v3_R_40px_no_conn_tag_up_center | 42 x 22 | box, caption above (tag_text)
+  number_v3_R_45px_no_conn_tag_up_center | 46 x 22 | box, caption above (tag_text)
+  number_v3_R_60px_no_conn_tag_up_center | 62 x 22 | wide box, caption above
+  number_v3_R_45px_con_down  | 46 x 38 | box + connector line down (tag_text caption)
+  number_v3_R_45px_con_top   | 46 x 38 | box + connector line up
+  number_v3_R_45px_con_left  | 62 x 22 | box + connector line left
+  number_v3_R_45px_con_right | 62 x 22 | box + connector line right
+  number_v3_rc_temp_48       | 49 x 21 | room temperature box
+STATUS (alias_text describes; tag_text empty):
+  V3_R_34px_circular_alarm_nrm  | 34 x 34 | alarm bell
+  V3_R_28px_circular_cooling_nrm| 28 x 28 | cooling status
+  V3_R_28px_circular_defrost_nrm| 28 x 28 | defrost status
+  V3_R_24px_anim_rg_alarm_nrm   | 24 x 24 | small animated alarm
+  V3_ok_alarm_nrm               | 61 x 21 | OK / ALARM banner
+  V3_81x21_enebled_disabled_nrm | 81 x 21 | enabled/disabled banner (note host typo "enebled")
+  V3_led_13px_circ_grey_green   | 13 x 13 | small green run LED
+  V3_led_16px_circ_grey_red     | 16 x 16 | small red LED
+  V3_led_21px_square_grey_red   | 21 x 21 | square red LED
+  V3_akpc_782A_suct             | 81 x 21 | Danfoss AK-PC 782 suction group state strip
+  V3_akpc_772_781_781A_783_contr| 81 x 21 | Danfoss AK-PC controller state strip
+  V3_akpc_783_781A_782A_cond    | 81 x 21 | Danfoss AK-PC condenser/gascooler state strip
+EQUIPMENT (alias_text describes; tag_text = short name shown above icon):
+  V3_58px_fan_left_nrm  / V3_58px_fan_right_nrm | 59 x 59 | fan
+  V3_21px_single_pump_grey_green_left/_up/_down | 21 x 21 | pump
+  number_v3_filter_only            | 27 x 70 | filter symbol
+  number_v3_exhaust_pipe_horisontal| 50 x 18 | pipe segment horizontal
+  number_v3_exhaust_pipe_vertical  | 18 x 50 | pipe segment vertical
+
+NEVER invent an obj_id. If it is not in this list (or in the full catalogue
+files when provided), do not use it. An unknown obj_id renders as a broken
+grey box.
+
+5. LAYOUT RULES
+---------------
+- Canvas 1400 x 750. Keep everything inside x 20..1380, y 10..730.
+- Organize in section columns roughly 300 px wide (x = 20, 320, 640, 960).
+- Each section: header bar (number_v3_header_grey75, W 260-280) then rows
+  every 28-30 px starting ~35 px below the header.
+- A value row = label at column x+5 (W 100-150) + value at x+150..180.
+- Never overlap objects. Leave 8+ px gaps.
+- Title: number_v3_label_12px_bold at top-left; alarm bell top-right (~x 1240).
+- ASCII ONLY in tag_text and alias_text. The host page is ISO-8859-1: writing
+  degree signs or Norwegian ae/oe/aa letters risks mojibake. Write
+  "gasskjoler", "trykk", "gr C", plain hyphens.
+
+6. WHAT THE FIELDS MEAN (SO YOU FILL THEM RIGHT)
+------------------------------------------------
+- tag_text: the visible text of headers/labels, and the small caption on
+  "tag_up"/"con_" boxes. Ignored by value_only, LEDs, bells, state strips.
+- alias_text: the SIGNAL DESCRIPTION shown to the human who links the object
+  (e.g. "Pc discharge pressure", "MT compressor 2 run status"). Set it on
+  every value/status/equipment object. Take the names from the source
+  document (P and ID sensor names like Po, Pc, Prec, Sgc, Sd, Ss, Shr2).
+- containers/graphics: always empty arrays in AI output (v1 contract).
+- No background image: background_embedded false, org_image_name "".
+
+7. RECIPES
+----------
+CO2 rack overview (from a P and ID): title + alarm bell; one section per
+suction group (MT / LT) with a row per compressor (label + green LED +
+capacity value + hours value) and an AK-PC state strip; a TRYKK section
+(Po / Pc / Prec / Pgc rows); a TEMPERATURER section (Ss / Sd / Sgc rows);
+gas cooler section (fan icon + fan % + HV % + GBV % boxes + cond state
+strip); receiver section (Prec + temp); heat recovery section (Shr rows).
+See generated-panel-example.json - a complete, insert-verified rack overview
+generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
+
+Ventilation unit: title; supply/extract rows with fan icons + pipe segments;
+temperature boxes with connector lines (con_down/con_top) placed along the
+pipes; filter symbols; setpoint + measured value pairs.
+
+8. WORKFLOW AFTER YOU ANSWER
+----------------------------
+The user saves your JSON as a .json file, opens the IWMAC Designer on the
+target plant, creates/loads a panel, clicks Insert JSON..., picks the file,
+then double-clicks each object to link it to a real driver (your alias_text
+guides that), and finally uses Compile Panel for Plant + Sync. Nothing you
+generate can write to the server - a bad file at worst fails validation with
+a listed reason.
+
+9. SELF-CHECK BEFORE ANSWERING
+------------------------------
+[] format iwmac-designer-panel, version 1, counts match array length
+[] every obj_id is from the allowlist / catalogue - none invented
+[] every object has ALL 17 template fields, driver_id = "driver_id"
+[] positions inside the canvas, no overlaps, integer pixels
+[] tag_text on text objects, alias_text on linkable objects, ASCII only
+[] containers [] and graphics [] empty
+[] raw JSON only - no fences, no commentary

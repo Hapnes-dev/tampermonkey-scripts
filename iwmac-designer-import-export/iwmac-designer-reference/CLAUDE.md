@@ -341,6 +341,16 @@ Outside the objectHandler:
 - Cross-plant: driver-id prefix rewrite `<src>_…` → `<target>_…` (§5), leftovers reported.
 - Envelope format `iwmac-designer-panel` v1 documented in [../README.md](../README.md).
 
+## 17b. Generating a panel JSON from a description (for AI assistants)
+
+The Insert JSON path accepts **AI-authored** panels, which makes "P&ID → panel" generation practical. The kit lives next to this file:
+
+- **[AI-BRIEFING.txt](AI-BRIEFING.txt)** — the normative contract: envelope + 17-field object template, the production-proven object allowlist (from [reference_data/production-usage-census.json](reference_data/production-usage-census.json) — 22 real panels), layout rules, and the recipes. Hand it to any AI as knowledge.
+- **[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt)** — the same contract compressed for the M365 Copilot Studio instructions field (5.4k chars, no angle brackets — the field rejects `<`/`>` and caps at 8000).
+- **[reference_data/generated-panel-example.json](reference_data/generated-panel-example.json)** — a complete correct answer: a CO₂ rack overview generated from an Advansor ValuePack 3x2-1R P&ID, insert-verified live (73/73 objects, 0 errors).
+
+The contract's load-bearing rules, all live-verified: exact allowlist obj_ids only (unknown ids render as broken `undefined`-class boxes, §4); `driver_id` stays the literal placeholder `"driver_id"` — the human links via the param selector afterwards (alias_text is what guides them, §13b); **ASCII-only text** (the page is ISO-8859-1 — `°`/æøå mojibake, verified); `zIndex "default"`; empty `containers`/`graphics` in v1; raw JSON output only.
+
 ## 18. How to introspect live
 
 ```js

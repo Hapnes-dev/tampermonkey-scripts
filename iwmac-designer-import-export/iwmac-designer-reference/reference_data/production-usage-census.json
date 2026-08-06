@@ -1,0 +1,609 @@
+{
+    "_note":  "Object-usage census across 22 real compiled panels on 6 plants (single_objects + container items). This is the ground truth behind the AI-BRIEFING allowlist: top40 = most-used object ids overall, maskin_top20 = most-used on machine/rack panels. w/h from the controls registry.",
+    "panels_scanned":  22,
+    "total_distinct_obj_ids":  87,
+    "top40":  [
+                  {
+                      "obj_id":  "number_v3_value_only",
+                      "uses":  236,
+                      "w":  "50",
+                      "h":  "20",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "value_txt",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "V3_R_34px_circular_alarm_nrm",
+                      "uses":  219,
+                      "w":  "34",
+                      "h":  "34",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "number_v3_40px_no_conn_no_tag",
+                      "uses":  182,
+                      "w":  "42",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox",
+                      "cls":  "number_v3_40px_no_conn"
+                  },
+                  {
+                      "obj_id":  "V3_R_28px_circular_cooling_nrm",
+                      "uses":  152,
+                      "w":  "28",
+                      "h":  "28",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "V3_R_28px_circular_defrost_nrm",
+                      "uses":  152,
+                      "w":  "28",
+                      "h":  "28",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "number_v3_label_10px_bold",
+                      "uses":  35,
+                      "w":  "5",
+                      "h":  "20",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "label",
+                      "cls":  "css_number_v3_label_10px_bold"
+                  },
+                  {
+                      "obj_id":  "number_v3_white_value_only",
+                      "uses":  30,
+                      "w":  "50",
+                      "h":  "20",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "value_txt",
+                      "cls":  "css_v3_white_iw_values"
+                  },
+                  {
+                      "obj_id":  "number_v3_label_11px_norm",
+                      "uses":  30,
+                      "w":  "5",
+                      "h":  "20",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "label",
+                      "cls":  "css_number_v3_label_11px_norm"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_45px_con_down",
+                      "uses":  27,
+                      "w":  "46",
+                      "h":  "38",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_45px_con_down"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_40px_no_conn_tag_up_center",
+                      "uses":  25,
+                      "w":  "42",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_40px_no_conn_tag_up_center"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_45px_con_left",
+                      "uses":  22,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_45px_con_left"
+                  },
+                  {
+                      "obj_id":  "V3_akpc_772_781_781A_783_contr",
+                      "uses":  20,
+                      "w":  81,
+                      "h":  21,
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "states_object",
+                      "cls":  "css_v3_iw_icons"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_45px_no_conn_tag_up_center",
+                      "uses":  20,
+                      "w":  "46",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_45px_no_conn_tag_up_center"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_45px_con_top",
+                      "uses":  18,
+                      "w":  "46",
+                      "h":  "38",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_45px_con_top"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_45px_con_right",
+                      "uses":  17,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_45px_con_right"
+                  },
+                  {
+                      "obj_id":  "number_v3_custom_json_obj",
+                      "uses":  16,
+                      "w":  "60",
+                      "h":  "20",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "css_number_v3_custom_json_obj"
+                  },
+                  {
+                      "obj_id":  "number_v3_60px_dark_no_conn_no_tag",
+                      "uses":  15,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox",
+                      "cls":  "number_v3_60px_dark_no_conn"
+                  },
+                  {
+                      "obj_id":  "V3_21px_single_pump_grey_green_down",
+                      "uses":  14,
+                      "w":  "21",
+                      "h":  "21",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object_tag",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "V3_led_13px_circ_grey_green",
+                      "uses":  13,
+                      "w":  "13",
+                      "h":  "13",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "V3_21px_single_pump_grey_green_left",
+                      "uses":  12,
+                      "w":  "21",
+                      "h":  "21",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object_tag",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_45px_no_conn_bott_center",
+                      "uses":  12,
+                      "w":  "46",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_45px_no_conn_tag_bott_center"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_60px_no_conn_tag_up_center",
+                      "uses":  11,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_60px_no_conn_tag_up_center"
+                  },
+                  {
+                      "obj_id":  "V3_akpc_782A_suct",
+                      "uses":  9,
+                      "w":  81,
+                      "h":  21,
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "states_object",
+                      "cls":  "css_v3_iw_icons"
+                  },
+                  {
+                      "obj_id":  "number_v3_60px_no_conn_no_tag",
+                      "uses":  9,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox",
+                      "cls":  "number_v3_60px_no_conn"
+                  },
+                  {
+                      "obj_id":  "V3_R_24px_anim_rg_alarm_nrm",
+                      "uses":  9,
+                      "w":  "24",
+                      "h":  "24",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "V3_58px_fan_left_nrm",
+                      "uses":  8,
+                      "w":  59,
+                      "h":  59,
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object_tag",
+                      "cls":  "css_v3_iw_icons"
+                  },
+                  {
+                      "obj_id":  "number_v3_60px_dark_no_conn",
+                      "uses":  8,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_60px_dark_no_conn"
+                  },
+                  {
+                      "obj_id":  "number_v3_exhaust_pipe_horisontal",
+                      "uses":  7,
+                      "w":  "50",
+                      "h":  "18",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "dummy",
+                      "cls":  "css_v3_exhaust_pipe_horisontal"
+                  },
+                  {
+                      "obj_id":  "V3_21px_single_pump_grey_green_up",
+                      "uses":  7,
+                      "w":  "21",
+                      "h":  "21",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object_tag",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "number_v3_label_8px_norm",
+                      "uses":  7,
+                      "w":  "5",
+                      "h":  "20",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "label",
+                      "cls":  "css_number_v3_label_8px_norm"
+                  },
+                  {
+                      "obj_id":  "number_v3_header_grey75",
+                      "uses":  6,
+                      "w":  "250",
+                      "h":  "20",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "dummy",
+                      "cls":  "css_v3_header_grey75"
+                  },
+                  {
+                      "obj_id":  "number_v3_label_12px_bold",
+                      "uses":  5,
+                      "w":  "5",
+                      "h":  "20",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "label",
+                      "cls":  "css_number_v3_label_12px_bold"
+                  },
+                  {
+                      "obj_id":  "V3_ok_alarm_nrm",
+                      "uses":  5,
+                      "w":  "61",
+                      "h":  "21",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "V3_81x21_enebled_disabled_nrm",
+                      "uses":  5,
+                      "w":  "81",
+                      "h":  "21",
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object",
+                      "cls":  "css_v3_iw_values"
+                  },
+                  {
+                      "obj_id":  "number_v3_rc_temp_48",
+                      "uses":  4,
+                      "w":  "49",
+                      "h":  "21",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "css_v3_rc_temp_48"
+                  },
+                  {
+                      "obj_id":  "V3_akpc_783_781A_782A_cond",
+                      "uses":  4,
+                      "w":  81,
+                      "h":  21,
+                      "hasTag":  false,
+                      "only_tag_text":  false,
+                      "obj_type":  "states_object",
+                      "cls":  "css_v3_iw_icons"
+                  },
+                  {
+                      "obj_id":  "number_v3_60px_no_conn",
+                      "uses":  4,
+                      "w":  "62",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_60px_no_conn"
+                  },
+                  {
+                      "obj_id":  "number_v3_R_40px_no_conn_tag_up_left",
+                      "uses":  4,
+                      "w":  "42",
+                      "h":  "22",
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "textbox_tag",
+                      "cls":  "number_v3_R_40px_tag_up_left"
+                  },
+                  {
+                      "obj_id":  "V3_58px_fan_right_nrm",
+                      "uses":  4,
+                      "w":  59,
+                      "h":  59,
+                      "hasTag":  true,
+                      "only_tag_text":  false,
+                      "obj_type":  "dig_object_tag",
+                      "cls":  "css_v3_iw_icons"
+                  },
+                  {
+                      "obj_id":  "number_v3_filter_only",
+                      "uses":  4,
+                      "w":  "27",
+                      "h":  "70",
+                      "hasTag":  true,
+                      "only_tag_text":  true,
+                      "obj_type":  "dummy_tag",
+                      "cls":  "css_number_v3_filter_only"
+                  }
+              ],
+    "maskin_top20":  [
+                         {
+                             "obj_id":  "number_v3_value_only",
+                             "uses":  183,
+                             "w":  "50",
+                             "h":  "20",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "value_txt",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "number_v3_white_value_only",
+                             "uses":  30,
+                             "w":  "50",
+                             "h":  "20",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "value_txt",
+                             "cls":  "css_v3_white_iw_values"
+                         },
+                         {
+                             "obj_id":  "V3_akpc_772_781_781A_783_contr",
+                             "uses":  20,
+                             "w":  81,
+                             "h":  21,
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "states_object",
+                             "cls":  "css_v3_iw_icons"
+                         },
+                         {
+                             "obj_id":  "V3_akpc_782A_suct",
+                             "uses":  9,
+                             "w":  81,
+                             "h":  21,
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "states_object",
+                             "cls":  "css_v3_iw_icons"
+                         },
+                         {
+                             "obj_id":  "V3_R_24px_anim_rg_alarm_nrm",
+                             "uses":  9,
+                             "w":  "24",
+                             "h":  "24",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "V3_led_13px_circ_grey_green",
+                             "uses":  7,
+                             "w":  "13",
+                             "h":  "13",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "V3_21px_single_pump_grey_green_down",
+                             "uses":  7,
+                             "w":  "21",
+                             "h":  "21",
+                             "hasTag":  true,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object_tag",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "number_v3_R_45px_no_conn_tag_up_center",
+                             "uses":  7,
+                             "w":  "46",
+                             "h":  "22",
+                             "hasTag":  true,
+                             "only_tag_text":  false,
+                             "obj_type":  "textbox_tag",
+                             "cls":  "number_v3_R_45px_no_conn_tag_up_center"
+                         },
+                         {
+                             "obj_id":  "number_v3_label_11px_norm",
+                             "uses":  6,
+                             "w":  "5",
+                             "h":  "20",
+                             "hasTag":  true,
+                             "only_tag_text":  true,
+                             "obj_type":  "label",
+                             "cls":  "css_number_v3_label_11px_norm"
+                         },
+                         {
+                             "obj_id":  "V3_ok_alarm_nrm",
+                             "uses":  5,
+                             "w":  "61",
+                             "h":  "21",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "V3_81x21_enebled_disabled_nrm",
+                             "uses":  5,
+                             "w":  "81",
+                             "h":  "21",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "number_v3_custom_json_obj",
+                             "uses":  5,
+                             "w":  "60",
+                             "h":  "20",
+                             "hasTag":  true,
+                             "only_tag_text":  false,
+                             "obj_type":  "textbox_tag",
+                             "cls":  "css_number_v3_custom_json_obj"
+                         },
+                         {
+                             "obj_id":  "V3_akpc_783_781A_782A_cond",
+                             "uses":  4,
+                             "w":  81,
+                             "h":  21,
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "states_object",
+                             "cls":  "css_v3_iw_icons"
+                         },
+                         {
+                             "obj_id":  "number_v3_60px_no_conn",
+                             "uses":  4,
+                             "w":  "62",
+                             "h":  "22",
+                             "hasTag":  true,
+                             "only_tag_text":  false,
+                             "obj_type":  "textbox_tag",
+                             "cls":  "number_v3_60px_no_conn"
+                         },
+                         {
+                             "obj_id":  "number_v3_exhaust_pipe_horisontal",
+                             "uses":  4,
+                             "w":  "50",
+                             "h":  "18",
+                             "hasTag":  true,
+                             "only_tag_text":  true,
+                             "obj_type":  "dummy",
+                             "cls":  "css_v3_exhaust_pipe_horisontal"
+                         },
+                         {
+                             "obj_id":  "V3_led_21px_square_grey_red",
+                             "uses":  3,
+                             "w":  "21",
+                             "h":  "21",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "V3_led_16px_circ_grey_red",
+                             "uses":  2,
+                             "w":  "16",
+                             "h":  "16",
+                             "hasTag":  false,
+                             "only_tag_text":  false,
+                             "obj_type":  "dig_object",
+                             "cls":  "css_v3_iw_values"
+                         },
+                         {
+                             "obj_id":  "number_v3_label_12px_bold",
+                             "uses":  2,
+                             "w":  "5",
+                             "h":  "20",
+                             "hasTag":  true,
+                             "only_tag_text":  true,
+                             "obj_type":  "label",
+                             "cls":  "css_number_v3_label_12px_bold"
+                         },
+                         {
+                             "obj_id":  "number_v3_exhaust_pipe_vertical",
+                             "uses":  2,
+                             "w":  "18",
+                             "h":  "50",
+                             "hasTag":  true,
+                             "only_tag_text":  true,
+                             "obj_type":  "dummy",
+                             "cls":  "css_v3_exhaust_pipe_vertical"
+                         },
+                         {
+                             "obj_id":  "number_v3_label_11px_bold",
+                             "uses":  2,
+                             "w":  "5",
+                             "h":  "20",
+                             "hasTag":  true,
+                             "only_tag_text":  true,
+                             "obj_type":  "label",
+                             "cls":  "css_number_v3_label_11px_bold"
+                         }
+                     ]
+}

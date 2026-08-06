@@ -56,6 +56,10 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+## AI-generated panels (Copilot)
+
+Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or system description and insert it, then link the objects by hand. The ready-to-use kit is in [iwmac-designer-reference/](iwmac-designer-reference/): `AI-BRIEFING.txt` (knowledge file for any AI), `AI-AGENT-INSTRUCTIONS.txt` (paste into the M365 Copilot Studio instructions field — 5.4k chars, no `<`/`>`), and `reference_data/generated-panel-example.json` (a complete insert-verified example: a CO₂ rack overview generated from an Advansor ValuePack P&ID — 73 objects, validated and rendered live). Attach the briefing + example as the agent's knowledge files.
+
 ## How it integrates
 
 - The sidebar is static HTML loaded with `innerHTML +=` — that re-serializes existing children and silently kills `addEventListener` handlers, so the injected buttons use **inline `onclick` attributes** calling `window.__IWDIE.*` (exactly how the host's own sidebar buttons survive). An idempotent interval re-adds/de-dupes the fieldset if the sidebar is ever re-rendered.
