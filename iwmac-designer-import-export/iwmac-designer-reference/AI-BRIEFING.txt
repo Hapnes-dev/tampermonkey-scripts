@@ -113,8 +113,28 @@ EQUIPMENT (alias_text describes; tag_text = short name shown above icon):
   V3_58px_fan_left_nrm  / V3_58px_fan_right_nrm | 59 x 59 | fan
   V3_21px_single_pump_grey_green_left/_up/_down | 21 x 21 | pump
   number_v3_filter_only            | 27 x 70 | filter symbol
-  number_v3_exhaust_pipe_horisontal| 50 x 18 | pipe segment horizontal
-  number_v3_exhaust_pipe_vertical  | 18 x 50 | pipe segment vertical
+VENTILATION SET (duct colors matter: fresh = outdoor air, supply = tilluft,
+exhaust = avtrekk/avkast; all pipes are dummies - never linked):
+  number_v3_fresh_pipe_horisontal   | 50 x 18 | outdoor-air duct segment
+  number_v3_fresh_pipe_vertical     | 18 x 50 |
+  number_v3_supply_pipe_horisontal  | 50 x 18 | supply duct segment
+  number_v3_supply_pipe_vertical    | 18 x 50 |
+  number_v3_exhaust_pipe_horisontal | 50 x 18 | extract/exhaust duct segment
+  number_v3_exhaust_pipe_vertical   | 18 x 50 |
+  number_v3_supply_connector_down / number_v3_exhaust_connector_up | 18 x 50 | duct corner pieces
+  numberV3_filter_with_diff_press  | 90 x 83 | filter WITH built-in diff-pressure box (tag_text e.g. "QD401 Pa", links to the pressure signal)
+  number_v3_heater_3_way           | 40 x 210 | water heating coil with 3-way valve (tag_text "LV401")
+  number_v3_el_heater              | 40 x 85  | electric heater (tag_text "LV402")
+  number_v3_cooler_2-way           | 38 x 132 | cooling coil
+  number_360_vg_rot                | 60 x 343 | rotary heat exchanger (place across both duct runs)
+  number_360_room                  | 100 x 339| room symbol (right end of the runs)
+  numberV3_outside_temp            | 79 x 50  | outdoor-temp symbol box
+  v3_3w_valve_right_down_nrm       | 22 x 18  | small 3-way valve symbol
+  number_v3_dummy_resirc_damp_hor / _vert | 42 x 42 / 70 x 40 | recirculation damper
+  number_v3_dummy_21x17_Arrow_Left / _Right | 21 x 17 | airflow direction arrows
+  number_v3_60px_json_obj / number_v3_custom_json_obj | 60 x 20 | enum/mode value boxes (Driftsmodus etc.)
+  number_v3_R_45px_no_conn_tag_up_left | 46 x 22 | box, caption above-left (room sensors)
+  V3_led_16px_circ_grey_yellow | 16 x 16 | B-alarm LED; V3_led_18px_circ_grey_red | 18 x 18 | smoke/fire LED
 
 NEVER invent an obj_id. If it is not in this list (or in the full catalogue
 files when provided), do not use it. An unknown obj_id renders as a broken
@@ -129,9 +149,12 @@ grey box.
 - A value row = label at column x+5 (W 100-150) + value at x+150..180.
 - Never overlap objects. Leave 8+ px gaps.
 - Title: number_v3_label_12px_bold at top-left; alarm bell top-right (~x 1240).
-- ASCII ONLY in tag_text and alias_text. The host page is ISO-8859-1: writing
-  degree signs or Norwegian ae/oe/aa letters risks mojibake. Write
-  "gasskjoler", "trykk", "gr C", plain hyphens.
+- TEXT ENCODING: the Insert JSON flow reads files as UTF-8, and production
+  panels do contain Norwegian letters, degree signs and m3-superscripts -
+  those survive the real pipeline. BUT if your output travels through any
+  non-UTF-8 channel (copy-paste through terminals, old mail systems) they
+  mojibake. Safe default: plain ASCII ("gr C", "hoyfart", "gasskjoler");
+  Norwegian/degree characters are acceptable when the user asks for them.
 
 6. WHAT THE FIELDS MEAN (SO YOU FILL THEM RIGHT)
 ------------------------------------------------
@@ -155,17 +178,41 @@ strip); receiver section (Prec + temp); heat recovery section (Shr rows).
 See generated-panel-example.json - a complete, insert-verified rack overview
 generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 
-Ventilation unit (the corpus says: con boxes dominate - 135 con_down + 95
-con_top uses across 39 vent panels; production panels usually hang them on
-an AHU background image): title + alarm bell; TWO horizontal duct runs of
-pipe segments (supply left-to-right on top, extract right-to-left below);
-con_down boxes ABOVE the supply duct (connector stem points down onto it)
-at each station (Ute, e.VGV, Tilluft); con_top boxes BELOW the extract duct
-(Avtrekk, e.VGV, Avkast); filter symbols and fans ON the ducts; vertical
-pipe pair between the runs as the VGV cross-over with a VGV percent dark
-box; a DRIFT / SETTPUNKT column at the right (run LEDs, SP dark boxes,
-paadrag and kanaltrykk values). See generated-vent-example.json - a
-complete insert-verified MODE A example.
+Ventilation unit - THE REAL ANATOMY (normative: it is the sanitized real
+production panel reference_data/real-vent-panel-example.json, 102 objects
+on the 00-blank-sidebar background; generated-vent-example.json is a
+simpler verified starter):
+- EXTRACT RUN on top, airflow right-to-left: one long
+  number_v3_exhaust_pipe_horisontal (stretch posWidth, e.g. 1025), extract
+  fan (V3_58px_fan_left_nrm, tag "JV501") and filter_with_diff_press
+  (tag "QD501 Pa") ON the run; con_down boxes ABOVE it: "RT502 gr C"
+  (exhaust), "RH501 %", "RT501 gr C" (extract); damper con_top BELOW at the
+  left end (tag "KA501 %"); arrows for direction; alarm bells NEXT TO the
+  component they guard (fan common alarm by the fan, filter alarm by the
+  filter).
+- SUPPLY RUN below, airflow left-to-right: fresh_pipe (outdoor section,
+  left) then supply_pipe; filter (QD401), heating coil number_v3_heater_3_way
+  (LV401), el heater (LV402), cooler, supply fan (V3_58px_fan_right_nrm,
+  JV401), smoke LED (RY401); con_down boxes above: "RH901 %" + "RT901 gr C"
+  (outdoor), "RT402 gr C" (efficiency), "RH401 %", "RT401 gr C" (supply);
+  damper "KA401 %" con_top below; motor output "LR401 %" con_top.
+- VGV CROSS-OVER between the runs: exhaust_pipe_vertical +
+  supply_pipe_vertical (or number_360_vg_rot across both), rotor alarm
+  bell, "LX001 %" con_top (rotor speed), recirculation damper "KA502 %".
+- COIL DETAIL under the supply run: coil temps RT510/RT520/RT410/RT420
+  con boxes, heating/cooling power "SB510 %"/"SB520 %", pump JP410,
+  3-way valve symbol.
+- RIGHT COLUMN (x ~1150-1390), three header sections:
+  "Status og vendere" (Driftsmodus + Systemvender json boxes, A-Alarm red
+  + B-Alarm yellow LEDs, Alarmkvittering), "Vifteregulering" (two columns
+  of dark SP boxes labeled Tilluft / Avtrekk: Sp. hoyfart m3/h, Sp. lavfart
+  m3/h, Sp. nattkjoling m3/h, Min friskluft %, Sp. CO2 ppm) and
+  "Temperaturregulering" (Sp. romtemperatur, Maks/Min tilluftstemperatur).
+- ROOM SENSORS mid-right: CO2 "RP501 ppm" and room temp "RT600" boxes.
+- TAG CONVENTION: tag_text = instrument code + unit ("RT401 gr C",
+  "RF401 m3/h", "KA401 %", "QD401 Pa"); codes follow the vent controller
+  (RT=temp, RF=flow, RH=humidity, KA=damper, LR=motor, LX=rotor, QD=filter
+  pressure, JV=fan, JP=pump, LV=coil/valve, SB=power, RP=CO2, RY=smoke).
 
 7b. HOW PANELS ARE DRAWN TODAY (PRODUCTION CONVENTIONS)
 -------------------------------------------------------
