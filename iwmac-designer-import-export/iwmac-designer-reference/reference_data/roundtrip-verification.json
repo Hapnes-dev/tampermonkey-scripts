@@ -14,6 +14,15 @@
   },
   "reload_and_loadback": { "rendered_objects": 54, "background_restored_from_store": true },
   "cleanup": { "delete_endpoint": "designer_site/iw_remove_panel.php?cust_id&panel_name", "reply": "<status>OK</status>", "panel_list_restored": true, "stored_json_after_delete": "empty" },
+  "cross_plant_insert": {
+    "_flow": "Export the 54-object panel on the source plant -> Insert JSON on a scratch canvas on a DIFFERENT plant (canvas-only, no save).",
+    "rebind_prompt": "Fired exactly as designed: 'This panel comes from plant <src> - you are on plant <dst>. Rewrite 54 driver ids from <src>_... to <dst>_...?'",
+    "result": { "objects_inserted": 54, "driver_ids_rebound": 54, "still_source_prefixed": 0, "placeholders_corrupted": 0, "duplicate_names": 0, "background_applied": true, "objectList_entries": 54 },
+    "notes": [
+      "Rebound ids keep the full address path (<dst>_AK3_AKC_0_11_1_0_7) - whether that address exists on the target plant is resolved by the designer at link/compile time, as documented (checkDriver does not validate).",
+      "org_image_name keeps the source-plant-prefixed FILENAME (e.g. 10113_oversikt_v3.png) - cosmetic only, since the image data itself is embedded and applied; a later compile posts that name as 'Original Image Name' metadata."
+    ]
+  },
   "findings": [
     "iw_save_ctrls.php IGNORED the posted visible=0 - the new panel row came back visible=1. Panel visibility for new compiles is not controllable from the save popup; change it afterwards (picture manager / Change Panel Order flow) if the panel must stay hidden.",
     "The compiled store keeps the JSON doc + the base64 image exactly as posted - iw_load_ctrls.php?format=json is a faithful read-back of upload_json.",
