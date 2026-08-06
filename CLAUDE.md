@@ -20,6 +20,7 @@ tampermonkey-scripts/
 ├── README.md                     # Root index — table of all scripts with install links
 ├── CLAUDE.md                     # This file
 ├── ak3-autoscan/                 # Automates the AK3 scanner setup workflow on IWMAC plant servers
+├── iwmac-designer-import-export/ # Panel JSON export/copy/insert on the IWMAC Designer (legacy.iwmac.local) w/ driver-id rebinding + embedded background (+ iwmac-designer-reference/: the designer deep-dive docs, reference_data)
 ├── iwmac-topology-copy/          # Copy/export topology + inject live driver columns on sys_tools
 ├── logic-designer-copy-paste/    # Copy/paste (Ctrl+C/V + Ctrl+B ghost), multi-wire (Shift+F), remove-connectors (Shift+D), drag-move undo, type colors, sketch quick-open, formula editor, sketch-info pill, alarm→block highlight on the VV Designer (Henrik Monge)
 ├── logic-designer-import-export/ # Export/Import sketch (JSON) in the VV Designer File menu — move logic between plants w/ driver-id rebinding (+ vv-designer-reference/: the VV Designer deep-dive docs, AI briefing/examples, reference_data)

@@ -1,0 +1,79 @@
+{
+    "_note":  "v4_get_tags_desc replies, truncated. toLoad=tags -\u003e flat iw_link_name catalogue; toLoad=tag_groups -\u003e named groups with tag_list; toLoad=parts -\u003e the area/system/unit/component taxonomy tree.",
+    "tags":  {
+                 "count":  1186,
+                 "sample":  [
+                                {
+                                    "default_link_name":  "Temp-reference of media",
+                                    "iw_link_name":  "ACL_ACS_CME_ST_CTRL_SECONDARY-LIQUID-REFERENCE",
+                                    "measure_type":  "STATUS"
+                                },
+                                {
+                                    "default_link_name":  "Temp in to exchanger (from fan/fancoil)",
+                                    "iw_link_name":  "ACL_ACS_CME_TEMP_RT_SECONDARY-LIQUID-IN",
+                                    "measure_type":  "temperature"
+                                },
+                                {
+                                    "default_link_name":  "Temp out from exchanger (into fan/fancoil)",
+                                    "iw_link_name":  "ACL_ACS_CME_TEMP_RT_SECONDARY-LIQUID-OUT",
+                                    "measure_type":  "temperature"
+                                }
+                            ]
+             },
+    "tag_groups":  {
+                       "count":  16,
+                       "sample":  [
+                                      {
+                                          "description":  "",
+                                          "name":  "Cooling \u0026 Refrigeration",
+                                          "ref":  "CRC_GK-GF-FF-FK",
+                                          "tag_list":  [
+                                                           "CRC_GK-GF-FF-FK_SX_ST_DO_EVAPORATOR-FAN",
+                                                           "CRC_GK-GF-FF-FK_SX_ST_DO_COOLING",
+                                                           "CRC_GK-GF-FF-FK_SX_SP_AL-PRI_OUTLET-MEDIA-SENSOR-FAULT",
+                                                           "CRC_GK-GF-FF-FK_SX_SP_AL-PRI_INLET-MEDIA-SENSOR-FAULT",
+                                                           "CRC_GK-GF-FF-FK_SX_SP_AL-PRI_HIGH-TEMP",
+                                                           "CRC_GK-GF-FF-FK_LF_TEMP_THERM_SENSOR",
+                                                           "CRC_GK-GF-FF-FK_LF_TEMP_OUTLET_AIR",
+                                                           "CRC_GK-GF-FF-FK_LF_TEMP_INLET_AIR",
+                                                           "CRC_GK-GF-FF-FK_LF_TEMP_DISPLAY_SENSOR",
+                                                           "CRC_GK-GF-FF-FK_LF_TEMP_DEF_SENSOR",
+                                                           "CRC_GK-GF-FF-FK_LF_ST_DO_DEFROSTING",
+                                                           "CRC_GK-GF-FF-FK_LF_SP_THERM_LOW-TEMP-ALARM",
+                                                           "CRC_GK-GF-FF-FK_LF_SP_THERM_HIGH-TEMP-ALARM-DELAY",
+                                                           "CRC_GK-GF-FF-FK_LF_SP_THERM_HIGH-TEMP-ALARM",
+                                                           "CRC_GK-GF-FF-FK_LF_SP_THERM_CUT-OUT",
+                                                           "CRC_GK-GF-FF-FK_LF_SP_DEF_STOP-TEMP",
+                                                           "CRC_GK-GF-FF-FK_LF_SP_DEF_MAX-TIME",
+                                                           "CRC_GK-GF-FF-FK_LF_ALM_THERM_LOW",
+                                                           "CRC_GK-GF-FF-FK_LF_ALM_THERM_HIGH-TEMP",
+                                                           "CRC_GK-GF-FF-FK_LF_ALM_OUTLET_AIR-SENSOR-FAULT",
+                                                           "CRC_GK-GF-FF-FK_LF_ALM_INLET_AIR-SENSOR-FAULT",
+                                                           "CRC_GK-GF-FF-FK_LF_ALM_DEF_SENSOR-FAULT"
+                                                       ]
+                                      },
+                                      {
+                                          "description":  "",
+                                          "name":  "Ventilation",
+                                          "ref":  "AHA",
+                                          "tag_list":  [
+                                                           "AHA_SAS_KK_SP_RT_SUPPLY-AIR",
+                                                           "AHA_RAS_KK_TEMP_RT_EXTRACT-AIR",
+                                                           "AHA_IAS_KK_TEMP_RT_INLET-AIR",
+                                                           "AHA_EAS_KK_TEMP_RT_EXHAUST-AIR",
+                                                           "AHA_AHU_SX_ST_CTRL_UNIT-ON-OFF"
+                                                       ]
+                                      },
+                                      {
+                                          "description":  "",
+                                          "name":  "Room Control",
+                                          "ref":  "RCO_RM_SX",
+                                          "tag_list":  [
+                                                           "RCO_RM_SX_TEMP_RT_RT-ROOM",
+                                                           "RCO_RM_SX_SP_RT_RT-ROOM"
+                                                       ]
+                                      }
+                                  ]
+                   },
+    "parts_sample_truncated":  "see CLAUDE.md - deep taxonomy tree (area-\u003esystem-\u003eunit-\u003ecomponent)"
+}

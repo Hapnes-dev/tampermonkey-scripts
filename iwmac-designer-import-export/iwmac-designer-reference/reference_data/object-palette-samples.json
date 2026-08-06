@@ -1,0 +1,60 @@
+{
+    "_note":  "controls = 1769 render definitions keyed by object id (how an object DRAWS: images per status, size, z, css, action). all_design_objects = 820 palette/menu entries (what the toolbox lists). No customer data - committed unmodified.",
+    "controls_count":  1769,
+    "controls_samples":  {
+                             "V3_R_34px_circular_alarm_nrm":  {
+                                                                  "width":  "34",
+                                                                  "height":  "34",
+                                                                  "file":  "V3/refrigeration/status_symbols/BellPumping_34.gif",
+                                                                  "name":  "V3_R_34px_circular_alarm_nrm",
+                                                                  "status_array":  {
+                                                                                       "0":  "transp.gif",
+                                                                                       "1":  "V3/refrigeration/status_symbols/BellPumping_34.gif",
+                                                                                       "2":  "V3/refrigeration/status_symbols/BellPumping_34.gif"
+                                                                                   },
+                                                                  "action":  "\"javascript:view_site_set_unit_parameter(\u0027\" + ctrl_id + \"\u0027)\"",
+                                                                  "cursor":  "Hand",
+                                                                  "zindex":  375,
+                                                                  "classname":  "css_v3_iw_values",
+                                                                  "tag_text_classname":  null,
+                                                                  "hasTag":  false,
+                                                                  "tag_text_default_text":  null,
+                                                                  "only_tag_text":  false,
+                                                                  "obj_type":  "dig_object",
+                                                                  "canLink":  true
+                                                              },
+                             "number_v3_40px_no_conn_no_tag":  {
+                                                                   "width":  "42",
+                                                                   "height":  "22",
+                                                                   "name":  "number_v3_40px_no_conn_no_tag",
+                                                                   "status_array":  "",
+                                                                   "action":  "\"javascript:view_site_set_unit_parameter(\u0027\" + ctrl_id + \"\u0027)\"",
+                                                                   "cursor":  "Hand",
+                                                                   "zindex":  110,
+                                                                   "classname":  "number_v3_40px_no_conn",
+                                                                   "tag_text_classname":  "number_v3_40px_no_conn_tag",
+                                                                   "hasTag":  true,
+                                                                   "tag_text_default_text":  "\u0026nbsp;\u0026nbsp;",
+                                                                   "only_tag_text":  false,
+                                                                   "obj_type":  "textbox",
+                                                                   "canLink":  true
+                                                               }
+                         },
+    "all_design_objects":  {
+                               "type":  "array",
+                               "len":  820,
+                               "sample":  {
+                                              "object_id":  "number_v3_label_8px_norm",
+                                              "menu_type":  "Text",
+                                              "object_type":  "Label",
+                                              "object_name":  "8px Normal",
+                                              "inverted":  "0",
+                                              "base_image_path":  "V3/assets/8pxn.png",
+                                              "info":  "",
+                                              "width":  "77",
+                                              "height":  "20",
+                                              "default_tag_txt":  "Tag_text",
+                                              "status_array":  "[]"
+                                          }
+                           }
+}

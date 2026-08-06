@@ -1,0 +1,43 @@
+{
+    "_note":  "V3get_plant_designer_panels = compiled/plant panels (the Retrieve select). V3get_designer_panels = saved DESIGN-panel JSON docs - empty on the sampled plant: all its panels exist only in the compiled store and load via iw_load_ctrls.php. v4listTemplates/V3_loadUnits_Templates need a plant param POSTed or they answer PLANT NOT DEFINED.",
+    "V3get_plant_designer_panels":  [
+                                        {
+                                            "pic_id_data_type":  "int(11)",
+                                            "panel_name":  "Oversikt",
+                                            "id":  "0",
+                                            "visible":  "1",
+                                            "image_name":  "NNNNN_oversikt_v3.png"
+                                        },
+                                        {
+                                            "pic_id_data_type":  "int(11)",
+                                            "panel_name":  "360.001 Ventilasjon",
+                                            "id":  "2",
+                                            "visible":  "1",
+                                            "image_name":  "00-blank-sidebar-1400x750"
+                                        },
+                                        {
+                                            "pic_id_data_type":  "int(11)",
+                                            "panel_name":  "Maskin",
+                                            "id":  "3",
+                                            "visible":  "1",
+                                            "image_name":  "NNNN_Maskin.png"
+                                        },
+                                        {
+                                            "pic_id_data_type":  "int(11)",
+                                            "panel_name":  "Energi",
+                                            "id":  "4",
+                                            "visible":  "1",
+                                            "image_name":  "xxxx_energi-v3.1_dato"
+                                        },
+                                        {
+                                            "pic_id_data_type":  "int(11)",
+                                            "panel_name":  "Kondenssystem",
+                                            "id":  "5",
+                                            "visible":  "1",
+                                            "image_name":  "NNNNN_oversikt_v3.png"
+                                        }
+                                    ],
+    "V3get_designer_panels":  [
+
+                              ]
+}
