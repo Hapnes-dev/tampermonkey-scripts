@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.3.0';
+var IWDIE_VERSION = '1.3.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -440,14 +440,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (existing.length > 0) return;
       var w7 = document.getElementById('manager_widget7');
       if (!w7) return;
+      /* 2x2 grid keeps the fieldset two button-rows tall — four stacked
+         btn_full rows made the whole manager sidebar overflow into a
+         scrollbar on 1280-class windows. */
+      var half = "class='btn_full ui-button ui-corner-all' style='width:49%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'";
       var html = [
         "<div id='manager_widget_iwdie'>",
         '  <fieldset>',
         '    <legend>Panel JSON</legend>',
-        "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
-        "    <button id='iwdie_copy_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doCopyJson()\">Copy JSON</button>",
-        "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
-        "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
+        "    <div style='display:flex;gap:2%'>",
+        "      <button id='iwdie_export_btn' " + half + " onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
+        "      <button id='iwdie_copy_btn' " + half + " onclick=\"window.__IWDIE.doCopyJson()\">Copy JSON</button>",
+        '    </div>',
+        "    <div style='display:flex;gap:2%'>",
+        "      <button id='iwdie_import_btn' " + half + " onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
+        "      <button id='iwdie_ai_btn' " + half + " title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">BG → .ai</button>",
+        '    </div>',
         '  </fieldset>',
         '</div>'].join('\n');
       w7.insertAdjacentHTML('afterend', html);
