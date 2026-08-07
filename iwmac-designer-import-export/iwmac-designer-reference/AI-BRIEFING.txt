@@ -92,6 +92,11 @@ was SVG). It is INPUT FOR YOU, never output:
   has thousands of ragged paths and text as outline blobs - it is a map,
   not a drawing. Insert ignores/strips the field; the embedded image_data
   always remains the real background.
+- NEVER read label text out of the trace: traced digits are chipped
+  outlines and misread silently (3 vs 2, 8 vs 6, F vs P, I vs 1 - proved
+  on a real store plan). Take names/numbers from the objects' tag_text /
+  alias_text, or view the image_data png; the trace supplies geometry
+  and colours only.
 
 3. THE OBJECT ENTRY - COPY THIS TEMPLATE EXACTLY
 ------------------------------------------------
