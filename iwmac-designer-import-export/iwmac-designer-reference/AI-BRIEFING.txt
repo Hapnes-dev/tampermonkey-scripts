@@ -92,6 +92,10 @@ file; companion image maskin-dark-style-example.png) exactly:
 - Two skins, same layout: LIGHT (9982-style) and DARK (near-black, see
   the example png). Match the plant's existing maskin - a dark-variant
   maskin is the sanctioned exception to the no-dark-canvas rule above.
+- Worked example: generated-maskin-example.json - a complete generated
+  Maskin (light skin image_svg drawn per the method + 63 objects with
+  the canonical maskin-akpc-link-map aliases), insert-verified 63/63
+  with the background applied.
 
 READING THE EXISTING DRAWING: "image_svg_trace" (v1.5.0). Exported panel
 jsons MAY carry panel.image_svg_trace - an automatic VECTOR TRACE of the
