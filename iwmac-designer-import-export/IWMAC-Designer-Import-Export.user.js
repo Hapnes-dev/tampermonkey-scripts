@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.0
+// @version      1.4.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.4.0';
+var IWDIE_VERSION = '1.4.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1839,6 +1839,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return new Response(stream).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
     }
 
+    /* Run the vendored tracer in a Web Worker so long traces (photo
+       backgrounds can take minutes) never freeze the tab. The whole library
+       is one self-contained constructor, so its source can be lifted into
+       the worker via Function.prototype.toString — no second copy needed. */
+    function traceInWorker(imgData, opts) {
+      return new Promise(function (resolve, reject) {
+        var src;
+        try { src = IWDIE_TRACER.constructor.toString(); } catch (e) { reject(e); return; }
+        var code = 'var IT=new (' + src + ')();' +
+          'onmessage=function(e){try{postMessage({svg:IT.imagedataToSVG(e.data.img,e.data.opts)})}catch(err){postMessage({err:String(err)})}};';
+        var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+        var w;
+        try { w = new Worker(url); } catch (e) { URL.revokeObjectURL(url); reject(e); return; } // e.g. CSP without blob: worker-src
+        var done = function () { URL.revokeObjectURL(url); try { w.terminate(); } catch (e) {} };
+        w.onmessage = function (ev) { done(); if (ev.data && ev.data.svg) resolve(ev.data.svg); else reject(new Error(ev.data && ev.data.err || 'trace failed')); };
+        w.onerror = function (ev) { done(); reject(new Error('worker: ' + (ev.message || 'error'))); };
+        w.postMessage({ img: { width: imgData.width, height: imgData.height, data: imgData.data }, opts: opts }, [imgData.data.buffer]);
+      });
+    }
+
     function doExportBackgroundAi() {
       if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
       var url = grabBackgroundUrl();
@@ -1875,7 +1895,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (IWDIE_TRACER) {
         wantTrace = window.confirm(
           'Trace the background to VECTORS for Illustrator?\n\n' +
-          'OK = vector trace (.svg — editable shapes; small text becomes rough outlines)\n' +
+          'OK = vector trace (.svg — editable shapes; small text becomes rough outlines).\n' +
+          '        Runs in the background — drawings take ~1 s, photos can take a while.\n' +
           'Cancel = original pixels on an artboard (.ai)');
       }
       var img = new Image();
@@ -1892,18 +1913,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { rgba = ctx.getImageData(0, 0, w, h).data; } catch (e) { rgba = null; }
         if (wantTrace) {
           if (!rgba) { toast('Could not read the image pixels for tracing.', true); return; }
-          var traced;
-          try {
-            traced = IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), {
-              numberofcolors: 16, ltres: 0.5, qtres: 0.5, pathomit: 4,
-              rightangleenhance: true, roundcoords: 1, strokewidth: 0,
-              linefilter: false, viewbox: true, desc: false
-            });
-          } catch (e) { toast('Vector trace failed: ' + e, true); return; }
+          var traceOpts = {
+            numberofcolors: 16, ltres: 0.5, qtres: 0.5, pathomit: 4,
+            rightangleenhance: true, roundcoords: 1, strokewidth: 0,
+            linefilter: false, viewbox: true, desc: false
+          };
           var svgName = iwdieBuildBackgroundFilename(plant, panel + ' traced', 'svg');
-          downloadBytes(traced, svgName, 'image/svg+xml');
-          hostOk('Background traced to vectors → ' + svgName + ' (' +
-            ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File → Open); retype small labels there.');
+          var t0 = Date.now();
+          var deliverTrace = function (traced) {
+            downloadBytes(traced, svgName, 'image/svg+xml');
+            hostOk('Background traced to vectors in ' + Math.round((Date.now() - t0) / 100) / 10 + ' s → ' + svgName + ' (' +
+              ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File → Open); retype small labels there.');
+          };
+          toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
+          traceInWorker(ctx.getImageData(0, 0, w, h), traceOpts).then(deliverTrace).catch(function () {
+            // no worker available (old browser / strict CSP): trace on the
+            // main thread after letting the toast paint first
+            toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
+            setTimeout(function () {
+              try { deliverTrace(IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), traceOpts)); }
+              catch (e) { toast('Vector trace failed: ' + e, true); }
+            }, 80);
+          });
           return;
         }
         var name = iwdieBuildBackgroundFilename(plant, panel, 'ai');
