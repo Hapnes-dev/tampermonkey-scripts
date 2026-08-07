@@ -1,6 +1,6 @@
 # IWMAC Designer Import/Export
 
-Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Copy JSON**, **Insert JSON…**, **Background → Illustrator** (slimmed so the sidebar never grows a scrollbar) — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, and the background artwork can be handed to Adobe Illustrator for editing. The designer itself has no way to do either; this script adds both.
+Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Copy JSON**, **Insert JSON…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, and the background artwork can be handed to Adobe Illustrator for editing. The designer itself has no way to do either; this script adds both.
 
 Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5").
 
@@ -60,7 +60,7 @@ Insert also accepts a **bare** panel document and the server's array-of-one wrap
 
 ## Background → Illustrator (v1.3.0)
 
-The fourth button exports the **current panel's background image as a file Adobe Illustrator edits directly** (since v1.3.2 the four buttons are slightly slimmer than the host's so the manager sidebar keeps fitting without a scrollbar):
+The fourth button exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; since v1.3.3 the script relaxes `#manager_div` to fit its content — capped to the viewport — so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size.)
 
 - **PNG/JPG background** → a single-page **`.ai`** file. Modern `.ai` is PDF-based and Illustrator opens any PDF as editable artwork, so the script hand-builds a minimal PDF (no external libraries): artboard = panel size (1 px = 1 pt), the image placed 1:1 and **losslessly** re-encoded (raw RGB deflated with the browser's native `CompressionStream`; automatic JPEG fallback on very old Chrome). Verified with a real PDF engine: 1400×750 artboard, image intact.
 - **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.
