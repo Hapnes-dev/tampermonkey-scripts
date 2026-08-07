@@ -1,0 +1,127 @@
+MASKIN (MACHINE PICTURE) DRAWING METHOD - Advansor CO2 cooling/freezer
+=======================================================================
+Distilled from "Advansor cooling/freezer machine drawing method v2"
+(internal Word doc; project-specific identifiers omitted). This is the
+reusable method for turning a technical refrigeration schematic (PDF
+systemskjema) into the clean HMI-style machine picture used as an IWMAC
+Designer panel background. Companion image: maskin-dark-style-example.png
+(the dark-background variant of the exact same template family as the
+light-background plant-9982 Maskin in real-vent/maskin examples).
+
+The PDF schematic is the technical source of truth; the drawing is a
+simplified operator visualization. Do not reproduce every bend or
+engineering annotation - preserve functional connections and labels.
+
+1. HOW THE MACHINE WORKS (what the drawing must communicate)
+-------------------------------------------------------------
+CO2 booster system, two suction levels:
+- MT compressors: medium-temperature loads (cooling).
+- LT compressors: freezer loads; LT discharge lifts into the MT /
+  intermediate side before final high-pressure compression.
+Flow: consumers absorb heat -> suction gas returns (M-T Suct., L-T
+Suct. lines) -> LT then MT compression -> oil separator removes oil
+from hot discharge gas (oil reservoir stores it) -> gas cooler /
+condenser rejects heat (fan block) -> optional HEAT RECOVERY branch
+taps rejected heat (tap water) before/beside the gas cooler -> high-
+pressure valve (Vhp) drops into the receiver -> receiver stores liquid
+/ separates flash gas (Level %, Low-level, Prec bar) -> receiver valve
+(Vrec) + liquid line feed the consumers again. Internal heat exchanger
+sits in the bottom-right line section. PRV manifold / filter drier /
+instrument manifolds exist in the PDF; show them only if operators
+need them.
+
+2. CANVAS LAYOUT DOCTRINE (1400 x 750, both real examples agree)
+----------------------------------------------------------------
+- MT compressor group: upper-left (labels MT1..MTn above each symbol).
+- LT compressor group: lower-left (LT1..LTn) - visually LOWER because
+  it is the separate, colder suction circuit.
+- Oil separator ("Oil-sep."): on the discharge riser, top-left, close
+  to the compressors.
+- Gas cooler / condenser: top-right - white rectangle with a row of
+  fan circles, the orange high-pressure run passes through it.
+- Heat recovery heat exchanger: top-center branch off the discharge
+  run (Shr sensors around it, V3hr valve).
+- Receiver: right-of-center vertical rounded vessel with internal coil
+  detail and a level bar; Level %, Low-level, Prec bar right next to it.
+- High-pressure / receiver valves: at the orange-to-yellow transition
+  right side (Vhp OD %) and near the receiver (Vrec OD % - some plants
+  label it Vrec DD %); valve tag ALWAYS next to the valve symbol.
+- Suction headers / consumer lines: parallel horizontal runs exiting
+  bottom-right, each labeled at the line end: "Liq. consumer",
+  "M-T Suct.", "L-T2 Suct.", "L-T Suct." - with small flow arrows.
+- Information/status panel: full-height grey panel on the far right
+  (Room Temperature, CO2 Alarm, Machine status pills, Heat recovery
+  information box); navigation cross bottom-right corner.
+
+3. CIRCUIT COLOURS = FUNCTION (one colour per circuit, per the PDF
+   colour-code categories; keep each on its own layer)
+------------------------------------------------------------------
+  Circuit                      Colour        Layer name
+  high pressure / discharge    orange        01_PIPE_HP_ORANGE
+  receiver / liquid            yellow        02_PIPE_RECEIVER_YELLOW
+  MT suction                   light cyan    03_PIPE_MT_SUCTION_CYAN
+  LT suction                   blue          04_PIPE_LT_SUCTION_BLUE
+Other layers: 00_BACKGROUND_LOCKED, 05_EQUIPMENT_COMPRESSORS,
+06_EQUIPMENT_GASCOOLER, 07_EQUIPMENT_RECEIVER_HEAT_EXCHANGER,
+08_VALVES_AND_TAGS, 09_INSTRUMENTS_AND_SENSORS, 10_VALUE_BOXES,
+11_LABELS, 12_UI_INFORMATION_PANEL, 99_EXPORT_GUIDES_DO_NOT_EXPORT.
+Pipes are simple ORTHOGONAL lines - no diagonals, no tiny bends.
+
+4. SYMBOLS, VALUES AND TEXT RULES
+---------------------------------
+- One compressor symbol family, repeated with equal spacing for MT and
+  LT; only label, pipe layer and value names change between copies.
+- Fan = circle with blade glyph, repeated inside the cooler rectangle.
+- One valve symbol style everywhere; V-xxx tag close to the valve.
+- Live values: WHITE ROUNDED PILLS. In the IWMAC panel the pills are
+  drawn EMPTY in the background and number objects render into them -
+  never bake numbers in (existing production PNGs that show example
+  text/states are mock states from the Illustrator master; when
+  authoring image_svg, draw the pills empty).
+- Setpoints / references: DARKER GREY pills, so operators can tell
+  setpoint from measurement.
+- Status colours: green = OK/running/enabled, red = alarm,
+  grey = manual/inactive/reference.
+- Instrument tags follow the PDF nomenclature: P/PI/PS pressure,
+  T/TI/TS temperature, F flow; sensors seen on the real drawings:
+  Pc, Tc, Sd, Ss, Sgc, Sc3, Shp, Shr2/3/4/8, Prec, Pgc, Suct C, SH K.
+- Small arrows on pipes wherever direction matters (header exits,
+  valve outlets).
+- Text large enough for the HMI export - no tiny engineering notes.
+
+5. LIGHT vs DARK VARIANT
+------------------------
+The SAME template family ships in two skins:
+- LIGHT: white/very light canvas, mid-grey line work (plant 9982
+  Maskin in the reference exports).
+- DARK: near-black canvas, same layout, same circuit colours, brighter
+  pill outlines (see maskin-dark-style-example.png).
+Match the plant's existing maskin. The kit's general "never cover the
+canvas in dark colors" rule applies to vent/overview panels - a maskin
+drawn in the dark variant is the sanctioned exception.
+
+6. WORKFLOW (PDF -> Illustrator -> PNG) + QUALITY CHECK
+-------------------------------------------------------
+1. From the PDF: list circuits (HP, receiver/liquid, MT suction, LT
+   suction) and main components; decide what operators need.
+2. Artboard = target HMI size (1400 x 750 px, 1 px = 1 pt); background
+   layer locked; one layer per circuit/equipment class; save symbols
+   (compressor, fan, valve, vessel, value pill, status pill).
+3. Place large equipment first (layout doctrine above), then pipes as
+   orthogonal runs coloured by function, then labels close to their
+   equipment, then value pills on an aligned grid, then the UI panel.
+4. Check: every pipe end has a destination or label; every copied
+   block has correct MT/LT naming; valve/sensor tags match the PDF;
+   contrast OK at 100% and at HMI screen size.
+5. Export PNG at exact HMI resolution; store PNG + AI source + PDF
+   revision together.
+
+7. DIVISION OF LABOUR IN AN IWMAC PANEL (kit contract)
+------------------------------------------------------
+The background (image_svg / PNG) draws: enclosure, pipes, equipment
+symbols, empty pills, static labels, the grey info panel frame.
+The OBJECTS deliver every live element: numbers (number_v3_value_only
+on the empty pills), status strips (V3_akpc_*), alarm banner
+(V3_ok_alarm_nrm), Manuel/state pills, LEDs. See AI-BRIEFING section 8b
++ maskin-akpc-link-map.json for how those objects link to the AK-PC
+pack controller.
