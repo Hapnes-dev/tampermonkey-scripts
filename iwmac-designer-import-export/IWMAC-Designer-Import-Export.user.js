@@ -1,8 +1,8 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.2
-// @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) â€” copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
+// @version      1.5.3
+// @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @supportURL   https://github.com/hapnes-dev/tampermonkey-scripts/issues
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.5.2';
+var IWDIE_VERSION = '1.5.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -63,10 +63,10 @@ function iwdieBuildEnvelope(doc, meta) {
  */
 function iwdieParsePayload(parsed) {
   if (parsed == null || typeof parsed !== 'object') {
-    return { errors: ['Not a JSON object â€” expected an exported panel .json file.'] };
+    return { errors: ['Not a JSON object — expected an exported panel .json file.'] };
   }
   if (Array.isArray(parsed)) {
-    if (parsed.length === 0) return { errors: ['Empty array â€” no panel document inside.'] };
+    if (parsed.length === 0) return { errors: ['Empty array — no panel document inside.'] };
     return iwdieParsePayload(parsed[0]);
   }
   if (parsed.format === IWDIE_FORMAT) {
@@ -79,17 +79,17 @@ function iwdieParsePayload(parsed) {
     return { doc: parsed.panel, meta: parsed };
   }
   if (parsed.format) {
-    return { errors: ['Unknown format "' + parsed.format + '" â€” this is not an IWMAC Designer panel export' +
-      (parsed.format === 'vv-fbx-sketch' ? ' (it is a VV Designer logic sketch â€” wrong tool)' : '') + '.'] };
+    return { errors: ['Unknown format "' + parsed.format + '" — this is not an IWMAC Designer panel export' +
+      (parsed.format === 'vv-fbx-sketch' ? ' (it is a VV Designer logic sketch — wrong tool)' : '') + '.'] };
   }
   // bare document?
   if (Array.isArray(parsed.single_objects) || Array.isArray(parsed.containers)) {
     return { doc: parsed, meta: null };
   }
-  return { errors: ['Unrecognized JSON â€” expected {format:"' + IWDIE_FORMAT + '", panel:{...}} or a bare panel document with single_objects[].'] };
+  return { errors: ['Unrecognized JSON — expected {format:"' + IWDIE_FORMAT + '", panel:{...}} or a bare panel document with single_objects[].'] };
 }
 
-/** Structural validation. Returns {errors:[], warnings:[]} â€” empty errors = importable. */
+/** Structural validation. Returns {errors:[], warnings:[]} — empty errors = importable. */
 function iwdieValidateDoc(doc) {
   var errors = [];
   var warnings = [];
@@ -105,17 +105,17 @@ function iwdieValidateDoc(doc) {
   var nObj = Array.isArray(so) ? so.length : 0;
   var nCon = Array.isArray(co) ? co.length : 0;
   var nGra = Array.isArray(gr) ? gr.length : 0;
-  if (nObj + nCon + nGra === 0) errors.push('Panel document is empty â€” no single_objects, containers or graphics.');
+  if (nObj + nCon + nGra === 0) errors.push('Panel document is empty — no single_objects, containers or graphics.');
   if (Array.isArray(so)) {
     for (var i = 0; i < so.length; i++) {
       var o = so[i];
       if (o == null || typeof o !== 'object') { errors.push('single_objects[' + i + '] is not an object.'); continue; }
       if (!o.obj_id || typeof o.obj_id !== 'string') {
-        errors.push('single_objects[' + i + '] has no "obj_id" (the palette object type) â€” the designer cannot draw it.');
+        errors.push('single_objects[' + i + '] has no "obj_id" (the palette object type) — the designer cannot draw it.');
       }
       ['posLeft', 'posTop', 'posWidth', 'posHeight'].forEach(function (k) {
         if (o[k] == null || isNaN(parseInt(o[k], 10))) {
-          warnings.push('single_objects[' + i + '].' + k + ' is missing/non-numeric â€” it will land at 0.');
+          warnings.push('single_objects[' + i + '].' + k + ' is missing/non-numeric — it will land at 0.');
         }
       });
     }
@@ -126,7 +126,7 @@ function iwdieValidateDoc(doc) {
       if (c == null || typeof c !== 'object') { errors.push('containers[' + j + '] is not an object.'); }
     }
   }
-  if (!doc.panel_width || !doc.panel_height) warnings.push('No panel_width/panel_height â€” panel size will not be applied.');
+  if (!doc.panel_width || !doc.panel_height) warnings.push('No panel_width/panel_height — panel size will not be applied.');
   return { errors: errors, warnings: warnings };
 }
 
@@ -155,7 +155,7 @@ function iwdieNormalizeDoc(doc) {
     if (c == null || typeof c !== 'object') return;
     // load_new_ver_containers routes on unique_id: only containers whose
     // unique_id contains "custom_" are instantiated (the template branch is an
-    // empty stub, V3scripts.js:684) â€” and the host renames name/unique_id from
+    // empty stub, V3scripts.js:684) — and the host renames name/unique_id from
     // its own counter anyway, so forcing the routing marker is lossless.
     if (typeof c.unique_id !== 'string' || c.unique_id.indexOf('custom_') === -1) {
       c.unique_id = 'custom_import';
@@ -256,7 +256,7 @@ function iwdieBuildExportFilename(plantId, panelName, now) {
 /**
  * Raw SVG markup -> a data: URL the designer accepts as a background
  * (verified live: CSS background + Image() both load it at full size).
- * This is what lets an AI *author* the artwork â€” SVG is just text, so no
+ * This is what lets an AI *author* the artwork — SVG is just text, so no
  * base64 step is required of the model.
  */
 function iwdieSvgToDataUrl(svg) {
@@ -287,7 +287,7 @@ function iwdieValidateSvg(svg) {
 }
 
 /** Attach a background image (data: URL) to a panel document the host-native
- *  way â€” renderPanel/iw_set_base_image consume converted:"true" + image_data. */
+ *  way — renderPanel/iw_set_base_image consume converted:"true" + image_data. */
 function iwdieAttachBackground(doc, dataUrl, fileName) {
   var d = JSON.parse(JSON.stringify(doc));
   d.converted = 'true';
@@ -296,11 +296,11 @@ function iwdieAttachBackground(doc, dataUrl, fileName) {
   return d;
 }
 
-/* ---- background â†’ Illustrator export helpers (v1.3.0) ----
+/* ---- background → Illustrator export helpers (v1.3.0) ----
    Modern .ai files are PDF-based and Illustrator opens any PDF as editable
    artwork on an artboard, so a hand-built single-page PDF named .ai is the
    dependency-free way to hand a raster background to Illustrator. SVG
-   backgrounds are already vector â€” Illustrator opens .svg natively, and
+   backgrounds are already vector — Illustrator opens .svg natively, and
    rasterizing them into a PDF would destroy the very thing worth editing,
    so those are exported as .svg instead. */
 
@@ -337,7 +337,7 @@ function iwdieIsSvgBackground(mimeOrUrl) {
  * shades within 24/channel of an already-picked colour (anti-aliasing halos),
  * then append up to 8 remaining saturated colours so thin coloured lines get
  * a slot even though greys dominate by count. Returns null for photo-like
- * images (>3000 buckets) â€” the tracer's own sampling handles those better.
+ * images (>3000 buckets) — the tracer's own sampling handles those better.
  * Pure (no DOM) so Node can unit-test it.
  */
 function iwdieBuildPalette(imgData, maxColors) {
@@ -390,7 +390,7 @@ function iwdieBuildPalette(imgData, maxColors) {
 }
 
 /**
- * Build a minimal single-page PDF containing one image XObject â€” the file
+ * Build a minimal single-page PDF containing one image XObject — the file
  * Illustrator opens as an artboard (1 px = 1 pt) with the image placed 1:1.
  * opts: { width, height, filter: 'FlateDecode' (raw RGB deflated) or
  *         'DCTDecode' (JPEG bytes as-is), data: Uint8Array }
@@ -405,7 +405,7 @@ function iwdieBuildImagePdf(opts) {
   function push(u8) { parts.push(u8); pos += u8.length; }
   function pushStr(s) { push(enc(s)); }
 
-  pushStr('%PDF-1.4\n%Ã¢Ã£ÃÃ“\n');
+  pushStr('%PDF-1.4\n%âãÏÓ\n');
   offsets[1] = pos; pushStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
   offsets[2] = pos; pushStr('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
   offsets[3] = pos; pushStr('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + w + ' ' + h + '] ' +
@@ -846,9 +846,9 @@ function ImageTracer(){
 	},// End of generatepalette()
 		
 	// 2. Layer separation and edge detection
-	// Edge node types ( â–“: this layer or 1; â–‘: not this layer or 0 )
-	// 12  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“
-	// 48  â–‘â–‘  â–‘â–‘  â–‘â–‘  â–‘â–‘  â–‘â–“  â–‘â–“  â–‘â–“  â–‘â–“  â–“â–‘  â–“â–‘  â–“â–‘  â–“â–‘  â–“â–“  â–“â–“  â–“â–“  â–“â–“
+	// Edge node types ( ▓: this layer or 1; ░: not this layer or 0 )
+	// 12  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓
+	// 48  ░░  ░░  ░░  ░░  ░▓  ░▓  ░▓  ░▓  ▓░  ▓░  ▓░  ▓░  ▓▓  ▓▓  ▓▓  ▓▓
 	//     0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15
 	this.layering = function(ii){
 		// Creating layers for each indexed color in arr
@@ -895,9 +895,9 @@ function ImageTracer(){
 	},// End of layering()
 	
 	// 2. Layer separation and edge detection
-	// Edge node types ( â–“: this layer or 1; â–‘: not this layer or 0 )
-	// 12  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“  â–‘â–‘  â–“â–‘  â–‘â–“  â–“â–“
-	// 48  â–‘â–‘  â–‘â–‘  â–‘â–‘  â–‘â–‘  â–‘â–“  â–‘â–“  â–‘â–“  â–‘â–“  â–“â–‘  â–“â–‘  â–“â–‘  â–“â–‘  â–“â–“  â–“â–“  â–“â–“  â–“â–“
+	// Edge node types ( ▓: this layer or 1; ░: not this layer or 0 )
+	// 12  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓
+	// 48  ░░  ░░  ░░  ░░  ░▓  ░▓  ░▓  ░▓  ▓░  ▓░  ▓░  ▓░  ▓▓  ▓▓  ▓▓  ▓▓
 	//     0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15
 	this.layeringstep = function(ii,cnum){
 		// Creating layers for each indexed color in arr
@@ -1734,7 +1734,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         !!document.getElementById('manager_widget7');
     }
 
-    /* ---------- sidebar fieldset (inline onclick â€” the sidebar is loaded with
+    /* ---------- sidebar fieldset (inline onclick — the sidebar is loaded with
        innerHTML += which would strip addEventListener handlers) ---------- */
     function ensureFieldset() {
       var existing = document.querySelectorAll('#manager_widget_iwdie');
@@ -1751,8 +1751,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '    <legend>Panel JSON</legend>',
         "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
         "    <button id='iwdie_copy_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doCopyJson()\">Copy JSON</button>",
-        "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSONâ€¦</button>",
-        "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background â†’ Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background â†’ Illustrator</button>",
+        "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
+        "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
         '  </fieldset>',
         '</div>'].join('\n');
       w7.insertAdjacentHTML('afterend', html);
@@ -1762,7 +1762,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function currentPanelName() {
       // get_value() is the host's own "current panel" accessor (selected option
       // text of #plant_panels_select). last_save_name defaults to the stale
-      // literal "test" and only the XML save path updates it â€” use it last.
+      // literal "test" and only the XML save path updates it — use it last.
       try { if (typeof W.get_value === 'function') { var v = W.get_value(); if (v) return v; } } catch (e) {}
       var sel = document.getElementById('plant_panels_select');
       if (sel && sel.value) return sel.value;
@@ -1780,7 +1780,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* ---------- collect current canvas into the host's own document ---------- */
     function collectCurrentDoc() {
-      if (!hostReady()) { toast('IWMAC Designer not ready yet â€” host functions missing.', true); return null; }
+      if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return null; }
       // the host's own save path resets these before collecting (container_tool.js)
       W.obj_data = []; W.container_data = []; W.container_items = [];
       var imgName = '';
@@ -1793,7 +1793,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return null;
       }
       if (!doc || ((doc.single_objects || []).length + (doc.containers || []).length + (doc.graphics || []).length) === 0) {
-        toast('Canvas is empty â€” load a panel first (Retrieve â†’ Load), then export.', true);
+        toast('Canvas is empty — load a panel first (Retrieve → Load), then export.', true);
         return null;
       }
       return doc;
@@ -1860,7 +1860,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* Optionally add panel.image_svg_trace to an export envelope: the vector
-       trace of the raster background â€” AI-reading material that tells an
+       trace of the raster background — AI-reading material that tells an
        agent how the drawing is STRUCTURED (Insert strips it; it is never
        rendered). SVG backgrounds are copied in as-is (already vector). */
     function finishExportWithTrace(env, done) {
@@ -1877,12 +1877,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (bg.indexOf('data:image/') !== 0 || !IWDIE_TRACER) { done(env, ''); return; }
       var want = window.confirm(
         'Also include a VECTOR TRACE of the background in the JSON?\n\n' +
-        'It lets an AI (Copilot) read how the drawing is structured â€” in the\n' +
-        'drawing\'s own colours â€” and generate matching artwork. Adds roughly\n' +
-        '1â€“3 MB. Drawings trace in ~1â€“2 s in the background; photos take longer.\n\n' +
+        'It lets an AI (Copilot) read how the drawing is structured — in the\n' +
+        'drawing\'s own colours — and generate matching artwork. Adds roughly\n' +
+        '1–3 MB. Drawings trace in ~1–2 s in the background; photos take longer.\n\n' +
         'OK = include the trace   |   Cancel = export without it');
       if (!want) { done(env, ''); return; }
-      toast('Tracing the background structureâ€¦ the export downloads when done.', false, 6000);
+      toast('Tracing the background structure… the export downloads when done.', false, 6000);
       var img = new Image();
       img.onload = function () {
         var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
@@ -1921,7 +1921,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           a.click();
           a.remove();
           setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-          hostOk('Exported ' + iwdieSummarize(env2.panel) + (env2.background_embedded ? ' + background' : '') + traceNote + ' â†’ ' + name);
+          hostOk('Exported ' + iwdieSummarize(env2.panel) + (env2.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
         });
       });
     }
@@ -1947,11 +1947,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!env) return;
         var ok = copyTextToClipboard(JSON.stringify(env, null, 2));
         if (ok) hostOk('Panel JSON copied to clipboard (' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + ')');
-        else toast('Clipboard copy failed on this browser â€” use Export JSON instead.', true);
+        else toast('Clipboard copy failed on this browser — use Export JSON instead.', true);
       });
     }
 
-    /* ---------- background â†’ Illustrator (.ai / .svg) ---------- */
+    /* ---------- background → Illustrator (.ai / .svg) ---------- */
     function downloadBytes(bytes, name, mime) {
       var blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
       var url = URL.createObjectURL(blob);
@@ -1980,7 +1980,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* Run the vendored tracer in a Web Worker so long traces (photo
        backgrounds can take minutes) never freeze the tab. The whole library
        is one self-contained constructor, so its source can be lifted into
-       the worker via Function.prototype.toString â€” no second copy needed. */
+       the worker via Function.prototype.toString — no second copy needed. */
     function traceInWorker(imgData, opts) {
       return new Promise(function (resolve, reject) {
         var src;
@@ -1998,18 +1998,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function doExportBackgroundAi() {
-      if (!hostReady()) { toast('IWMAC Designer not ready yet â€” host functions missing.', true); return; }
+      if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
       var url = grabBackgroundUrl();
-      if (!url) { toast('This panel has no background image. Load a panel with one (Retrieve â†’ Load) first.', true); return; }
+      if (!url) { toast('This panel has no background image. Load a panel with one (Retrieve → Load) first.', true); return; }
       var plant = currentPlantId(), panel = currentPanelName();
 
-      /* SVG background: already vector â€” hand Illustrator the .svg itself
-         (File â†’ Open edits it natively; a PDF re-wrap would rasterize it). */
+      /* SVG background: already vector — hand Illustrator the .svg itself
+         (File → Open edits it natively; a PDF re-wrap would rasterize it). */
       if (iwdieIsSvgBackground(url)) {
         var deliverSvg = function (bytes) {
           var name = iwdieBuildBackgroundFilename(plant, panel, 'svg');
           downloadBytes(bytes, name, 'image/svg+xml');
-          hostOk('Background is SVG â€” vector already. Saved ' + name + '; open it directly in Illustrator (File â†’ Open).');
+          hostOk('Background is SVG — vector already. Saved ' + name + '; open it directly in Illustrator (File → Open).');
         };
         if (url.indexOf('data:') === 0) {
           var parsed = iwdieParseDataUrl(url);
@@ -2026,16 +2026,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
 
       /* Raster background: a PNG has no vectors to carry over, so offer two
-         deliveries â€” an automatic vector TRACE (editable shapes; small text
+         deliveries — an automatic vector TRACE (editable shapes; small text
          becomes outlines) as .svg, or the pixel-exact image as a PDF-based
          .ai artboard. */
       var wantTrace = false;
       if (IWDIE_TRACER) {
         wantTrace = window.confirm(
           'Trace the background to VECTORS for Illustrator?\n\n' +
-          'OK = vector trace (.svg â€” editable shapes in the drawing\'s own colours;\n' +
-          '        small text becomes rough outlines). Runs in the background â€”\n' +
-          '        drawings take ~1â€“2 s, photos can take a while.\n' +
+          'OK = vector trace (.svg — editable shapes in the drawing\'s own colours;\n' +
+          '        small text becomes rough outlines). Runs in the background —\n' +
+          '        drawings take ~1–2 s, photos can take a while.\n' +
           'Cancel = original pixels on an artboard (.ai)');
       }
       var img = new Image();
@@ -2056,16 +2056,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var t0 = Date.now();
           var deliverTrace = function (traced) {
             downloadBytes(traced, svgName, 'image/svg+xml');
-            hostOk('Background traced to vectors in ' + Math.round((Date.now() - t0) / 100) / 10 + ' s â†’ ' + svgName + ' (' +
-              ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File â†’ Open); retype small labels there.');
+            hostOk('Background traced to vectors in ' + Math.round((Date.now() - t0) / 100) / 10 + ' s → ' + svgName + ' (' +
+              ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File → Open); retype small labels there.');
           };
-          toast('Tracing background to vectorsâ€¦ the browser stays usable; the .svg downloads when done.', false, 6000);
+          toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
           var imgd = ctx.getImageData(0, 0, w, h);
           var opts = traceOptsFor(imgd);
           traceInWorker(imgd, opts).then(deliverTrace).catch(function () {
             // no worker available (old browser / strict CSP): trace on the
             // main thread after letting the toast paint first
-            toast('Tracing on the main thread â€” the browser will be busy for a momentâ€¦', false, 8000);
+            toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
             setTimeout(function () {
               try {
                 var imgd2 = ctx.getImageData(0, 0, w, h); // first buffer was transferred away
@@ -2079,7 +2079,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var name = iwdieBuildBackgroundFilename(plant, panel, 'ai');
         var finish = function (pdf, note) {
           downloadBytes(pdf, name, 'application/pdf');
-          hostOk('Background exported for Illustrator â†’ ' + name + ' (' + w + 'Ã—' + h + note + '). Open it in Illustrator like any .ai/PDF.');
+          hostOk('Background exported for Illustrator → ' + name + ' (' + w + '×' + h + note + '). Open it in Illustrator like any .ai/PDF.');
         };
         var jpegFallback = function () {
           var parsed = iwdieParseDataUrl(canvas.toDataURL('image/jpeg', 0.95));
@@ -2093,7 +2093,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           finish(iwdieBuildImagePdf({ width: w, height: h, filter: 'FlateDecode', data: flated }), ', lossless');
         }).catch(jpegFallback);
       };
-      img.onerror = function () { toast('Could not load the background image (' + String(url).slice(0, 80) + 'â€¦)', true); };
+      img.onerror = function () { toast('Could not load the background image (' + String(url).slice(0, 80) + '…)', true); };
       img.src = url;
     }
 
@@ -2117,14 +2117,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       panel.className = 'iwdie-panel';
       panel.innerHTML = [
         '<h3>Insert panel JSON</h3>',
-        '<div>Objects are <b>added</b> to the current canvas (nothing is deleted). On an empty panel this recreates the exported panel 1:1. Nothing is saved to the server until you use the designerâ€™s own Save buttons.</div>',
-        '<label>Optional: background image (PNG/JPG) â€” pick it BEFORE the .json</label>',
+        '<div>Objects are <b>added</b> to the current canvas (nothing is deleted). On an empty panel this recreates the exported panel 1:1. Nothing is saved to the server until you use the designer’s own Save buttons.</div>',
+        '<label>Optional: background image (PNG/JPG) — pick it BEFORE the .json</label>',
         '<input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
         '<label>Pick the exported .json file</label>',
         '<input type="file" id="iwdie_file" accept=".json,application/json">',
-        '<div class="iwdie-drop" id="iwdie_drop">â€¦or drop the file here</div>',
-        '<label>â€¦or paste the JSON text</label>',
-        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Lim inn / paste the JSON hereâ€¦"></textarea>',
+        '<div class="iwdie-drop" id="iwdie_drop">…or drop the file here</div>',
+        '<label>…or paste the JSON text</label>',
+        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Lim inn / paste the JSON here…"></textarea>',
         '<div>',
         '  <button class="iwdie-btn" id="iwdie_paste_btn">Insert pasted JSON</button>',
         '  <button class="iwdie-btn iwdie-secondary" id="iwdie_cancel_btn">Cancel</button>',
@@ -2169,13 +2169,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function showErrors(errors, warnings) {
       var panel = importOverlay ? importOverlay.querySelector('.iwdie-panel') : null;
-      var msg = 'Import blocked:\nâ€¢ ' + errors.join('\nâ€¢ ');
+      var msg = 'Import blocked:\n• ' + errors.join('\n• ');
       if (panel) {
         var old = panel.querySelector('.iwdie-errlist');
         if (old) old.remove();
         var div = document.createElement('div');
         div.className = 'iwdie-errlist';
-        div.innerHTML = '<b>Import blocked â€” nothing was changed:</b><ul>' +
+        div.innerHTML = '<b>Import blocked — nothing was changed:</b><ul>' +
           errors.map(function (e) { return '<li>' + e.replace(/</g, '&lt;') + '</li>'; }).join('') + '</ul>' +
           (warnings && warnings.length ? '<i>Warnings:</i><ul>' + warnings.map(function (w) { return '<li>' + w.replace(/</g, '&lt;') + '</li>'; }).join('') + '</ul>' : '');
         panel.appendChild(div);
@@ -2197,7 +2197,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** After appending, renumber name="object_N" sequentially so no two canvas
-     *  children share a name (the host's own paste machinery does the same â€”
+     *  children share a name (the host's own paste machinery does the same —
      *  Duplicator.constructItems renames from the live child index). */
     function renumberCanvasNames() {
       var cc = document.getElementById('control_container');
@@ -2217,7 +2217,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!f) { cb(null); return; }
       var fr = new FileReader();
       fr.onload = function () { cb({ dataUrl: String(fr.result), name: f.name }); };
-      fr.onerror = function () { toast('Could not read the background image â€” inserting without it.', true); cb(null); };
+      fr.onerror = function () { toast('Could not read the background image — inserting without it.', true); cb(null); };
       fr.readAsDataURL(f);
     }
 
@@ -2243,7 +2243,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       delete doc.image_svg;
       // image_svg_trace is AI-reading material written by Export (the vector
-      // trace of the raster background) â€” never rendered; the embedded
+      // trace of the raster background) — never rendered; the embedded
       // image_data stays the real background.
       delete doc.image_svg_trace;
       if (pendingBg) { doc = iwdieAttachBackground(doc, pendingBg.dataUrl, pendingBg.name); }
@@ -2253,10 +2253,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       if (source && target && source !== target) {
         var n = iwdieCountRebindable(doc, source);
-        if (n > 0 && window.confirm('This panel comes from plant ' + source + ' â€” you are on plant ' + target + '.\n\nRewrite ' + n + ' driver id' + (n === 1 ? '' : 's') + ' from "' + source + '_â€¦" to "' + target + '_â€¦"?\n\n(OK = rewrite so objects can link to this plantâ€™s drivers. Cancel = keep original ids.)')) {
+        if (n > 0 && window.confirm('This panel comes from plant ' + source + ' — you are on plant ' + target + '.\n\nRewrite ' + n + ' driver id' + (n === 1 ? '' : 's') + ' from "' + source + '_…" to "' + target + '_…"?\n\n(OK = rewrite so objects can link to this plant’s drivers. Cancel = keep original ids.)')) {
           var rb = iwdieRebindDriverIds(doc, source, target);
           doc = rb.doc;
-          rebindNote = ', ' + rb.rebound + ' driver ids rebound ' + source + 'â†’' + target;
+          rebindNote = ', ' + rb.rebound + ' driver ids rebound ' + source + '→' + target;
         }
       }
       var foreign = iwdieListForeignDriverIds(doc, target);
@@ -2306,9 +2306,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var msg = 'Inserted ' + iwdieSummarize(doc) + rebindNote +
         (appliedBg ? ', background applied' : '') +
         (skippedGraphics ? ', ' + skippedGraphics + ' graphics skipped (canvas already has graphics)' : '') +
-        '.\nNothing is saved yet â€” use the designerâ€™s own Save buttons when happy.';
+        '.\nNothing is saved yet — use the designer’s own Save buttons when happy.';
       if (foreign.length) {
-        msg += '\nâš  ' + foreign.length + ' object(s) still reference drivers from another plant and will not link here.';
+        msg += '\n⚠ ' + foreign.length + ' object(s) still reference drivers from another plant and will not link here.';
       }
       toast(msg, foreign.length > 0, 9000);
     }
