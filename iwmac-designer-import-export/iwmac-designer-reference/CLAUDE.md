@@ -376,7 +376,7 @@ controls['V3_R_34px_circular_alarm_nrm']
 // container registry / object cache
 designContainers.designcontainerList; objectList.objectList
 ```
-The userscript also exposes `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `doExportBackgroundAi`, `_collect`). `doExportBackgroundAi` (v1.3.0) reads the canvas background the same way `embedBackground` does (`#main_image` computed `background-image`), then: raster → lossless single-page PDF named `.ai` (hand-built, raw-RGB `CompressionStream('deflate')`, artboard = panel px; Illustrator opens any PDF), SVG → the raw `.svg` (already vector; a PDF wrap would rasterize it). On this plain-http host Chrome may flag the `.ai` download — "Keep" saves it.
+The userscript also exposes `window.__IWDIE` (`doExport`, `doCopyJson`, `openImportPanel`, `applyImport`, `doExportBackgroundAi`, `_collect`). `doExportBackgroundAi` (v1.3.0) reads the canvas background the same way `embedBackground` does (`#main_image` computed `background-image`), then: raster → confirm offers **vector trace to `.svg`** (v1.4.0, vendored imagetracerjs 1.2.6/public domain inside the userscript; ~0.7 s / ≈7 000 paths on a Maskin background; small text becomes outlines — inherent to tracing) or the lossless single-page PDF named `.ai` (hand-built, raw-RGB `CompressionStream('deflate')`, artboard = panel px; Illustrator opens any PDF); SVG background → the raw `.svg` (already vector; a PDF wrap would rasterize it). On this plain-http host Chrome may flag downloads — "Keep" saves them.
 
 ## 19. Gotchas (the real footguns)
 
