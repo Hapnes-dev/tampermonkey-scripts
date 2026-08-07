@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.0
+// @version      1.5.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.5.0';
+var IWDIE_VERSION = '1.5.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -325,6 +325,68 @@ function iwdieParseDataUrl(dataUrl) {
 function iwdieIsSvgBackground(mimeOrUrl) {
   var s = String(mimeOrUrl == null ? '' : mimeOrUrl).toLowerCase();
   return s.indexOf('image/svg') !== -1 || /\.svg(\?|#|$)/.test(s);
+}
+
+/**
+ * Trace palette from the drawing's OWN colours. The tracer's sampled palette
+ * washes flat schematics to grey: it samples evenly across the image, which
+ * on a ~99% white/grey drawing gives 16 near-greys, and the thin coloured
+ * pipe runs (orange hot gas, blue suction, yellow liquid) snap to the nearest
+ * grey. Instead: bucket near-identical shades (5 bits/channel), rank buckets
+ * by pixel count, represent each by its most frequent exact colour, drop
+ * shades within 24/channel of an already-picked colour (anti-aliasing halos),
+ * then append up to 8 remaining saturated colours so thin coloured lines get
+ * a slot even though greys dominate by count. Returns null for photo-like
+ * images (>3000 buckets) — the tracer's own sampling handles those better.
+ * Pure (no DOM) so Node can unit-test it.
+ */
+function iwdieBuildPalette(imgData, maxColors) {
+  maxColors = maxColors || 24;
+  var d = imgData.data;
+  var buckets = Object.create(null);
+  var i, k, bk;
+  for (i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 128) continue;
+    k = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+    bk = ((d[i] >> 3) << 10) | ((d[i + 1] >> 3) << 5) | (d[i + 2] >> 3);
+    var B = buckets[bk];
+    if (!B) { B = buckets[bk] = { count: 0, best: k, bestCount: 0, exact: Object.create(null) }; }
+    B.count++;
+    var c = (B.exact[k] || 0) + 1;
+    B.exact[k] = c;
+    if (c > B.bestCount) { B.bestCount = c; B.best = k; }
+  }
+  var keys = Object.keys(buckets);
+  if (!keys.length || keys.length > 3000) return null;
+  keys.sort(function (a, b) { return buckets[b].count - buckets[a].count; });
+  var floor = Math.max(8, Math.round(imgData.width * imgData.height / 20000));
+  var toRGB = function (kk) { return { r: (kk >> 16) & 255, g: (kk >> 8) & 255, b: kk & 255, a: 255 }; };
+  var isSat = function (kk) {
+    var r = (kk >> 16) & 255, g = (kk >> 8) & 255, b = kk & 255;
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    return mx > 90 && (mx - mn) / mx > 0.25;
+  };
+  var near = function (pal, kk) {
+    var r = (kk >> 16) & 255, g = (kk >> 8) & 255, b = kk & 255;
+    for (var q = 0; q < pal.length; q++) {
+      if (Math.max(Math.abs(pal[q].r - r), Math.abs(pal[q].g - g), Math.abs(pal[q].b - b)) < 24) return true;
+    }
+    return false;
+  };
+  var pal = [], j;
+  for (j = 0; j < keys.length && pal.length < maxColors; j++) {
+    var Bj = buckets[keys[j]];
+    if (Bj.count < floor && pal.length >= 8) break;
+    if (pal.length && near(pal, Bj.best)) continue;
+    pal.push(toRGB(Bj.best));
+  }
+  var extra = 0;
+  for (; j < keys.length && extra < 8; j++) {
+    var Bx = buckets[keys[j]];
+    if (Bx.count < Math.max(24, floor >> 1)) break;
+    if (isSat(Bx.best) && !near(pal, Bx.best)) { pal.push(toRGB(Bx.best)); extra++; }
+  }
+  return pal;
 }
 
 /**
@@ -1772,13 +1834,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return embedBackground(doc).then(function (d) { return iwdieBuildEnvelope(d); });
     }
 
-    /* shared tracer options, tuned for the flat schematic style */
+    /* shared tracer options, tuned for the flat schematic style
+       (numberofcolors only applies when no custom palette is derived) */
     function traceOpts() {
       return {
         numberofcolors: 16, ltres: 0.5, qtres: 0.5, pathomit: 4,
         rightangleenhance: true, roundcoords: 1, strokewidth: 0,
         linefilter: false, viewbox: true, desc: false
       };
+    }
+
+    /* traceOpts + a palette from the drawing's own colours, so flat
+       schematics keep their pipe colours instead of washing to grey.
+       MUST run before traceInWorker: the worker transfer detaches the
+       ImageData buffer. */
+    function traceOptsFor(imgData) {
+      var o = traceOpts();
+      var pal = iwdieBuildPalette(imgData, 24);
+      if (pal) o.pal = pal;
+      return o;
     }
 
     /* Optionally add panel.image_svg_trace to an export envelope: the vector
@@ -1799,9 +1873,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (bg.indexOf('data:image/') !== 0 || !IWDIE_TRACER) { done(env, ''); return; }
       var want = window.confirm(
         'Also include a VECTOR TRACE of the background in the JSON?\n\n' +
-        'It lets an AI (Copilot) read how the drawing is structured and generate\n' +
-        'matching artwork. Adds roughly 1 MB. Drawings trace in ~1–2 s in the\n' +
-        'background; photo backgrounds take longer.\n\n' +
+        'It lets an AI (Copilot) read how the drawing is structured — in the\n' +
+        'drawing\'s own colours — and generate matching artwork. Adds roughly\n' +
+        '1–3 MB. Drawings trace in ~1–2 s in the background; photos take longer.\n\n' +
         'OK = include the trace   |   Cancel = export without it');
       if (!want) { done(env, ''); return; }
       toast('Tracing the background structure… the export downloads when done.', false, 6000);
@@ -1816,8 +1890,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           p.image_svg_trace = svg;
           done(env, ' + vector structure (' + ((svg.match(/<path/g) || []).length) + ' paths)');
         };
-        traceInWorker(ctx.getImageData(0, 0, w, h), traceOpts()).then(deliver).catch(function () {
-          try { deliver(IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), traceOpts())); }
+        var imgd = ctx.getImageData(0, 0, w, h);
+        var opts = traceOptsFor(imgd);
+        traceInWorker(imgd, opts).then(deliver).catch(function () {
+          try {
+            var imgd2 = ctx.getImageData(0, 0, w, h); // first buffer was transferred away
+            deliver(IWDIE_TRACER.imagedataToSVG(imgd2, opts));
+          }
           catch (e) { done(env, ''); }
         });
       };
@@ -1950,8 +2029,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (IWDIE_TRACER) {
         wantTrace = window.confirm(
           'Trace the background to VECTORS for Illustrator?\n\n' +
-          'OK = vector trace (.svg — editable shapes; small text becomes rough outlines).\n' +
-          '        Runs in the background — drawings take ~1 s, photos can take a while.\n' +
+          'OK = vector trace (.svg — editable shapes in the drawing\'s own colours;\n' +
+          '        small text becomes rough outlines). Runs in the background —\n' +
+          '        drawings take ~1–2 s, photos can take a while.\n' +
           'Cancel = original pixels on an artboard (.ai)');
       }
       var img = new Image();
@@ -1976,12 +2056,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File → Open); retype small labels there.');
           };
           toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
-          traceInWorker(ctx.getImageData(0, 0, w, h), traceOpts()).then(deliverTrace).catch(function () {
+          var imgd = ctx.getImageData(0, 0, w, h);
+          var opts = traceOptsFor(imgd);
+          traceInWorker(imgd, opts).then(deliverTrace).catch(function () {
             // no worker available (old browser / strict CSP): trace on the
             // main thread after letting the toast paint first
             toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
             setTimeout(function () {
-              try { deliverTrace(IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), traceOpts())); }
+              try {
+                var imgd2 = ctx.getImageData(0, 0, w, h); // first buffer was transferred away
+                deliverTrace(IWDIE_TRACER.imagedataToSVG(imgd2, opts));
+              }
               catch (e) { toast('Vector trace failed: ' + e, true); }
             }, 80);
           });
@@ -2270,6 +2355,7 @@ if (typeof module !== 'undefined' && module.exports) {
     isSvgBackground: iwdieIsSvgBackground,
     buildImagePdf: iwdieBuildImagePdf,
     buildBackgroundFilename: iwdieBuildBackgroundFilename,
+    buildPalette: iwdieBuildPalette,
     tracer: IWDIE_TRACER
   };
 }

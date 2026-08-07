@@ -80,7 +80,11 @@ panel's current raster background (or the SVG itself when the background
 was SVG). It is INPUT FOR YOU, never output:
 - READ it to learn how the drawing is structured: the path coordinates
   tell you where the pipe runs, vessels, frames, side panels and section
-  boxes sit - the geometry the plain PNG cannot tell you.
+  boxes sit - the geometry the plain PNG cannot tell you. Since v1.5.1
+  the path fills are the drawing's REAL colours (palette derived from the
+  image), and colour is meaning in these schematics: orange = hot
+  gas / discharge, blue/cyan = suction, yellow = liquid, green = OK /
+  running, red = alarm. Use the fill colours to tell the circuits apart.
 - USE that structure when asked to generate or modify artwork: author
   your OWN clean image_svg whose layout matches the traced geometry
   (same runs, same enclosure positions), drawn with crisp shapes.
