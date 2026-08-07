@@ -89,16 +89,41 @@ Pipes are simple ORTHOGONAL lines - no diagonals, no tiny bends.
   valve outlets).
 - Text large enough for the HMI export - no tiny engineering notes.
 
-5. LIGHT vs DARK VARIANT
-------------------------
+5. LIGHT vs DARK VARIANT + THE CANONICAL TEMPLATE
+--------------------------------------------------
 The SAME template family ships in two skins:
-- LIGHT: white/very light canvas, mid-grey line work (plant 9982
-  Maskin in the reference exports).
+- LIGHT: white/very light canvas, mid-grey line work - THE NORMAL LOOK
+  ("how most maskin pictures should look"). Canonical reference in this
+  kit: maskin-light-style-reference.png, rendered 1:1 from the actual
+  Illustrator source maskin-light-template.ai (Advansor 781 template).
 - DARK: near-black canvas, same layout, same circuit colours, brighter
   pill outlines (see maskin-dark-style-example.png).
 Match the plant's existing maskin. The kit's general "never cover the
 canvas in dark colors" rule applies to vent/overview panels - a maskin
 drawn in the dark variant is the sanctioned exception.
+
+FACTS READ OUT OF THE PRODUCTION .AI ITSELF:
+- Artboard is exactly 1400 x 750 pt (1 px = 1 pt) - confirmed.
+- The real layer structure is THREE layers with Norwegian names:
+  "Maskinrom" (equipment + symbols + pills + text), "Ror" (pipes,
+  spelled R-o-slash-r) and "Backround" (sic - production's own
+  spelling; keep it when editing existing files). The 12-layer naming
+  template in section 3 is the tidy recommendation for NEW files; the
+  shipped template uses these three.
+- Label variants seen across production: suction-group temperature row
+  is "Po C" on the canonical template and "To C" on some plants;
+  runtimes are "Runtime h"; the heat-recovery dark pills are
+  "Hr Req %" + "Hr Ref" (older: "Consumer Ref %" + "Ref").
+- Vrec is the receiver FLASH-GAS valve: it sits on the cyan
+  suction-side line leaving the receiver's left side (gas bypass to MT
+  suction) - NOT on the yellow liquid line.
+- V3gc is drawn as a motorized 3-way valve glyph at the corner where
+  the gas-cooler bypass rejoins; V3hr likewise at the HR heat
+  exchanger; V3tw (tap water) exists on plants with a tap-water HR
+  branch. The grey "Heat recovery information" box legend lists them:
+  "V3hr = Hr active", "V3tw = Tw active", "V3gc = Gc-bypass active".
+- The receiver is drawn double-walled: outer rounded vessel + inner
+  rounded rectangle, coil at the bottom, level bar at the right.
 
 6. WORKFLOW (PDF -> Illustrator -> PNG) + QUALITY CHECK
 -------------------------------------------------------

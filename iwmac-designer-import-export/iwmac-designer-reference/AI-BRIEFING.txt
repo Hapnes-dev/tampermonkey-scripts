@@ -89,9 +89,14 @@ file; companion image maskin-dark-style-example.png) exactly:
 - One symbol family reused: compressors (MT1..n/LT1..n), fan circles,
   one valve style with its V-xxx tag adjacent, WHITE pills drawn EMPTY
   (number objects render into them), darker grey pills = setpoints.
-- Two skins, same layout: LIGHT (9982-style) and DARK (near-black, see
-  the example png). Match the plant's existing maskin - a dark-variant
-  maskin is the sanctioned exception to the no-dark-canvas rule above.
+- Two skins, same layout: LIGHT (the normal look - canonical reference
+  maskin-light-style-reference.png, rendered 1:1 from the Illustrator
+  source maskin-light-template.ai; its real layers are Backround / Ror
+  / Maskinrom) and DARK (near-black, see the dark example png). Match
+  the plant's existing maskin - a dark-variant maskin is the sanctioned
+  exception to the no-dark-canvas rule above. Vrec is the receiver
+  FLASH-GAS valve: draw it on the cyan suction-side line, never on the
+  yellow liquid line.
 - Worked example: generated-maskin-example.json - a complete generated
   Maskin (light skin image_svg drawn per the method + 63 objects with
   the canonical maskin-akpc-link-map aliases), insert-verified 63/63
