@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.4
+// @version      1.5.5
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.5.4';
+var IWDIE_VERSION = '1.5.5';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1704,6 +1704,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          short windows the page's own scroll reaches the bottom, exactly
          like it does for tall canvases. */
       '#manager_div{height:auto !important;min-height:900px !important;max-height:none !important;overflow:visible !important}',
+      /* THE actual clipper (found v1.5.5): the host wraps the whole sidebar
+         in #master_wrapper, hard-coded height:900px + overflow hidden — it
+         cut the last ~18px of the Panel JSON fieldset at ANY window size
+         (the constant "little cut off" under the 4th button). Relax it the
+         same way as #manager_div: grow with content, never clip. */
+      '#master_wrapper{height:auto !important;min-height:900px !important;overflow:visible !important}',
       /* Compact mode — applied by updateCompact() ONLY when the full column
          would not fit the window (measured, with hysteresis): tightens the
          8px fieldset gaps to 4px and trims fieldset paddings, reclaiming
