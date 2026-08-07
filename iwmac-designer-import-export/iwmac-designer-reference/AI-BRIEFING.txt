@@ -74,6 +74,21 @@ BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
    dialog's background picker (v1.1.0+) embeds it for them.
 Set the envelope's "background_embedded": true when 1 or 2 is used.
 
+READING THE EXISTING DRAWING: "image_svg_trace" (v1.5.0). Exported panel
+jsons MAY carry panel.image_svg_trace - an automatic VECTOR TRACE of the
+panel's current raster background (or the SVG itself when the background
+was SVG). It is INPUT FOR YOU, never output:
+- READ it to learn how the drawing is structured: the path coordinates
+  tell you where the pipe runs, vessels, frames, side panels and section
+  boxes sit - the geometry the plain PNG cannot tell you.
+- USE that structure when asked to generate or modify artwork: author
+  your OWN clean image_svg whose layout matches the traced geometry
+  (same runs, same enclosure positions), drawn with crisp shapes.
+- NEVER copy image_svg_trace into image_svg or echo it back: traced art
+  has thousands of ragged paths and text as outline blobs - it is a map,
+  not a drawing. Insert ignores/strips the field; the embedded image_data
+  always remains the real background.
+
 3. THE OBJECT ENTRY - COPY THIS TEMPLATE EXACTLY
 ------------------------------------------------
 Change ONLY: obj_id, name index, posWidth/posHeight/posLeft/posTop, tag_text,

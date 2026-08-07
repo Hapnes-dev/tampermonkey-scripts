@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.1
+// @version      1.5.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.4.1';
+var IWDIE_VERSION = '1.5.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1772,19 +1772,74 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return embedBackground(doc).then(function (d) { return iwdieBuildEnvelope(d); });
     }
 
+    /* shared tracer options, tuned for the flat schematic style */
+    function traceOpts() {
+      return {
+        numberofcolors: 16, ltres: 0.5, qtres: 0.5, pathomit: 4,
+        rightangleenhance: true, roundcoords: 1, strokewidth: 0,
+        linefilter: false, viewbox: true, desc: false
+      };
+    }
+
+    /* Optionally add panel.image_svg_trace to an export envelope: the vector
+       trace of the raster background — AI-reading material that tells an
+       agent how the drawing is STRUCTURED (Insert strips it; it is never
+       rendered). SVG backgrounds are copied in as-is (already vector). */
+    function finishExportWithTrace(env, done) {
+      var p = env.panel || {};
+      var bg = String(p.image_data || '');
+      if (bg.indexOf('data:image/svg') === 0) {
+        var parsed = iwdieParseDataUrl(bg);
+        if (parsed) {
+          try { p.image_svg_trace = new TextDecoder().decode(parsed.bytes); } catch (e) {}
+        }
+        done(env, p.image_svg_trace ? ' + vector structure' : '');
+        return;
+      }
+      if (bg.indexOf('data:image/') !== 0 || !IWDIE_TRACER) { done(env, ''); return; }
+      var want = window.confirm(
+        'Also include a VECTOR TRACE of the background in the JSON?\n\n' +
+        'It lets an AI (Copilot) read how the drawing is structured and generate\n' +
+        'matching artwork. Adds roughly 1 MB. Drawings trace in ~1–2 s in the\n' +
+        'background; photo backgrounds take longer.\n\n' +
+        'OK = include the trace   |   Cancel = export without it');
+      if (!want) { done(env, ''); return; }
+      toast('Tracing the background structure… the export downloads when done.', false, 6000);
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        var c = document.createElement('canvas'); c.width = w; c.height = h;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0);
+        var deliver = function (svg) {
+          p.image_svg_trace = svg;
+          done(env, ' + vector structure (' + ((svg.match(/<path/g) || []).length) + ' paths)');
+        };
+        traceInWorker(ctx.getImageData(0, 0, w, h), traceOpts()).then(deliver).catch(function () {
+          try { deliver(IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), traceOpts())); }
+          catch (e) { done(env, ''); }
+        });
+      };
+      img.onerror = function () { done(env, ''); };
+      img.src = bg;
+    }
+
     function doExport() {
       buildEnvelopeAsync().then(function (env) {
         if (!env) return;
-        var name = iwdieBuildExportFilename(env.source_plant_id, env.panel_name);
-        var blob = new Blob([JSON.stringify(env, null, 2)], { type: 'application/json' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url; a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-        hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + ' → ' + name);
+        finishExportWithTrace(env, function (env2, traceNote) {
+          var name = iwdieBuildExportFilename(env2.source_plant_id, env2.panel_name);
+          var blob = new Blob([JSON.stringify(env2, null, 2)], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url; a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+          hostOk('Exported ' + iwdieSummarize(env2.panel) + (env2.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
+        });
       });
     }
 
@@ -1913,11 +1968,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { rgba = ctx.getImageData(0, 0, w, h).data; } catch (e) { rgba = null; }
         if (wantTrace) {
           if (!rgba) { toast('Could not read the image pixels for tracing.', true); return; }
-          var traceOpts = {
-            numberofcolors: 16, ltres: 0.5, qtres: 0.5, pathomit: 4,
-            rightangleenhance: true, roundcoords: 1, strokewidth: 0,
-            linefilter: false, viewbox: true, desc: false
-          };
           var svgName = iwdieBuildBackgroundFilename(plant, panel + ' traced', 'svg');
           var t0 = Date.now();
           var deliverTrace = function (traced) {
@@ -1926,12 +1976,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File → Open); retype small labels there.');
           };
           toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
-          traceInWorker(ctx.getImageData(0, 0, w, h), traceOpts).then(deliverTrace).catch(function () {
+          traceInWorker(ctx.getImageData(0, 0, w, h), traceOpts()).then(deliverTrace).catch(function () {
             // no worker available (old browser / strict CSP): trace on the
             // main thread after letting the toast paint first
             toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
             setTimeout(function () {
-              try { deliverTrace(IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), traceOpts)); }
+              try { deliverTrace(IWDIE_TRACER.imagedataToSVG(ctx.getImageData(0, 0, w, h), traceOpts())); }
               catch (e) { toast('Vector trace failed: ' + e, true); }
             }, 80);
           });
@@ -2103,6 +2153,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (svgUrl) { doc = iwdieAttachBackground(doc, svgUrl, doc.org_image_name || 'ai-background.svg'); }
       }
       delete doc.image_svg;
+      // image_svg_trace is AI-reading material written by Export (the vector
+      // trace of the raster background) — never rendered; the embedded
+      // image_data stays the real background.
+      delete doc.image_svg_trace;
       if (pendingBg) { doc = iwdieAttachBackground(doc, pendingBg.dataUrl, pendingBg.name); }
       var target = currentPlantId();
       var source = iwdieDetectSourcePlant(doc);

@@ -56,6 +56,8 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+**The drawing's structure can live inside the JSON too** (v1.5.0): when the background is a raster, **Export JSON** offers to include `panel.image_svg_trace` — an automatic vector trace of the background (worker-traced, ~1 MB). It exists so an **AI can read how the drawing is structured** (where pipe runs, vessels and frames sit — geometry a PNG can't convey) and generate matching artwork via its own `image_svg`. Insert strips the field and never renders it; the embedded pixel background always stays the real one. SVG backgrounds are copied into the field as-is (no confirm needed).
+
 **The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `panel.image_data: "data:image/png;base64,…"` — the designer's own embedded-image format), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 
 ## Background → Illustrator (v1.3.0)
