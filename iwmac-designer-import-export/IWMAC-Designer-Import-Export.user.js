@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.5
+// @version      1.6.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.5.5';
+var IWDIE_VERSION = '1.6.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -486,13 +486,13 @@ function ImageTracer(){
 	var _this = this;
 
 	this.versionnumber = '1.2.6',
-	
+
 	////////////////////////////////////////////////////////////
 	//
 	//  API
 	//
 	////////////////////////////////////////////////////////////
-	
+
 	// Loading an image from a URL, tracing when loaded,
 	// then executing callback with the scaled svg string as argument
 	this.imageToSVG = function( url, callback, options ){
@@ -508,7 +508,7 @@ function ImageTracer(){
 			options
 		);
 	},// End of imageToSVG()
-	
+
 	// Tracing imagedata, then returning the scaled svg string
 	this.imagedataToSVG = function( imgd, options ){
 		options = _this.checkoptions(options);
@@ -517,7 +517,7 @@ function ImageTracer(){
 		// returning SVG string
 		return _this.getsvgstring(td, options);
 	},// End of imagedataToSVG()
-	
+
 	// Loading an image from a URL, tracing when loaded,
 	// then executing callback with tracedata as argument
 	this.imageToTracedata = function( url, callback, options ){
@@ -533,16 +533,16 @@ function ImageTracer(){
 				options
 		);
 	},// End of imageToTracedata()
-	
+
 	// Tracing imagedata, then returning tracedata (layers with paths, palette, image size)
 	this.imagedataToTracedata = function( imgd, options ){
 		options = _this.checkoptions(options);
-		
+
 		// 1. Color quantization
 		var ii = _this.colorquantization( imgd, options );
-		
+
 		if(options.layering === 0){// Sequential layering
-			
+
 			// create tracedata object
 			var tracedata = {
 				layers : [],
@@ -550,48 +550,48 @@ function ImageTracer(){
 				width : ii.array[0].length-2,
 				height : ii.array.length-2
 			};
-			
+
 			// Loop to trace each color layer
 			for(var colornum=0; colornum<ii.palette.length; colornum++){
-				
+
 				// layeringstep -> pathscan -> internodes -> batchtracepaths
 				var tracedlayer =
 					_this.batchtracepaths(
-							
+
 						_this.internodes(
-								
+
 							_this.pathscan(
 								_this.layeringstep( ii, colornum ),
 								options.pathomit
 							),
-							
+
 							options
-							
+
 						),
-						
+
 						options.ltres,
 						options.qtres
-						
+
 					);
-				
+
 				// adding traced layer
 				tracedata.layers.push(tracedlayer);
-				
+
 			}// End of color loop
-			
+
 		}else{// Parallel layering
 			// 2. Layer separation and edge detection
 			var ls = _this.layering( ii );
-			
+
 			// Optional edge node visualization
 			if(options.layercontainerid){ _this.drawLayers( ls, _this.specpalette, options.scale, options.layercontainerid ); }
-			
+
 			// 3. Batch pathscan
 			var bps = _this.batchpathscan( ls, options.pathomit );
-			
+
 			// 4. Batch interpollation
 			var bis = _this.batchinternodes( bps, options );
-			
+
 			// 5. Batch tracing and creating tracedata object
 			var tracedata = {
 				layers : _this.batchtracelayers( bis, options.ltres, options.qtres ),
@@ -599,33 +599,33 @@ function ImageTracer(){
 				width : imgd.width,
 				height : imgd.height
 			};
-			
+
 		}// End of parallel layering
-		
+
 		// return tracedata
 		return tracedata;
-		
+
 	},// End of imagedataToTracedata()
-	
+
 	this.optionpresets = {
 		'default': {
-			
+
 			// Tracing
 			corsenabled : false,
 			ltres : 1,
 			qtres : 1,
 			pathomit : 8,
 			rightangleenhance : true,
-			
+
 			// Color quantization
 			colorsampling : 2,
 			numberofcolors : 16,
 			mincolorratio : 0,
 			colorquantcycles : 3,
-			
+
 			// Layering method
 			layering : 0,
-			
+
 			// SVG rendering
 			strokewidth : 1,
 			linefilter : false,
@@ -635,11 +635,11 @@ function ImageTracer(){
 			desc : false,
 			lcpr : 0,
 			qcpr : 0,
-			
+
 			// Blur
 			blurradius : 0,
 			blurdelta : 20
-			
+
 		},
 		'posterized1': { colorsampling:0, numberofcolors:2 },
 		'posterized2': { numberofcolors:4, blurradius:5 },
@@ -659,7 +659,7 @@ function ImageTracer(){
 			mincolorratio: 0, colorquantcycles: 3, blurradius: 3, blurdelta: 20, strokewidth: 0, linefilter: false,
 			roundcoords: 1, pal: [ { r: 0, g: 0, b: 100, a: 255 }, { r: 255, g: 255, b: 255, a: 255 } ] }
 	},// End of optionpresets
-	
+
 	// creating options object, setting defaults for missing values
 	this.checkoptions = function(options){
 		options = options || {};
@@ -677,18 +677,18 @@ function ImageTracer(){
 		// options.layercontainerid is not defined here, can be added externally: options.layercontainerid = 'mydiv'; ... <div id="mydiv"></div>
 		return options;
 	},// End of checkoptions()
-	
+
 	////////////////////////////////////////////////////////////
 	//
 	//  Vectorizing functions
 	//
 	////////////////////////////////////////////////////////////
-	
+
 	// 1. Color quantization
 	// Using a form of k-means clustering repeatead options.colorquantcycles times. http://en.wikipedia.org/wiki/Color_quantization
 	this.colorquantization = function( imgd, options ){
 		var arr = [], idx=0, cd,cdl,ci, paletteacc = [], pixelnum = imgd.width * imgd.height, i, j, k, cnt, palette;
-		
+
 		// imgd.data must be RGBA, not just RGB
 		if( imgd.data.length < pixelnum * 4 ){
 			var newimgddata = new Uint8ClampedArray(pixelnum * 4);
@@ -700,10 +700,10 @@ function ImageTracer(){
 			}
 			imgd.data = newimgddata;
 		}// End of RGBA imgd.data check
-		
+
 		// Filling arr (color index array) with -1
 		for( j=0; j<imgd.height+2; j++ ){ arr[j]=[]; for(i=0; i<imgd.width+2 ; i++){ arr[j][i] = -1; } }
-		
+
 		// Use custom palette if pal is defined or sample / generate custom length palette
 		if(options.pal){
 			palette = options.pal;
@@ -714,18 +714,18 @@ function ImageTracer(){
 		}else{
 			palette = _this.samplepalette2( options.numberofcolors, imgd );
 		}
-		
+
 		// Selective Gaussian blur preprocessing
 		if( options.blurradius > 0 ){ imgd = _this.blur( imgd, options.blurradius, options.blurdelta ); }
-		
+
 		// Repeat clustering step options.colorquantcycles times
 		for( cnt=0; cnt < options.colorquantcycles; cnt++ ){
-			
+
 			// Average colors from the second iteration
 			if(cnt>0){
 				// averaging paletteacc for palette
 				for( k=0; k < palette.length; k++ ){
-					
+
 					// averaging
 					if( paletteacc[k].n > 0 ){
 						palette[k] = {  r: Math.floor( paletteacc[k].r / paletteacc[k].n ),
@@ -733,7 +733,7 @@ function ImageTracer(){
 										b: Math.floor( paletteacc[k].b / paletteacc[k].n ),
 										a:  Math.floor( paletteacc[k].a / paletteacc[k].n ) };
 					}
-					
+
 					// Randomizing a color, if there are too few pixels and there will be a new cycle
 					if( ( paletteacc[k].n/pixelnum < options.mincolorratio ) && ( cnt < options.colorquantcycles-1 ) ){
 						palette[k] = {  r: Math.floor(Math.random()*255),
@@ -741,51 +741,51 @@ function ImageTracer(){
 										b: Math.floor(Math.random()*255),
 										a: Math.floor(Math.random()*255) };
 					}
-					
+
 				}// End of palette loop
 			}// End of Average colors from the second iteration
-			
+
 			// Reseting palette accumulator for averaging
 			for( i=0; i < palette.length; i++ ){ paletteacc[i] = { r:0, g:0, b:0, a:0, n:0 }; }
-			
+
 			// loop through all pixels
 			for( j=0; j < imgd.height; j++ ){
 				for( i=0; i < imgd.width; i++ ){
-					
+
 					// pixel index
 					idx = (j*imgd.width+i)*4;
-					
+
 					// find closest color from palette by measuring (rectilinear) color distance between this pixel and all palette colors
 					ci=0; cdl = 1024; // 4 * 256 is the maximum RGBA distance
 					for( k=0; k<palette.length; k++ ){
-						
+
 						// In my experience, https://en.wikipedia.org/wiki/Rectilinear_distance works better than https://en.wikipedia.org/wiki/Euclidean_distance
 						cd = Math.abs(palette[k].r-imgd.data[idx]) + Math.abs(palette[k].g-imgd.data[idx+1]) + Math.abs(palette[k].b-imgd.data[idx+2]) + Math.abs(palette[k].a-imgd.data[idx+3]);
-						
+
 						// Remember this color if this is the closest yet
 						if(cd<cdl){ cdl = cd; ci = k; }
-						
+
 					}// End of palette loop
-					
+
 					// add to palettacc
 					paletteacc[ci].r += imgd.data[idx  ];
 					paletteacc[ci].g += imgd.data[idx+1];
 					paletteacc[ci].b += imgd.data[idx+2];
 					paletteacc[ci].a += imgd.data[idx+3];
 					paletteacc[ci].n++;
-					
+
 					// update the indexed color array
 					arr[j+1][i+1] = ci;
-					
+
 				}// End of i loop
 			}// End of j loop
-			
+
 		}// End of Repeat clustering step options.colorquantcycles times
-		
+
 		return { array:arr, palette:palette };
-		
+
 	},// End of colorquantization()
-	
+
 	// Sampling a palette from imagedata
 	this.samplepalette = function( numberofcolors, imgd ){
 		var idx, palette=[];
@@ -795,7 +795,7 @@ function ImageTracer(){
 		}
 		return palette;
 	},// End of samplepalette()
-	
+
 	// Deterministic sampling a palette from imagedata: rectangular grid
 	this.samplepalette2 = function( numberofcolors, imgd ){
 		var idx, palette=[], ni = Math.ceil(Math.sqrt(numberofcolors)), nj = Math.ceil(numberofcolors/ni),
@@ -812,23 +812,23 @@ function ImageTracer(){
 		}
 		return palette;
 	},// End of samplepalette2()
-	
+
 	// Generating a palette with numberofcolors
 	this.generatepalette = function(numberofcolors){
 		var palette = [], rcnt, gcnt, bcnt;
 		if(numberofcolors<8){
-			
+
 			// Grayscale
 			var graystep = Math.floor(255/(numberofcolors-1));
 			for(var i=0; i<numberofcolors; i++){ palette.push({ r:i*graystep, g:i*graystep, b:i*graystep, a:255 }); }
-			
+
 		}else{
-			
+
 			// RGB color cube
 			var colorqnum = Math.floor(Math.pow(numberofcolors, 1/3)), // Number of points on each edge on the RGB color cube
 				colorstep = Math.floor(255/(colorqnum-1)), // distance between points
 				rndnum = numberofcolors - colorqnum*colorqnum*colorqnum; // number of random colors
-			
+
 			for(rcnt=0; rcnt<colorqnum; rcnt++){
 				for(gcnt=0; gcnt<colorqnum; gcnt++){
 					for(bcnt=0; bcnt<colorqnum; bcnt++){
@@ -836,15 +836,15 @@ function ImageTracer(){
 					}// End of blue loop
 				}// End of green loop
 			}// End of red loop
-			
+
 			// Rest is random
 			for(rcnt=0; rcnt<rndnum; rcnt++){ palette.push({ r:Math.floor(Math.random()*255), g:Math.floor(Math.random()*255), b:Math.floor(Math.random()*255), a:Math.floor(Math.random()*255) }); }
 
 		}// End of numberofcolors check
-		
+
 		return palette;
 	},// End of generatepalette()
-		
+
 	// 2. Layer separation and edge detection
 	// Edge node types ( ▓: this layer or 1; ░: not this layer or 0 )
 	// 12  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓
@@ -853,7 +853,7 @@ function ImageTracer(){
 	this.layering = function(ii){
 		// Creating layers for each indexed color in arr
 		var layers = [], val=0, ah = ii.array.length, aw = ii.array[0].length, n1,n2,n3,n4,n5,n6,n7,n8, i, j, k;
-		
+
 		// Create layers
 		for(k=0; k<ii.palette.length; k++){
 			layers[k] = [];
@@ -864,14 +864,14 @@ function ImageTracer(){
 				}
 			}
 		}
-		
+
 		// Looping through all pixels and calculating edge node type
 		for(j=1; j<ah-1; j++){
 			for(i=1; i<aw-1; i++){
-				
+
 				// This pixel's indexed color
 				val = ii.array[j][i];
-				
+
 				// Are neighbor pixel colors the same?
 				n1 = ii.array[j-1][i-1]===val ? 1 : 0;
 				n2 = ii.array[j-1][i  ]===val ? 1 : 0;
@@ -881,19 +881,19 @@ function ImageTracer(){
 				n6 = ii.array[j+1][i-1]===val ? 1 : 0;
 				n7 = ii.array[j+1][i  ]===val ? 1 : 0;
 				n8 = ii.array[j+1][i+1]===val ? 1 : 0;
-				
+
 				// this pixel's type and looking back on previous pixels
 				layers[val][j+1][i+1] = 1 + n5 * 2 + n8 * 4 + n7 * 8 ;
 				if(!n4){ layers[val][j+1][i  ] = 0 + 2 + n7 * 4 + n6 * 8 ; }
 				if(!n2){ layers[val][j  ][i+1] = 0 + n3*2 + n5 * 4 + 8 ; }
 				if(!n1){ layers[val][j  ][i  ] = 0 + n2*2 + 4 + n4 * 8 ; }
-				
+
 			}// End of i loop
 		}// End of j loop
-		
+
 		return layers;
 	},// End of layering()
-	
+
 	// 2. Layer separation and edge detection
 	// Edge node types ( ▓: this layer or 1; ░: not this layer or 0 )
 	// 12  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓  ░░  ▓░  ░▓  ▓▓
@@ -902,7 +902,7 @@ function ImageTracer(){
 	this.layeringstep = function(ii,cnum){
 		// Creating layers for each indexed color in arr
 		var layer = [], val=0, ah = ii.array.length, aw = ii.array[0].length, n1,n2,n3,n4,n5,n6,n7,n8, i, j, k;
-		
+
 		// Create layer
 		for(j=0; j<ah; j++){
 			layer[j] = [];
@@ -910,7 +910,7 @@ function ImageTracer(){
 				layer[j][i]=0;
 			}
 		}
-		
+
 		// Looping through all pixels and calculating edge node type
 		for(j=1; j<ah; j++){
 			for(i=1; i<aw; i++){
@@ -922,10 +922,10 @@ function ImageTracer(){
 				;
 			}// End of i loop
 		}// End of j loop
-			
+
 		return layer;
 	},// End of layeringstep()
-	
+
 	// Point in polygon test
 	this.pointinpoly = function( p, pa ){
 		var isin=false;
@@ -938,7 +938,7 @@ function ImageTracer(){
 
 		return isin;
 	},
-	
+
 	// Lookup tables for pathscan
 	// pathscan_combined_lookup[ arr[py][px] ][ dir ] = [nextarrpypx, nextdir, deltapx, deltapy];
 	this.pathscan_combined_lookup = [
@@ -946,17 +946,17 @@ function ImageTracer(){
 		[[ 0, 1, 0,-1], [-1,-1,-1,-1], [-1,-1,-1,-1], [ 0, 2,-1, 0]],
 		[[-1,-1,-1,-1], [-1,-1,-1,-1], [ 0, 1, 0,-1], [ 0, 0, 1, 0]],
 		[[ 0, 0, 1, 0], [-1,-1,-1,-1], [ 0, 2,-1, 0], [-1,-1,-1,-1]],
-		
+
 		[[-1,-1,-1,-1], [ 0, 0, 1, 0], [ 0, 3, 0, 1], [-1,-1,-1,-1]],
 		[[13, 3, 0, 1], [13, 2,-1, 0], [ 7, 1, 0,-1], [ 7, 0, 1, 0]],
 		[[-1,-1,-1,-1], [ 0, 1, 0,-1], [-1,-1,-1,-1], [ 0, 3, 0, 1]],
 		[[ 0, 3, 0, 1], [ 0, 2,-1, 0], [-1,-1,-1,-1], [-1,-1,-1,-1]],
-		
+
 		[[ 0, 3, 0, 1], [ 0, 2,-1, 0], [-1,-1,-1,-1], [-1,-1,-1,-1]],
 		[[-1,-1,-1,-1], [ 0, 1, 0,-1], [-1,-1,-1,-1], [ 0, 3, 0, 1]],
 		[[11, 1, 0,-1], [14, 0, 1, 0], [14, 3, 0, 1], [11, 2,-1, 0]],
 		[[-1,-1,-1,-1], [ 0, 0, 1, 0], [ 0, 3, 0, 1], [-1,-1,-1,-1]],
-		
+
 		[[ 0, 0, 1, 0], [-1,-1,-1,-1], [ 0, 2,-1, 0], [-1,-1,-1,-1]],
 		[[-1,-1,-1,-1], [-1,-1,-1,-1], [ 0, 1, 0,-1], [ 0, 0, 1, 0]],
 		[[ 0, 1, 0,-1], [-1,-1,-1,-1], [-1,-1,-1,-1], [ 0, 2,-1, 0]],
@@ -964,15 +964,15 @@ function ImageTracer(){
 	],
 
 	// 3. Walking through an edge node array, discarding edge node types 0 and 15 and creating paths from the rest.
-	// Walk directions (dir): 0 > ; 1 ^ ; 2 < ; 3 v 
+	// Walk directions (dir): 0 > ; 1 ^ ; 2 < ; 3 v
 	this.pathscan = function( arr, pathomit ){
 		var paths=[], pacnt=0, pcnt=0, px=0, py=0, w = arr[0].length, h = arr.length,
 			dir=0, pathfinished=true, holepath=false, lookuprow;
-		
+
 		for(var j=0; j<h; j++){
 			for(var i=0; i<w; i++){
 				if( (arr[j][i] == 4) || ( arr[j][i] == 11) ){ // Other values are not valid
-					
+
 					// Init
 					px = i; py = j;
 					paths[pacnt] = {};
@@ -986,19 +986,19 @@ function ImageTracer(){
 
 					// Path points loop
 					while(!pathfinished){
-						
+
 						// New path point
 						paths[pacnt].points[pcnt] = {};
 						paths[pacnt].points[pcnt].x = px-1;
 						paths[pacnt].points[pcnt].y = py-1;
 						paths[pacnt].points[pcnt].t = arr[py][px];
-						
+
 						// Bounding box
 						if( (px-1) < paths[pacnt].boundingbox[0] ){ paths[pacnt].boundingbox[0] = px-1; }
 						if( (px-1) > paths[pacnt].boundingbox[2] ){ paths[pacnt].boundingbox[2] = px-1; }
 						if( (py-1) < paths[pacnt].boundingbox[1] ){ paths[pacnt].boundingbox[1] = py-1; }
 						if( (py-1) > paths[pacnt].boundingbox[3] ){ paths[pacnt].boundingbox[3] = py-1; }
-						
+
 						// Next: look up the replacement, direction and coordinate changes = clear this cell, turn if required, walk forward
 						lookuprow = _this.pathscan_combined_lookup[ arr[py][px] ][ dir ];
 						arr[py][px] = lookuprow[0]; dir = lookuprow[1]; px += lookuprow[2]; py += lookuprow[3];
@@ -1006,17 +1006,17 @@ function ImageTracer(){
 						// Close path
 						if( (px-1 === paths[pacnt].points[0].x ) && ( py-1 === paths[pacnt].points[0].y ) ){
 							pathfinished = true;
-							
+
 							// Discarding paths shorter than pathomit
 							if( paths[pacnt].points.length < pathomit ){
 								paths.pop();
 							}else{
-							
+
 								paths[pacnt].isholepath = holepath ? true : false;
-								
+
 								// Finding the parent shape for this hole
 								if(holepath){
-									
+
 									var parentidx = 0, parentbbox = [-1,-1,w+1,h+1];
 									for(var parentcnt=0; parentcnt < pacnt; parentcnt++){
 										if( (!paths[parentcnt].isholepath) &&
@@ -1028,33 +1028,33 @@ function ImageTracer(){
 											parentbbox = paths[parentcnt].boundingbox;
 										}
 									}
-									
+
 									paths[parentidx].holechildren.push( pacnt );
-									
+
 								}// End of holepath parent finding
-								
+
 								pacnt++;
-							
+
 							}
-							
+
 						}// End of Close path
-						
+
 						pcnt++;
-						
+
 					}// End of Path points loop
-					
+
 				}// End of Follow path
-				
+
 			}// End of i loop
 		}// End of j loop
-		
+
 		return paths;
 	},// End of pathscan()
-	
+
 	this.boundingboxincludes = function( parentbbox, childbbox ){
 		return ( ( parentbbox[0] < childbbox[0] ) && ( parentbbox[1] < childbbox[1] ) && ( parentbbox[2] > childbbox[2] ) && ( parentbbox[3] > childbbox[3] ) );
 	},// End of boundingboxincludes()
-	
+
 	// 3. Batch pathscan
 	this.batchpathscan = function( layers, pathomit ){
 		var bpaths = [];
@@ -1064,30 +1064,30 @@ function ImageTracer(){
 		}
 		return bpaths;
 	},
-	
+
 	// 4. interpollating between path points for nodes with 8 directions ( East, SouthEast, S, SW, W, NW, N, NE )
 	this.internodes = function( paths, options ){
 		var ins = [], palen=0, nextidx=0, nextidx2=0, previdx=0, previdx2=0, pacnt, pcnt;
-		
+
 		// paths loop
 		for(pacnt=0; pacnt<paths.length; pacnt++){
-			
+
 			ins[pacnt] = {};
 			ins[pacnt].points = [];
 			ins[pacnt].boundingbox = paths[pacnt].boundingbox;
 			ins[pacnt].holechildren = paths[pacnt].holechildren;
 			ins[pacnt].isholepath = paths[pacnt].isholepath;
 			palen = paths[pacnt].points.length;
-			
+
 			// pathpoints loop
 			for(pcnt=0; pcnt<palen; pcnt++){
-			
+
 				// next and previous point indexes
 				nextidx = (pcnt+1)%palen; nextidx2 = (pcnt+2)%palen; previdx = (pcnt-1+palen)%palen; previdx2 = (pcnt-2+palen)%palen;
-				
+
 				// right angle enhance
 				if( options.rightangleenhance && _this.testrightangle( paths[pacnt], previdx2, previdx, pcnt, nextidx, nextidx2 ) ){
-					
+
 					// Fix previous direction
 					if(ins[pacnt].points.length > 0){
 						ins[pacnt].points[ ins[pacnt].points.length-1 ].linesegment = _this.getdirection(
@@ -1097,7 +1097,7 @@ function ImageTracer(){
 								paths[pacnt].points[pcnt].y
 							);
 					}
-					
+
 					// This corner point
 					ins[pacnt].points.push({
 						x : paths[pacnt].points[pcnt].x,
@@ -1109,9 +1109,9 @@ function ImageTracer(){
 								(( paths[pacnt].points[pcnt].y + paths[pacnt].points[nextidx].y ) /2)
 							)
 					});
-					
+
 				}// End of right angle enhance
-				
+
 				// interpolate between two path points
 				ins[pacnt].points.push({
 					x : (( paths[pacnt].points[pcnt].x + paths[pacnt].points[nextidx].x ) /2),
@@ -1123,14 +1123,14 @@ function ImageTracer(){
 							(( paths[pacnt].points[nextidx].y + paths[pacnt].points[nextidx2].y ) /2)
 						)
 				});
-				
+
 			}// End of pathpoints loop
-						
+
 		}// End of paths loop
-		
+
 		return ins;
 	},// End of internodes()
-	
+
 	this.testrightangle = function( path, idx1, idx2, idx3, idx4, idx5 ){
 		return ( (( path.points[idx3].x === path.points[idx1].x) &&
 				  ( path.points[idx3].x === path.points[idx2].x) &&
@@ -1144,7 +1144,7 @@ function ImageTracer(){
 				 )
 		);
 	},// End of testrightangle()
-	
+
 	this.getdirection = function( x1, y1, x2, y2 ){
 		var val = 8;
 		if(x1 < x2){
@@ -1162,7 +1162,7 @@ function ImageTracer(){
 		}
 		return val;
 	},// End of getdirection()
-	
+
 	// 4. Batch interpollation
 	this.batchinternodes = function( bpaths, options ){
 		var binternodes = [];
@@ -1172,47 +1172,47 @@ function ImageTracer(){
 		}
 		return binternodes;
 	},
-	
+
 	// 5. tracepath() : recursively trying to fit straight and quadratic spline segments on the 8 direction internode path
-	
+
 	// 5.1. Find sequences of points with only 2 segment types
 	// 5.2. Fit a straight line on the sequence
 	// 5.3. If the straight line fails (distance error > ltres), find the point with the biggest error
 	// 5.4. Fit a quadratic spline through errorpoint (project this to get controlpoint), then measure errors on every point in the sequence
 	// 5.5. If the spline fails (distance error > qtres), find the point with the biggest error, set splitpoint = fitting point
 	// 5.6. Split sequence and recursively apply 5.2. - 5.6. to startpoint-splitpoint and splitpoint-endpoint sequences
-	
+
 	this.tracepath = function( path, ltres, qtres ){
 		var pcnt=0, segtype1, segtype2, seqend, smp = {};
 		smp.segments = [];
 		smp.boundingbox = path.boundingbox;
 		smp.holechildren = path.holechildren;
 		smp.isholepath = path.isholepath;
-		
+
 		while(pcnt < path.points.length){
 			// 5.1. Find sequences of points with only 2 segment types
 			segtype1 = path.points[pcnt].linesegment; segtype2 = -1; seqend=pcnt+1;
 			while(
 				((path.points[seqend].linesegment === segtype1) || (path.points[seqend].linesegment === segtype2) || (segtype2 === -1))
 				&& (seqend < path.points.length-1) ){
-				
+
 				if((path.points[seqend].linesegment!==segtype1) && (segtype2===-1)){ segtype2 = path.points[seqend].linesegment; }
 				seqend++;
-				
+
 			}
 			if(seqend === path.points.length-1){ seqend = 0; }
 
 			// 5.2. - 5.6. Split sequence and recursively apply 5.2. - 5.6. to startpoint-splitpoint and splitpoint-endpoint sequences
 			smp.segments = smp.segments.concat( _this.fitseq(path, ltres, qtres, pcnt, seqend) );
-			
+
 			// forward pcnt;
 			if(seqend>0){ pcnt = seqend; }else{ pcnt = path.points.length; }
-			
+
 		}// End of pcnt loop
-		
+
 		return smp;
 	},// End of tracepath()
-		
+
 	// 5.2. - 5.6. recursively fitting a straight or quadratic line segment on this sequence of path nodes,
 	// called from tracepath()
 	this.fitseq = function( path, ltres, qtres, seqstart, seqend ){
@@ -1223,7 +1223,7 @@ function ImageTracer(){
 		var tl = (seqend-seqstart); if(tl<0){ tl += path.points.length; }
 		var vx = (path.points[seqend].x-path.points[seqstart].x) / tl,
 			vy = (path.points[seqend].y-path.points[seqstart].y) / tl;
-		
+
 		// 5.2. Fit a straight line on the sequence
 		var pcnt = (seqstart+1) % path.points.length, pl;
 		while(pcnt != seqend){
@@ -1236,25 +1236,25 @@ function ImageTracer(){
 		}
 		// return straight line if fits
 		if(curvepass){ return [{ type:'L', x1:path.points[seqstart].x, y1:path.points[seqstart].y, x2:path.points[seqend].x, y2:path.points[seqend].y }]; }
-		
+
 		// 5.3. If the straight line fails (distance error>ltres), find the point with the biggest error
 		var fitpoint = errorpoint; curvepass = true; errorval = 0;
-		
+
 		// 5.4. Fit a quadratic spline through this point, measure errors on every point in the sequence
 		// helpers and projecting to get control point
 		var t=(fitpoint-seqstart)/tl, t1=(1-t)*(1-t), t2=2*(1-t)*t, t3=t*t;
 		var cpx = (t1*path.points[seqstart].x + t3*path.points[seqend].x - path.points[fitpoint].x)/-t2 ,
 			cpy = (t1*path.points[seqstart].y + t3*path.points[seqend].y - path.points[fitpoint].y)/-t2 ;
-		
+
 		// Check every point
 		pcnt = seqstart+1;
 		while(pcnt != seqend){
 			t=(pcnt-seqstart)/tl; t1=(1-t)*(1-t); t2=2*(1-t)*t; t3=t*t;
 			px = t1 * path.points[seqstart].x + t2 * cpx + t3 * path.points[seqend].x;
 			py = t1 * path.points[seqstart].y + t2 * cpy + t3 * path.points[seqend].y;
-			
+
 			dist2 = (path.points[pcnt].x-px)*(path.points[pcnt].x-px) + (path.points[pcnt].y-py)*(path.points[pcnt].y-py);
-			
+
 			if(dist2>qtres){curvepass=false;}
 			if(dist2>errorval){ errorpoint=pcnt; errorval=dist2; }
 			pcnt = (pcnt+1)%path.points.length;
@@ -1263,13 +1263,13 @@ function ImageTracer(){
 		if(curvepass){ return [{ type:'Q', x1:path.points[seqstart].x, y1:path.points[seqstart].y, x2:cpx, y2:cpy, x3:path.points[seqend].x, y3:path.points[seqend].y }]; }
 		// 5.5. If the spline fails (distance error>qtres), find the point with the biggest error
 		var splitpoint = fitpoint; // Earlier: Math.floor((fitpoint + errorpoint)/2);
-		
+
 		// 5.6. Split sequence and recursively apply 5.2. - 5.6. to startpoint-splitpoint and splitpoint-endpoint sequences
 		return _this.fitseq( path, ltres, qtres, seqstart, splitpoint ).concat(
 				_this.fitseq( path, ltres, qtres, splitpoint, seqend ) );
-		
+
 	},// End of fitseq()
-	
+
 	// 5. Batch tracing paths
 	this.batchtracepaths = function(internodepaths,ltres,qtres){
 		var btracedpaths = [];
@@ -1279,7 +1279,7 @@ function ImageTracer(){
 		}
 		return btracedpaths;
 	},
-	
+
 	// 5. Batch tracing layers
 	this.batchtracelayers = function(binternodes, ltres, qtres){
 		var btbis = [];
@@ -1289,30 +1289,30 @@ function ImageTracer(){
 		}
 		return btbis;
 	},
-	
+
 	////////////////////////////////////////////////////////////
 	//
 	//  SVG Drawing functions
 	//
 	////////////////////////////////////////////////////////////
-	
+
 	// Rounding to given decimals https://stackoverflow.com/questions/11832914/round-to-at-most-2-decimal-places-in-javascript
 	this.roundtodec = function(val,places){ return +val.toFixed(places); },
-	
+
 	// Getting SVG path element string from a traced path
 	this.svgpathstring = function( tracedata, lnum, pathnum, options ){
-		
+
 		var layer = tracedata.layers[lnum], smp = layer[pathnum], str='', pcnt;
-		
+
 		// Line filter
 		if(options.linefilter && (smp.segments.length < 3)){ return str; }
-		
+
 		// Starting path element, desc contains layer and path number
 		str = '<path '+
 			( options.desc ? ('desc="l '+lnum+' p '+pathnum+'" ') : '' ) +
 			_this.tosvgcolorstr(tracedata.palette[lnum], options) +
 			'd="';
-		
+
 		// Creating non-hole path string
 		if( options.roundcoords === -1 ){
 			str += 'M '+ smp.segments[0].x1 * options.scale +' '+ smp.segments[0].y1 * options.scale +' ';
@@ -1333,36 +1333,36 @@ function ImageTracer(){
 			}
 			str += 'Z ';
 		}// End of creating non-hole path string
-		
+
 		// Hole children
 		for( var hcnt=0; hcnt < smp.holechildren.length; hcnt++){
 			var hsmp = layer[ smp.holechildren[hcnt] ];
 			// Creating hole path string
 			if( options.roundcoords === -1 ){
-				
+
 				if(hsmp.segments[ hsmp.segments.length-1 ].hasOwnProperty('x3')){
 					str += 'M '+ hsmp.segments[ hsmp.segments.length-1 ].x3 * options.scale +' '+ hsmp.segments[ hsmp.segments.length-1 ].y3 * options.scale +' ';
 				}else{
 					str += 'M '+ hsmp.segments[ hsmp.segments.length-1 ].x2 * options.scale +' '+ hsmp.segments[ hsmp.segments.length-1 ].y2 * options.scale +' ';
 				}
-				
+
 				for(pcnt = hsmp.segments.length-1; pcnt >= 0; pcnt--){
 					str += hsmp.segments[pcnt].type +' ';
 					if(hsmp.segments[pcnt].hasOwnProperty('x3')){
 						str += hsmp.segments[pcnt].x2 * options.scale +' '+ hsmp.segments[pcnt].y2 * options.scale +' ';
 					}
-					
+
 					str += hsmp.segments[pcnt].x1 * options.scale +' '+ hsmp.segments[pcnt].y1 * options.scale +' ';
 				}
-				
+
 			}else{
-				
+
 				if(hsmp.segments[ hsmp.segments.length-1 ].hasOwnProperty('x3')){
 					str += 'M '+ _this.roundtodec( hsmp.segments[ hsmp.segments.length-1 ].x3 * options.scale ) +' '+ _this.roundtodec( hsmp.segments[ hsmp.segments.length-1 ].y3 * options.scale ) +' ';
 				}else{
 					str += 'M '+ _this.roundtodec( hsmp.segments[ hsmp.segments.length-1 ].x2 * options.scale ) +' '+ _this.roundtodec( hsmp.segments[ hsmp.segments.length-1 ].y2 * options.scale ) +' ';
 				}
-				
+
 				for(pcnt = hsmp.segments.length-1; pcnt >= 0; pcnt--){
 					str += hsmp.segments[pcnt].type +' ';
 					if(hsmp.segments[pcnt].hasOwnProperty('x3')){
@@ -1370,17 +1370,17 @@ function ImageTracer(){
 					}
 					str += _this.roundtodec( hsmp.segments[pcnt].x1 * options.scale ) +' '+ _this.roundtodec( hsmp.segments[pcnt].y1 * options.scale ) +' ';
 				}
-				
-				
+
+
 			}// End of creating hole path string
-			
+
 			str += 'Z '; // Close path
-			
+
 		}// End of holepath check
-		
+
 		// Closing path element
 		str += '" />';
-		
+
 		// Rendering control points
 		if(options.lcpr || options.qcpr){
 			for(pcnt=0; pcnt<smp.segments.length; pcnt++){
@@ -1394,7 +1394,7 @@ function ImageTracer(){
 					str += '<circle cx="'+ smp.segments[pcnt].x2 * options.scale +'" cy="'+ smp.segments[pcnt].y2 * options.scale +'" r="'+ options.lcpr +'" fill="white" stroke-width="'+ options.lcpr * 0.2 +'" stroke="black" />';
 				}
 			}
-			
+
 			// Hole children control points
 			for( var hcnt=0; hcnt < smp.holechildren.length; hcnt++){
 				var hsmp = layer[ smp.holechildren[hcnt] ];
@@ -1411,18 +1411,18 @@ function ImageTracer(){
 				}
 			}
 		}// End of Rendering control points
-			
+
 		return str;
-		
+
 	},// End of svgpathstring()
-	
+
 	// Converting tracedata to an SVG string
 	this.getsvgstring = function( tracedata, options ){
-		
+
 		options = _this.checkoptions(options);
-		
+
 		var w = tracedata.width * options.scale, h = tracedata.height * options.scale;
-		
+
 		// SVG start
 		var svgstr = '<svg ' + (options.viewbox ? ('viewBox="0 0 '+w+' '+h+'" ') : ('width="'+w+'" height="'+h+'" ')) +
 			'version="1.1" xmlns="http://www.w3.org/2000/svg" desc="Created with imagetracer.js version '+_this.versionnumber+'" >';
@@ -1430,33 +1430,33 @@ function ImageTracer(){
 		// Drawing: Layers and Paths loops
 		for(var lcnt=0; lcnt < tracedata.layers.length; lcnt++){
 			for(var pcnt=0; pcnt < tracedata.layers[lcnt].length; pcnt++){
-				
+
 				// Adding SVG <path> string
 				if( !tracedata.layers[lcnt][pcnt].isholepath ){
 					svgstr += _this.svgpathstring( tracedata, lcnt, pcnt, options );
 				}
-					
+
 			}// End of paths loop
 		}// End of layers loop
-		
+
 		// SVG End
 		svgstr+='</svg>';
-		
+
 		return svgstr;
-		
+
 	},// End of getsvgstring()
-	
+
 	// Comparator for numeric Array.sort
 	this.compareNumbers = function(a,b){ return a - b; },
-	
+
 	// Convert color object to rgba string
 	this.torgbastr = function(c){ return 'rgba('+c.r+','+c.g+','+c.b+','+c.a+')'; },
-	
+
 	// Convert color object to SVG color string
 	this.tosvgcolorstr = function(c, options){
 		return 'fill="rgb('+c.r+','+c.g+','+c.b+')" stroke="rgb('+c.r+','+c.g+','+c.b+')" stroke-width="'+options.strokewidth+'" opacity="'+c.a/255.0+'" ';
 	},
-	
+
 	// Helper function: Appending an <svg> element to a container from an svgstring
 	this.appendSVGString = function(svgstr,parentid){
 		var div;
@@ -1473,28 +1473,28 @@ function ImageTracer(){
 		}
 		div.innerHTML += svgstr;
 	},
-	
+
 	////////////////////////////////////////////////////////////
 	//
 	//  Canvas functions
 	//
 	////////////////////////////////////////////////////////////
-	
+
 	// Gaussian kernels for blur
 	this.gks = [ [0.27901,0.44198,0.27901], [0.135336,0.228569,0.272192,0.228569,0.135336], [0.086776,0.136394,0.178908,0.195843,0.178908,0.136394,0.086776],
 	             [0.063327,0.093095,0.122589,0.144599,0.152781,0.144599,0.122589,0.093095,0.063327], [0.049692,0.069304,0.089767,0.107988,0.120651,0.125194,0.120651,0.107988,0.089767,0.069304,0.049692] ],
-	
+
 	// Selective Gaussian blur for preprocessing
 	this.blur = function(imgd,radius,delta){
 		var i,j,k,d,idx,racc,gacc,bacc,aacc,wacc;
-		
+
 		// new ImageData
 		var imgd2 = { width:imgd.width, height:imgd.height, data:[] };
-		
+
 		// radius and delta limits, this kernel
 		radius = Math.floor(radius); if(radius<1){ return imgd; } if(radius>5){ radius = 5; } delta = Math.abs( delta ); if(delta>1024){ delta = 1024; }
 		var thisgk = _this.gks[radius-1];
-		
+
 		// loop through all pixels, horizontal blur
 		for( j=0; j < imgd.height; j++ ){
 			for( i=0; i < imgd.width; i++ ){
@@ -1518,13 +1518,13 @@ function ImageTracer(){
 				imgd2.data[idx+1] = Math.floor(gacc / wacc);
 				imgd2.data[idx+2] = Math.floor(bacc / wacc);
 				imgd2.data[idx+3] = Math.floor(aacc / wacc);
-				
+
 			}// End of width loop
 		}// End of horizontal blur
-		
+
 		// copying the half blurred imgd2
 		var himgd = new Uint8ClampedArray(imgd2.data);
-		
+
 		// loop through all pixels, vertical blur
 		for( j=0; j < imgd.height; j++ ){
 			for( i=0; i < imgd.width; i++ ){
@@ -1548,14 +1548,14 @@ function ImageTracer(){
 				imgd2.data[idx+1] = Math.floor(gacc / wacc);
 				imgd2.data[idx+2] = Math.floor(bacc / wacc);
 				imgd2.data[idx+3] = Math.floor(aacc / wacc);
-				
+
 			}// End of width loop
 		}// End of vertical blur
-		
+
 		// Selective blur: loop through all pixels
 		for( j=0; j < imgd.height; j++ ){
 			for( i=0; i < imgd.width; i++ ){
-				
+
 				idx = (j*imgd.width+i)*4;
 				// d is the difference between the blurred and the original pixel
 				d = Math.abs(imgd2.data[idx  ] - imgd.data[idx  ]) + Math.abs(imgd2.data[idx+1] - imgd.data[idx+1]) +
@@ -1569,11 +1569,11 @@ function ImageTracer(){
 				}
 			}
 		}// End of Selective blur
-		
+
 		return imgd2;
-		
+
 	},// End of blur()
-	
+
 	// Helper function: loading an image from a URL, then executing callback with canvas as argument
 	this.loadImage = function(url,callback,options){
 		var img = new Image();
@@ -1588,13 +1588,13 @@ function ImageTracer(){
 		};
 		img.src = url;
 	},
-	
+
 	// Helper function: getting ImageData from a canvas
 	this.getImgdata = function(canvas){
 		var context = canvas.getContext('2d');
 		return context.getImageData(0,0,canvas.width,canvas.height);
 	},
-	
+
 	// Special palette to use with drawlayers()
 	this.specpalette = [
 		{r:0,g:0,b:0,a:255}, {r:128,g:128,b:128,a:255}, {r:0,g:0,b:128,a:255}, {r:64,g:64,b:128,a:255},
@@ -1602,12 +1602,12 @@ function ImageTracer(){
 		{r:128,g:0,b:0,a:255}, {r:128,g:64,b:64,a:255}, {r:128,g:0,b:128,a:255}, {r:168,g:168,b:168,a:255},
 		{r:192,g:128,b:128,a:255}, {r:192,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}, {r:0,g:128,b:0,a:255}
 	],
-	
+
 	// Helper function: Drawing all edge node layers into a container
 	this.drawLayers = function(layers,palette,scale,parentid){
 		scale = scale||1;
 		var w,h,i,j,k;
-		
+
 		// Preparing container
 		var div;
 		if(parentid){
@@ -1621,18 +1621,18 @@ function ImageTracer(){
 			div = document.createElement('div');
 			document.body.appendChild(div);
 		}
-		
+
 		// Layers loop
 		for (k in layers) {
 			if(!layers.hasOwnProperty(k)){ continue; }
-			
+
 			// width, height
 			w=layers[k][0].length; h=layers[k].length;
-			
+
 			// Creating new canvas for every layer
 			var canvas = document.createElement('canvas'); canvas.width=w*scale; canvas.height=h*scale;
 			var context = canvas.getContext('2d');
-			
+
 			// Drawing
 			for(j=0; j<h; j++){
 				for(i=0; i<w; i++){
@@ -1640,14 +1640,14 @@ function ImageTracer(){
 					context.fillRect(i*scale,j*scale,scale,scale);
 				}
 			}
-			
+
 			// Appending canvas to container
 			div.appendChild(canvas);
 		}// End of Layers loop
 	}// End of drawlayers
-	
+
 	;// End of function list
-	
+
 }// End of ImageTracer object
 
 // export as AMD module / Node module / browser or worker variable
@@ -1693,6 +1693,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-btn.iwdie-secondary{background:#7a8794}',
       '.iwdie-errlist{background:#fdf0f0;border:1px solid #e3b3b3;border-radius:6px;padding:10px 14px;margin:8px 0;max-height:220px;overflow:auto}',
       '.iwdie-errlist li{margin:4px 0}',
+      '.iwdie-x{position:absolute;top:6px;right:8px;width:26px;height:26px;border:none;background:transparent;color:#66788a;font:18px/26px Arial,sans-serif;cursor:pointer;border-radius:4px;padding:0}',
+      '.iwdie-x:hover{background:#e8edf2;color:#222}',
+      '.iwdie-choice{border:1px solid #d5dbe1;border-radius:6px;padding:10px 12px;margin:10px 0;background:#f7f9fb}',
+      '.iwdie-choice>div{margin-top:6px;color:#445;font-size:12.5px;line-height:1.45}',
+      '.iwdie-choice .iwdie-btn{margin:0}',
+      '.iwdie-hint{color:#778;font-size:11.5px;margin-top:6px}',
       '#manager_widget_iwdie fieldset{margin-top:4px}',
       /* The host hard-codes #manager_div to height:900px (overflow-y:auto);
          a fourth full-size button row makes the content ~918px, so the
@@ -2056,18 +2062,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
 
       /* Raster background: a PNG has no vectors to carry over, so offer two
-         deliveries — an automatic vector TRACE (editable shapes; small text
-         becomes outlines) as .svg, or the pixel-exact image as a PDF-based
-         .ai artboard. */
-      var wantTrace = false;
-      if (IWDIE_TRACER) {
-        wantTrace = window.confirm(
-          'Trace the background to VECTORS for Illustrator?\n\n' +
-          'OK = vector trace (.svg — editable shapes in the drawing\'s own colours;\n' +
-          '        small text becomes rough outlines). Runs in the background —\n' +
-          '        drawings take ~1–2 s, photos can take a while.\n' +
-          'Cancel = original pixels on an artboard (.ai)');
-      }
+         deliveries in a proper dialog (v1.6.0; used to be a bare confirm) —
+         an automatic vector TRACE (editable shapes; small text becomes
+         outlines) as .svg, or the pixel-exact image as a PDF-based .ai
+         artboard. Both buttons feed the same pipeline below. */
+      var startRasterExport = function (wantTrace) {
       var img = new Image();
       img.onload = function () {
         var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
@@ -2125,6 +2124,51 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       img.onerror = function () { toast('Could not load the background image (' + String(url).slice(0, 80) + '…)', true); };
       img.src = url;
+      };
+      if (!IWDIE_TRACER) { startRasterExport(false); return; }
+      openAiChooser(panel, startRasterExport);
+    }
+
+    /* ---------- Background → Illustrator chooser (v1.6.0) ---------- */
+    var aiChooserOverlay = null;
+
+    function closeAiChooser() {
+      if (aiChooserOverlay) { aiChooserOverlay.remove(); aiChooserOverlay = null; }
+      document.removeEventListener('keydown', onAiChooserKeydown, true);
+    }
+
+    function onAiChooserKeydown(ev) {
+      if (ev.key === 'Escape') { closeAiChooser(); ev.stopPropagation(); }
+    }
+
+    function openAiChooser(panelName, start) {
+      closeAiChooser();
+      var escd = String(panelName == null ? '' : panelName).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      aiChooserOverlay = document.createElement('div');
+      aiChooserOverlay.className = 'iwdie-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'iwdie-panel';
+      panel.innerHTML = [
+        '<button class="iwdie-x" id="iwdie_ai_x" title="Close (Esc)">×</button>',
+        '<h3>Background → Illustrator</h3>',
+        '<div>The background of <b>' + escd + '</b> is a pixel image (PNG/JPG). Pixels contain no vectors, so choose how Illustrator should get it:</div>',
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn" id="iwdie_ai_svg">Save as .SVG — vector trace</button>',
+        '  <div>Auto-traced to <b>editable vector shapes</b> in the drawing’s own colours — pipes, pills and symbols come out clean. Small text becomes rough outlines; retype labels in Illustrator. Traces in the background: drawings take ~1–2 s, photos can take minutes (the browser stays usable, the file downloads when done). Open with <i>File → Open</i>.</div>',
+        '</div>',
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn" id="iwdie_ai_pix">Save as .AI — pixels on artboard</button>',
+        '  <div>The original image, <b>lossless and pixel-exact</b>, placed 1:1 on an artboard (1 px = 1 pt). Ideal as a reference or tracing layer under new artwork — zooming shows pixels, nothing is vector-editable.</div>',
+        '</div>',
+        '<div class="iwdie-hint">Tip: if the drawing’s Illustrator source (.ai) exists in your archive, editing that beats any trace.</div>'
+      ].join('\n');
+      aiChooserOverlay.appendChild(panel);
+      document.body.appendChild(aiChooserOverlay);
+      document.addEventListener('keydown', onAiChooserKeydown, true);
+      aiChooserOverlay.addEventListener('mousedown', function (ev) { if (ev.target === aiChooserOverlay) closeAiChooser(); });
+      panel.querySelector('#iwdie_ai_x').addEventListener('click', closeAiChooser);
+      panel.querySelector('#iwdie_ai_svg').addEventListener('click', function () { closeAiChooser(); start(true); });
+      panel.querySelector('#iwdie_ai_pix').addEventListener('click', function () { closeAiChooser(); start(false); });
     }
 
     /* ---------- import modal ---------- */
