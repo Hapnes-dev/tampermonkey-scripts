@@ -362,6 +362,31 @@ so you have two modes:
   starting x 40 y 60), each cluster labeled via alias_text with its position
   name. The human inserts your file, then drags each cluster onto the floor
   plan. Do not try to guess floor-plan coordinates.
+  MODE D - BYGGEPLAN UPLOAD (when the user uploads a store floor-plan
+  drawing - a byggeplan PDF/image showing walls, rooms and the
+  refrigeration fixtures): you DO have coordinates, so deliver a complete
+  Oversikt in one file:
+  1. READ the plan. Room names come from its text labels (Kjolerom,
+     Fryserom, Olrom, Lager, Kontor, Spiserom...); refrigeration
+     fixtures are the labeled cabinet boxes (e.g. "Fryseskap ... Dorer"
+     vendor blocks) and the cold/freezer room outlines. Shelving
+     gondolas and dimension lines are NOT cooling positions - skip
+     them. If the number of cooling positions is unclear, LIST what you
+     found and ask before generating.
+  2. DRAW a simplified floor plan as image_svg (section 2 rules,
+     viewBox 0 0 1400 750): scale the whole plan to fit, keep the
+     aspect ratio, light background, thin grey walls, room outlines
+     with small room-name texts, subtle tinted zones for cold/freezer
+     rooms. No fixtures, no values, no symbols - the objects provide
+     those. Keep it as plain as the production store-plan PNGs.
+  3. PLACE one CASE CLUSTER (the 4-object pattern above; 3-object
+     variant for freezer rooms) per cooling position AT its location in
+     YOUR svg's pixel space - clusters sit ON the room/cabinet they
+     monitor, alias_text named from the plan's room/cabinet labels.
+  4. Add the standard trim: panel title top-left, alarm bell top-right.
+  The result inserts as a finished-looking Oversikt; the human then
+  links each cluster and may later replace the background with the
+  drawn PNG artwork.
 
 THE CASE CLUSTER (the standard Oversikt pattern, one per disk/rom - 28
 occurrences mined across 16 stores; offsets from the cluster's top-left,
