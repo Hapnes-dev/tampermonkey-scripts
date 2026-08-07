@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.3
+// @version      1.5.4
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -26,7 +26,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.5.3';
+var IWDIE_VERSION = '1.5.4';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1704,6 +1704,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          short windows the page's own scroll reaches the bottom, exactly
          like it does for tall canvases. */
       '#manager_div{height:auto !important;min-height:900px !important;max-height:none !important;overflow:visible !important}',
+      /* Compact mode — applied by updateCompact() ONLY when the full column
+         would not fit the window (measured, with hysteresis): tightens the
+         8px fieldset gaps to 4px and trims fieldset paddings, reclaiming
+         ~68px so the whole Panel JSON fieldset stays visible on ~1080p
+         windows. Button size is untouched (28px); on tall windows the
+         sidebar keeps the host's stock spacing. */
+      '#manager_div.iwdie-compact fieldset{margin-top:4px !important;padding-top:4px !important;padding-bottom:6px !important}',
+      '#manager_div.iwdie-compact #manager_widget_iwdie button{margin-top:2px !important}',
       ''].join('\n');
     try {
       if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
@@ -1756,6 +1764,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '  </fieldset>',
         '</div>'].join('\n');
       w7.insertAdjacentHTML('afterend', html);
+    }
+
+    /* Toggle the sidebar's compact spacing based on whether the full column
+       fits the window. Hysteresis: turning compact OFF regrows the column by
+       ~68px, so only leave compact when the regrown height would also fit —
+       otherwise the class would flap on every check. */
+    function updateCompact() {
+      var md = document.getElementById('manager_div');
+      var ours = document.getElementById('manager_widget_iwdie');
+      if (!md || !ours) return;
+      var fs = ours.querySelector('fieldset');
+      if (!fs) return;
+      var bottom = fs.getBoundingClientRect().bottom;
+      var compact = md.classList.contains('iwdie-compact');
+      if (!compact && bottom > window.innerHeight) md.classList.add('iwdie-compact');
+      else if (compact && bottom + 74 < window.innerHeight) md.classList.remove('iwdie-compact');
     }
 
     /* ---------- current panel context ---------- */
@@ -2327,10 +2351,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var installTimer = setInterval(function () {
       if (!document.getElementById('manager_widget7')) return;
       ensureFieldset();
+      updateCompact();
     }, 800);
     // keep the interval running forever (cheap) so the fieldset survives any
-    // host re-render of the sidebar; ensureFieldset() is idempotent.
+    // host re-render of the sidebar; ensureFieldset() is idempotent and
+    // updateCompact() re-evaluates after zooms/window changes too.
+    try { window.addEventListener('resize', updateCompact); } catch (e) {}
     ensureFieldset();
+    updateCompact();
   })();
 }
 
