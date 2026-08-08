@@ -114,7 +114,7 @@
       "units": [
         {
           "unit_id": "V03",
-          "unit_name": "360.002 Ventilasjon"
+          "unit_name": "360.003Ventilasjon"
         }
       ],
       "panels": [
@@ -130,7 +130,7 @@
             "V03"
           ],
           "unit_names": [
-            "360.002 Ventilasjon"
+            "360.003Ventilasjon"
           ],
           "fetch_error": null
         }

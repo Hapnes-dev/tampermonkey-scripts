@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 
-VENTILATION_WORDS = re.compile(r"\b(?:ventilasjon|ventilation)\b")
+VENTILATION_WORDS = re.compile(
+    r"(?:(?<=\d)|\b)(?:ventilasjon|ventilation)\b"
+)
 
 
 def normalize_text(value: object) -> str:

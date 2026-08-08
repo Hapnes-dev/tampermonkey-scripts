@@ -2,6 +2,7 @@ import importlib.util
 import json
 import pathlib
 import re
+import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -21,8 +22,10 @@ class CorpusBuilderTests(unittest.TestCase):
     def test_normalizes_case_and_norwegian_text(self):
         self.assertTrue(MODULE.is_ventilation_name("360.001 Ventilasjon"))
         self.assertTrue(MODULE.is_ventilation_name("VENTILATION"))
+        self.assertTrue(MODULE.is_ventilation_name("360.001Ventilasjon"))
         self.assertFalse(MODULE.is_ventilation_name("V01"))
         self.assertFalse(MODULE.is_ventilation_name("Varmegjenvinning"))
+        self.assertFalse(MODULE.is_ventilation_name("Forventilasjon"))
 
     def test_reports_panel_unit_and_both_reasons(self):
         corpus = MODULE.build_corpus(self.raw)
@@ -41,7 +44,7 @@ class CorpusBuilderTests(unittest.TestCase):
         self.assertEqual(xml["visibility"], "hidden")
         self.assertEqual(xml["v2_objects"], 44)
         self.assertEqual(xml["unit_ids"], ["V03"])
-        self.assertEqual(xml["unit_names"], ["360.002 Ventilasjon"])
+        self.assertEqual(xml["unit_names"], ["360.003Ventilasjon"])
         failed = next(p for p in corpus["plants"] if p["plant_id"] == "8049")
         partial = next(p for p in corpus["plants"] if p["plant_id"] == "8075")
         self.assertEqual(failed["outcome"], "failed")
@@ -135,4 +138,103 @@ class CorpusBuilderTests(unittest.TestCase):
         self.assertIn(
             "record.unit_names = joinedUnitNames(record.unit_ids, plant.units)",
             source,
+        )
+
+    def test_runner_uses_live_unit_route_and_parses_xml_data_rows(self):
+        runner = ROOT / "ventilation-survey-20.js"
+        harness = r"""
+const fs = require('fs');
+
+class Element {
+  constructor(name, textContent = '', children = []) {
+    this.localName = name;
+    this.nodeName = name;
+    this.textContent = textContent;
+    this.children = children;
+    this.attributes = [];
+  }
+
+  getElementsByTagName(tag) {
+    const matches = [];
+    const visit = element => {
+      if (tag === '*' || element.localName === tag) matches.push(element);
+      element.children.forEach(visit);
+    };
+    this.children.forEach(visit);
+    return matches;
+  }
+}
+
+class DOMParser {
+  parseFromString(text) {
+    const rows = Array.from(text.matchAll(/<data>([\s\S]*?)<\/data>/g), match => {
+      const body = match[1];
+      const value = tag => {
+        const found = body.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+        return found ? found[1] : '';
+      };
+      const children = [
+        new Element('unit_id', value('unit_id')),
+        new Element('unit_name', value('unit_name'))
+      ];
+      return new Element('data', children.map(child => child.textContent).join(''), children);
+    });
+    const root = new Element('root', '', rows);
+    return {
+      querySelector: () => null,
+      getElementsByTagName: tag => root.getElementsByTagName(tag)
+    };
+  }
+}
+
+global.DOMParser = DOMParser;
+global.setTimeout = resolve => { resolve(); return 0; };
+
+const calls = [];
+const unitXml = '<units>' +
+  '<data><unit_id>V01</unit_id><unit_name>360.001Ventilasjon</unit_name></data>' +
+  '<data><unit_id>V02</unit_id><unit_name>Butikkjøling</unit_name></data>' +
+  '</units>';
+global.fetch = async url => {
+  calls.push(url);
+  const payload = url.includes('V3get_plant_designer_panels') ? '[]' : unitXml;
+  return {ok: true, status: 200, text: async () => payload};
+};
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const run = eval(`(${source})`);
+const page = {
+  evaluate: async callback => callback([{id: '9099', name: 'Test plant'}])
+};
+
+run(page).then(serialized => {
+  const result = JSON.parse(serialized);
+  process.stdout.write(JSON.stringify({
+    unit_url: calls.find(url => url.includes('iw_load_units.php')),
+    units: result.plants['9099'].units
+  }));
+}).catch(error => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness, str(runner)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observed = json.loads(completed.stdout)
+        self.assertEqual(
+            observed["unit_url"],
+            "/iwmac_designer_v4/designer_site/iw_load_units.php"
+            "?cust_id=9099&driverId=driver_id",
+        )
+        self.assertEqual(
+            observed["units"],
+            [
+                {"unit_id": "V01", "unit_name": "360.001Ventilasjon"},
+                {"unit_id": "V02", "unit_name": "Butikkjøling"},
+            ],
         )

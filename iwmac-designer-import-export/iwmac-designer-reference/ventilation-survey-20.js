@@ -266,7 +266,8 @@ async page => {
 
       try {
         const unitPayload = await getText(
-          'iw_load_units.php?cust_id=' + encodeURIComponent(plantSpec.id) + '&driverId='
+          'designer_site/iw_load_units.php?cust_id=' +
+          encodeURIComponent(plantSpec.id) + '&driverId=driver_id'
         );
         const parsedUnits = parseUnits(unitPayload);
         plant.units = parsedUnits.rows;
