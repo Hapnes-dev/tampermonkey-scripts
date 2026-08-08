@@ -43,7 +43,7 @@ The approved design calls the general survey raw source and permits updating it 
 **Modify**
 
 - `iwmac-designer-import-export/README.md` — link focused corpus from AI-generated panel/reference section.
-- `iwmac-designer-import-export/iwmac-designer-reference/PANEL-TYPE-GUIDE.md` — expand ventilation section using verified 20-plant evidence and distinguish modern JSON from legacy/XML-only forms.
+- `iwmac-designer-import-export/iwmac-designer-reference/PANEL-TYPE-GUIDE.md` — expand ventilation section using verified 20-plant evidence and document JSON/XML transport format independently from modern-object and legacy-V2 object generation.
 - `iwmac-designer-import-export/iwmac-designer-reference/PLANT-PANEL-CATALOG.md` — add compact MENY 20-plant batch section and named ventilation copy sources.
 - `iwmac-designer-import-export/iwmac-designer-reference/CLAUDE.md` — document matching method, corpus artifacts, and XML-only export limitation.
 
@@ -270,7 +270,7 @@ def is_ventilation_name(value):
 1. Reject a batch unless `batch.plant_ids` has exactly 20 unique IDs and `plants` has an outcome record for every ID.
 2. Iterate plants in `batch.plant_ids` order and panels in source order.
 3. Compute panel-name match from exact panel name.
-4. Compute unit-name match only from `panel.unit_names`, already restricted by scraper to units linked from that panel's objects.
+4. Compute unit-name match by exact-joining each `panel.unit_ids` value to `unit_id` in that same plant's unit inventory, then classify from the joined inventory `unit_name`; recompute this join and never trust source `panel.unit_names`.
 5. Emit `discovery_reason` as `both`, `panel_name`, or `unit_name`.
 6. Map visibility `"1"` to `visible`; every other value to `hidden`.
 7. Keep JSON stats, XML-only stats, exact names, exact unit IDs/names, census, background, and fetch-error summary. Omit unknown/raw/private fields by constructing output from an allowlist rather than copying input dictionaries.
@@ -368,18 +368,18 @@ const PLANTS = [
 
 Inside `page.evaluate`, implement:
 
-- `getText(relativeUrl)` using `fetch(base + relativeUrl, {credentials: 'same-origin'})`, rejecting non-2xx HTTP statuses.
-- `getJson(relativeUrl)` returning parsed JSON or `null`.
+- `getText(relativeUrl, encoding = null)` using `fetch(base + relativeUrl, {credentials: 'same-origin'})`, rejecting non-2xx HTTP statuses. Normal JSON/panel responses use `response.text()`; unit XML passes `windows-1252`, reads `response.arrayBuffer()`, and decodes with `TextDecoder`.
+- `getJson(relativeUrl)` returns `null` for a blank response, returns parsed JSON for valid nonblank input, and throws sanitized `malformed JSON` for nonblank malformed input.
 - `parseUnits(payloadText)` must support both known response families without assuming one unverified XML shape:
   1. Try JSON first. Walk arrays plus object values recursively. Treat an object as a unit row when candidate ID keys `unit_id`, `id`, or `unit_ref` and candidate name keys `unit_name`, `name`, `alias_text`, or `aliastext` yield scalar values.
   2. Otherwise parse XML/HTML with `DOMParser`. Inspect `unit`, `data`, and `option` elements. Read ID/name from descendant tags with those same candidate names, then from same-named attributes; for `<option>`, use `value` as ID and trimmed text content as name.
   3. Discard rows missing ID or name, normalize values only for blank checks, preserve exact trimmed source strings, and deduplicate by the tuple `(unit_id, unit_name)`.
   4. When nonblank payload produces zero rows, return diagnostic `unit payload parsed zero rows` instead of silently treating inventory as empty.
-- Unit request: `iw_load_units.php?cust_id=<plant>&driverId=`. If request or parsing fails, set sanitized `unit_error` and continue panel survey. No panel may gain `unit_names` from a plant-wide fuzzy match: join exact object `unit_id` values only.
+- Unit request: `designer_site/iw_load_units.php?cust_id=<plant>&driverId=driver_id`. If request or parsing fails, set sanitized `unit_error` and continue panel survey. No panel may gain `unit_names` from a plant-wide fuzzy match: join exact object `unit_id` values only.
 - Panel list request: `designer_site/V3_objectHandler.php?function=V3get_plant_designer_panels&plant_id=<plant>`.
-- JSON request and stats exactly as `survey-batch.js`, plus `source_format: "json"`, `unit_ids` sorted unique from all single objects and container items with real `unit_id`, and `unit_names` obtained by joining those IDs to parsed unit rows.
+- JSON request and stats exactly as `survey-batch.js`, plus `source_format: "json"`, `unit_ids` sorted unique only when a valid `driver_id` and valid `unit_id` occur on the same single object or container item, and `unit_names` obtained by joining those IDs to parsed unit rows.
 - Background request only for valid JSON panels.
-- XML fallback request when JSON lacks `panel_name`; count `<data>` nodes, set `source_format: "xml_only"`, `n_obj`, `n_v2` from legacy object names/types matching current V2 heuristic, and `separator` when count is zero.
+- XML fallback request when JSON lacks `panel_name`; compiled XML requires a valid `<id>` (= `driver_id`) and valid `<unit_id>` on the same `<data>` before retaining that unit ID. Count `<data>` nodes, set `source_format: "xml_only"`, `n_obj`, `n_v2` from legacy object names/types matching current V2 heuristic, and `separator` when count is zero. Well-formed zero-`<data>` XML is valid; malformed XML remains an explicit sanitized `malformed XML` panel error.
 - Per-panel failures in `fetch_error`; plant failures in `error`; unit failures in `unit_error`.
 - Top-level metadata exactly:
 
@@ -455,7 +455,7 @@ Verify page title contains `IWMAC Designer V5`. If session is unauthenticated, s
 
 - [ ] **Step 3: Smoke-test unit parsing against live plant 9099**
 
-Before starting 20-plant batch, run one read-only `iw_load_units.php?cust_id=9099&driverId=` request in authenticated page context and apply runner's `parseUnits` logic to response in memory. Print only response family (`json` or `xml`), parsed row count, and exact parsed row for `V01`; never write raw payload. Required evidence: at least one parsed row and `V01` has nonblank display name. If this fails, stop batch, inspect only structural key/tag names in memory, send correction through original Codex thread, rerun deterministic tests, then repeat this smoke test. Do not claim unit-name discovery from unverified parser output.
+Before starting 20-plant batch, run one read-only `designer_site/iw_load_units.php?cust_id=9099&driverId=driver_id` request in authenticated page context, decode its bytes as Windows-1252, and apply the runner's `parseUnits` logic to the decoded response in memory. Print only response family (`json` or `xml`), parsed row count, and exact parsed row for `V01`; never write raw payload. Required evidence: at least one parsed row and `V01` has nonblank display name. If this fails, stop batch, inspect only structural key/tag names in memory, send correction through original Codex thread, rerun deterministic tests, then repeat this smoke test. Do not claim unit-name discovery from unverified parser output.
 
 - [ ] **Step 4: Run exact browser callback once**
 
@@ -537,7 +537,7 @@ Include these sections:
 2. Discovery: panel names plus panel-linked unit display names; `unit_id` alone excluded.
 3. Coverage table with attempted, matched, zero-match, failed/partial, JSON, XML-only, visible/hidden, and V2-bearing counts.
 4. Modern V3 object-drawn AHU pattern.
-5. Legacy V2/XML-only pattern and current userscript export limitation.
+5. Legacy V2 object pattern and current userscript export limitation, with JSON/XML source format reported separately because transport and object generation are independent dimensions.
 6. Copy-source table ranked by suitability using object count, linked ratio, source format, dimensions, and errors—not object count alone.
 7. Canonical plant 9099 production record: `360.001 Ventilasjon`, 1400×750, 102 objects, 57 linked, `V01`, zero V2/containers/graphics, approximately 6 KB blank/sidebar background, content extent 1400×623.
 8. Generated demo separation: 45 unlinked objects, SVG background, no production bindings, excluded from totals.
@@ -555,7 +555,7 @@ At `PANEL-TYPE-GUIDE.md:46-60`:
 - Preserve existing 41-plant Coop statistics as their own evidence set.
 - Add MENY batch subsection sourced from new corpus.
 - Explain panel-name and linked-unit-name discovery.
-- Contrast modern V3 JSON panels with legacy V2/XML-only panels.
+- Document modern-object and legacy-V2 object generation independently from JSON/XML transport format; do not infer one dimension from the other.
 - Replace or extend best-copy-source list only when new panel has complete JSON, no fetch errors, useful dimensions, and strong linked ratio.
 
 - [ ] **Step 5: Update plant catalog**

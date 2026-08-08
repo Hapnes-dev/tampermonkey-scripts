@@ -13,6 +13,8 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 SPEC.loader.exec_module(MODULE)
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "ventilation-survey-fixture.json"
+CORPUS = ROOT / "reference_data" / "ventilation-panel-corpus.json"
+GUIDE = ROOT / "VENTILATION-CORPUS.md"
 
 
 class CorpusBuilderTests(unittest.TestCase):
@@ -37,6 +39,35 @@ class CorpusBuilderTests(unittest.TestCase):
         self.assertEqual(reasons[("8002", "Butikk")], "unit_name")
         self.assertEqual(reasons[("8016", "Teknisk")], "unit_name")
 
+    def test_ignores_injected_panel_unit_names_without_exact_join(self):
+        panel = self.raw["plants"]["8045"]["panels"][0]
+        panel["unit_ids"] = []
+        panel["unit_names"] = ["Ventilasjon"]
+        corpus = MODULE.build_corpus(self.raw)
+        self.assertFalse(
+            any(item["plant_id"] == "8045" for item in corpus["panels"])
+        )
+
+    def test_recomputes_panel_unit_names_from_exact_same_plant_join(self):
+        plant = self.raw["plants"]["8045"]
+        panel = plant["panels"][0]
+        plant["units"] = [
+            {"unit_id": "V99", "unit_name": "360.099Ventilasjon"},
+            {"unit_id": "V98", "unit_name": "360.098 Ventilation"},
+        ]
+        panel["unit_ids"] = ["V99", "V98", "V99"]
+        panel["unit_names"] = ["stale source name"]
+        corpus = MODULE.build_corpus(self.raw)
+        matched = next(
+            item for item in corpus["panels"] if item["plant_id"] == "8045"
+        )
+        self.assertEqual(matched["discovery_reason"], "unit_name")
+        self.assertEqual(matched["unit_ids"], ["V98", "V99"])
+        self.assertEqual(
+            matched["unit_names"],
+            ["360.098 Ventilation", "360.099Ventilasjon"],
+        )
+
     def test_keeps_xml_hidden_v2_and_failed_plant_coverage(self):
         corpus = MODULE.build_corpus(self.raw)
         xml = next(p for p in corpus["panels"] if p["plant_id"] == "8016")
@@ -49,6 +80,7 @@ class CorpusBuilderTests(unittest.TestCase):
         partial = next(p for p in corpus["plants"] if p["plant_id"] == "8075")
         self.assertEqual(failed["outcome"], "failed")
         self.assertEqual(partial["outcome"], "partial")
+        self.assertEqual(corpus["summary"]["partial_plants"], 1)
 
     def test_canonical_examples_stay_outside_batch_totals(self):
         corpus = MODULE.build_corpus(self.raw)
@@ -57,10 +89,83 @@ class CorpusBuilderTests(unittest.TestCase):
         self.assertEqual(production["plant_id"], "9099")
         self.assertEqual(production["objects"], 102)
         self.assertEqual(production["linked_objects"], 57)
+        self.assertEqual(production["unit_names"], ["360.001Ventilasjon"])
         self.assertTrue(production["outside_batch"])
         self.assertEqual(demo["objects"], 45)
         self.assertFalse(demo["included_in_production_totals"])
         self.assertEqual(corpus["summary"]["attempted_plants"], 20)
+
+    def test_documented_coverage_table_matches_repository_corpus(self):
+        corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+        guide = GUIDE.read_text(encoding="utf-8")
+        summary = corpus["summary"]
+        expected = {
+            "Attempted plants": summary["attempted_plants"],
+            "Matched plants": summary["matched_plants"],
+            "Zero-match plants": summary["zero_match_plants"],
+            "Partial plants": summary["partial_plants"],
+            "Failed plants": summary["failed_plants"],
+            "Matched panels": summary["matched_panels"],
+            "JSON panels": summary["json_panels"],
+            "XML-only panels": summary["xml_only_panels"],
+            "Visible panels": summary["visible_panels"],
+            "Hidden panels": summary["hidden_panels"],
+            "V2-bearing panels": summary["v2_bearing_panels"],
+            "Discovery: both": sum(
+                panel["discovery_reason"] == "both" for panel in corpus["panels"]
+            ),
+            "Discovery: unit_name": sum(
+                panel["discovery_reason"] == "unit_name"
+                for panel in corpus["panels"]
+            ),
+            "Discovery: panel_name": sum(
+                panel["discovery_reason"] == "panel_name"
+                for panel in corpus["panels"]
+            ),
+        }
+        for label, value in expected.items():
+            with self.subTest(label=label):
+                matches = re.findall(
+                    rf"^\|\s*{re.escape(label)}\s*\|\s*(\d+)\s*\|\s*$",
+                    guide,
+                    flags=re.MULTILINE,
+                )
+                self.assertEqual(matches, [str(value)])
+
+    def test_zero_panels_with_unit_endpoint_error_is_partial(self):
+        plant = self.raw["plants"]["8045"]
+        plant["panels"] = []
+        plant["unit_error"] = "HTTP 500"
+        corpus = MODULE.build_corpus(self.raw)
+        coverage = next(
+            item for item in corpus["plants"] if item["plant_id"] == "8045"
+        )
+        self.assertEqual(coverage["outcome"], "partial")
+
+    def test_failed_panel_is_not_matched_by_name(self):
+        panel = self.raw["plants"]["8045"]["panels"][0]
+        panel["name"] = "Ventilasjon"
+        panel["source_format"] = None
+        panel["fetch_error"] = "malformed XML"
+        corpus = MODULE.build_corpus(self.raw)
+        coverage = next(
+            item for item in corpus["plants"] if item["plant_id"] == "8045"
+        )
+        self.assertFalse(
+            any(item["plant_id"] == "8045" for item in corpus["panels"])
+        )
+        self.assertEqual(coverage["outcome"], "partial")
+        self.assertEqual(
+            corpus["summary"]["matched_panels"],
+            corpus["summary"]["json_panels"]
+            + corpus["summary"]["xml_only_panels"],
+        )
+        self.assertTrue(
+            all(
+                item["source_format"] in {"json", "xml_only"}
+                for item in corpus["panels"]
+            )
+        )
 
     def test_requires_exact_20_unique_attempts(self):
         self.raw["batch"]["plant_ids"].pop()
@@ -191,14 +296,27 @@ global.DOMParser = DOMParser;
 global.setTimeout = resolve => { resolve(); return 0; };
 
 const calls = [];
-const unitXml = '<units>' +
+const unitXmlBytes = Uint8Array.from(Buffer.from('<units>' +
   '<data><unit_id>V01</unit_id><unit_name>360.001Ventilasjon</unit_name></data>' +
-  '<data><unit_id>V02</unit_id><unit_name>Butikkjøling</unit_name></data>' +
-  '</units>';
+  '<data><unit_id>V02</unit_id><unit_name>Kj\xf8l</unit_name></data>' +
+  '<data><unit_id>V03</unit_id><unit_name>T\xf8rrkj\xf8ler</unit_name></data>' +
+  '</units>', 'latin1'));
 global.fetch = async url => {
   calls.push(url);
-  const payload = url.includes('V3get_plant_designer_panels') ? '[]' : unitXml;
-  return {ok: true, status: 200, text: async () => payload};
+  if (url.includes('iw_load_units.php')) {
+    return {
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error('unit inventory used response.text()'); },
+      arrayBuffer: async () => unitXmlBytes.buffer
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    text: async () => '[]',
+    arrayBuffer: async () => { throw new Error('panel response used arrayBuffer()'); }
+  };
 };
 
 const source = fs.readFileSync(process.argv[1], 'utf8');
@@ -235,6 +353,207 @@ run(page).then(serialized => {
             observed["units"],
             [
                 {"unit_id": "V01", "unit_name": "360.001Ventilasjon"},
-                {"unit_id": "V02", "unit_name": "Butikkjøling"},
+                {"unit_id": "V02", "unit_name": "Kjøl"},
+                {"unit_id": "V03", "unit_name": "Tørrkjøler"},
             ],
         )
+
+    def test_runner_rejects_malformed_json_and_requires_real_panel_links(self):
+        runner = ROOT / "ventilation-survey-20.js"
+        harness = r"""
+const fs = require('fs');
+
+class Element {
+  constructor(name, textContent = '', children = []) {
+    this.localName = name;
+    this.nodeName = name;
+    this.textContent = textContent;
+    this.children = children;
+    this.attributes = [];
+  }
+
+  getElementsByTagName(tag) {
+    const matches = [];
+    const visit = element => {
+      if (tag === '*' || element.localName === tag) matches.push(element);
+      element.children.forEach(visit);
+    };
+    this.children.forEach(visit);
+    return matches;
+  }
+}
+
+class DOMParser {
+  parseFromString(text, mediaType) {
+    if (mediaType === 'application/xml' && text === '<root><data>') {
+      return {
+        querySelector: selector => selector === 'parsererror'
+          ? new Element('parsererror', 'malformed')
+          : null,
+        getElementsByTagName: () => []
+      };
+    }
+    const rows = Array.from(text.matchAll(/<data>([\s\S]*?)<\/data>/g), match => {
+      const body = match[1];
+      const value = tag => {
+        const found = body.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+        return found ? found[1] : '';
+      };
+      const children = [
+        'name', 'obj_id', 'object_name', 'iw_name', 'type', 'obj_type',
+        'id', 'unit_id'
+      ].map(tag => new Element(tag, value(tag)));
+      return new Element('data', children.map(child => child.textContent).join(''), children);
+    });
+    const root = new Element('root', '', rows);
+    return {
+      querySelector: () => null,
+      getElementsByTagName: tag => root.getElementsByTagName(tag)
+    };
+  }
+}
+
+global.DOMParser = DOMParser;
+global.setTimeout = resolve => { resolve(); return 0; };
+
+let scenario = 'panels';
+const calls = [];
+const response = text => ({
+  ok: true,
+  status: 200,
+  text: async () => text,
+  arrayBuffer: async () => Uint8Array.from(Buffer.from(text, 'utf8')).buffer
+});
+const unitJson = JSON.stringify([
+  {unit_id: 'V01', unit_name: '360.001Ventilasjon'},
+  {unit_id: 'V02', unit_name: '360.002 Ventilation'}
+]);
+const panelList = JSON.stringify([
+  {id: '1', panel_name: 'Malformed', visible: '1'},
+  {id: '2', panel_name: 'EmptyFallback', visible: '1'},
+  {id: '3', panel_name: 'ZeroObjectXml', visible: '1'},
+  {id: '4', panel_name: 'BrokenXml', visible: '1'},
+  {id: '5', panel_name: 'JsonLinked', visible: '1'}
+]);
+const legacyXml = '<root>' +
+  '<data><name>V2_old</name><id>driver_id</id><unit_id>STALE</unit_id></data>' +
+  '<data><name>number_v3_label</name><id>real-xml</id><unit_id>UNIT_ID</unit_id></data>' +
+  '<data><name>number_v3_label</name><id>UnDeFiNeD</id><unit_id>STALE2</unit_id></data>' +
+  '<data><name>number_v3_label</name><id>real-xml</id><unit_id>#template</unit_id></data>' +
+  '<data><name>V2_live</name><id>real-xml</id><unit_id>V02</unit_id></data>' +
+  '</root>';
+const jsonPanel = JSON.stringify({
+  panel_name: 'JsonLinked',
+  panel_width: '1400px',
+  panel_height: '750px',
+  single_objects: [
+    {obj_id: 'number_v3_label', driver_id: 'driver_id', unit_id: 'STALE', linked: 'true'},
+    {obj_id: 'number_v3_label', driver_id: 'real-json', unit_id: 'DRIVER_ID'},
+    {obj_id: 'number_v3_label', driver_id: 'UNIT_ID', unit_id: 'STALE2'},
+    {obj_id: 'number_v3_label', driver_id: 'real-json', unit_id: 'NuLl'},
+    {obj_id: 'number_v3_label', driver_id: 'real-json', unit_id: '#template'},
+    {obj_id: 'number_v3_label', driver_id: 'real-json', unit_id: ''}
+  ],
+  containers: [{items: [
+    {obj_id: 'V2_live', driver_id: 'real-json', unit_id: 'V01'}
+  ]}],
+  graphics: []
+});
+
+global.fetch = async url => {
+  calls.push({scenario, url});
+  if (url.includes('iw_load_units.php')) return response(unitJson);
+  if (url.includes('V3get_plant_designer_panels')) {
+    return response(scenario === 'malformed-list' ? '[{"panel_name":' : panelList);
+  }
+  if (url.includes('format=json') && url.includes('name=Malformed')) {
+    return response('{"panel_name":');
+  }
+  if (url.includes('format=json') && (
+    url.includes('name=EmptyFallback') ||
+    url.includes('name=ZeroObjectXml') ||
+    url.includes('name=BrokenXml')
+  )) {
+    return response('[]');
+  }
+  if (url.includes('format=json') && url.includes('name=JsonLinked')) {
+    return response(jsonPanel);
+  }
+  if (url.includes('format=image_data')) return response('');
+  if (url.includes('name=EmptyFallback')) return response(legacyXml);
+  if (url.includes('name=ZeroObjectXml')) return response('<root></root>');
+  if (url.includes('name=BrokenXml')) return response('<root><data>');
+  throw new Error('unexpected URL ' + url);
+};
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const run = eval(`(${source})`);
+const page = {
+  evaluate: async callback => callback([{id: '9099', name: 'Test plant'}])
+};
+
+async function survey(nextScenario) {
+  scenario = nextScenario;
+  return JSON.parse(await run(page));
+}
+
+(async () => {
+  const panelResult = await survey('panels');
+  const malformedListResult = await survey('malformed-list');
+  const panels = panelResult.plants['9099'].panels;
+  process.stdout.write(JSON.stringify({
+    malformed: panels.find(panel => panel.name === 'Malformed'),
+    fallback: panels.find(panel => panel.name === 'EmptyFallback'),
+    zeroObjectXml: panels.find(panel => panel.name === 'ZeroObjectXml'),
+    malformedXml: panels.find(panel => panel.name === 'BrokenXml'),
+    jsonLinked: panels.find(panel => panel.name === 'JsonLinked'),
+    malformedListError: malformedListResult.plants['9099'].error,
+    malformedXmlRequests: calls.filter(
+      call => call.url.includes('name=Malformed') && !call.url.includes('format=json')
+    ).length
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness, str(runner)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observed = json.loads(completed.stdout)
+        with self.subTest("malformed panel JSON"):
+            self.assertIsNone(observed["malformed"]["source_format"])
+            self.assertEqual(
+                observed["malformed"]["fetch_error"], "malformed JSON"
+            )
+            self.assertEqual(observed["malformedXmlRequests"], 0)
+        with self.subTest("valid empty JSON uses linked XML fallback"):
+            self.assertEqual(observed["fallback"]["source_format"], "xml_only")
+            self.assertEqual(observed["fallback"]["unit_ids"], ["V02"])
+            self.assertEqual(
+                observed["fallback"]["unit_names"], ["360.002 Ventilation"]
+            )
+            self.assertEqual(observed["fallback"]["n_v2"], 2)
+        with self.subTest("well-formed zero-object panel XML"):
+            self.assertEqual(observed["zeroObjectXml"]["source_format"], "xml_only")
+            self.assertTrue(observed["zeroObjectXml"]["separator"])
+            self.assertEqual(observed["zeroObjectXml"]["n_obj"], 0)
+            self.assertIsNone(observed["zeroObjectXml"]["fetch_error"])
+        with self.subTest("malformed panel XML"):
+            self.assertIsNone(observed["malformedXml"]["source_format"])
+            self.assertEqual(observed["malformedXml"]["fetch_error"], "malformed XML")
+            self.assertEqual(observed["malformedXml"]["unit_ids"], [])
+            self.assertEqual(observed["malformedXml"]["unit_names"], [])
+        with self.subTest("JSON unit IDs require real drivers"):
+            self.assertEqual(observed["jsonLinked"]["source_format"], "json")
+            self.assertEqual(observed["jsonLinked"]["unit_ids"], ["V01"])
+            self.assertEqual(
+                observed["jsonLinked"]["unit_names"], ["360.001Ventilasjon"]
+            )
+            self.assertEqual(observed["jsonLinked"]["n_v2"], 1)
+        with self.subTest("malformed panel list JSON"):
+            self.assertEqual(observed["malformedListError"], "malformed JSON")

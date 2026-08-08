@@ -44,12 +44,44 @@ def _dict(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _joined_panel_units(
+    panel: dict[str, Any], unit_rows: list[Any]
+) -> tuple[list[str], list[str]]:
+    """Return sorted panel-local IDs and exact same-plant inventory joins."""
+
+    unit_ids = sorted(
+        {
+            value
+            for value in _list(panel.get("unit_ids"))
+            if isinstance(value, str) and value
+        }
+    )
+    unit_names: list[str] = []
+    seen_names: set[str] = set()
+    for unit_id in unit_ids:
+        for row in unit_rows:
+            if not isinstance(row, dict) or row.get("unit_id") != unit_id:
+                continue
+            unit_name = row.get("unit_name")
+            if (
+                not isinstance(unit_name, str)
+                or not unit_name.strip()
+                or unit_name in seen_names
+            ):
+                continue
+            seen_names.add(unit_name)
+            unit_names.append(unit_name)
+    return unit_ids, unit_names
+
+
 def _panel_record(
     plant_id: str,
     plant_name: object,
     fleet: object,
     panel: dict[str, Any],
     discovery_reason: str,
+    unit_ids: list[str],
+    unit_names: list[str],
 ) -> dict[str, Any]:
     """Project one matched source panel through the public allowlist."""
 
@@ -77,8 +109,8 @@ def _panel_record(
         "background_name": panel.get("org_image"),
         "background_kb": panel.get("bg_kb"),
         "separator": panel.get("separator"),
-        "unit_ids": _list(panel.get("unit_ids")),
-        "unit_names": _list(panel.get("unit_names")),
+        "unit_ids": unit_ids,
+        "unit_names": unit_names,
         "fetch_error": _error_summary(panel.get("fetch_error"), 120),
     }
 
@@ -94,6 +126,7 @@ def _canonical_examples() -> dict[str, dict[str, Any]]:
             "objects": 102,
             "linked_objects": 57,
             "unit_ids": ["V01"],
+            "unit_names": ["360.001Ventilasjon"],
             "v2_objects": 0,
             "containers": 0,
             "graphics": 0,
@@ -157,6 +190,7 @@ def build_corpus(raw: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"plant {plant_id} must be an object")
 
         source_panels = _list(plant.get("panels"))
+        unit_rows = _list(plant.get("units"))
         plant_matches: list[dict[str, Any]] = []
         panel_errors: list[dict[str, Any]] = []
 
@@ -172,11 +206,13 @@ def build_corpus(raw: dict[str, Any]) -> dict[str, Any]:
                         "error": panel_error,
                     }
                 )
+                continue
 
+            unit_ids, unit_names = _joined_panel_units(source_panel, unit_rows)
             panel_match = is_ventilation_name(source_panel.get("name"))
             unit_match = any(
                 is_ventilation_name(unit_name)
-                for unit_name in _list(source_panel.get("unit_names"))
+                for unit_name in unit_names
             )
             if not panel_match and not unit_match:
                 continue
@@ -194,6 +230,8 @@ def build_corpus(raw: dict[str, Any]) -> dict[str, Any]:
                 fleet,
                 source_panel,
                 reason,
+                unit_ids,
+                unit_names,
             )
             plant_matches.append(record)
             matched_panels.append(record)
@@ -202,7 +240,7 @@ def build_corpus(raw: dict[str, Any]) -> dict[str, Any]:
         unit_error = _error_summary(plant.get("unit_error"))
         if plant_error and not source_panels:
             outcome = "failed"
-        elif source_panels and (plant_error or unit_error or panel_errors):
+        elif plant_error or unit_error or panel_errors:
             outcome = "partial"
         elif plant_matches:
             outcome = "matched"
@@ -227,6 +265,7 @@ def build_corpus(raw: dict[str, Any]) -> dict[str, Any]:
         "attempted_plants": len(coverage),
         "successful_plants": sum(outcome != "failed" for outcome in outcomes),
         "failed_plants": outcomes.count("failed"),
+        "partial_plants": outcomes.count("partial"),
         "zero_match_plants": outcomes.count("zero_match"),
         "matched_plants": sum(plant["matched_panels"] > 0 for plant in coverage),
         "matched_panels": len(matched_panels),

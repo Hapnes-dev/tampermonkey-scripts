@@ -16,6 +16,61 @@ Surveyed 2026-08-08 from the live compiled-panel store (read-only `iw_load_ctrls
 - **9914 (EXTRA Hunstad)** is the outlier: 35 panels including a container-built per-room system (`Romtype*`, `Rom NNN`) and `Plan 1`/`Plan 2` floor plans — the only plant in the fleet using containers at scale.
 - **9486 (Coop Extra Igor Mitt)** is Swedish (`Översikt`, panel `KA1`).
 
+## Separate MENY ventilation batch — 20 attempted plants
+
+This is not part of the Coop Extra fleet totals above. The focused [MENY ventilation corpus](VENTILATION-CORPUS.md) derives from the corrected [101-panel raw batch](reference_data/plant-panel-survey-meny-20.json) and its [machine-readable match set](reference_data/ventilation-panel-corpus.json). The authenticated GET-only rerun passed offline validation: 20 plants, 42 JSON-backed panels, 59 XML-only panels, and no plant, unit, or panel errors.
+
+- **Matched (16):** `8001`, `8002`, `8016`, `8049`, `8075`, `8088`, `8124`, `8132`, `8146`, `8150`, `8158`, `8205`, `8214`, `8232`, `8239`, `8272`.
+- **Zero match (4):** `8045`, `8076`, `8098`, `8289`. **Partial: 0; failed: 0.**
+- **34 matched panels:** 14 JSON / 20 XML-only; 33 visible / 1 hidden; 30 V2-bearing.
+- **Discovery:** 2 panel-and-unit (`both`), 30 exact panel-linked unit-name, 2 panel-name only. Opaque IDs and unrelated plant-wide unit names never classify a panel.
+- **Compiled XML binding:** retain a unit ID only when a valid `<id>` (= `driver_id`) and valid `<unit_id>` occur on the same `<data>` object.
+
+Plant `9099` remains the separate canonical production example outside this MENY batch: panel `360.001 Ventilasjon` joins `V01` to the exact live same-plant inventory name `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override that live name. Generated `ventilation_demo_360001.json` remains demo-only and contributes to no production total.
+
+The table below contains all 34 matched records plus one coverage row for every zero-match plant. `—` means the corpus does not know that field; in particular, XML-only dimensions and linked totals are not zero. All matched panel `fetch_error` fields and all four zero-match plant/unit error fields are null.
+
+| Plant | Panel | Match / outcome | Source | Vis | Size | Objects | Linked | Error |
+|---|---|---|---|---|---|---:|---:|---|
+| 8001 MENY Rona | Ventilasjon | `both` | JSON | visible | 1280×1024 | 80 | 57/80 | none |
+| 8001 MENY Rona | Energi | `unit_name` | JSON | visible | 1050×745 | 12 | 12/12 | none |
+| 8002 MENY Bekkestua | 360.01 Ventilasjon | `both` | XML-only | visible | — | 77 | — | none |
+| 8002 MENY Bekkestua | Energi | `unit_name` | JSON | visible | 1050×745 | 14 | 14/14 | none |
+| 8016 MENY Støletorget | 360.01 Butikk | `unit_name` | XML-only | visible | — | 59 | — | none |
+| 8016 MENY Støletorget | Energi | `unit_name` | JSON | visible | 852×713 | 8 | 8/8 | none |
+| 8049 MENY Osloveien Hønefoss | 360.01 Butikk | `unit_name` | XML-only | visible | — | 107 | — | none |
+| 8049 MENY Osloveien Hønefoss | Energi | `unit_name` | XML-only | visible | — | 18 | — | none |
+| 8075 Meny GS | 360.01 Butikk | `unit_name` | XML-only | visible | — | 103 | — | none |
+| 8075 Meny GS | Energi | `unit_name` | XML-only | visible | — | 4 | — | none |
+| 8088 MENY Romeriksenteret | 360.01 Butikk | `unit_name` | XML-only | visible | — | 84 | — | none |
+| 8088 MENY Romeriksenteret | Energi | `unit_name` | XML-only | visible | — | 4 | — | none |
+| 8124 MENY Alna | 360.01 Ventilasjon | `panel_name` | JSON | visible | 1280×1024 | 95 | 71/95 | none |
+| 8124 MENY Alna | Energi | `unit_name` | JSON | visible | 1400×750 | 17 | 17/17 | none |
+| 8132 MENY Rasta | 360.01 Butikk | `unit_name` | XML-only | visible | — | 77 | — | none |
+| 8132 MENY Rasta | Energi | `unit_name` | XML-only | visible | — | 4 | — | none |
+| 8146 MENY Høvik | Tørrkjøler og beredersystem | `unit_name` | JSON | visible | 1280×1024 | 84 | 52/84 | none |
+| 8146 MENY Høvik | 360.01 Butikk | `unit_name` | XML-only | visible | — | 68 | — | none |
+| 8146 MENY Høvik | Energi | `unit_name` | JSON | visible | 1050×745 | 16 | 16/16 | none |
+| 8150 MENY Stovner | Tørrkjøler og beredersystem | `unit_name` | JSON | visible | 1280×1024 | 38 | 32/38 | none |
+| 8150 MENY Stovner | 360.01 Butikk | `unit_name` | XML-only | visible | — | 91 | — | none |
+| 8150 MENY Stovner | Energi | `unit_name` | XML-only | visible | — | 8 | — | none |
+| 8158 Meny Trekanten | Tørrkjøler | `unit_name` | XML-only | visible | — | 49 | — | none |
+| 8158 Meny Trekanten | 360.01 Butikk | `unit_name` | XML-only | visible | — | 35 | — | none |
+| 8158 Meny Trekanten | Energi | `unit_name` | JSON | visible | 1400×750 | 6 | 6/6 | none |
+| 8205 MENY Brakerøya | Tørrkjøler og beredersystem | `unit_name` | JSON | visible | 1280×1024 | 38 | 32/38 | none |
+| 8205 MENY Brakerøya | 360.01 Butikk | `unit_name` | XML-only | visible | — | 110 | — | none |
+| 8205 MENY Brakerøya | Energi | `unit_name` | JSON | visible | 1400×750 | 12 | 12/12 | none |
+| 8205 MENY Brakerøya | 360.01 UR | `unit_name` | XML-only | hidden | — | 30 | — | none |
+| 8214 MENY Langhus | Energi | `unit_name` | JSON | visible | 1280×1024 | 10 | 10/10 | none |
+| 8232 MENY Askim | Energi | `unit_name` | JSON | visible | 1280×1024 | 24 | 16/24 | none |
+| 8239 MENY Vollebekk | 360.01 Ventilasjon | `panel_name` | XML-only | visible | — | 33 | — | none |
+| 8239 MENY Vollebekk | Energi | `unit_name` | XML-only | visible | — | 4 | — | none |
+| 8272 MENY Åssiden | Energi | `unit_name` | XML-only | visible | — | 4 | — | none |
+| 8045 MENY Nanset | — | `zero_match` | — | — | — | — | — | none |
+| 8076 MENY Slependen | — | `zero_match` | — | — | — | — | — | none |
+| 8098 MENY Stortorvet | — | `zero_match` | — | — | — | — | — | none |
+| 8289 MENY Fantoft | — | `zero_match` | — | — | — | — | — | none |
+
 ## Per-plant inventory
 
 ### 9099 — EXTRA Dokka NY

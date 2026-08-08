@@ -47,22 +47,27 @@ async page => {
       return (compact || 'unknown error').slice(0, limit);
     }
 
-    async function getText(relativeUrl) {
+    async function getText(relativeUrl, encoding = null) {
       const response = await fetch(base + relativeUrl, {
         credentials: 'same-origin'
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
+      if (encoding !== null) {
+        const bytes = await response.arrayBuffer();
+        return new TextDecoder(encoding).decode(bytes);
+      }
       return await response.text();
     }
 
     async function getJson(relativeUrl) {
       const payloadText = await getText(relativeUrl);
+      if (!payloadText.trim()) return null;
       try {
         return JSON.parse(payloadText);
       } catch (error) {
-        return null;
+        throw new Error('malformed JSON');
       }
     }
 
@@ -125,6 +130,17 @@ async page => {
       const xmlDocument = parser.parseFromString(payloadText, 'application/xml');
       if (!xmlDocument.querySelector('parsererror')) return xmlDocument;
       return parser.parseFromString(payloadText, 'text/html');
+    }
+
+    function parsePanelXml(payloadText) {
+      const documentNode = new DOMParser().parseFromString(
+        payloadText,
+        'application/xml'
+      );
+      if (documentNode.querySelector('parsererror')) {
+        throw new Error('malformed XML');
+      }
+      return documentNode;
     }
 
     function parseUnits(payloadText) {
@@ -195,13 +211,20 @@ async page => {
 
     function realDriverId(value) {
       const driverId = scalarText(value);
-      return driverId !== null && driverId !== 'driver_id' && !driverId.startsWith('#');
+      if (driverId === null || driverId.startsWith('#')) return false;
+      return !['driver_id', 'unit_id', 'undefined', 'null'].includes(
+        driverId.toLocaleLowerCase('en-US')
+      );
     }
 
     function realUnitId(value) {
       const unitId = scalarText(value);
       if (unitId === null || unitId.startsWith('#')) return null;
-      if (['unit_id', 'undefined', 'null'].includes(unitId.toLocaleLowerCase('en-US'))) {
+      if (
+        ['driver_id', 'unit_id', 'undefined', 'null'].includes(
+          unitId.toLocaleLowerCase('en-US')
+        )
+      ) {
         return null;
       }
       return unitId;
@@ -226,7 +249,7 @@ async page => {
     }
 
     function parseLegacyPanel(payloadText) {
-      const documentNode = parseMarkup(payloadText);
+      const documentNode = parsePanelXml(payloadText);
       const dataNodes = Array.from(documentNode.getElementsByTagName('*'))
         .filter(element => nodeName(element) === 'data');
       const unitIds = new Set();
@@ -237,8 +260,10 @@ async page => {
           return value !== null && v2Pattern.test(value);
         });
         if (isV2) v2Objects += 1;
-        const unitId = realUnitId(legacyValue(dataNode, 'unit_id'));
-        if (unitId !== null) unitIds.add(unitId);
+        if (realDriverId(legacyValue(dataNode, 'id'))) {
+          const unitId = realUnitId(legacyValue(dataNode, 'unit_id'));
+          if (unitId !== null) unitIds.add(unitId);
+        }
       }
       return {
         objects: dataNodes.length,
@@ -267,7 +292,8 @@ async page => {
       try {
         const unitPayload = await getText(
           'designer_site/iw_load_units.php?cust_id=' +
-          encodeURIComponent(plantSpec.id) + '&driverId=driver_id'
+          encodeURIComponent(plantSpec.id) + '&driverId=driver_id',
+          'windows-1252'
         );
         const parsedUnits = parseUnits(unitPayload);
         plant.units = parsedUnits.rows;
@@ -325,12 +351,15 @@ async page => {
                 let maxY = 0;
 
                 for (const object of allItems) {
-                  if (realDriverId(object.driver_id)) linked += 1;
+                  const hasRealDriver = realDriverId(object.driver_id);
+                  if (hasRealDriver) linked += 1;
                   const objectType = scalarText(object.obj_id) || '';
                   census[objectType] = (census[objectType] || 0) + 1;
                   if (v2Pattern.test(objectType)) v2Objects += 1;
-                  const unitId = realUnitId(object.unit_id);
-                  if (unitId !== null) unitIds.add(unitId);
+                  if (hasRealDriver) {
+                    const unitId = realUnitId(object.unit_id);
+                    if (unitId !== null) unitIds.add(unitId);
+                  }
                   const right = (parseInt(object.posLeft) || 0) +
                     (parseInt(object.posWidth) || 0);
                   const bottom = (parseInt(object.posTop) || 0) +
