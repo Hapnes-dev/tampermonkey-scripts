@@ -62,7 +62,7 @@ MUST equal that array's real length.
 BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
 (picked file beats image_svg beats image_data). NOT ON VENTILASJON: a
 vent panel is drawn with designer objects on the blank background, never
-with artwork - see section 7, "Ventilation unit".
+with artwork - see section 7a, "VENTILATION UNIT".
 
 1. YOU CAN DRAW IT YOURSELF (v1.2.0+): put raw SVG markup in the panel
    object as "image_svg". Rules: the string starts with <svg, carries
@@ -72,13 +72,16 @@ with artwork - see section 7, "Ventilation unit".
    background - so one file delivers artwork AND objects.
    What to draw (keep it schematic, like the production PNGs):
    - a light page background (#eef1f4-ish) and a tinted side/section zone
-   - a rounded-rect aggregate/machine enclosure with a small title text
-   - soft duct-band shadows BEHIND where your pipe objects run
-     (supply tinted blue, extract tinted warm), airflow arrows
-   - dashed zone boxes (VGV cross-over, coil sections)
+   - a rounded-rect machine/plant enclosure with a small title text
+   - the pipe, duct or tank runs that the panel's value boxes annotate,
+     as thin flat bands behind them, plus flow arrows
+   - dashed zone boxes around a subsystem
    Never cover the canvas in dark colors - light backgrounds only, no
    exceptions - and never draw values or symbols the OBJECTS already
-   provide (no fake numbers, LEDs or fans in the SVG).
+   provide (no fake numbers, LEDs or fans in the SVG). NEVER for a
+   Ventilasjon panel: its ducts, dampers, coils and fans are OBJECTS
+   (section 7a), so drawing them here yields a doubled, un-linkable
+   panel that no technician can maintain.
 2. If the user supplies ready image data, put it in "image_data" as a
    data:image/png;base64,... string with "converted": "true".
 3. If they only have a file on disk, leave the fields out - the Insert
@@ -295,12 +298,23 @@ grey box.
   production spjeldliste runs rows to y 4646 and content to x 1585 on a
   nominal 1400x750 panel; the plant view scrolls. Only list panels may
   do this.
-- Organize in section columns roughly 300 px wide (x = 20, 320, 640, 960).
-- Each section: header bar (number_v3_header_grey75, W 260-280) then rows
-  every 28-30 px starting ~35 px below the header.
+- PANEL-TYPE GEOMETRY WINS. The column grammar in this section is for
+  TABLE-STYLE panels (mode A: rack overviews, energy lists, status
+  pages on an empty canvas). Where a panel type has its own measured
+  layout - Ventilasjon (7a), spjeldliste (7c), hotel Oversikt (7d) -
+  that layout overrides every bullet below it. Do not apply the column
+  grammar to a schematic panel.
+- Table-style: organize in section columns roughly 300 px wide
+  (x = 20, 320, 640, 960).
+- Table-style: each section has a header bar (number_v3_header_grey75,
+  W 260-280) then rows every 28-30 px starting ~35 px below the header.
 - A value row = label at column x+5 (W 100-150) + value at x+150..180.
-- Never overlap objects. Leave 8+ px gaps.
-- Title: number_v3_label_12px_bold at top-left; alarm bell top-right (~x 1240).
+- Never overlap objects. Leave 8+ px gaps. EXCEPTION: on a schematic
+  panel a value box deliberately sits on top of the duct or pipe it
+  belongs to - that is what the z-index bands (7a-5) are for.
+- Table-style: title number_v3_label_12px_bold at top-left; alarm bell
+  top-right (~x 1240). A schematic panel has neither - never add a
+  title bar or a corner bell to a Ventilasjon panel.
 - TEXT ENCODING: the Insert JSON flow reads files as UTF-8, and production
   panels do contain Norwegian letters, degree signs and m3-superscripts -
   those survive the real pipeline. BUT if your output travels through any
@@ -331,59 +345,238 @@ strip); receiver section (Prec + temp); heat recovery section (Shr rows).
 See generated-panel-example.json - a complete, insert-verified rack overview
 generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 
-Ventilation unit - THE REAL ANATOMY. TWO normative references, and no
-others - both sanitized real production panels, both on the
-00-blank-sidebar background, every obj_id in them a real palette entry:
+7a. VENTILATION UNIT (360.NNN) - THE REAL ANATOMY (NORMATIVE)
+--------------------------------------------------------------
+A vent panel is a PROCESS SCHEMATIC drawn with objects, plus a control
+sidebar on the right. It is not a table-style dashboard, and THIS
+SECTION OVERRIDES SECTION 5: no 300 px section columns, no title
+top-left, no alarm bell top-right. Every coordinate below is the
+literal posLeft/posTop/posWidth/posHeight of a sanitized real
+production export. Copy them. Do not invent a visual language.
+
+TWO normative references, and no others - both real production panels,
+both on the 00-blank-sidebar background, every obj_id in them a real
+palette entry:
 A) reference_data/real-vent-panel-example.json - 102 objects, 41
-   distinct obj_ids, OJEXHAUST drivers. The run-by-run anatomy below is
-   this panel.
+   distinct obj_ids, OJEXHAUST drivers. THE reference: every number in
+   this section is measured from it.
 B) reference_data/real-vent-panel-example-2.json - a second plant's AHU,
-   same doctrine, extra vocabulary: 92 objects, 39 distinct obj_ids, 55
-   of them linked, BACNET drivers. Adds horizontal dampers
-   (V3_horis_damper_flow-left_nrm / -right_nrm), a dummy 2-way motor, a
-   grey/green status LED, the sub-page navigation row
-   (sub_page_link_btn_home / _left / _right plus
-   sub_page_80_24_kurver_btn) and a file_pdf document link that carries
-   /iw_plants/iw_NNNNN/files/Funksjonsbeskrivelse.pdf in BOTH driver_id
-   and file_pdf.
-OBJECTS ONLY: build the unit from duct/pipe/connector/equipment objects
-and NEVER author an image_svg for it. Keep org_image_name
-"00-blank-sidebar-1400x750" and background_embedded true. Use only
-obj_ids that exist in the designer palette (all-design-objects.json,
-797 entries) - an id that is not in that dump does not exist.
-A vent export's image_svg_trace is a trace of the BLANK background (two
-rectangles, no information): ignore it, never copy it into image_svg.
-- EXTRACT RUN on top, airflow right-to-left: one long
-  number_v3_exhaust_pipe_horisontal (stretch posWidth, e.g. 1025), extract
-  fan (V3_58px_fan_left_nrm, tag "JV501") and filter_with_diff_press
-  (tag "QD501 Pa") ON the run; con_down boxes ABOVE it: "RT502 gr C"
-  (exhaust), "RH501 %", "RT501 gr C" (extract); damper con_top BELOW at the
-  left end (tag "KA501 %"); arrows for direction; alarm bells NEXT TO the
-  component they guard (fan common alarm by the fan, filter alarm by the
-  filter).
-- SUPPLY RUN below, airflow left-to-right: fresh_pipe (outdoor section,
-  left) then supply_pipe; filter (QD401), heating coil number_v3_heater_3_way
-  (LV401), el heater (LV402), cooler, supply fan (V3_58px_fan_right_nrm,
-  JV401), smoke LED (RY401); con_down boxes above: "RH901 %" + "RT901 gr C"
-  (outdoor), "RT402 gr C" (efficiency), "RH401 %", "RT401 gr C" (supply);
-  damper "KA401 %" con_top below; motor output "LR401 %" con_top.
-- VGV CROSS-OVER between the runs: exhaust_pipe_vertical +
-  supply_pipe_vertical (or number_360_vg_rot across both), rotor alarm
-  bell, "LX001 %" con_top (rotor speed), recirculation damper "KA502 %".
-- COIL DETAIL under the supply run: coil temps RT510/RT520/RT410/RT420
-  con boxes, heating/cooling power "SB510 %"/"SB520 %", pump JP410,
-  3-way valve symbol.
-- RIGHT COLUMN (x ~1150-1390), three header sections:
-  "Status og vendere" (Driftsmodus + Systemvender json boxes, A-Alarm red
-  + B-Alarm yellow LEDs, Alarmkvittering), "Vifteregulering" (two columns
-  of dark SP boxes labeled Tilluft / Avtrekk: Sp. hoyfart m3/h, Sp. lavfart
-  m3/h, Sp. nattkjoling m3/h, Min friskluft %, Sp. CO2 ppm) and
-  "Temperaturregulering" (Sp. romtemperatur, Maks/Min tilluftstemperatur).
-- ROOM SENSORS mid-right: CO2 "RP501 ppm" and room temp "RT600" boxes.
-- TAG CONVENTION: tag_text = instrument code + unit ("RT401 gr C",
-  "RF401 m3/h", "KA401 %", "QD401 Pa"); codes follow the vent controller
-  (RT=temp, RF=flow, RH=humidity, KA=damper, LR=motor, LX=rotor, QD=filter
-  pressure, JV=fan, JP=pump, LV=coil/valve, SB=power, RP=CO2, RY=smoke).
+   same doctrine, extra vocabulary (7a-6): 92 objects, 39 distinct
+   obj_ids, BACNET drivers.
+Default to A. Choose B when the unit has a plate/battery recovery coil
+instead of a rotor, an aux coil, or a sub-page navigation row.
+
+7a-0 CLASSIFY THE REQUEST BEFORE WRITING ANY JSON. Four cases. Name the
+one you picked in the verification report (7a-10):
+ 1) NEW UNLINKED DEMO ("build a 360.001 Ventilasjon like the example").
+    Take the layout grammar of A or B whole - canvas, background, duct
+    centrelines, equipment order, cluster offsets, sidebar - then strip
+    every source-plant link (7a-7). Never invent a layout for a demo.
+ 2) COPY OF A REAL PRODUCTION LAYOUT (a plant/panel is named, or an
+    export is attached to be reproduced elsewhere). Reproduce the
+    geometry object for object; change only what was asked; relink from
+    the TARGET plant's dump (section 8b).
+ 3) MODIFICATION OF AN ATTACHED EXPORT. Preserve every existing object
+    and every field value; add, move or edit ONLY what the user
+    explicitly authorized. Do not renumber, reorder, re-space or "tidy"
+    the rest, and never silently drop an object you cannot explain.
+ 4) BACKGROUND-ONLY REQUEST. A vent panel has no artwork background.
+    Say so, change nothing, stop.
+
+7a-1 STYLE CONTRACT (all four cases)
+- OBJECTS ONLY. Build the unit from duct/pipe/connector/equipment/
+  sensor/status/label/value objects. NEVER author panel.image_svg for a
+  vent panel. Keep org_image_name "00-blank-sidebar-1400x750" and
+  background_embedded true (reference A's image_data IS that blank -
+  reuse it verbatim).
+- A vent export's image_svg_trace traces the BLANK background (two
+  rectangles, no information): ignore it, never copy it into image_svg.
+- Match the source canvas. Both references are 1400x750 and that is the
+  default; when copying a panel of another size, match that size
+  exactly instead of forcing 1400x750.
+- Only obj_ids that exist in all-design-objects.json (797 entries,
+  named in plain language in DESIGN-OBJECT-CATALOG.md). An id that is
+  not in that dump renders as a broken grey box.
+- Composition: process schematic on the LEFT (x 2..1144), control and
+  status sidebar on the RIGHT (x 1150..1390); extract run above, supply
+  run below; equipment in process order along its run; every value
+  adjacent to the equipment it reports; section headers are compact
+  grey 250x20 bars.
+- FORBIDDEN on a vent panel: decorative cards, oversized rounded
+  containers, drop shadows, instructional footer banners, invented KPI
+  or "summary" blocks, legends - and anything else not present in the
+  reference you selected. If the reference does not have it, it does
+  not go on the panel.
+- Preview pictures, when your host renders one, are drawn from the SAME
+  coordinates as the JSON and represent the whole 1400x750 composition
+  including the dynamic objects. Say the preview is approximate: you
+  are not the IWMAC renderer. Never draw a nicer picture than the JSON.
+
+7a-2 THE SKELETON (measured, reference A; all values in px)
+- Canvas 1400x750, blank-sidebar background, 0 containers, 0 graphics.
+- EXTRACT RUN, airflow right-to-left: number_v3_exhaust_pipe_horisontal
+  at (24,200) 1025x18. Centreline y 209.
+- SUPPLY RUN, airflow left-to-right, 242 px below the extract run:
+  number_v3_fresh_pipe_horisontal (24,442) 260x18 for the outdoor
+  section, then number_v3_supply_pipe_horisontal (337,442) 710x18.
+  Centreline y 451.
+- CROSS-OVER COLUMN at x 411, joining the runs, top to bottom:
+  number_v3_exhaust_connector_up (411,211) 18x50,
+  number_v3_exhaust_pipe_vertical (411,254) 18x75,
+  number_v3_supply_pipe_vertical (411,329) 18x75,
+  number_v3_supply_connector_down (411,399) 18x50.
+- HEAT RECOVERY across both runs: number_360_vg_rot (282,149) 60x343.
+- EQUIPMENT in process order, each centred on its run:
+  extract  V3_58px_fan_left_nrm (152,179) 59x59;
+           numberV3_filter_with_diff_press (466,154) 90x83.
+  supply   numberV3_filter_with_diff_press (189,397) 90x83;
+           number_v3_cooler_2-way (456,409) 38x132;
+           number_v3_heater_3_way (583,413) 40x210, tag LV401;
+           number_v3_el_heater (693,413) 40x85, tag LV402;
+           V3_58px_fan_right_nrm (795,421) 59x59;
+           V3_led_18px_circ_grey_red (893,422) smoke detector.
+  ends     numberV3_outside_temp (20,301) 79x50;
+           number_360_room (1044,159) 100x339 with its CO2 and
+           room-temperature boxes at x 1072.
+  recirc   number_v3_dummy_resirc_damp_hor (28,182) and (30,424) 42x42,
+           number_v3_dummy_resirc_damp_vert (407,310) 40x40.
+- CONNECTOR RULE - this is what makes it read as ductwork: a con_down
+  value box sits ABOVE the run with its connector touching the duct
+  ("RT502 gr C" at (985,174) over the extract run, "RT401 gr C" at
+  (985,417) over the supply run); a con_top box sits BELOW the run with
+  its top edge at the duct's bottom edge (damper "KA501 %" at (24,218),
+  fan output "LR501 %" at (157,236); supply "KA401 %" (337,461),
+  "LR401 %" (800,476)).
+- The schematic occupies y 140..600 and the sidebar y 0..470. Nothing
+  is centred on the canvas and nothing is stretched to fill it.
+
+7a-3 FUNCTIONAL CLUSTERS - copy whole, never split
+Relocate a cluster by adding ONE translation vector to every member and
+keeping the internal offsets. Offsets below are from the equipment
+object's top-left corner.
+- FAN: fan 59x59 + flow value number_v3_R_60px_no_conn_tag_up_center
+  ("RF501 m3/h") at (-2,-39) + motor output con_top ("LR501 %") at
+  (+5,+57) + V3_R_34px_circular_alarm_nrm at (+45,-19). The supply fan
+  in the same file repeats this within 3 px (-2,-40 / +5,+55 / +48,-18)
+  - that repetition is the proof it is a template, not a coincidence.
+- FILTER: numberV3_filter_with_diff_press carries its own differential
+  pressure in tag_text ("QD401 Pa") - do NOT add a separate value box -
+  plus an alarm bell above it (+8,-45 supply, +61,-46 extract).
+- HEATING COIL: number_v3_heater_3_way + frost alarm at (-22,-36) +
+  coil temps con_right "RT510 gr C" (535,518) and con_left "RT410 gr C"
+  (610,490) + power con_left "SB510 %" (620,570) + pump
+  V3_21px_single_pump_grey_green_up (601,527) + valve
+  v3_3w_valve_right_down_nrm (602,572).
+- COOLING COIL: number_v3_cooler_2-way + alarm at (+1,-30) + "SB520 %"
+  con_top (453,532) + "RT420 gr C" con_left (482,486) + "RT520 gr C"
+  con_right (408,486).
+- HEAT RECOVERY: number_360_vg_rot + alarm at (+12,+160) + "LX001 %"
+  con_top (288,484) + efficiency box "Virk.gr %" (288,537).
+Remove equipment and you remove its whole cluster. Add equipment and
+you copy a whole cluster. Never leave an alarm, an output or a
+temperature behind, and never let one float away from its equipment.
+
+7a-4 THE SIDEBAR (measured, reference A) - KEEP IT
+- Three number_v3_header_grey75 250x20 at x 1150, y 0 / 165 / 357
+  (reference B: 0 / 165 / 400): "Status og vendere", "Vifteregulering",
+  "Temperaturregulering".
+- Row labels number_v3_label_11px_norm at x 1160 (production also uses
+  1156 / 1165 / 1172 / 1175 to align a longer text).
+- Mode row: number_v3_custom_json_obj (1160,36) 230x20 (Driftsmodus),
+  number_v3_60px_json_obj (1160,73) and (1160,108) 100x20
+  (Systemvender, Alarmkvittering).
+- A/B alarm LEDs: V3_led_16px_circ_grey_red (1317,75) 16x16 and
+  V3_led_16px_circ_grey_yellow (1362,75) 16x16, captions at y 59.
+- Setpoint grid: number_v3_60px_dark_no_conn 62x22 in TWO columns,
+  x 1260 ("Tilluft") and x 1330 ("Avtrekk"), rows y 205 / 230 / 255 /
+  279 / 308 (25 px pitch), column captions at y 190. The five rows are
+  Sp. hoyfart m3/h, Sp. lavfart m3/h, Sp. nattkjoling m3/h, Min
+  friskluft %, Sp. CO2 ppm.
+- Temperature setpoints: number_v3_60px_dark_no_conn_no_tag 62x22 at
+  x 1329, y 385 / 410 / 435 (Sp. romtemperatur, Maks and Min
+  tilluftstemperatur).
+This sidebar is the strongest visual signature of a production vent
+panel. Drop it and the result looks generic however good the schematic.
+
+7a-5 Z-INDEX BANDS. The import writes zIndex through verbatim (it only
+supplies "default" when the field is missing), so use the production
+bands - they are what puts a value box on top of a duct:
+   5    ducts, pipes, connectors, section header bars
+   15   dummy arrows and short lines
+   20   sub-page navigation buttons (reference B)
+   40   equipment bodies (fan, rotor, coil, heater, room, dampers)
+   110  value / setpoint / json boxes, filter, outside temp, file_pdf
+   375  alarm bells, LEDs, pumps, valves, kurver button
+   1100 text labels
+If you emit zIndex "default" instead, you MUST order the array
+back-to-front (ducts first, labels last): equal z means DOM order.
+
+7a-6 EXTRA VOCABULARY (reference B, measured)
+   V3_horis_damper_flow-left_nrm (30,195) / -right_nrm (30,438) 36x26,
+   z 40 - end dampers on a unit without recirculation.
+   number_360_vg_vb_kb (293,165) 38x312 - battery/plate heat recovery.
+   number_360_cb_aux (808,410) 37x220, tag LK401 - aux coil.
+   number_v3_dummy_2way_motor_right (830,593) 26x19, z 300.
+   sub_page_link_btn_left / _home / _right 38x38, z 20, y 629,
+   x 1222 / 1257 / 1292; sub_page_80_24_kurver_btn (1310,426) 80x24;
+   file_pdf (1332,556) 32x32.
+   V3_led_21px_square_grey_green (1354,365) 21x21.
+   NOTE: reference B contains each of the three navigation buttons
+   TWICE at identical coordinates - a copy-paste artifact of the
+   production file. Emit each one once; do not imitate the duplicate.
+
+7a-7 STRIP THE SOURCE PLANT (case 1, the unlinked demo)
+Both references are REAL exports and are already linked: every object
+carries linked "true", 57 of A's 102 carry a real (masked) driver_id
+such as NNNNN_OJEXHAUST_OJ_1_1_0_4_19, and 76 carry a unit_id ("V01",
+or the literal string "undefined"). Copying an object verbatim
+therefore leaks another plant's driver ids into your demo. For every
+object you carry over, reset:
+   id "driver_id", driver_id "driver_id", linked "false", unit_id "",
+   unit_ref "", link_name "", link_tag "", sub_group ""
+and keep obj_id, posLeft/posTop/posWidth/posHeight, zIndex, tag_text
+and alias_text. alias_text is the portable part: keep the descriptive
+Norwegian text ("Avtrekksvifte turtall", "Tilluftstemperatur") - it is
+what a human links by later (8b). Static scaffold (labels, headers,
+ducts) keeps its display text and simply stays unlinked. NEVER invent a
+driver id, unit id, link tag, parameter id or navigation target id: an
+invented id is worse than an empty one because it looks linked and is
+not.
+
+7a-8 TAG CONVENTION. tag_text = instrument code + unit ("RT401 gr C",
+"RF401 m3/h", "KA401 %", "QD401 Pa"); alias_text = the sentence a human
+reads. Codes follow the vent controller: RT=temp, RF=flow,
+RH=humidity, KA=damper, LR=motor/output, LX=rotor, QD=filter pressure,
+JV=fan, JP=pump, LV=coil/valve, SB=power, RP=CO2, RY=smoke.
+
+7a-9 BAD vs GOOD - a vent panel is judged on exactly these
+BAD   a two-card dashboard of headings and KPI boxes matching no real
+      export; an image_svg with ducts or equipment drawn into it; one
+      guessed obj_id repeated everywhere; invented driver ids, or a
+      reusable demo still carrying the source plant's links; values and
+      alarms detached from their equipment; a layout that ignores the
+      production sidebar and the process order; a polished preview
+      whose geometry does not match the JSON; decorative UI the
+      reference never had.
+GOOD  geometry and object families derived from a NAMED real export;
+      the production blank (or blank-sidebar) background; real duct,
+      connector, equipment, sensor, status, label and value objects;
+      whole functional clusters at their measured relative positions;
+      source links stripped but useful aliases kept; JSON and preview
+      generated from one set of coordinates; the structural checks
+      below all pass; the reference named in the report.
+
+7a-10 VERIFICATION REPORT. Re-parse your own JSON and check: counts
+equal array lengths; names are object_0..object_N, sequential, no
+duplicates; every obj_id exists in all-design-objects.json; positions
+in bounds (or overflowing on purpose, and you say why); no source
+driver_id, unit_id or link_tag survived; no panel.image_svg; the
+preview matches the JSON geometry. Then report in 10 lines or fewer:
+the case you picked (7a-0), the reference you copied, object count and
+distinct obj_id count, the checks above, and anything you could NOT
+verify. Where the host requires the answer to be raw JSON only, deliver
+the JSON as the file/answer and put the report in the accompanying
+chat message - never as comments inside the JSON.
 
 7b. HOW PANELS ARE DRAWN TODAY (PRODUCTION CONVENTIONS)
 -------------------------------------------------------
@@ -700,11 +893,21 @@ The canonical 64-signal map (alias -> obj_id + parameter group anatomy
 763=MT block / 764=LT / 230+i=Ci status / 240+i=Ci capacity / 337=VSD):
 reference_data/maskin-akpc-link-map.json.
 
-Normative pair in reference_data/: real-vent-panel-linked-example.json
-(the linked twin of real-vent-panel-example.json - diff them to see
-exactly which four fields change) and driver-parameters-sample.sql (the
+Normative material in reference_data/: real-vent-panel-example.json (a
+linked production vent panel) and driver-parameters-sample.sql (the
 dump format, trimmed). Driver ids are plant-prefixed: always link from
 the TARGET plant's dump.
+CORRECTION (verified 2026-08-09): real-vent-panel-linked-example.json
+is NOT an unlinked/linked pair with the file above. Its 102 objects are
+byte-identical to real-vent-panel-example.json; only exported_at and
+generator differ, in the envelope. Diffing them teaches nothing. Read
+the link fields on either file instead. A LINKED object carries a
+plant-prefixed driver_id, a unit_id, linked "true", and leaves id and
+link_name untouched. An unlinked object in a REAL export carries an
+EMPTY driver_id - not the literal "driver_id". That placeholder is the
+generation contract (section 3): you emit it, the host resolves it on
+insert. So an export is not a template for what YOU must write: strip
+it per 7a-7 before reusing it as a demo.
 
 9. SELF-CHECK BEFORE ANSWERING
 ------------------------------
@@ -720,4 +923,12 @@ the TARGET plant's dump.
 [] graphics [] empty; containers [] too UNLESS this is a list panel (7c),
    then counts.containers equals the containers array length and every
    container follows the 7c template exactly
+[] names are object_0..object_N, sequential, with no duplicates
+[] no driver_id, unit_id or link_tag copied out of a source plant's
+   export into a demo (vent: 7a-7) - and none invented
+[] Ventilasjon: no panel.image_svg, background is the blank sidebar,
+   the layout is traced from a NAMED reference (7a), functional
+   clusters are intact and the right-hand control sidebar is present
+[] any preview picture you show was drawn from these coordinates and
+   you labelled it approximate
 [] raw JSON only - no fences, no commentary

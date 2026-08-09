@@ -453,6 +453,17 @@ def main() -> None:
         "the survey. `—` means the fleet never places it; prefer a used object when "
         "one fits."
     )
+    add(
+        "7. **This catalog answers *which id*, never *where*.** Picking valid ids "
+        "is not enough to produce a panel that looks like production — the "
+        "geometry is a separate contract. For a **Ventilasjon (360.NNN)** panel, "
+        "take every position, size and z-index from a real export "
+        "(`reference_data/real-vent-panel-example.json`; measured skeleton and "
+        "cluster offsets in [AI-BRIEFING.txt](AI-BRIEFING.txt) §7a) — objects only "
+        "on the `00-blank-sidebar-1400x750` background, never an authored "
+        "`image_svg`. Choosing ids from this list and inventing the layout is what "
+        "produces a generic dashboard."
+    )
     add("")
 
     add("## Pick by task")
