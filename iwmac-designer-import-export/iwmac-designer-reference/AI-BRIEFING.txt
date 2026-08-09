@@ -394,8 +394,8 @@ one you picked in the verification report (7a-10):
 - Match the source canvas. Both references are 1400x750 and that is the
   default; when copying a panel of another size, match that size
   exactly instead of forcing 1400x750.
-- Only obj_ids that exist in all-design-objects.json (797 entries,
-  named in plain language in DESIGN-OBJECT-CATALOG.md). An id that is
+- Only obj_ids that exist in all-design-objects.json (820 entries,
+  797 distinct ids, named in DESIGN-OBJECT-CATALOG.md). An id that is
   not in that dump renders as a broken grey box.
 - Composition: process schematic on the LEFT (x 2..1144), control and
   status sidebar on the RIGHT (x 1150..1390); extract run above, supply

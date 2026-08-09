@@ -1,5 +1,5 @@
 {
-    "_note":  "Object-usage census across 22 real compiled panels on 6 plants (single_objects + container items). This is the ground truth behind the AI-BRIEFING allowlist: top40 = most-used object ids overall, maskin_top20 = most-used on machine/rack panels. w/h from the controls registry.",
+    "_note":  "Object-usage census across 22 real compiled panels on 6 plants (single_objects + container items). SUPERSEDED as a fleet basis - design-object-catalog.json spans 266 compiled panels and plant-panel-survey.json 41 plants; rank object usage from those, not from here. Kept because it is the original evidence the AI-BRIEFING allowlist was derived from: top40 = most-used object ids overall, maskin_top20 = most-used on machine/rack panels. w/h from the controls registry.",
     "panels_scanned":  22,
     "total_distinct_obj_ids":  87,
     "top40":  [
