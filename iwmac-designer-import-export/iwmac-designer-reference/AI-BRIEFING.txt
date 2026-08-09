@@ -66,13 +66,21 @@ BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
    - soft duct-band shadows BEHIND where your pipe objects run
      (supply tinted blue, extract tinted warm), airflow arrows
    - dashed zone boxes (VGV cross-over, coil sections)
-   Never cover the canvas in dark colors, never draw values or symbols the
+   NEWLY GENERATED backgrounds MUST always be light: white, off-white or
+   light grey. Never cover the canvas in dark colours. Dark colours are
+   allowed only on bounded foreground controls, setpoint boxes, pipes,
+   borders, labels and status indicators. Never draw values or symbols the
    OBJECTS already provide (no fake numbers, LEDs or fans in the SVG).
 2. If the user supplies ready image data, put it in "image_data" as a
    data:image/png;base64,... string with "converted": "true".
 3. If they only have a file on disk, leave the fields out - the Insert
    dialog's background picker (v1.1.0+) embeds it for them.
 Set the envelope's "background_embedded": true when 1 or 2 is used.
+
+When editing an existing production panel, preserve its dark background only
+if the user explicitly asks to edit that SAME panel. Do not introduce, expand
+or select dark styling. A trace, reference image or plant style never permits
+a dark background for newly generated artwork.
 
 MASKIN (MACHINE PICTURE) ARTWORK - when asked to draw or modify a
 machine-picture background, follow maskin-drawing-method.txt (knowledge
@@ -89,14 +97,14 @@ file; companion image maskin-dark-style-example.png) exactly:
 - One symbol family reused: compressors (MT1..n/LT1..n), fan circles,
   one valve style with its V-xxx tag adjacent, WHITE pills drawn EMPTY
   (number objects render into them), darker grey pills = setpoints.
-- Two skins, same layout: LIGHT (the normal look - canonical reference
-  maskin-light-style-reference.png, rendered 1:1 from the Illustrator
-  source maskin-light-template.ai; its real layers are Backround / Ror
-  / Maskinrom) and DARK (near-black, see the dark example png). Match
-  the plant's existing maskin - a dark-variant maskin is the sanctioned
-  exception to the no-dark-canvas rule above. Vrec is the receiver
-  FLASH-GAS valve: draw it on the cyan suction-side line, never on the
-  yellow liquid line.
+- Generation skin: LIGHT only - canonical reference
+  maskin-light-style-reference.png, rendered 1:1 from the Illustrator source
+  maskin-light-template.ai; its real layers are Backround / Ror / Maskinrom.
+  maskin-dark-style-example.png is historical/reference evidence only, never
+  a generation target. Preserve a dark Maskin background only for an explicit
+  edit of that same existing production panel; never introduce or expand it.
+  Vrec is the receiver FLASH-GAS valve: draw it on the cyan suction-side
+  line, never on the yellow liquid line.
 - Worked example: generated-maskin-example.json - a complete generated
   Maskin (light skin image_svg drawn per the method + 63 objects with
   the canonical maskin-akpc-link-map aliases), insert-verified 63/63
@@ -673,4 +681,7 @@ the TARGET plant's dump.
 [] graphics [] empty; containers [] too UNLESS this is a list panel (7c),
    then counts.containers equals the containers array length and every
    container follows the 7c template exactly
+[] newly generated background is light (white, off-white or light grey);
+   dark existing artwork is preserved only for an explicitly requested edit
+   of that same panel, never selected for new generation
 [] raw JSON only - no fences, no commentary
