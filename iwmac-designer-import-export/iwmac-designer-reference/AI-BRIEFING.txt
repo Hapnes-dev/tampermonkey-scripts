@@ -66,13 +66,21 @@ BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
    - soft duct-band shadows BEHIND where your pipe objects run
      (supply tinted blue, extract tinted warm), airflow arrows
    - dashed zone boxes (VGV cross-over, coil sections)
-   Never cover the canvas in dark colors, never draw values or symbols the
+   NEWLY GENERATED backgrounds MUST always be light: white, off-white or
+   light grey. Never cover the canvas in dark colours. Dark colours are
+   allowed only on bounded foreground controls, setpoint boxes, pipes,
+   borders, labels and status indicators. Never draw values or symbols the
    OBJECTS already provide (no fake numbers, LEDs or fans in the SVG).
 2. If the user supplies ready image data, put it in "image_data" as a
    data:image/png;base64,... string with "converted": "true".
 3. If they only have a file on disk, leave the fields out - the Insert
    dialog's background picker (v1.1.0+) embeds it for them.
 Set the envelope's "background_embedded": true when 1 or 2 is used.
+
+When editing an existing production panel, preserve its dark background only
+if the user explicitly asks to edit that SAME panel. Do not introduce, expand
+or select dark styling. A trace, reference image or plant style never permits
+a dark background for newly generated artwork.
 
 MASKIN (MACHINE PICTURE) ARTWORK - when asked to draw or modify a
 machine-picture background, follow maskin-drawing-method.txt (knowledge
@@ -89,14 +97,14 @@ file; companion image maskin-dark-style-example.png) exactly:
 - One symbol family reused: compressors (MT1..n/LT1..n), fan circles,
   one valve style with its V-xxx tag adjacent, WHITE pills drawn EMPTY
   (number objects render into them), darker grey pills = setpoints.
-- Two skins, same layout: LIGHT (the normal look - canonical reference
-  maskin-light-style-reference.png, rendered 1:1 from the Illustrator
-  source maskin-light-template.ai; its real layers are Backround / Ror
-  / Maskinrom) and DARK (near-black, see the dark example png). Match
-  the plant's existing maskin - a dark-variant maskin is the sanctioned
-  exception to the no-dark-canvas rule above. Vrec is the receiver
-  FLASH-GAS valve: draw it on the cyan suction-side line, never on the
-  yellow liquid line.
+- Generation skin: LIGHT only - canonical reference
+  maskin-light-style-reference.png, rendered 1:1 from the Illustrator source
+  maskin-light-template.ai; its real layers are Backround / Ror / Maskinrom.
+  maskin-dark-style-example.png is historical/reference evidence only, never
+  a generation target. Preserve a dark Maskin background only for an explicit
+  edit of that same existing production panel; never introduce or expand it.
+  Vrec is the receiver FLASH-GAS valve: draw it on the cyan suction-side
+  line, never on the yellow liquid line.
 - Worked example: generated-maskin-example.json - a complete generated
   Maskin (light skin image_svg drawn per the method + 63 objects with
   the canonical maskin-akpc-link-map aliases), insert-verified 63/63
@@ -291,7 +299,13 @@ generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 Ventilation unit - THE REAL ANATOMY (normative: it is the sanitized real
 production panel reference_data/real-vent-panel-example.json, 102 objects
 on the 00-blank-sidebar background; generated-vent-example.json is a
-simpler verified starter):
+simpler verified starter). A newer IWDIE v1.6.0 production export confirms
+this anatomy on plant 9099, panel "360.001 Ventilasjon": 1400 x 750, 102
+single objects, 0 containers, 0 graphics, with an embedded background.
+It covers supply/extract ducts and fans, dampers, filters, temperature,
+flow, pressure, humidity and CO2 points, heat recovery, heating/cooling,
+alarms, operating mode and fan/temperature setpoints. This canonical plant
+9099 evidence remains outside the exact-20 MENY ventilation survey totals:
 - EXTRACT RUN on top, airflow right-to-left: one long
   number_v3_exhaust_pipe_horisontal (stretch posWidth, e.g. 1025), extract
   fan (V3_58px_fan_left_nrm, tag "JV501") and filter_with_diff_press
@@ -588,8 +602,11 @@ THE DUMP: one row per parameter. Columns that matter:
   VERBATIM - never construct or edit one (the digit groups differ per
   driver type; on the OJ vent driver _4_ = Analog values and _2_ =
   Digital IO, but AKC/EM drivers use other group digits).
-- unit_id + unit_name: the unit ("V01" / "360.001 Ventilasjon"). Match
-  unit_name against the panel's system number to pick the right unit.
+- unit_id + unit_name: the unit. Production plant 9099 uses opaque unit_id
+  "V01" for panel "360.001 Ventilasjon"; its exact same-plant live inventory
+  name is the compact "360.001Ventilasjon". Match the human-readable
+  unit_name against the panel's system number. Never treat "V01" itself as
+  evidence that a panel or unit is ventilation.
 - alias_text: the parameter description ("Actual supply temperature...",
   "Supply motor ON/OFF") - your matching target.
 - application: "Analog values" (readings/setpoints) vs "Digital IO"
@@ -599,8 +616,10 @@ THE DUMP: one row per parameter. Columns that matter:
 - eng_unit (degC, %, Pa, m3/h) and format_extra (enum value map).
 
 PROCEDURE per linkable object:
-1. Find the unit: unit_name matches the panel's system (360.001 ->
-   "360.001 Ventilasjon") - fixes unit_id and the driver prefix.
+1. Find the unit: unit_name matches the panel's system (360.001 -> exact
+   same-plant inventory name "360.001Ventilasjon") - fixes unit_id and the
+   driver prefix. Display/panel names may include a space; inventory names
+   may not.
 2. Find the row whose alias_text matches the object's signal (use the
    object's alias_text/tag_text: "RT401 gr C" -> "Actual supply
    temperature", fan JV401 -> "Supply motor ON/OFF", QD401 -> supply
@@ -609,7 +628,10 @@ PROCEDURE per linkable object:
    unit_id = the row's unit_id, linked = "true", alias_text = the row's
    alias_text (production panels show the selector's "Menu,-Description"
    form, e.g. "Most Used,-Actual supply air temperature" - the plain row
-   text is accepted).
+   text is accepted). A genuine binding requires a valid, non-placeholder
+   driver_id and a valid, non-placeholder unit_id on the SAME object.
+   linked = "true" alone proves nothing: production pipes, connectors,
+   labels and other dummies may carry stale or misleading link flags.
 4. Touch NOTHING else: id stays literally "driver_id", link_name,
    link_tag, unit_ref, positions and obj_id are unchanged.
 5. Dummies never link: pipes, connectors, arrows, labels, headers,
@@ -659,4 +681,7 @@ the TARGET plant's dump.
 [] graphics [] empty; containers [] too UNLESS this is a list panel (7c),
    then counts.containers equals the containers array length and every
    container follows the 7c template exactly
+[] newly generated background is light (white, off-white or light grey);
+   dark existing artwork is preserved only for an explicitly requested edit
+   of that same panel, never selected for new generation
 [] raw JSON only - no fences, no commentary
