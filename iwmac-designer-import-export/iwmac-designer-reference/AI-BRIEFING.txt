@@ -291,7 +291,13 @@ generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 Ventilation unit - THE REAL ANATOMY (normative: it is the sanitized real
 production panel reference_data/real-vent-panel-example.json, 102 objects
 on the 00-blank-sidebar background; generated-vent-example.json is a
-simpler verified starter):
+simpler verified starter). A newer IWDIE v1.6.0 production export confirms
+this anatomy on plant 9099, panel "360.001 Ventilasjon": 1400 x 750, 102
+single objects, 0 containers, 0 graphics, with an embedded background.
+It covers supply/extract ducts and fans, dampers, filters, temperature,
+flow, pressure, humidity and CO2 points, heat recovery, heating/cooling,
+alarms, operating mode and fan/temperature setpoints. This canonical plant
+9099 evidence remains outside the exact-20 MENY ventilation survey totals:
 - EXTRACT RUN on top, airflow right-to-left: one long
   number_v3_exhaust_pipe_horisontal (stretch posWidth, e.g. 1025), extract
   fan (V3_58px_fan_left_nrm, tag "JV501") and filter_with_diff_press
@@ -588,8 +594,11 @@ THE DUMP: one row per parameter. Columns that matter:
   VERBATIM - never construct or edit one (the digit groups differ per
   driver type; on the OJ vent driver _4_ = Analog values and _2_ =
   Digital IO, but AKC/EM drivers use other group digits).
-- unit_id + unit_name: the unit ("V01" / "360.001 Ventilasjon"). Match
-  unit_name against the panel's system number to pick the right unit.
+- unit_id + unit_name: the unit. Production plant 9099 uses opaque unit_id
+  "V01" for panel "360.001 Ventilasjon"; its exact same-plant live inventory
+  name is the compact "360.001Ventilasjon". Match the human-readable
+  unit_name against the panel's system number. Never treat "V01" itself as
+  evidence that a panel or unit is ventilation.
 - alias_text: the parameter description ("Actual supply temperature...",
   "Supply motor ON/OFF") - your matching target.
 - application: "Analog values" (readings/setpoints) vs "Digital IO"
@@ -599,8 +608,10 @@ THE DUMP: one row per parameter. Columns that matter:
 - eng_unit (degC, %, Pa, m3/h) and format_extra (enum value map).
 
 PROCEDURE per linkable object:
-1. Find the unit: unit_name matches the panel's system (360.001 ->
-   "360.001 Ventilasjon") - fixes unit_id and the driver prefix.
+1. Find the unit: unit_name matches the panel's system (360.001 -> exact
+   same-plant inventory name "360.001Ventilasjon") - fixes unit_id and the
+   driver prefix. Display/panel names may include a space; inventory names
+   may not.
 2. Find the row whose alias_text matches the object's signal (use the
    object's alias_text/tag_text: "RT401 gr C" -> "Actual supply
    temperature", fan JV401 -> "Supply motor ON/OFF", QD401 -> supply
@@ -609,7 +620,10 @@ PROCEDURE per linkable object:
    unit_id = the row's unit_id, linked = "true", alias_text = the row's
    alias_text (production panels show the selector's "Menu,-Description"
    form, e.g. "Most Used,-Actual supply air temperature" - the plain row
-   text is accepted).
+   text is accepted). A genuine binding requires a valid, non-placeholder
+   driver_id and a valid, non-placeholder unit_id on the SAME object.
+   linked = "true" alone proves nothing: production pipes, connectors,
+   labels and other dummies may carry stale or misleading link flags.
 4. Touch NOTHING else: id stays literally "driver_id", link_name,
    link_tag, unit_ref, positions and obj_id are unchanged.
 5. Dummies never link: pipes, connectors, arrows, labels, headers,
