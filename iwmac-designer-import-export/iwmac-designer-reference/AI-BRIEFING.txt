@@ -66,8 +66,9 @@ BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
    - soft duct-band shadows BEHIND where your pipe objects run
      (supply tinted blue, extract tinted warm), airflow arrows
    - dashed zone boxes (VGV cross-over, coil sections)
-   Never cover the canvas in dark colors, never draw values or symbols the
-   OBJECTS already provide (no fake numbers, LEDs or fans in the SVG).
+   Never cover the canvas in dark colors - light backgrounds only, no
+   exceptions - and never draw values or symbols the OBJECTS already
+   provide (no fake numbers, LEDs or fans in the SVG).
 2. If the user supplies ready image data, put it in "image_data" as a
    data:image/png;base64,... string with "converted": "true".
 3. If they only have a file on disk, leave the fields out - the Insert
@@ -76,7 +77,7 @@ Set the envelope's "background_embedded": true when 1 or 2 is used.
 
 MASKIN (MACHINE PICTURE) ARTWORK - when asked to draw or modify a
 machine-picture background, follow maskin-drawing-method.txt (knowledge
-file; companion image maskin-dark-style-example.png) exactly:
+file; companion image maskin-light-style-reference.png) exactly:
 - Layout doctrine: MT compressor group upper-left, LT group lower-left,
   oil separator on the discharge riser top-left, gas cooler (white box
   with fan circles) top-right, heat-recovery HX branch top-center,
@@ -89,14 +90,15 @@ file; companion image maskin-dark-style-example.png) exactly:
 - One symbol family reused: compressors (MT1..n/LT1..n), fan circles,
   one valve style with its V-xxx tag adjacent, WHITE pills drawn EMPTY
   (number objects render into them), darker grey pills = setpoints.
-- Two skins, same layout: LIGHT (the normal look - canonical reference
+- ONE skin only: LIGHT (the normal look - canonical reference
   maskin-light-style-reference.png, rendered 1:1 from the Illustrator
   source maskin-light-template.ai; its real layers are Backround / Ror
-  / Maskinrom) and DARK (near-black, see the dark example png). Match
-  the plant's existing maskin - a dark-variant maskin is the sanctioned
-  exception to the no-dark-canvas rule above. Vrec is the receiver
-  FLASH-GAS valve: draw it on the cyan suction-side line, never on the
-  yellow liquid line.
+  / Maskinrom). NEVER draw a dark-background maskin: the no-dark-canvas
+  rule above has NO exceptions, not even when the plant's existing
+  maskin is dark. maskin-dark-style-example.png is historical evidence
+  of what NOT to produce - never use it as a drawing reference.
+- Vrec is the receiver FLASH-GAS valve: draw it on the cyan
+  suction-side line, never on the yellow liquid line.
 - Worked example: generated-maskin-example.json - a complete generated
   Maskin (light skin image_svg drawn per the method + 63 objects with
   the canonical maskin-akpc-link-map aliases), insert-verified 63/63

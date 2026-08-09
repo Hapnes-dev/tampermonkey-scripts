@@ -4,9 +4,11 @@ Distilled from "Advansor cooling/freezer machine drawing method v2"
 (internal Word doc; project-specific identifiers omitted). This is the
 reusable method for turning a technical refrigeration schematic (PDF
 systemskjema) into the clean HMI-style machine picture used as an IWMAC
-Designer panel background. Companion image: maskin-dark-style-example.png
-(the dark-background variant of the exact same template family as the
-light-background plant-9982 Maskin in real-vent/maskin examples).
+Designer panel background. Companion image: maskin-light-style-reference.png
+(rendered 1:1 from maskin-light-template.ai, the same template family as
+the light-background plant-9982 Maskin in real-vent/maskin examples).
+The light skin is the ONLY sanctioned look - never draw a maskin on a
+dark background.
 
 The PDF schematic is the technical source of truth; the drawing is a
 simplified operator visualization. Do not reproduce every bend or
@@ -230,18 +232,19 @@ with an alpha-safe mask; restore exact sampled headers, branches and junctions;
 then validate counts, the exact object diff, protected fields, raster style,
 pitch and the combined background/object overlay.
 
-6. LIGHT vs DARK VARIANT + THE CANONICAL TEMPLATE
+6. LIGHT SKIN ONLY + THE CANONICAL TEMPLATE
 --------------------------------------------------
-The SAME template family ships in two skins:
+There is exactly ONE sanctioned skin:
 - LIGHT: white/very light canvas, mid-grey line work - THE NORMAL LOOK
   ("how most maskin pictures should look"). Canonical reference in this
   kit: maskin-light-style-reference.png, rendered 1:1 from the actual
   Illustrator source maskin-light-template.ai (Advansor 781 template).
-- DARK: near-black canvas, same layout, same circuit colours, brighter
-  pill outlines (see maskin-dark-style-example.png).
-Match the plant's existing maskin. The kit's general "never cover the
-canvas in dark colors" rule applies to vent/overview panels - a maskin
-drawn in the dark variant is the sanctioned exception.
+NEVER draw a maskin on a dark background. The kit's general "never cover
+the canvas in dark colors" rule has NO exceptions: it applies to maskin
+pictures exactly as it applies to vent/overview panels, even when the
+plant's existing maskin is a near-black one. maskin-dark-style-example.png
+is retained only as historical evidence of what NOT to produce; it is
+never a drawing reference.
 
 FACTS READ OUT OF THE PRODUCTION .AI ITSELF:
 - Artboard is exactly 1400 x 750 pt (1 px = 1 pt) - confirmed.
