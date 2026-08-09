@@ -323,10 +323,21 @@ strip); receiver section (Prec + temp); heat recovery section (Shr rows).
 See generated-panel-example.json - a complete, insert-verified rack overview
 generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 
-Ventilation unit - THE REAL ANATOMY. ONE normative reference, and no
-other: reference_data/real-vent-panel-example.json - the sanitized real
-production panel, 102 objects, 41 distinct obj_ids, every one of them a
-real palette entry, on the 00-blank-sidebar background.
+Ventilation unit - THE REAL ANATOMY. TWO normative references, and no
+others - both sanitized real production panels, both on the
+00-blank-sidebar background, every obj_id in them a real palette entry:
+A) reference_data/real-vent-panel-example.json - 102 objects, 41
+   distinct obj_ids, OJEXHAUST drivers. The run-by-run anatomy below is
+   this panel.
+B) reference_data/real-vent-panel-example-2.json - a second plant's AHU,
+   same doctrine, extra vocabulary: 92 objects, 39 distinct obj_ids, 55
+   of them linked, BACNET drivers. Adds horizontal dampers
+   (V3_horis_damper_flow-left_nrm / -right_nrm), a dummy 2-way motor, a
+   grey/green status LED, the sub-page navigation row
+   (sub_page_link_btn_home / _left / _right plus
+   sub_page_80_24_kurver_btn) and a file_pdf document link that carries
+   /iw_plants/iw_NNNNN/files/Funksjonsbeskrivelse.pdf in BOTH driver_id
+   and file_pdf.
 OBJECTS ONLY: build the unit from duct/pipe/connector/equipment objects
 and NEVER author an image_svg for it. Keep org_image_name
 "00-blank-sidebar-1400x750" and background_embedded true. Use only
