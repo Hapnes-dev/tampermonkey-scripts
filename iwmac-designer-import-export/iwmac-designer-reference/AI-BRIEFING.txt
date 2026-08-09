@@ -354,9 +354,23 @@ top-left, no alarm bell top-right. Every coordinate below is the
 literal posLeft/posTop/posWidth/posHeight of a sanitized real
 production export. Copy them. Do not invent a visual language.
 
-TWO normative references, and no others - both real production panels,
-both on the 00-blank-sidebar background, every obj_id in them a real
-palette entry:
+EVIDENCE PRIORITY. Rank the ground truth like this and name the rank
+you used: 1) a panel JSON the user supplied in this conversation; 2) a
+production reference in reference_data/; 3) PANEL-TYPE-GUIDE.md; 4)
+DESIGN-OBJECT-CATALOG.md; 5) an invented layout - only when no
+production reference exists for the panel type at all. When the user
+supplies an existing JSON and asks for something that should look like
+it, THAT JSON IS THE AUTHORITATIVE GEOMETRIC TEMPLATE: its coordinates,
+sizes, z-indexes and object vocabulary override every measured anchor
+printed below, which were taken from a different export. Never replace
+a detailed production layout with a reduced conceptual diagram. Full
+rules and QA checklists: iwmac-designer-reference/CLAUDE.md, section
+"Ventilation panel fidelity and template-matching rules".
+
+TWO COMMITTED normative references - and no others when the user has
+supplied none of their own (rank 2 of EVIDENCE PRIORITY). Both are real
+production panels on the 00-blank-sidebar background, every obj_id in
+them a real palette entry:
 A) reference_data/real-vent-panel-example.json - 102 objects, 41
    distinct obj_ids, OJEXHAUST drivers. THE reference: every number in
    this section is measured from it.
@@ -577,6 +591,73 @@ distinct obj_id count, the checks above, and anything you could NOT
 verify. Where the host requires the answer to be raw JSON only, deliver
 the JSON as the file/answer and put the report in the accompanying
 chat message - never as comments inside the JSON.
+
+7a-11 TEMPLATE FIDELITY WHEN THE USER SUPPLIES A JSON. Rank 1 of the
+EVIDENCE PRIORITY above. Full rules, the 17-item visual acceptance
+list and the worked lesson: iwmac-designer-reference/CLAUDE.md,
+"Ventilation panel fidelity and template-matching rules".
+ - CLONE THE WHOLE VISUAL GRAMMAR. panel_width/height, background type,
+   org_image_name, embedded image_data, sidebar width and start x, and
+   per object obj_id, posLeft, posTop, posWidth, posHeight, zIndex,
+   tag_text, alias_text - plus containers, graphics, and array order
+   where layering depends on it. Keep the unlinked scaffold: labels,
+   arrows, connector lines, dummy objects, spacers, section headers,
+   room and sidebar framing, heat-recovery artwork, alarm symbols. Do
+   not keep only the objects that look like equipment.
+ - OBJECT COUNT IS NOT THE TEST. Compare object by object, by role. A
+   102-object reference reduced to 53 objects lost 27 production roles
+   and substituted 8 obj_ids that appear nowhere in the reference - all
+   8 legal palette entries, which is the point: passing the id-exists
+   check is not the same as matching the reference vocabulary. 53 is
+   not a threshold; the missing roles and the substitutions are the
+   fault.
+ - EXACT PRODUCTION TYPES, EXACT SPELLING. No generic substitute where
+   the reference uses a purpose-built object:
+   numberV3_filter_with_diff_press, V3_58px_fan_left_nrm and
+   V3_58px_fan_right_nrm, number_v3_heater_3_way, number_v3_el_heater,
+   number_v3_cooler_2-way, number_360_vg_rot, number_360_room,
+   number_v3_dummy_resirc_damp_hor and _vert, number_v3_header_grey75,
+   number_v3_60px_dark_no_conn, number_v3_60px_dark_no_conn_no_tag,
+   number_v3_custom_json_obj, number_v3_60px_json_obj. Copy obj_id
+   spelling from the catalogue or the reference JSON - do not normalize
+   capitalization and do not correct historical spelling.
+ - LAYOUT-MATCHED BUT UNLINKED is a mode of its own. Keep obj_id,
+   geometry, zIndex, tag_text, alias_text, background, panel size,
+   object order and every visual or structural object. Sanitize only
+   linked="false", driver_id="driver_id", link_name="", link_tag="",
+   unit_id="", unit_ref="", and set source_plant_id and panel.plant_id
+   to "" for a generic reusable demo (keep them only if the user asks
+   for a plant-specific linked file). KEEP alias_text - it is what a
+   human relinks by. Do not strip static labels or scaffold objects
+   because they carry no live value.
+ - BACKGROUND. Objects-only means the ducts, equipment, values and
+   controls are objects. It does NOT mean "drop the standard embedded
+   blank-sidebar raster". Preserve org_image_name
+   "00-blank-sidebar-1400x750" and its image_data unless the user asks
+   for a different background. Never author a decorative
+   panel.image_svg for a vent panel - that prohibition is unchanged.
+ - NO INVENTED EQUIPMENT. Add or remove equipment only when the user's
+   system description, an uploaded P and ID, a parameter inventory, an
+   existing target panel or another named production template supports
+   it. If that information is missing, deliver an unlinked layout from
+   the closest template and say which equipment assumptions you kept.
+   Never invent driver ids, unit ids or parameter identifiers.
+ - VALIDATE STRUCTURE, THEN THE PICTURE. Structural report against the
+   reference: dimensions, background name and embedded flag, single /
+   container / graphics counts, distinct obj_id count, per-id frequency
+   differences, missing roles, added roles, objects outside the canvas,
+   duplicate or non-sequential names, overlapping rectangles needing a
+   visual check, mismatched pipe endpoints, components not meeting
+   their duct, sidebar objects outside the sidebar, source driver ids
+   surviving in a demo, missing alias_text. COUNTS ARE NECESSARY BUT
+   NOT SUFFICIENT - two panels can agree on every count and differ in
+   every coordinate. Then render or insert on an EMPTY canvas (Insert
+   JSON appends), capture a clean 1400x750 preview with the pointer
+   away from every object, and compare: upper duct line, lower duct
+   line, heat-recovery and conditioning section, sidebar. A Designer
+   hover tooltip is runtime UI, never panel content. If real rendering
+   is unavailable, label the preview an approximation and do not claim
+   pixel-level fidelity.
 
 7b. HOW PANELS ARE DRAWN TODAY (PRODUCTION CONVENTIONS)
 -------------------------------------------------------

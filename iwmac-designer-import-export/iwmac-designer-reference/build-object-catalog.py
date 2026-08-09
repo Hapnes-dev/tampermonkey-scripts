@@ -211,7 +211,29 @@ PICK_BY_TASK = [
      "Stretch posWidth/posHeight along the run - one object per run, not a chain."),
     ("Air handling: filter",
      ["numberV3_filter_with_diff_press", "number_v3_filter_only"],
-     "The diff-press variant carries the QD tag."),
+     "The diff-press variant carries the QD tag. Note the capital V - copy the id verbatim."),
+    ("Air handling: heating and cooling coils",
+     ["number_v3_heater_3_way", "number_v3_el_heater", "number_v3_cooler_2-way"],
+     "Purpose-built coil bodies drawn ACROSS the run they condition (heights 85-210 px) "
+     "- never a plain value box or a generic valve. The hyphen in _2-way is real."),
+    ("Air handling: heat recovery",
+     ["number_360_vg_rot", "number_360_room"],
+     "The rotor spans both duct runs (60x343 in the reference); the room symbol closes "
+     "the supply end. Both belong to the z=40 equipment band."),
+    ("Air handling: crossovers and recirculation",
+     ["number_v3_exhaust_connector_up", "number_v3_supply_connector_down",
+      "number_v3_dummy_resirc_damp_hor", "number_v3_dummy_resirc_damp_vert"],
+     "The connectors join a horizontal run to the vertical crossover column; the resirc "
+     "dummies are the recirculation damper symbols a vent panel actually uses."),
+    ("Ventilasjon sidebar row",
+     ["number_v3_header_grey75", "number_v3_60px_dark_no_conn",
+      "number_v3_60px_dark_no_conn_no_tag", "number_v3_label_11px_norm"],
+     "Header bar 250x20 spanning the section, label on the left of the row, value boxes "
+     "in one or two columns on the right, 25 px pitch. The _no_tag variant is for rows "
+     "whose label already names the value."),
+    ("Outside-air reference",
+     ["numberV3_outside_temp"],
+     "The outdoor-temperature block at the fresh-air inlet. Capital V again."),
     ("Refrigeration: pack controller",
      ["V3_akpc_772_781_781A_783_contr", "V3_akpc_782A_suct", "V3_akpc_783_781A_782A_cond"],
      "Danfoss AK-PC blocks - controller, suction group, condensing group."),
@@ -462,7 +484,12 @@ def main() -> None:
         "cluster offsets in [AI-BRIEFING.txt](AI-BRIEFING.txt) §7a) — objects only "
         "on the `00-blank-sidebar-1400x750` background, never an authored "
         "`image_svg`. Choosing ids from this list and inventing the layout is what "
-        "produces a generic dashboard."
+        "produces a generic dashboard. And when the user supplies their own panel "
+        "JSON, that file outranks every reference here and becomes the authoritative "
+        "geometric template - clone its geometry, z-indexes and object vocabulary, "
+        "sanitize only the parameter bindings, and keep `alias_text`. Rules and QA "
+        "checklists: [CLAUDE.md](CLAUDE.md), *Ventilation panel fidelity and "
+        "template-matching rules*."
     )
     add("")
 

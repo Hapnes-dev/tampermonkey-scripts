@@ -395,6 +395,94 @@ A vent panel is a **process schematic drawn with objects** plus a right-hand con
 
 **Regression prompt** (run this against any agent given the kit): *"Create an unlinked 360.001 Ventilasjon demo in the same production style as real-vent-panel-example.json."* It passes only if the answer is valid v1 JSON whose layout is visibly derived from that reference, drawn with palette objects on the blank sidebar background, with no `panel.image_svg`, no source driver/unit ids, the unlinked placeholder contract on every dynamic object, intact functional clusters, the right-hand control sidebar present, counts and sequential names valid, and a preview (if any) matching the JSON geometry.
 
+### Ventilation panel fidelity and template-matching rules
+
+The subsection above says how to draw a vent panel from the two committed references. This one says what to do when the user supplies **their own** panel and asks for something that should look like it — the case where a generated panel most often degrades into a conceptual diagram. This is the authoritative implementation and QA contract. [AI-BRIEFING.txt](AI-BRIEFING.txt) §7a-11 carries the short generation contract and [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) the style summary; both point here rather than restating these rules.
+
+Measurements below marked *(9099 export)* come from a user-supplied `iwmac-panel_9099_360-001-ventilasjon` export inspected on 2026-08-09 — 102 objects, 41 distinct obj_ids, IWDIE v1.6.1. **It is not committed**: it carries a live plant id and real driver ids, and the repo policy is that reference JSONs are masked before commit. It is a *revised* layout of the same AHU as [real-vent-panel-example.json](reference_data/real-vent-panel-example.json), not its unmasked twin — 85 objects differ in `posLeft`, 84 in `posTop`, 66 in `obj_id` — so the two sets of anchors are both real and must not be merged.
+
+**1. Clone the complete visual grammar, not the equipment list.** When a supplied JSON is the template, reproduce `panel_width`, `panel_height`, the background type, `org_image_name`, the embedded `image_data`, the sidebar width and its starting x, and then every object's `obj_id`, `posLeft`, `posTop`, `posWidth`, `posHeight`, `zIndex`, `tag_text` and `alias_text` — plus the `containers` and `graphics` arrays and, where layering depends on array order rather than an explicit z-index, the object ordering itself. Keep the unlinked scaffold: labels, arrows, connector lines, dummy objects, spacers. Do not keep only the objects that look like equipment. The 9099 export is 102 single objects; the earlier generated demo (`ventilation_demo_360001.json`) was 53 and lost most of the production structure. **53 is not a universal bad threshold** — object count and object roles must be justified against the reference panel, and the comparison is object by object, not count against count.
+
+**2. The scaffold is part of the design.** A production vent panel is mostly objects with no live value, and they are what makes it read as ductwork. Named roles, all present in the 9099 export: horizontal fresh / supply / exhaust pipe runs; vertical crossover pipes; pipe connectors (`exhaust_connector_up`, `supply_connector_down`); airflow arrows; recirculation damper symbols; dummy line connectors; the labels that belong to values; section headers; room and sidebar framing objects; heat-recovery artwork; component labels; and the alarm symbols standing beside the equipment they guard. None of these may be dropped on the grounds that they have no driver behind them.
+
+**3. Use the exact production object types.** No generic substitution where the reference uses a purpose-built object. The 41 ids in the 9099 export include, verbatim:
+
+`numberV3_filter_with_diff_press` · `V3_58px_fan_left_nrm` · `V3_58px_fan_right_nrm` · `number_v3_heater_3_way` · `number_v3_el_heater` · `number_v3_cooler_2-way` · `number_360_vg_rot` · `number_360_room` · `number_v3_dummy_resirc_damp_hor` · `number_v3_dummy_resirc_damp_vert` · `number_v3_header_grey75` · `number_v3_60px_dark_no_conn` · `number_v3_60px_dark_no_conn_no_tag` · `number_v3_custom_json_obj` · `number_v3_60px_json_obj`
+
+**Spell `obj_id` exactly as the catalog or the reference JSON spells it.** Do not normalise capitalisation and do not "correct" historical spelling — `numberV3_filter_with_diff_press` and `numberV3_outside_temp` really do carry the capital V, and `number_v3_cooler_2-way` really does carry a hyphen. An id that does not match a palette entry renders as a broken `undefined`-class box (§4). Substituting a generic value box for a purpose-built coil, filter or damper is the second most common way a generated vent panel stops looking like production; inventing an id is the first. The 53-object demo substituted eight ids that appear nowhere in the reference: `number_v3_heater_3W_valve` and `number_v3_cooler_3W_valve` for the real coil bodies, `V3_horis_damper_flow-left_nrm`/`-right_nrm` for the resirc dummies, plus `number_v3_label_11px_bold`, `number_v3_label_12px_bold`, `V3_81x21_enebled_disabled_nrm` and `V3_ok_alarm_nrm`. **All eight are legal palette entries** (checked against [all-design-objects.json](reference_data/all-design-objects.json)) — which is the point: passing the id-exists check is not the same as matching the reference's vocabulary, and the id-exists check is the only one an agent usually remembers to run.
+
+**4. Visual fidelity and parameter linking are separate axes — the layout-matched-but-unlinked mode.** A reusable demo built from a production template keeps the drawing and drops only the bindings.
+
+| Preserve verbatim | Sanitize |
+|---|---|
+| `obj_id`, `posLeft`, `posTop`, `posWidth`, `posHeight` | `linked` → `"false"` |
+| `zIndex`, object ordering | `driver_id` → the literal `"driver_id"` |
+| `tag_text`, `alias_text` | `link_name` → `""` |
+| panel dimensions, background, `org_image_name`, `image_data` | `link_tag` → `""` |
+| every visual and structural object | `unit_id`, `unit_ref` → `""` |
+
+Also set the envelope's `source_plant_id` and `panel.plant_id` to `""` for a generic reusable demo. Keep them only when the user explicitly asks for a plant-specific linked file.
+
+**Do not remove `alias_text` during sanitization.** The alias is the selector text a human links by afterwards (§13b) — stripping it makes the demo unrelinkable. Do not strip static labels or scaffold objects either; "not live-linked" is not a reason to delete anything. `ventilation_demo_360001_layout_matched.json` (2026-08-09, user Downloads, not committed) is what a correct result looks like: 102 objects, obj_id multiset and geometry identical to the 9099 export, `linked:"false"` and `driver_id:"driver_id"` on all 102, `unit_id` empty on all 102, `alias_text` non-empty on all 102.
+
+**5. Preserve the production background contract.** The 9099 export is 1400 × 750 with `org_image_name = "00-blank-sidebar-1400x750"` and a real embedded raster in `image_data` (`converted:"true"`, a ~8 KB PNG data URI byte-identical to the one in the committed reference): a white main drawing area with a light-grey right sidebar starting at about **x = 1150**.
+
+"Ventilasjon is objects-only" means the ducts, equipment, values, symbols and controls are Designer objects rather than painted artwork. **It does not mean "remove the standard embedded blank-sidebar background."** Preserve the reference background exactly unless the user explicitly asks for a different one. And the standing prohibition is unchanged: **never generate decorative SVG artwork behind a ventilation panel** — no authored `panel.image_svg`. Keeping the blank-sidebar raster is preservation, not authorship.
+
+**6. Match the production composition.** The arrangement, not just the parts *(9099 export; literal `posLeft,posTop posWidth×posHeight`)*:
+
+- **Extract-air route on the upper horizontal line** — `number_v3_exhaust_pipe_horisontal` (24,200) 1025×18, extract fan `V3_58px_fan_left_nrm` (187,179) 59×59.
+- **Supply-air route on the lower horizontal line** — `number_v3_fresh_pipe_horisontal` (24,442) 260×18 then `number_v3_supply_pipe_horisontal` (337,442) 710×18, supply fan `V3_58px_fan_right_nrm` (795,421) 59×59. The two routes are 242 px apart.
+- **Vertical crossover / heat-recovery section between the routes** — the column at x 411 (`exhaust_connector_up` y 211, `exhaust_pipe_vertical` y 254, `supply_pipe_vertical` y 329, `supply_connector_down` y 399) with the rotor `number_360_vg_rot` (282,149) 60×343 and `number_v3_dummy_resirc_damp_vert` (407,310) 40×40.
+- **Conditioning equipment placed directly on or across the duct line** — `number_v3_cooler_2-way` (456,409) 38×132, `number_v3_heater_3_way` (583,413) 40×210, `number_v3_el_heater` (697,413) 40×85, all straddling the supply run.
+- **Labels and live values close to their sensor or equipment**, and **alarm bells beside the associated component**, never on top of it.
+- **A dedicated right sidebar** — see rule 6b.
+- Retain this composition when adapting the panel to another AHU, unless the documented equipment sequence for that unit forces a structural change.
+
+**6b. The sidebar, row by row** *(9099 export)*. Three `number_v3_header_grey75` bars 250×20 at **x 1150**, y **0 / 165 / 357**, spanning the section width, captioned **Status og vendere**, **Vifteregulering**, **Temperaturregulering**. Labels start in the left part of each row at **x 1160–1175**; values and controls line up in one or two columns on the right — `number_v3_60px_dark_no_conn` 62×22 at **x 1260** (Tilluft) and **x 1330** (Avtrekk) under *Vifteregulering*, `number_v3_60px_dark_no_conn_no_tag` at **x 1329** under *Temperaturregulering*, `number_v3_60px_json_obj` / `number_v3_custom_json_obj` 100–230×20 at x 1160/1290 under *Status og vendere*, with the two alarm LEDs `V3_led_16px_circ_grey_red` / `_grey_yellow` at x 1317/1362, y 75. Vertical pitch is compact and consistent — 25 px inside the fan block (y 205/230/255/279/308), 25 px inside the temperature block (y 385/410/435). Keep the three sections visually separated by their header bars.
+
+**7. Do not invent equipment to fill space.** Equipment may be added or removed only when the change is supported by the user's system description, an uploaded P&ID, a parameter inventory, an existing target panel, or another explicitly selected production template. If that information is missing, generate an unlinked layout from the closest template and state which equipment assumptions were carried over unchanged. **Never invent driver ids, unit ids or parameter identifiers** — an invented id looks linked and is not (§5, §8b).
+
+**8. Avoid overlap, and do not mistake a hover tooltip for panel content.** Check, before delivering: label / value / equipment / alarm / connector overlap; values kept clear of the duct centreline unless the object actually connects to it; alarm bells close to their component but not covering it; connector-bearing value objects pointing at the correct duct or equipment (`con_down` above a run, `con_top` below it); sidebar labels not colliding with their value boxes; equipment not unintentionally breaking a pipe run; and `zIndex` putting pipes below equipment, values, labels and alarms where that is the intent.
+
+**A Designer hover tooltip is runtime UI, not saved panel content.** Capture QA screenshots with the pointer moved away from every panel object. The 2026-08-09 QA screenshot of this panel showed a tooltip over a cooling-related value object; nothing in it belongs in the JSON.
+
+**9. Run a structural comparison before declaring a generated JSON complete.** Report, generated against reference: panel dimensions · background name and whether it is embedded · single-object count · container count · graphics count · distinct `obj_id` count · per-id frequency differences · reference object roles that are missing · object roles that were added · objects outside the canvas · duplicate object names · non-sequential object names · overlapping rectangles that need a visual check · mismatched pipe endpoints · components that do not intersect or align with their intended duct · sidebar objects outside the sidebar area · live driver ids accidentally retained in a generic demo · missing `alias_text` on objects intended for later linking.
+
+**Counts are necessary but not sufficient.** Two panels can agree on all six counts and still differ in every coordinate — the 9099 export and the committed reference do exactly that.
+
+**10. Render-based QA is mandatory.** Ten steps, in order: (1) parse the JSON; (2) validate the envelope and the counts; (3) render it, or insert it in a safe test context; (4) capture a clean 1400 × 750 preview with no hover overlay; (5) compare against the reference screenshot; (6) inspect the upper duct line; (7) inspect the lower duct line; (8) inspect the heat-recovery and conditioning section; (9) inspect the right sidebar; (10) correct geometry or object choices before delivery.
+
+Do not deliver a hand-drawn approximation as the final preview when real Designer rendering is available. When it is not, label the preview as an approximation and do not claim pixel-level fidelity. Remember that Insert JSON **appends** (§10.1, §17) — insert a full panel onto an empty canvas unless duplication is intentional.
+
+**11. Visual acceptance criteria.** All seventeen must hold:
+
+1. Canvas and sidebar proportions match the reference.
+2. Duct lines are straight and continuous.
+3. Vertical crossovers meet the horizontal runs.
+4. Fans point in the intended airflow direction.
+5. Filters align with their pressure-value connectors.
+6. Heating and cooling assemblies use the correct production objects.
+7. Alarm bells are visually attached to the correct systems.
+8. Sensor and value connectors terminate at the intended line.
+9. Tags are readable and not clipped.
+10. Sidebar headers share a consistent width and alignment.
+11. Sidebar values form clean columns.
+12. No component floats without a line, pipe or label.
+13. No placeholder tooltip is visible in the preview.
+14. A generic demo contains no source-plant driver identifiers.
+15. `counts.single_objects` equals `panel.single_objects.length`.
+16. Object names are sequential — `object_0 … object_N`, no duplicates.
+17. The final JSON reparses without errors.
+
+**12. Worked lesson — the 53-object demo (2026-08-09).**
+
+*Bad approach.* Build a new conceptual panel from a short equipment list; use roughly half the production object set; approximate the filters, the coils and the sidebar elements; then illustrate a preview by hand that does not reflect what the Designer would actually render. Measured result against the 102-object production panel: 53 objects, 30 distinct ids, no background, and **27 production roles absent or thinned** — every one of `number_v3_60px_dark_no_conn_no_tag`, `number_v3_60px_json_obj`, `number_v3_custom_json_obj`, `number_v3_dummy_resirc_damp_hor`, `number_v3_dummy_resirc_damp_vert`, `number_v3_R_45px_con_right`, `number_v3_dummy_6x15_Line_Small_Down`, `number_360_room`, `number_360_vg_rot`, both dummy arrows, both sidebar LEDs, `numberV3_outside_temp`, `v3_3w_valve_right_down_nrm`, `V3_21px_single_pump_grey_green_up`, `number_v3_heater_3_way`, `number_v3_el_heater` and `number_v3_cooler_2-way`, with labels cut from 16 to 7 and setpoint boxes from 8 to 3 — plus 8 substituted ids that appear nowhere in the reference (rule 3).
+
+*Preferred approach.* Open the supplied production JSON. Treat all 102 objects as the baseline. Preserve geometry, `zIndex`, `tag_text`, `alias_text` and the background. Sanitize only the live parameter bindings (rule 4). Render the copied structure and compare it with the supplied screenshot. Then change only what the user's requested system difference actually requires.
+
+**The goal is not blind copying.** It is evidence-based reuse of production composition, object vocabulary, spacing and layering — so that the parts you deliberately change are the only parts that differ.
+
 The contract's load-bearing rules, all live-verified: exact allowlist obj_ids only (unknown ids render as broken `undefined`-class boxes, §4); `driver_id` stays the literal placeholder `"driver_id"` — the human links via the param selector afterwards (alias_text is what guides them, §13b); **plain-ASCII text as the safe default** (the Insert flow reads files as UTF-8 and production panels do carry `°`/æøå — those survive; the mojibake risk is other channels like `addScriptTag` on the ISO-8859-1 page, verified both ways); `zIndex "default"`; empty `containers`/`graphics` in v1 — **except list panels** (spjeldliste), which are container-built with explicit zIndex layers (next section); raw JSON output only.
 
 **Production drawing conventions** ([reference_data/panel-conventions.json](reference_data/panel-conventions.json) — mined from **194 compiled panels on 59 plants**, incl. the older 3xxx fleet and SE/DK stores): standard panel inventory per plant is Oversikt / Maskin / Energi / Ventilasjon 360.NNN / VGV / Waterloop / Kondenssystem (+ Varmesentral/320.NNN heating, Tørrkjøler, Kurver, multi-part Oversikt on big sites; SE `Översikt Butik`/`Larmöversikt`, DK `Overblik Butik`); **three size standards** — 1400×750 and 1400×755 (the designer's own Actions preset) on newer plants, 1280×1024 on the older fleet — always match the plant; **96% of panels sit on a background image** (`<plant>_<type>-vN_<date>.png`, blanks `00-blank[-sidebar]-1400x750` for object-drawn Ventilasjon panels; images freely reused across sister stores); median 57 objects and 94% driver-linked per finished panel; `link_tag` rare except Energi panels; **containers on 3/194 panels, graphics on 0/194** — empty arrays are the production norm; older plants are drawn in legacy V2 object ids (`alarm_anim.gif`, `number6`, `red_led_small`) that still render but are not modern style. The signature Oversikt pattern is the **case cluster** — one per cooling position, **28 occurrences** (+11 of a 3-member variant without the cooling symbol): alarm bell (dx12,dy0) + temp box 42×22 (dx7,dy22) + cooling 28px (dx10,dy35) + defrost 28px (dx28,dy38), ~62×66 px footprint, all four linked to the same case controller. AI mode A = blank table-style panel; mode B = a **cluster kit** grid the human drags onto the floor plan after insert; mode C = the container-built **list panel** below (the briefing §7b/§7c documents all three).
