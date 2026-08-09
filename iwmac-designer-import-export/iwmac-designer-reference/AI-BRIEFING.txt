@@ -95,8 +95,8 @@ file; companion image maskin-light-style-reference.png) exactly:
   source maskin-light-template.ai; its real layers are Backround / Ror
   / Maskinrom). NEVER draw a dark-background maskin: the no-dark-canvas
   rule above has NO exceptions, not even when the plant's existing
-  maskin is dark. maskin-dark-style-example.png is historical evidence
-  of what NOT to produce - never use it as a drawing reference.
+  maskin is dark - redraw it on the light skin. No dark reference image
+  ships with this kit.
 - Vrec is the receiver FLASH-GAS valve: draw it on the cyan
   suction-side line, never on the yellow liquid line.
 - Worked example: generated-maskin-example.json - a complete generated

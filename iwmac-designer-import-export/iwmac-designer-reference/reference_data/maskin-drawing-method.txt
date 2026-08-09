@@ -242,9 +242,8 @@ There is exactly ONE sanctioned skin:
 NEVER draw a maskin on a dark background. The kit's general "never cover
 the canvas in dark colors" rule has NO exceptions: it applies to maskin
 pictures exactly as it applies to vent/overview panels, even when the
-plant's existing maskin is a near-black one. maskin-dark-style-example.png
-is retained only as historical evidence of what NOT to produce; it is
-never a drawing reference.
+plant's existing maskin is a near-black one - redraw it on the light
+skin. No dark reference image ships with this kit.
 
 FACTS READ OUT OF THE PRODUCTION .AI ITSELF:
 - Artboard is exactly 1400 x 750 pt (1 px = 1 pt) - confirmed.
