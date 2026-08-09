@@ -1,0 +1,627 @@
+{
+  "survey_date": "2026-08-08",
+  "fleet": "MENY Norway — initial 20-plant batch",
+  "batch": {
+    "requested": 20,
+    "plant_ids": [
+      "8001",
+      "8002",
+      "8016",
+      "8045",
+      "8049",
+      "8075",
+      "8076",
+      "8088",
+      "8098",
+      "8124",
+      "8132",
+      "8146",
+      "8150",
+      "8158",
+      "8205",
+      "8214",
+      "8232",
+      "8239",
+      "8272",
+      "8289"
+    ]
+  },
+  "plants": {
+    "8001": {
+      "name": "MENY Rona",
+      "error": null,
+      "unit_error": null,
+      "units": [
+        {
+          "unit_id": "V01",
+          "unit_name": "360.001 Ventilasjon"
+        }
+      ],
+      "panels": [
+        {
+          "name": "360.001 Ventilasjon",
+          "id": "3",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1400px",
+          "h": "750px",
+          "n_obj": 102,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 102,
+          "n_linked": 57,
+          "n_v2": 0,
+          "max_x": 1400,
+          "max_y": 623,
+          "census": {
+            "number_v3_label_11px_norm": 16
+          },
+          "has_bg": true,
+          "bg_kb": 6,
+          "unit_ids": [
+            "V01"
+          ],
+          "unit_names": [
+            "360.001 Ventilasjon"
+          ],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8002": {
+      "name": "MENY Bekkestua",
+      "error": null,
+      "unit_error": null,
+      "units": [
+        {
+          "unit_id": "V02",
+          "unit_name": "Ventilasjon butikk"
+        }
+      ],
+      "panels": [
+        {
+          "name": "Butikk",
+          "id": "7",
+          "visible": "4",
+          "source_format": "json",
+          "w": "1400px",
+          "h": "750px",
+          "n_obj": 80,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 80,
+          "n_linked": 40,
+          "n_v2": 0,
+          "max_x": 1200,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 6,
+          "unit_ids": [
+            "V02"
+          ],
+          "unit_names": [
+            "Ventilasjon butikk"
+          ],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8016": {
+      "name": "MENY Støletorget",
+      "error": null,
+      "unit_error": null,
+      "units": [
+        {
+          "unit_id": "V03",
+          "unit_name": "360.003Ventilasjon"
+        }
+      ],
+      "panels": [
+        {
+          "name": "Teknisk",
+          "id": "9",
+          "visible": "4",
+          "source_format": "xml_only",
+          "n_obj": 44,
+          "n_v2": 44,
+          "separator": false,
+          "unit_ids": [
+            "V03"
+          ],
+          "unit_names": [
+            "360.003Ventilasjon"
+          ],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8045": {
+      "name": "MENY Nanset",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8049": {
+      "name": "MENY Osloveien Hønefoss",
+      "error": "no panel list",
+      "unit_error": null,
+      "units": [],
+      "panels": []
+    },
+    "8075": {
+      "name": "Meny GS",
+      "error": null,
+      "unit_error": "HTTP 500",
+      "units": [],
+      "panels": [
+        {
+          "name": "360.001 Ventilasjon",
+          "id": "4",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8076": {
+      "name": "MENY Slependen",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8088": {
+      "name": "MENY Romeriksenteret",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8098": {
+      "name": "MENY Stortorvet",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8124": {
+      "name": "MENY Alna",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8132": {
+      "name": "MENY Rasta",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8146": {
+      "name": "MENY Høvik",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8150": {
+      "name": "MENY Stovner",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8158": {
+      "name": "Meny Trekanten",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8205": {
+      "name": "MENY Brakerøya",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8214": {
+      "name": "MENY Langhus",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8232": {
+      "name": "MENY Askim",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8239": {
+      "name": "MENY Vollebekk",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8272": {
+      "name": "MENY Åssiden",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    },
+    "8289": {
+      "name": "MENY Fantoft",
+      "error": null,
+      "unit_error": null,
+      "units": [],
+      "panels": [
+        {
+          "name": "Oversikt",
+          "id": "1",
+          "visible": "1",
+          "source_format": "json",
+          "w": "1000px",
+          "h": "700px",
+          "n_obj": 20,
+          "n_cont": 0,
+          "n_graph": 0,
+          "n_items_total": 20,
+          "n_linked": 20,
+          "n_v2": 0,
+          "max_x": 1000,
+          "max_y": 700,
+          "census": {},
+          "has_bg": true,
+          "bg_kb": 20,
+          "unit_ids": [],
+          "unit_names": [],
+          "fetch_error": null
+        }
+      ]
+    }
+  }
+}

@@ -59,6 +59,14 @@ The air-handling-unit page: ducts, dampers, filters and sensors drawn **with obj
 - Reference exports already in the kit: `reference_data/real-vent-panel-example.json` (unlinked) and `real-vent-panel-linked-example.json` (linked twin, the linking contract).
 - **Best copy sources:** 9916 EXTRA St. Olavsgt (92 obj) · 9868 EXTRA Ugla (90) · 9914 EXTRA Hunstad 360.01 (87) — all the same 57%-linked scaffold pattern.
 
+### Separate MENY ventilation evidence
+
+The focused [MENY ventilation corpus](VENTILATION-CORPUS.md) is separate from the Coop Extra statistics above. Its corrected authenticated GET-only rerun passed offline validation with exactly 20 plants and 101 panels—42 JSON-backed and 59 XML-only—with no plant, unit, or panel errors. It matched 34 panels on 16 plants: 14 JSON and 20 XML-only, 33 visible and 1 hidden, 30 V2-bearing, with discovery split 2 `both`, 30 `unit_name`, and 2 `panel_name`. The raw batch is [plant-panel-survey-meny-20.json](reference_data/plant-panel-survey-meny-20.json); the derived matches are [ventilation-panel-corpus.json](reference_data/ventilation-panel-corpus.json).
+
+Discovery is deliberately narrower than a plant-wide name search: collect real unit IDs from the current panel, exact-join them to that plant's Windows-1252 unit inventory, then test only the joined display names for normalized `ventilasjon`/`ventilation`. JSON requires valid `driver_id` and `unit_id` fields on the same object. Production compiled XML requires a valid `<id>` (= `driver_id`) and valid `<unit_id>` on the same `<data>`. Compact `360.001Ventilasjon` is valid; `V01` and `Forventilasjon` are not. XML-only panels retain enough object/unit evidence for this join but lack the richer layout/link/background metadata available from JSON, so do not rank them as equivalent JSON copy sources; the current userscript cannot export them until they have been recompiled into JSON.
+
+Canonical plant `9099` stays outside the MENY batch: its panel name is `360.001 Ventilasjon`, while the exact live same-plant unit inventory name is `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override the live inventory. The generated demo remains outside production totals.
+
 ## Energi (energy meters) — most plants
 
 The smallest panel type: energy-meter values on a meter-tree drawing.
