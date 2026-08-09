@@ -93,7 +93,24 @@ class CorpusBuilderTests(unittest.TestCase):
         self.assertTrue(production["outside_batch"])
         self.assertEqual(demo["objects"], 45)
         self.assertFalse(demo["included_in_production_totals"])
+        self.assertFalse(demo["present_in_repository"])
+        self.assertTrue(demo["violates_background_contract"])
         self.assertEqual(corpus["summary"]["attempted_plants"], 20)
+
+    def test_generated_demo_is_not_a_retrievable_repository_file(self):
+        """The demo record names a file that was never committed.
+
+        If someone adds it, this test fails so the record and the surrounding
+        documentation get corrected instead of silently going stale.
+        """
+        corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+        demo = corpus["canonical_examples"]["generated_demo"]
+        self.assertFalse(demo["present_in_repository"])
+        matches = sorted(
+            str(path.relative_to(ROOT))
+            for path in ROOT.rglob(demo["name"])
+        )
+        self.assertEqual(matches, [])
 
     def test_documented_coverage_table_matches_repository_corpus(self):
         corpus = json.loads(CORPUS.read_text(encoding="utf-8"))

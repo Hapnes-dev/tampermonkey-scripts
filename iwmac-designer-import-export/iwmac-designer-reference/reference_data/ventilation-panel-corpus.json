@@ -1640,7 +1640,11 @@
       "linked_objects": 0,
       "background": "SVG",
       "production_bindings": false,
-      "included_in_production_totals": false
+      "included_in_production_totals": false,
+      "present_in_repository": false,
+      "provenance": "session artifact in the user's Downloads folder, 2026-08-08; never committed to this repository and not retrievable from it",
+      "violates_background_contract": true,
+      "why_recorded": "kept as a named counter-example: an authored image_svg background and 45 unlinked objects are what a Ventilasjon panel must not be"
     }
   }
 }

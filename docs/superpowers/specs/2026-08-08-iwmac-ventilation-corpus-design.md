@@ -90,7 +90,7 @@ Committed material strips `saved_by` and other personal metadata. Production ali
 
 ### Generated demo
 
-`ventilation_demo_360001.json` remains separately classified generated material:
+`ventilation_demo_360001.json` remains separately classified generated material. It is an uncommitted session artifact, not a repository file — only the record below is committed:
 
 - 45 unlinked objects
 - SVG background

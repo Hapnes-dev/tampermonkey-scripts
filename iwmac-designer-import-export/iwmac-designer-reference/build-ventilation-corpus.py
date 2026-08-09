@@ -144,6 +144,16 @@ def _canonical_examples() -> dict[str, dict[str, Any]]:
             "background": "SVG",
             "production_bindings": False,
             "included_in_production_totals": False,
+            "present_in_repository": False,
+            "provenance": (
+                "session artifact in the user's Downloads folder, 2026-08-08; "
+                "never committed to this repository and not retrievable from it"
+            ),
+            "violates_background_contract": True,
+            "why_recorded": (
+                "kept as a named counter-example: an authored image_svg background "
+                "and 45 unlinked objects are what a Ventilasjon panel must not be"
+            ),
         },
     }
 

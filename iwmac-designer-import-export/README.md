@@ -84,7 +84,7 @@ Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or
 
 The focused [MENY ventilation corpus](iwmac-designer-reference/VENTILATION-CORPUS.md) is a separate production evidence set. Its corrected authenticated GET-only rerun passed offline validation with 20 plants, 101 panels (42 JSON / 59 XML-only), and no plant, unit, or panel errors. The derived corpus has 16 matched plants, 4 zero-match plants, 0 partial/failed plants, and 34 matches: 14 JSON / 20 XML-only, 33 visible / 1 hidden, and 30 V2-bearing, with reasons 2 `both` / 30 `unit_name` / 2 `panel_name`. Production compiled XML retains a unit ID only when valid `<id>` (= `driver_id`) and `<unit_id>` values occur on the same `<data>`. Its [raw survey](iwmac-designer-reference/reference_data/plant-panel-survey-meny-20.json) and [machine corpus](iwmac-designer-reference/reference_data/ventilation-panel-corpus.json) remain separate from the 41-plant Coop Extra totals above.
 
-Canonical plant `9099` is outside that MENY batch: panel `360.001 Ventilasjon` joins `V01` to the exact live inventory name `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override the live inventory; `ventilation_demo_360001.json` remains outside production totals.
+Canonical plant `9099` is outside that MENY batch: panel `360.001 Ventilasjon` joins `V01` to the exact live inventory name `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override the live inventory; `ventilation_demo_360001.json` remains outside production totals, and is not a file in this repository — it was an uncommitted session artifact, kept in the corpus only as a named counter-example.
 
 ## How it integrates
 

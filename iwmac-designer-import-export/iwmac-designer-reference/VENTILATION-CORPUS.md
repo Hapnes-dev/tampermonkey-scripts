@@ -93,6 +93,8 @@ Plant `9099` is canonical production evidence but is **outside this initial MENY
 
 `ventilation_demo_360001.json` remains separately classified as `generated_demo`: 45 unlinked objects, SVG background, no production bindings, and excluded from every production total above.
 
+**That file is not in this repository and never was.** It was a session artifact in the user's Downloads folder on 2026-08-08, so nothing here can open it — the corpus keeps only the record, under `canonical_examples.generated_demo` with `present_in_repository: false`. The record is worth keeping because it names a counter-example: an authored `image_svg` background and 45 unlinked objects are exactly what a Ventilasjon panel must not be (see the background contract in [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md)). Do not cite it as a template, and do not treat 45 as a target object count — the production reference is plant `9099` with 102 objects.
+
 ## Reproduction
 
 Run the survey only from an existing authenticated Designer session. The callback is paced, same-origin, GET-only, and must not be changed to navigate, authenticate, POST, save, sync, upload, delete, or compile:

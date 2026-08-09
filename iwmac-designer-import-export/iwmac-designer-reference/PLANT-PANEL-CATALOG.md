@@ -26,7 +26,7 @@ This is not part of the Coop Extra fleet totals above. The focused [MENY ventila
 - **Discovery:** 2 panel-and-unit (`both`), 30 exact panel-linked unit-name, 2 panel-name only. Opaque IDs and unrelated plant-wide unit names never classify a panel.
 - **Compiled XML binding:** retain a unit ID only when a valid `<id>` (= `driver_id`) and valid `<unit_id>` occur on the same `<data>` object.
 
-Plant `9099` remains the separate canonical production example outside this MENY batch: panel `360.001 Ventilasjon` joins `V01` to the exact live same-plant inventory name `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override that live name. Generated `ventilation_demo_360001.json` remains demo-only and contributes to no production total.
+Plant `9099` remains the separate canonical production example outside this MENY batch: panel `360.001 Ventilasjon` joins `V01` to the exact live same-plant inventory name `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override that live name. Generated `ventilation_demo_360001.json` remains demo-only and contributes to no production total. It is **not a file in this repository** — it was an uncommitted 2026-08-08 session artifact, recorded in the corpus only as a counter-example (`present_in_repository: false`).
 
 The table below contains all 34 matched records plus one coverage row for every zero-match plant. `—` means the corpus does not know that field; in particular, XML-only dimensions and linked totals are not zero. All matched panel `fetch_error` fields and all four zero-match plant/unit error fields are null.
 
