@@ -52,7 +52,9 @@ is 0 and panel.containers stays [] in every panel type EXCEPT list panels
 MUST equal that array's real length.
 
 BACKGROUND ARTWORK (optional) - three ways, in priority order on insert
-(picked file beats image_svg beats image_data):
+(picked file beats image_svg beats image_data). NOT ON VENTILASJON: a
+vent panel is drawn with designer objects on the blank background, never
+with artwork - see section 7, "Ventilation unit".
 
 1. YOU CAN DRAW IT YOURSELF (v1.2.0+): put raw SVG markup in the panel
    object as "image_svg". Rules: the string starts with <svg, carries
@@ -321,10 +323,17 @@ strip); receiver section (Prec + temp); heat recovery section (Shr rows).
 See generated-panel-example.json - a complete, insert-verified rack overview
 generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 
-Ventilation unit - THE REAL ANATOMY (normative: it is the sanitized real
-production panel reference_data/real-vent-panel-example.json, 102 objects
-on the 00-blank-sidebar background; generated-vent-example.json is a
-simpler verified starter):
+Ventilation unit - THE REAL ANATOMY. ONE normative reference, and no
+other: reference_data/real-vent-panel-example.json - the sanitized real
+production panel, 102 objects, 41 distinct obj_ids, every one of them a
+real palette entry, on the 00-blank-sidebar background.
+OBJECTS ONLY: build the unit from duct/pipe/connector/equipment objects
+and NEVER author an image_svg for it. Keep org_image_name
+"00-blank-sidebar-1400x750" and background_embedded true. Use only
+obj_ids that exist in the designer palette (all-design-objects.json,
+797 entries) - an id that is not in that dump does not exist.
+A vent export's image_svg_trace is a trace of the BLANK background (two
+rectangles, no information): ignore it, never copy it into image_svg.
 - EXTRACT RUN on top, airflow right-to-left: one long
   number_v3_exhaust_pipe_horisontal (stretch posWidth, e.g. 1025), extract
   fan (V3_58px_fan_left_nrm, tag "JV501") and filter_with_diff_press

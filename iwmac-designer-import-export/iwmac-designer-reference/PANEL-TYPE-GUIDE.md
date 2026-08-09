@@ -55,7 +55,7 @@ The air-handling-unit page: ducts, dampers, filters and sensors drawn **with obj
   - `number_v3_60px_dark_no_conn` (220) — dark value boxes
   - `V3_R_34px_circular_alarm_nrm` (196), `number_v3_60px_json_obj` / `number_v3_custom_json_obj` (165) — JSON plugin objects
   - `numberV3_filter_with_diff_press` (56), `number_v3_fresh_pipe_horisontal` (37), `number_v3_header_grey75` section headers
-- Background: the ~6 KB blank (`00-blank…`) — the drawing *is* the objects.
+- Background: the ~6 KB blank (`00-blank…`) — the drawing *is* the objects. **Objects only:** never author an SVG background for a Ventilasjon panel, and use only obj_ids that exist in the designer palette (`reference_data/all-design-objects.json`).
 - Reference exports already in the kit: `reference_data/real-vent-panel-example.json` (unlinked) and `real-vent-panel-linked-example.json` (linked twin, the linking contract).
 - **Best copy sources:** 9916 EXTRA St. Olavsgt (92 obj) · 9868 EXTRA Ugla (90) · 9914 EXTRA Hunstad 360.01 (87) — all the same 57%-linked scaffold pattern.
 
