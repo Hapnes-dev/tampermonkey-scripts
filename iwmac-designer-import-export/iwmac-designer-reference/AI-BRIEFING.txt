@@ -9,6 +9,14 @@ catalogues (reference_data/all-design-objects.json and controls-registry.json)
 are optional extra knowledge - the allowlist in section 4 is enough for most
 panels.
 
+WHICH OBJECT DO I USE? DESIGN-OBJECT-CATALOG.md names all 797 palette
+objects in plain language - what each one looks like, its size, whether it
+takes a tag or a link, its states, and how many times the 266 surveyed
+production panels actually placed it. Its "Pick by task" table answers
+"I need a value box / an alarm / a damper / a page link" directly. Upload
+it alongside this briefing; reference_data/design-object-catalog.json is
+the same data machine-readable, keyed by obj_id.
+
 1. WHAT YOU ARE MAKING
 ----------------------
 A plant-view panel: absolutely positioned objects on a 1400 x 750 canvas.
