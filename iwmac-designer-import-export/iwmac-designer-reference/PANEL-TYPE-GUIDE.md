@@ -1,16 +1,18 @@
-# IWMAC panel types — how Coop Extra panels are built today
+# IWMAC panel types — how Coop Extra and MENY panels are built today
 
-A per-panel-type style guide, mined 2026-08-08 from the live compiled panels of 41 Coop Extra plants (231+ panels). Raw data: [reference_data/plant-panel-survey.json](reference_data/plant-panel-survey.json). Per-plant inventory: [PLANT-PANEL-CATALOG.md](PLANT-PANEL-CATALOG.md). Written as a knowledge file for AI assistants (Copilot) helping colleagues build or copy panels.
+A per-panel-type style guide, mined 2026-08-08 from the live compiled panels of 82 plants across two chains — 41 Coop Extra + 41 MENY, 457+ panels. Raw data: [reference_data/plant-panel-survey.json](reference_data/plant-panel-survey.json). Per-plant inventory: [PLANT-PANEL-CATALOG.md](PLANT-PANEL-CATALOG.md). Written as a knowledge file for AI assistants (Copilot) helping colleagues build or copy panels. Unless noted otherwise, the section statistics retain the Coop Extra baseline; MENY differences are called out explicitly.
 
 **Common rules across all types (fleet-verified):**
 
-- Canvas: **1400×750 px** is the standard. 1280×1024 only appears on older-era panels — do not build new ones at that size.
-- Style era: **modern V3 objects only** — zero legacy `V2_*` objects anywhere in this fleet.
-- Containers and graphics: **empty on almost every panel** — panels are flat `single_objects` over a background PNG. (Exception: 9914's room-card panels.)
+- Canvas: **1400×750 px** is the Coop Extra standard. MENY's JSON-store panels are split almost evenly between 1280×1024 (53) and 1400×750 (52), with 10 at 1050×745 and one at 852×713; prefer 1400×750 for new work.
+- Style era: Coop Extra is **modern V3 only** (zero legacy `V2_*` objects), while MENY retains a substantial legacy V2 population (3,181 objects in the JSON-store panels).
+- Containers and graphics: **empty on almost every panel** — panels are flat `single_objects` over a background PNG. (Exceptions: 9914's room-card panels and one MENY JSON panel with a container.)
 - Backgrounds: nearly every panel has an embedded PNG background. Two families: a drawn schematic (Maskin, Energi, VGV, Kondens — 30–130 KB) or the ~6 KB blank canvas on which Ventilasjon panels draw their duct layout using objects.
 - Backup convention: keep the old version as a hidden panel suffixed `_old` / `Gammel` / `_copy` — never overwrite history.
 - Visibility: main panels `visible=1`; detail/backup panels `visible=4` (hidden from the list, reachable via navigation buttons).
 - To copy a panel between plants: Export JSON on the source plant → Insert JSON on the target, accept the driver-id prefix rewrite, then re-link via the parameter selector (aliases carry over — see the linking notes per type).
+
+**MENY storage caveat:** 110 of its 226 panels exist only in the XML store because the JSON fetch is empty; the userscript cannot export those panels until they are re-compiled. MENY store-overview panels are also often split into `Oversikt Øvre`/`Nedre` or `Oversikt Plan 1`/`Plan 2`, so inspect both halves before choosing a copy source.
 
 ---
 
@@ -27,7 +29,7 @@ The floor-plan panel: case clusters placed over the store layout PNG.
   - All four link to the same case controller.
 - Trim: `number_v3_label_12px_bold` / `_11px_norm` labels, `V3_led_21px_circ_grey_red` LEDs, `number_v3_1440x95_footer_dark` footer bar, `number_v3_header_grey75` headers, occasional `number_v3_rc_temp_sp_60` room-temp boxes.
 - Background: the store floor plan PNG (30–70 KB).
-- **Best copy sources:** 9982 EXTRA Fauske (240 obj, 100% linked) · 9856 EXTRA Løten (215, 100%) · 9857 EXTRA Otta (207, 100%) · 9673 Extra Vennesla (206, 100%).
+- **Best copy sources:** 8150 MENY Stovner (272 obj, 100% linked) · 9982 EXTRA Fauske (240, 100%) · 9856 EXTRA Løten (215, 100%) · 9857 EXTRA Otta (207, 100%) · 9673 Extra Vennesla (206, 100%).
 
 ## Maskin (CO₂ rack / machine room) — every plant has one
 
@@ -41,7 +43,15 @@ The refrigeration-plant schematic: pack controller values drawn onto the machine
   - `V3_led_13px_circ_grey_green`, `V3_81x21_enebled_disabled_nrm`, `V3_ok_alarm_nrm`, `V3_21px_single_pump_grey_green_down`, `V3_co2_compressor_31x35_nrm`
 - Background: the Advansor-style CO₂ booster drawing (80–130 KB) — see `reference_data/maskin-drawing-method.txt` for the drawing doctrine and `maskin-light-template.ai` for the production template.
 - Linking: aliases are Danfoss parameter names (`Pc`, `Sd-MT`, `Running capacity MT` …) — `reference_data/maskin-akpc-link-map.json` is the canonical alias→parameter map; relinking by alias is how a Maskin moves between plants.
-- **Best copy sources:** 9643 EXTRA Kjerulfsgate (67, 100%) · 9683 Extra Havnesenteret (67, 100%) · 9982 EXTRA Fauske (64, 100%) · 9664 EXTRA Rakkestad (63, 100%).
+- **Best copy sources:** 8477 MENY Gystadmarka (74 obj, 100% linked) · 9643 EXTRA Kjerulfsgate (67, 100%) · 9683 Extra Havnesenteret (67, 100%) · 9982 EXTRA Fauske (64, 100%) · 9664 EXTRA Rakkestad (63, 100%).
+
+## Tørrkjøler og beredersystem (dry cooler / water heater) — MENY standard panel
+
+The dry-cooler, pump and hot-water page is a chain-standard MENY panel: 36 plants have one, named either `Tørrkjøler` or `Tørrkjøler og beredersystem`. Eight are available in the JSON store and 28 are XML-only.
+
+- The JSON-store examples are typically **~38–40 objects**: median 38 for the combined `Tørrkjøler og beredersystem` variant, and median 40 across all eight dry-cooler panels.
+- Aggregated top object IDs across the eight JSON panels are `number_v3_value_only` (88), `number1` (73), `number51` (29), `V3_R_34px_circular_alarm_nrm` (25), `alarm_anim.gif` (23), and the pump symbols `18x18_grey_green_pump_right` (13) / `V3_21px_single_pump_grey_green_left` (12) / `_down` (12).
+- **Best copy sources:** 8124 MENY Alna (46 obj, 45/46 linked) · 8554 MENY Oppsal senteret (42, 41/42) · 8456 MENY Kolsås (40, 38/40).
 
 ## Ventilasjon (360.NNN) — most plants
 
@@ -66,7 +76,7 @@ The smallest panel type: energy-meter values on a meter-tree drawing.
 - **30 panels**, median **10 objects** (range 4–78), ~**97% linked**.
 - Almost mono-object: `number_v3_value_only` (346 of ~400 total objects fleet-wide) + a few `number_v3_label_8px/11px_norm` labels.
 - Background: the energy/meter schematic PNG (20–46 KB).
-- **Best copy sources:** 9856 EXTRA Løten (42 obj — the big worked example) · 9914 EXTRA Hunstad (24) · 9585 Extra Evje (13).
+- **Best copy sources:** 8918 MENY Åråsen (44 obj, 100% linked) · 9856 EXTRA Løten (42 — the big worked example) · 9914 EXTRA Hunstad (24) · 9585 Extra Evje (13).
 
 ## VGV / Varmegjenvinning / Akkumulator (heat recovery)
 
@@ -93,6 +103,8 @@ The smallest panel type: energy-meter values on a meter-tree drawing.
 ## Aggregat-detalj (Swegon unit pages, 9677 only)
 
 - 9677 EXTRA Ørmelen carries 7 `Swegon PM Gold 1.09 …` setting/curve pages (14–17 objects, 1280×1024) — per-AHU deep-dive panels for a BACnet Swegon unit. A pattern to copy when a plant gets a Swegon aggregate.
+
+**MENY outlier — 9850 Meny Levert Hjem Oslo:** this warehouse/distribution site uses `Oversikt Plan 1/2`, `IK001`–`IK003`, and multiple `K0N Sone` panels instead of the standard supermarket inventory; do not use it as a generic MENY copy source.
 
 ## The container exception: 9914 EXTRA Hunstad room system
 
