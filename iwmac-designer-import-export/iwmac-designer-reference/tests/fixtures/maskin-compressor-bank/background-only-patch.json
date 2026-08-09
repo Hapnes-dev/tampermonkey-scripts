@@ -1,0 +1,27 @@
+{
+  "format": "iwmac-designer-panel",
+  "version": 1,
+  "generator": "masked-regression-fixture",
+  "source_plant_id": "MASKED_PLANT",
+  "panel_name": "Maskin masked fixture",
+  "counts": {
+    "single_objects": 0,
+    "containers": 0,
+    "graphics": 0
+  },
+  "background_embedded": true,
+  "panel": {
+    "plant_id": "MASKED_PLANT",
+    "panel_name": "Maskin masked fixture",
+    "panel_width": "96px",
+    "panel_height": "64px",
+    "org_image_name": "masked-maskin.png",
+    "image_name": "",
+    "saved_by": "masked",
+    "converted": "true",
+    "image_data": "fixture:raster-after.json",
+    "single_objects": [],
+    "containers": [],
+    "graphics": []
+  }
+}

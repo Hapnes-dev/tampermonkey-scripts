@@ -102,6 +102,37 @@ file; companion image maskin-dark-style-example.png) exactly:
   the canonical maskin-akpc-link-map aliases), insert-verified 63/63
   with the background applied.
 
+Editing an existing Maskin compressor bank from an exported panel JSON
+- Decide the deliverable BEFORE editing. A background-only patch changes
+  image_data and has zero counts plus empty single_objects, containers and
+  graphics. An entire/full JSON preserves the complete source document and
+  every existing object; only requested additions may be appended. Insert JSON
+  APPENDS, so insert a full export only on an empty canvas unless duplicates
+  are intentional.
+- Inspect the source target column before adding objects. Artwork alone does
+  not require parameter objects. Preserve every existing object unless the
+  request explicitly authorizes a change. If boxes are requested, clone the
+  nearest role match atomically: a fixed-speed C4 matching C3 gets status,
+  capacity and runtime only, never C1's extra VSD row. New objects use id and
+  driver_id "driver_id", linked "false", blank link/unit fields and clear
+  alias_text; NEVER invent a driver ID.
+- Treat the compressor column as one template and apply one measured vector to
+  its compressor art, upper/lower branches, static label, empty pills and
+  requested object coordinates. Background owns pipes, equipment, labels,
+  status/pill artwork and empty fields; dynamic objects own live state/values.
+- Preserve source alpha or mask intended foreground pixels only; NEVER paste an
+  opaque rectangular crop. Sample every source's centerline, colour, alpha,
+  thickness, anti-aliasing and junction geometry exactly. The fixture's orange
+  191/255/64 three-row header, opaque two-row cyan header and opaque two-column
+  branches are example-specific measurements, not universal defaults.
+- Reparse full JSON; check counts, sequential names, the exact object diff and
+  protected existing fields. Render full panel, zoomed bank and background plus
+  dynamic overlay; a background-only preview cannot prove overlay alignment.
+  Restart from the original export after any failed iteration.
+Complete procedure and four checklists: reference_data/maskin-drawing-method.txt
+Regression fixture/test: tests/fixtures/maskin-compressor-bank/ and
+tests/test_maskin_compressor_bank.py
+
 READING THE EXISTING DRAWING: "image_svg_trace" (v1.5.0). Exported panel
 jsons MAY carry panel.image_svg_trace - an automatic VECTOR TRACE of the
 panel's current raster background (or the SVG itself when the background

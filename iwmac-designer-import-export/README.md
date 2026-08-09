@@ -20,6 +20,13 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 6. Objects are **added** to the canvas (nothing is deleted); on an empty panel that's a 1:1 copy. The embedded background is applied if the canvas has none (or after a confirm if it does).
 7. Nothing touches the server until you use the designer's own **Save** buttons (*Compile Panel for Plant* / *Sync Panels with Plant*).
 
+> **Editing an existing Maskin background:** **Insert JSON appends objects.** Use a
+> background-only patch with empty object arrays when applying artwork to a populated
+> panel. Insert an entire/full export only on an empty canvas unless duplicate objects
+> are intentional. See [Editing an existing Maskin compressor bank from an exported
+> panel JSON](iwmac-designer-reference/reference_data/maskin-drawing-method.txt) for
+> object-preservation, measured-raster, and overlay-QA rules.
+
 ## What it handles for you
 
 | Concern | Behaviour |
