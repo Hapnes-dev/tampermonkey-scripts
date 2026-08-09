@@ -84,6 +84,18 @@ Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or
 
 The focused [MENY ventilation corpus](iwmac-designer-reference/VENTILATION-CORPUS.md) is a separate production evidence set. Its corrected authenticated GET-only rerun passed offline validation with 20 plants, 101 panels (42 JSON / 59 XML-only), and no plant, unit, or panel errors. The derived corpus has 16 matched plants, 4 zero-match plants, 0 partial/failed plants, and 34 matches: 14 JSON / 20 XML-only, 33 visible / 1 hidden, and 30 V2-bearing, with reasons 2 `both` / 30 `unit_name` / 2 `panel_name`. Production compiled XML retains a unit ID only when valid `<id>` (= `driver_id`) and `<unit_id>` values occur on the same `<data>`. Its [raw survey](iwmac-designer-reference/reference_data/plant-panel-survey-meny-20.json) and [machine corpus](iwmac-designer-reference/reference_data/ventilation-panel-corpus.json) remain separate from the 41-plant Coop Extra totals above.
 
+### When the AI's file is rejected (v1.7.0)
+
+An AI that cannot reach its knowledge files does not fail loudly — it improvises a document *about* a panel and hands that over instead, and the old error (`Unknown format "…"`) said nothing a user could act on. Insert JSON now explains the refusal and hands back a correction you can paste straight into the chat. Three causes are named separately:
+
+| What the AI did | What the dialog now says |
+|---|---|
+| Invented a format (`"IWMAC Designer demo specification"`, `source_note` explaining it could not open the reference) | Names it as a document written *about* a panel, lists the top-level keys and reports `single_objects[]: not found`. The correction tells the agent to **report an unreadable knowledge file and stop**, never to substitute one it wrote |
+| Was cut off mid-answer | Counts the unclosed brackets and says the answer was truncated — with the advice to attach a `.json` file rather than paste a long panel into chat, and never to emit `... (truncated)` |
+| Produced a valid wrapper with broken objects | Lists the offending indices — which objects have no `obj_id`, which have unusable geometry |
+
+Each case renders a **📋 Copy the fix for the AI** button. The copied text carries the required envelope skeleton, all 17 object fields, and the rules that reject or silently break a file — including that a non-numeric coordinate lands the object at 0,0 while `"120px"` is quietly read as `120`. Nothing is imported in any of these cases; the canvas is untouched.
+
 Canonical plant `9099` is outside that MENY batch: panel `360.001 Ventilasjon` joins `V01` to the exact live inventory name `360.001Ventilasjon`. The spaced SQL sample is sample/stale formatting and does not override the live inventory; `ventilation_demo_360001.json` remains outside production totals, and is not a file in this repository — it was an uncommitted session artifact, kept in the corpus only as a named counter-example.
 
 ## How it integrates

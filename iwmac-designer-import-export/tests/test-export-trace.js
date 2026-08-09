@@ -28,7 +28,7 @@ function envelope(imageData) {
 }
 
 async function run() {
-  assert.equal(api.IWDIE_VERSION, '1.6.1');
+  assert.equal(api.IWDIE_VERSION, '1.7.0');
   assert.equal(envelope(null).version, 1);
   assert.equal(api.sanitizeName('Maskin Panel'), 'maskin-panel');
   assert.equal(api.parsePayload(envelope(null)).doc.panel_name, 'Maskin');

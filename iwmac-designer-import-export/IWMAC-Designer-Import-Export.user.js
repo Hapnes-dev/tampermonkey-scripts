@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.1
+// @version      1.7.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.6.1';
+var IWDIE_VERSION = '1.7.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -62,30 +62,233 @@ function iwdieBuildEnvelope(doc, meta) {
  */
 function iwdieParsePayload(parsed) {
   if (parsed == null || typeof parsed !== 'object') {
-    return { errors: ['Not a JSON object — expected an exported panel .json file.'] };
+    return iwdieReject(parsed, ['Not a JSON object — expected an exported panel .json file.']);
   }
   if (Array.isArray(parsed)) {
-    if (parsed.length === 0) return { errors: ['Empty array — no panel document inside.'] };
+    if (parsed.length === 0) return iwdieReject(parsed, ['Empty array — no panel document inside.']);
     return iwdieParsePayload(parsed[0]);
   }
   if (parsed.format === IWDIE_FORMAT) {
     if (parsed.version > IWDIE_FORMAT_VERSION) {
-      return { errors: ['File version ' + parsed.version + ' is newer than this script understands (' + IWDIE_FORMAT_VERSION + '). Update the script.'] };
+      return iwdieReject(parsed, ['File version ' + parsed.version + ' is newer than this script understands (' + IWDIE_FORMAT_VERSION + '). Update the script.']);
     }
     if (parsed.panel == null || typeof parsed.panel !== 'object') {
-      return { errors: ['Envelope has no "panel" document inside.'] };
+      return iwdieReject(parsed, ['Envelope has no "panel" document inside. The wrapper is correct but the panel itself is missing — "panel" must be an object holding single_objects[].']);
     }
     return { doc: parsed.panel, meta: parsed };
   }
   if (parsed.format) {
-    return { errors: ['Unknown format "' + parsed.format + '" — this is not an IWMAC Designer panel export' +
-      (parsed.format === 'vv-fbx-sketch' ? ' (it is a VV Designer logic sketch — wrong tool)' : '') + '.'] };
+    return iwdieReject(parsed, ['Unknown format "' + parsed.format + '" — this is not an IWMAC Designer panel export' +
+      (parsed.format === 'vv-fbx-sketch' ? ' (it is a VV Designer logic sketch — wrong tool)' : '') + '.',
+      '"format" must be exactly "' + IWDIE_FORMAT + '". It is checked before anything else is read, so no other value can import — however correct the rest of the file is.']);
   }
   // bare document?
   if (Array.isArray(parsed.single_objects) || Array.isArray(parsed.containers)) {
     return { doc: parsed, meta: null };
   }
-  return { errors: ['Unrecognized JSON — expected {format:"' + IWDIE_FORMAT + '", panel:{...}} or a bare panel document with single_objects[].'] };
+  return iwdieReject(parsed, ['Unrecognized JSON — expected {format:"' + IWDIE_FORMAT + '", panel:{...}} or a bare panel document with single_objects[].']);
+}
+
+/* ---------- why an AI-written file was rejected, and how to say so back ---------- */
+
+/** The 17 fields the host reads off every object (V3scripts.js:486-503). */
+var IWDIE_OBJECT_FIELDS = ['obj_id', 'name', 'id', 'posWidth', 'posHeight', 'posLeft', 'posTop',
+  'zIndex', 'tag_text', 'linked', 'link_name', 'link_tag', 'sub_group', 'driver_id',
+  'unit_id', 'unit_ref', 'alias_text'];
+
+/** Wrap an error list with a diagnosis and a paste-back prompt for the AI. */
+function iwdieReject(parsed, errors) {
+  return { errors: errors, diagnosis: iwdieDiagnosePayload(parsed, errors) };
+}
+
+/**
+ * Did an AI improvise a document instead of producing an export? The tell is a
+ * self-describing format name plus prose/provenance keys the importer never
+ * reads. Only consulted on payloads that already failed the format check.
+ */
+function iwdieLooksImprovised(parsed) {
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  var fmt = String(parsed.format || '').toLowerCase();
+  if (/spec|demo|draft|example|proposal|mock|sample|template|概/.test(fmt)) return true;
+  var keys = Object.keys(parsed).join(' ').toLowerCase();
+  return /source_note|source_document|disclaimer|assumption|limitation|caveat|explanation/.test(keys);
+}
+
+/** Structured "what is this file, actually" report. Pure — no DOM. */
+function iwdieDiagnosePayload(parsed, errors) {
+  var facts = [];
+  var isObj = parsed != null && typeof parsed === 'object' && !Array.isArray(parsed);
+  var keys = isObj ? Object.keys(parsed) : [];
+  if (isObj) {
+    facts.push('format: ' + (parsed.format == null ? '(missing)' : JSON.stringify(parsed.format)));
+    facts.push('top-level keys: ' + (keys.length ? keys.join(', ') : '(none)'));
+    var panel = (parsed.panel && typeof parsed.panel === 'object') ? parsed.panel : null;
+    var so = Array.isArray(parsed.single_objects) ? parsed.single_objects
+      : (panel && Array.isArray(panel.single_objects) ? panel.single_objects : null);
+    facts.push('single_objects[]: ' + (so ? so.length + ' objects' : 'not found'));
+    if (!panel && parsed.format === IWDIE_FORMAT) facts.push('panel: missing');
+  } else if (Array.isArray(parsed)) {
+    facts.push('top level is an array of ' + parsed.length + ' item(s)');
+  } else {
+    facts.push('top level is ' + (parsed === null ? 'null' : typeof parsed));
+  }
+  var improvised = iwdieLooksImprovised(parsed);
+  return {
+    improvised: improvised,
+    facts: facts,
+    headline: improvised
+      ? 'This looks like a document the AI wrote *about* a panel, not a panel file. The importer reads structure only — it never reads notes, summaries or descriptions.'
+      : 'The file did not match the import contract.',
+    aiPrompt: iwdieBuildAiFixPrompt(parsed, errors, facts, improvised)
+  };
+}
+
+/**
+ * Text that would not even parse. The dominant cause with a chat-window AI is
+ * truncation — the answer was cut off mid-array — and the second is markdown
+ * fencing or prose wrapped around the JSON. Both are worth naming, because
+ * "Unexpected end of JSON input" tells the user nothing actionable.
+ */
+function iwdieDiagnoseBadJson(text, message) {
+  var s = String(text == null ? '' : text);
+  var trimmed = s.trim();
+  var errors = ['Not valid JSON: ' + message];
+  var facts = ['length: ' + s.length + ' characters'];
+  var first = trimmed.slice(0, 1);
+  var last = trimmed.slice(-1);
+  facts.push('starts with: ' + (first ? JSON.stringify(first) : '(empty)'));
+  facts.push('ends with: ' + (last ? JSON.stringify(last) : '(empty)'));
+
+  var depth = 0, inStr = false, escNext = false, minDepth = 0;
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (escNext) { escNext = false; continue; }
+    if (inStr) {
+      if (ch === '\\') escNext = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') { depth--; if (depth < minDepth) minDepth = depth; }
+  }
+  var fenced = /^```/.test(trimmed) || /```\s*$/.test(trimmed);
+  var truncated = depth > 0 || inStr;
+  if (fenced) {
+    errors.push('The text is wrapped in a markdown code fence (```). Paste the JSON only — the fence is not part of the file.');
+  }
+  if (truncated) {
+    errors.push('The JSON is incomplete: ' + (inStr ? 'it stops in the middle of a string' : depth + ' bracket(s) never close') +
+      '. The answer was cut off before it finished — this is the usual outcome when a chat assistant is asked for a long panel inline.');
+    facts.push('unclosed brackets at end of text: ' + depth);
+  }
+  if (!fenced && !truncated && first && first !== '{' && first !== '[') {
+    errors.push('The text starts with prose, not with "{". Anything before the opening brace has to go.');
+  }
+
+  var L = [];
+  L.push('The JSON you produced could not be parsed by the IWMAC Designer Import/Export userscript (v' + IWDIE_VERSION + '). Nothing was imported.');
+  L.push('');
+  L.push('PARSER ERROR');
+  L.push('- ' + message);
+  L.push('');
+  L.push('WHAT ARRIVED');
+  facts.forEach(function (f) { L.push('- ' + f); });
+  L.push('');
+  L.push('WHAT TO DO');
+  if (truncated) {
+    L.push('- Your answer was cut off before the JSON closed. Do not paste panel JSON into the chat window.');
+    L.push('- Attach it as a downloadable .json file instead, or reduce the object count until the whole file fits, and verify the last character you emit is "}".');
+    L.push('- Never end a file mid-array and never add "... (truncated)", "// rest omitted" or any similar placeholder. A partial file cannot be imported.');
+  }
+  if (fenced) {
+    L.push('- Emit the raw JSON with no markdown code fence around it.');
+  }
+  L.push('- No commentary before or after the JSON. The first character must be "{" and the last must be "}".');
+  L.push('- No comments (// or /* */), no trailing commas, no single quotes — strict JSON only.');
+  L.push('- Re-read your own output and confirm it parses before answering.');
+  L.push('');
+  L.push('Return the complete corrected JSON file and nothing else.');
+
+  return {
+    errors: errors,
+    diagnosis: {
+      improvised: false,
+      facts: facts,
+      headline: truncated ? 'The file is incomplete — it was cut off before the JSON finished.'
+        : 'The text is not parseable JSON.',
+      aiPrompt: L.join('\n')
+    }
+  };
+}
+
+/**
+ * A correction message the user can paste straight back to the AI that produced
+ * the file. States what arrived, why it was refused, and the exact shape wanted.
+ */
+function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
+  var L = [];
+  L.push('The JSON you produced was REJECTED by the IWMAC Designer Import/Export userscript (v' + IWDIE_VERSION + '). Nothing was imported. Read this, then return the corrected file.');
+  L.push('');
+  L.push('WHAT ARRIVED');
+  (facts || []).forEach(function (f) { L.push('- ' + f); });
+  L.push('');
+  L.push('WHY IT WAS REFUSED');
+  (errors || []).forEach(function (e) { L.push('- ' + e); });
+  L.push('');
+  L.push('DO NOT');
+  L.push('- Do not invent a format name, a schema, or a wrapper of your own. "' + IWDIE_FORMAT + '" is the only accepted value.');
+  L.push('- Do not answer with a description, a specification, a plan or a summary of a panel. The only valid answer is the panel file itself.');
+  L.push('- Do not invent obj_id, driver_id, unit_id or navigation target ids. An invented id looks linked and is not.');
+  if (improvised) {
+    L.push('- If you could not open your knowledge files (AI-BRIEFING.txt, DESIGN-OBJECT-CATALOG.md, VENTILATION-GEOMETRY-CONTRACT.md), SAY SO AND STOP. Do not substitute a document you wrote yourself. An unreadable knowledge file is the actual problem and has to be reported, not worked around — a made-up file cannot be imported and wastes the attempt.');
+  }
+  L.push('');
+  L.push('REQUIRED SHAPE — return exactly this, with nothing before or after it');
+  L.push('{');
+  L.push('  "format": "' + IWDIE_FORMAT + '",');
+  L.push('  "version": ' + IWDIE_FORMAT_VERSION + ',');
+  L.push('  "generator": "<your name>",');
+  L.push('  "source_plant_id": "",');
+  L.push('  "panel_name": "<panel name>",');
+  L.push('  "panel_width": "1400px",');
+  L.push('  "panel_height": "750px",');
+  L.push('  "counts": { "single_objects": <n>, "containers": 0, "graphics": 0 },');
+  L.push('  "background_embedded": false,');
+  L.push('  "panel": {');
+  L.push('    "plant_id": "",');
+  L.push('    "panel_name": "<panel name>",');
+  L.push('    "panel_width": "1400px",');
+  L.push('    "panel_height": "750px",');
+  L.push('    "org_image_name": "",');
+  L.push('    "image_name": "",');
+  L.push('    "saved_by": "copilot",');
+  L.push('    "single_objects": [ ... ],');
+  L.push('    "containers": [],');
+  L.push('    "graphics": []');
+  L.push('  }');
+  L.push('}');
+  L.push('');
+  L.push('EVERY ENTRY IN single_objects[] — all ' + IWDIE_OBJECT_FIELDS.length + ' fields, every time:');
+  L.push('  ' + IWDIE_OBJECT_FIELDS.join(', '));
+  L.push('');
+  L.push('{ "obj_id": "<exact id from DESIGN-OBJECT-CATALOG.md>", "name": "object_0", "id": "driver_id",');
+  L.push('  "posWidth": 80, "posHeight": 24, "posLeft": 120, "posTop": 300, "zIndex": "default",');
+  L.push('  "tag_text": "<text shown on the panel>", "linked": "false", "link_name": "", "link_tag": "",');
+  L.push('  "sub_group": "", "driver_id": "driver_id", "unit_id": "", "unit_ref": "",');
+  L.push('  "alias_text": "<what the signal is>" }');
+  L.push('');
+  L.push('RULES THAT GET A FILE REJECTED OR SILENTLY BROKEN');
+  L.push('- obj_id must be an id that exists in the palette catalogue. An object with no obj_id cannot be drawn at all.');
+  L.push('- posLeft / posTop / posWidth / posHeight are integer pixels. Emit them as numbers. A missing value, or text that does not start with a digit ("center", "auto"), silently lands the object at 0,0 in the top-left corner. A string like "120px" or "50%" is read as its leading number — 120 and 50 — which is almost never the position you meant.');
+  L.push('- "name" is "object_0", "object_1", ... sequential, no gaps, no duplicates.');
+  L.push('- For an unlinked panel: "id" and "driver_id" are the literal string "driver_id", "linked" is the string "false", and link_name / link_tag / sub_group / unit_id / unit_ref are empty strings.');
+  L.push('- "counts" must equal the real array lengths.');
+  L.push('- The canvas is 1400 x 750. Objects outside it are not visible.');
+  L.push('- A 360.001 Ventilasjon panel is objects-only: no image_svg, no image_data, no drawn background.');
+  L.push('');
+  L.push('Return the corrected JSON file and nothing else.');
+  return L.join('\n');
 }
 
 /** Structural validation. Returns {errors:[], warnings:[]} — empty errors = importable. */
@@ -127,6 +330,38 @@ function iwdieValidateDoc(doc) {
   }
   if (!doc.panel_width || !doc.panel_height) warnings.push('No panel_width/panel_height — panel size will not be applied.');
   return { errors: errors, warnings: warnings };
+}
+
+/**
+ * The envelope was accepted but the panel document itself is broken. Report the
+ * shape that arrived so the AI can see which of its objects are at fault.
+ */
+function iwdieDiagnoseDoc(doc, errors, warnings) {
+  var facts = [];
+  var so = (doc && Array.isArray(doc.single_objects)) ? doc.single_objects : [];
+  facts.push('single_objects[]: ' + so.length + ' objects');
+  facts.push('containers[]: ' + ((doc && Array.isArray(doc.containers)) ? doc.containers.length : 0) +
+    ', graphics[]: ' + ((doc && Array.isArray(doc.graphics)) ? doc.graphics.length : 0));
+  facts.push('panel size: ' + ((doc && doc.panel_width) || '(missing)') + ' x ' + ((doc && doc.panel_height) || '(missing)'));
+  var noId = [];
+  var badPos = [];
+  for (var i = 0; i < so.length; i++) {
+    var o = so[i];
+    if (o == null || typeof o !== 'object') continue;
+    if (!o.obj_id || typeof o.obj_id !== 'string') noId.push(i);
+    for (var k = 0; k < 4; k++) {
+      var key = ['posLeft', 'posTop', 'posWidth', 'posHeight'][k];
+      if (o[key] == null || isNaN(parseInt(o[key], 10))) { badPos.push(i + '.' + key); break; }
+    }
+  }
+  if (noId.length) facts.push('objects with no obj_id: ' + noId.slice(0, 12).join(', ') + (noId.length > 12 ? ' …(' + noId.length + ' total)' : ''));
+  if (badPos.length) facts.push('objects with bad geometry: ' + badPos.slice(0, 12).join(', ') + (badPos.length > 12 ? ' …(' + badPos.length + ' total)' : ''));
+  return {
+    improvised: false,
+    facts: facts,
+    headline: 'The wrapper was accepted — the panel document inside it is what failed.',
+    aiPrompt: iwdieBuildAiFixPrompt(doc, (errors || []).concat(warnings || []), facts, false)
+  };
 }
 
 /** Deep copy + fill defaults so the host loaders never see undefined. */
@@ -1743,8 +1978,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-btn{display:inline-block;background:#2f6fb2;color:#fff;border:none;border-radius:4px;padding:7px 14px;margin:8px 8px 0 0;cursor:pointer;font:13px Roboto,Arial,sans-serif}',
       '.iwdie-btn:hover{background:#265d96}',
       '.iwdie-btn.iwdie-secondary{background:#7a8794}',
-      '.iwdie-errlist{background:#fdf0f0;border:1px solid #e3b3b3;border-radius:6px;padding:10px 14px;margin:8px 0;max-height:220px;overflow:auto}',
+      '.iwdie-errlist{background:#fdf0f0;border:1px solid #e3b3b3;border-radius:6px;padding:10px 14px;margin:8px 0;max-height:420px;overflow:auto}',
       '.iwdie-errlist li{margin:4px 0}',
+      '.iwdie-diag{background:#fff;border:1px solid #e3b3b3;border-radius:5px;padding:8px 12px;margin:8px 0}',
+      '.iwdie-diag ul{margin:6px 0 0;padding-left:18px}',
+      '.iwdie-diag li{font-family:Consolas,monospace;font-size:12px;color:#444}',
+      '.iwdie-fixtext{display:block;width:100%;box-sizing:border-box;height:220px;margin-top:8px;font:11px Consolas,monospace;white-space:pre;overflow:auto;border:1px solid #c3c9cf;border-radius:4px;padding:8px;background:#fbfbfb}',
       '.iwdie-x{position:absolute;top:6px;right:8px;width:26px;height:26px;border:none;background:transparent;color:#66788a;font:18px/26px Arial,sans-serif;cursor:pointer;border-radius:4px;padding:0}',
       '.iwdie-x:hover{background:#e8edf2;color:#222}',
       '.iwdie-choice{border:1px solid #d5dbe1;border-radius:6px;padding:10px 12px;margin:10px 0;background:#f7f9fb}',
@@ -2259,11 +2498,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function importFromText(text) {
       var parsed;
       try { parsed = JSON.parse(text); }
-      catch (e) { showErrors(['Not valid JSON: ' + e.message]); return; }
+      catch (e) {
+        var bad = iwdieDiagnoseBadJson(text, e.message);
+        showErrors(bad.errors, null, bad.diagnosis);
+        return;
+      }
       applyImport(parsed);
     }
 
-    function showErrors(errors, warnings) {
+    /** Clipboard for an http origin: navigator.clipboard is unavailable outside a
+     *  secure context, so the hidden-textarea + execCommand path is the real one. */
+    function copyToClipboard(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+      if (!ok && typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { toast('Copied.'); },
+          function () { toast('Could not copy — select the text and press Ctrl+C.', true); });
+        return;
+      }
+      toast(ok ? 'Copied — paste it back to the AI.' : 'Could not copy — select the text and press Ctrl+C.', !ok);
+    }
+
+    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+    function showErrors(errors, warnings, diagnosis) {
       var panel = importOverlay ? importOverlay.querySelector('.iwdie-panel') : null;
       var msg = 'Import blocked:\n• ' + errors.join('\n• ');
       if (panel) {
@@ -2271,10 +2537,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (old) old.remove();
         var div = document.createElement('div');
         div.className = 'iwdie-errlist';
-        div.innerHTML = '<b>Import blocked — nothing was changed:</b><ul>' +
-          errors.map(function (e) { return '<li>' + e.replace(/</g, '&lt;') + '</li>'; }).join('') + '</ul>' +
-          (warnings && warnings.length ? '<i>Warnings:</i><ul>' + warnings.map(function (w) { return '<li>' + w.replace(/</g, '&lt;') + '</li>'; }).join('') + '</ul>' : '');
+        var html = '<b>Import blocked — nothing was changed:</b><ul>' +
+          errors.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' +
+          (warnings && warnings.length ? '<i>Warnings:</i><ul>' + warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>' : '');
+        if (diagnosis) {
+          html += '<div class="iwdie-diag"><b>' + esc(diagnosis.headline) + '</b>' +
+            '<ul>' + diagnosis.facts.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul></div>' +
+            '<button class="iwdie-btn" id="iwdie_copy_fix">📋 Copy the fix for the AI</button>' +
+            '<button class="iwdie-btn iwdie-secondary" id="iwdie_show_fix">Show it</button>' +
+            '<textarea class="iwdie-fixtext" id="iwdie_fix_text" readonly style="display:none">' +
+            esc(diagnosis.aiPrompt) + '</textarea>';
+        }
+        div.innerHTML = html;
         panel.appendChild(div);
+        if (diagnosis) {
+          div.querySelector('#iwdie_copy_fix').addEventListener('click', function () {
+            copyToClipboard(diagnosis.aiPrompt);
+          });
+          div.querySelector('#iwdie_show_fix').addEventListener('click', function () {
+            var t = div.querySelector('#iwdie_fix_text');
+            var shown = t.style.display !== 'none';
+            t.style.display = shown ? 'none' : 'block';
+            this.textContent = shown ? 'Show it' : 'Hide it';
+          });
+        }
       } else {
         toast(msg, true, 9000);
       }
@@ -2323,9 +2609,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function applyImportCore(parsed, pendingBg) {
       var res = iwdieParsePayload(parsed);
-      if (res.errors) { showErrors(res.errors); return; }
+      if (res.errors) { showErrors(res.errors, null, res.diagnosis); return; }
       var v = iwdieValidateDoc(res.doc);
-      if (v.errors.length) { showErrors(v.errors, v.warnings); return; }
+      if (v.errors.length) { showErrors(v.errors, v.warnings, iwdieDiagnoseDoc(res.doc, v.errors, v.warnings)); return; }
       if (!hostReady()) { showErrors(['IWMAC Designer host functions are not available (page not fully loaded?).']); return; }
 
       var doc = iwdieNormalizeDoc(res.doc);
@@ -2441,6 +2727,11 @@ if (typeof module !== 'undefined' && module.exports) {
     IWDIE_DOC_KEYS: IWDIE_DOC_KEYS,
     buildEnvelope: iwdieBuildEnvelope,
     parsePayload: iwdieParsePayload,
+    diagnosePayload: iwdieDiagnosePayload,
+    diagnoseDoc: iwdieDiagnoseDoc,
+    diagnoseBadJson: iwdieDiagnoseBadJson,
+    buildAiFixPrompt: iwdieBuildAiFixPrompt,
+    looksImprovised: iwdieLooksImprovised,
     validateDoc: iwdieValidateDoc,
     normalizeDoc: iwdieNormalizeDoc,
     attachBackground: iwdieAttachBackground,
