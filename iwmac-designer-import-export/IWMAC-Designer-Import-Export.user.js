@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.0
+// @version      1.6.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14,7 +14,6 @@
 // @noframes
 // @grant        unsafeWindow
 // @grant        GM_addStyle
-// @grant        GM_setClipboard
 // ==/UserScript==
 
 /*
@@ -26,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.6.0';
+var IWDIE_VERSION = '1.6.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -387,6 +386,59 @@ function iwdieBuildPalette(imgData, maxColors) {
     if (isSat(Bx.best) && !near(pal, Bx.best)) { pal.push(toRGB(Bx.best)); extra++; }
   }
   return pal;
+}
+
+function iwdieNormalizeTraceSvg(svg) {
+  var s = String(svg == null ? '' : svg).trim();
+  if (!s || iwdieValidateSvg(s).length > 0 || !/<\/svg>\s*$/i.test(s)) return null;
+  return s;
+}
+
+function iwdiePrepareExportTrace(env, deps) {
+  deps = deps || {};
+  var panel = env && env.panel;
+  if (!panel || typeof panel !== 'object') return Promise.reject(new Error('Export envelope has no panel document.'));
+  var bg = String(panel.image_data || '');
+  delete panel.image_svg_trace;
+  if (!/^data:image\//i.test(bg)) return Promise.resolve({ env: env, traceNote: '' });
+
+  if (iwdieIsSvgBackground(bg)) {
+    return Promise.resolve().then(function () {
+      var parsed;
+      try { parsed = iwdieParseDataUrl(bg); }
+      catch (error) { throw new Error('Embedded SVG background could not be decoded: ' + error); }
+      if (!parsed || typeof deps.decodeUtf8 !== 'function') throw new Error('Embedded SVG background could not be decoded.');
+      var svg;
+      try { svg = deps.decodeUtf8(parsed.bytes); }
+      catch (error) { throw new Error('Embedded SVG background could not be decoded: ' + error); }
+      svg = iwdieNormalizeTraceSvg(svg);
+      if (!svg) throw new Error('Embedded SVG background did not contain valid SVG.');
+      panel.image_svg_trace = svg;
+      return { env: env, traceNote: ' + vector structure' };
+    });
+  }
+
+  if (typeof deps.traceRaster !== 'function') return Promise.reject(new Error('Background tracer is unavailable.'));
+  return Promise.resolve().then(function () {
+    return deps.traceRaster(bg);
+  }).then(function (svg) {
+    svg = iwdieNormalizeTraceSvg(svg);
+    if (!svg) throw new Error('Vector trace did not produce valid SVG.');
+    panel.image_svg_trace = svg;
+    return {
+      env: env,
+      traceNote: ' + vector structure (' + ((svg.match(/<path\b/g) || []).length) + ' paths)'
+    };
+  });
+}
+
+function iwdieCompleteExport(env, deps) {
+  deps = deps || {};
+  return iwdiePrepareExportTrace(env, deps).then(function (result) {
+    if (typeof deps.download !== 'function') throw new Error('Export downloader is unavailable.');
+    deps.download(result.env, result.traceNote);
+    return result;
+  });
 }
 
 /**
@@ -1701,7 +1753,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-hint{color:#778;font-size:11.5px;margin-top:6px}',
       '#manager_widget_iwdie fieldset{margin-top:4px}',
       /* The host hard-codes #manager_div to height:900px (overflow-y:auto);
-         a fourth full-size button row makes the content ~918px, so the
+         the added full-size button rows make the content taller, so the
          sidebar must be allowed to fit its content. NO viewport cap: the
          v1.3.3 calc(100vh - 110px) cap made short windows clip/scroll the
          last fieldset inside the sidebar. Instead the sidebar simply grows
@@ -1713,7 +1765,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       /* THE actual clipper (found v1.5.5): the host wraps the whole sidebar
          in #master_wrapper, hard-coded height:900px + overflow hidden — it
          cut the last ~18px of the Panel JSON fieldset at ANY window size
-         (the constant "little cut off" under the 4th button). Relax it the
+         (the constant "little cut off" under the final button). Relax it the
          same way as #manager_div: grow with content, never clip. */
       '#master_wrapper{height:auto !important;min-height:900px !important;overflow:visible !important}',
       /* Compact mode — applied by updateCompact() ONLY when the full column
@@ -1762,7 +1814,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (existing.length > 0) return;
       var w7 = document.getElementById('manager_widget7');
       if (!w7) return;
-      /* Four stacked buttons at the host's standard btn_full size; the
+      /* Three stacked buttons at the host's standard btn_full size; the
          sidebar-height relaxation in the injected CSS keeps the manager
          sidebar scrollbar-free (see the #manager_div rule above). */
       var html = [
@@ -1770,7 +1822,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '  <fieldset>',
         '    <legend>Panel JSON</legend>',
         "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
-        "    <button id='iwdie_copy_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doCopyJson()\">Copy JSON</button>",
         "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
         "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
         '  </fieldset>',
@@ -1867,7 +1918,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /* ---------- export / copy ---------- */
+    /* ---------- export ---------- */
     function buildEnvelopeAsync() {
       var doc = collectCurrentDoc();
       if (!doc) return Promise.resolve(null);
@@ -1895,95 +1946,66 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return o;
     }
 
-    /* Optionally add panel.image_svg_trace to an export envelope: the vector
-       trace of the raster background — AI-reading material that tells an
-       agent how the drawing is STRUCTURED (Insert strips it; it is never
-       rendered). SVG backgrounds are copied in as-is (already vector). */
-    function finishExportWithTrace(env, done) {
-      var p = env.panel || {};
-      var bg = String(p.image_data || '');
-      if (bg.indexOf('data:image/svg') === 0) {
-        var parsed = iwdieParseDataUrl(bg);
-        if (parsed) {
-          try { p.image_svg_trace = new TextDecoder().decode(parsed.bytes); } catch (e) {}
-        }
-        done(env, p.image_svg_trace ? ' + vector structure' : '');
-        return;
-      }
-      if (bg.indexOf('data:image/') !== 0 || !IWDIE_TRACER) { done(env, ''); return; }
-      var want = window.confirm(
-        'Also include a VECTOR TRACE of the background in the JSON?\n\n' +
-        'It lets an AI (Copilot) read how the drawing is structured — in the\n' +
-        'drawing\'s own colours — and generate matching artwork. Adds roughly\n' +
-        '1–3 MB. Drawings trace in ~1–2 s in the background; photos take longer.\n\n' +
-        'OK = include the trace   |   Cancel = export without it');
-      if (!want) { done(env, ''); return; }
+    function traceRasterBackground(bg) {
+      if (!IWDIE_TRACER) return Promise.reject(new Error('Background tracer is unavailable.'));
       toast('Tracing the background structure… the export downloads when done.', false, 6000);
-      var img = new Image();
-      img.onload = function () {
-        var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-        var c = document.createElement('canvas'); c.width = w; c.height = h;
-        var ctx = c.getContext('2d');
-        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0);
-        var deliver = function (svg) {
-          p.image_svg_trace = svg;
-          done(env, ' + vector structure (' + ((svg.match(/<path/g) || []).length) + ' paths)');
-        };
-        var imgd = ctx.getImageData(0, 0, w, h);
-        var opts = traceOptsFor(imgd);
-        traceInWorker(imgd, opts).then(deliver).catch(function () {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () {
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          if (!w || !h) { reject(new Error('Background image has no size.')); return; }
+          var ctx, imgData, opts;
           try {
-            var imgd2 = ctx.getImageData(0, 0, w, h); // first buffer was transferred away
-            deliver(IWDIE_TRACER.imagedataToSVG(imgd2, opts));
+            var canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('2D canvas context unavailable');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(img, 0, 0);
+            imgData = ctx.getImageData(0, 0, w, h);
+            opts = traceOptsFor(imgData);
+          } catch (error) {
+            reject(new Error('Could not read background image pixels for tracing: ' + error));
+            return;
           }
-          catch (e) { done(env, ''); }
-        });
-      };
-      img.onerror = function () { done(env, ''); };
-      img.src = bg;
+          traceInWorker(imgData, opts).then(resolve).catch(function (workerError) {
+            try {
+              var fallbackData = ctx.getImageData(0, 0, w, h);
+              resolve(IWDIE_TRACER.imagedataToSVG(fallbackData, opts));
+            } catch (fallbackError) {
+              reject(new Error('Vector trace failed in worker and main-thread fallback: ' + workerError + '; ' + fallbackError));
+            }
+          });
+        };
+        img.onerror = function () { reject(new Error('Background image failed to load.')); };
+        img.src = bg;
+      });
+    }
+
+    function downloadEnvelope(env, traceNote) {
+      var name = iwdieBuildExportFilename(env.source_plant_id, env.panel_name);
+      var blob = new Blob([JSON.stringify(env, null, 2)], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+      hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
     }
 
     function doExport() {
       buildEnvelopeAsync().then(function (env) {
-        if (!env) return;
-        finishExportWithTrace(env, function (env2, traceNote) {
-          var name = iwdieBuildExportFilename(env2.source_plant_id, env2.panel_name);
-          var blob = new Blob([JSON.stringify(env2, null, 2)], { type: 'application/json' });
-          var url = URL.createObjectURL(blob);
-          var a = document.createElement('a');
-          a.href = url; a.download = name;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-          hostOk('Exported ' + iwdieSummarize(env2.panel) + (env2.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
+        if (!env) return null;
+        return iwdieCompleteExport(env, {
+          decodeUtf8: function (bytes) { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); },
+          traceRaster: traceRasterBackground,
+          download: downloadEnvelope
         });
-      });
-    }
-
-    function copyTextToClipboard(text) {
-      if (typeof GM_setClipboard === 'function') { GM_setClipboard(text); return true; }
-      if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text); return true;
-      }
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try { ok = document.execCommand('copy'); } catch (e) {}
-      ta.remove();
-      return ok;
-    }
-
-    function doCopyJson() {
-      buildEnvelopeAsync().then(function (env) {
-        if (!env) return;
-        var ok = copyTextToClipboard(JSON.stringify(env, null, 2));
-        if (ok) hostOk('Panel JSON copied to clipboard (' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + ')');
-        else toast('Clipboard copy failed on this browser — use Export JSON instead.', true);
+      }).catch(function (error) {
+        toast('Export blocked: ' + (error && error.message ? error.message : error) + '\nNo JSON was downloaded.', true, 9000);
       });
     }
 
@@ -2391,7 +2413,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     W.__IWDIE = {
       version: IWDIE_VERSION,
       doExport: doExport,
-      doCopyJson: doCopyJson,
       openImportPanel: openImportPanel,
       applyImport: applyImport,
       doExportBackgroundAi: doExportBackgroundAi,
@@ -2438,6 +2459,8 @@ if (typeof module !== 'undefined' && module.exports) {
     buildImagePdf: iwdieBuildImagePdf,
     buildBackgroundFilename: iwdieBuildBackgroundFilename,
     buildPalette: iwdieBuildPalette,
+    prepareExportTrace: iwdiePrepareExportTrace,
+    completeExport: iwdieCompleteExport,
     tracer: IWDIE_TRACER
   };
 }
