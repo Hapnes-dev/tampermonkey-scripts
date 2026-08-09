@@ -39,29 +39,42 @@ No output may be presented as validated when any source-gate check fails.
 
 ## Chosen Approach
 
-Use vector-derived light artwork, then preserve C4 pipe pixels from the authoritative export.
+Use verified vector-derived light artwork, then restore authoritative plant-specific pixels without changing C4 pipes or the right information panel.
 
 1. Render `maskin-light-template.ai` at exactly 72 DPI so its 1400 x 750 point artboard becomes a 1400 x 750 PNG without scaling.
-2. Compare fixed landmarks between the rendered template and the authoritative background: compressor symbols, empty pills, static labels, equipment outlines, and right information panel.
-3. Require exact or explicitly measured alignment. Do not guess an offset.
-4. Copy only the verified C4 orange-discharge and cyan-suction pipe pixels from the authoritative source onto the rendered light image.
-5. Do not smooth, resample, recolor, widen, redraw, or antialias those pixels.
-6. Reject the result if the template does not align with plant 10113 geometry.
+2. Compare fixed landmarks against the authoritative background: compressor symbols, empty pills, static labels, equipment outlines, pipe junctions, and right information panel.
+3. Require exact or explicitly measured alignment. Do not guess an offset or resample either image.
+4. Preserve the right information panel from the authoritative source or another verified plant-10113 light source. Require pixel identity over its complete measured rectangle.
+5. Copy only the verified C4 orange-discharge and cyan-suction pipe pixels from the authoritative source onto the rendered light image.
+6. Do not smooth, resample, recolor, widen, redraw, or antialias those pipe pixels.
+7. Reject the result if template geometry does not align with plant 10113.
 
-This route avoids reconstructing glyph alpha from labels flattened against black. It uses the verified production font and light rendering instead of global raster conversion.
+This route follows the requested light Illustrator/template source and avoids global processing of the flattened PNG.
 
 ## Fallback
 
-If the Illustrator source cannot be rendered or does not align, use localized label reconstruction only.
+If the Illustrator source cannot be rendered or does not align, use localized label restoration only. Do not process the complete image.
 
-1. Start from a verified light image whose non-label geometry already matches the authoritative source.
+Direct inspection of the original production export found intact foreground RGB plus 25,788 intermediate-alpha pixels. Use that alpha evidence only inside verified static-label rectangles, never as a whole-image conversion.
+
+1. Start from a verified plant-10113 light image whose non-label geometry and right information panel already match the required output.
 2. Define exact rectangles for `Run Cap. %`, `Capacity %`, `Reg Cap. %`, `Runtime`, and `VSD %`.
-3. Confirm every rectangle excludes live-value objects and C4 pipe masks.
-4. Clear only those rectangles using verified local background pixels.
-5. Render Roboto Regular, weight 400, with measured point size, fill, baseline, tracking, kerning, and coordinates.
-6. Reject the result if any typography metric remains inferred rather than measured.
+3. Confirm every rectangle excludes live-value objects, C4 pipe masks, symbols, and right information panel.
+4. Prefer copying matching label pixels from the verified native light reference when coordinates and surrounding pixels align exactly.
+5. Otherwise reconstruct only those rectangles from source RGBA coverage using the verified local light background and exact integer source-over composition:
 
-Whole-image inversion, thresholding, brightening, black replacement, remapping, or recoloring is forbidden. A complete SVG redraw is also out of scope because it creates avoidable geometry drift.
+   ```python
+   output_channel = (
+       foreground_channel * alpha
+       + background_channel * (255 - alpha)
+       + 127
+   ) // 255
+   ```
+
+6. If source alpha cannot produce accepted native-scale text, clear only the verified label rectangles and render Roboto Regular, weight 400, with measured point size, fill, baseline, tracking, kerning, and coordinates.
+7. Reject the result if any typography metric remains inferred rather than measured.
+
+Whole-image inversion, thresholding, brightening, black replacement, alpha composition, remapping, or recoloring is forbidden. A complete SVG redraw is also out of scope because it creates avoidable geometry drift.
 
 ## JSON Preservation
 
@@ -117,6 +130,9 @@ Stop without creating a claimed-final artifact when:
 - raw object spans cannot be preserved;
 - Illustrator render is not exactly 1400 x 750;
 - template alignment is unproven;
+- right information panel cannot be preserved pixel-identically;
+- fallback label rectangles cannot be isolated from live objects, symbols, C4 pipes, or right information panel;
+- fallback source alpha or typography cannot reproduce accepted native-scale text;
 - C4 pipe delta cannot be isolated;
 - any pipe pixel changes;
 - typography requires guessed metrics;
