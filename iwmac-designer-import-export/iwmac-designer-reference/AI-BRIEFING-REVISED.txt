@@ -1,0 +1,506 @@
+AI-BRIEFING-REVISED.txt - revision specification for AI-BRIEFING.txt
+=====================================================================
+
+THIS IS A SPECIFICATION, NOT A REPLACEMENT FILE.
+
+AI-BRIEFING.txt is 61,407 characters across 1,031 lines and the instruction
+for this audit was explicitly "do not delete existing technical details
+merely to shorten the documentation". A full rewrite would have to either
+reproduce every retained paragraph verbatim - producing a second copy that
+drifts from the first the moment either is edited - or silently drop
+detail. This form does neither. Every section gets a verdict; every section
+whose verdict is ADD or REWRITE gets its full replacement text and the
+exact anchor it replaces.
+
+Applying it is mechanical.
+
+The factual corrections from the audit are ALREADY APPLIED IN PLACE - the
+encoding rule, the overlap rule, the header-bar width, the allowlist size
+column, and the two self-check lines. See documentation-change-log.md
+Part 1. What remains below is the structural work.
+
+
+WHY THIS FILE CHANGES AT ALL
+-----------------------------
+AI-BRIEFING.txt is the output contract: what a valid panel JSON must
+contain. It does that job well. Three defects are structural, not factual:
+
+ 1. THE PRECEDENCE RULE IS BURIED AND INCOMPLETE. "EVIDENCE PRIORITY" sits
+    inside section 7a, so it reads as a ventilation rule. It is not - it
+    governs every panel type. It also lists five ranks where seven are
+    needed: it omits CLAUDE.md's panel-specific rules and this briefing
+    itself, so an agent holding a supplied JSON, a production export and a
+    briefing rule that disagree has no stated way to choose. This is the
+    single highest-value change in the whole audit.
+
+ 2. MEASURED GEOMETRY IS STATED HERE AND ALSO IN TWO OTHER FILES, with no
+    marker saying which copy wins. 7a-2 and 7a-4 print coordinates that
+    also appear in CLAUDE.md section 17b and now in
+    VENTILATION-GEOMETRY-CONTRACT.md. Three copies, no owner.
+
+ 3. THE FILE SAYS IT IS "SELF-CONTAINED" AND ALSO REQUIRES FOUR OTHER
+    FILES. Both are half true, and the contradiction matters: an agent
+    given only this briefing needs to know what it can still do.
+
+The fix for 2 is NOT to delete the coordinates from here - that would break
+the self-contained property that makes this file uploadable on its own. The
+fix is to mark every duplicated measurement with its evidence id and a line
+naming the contract as authoritative on conflict.
+
+
+SECTION-BY-SECTION DISPOSITION
+-------------------------------
+Verdicts: KEEP (unchanged) - KEEP+ (unchanged, gains a provenance header) -
+REWRITE (replacement text below) - ADD (new section).
+
+  sec  lines      title                                     verdict
+  ---  ---------  ----------------------------------------  -----------
+   -   1-19       Header and "which object do I use"         REWRITE  R1
+   0   -          SOURCE PRECEDENCE (NORMATIVE)              ADD      R2
+   1   20-28      WHAT YOU ARE MAKING                        KEEP
+   2   29-174     THE OUTPUT FILE - EXACT SHAPE              KEEP
+   3   175-198    THE OBJECT ENTRY - COPY THIS TEMPLATE      KEEP
+   4   199-295    OBJECT ALLOWLIST                           KEEP  (fixed
+                                                             in place)
+   5   296-339    LAYOUT RULES                               KEEP+ R3
+   6   340-351    WHAT THE FIELDS MEAN                       KEEP
+   7   352-362    RECIPES                                    KEEP
+  7a   363-380    VENTILATION UNIT - intro                   REWRITE  R4
+  7a   382-393    EVIDENCE PRIORITY                          REWRITE  R5
+  7a   395-406    TWO COMMITTED normative references         KEEP+ R6
+  7a-0 408-423    CLASSIFY THE REQUEST                       KEEP
+  7a-1 425-453    STYLE CONTRACT                             KEEP+ R7
+  7a-2 454-491    THE SKELETON (measured)                    KEEP+ R8
+  7a-3 492-517    FUNCTIONAL CLUSTERS                        KEEP+ R8
+  7a-4 518-539    THE SIDEBAR (measured)                     KEEP+ R8, R9
+  7a-5 540-552    Z-INDEX BANDS                              KEEP+ R8
+  7a-6 553-566    EXTRA VOCABULARY                           KEEP+ R8
+  7a-7 567-584    STRIP THE SOURCE PLANT                     KEEP
+  7a-8 585-590    TAG CONVENTION                             KEEP+ R10
+  7a-9 591-607    BAD vs GOOD                                REWRITE  R11
+  7a-10 608-619   VERIFICATION REPORT                        REWRITE  R12
+  7a-11 620-686   TEMPLATE FIDELITY                          REWRITE  R13
+  7b   687-770    HOW PANELS ARE DRAWN TODAY                 KEEP
+  7c   771-841    LIST PANELS (SPJELDLISTE)                  KEEP
+  7d   842-928    HOTELS / MULTI-BUILDING PLANTS             KEEP
+   8   929-937    WORKFLOW AFTER YOU ANSWER                  KEEP
+  8b   938-1017   LINKING                                    KEEP
+   9   1018-1031  SELF-CHECK BEFORE ANSWERING                REWRITE  R14
+
+Line numbers are as the file stands AFTER the in-place corrections (the
+allowlist header gained two lines, the self-check gained two, the overlap
+and encoding blocks gained eight between them).
+
+Net: 20 sections unchanged, 8 gain a provenance header, 6 rewritten, 1
+added. No rule is deleted. No coordinate is deleted.
+
+
+R1 - HEADER (replaces lines 1-19)
+----------------------------------
+Anchor: from "IWMAC DESIGNER PANEL GENERATION - AI BRIEFING" through the
+paragraph ending "...machine-readable, keyed by obj_id."
+
+Replacement:
+
+  IWMAC DESIGNER PANEL GENERATION - AI BRIEFING
+  ==============================================
+  The output contract for any AI (Copilot agent, Claude, GPT) that
+  generates an "iwmac-designer-panel" .json file. The file is inserted
+  into the IWMAC Designer with the "Insert JSON..." button (IWMAC Designer
+  Import/Export userscript, Panel JSON section under Manage Files).
+
+  WHAT THIS FILE OWNS: the envelope, the 17-field object template, the
+  object allowlist, the layout rules, the per-panel-type recipes, the
+  linking procedure and the self-check. It is enough on its own to
+  produce a valid panel.
+
+  WHAT IT DOES NOT OWN, and where to look instead:
+    which obj_id draws what ......... DESIGN-OBJECT-CATALOG.md
+                                      (797 objects, "Pick by task" table)
+    exact ventilation geometry ...... VENTILATION-GEOMETRY-CONTRACT.md
+                                      (measured, with evidence ids)
+    is my panel correct ............. VENTILATION-QA-CHECKLIST.md
+    how the Designer itself works ... iwmac-designer-reference/CLAUDE.md
+    the same rules for a validator .. documentation-rules.json
+
+  Section 7a reprints the ventilation measurements so this briefing stays
+  usable when it is the only file uploaded. WHERE A REPRINTED NUMBER
+  DISAGREES WITH VENTILATION-GEOMETRY-CONTRACT.md, THE CONTRACT WINS - it
+  carries the evidence id and the measurement date, and this file does
+  not.
+
+  Give this briefing plus reference_data/generated-panel-example.json to
+  the AI as knowledge. reference_data/all-design-objects.json and
+  controls-registry.json are optional extra knowledge; the allowlist in
+  section 4 covers most panels.
+
+
+R2 - NEW SECTION 0 (insert immediately after R1, before section 1)
+-------------------------------------------------------------------
+This is the change the whole audit turns on. Insert verbatim:
+
+  0. SOURCE PRECEDENCE (NORMATIVE - APPLIES TO EVERY PANEL TYPE)
+  --------------------------------------------------------------
+  When two sources disagree, the higher rank wins. Name the rank you used
+  in your verification report.
+
+    1. A panel JSON or screenshot supplied with the current task.
+    2. A real production export of the same panel type
+       (reference_data/*.json).
+    3. Panel-specific rules in iwmac-designer-reference/CLAUDE.md.
+    4. This briefing.
+    5. PANEL-TYPE-GUIDE.md.
+    6. DESIGN-OBJECT-CATALOG.md.
+    7. Generic visual-design advice.
+
+  DO NOT AVERAGE CONFLICTING COORDINATES. Use the highest-precedence
+  source. Two anchors that disagree are two different panels, not one
+  panel measured twice: splitting the difference produces a layout that
+  matches neither and that no site will recognise.
+
+  Three consequences that catch agents out:
+
+  - A SIZE IN THE ALLOWLIST OR THE CATALOGUE IS A TOOLBOX DEFAULT, NOT A
+    PLACEMENT. Rank 6 loses to rank 2. Seven objects in the ventilation
+    references are placed at a size the catalogue does not list - the
+    sidebar header is 60x25 in the palette and 250x20 on every real
+    ventilation panel.
+
+  - A SUPPLIED JSON OUTRANKS EVERY MEASUREMENT PRINTED IN THIS FILE.
+    Its coordinates, sizes, z-indexes, object vocabulary and ordering are
+    the template. The numbers in 7a were measured from a different
+    export.
+
+  - OBJECT COUNT IS NOT A QUALITY TARGET. Coverage of the required
+    production roles is the target (7a-3 lists them). A panel is not
+    better for having more objects, and not worse for having fewer - it
+    is wrong when a required role is missing or a coordinate was
+    invented.
+
+  WHEN THE EVIDENCE DOES NOT EXIST, SAY SO. Do not guess a coordinate to
+  fill a gap. Report what is missing and what you would need to measure
+  it. A stated gap is recoverable; an invented number is not, because
+  nothing downstream marks it as invented.
+
+
+R3 - SECTION 5 LAYOUT RULES (append, do not alter)
+---------------------------------------------------
+Anchor: end of section 5, before "6. WHAT THE FIELDS MEAN".
+
+Append:
+
+  - SECTION 5 IS THE TABLE-STYLE DEFAULT. Sections 7a (ventilation), 7c
+    (list panels) and 7d (hotels) override it in full - not rule by rule.
+    When you are on one of those panel types, section 5's columns, row
+    pitch, title position and alarm-bell position do not apply at all.
+    Say which section you are working under before you place anything.
+
+
+R4 - 7a INTRO (replace lines 363-380)
+--------------------------------------
+Anchor: "7a. VENTILATION UNIT (360.NNN) - THE REAL ANATOMY (NORMATIVE)"
+through "...Do not invent a visual language."
+
+Replacement:
+
+  7a. VENTILATION UNIT (360.NNN) - THE REAL ANATOMY (NORMATIVE)
+  --------------------------------------------------------------
+  A vent panel is a PROCESS SCHEMATIC drawn with objects, plus a control
+  sidebar on the right. It is not a table-style dashboard, and THIS
+  SECTION OVERRIDES SECTION 5 IN FULL: no 300 px section columns, no
+  title top-left, no alarm bell top-right.
+
+  Every coordinate below is the literal posLeft/posTop/posWidth/posHeight
+  of a sanitized real production export. Copy them. Do not invent a
+  visual language.
+
+  PROVENANCE. The measurements in 7a-2 through 7a-6 are evidence E2
+  (reference_data/real-vent-panel-example.json, 102 objects) except where
+  marked E3 (real-vent-panel-example-2.json, 92 objects).
+  VENTILATION-GEOMETRY-CONTRACT.md carries the same measurements with
+  their evidence ids, scope tags and a third export (E1), and IT IS
+  AUTHORITATIVE ON CONFLICT. This section exists so the briefing works
+  when it is uploaded alone.
+
+
+R5 - EVIDENCE PRIORITY (replace lines 382-393)
+-----------------------------------------------
+The block is promoted to section 0. What stays here is a pointer plus the
+one clause that is genuinely ventilation-specific.
+
+Anchor: "EVIDENCE PRIORITY. Rank the ground truth like this..." through
+"...section 'Ventilation panel fidelity and template-matching rules'."
+
+Replacement:
+
+  SOURCE PRECEDENCE: see section 0. It governs every panel type, not just
+  this one. Name the rank you used in the verification report (7a-10).
+
+  The ventilation-specific consequence: WHEN THE USER SUPPLIES AN
+  EXISTING JSON AND ASKS FOR SOMETHING THAT SHOULD LOOK LIKE IT, THAT
+  JSON IS THE AUTHORITATIVE GEOMETRIC TEMPLATE. Its coordinates, sizes,
+  z-indexes and object vocabulary override every measured anchor printed
+  below, which were taken from a different export. Never replace a
+  detailed production layout with a reduced conceptual diagram, and never
+  merge two exports' anchors into an average.
+
+
+R6 - TWO COMMITTED REFERENCES (append)
+---------------------------------------
+Anchor: after "...a sub-page navigation row."
+
+Append:
+
+  Do not diff two references by array index. The array order is not paint
+  order and is not stable between exports: matched index by index, A and
+  a third production export differ in 85 positions; matched by ROLE, 79
+  of 102 objects are geometrically identical and 21 moved. Compare by
+  role - a workable key is (obj_id, alias_text), falling back to
+  (obj_id, nearest neighbour) for unlabelled scaffold objects - and
+  report the moved roles, not a count of differing slots.
+
+
+R7 - 7a-1 STYLE CONTRACT (append one bullet)
+---------------------------------------------
+Anchor: after the "Preview pictures..." bullet.
+
+Append:
+
+  - "OBJECTS ONLY" IS ABOUT THE DRAWING, NOT THE BACKGROUND. It means the
+    ducts, equipment, values, symbols and controls are Designer objects
+    rather than painted artwork. The panel still carries a real embedded
+    background image - dropping it is a regression. What is forbidden is
+    authoring a panel.image_svg process drawing. This is the most
+    misread rule in the kit.
+
+
+R8 - PROVENANCE HEADERS (7a-2 through 7a-6)
+--------------------------------------------
+Each of these five subsections prints measurements that now also live in
+VENTILATION-GEOMETRY-CONTRACT.md. Add one line under each heading so a
+reader knows which copy wins. No measurement changes.
+
+  under 7a-2 THE SKELETON:
+    [E2. Contract section 1 and 6 are authoritative on conflict.]
+
+  under 7a-3 FUNCTIONAL CLUSTERS:
+    [E2. Contract section 5 is authoritative; it lists the ten required
+     roles and the per-cluster offset tables.]
+
+  under 7a-4 THE SIDEBAR:
+    [E2, with E3 variants marked. Contract section 8 is authoritative.]
+
+  under 7a-5 Z-INDEX BANDS:
+    [E2, confirmed on E1 and E3. Contract section 2 is authoritative.]
+
+  under 7a-6 EXTRA VOCABULARY:
+    [E3. Contract section 5 lists which roles it replaces.]
+
+
+R9 - 7a-4 SIDEBAR, the centring correction (append)
+----------------------------------------------------
+Anchor: after the sidebar column description.
+
+Append:
+
+  COLUMN HEADINGS ARE NOT CENTRED BY GIVING THEM EQUAL WIDTHS.
+  number_v3_label_11px_norm renders its text LEFT-ALIGNED inside its box,
+  so two headings with identical posWidth over two identical columns
+  still print off-centre. Position by rendered text width instead:
+
+      posLeft = column_centre - rendered_text_width / 2
+
+  Supply column: boxes x1260 w62, centre 1291 -> "Tilluft" at x1275
+  w32. Extract column: boxes x1330 w62, centre 1361 -> "Avtrekk" at
+  x1341 w40. DO NOT ASSUME EQUAL OBJECT WIDTHS IMPLY VISUALLY CENTRED
+  TEXT. Contract section 7.2 gives the derivation; QA check C7 tests it
+  to +/-2 px.
+
+
+R10 - 7a-8 TAG CONVENTION (append)
+-----------------------------------
+Append:
+
+  Write the real degree symbol: "RT401 °C". Never "gr C". The Insert flow
+  reads UTF-8, production exports carry 13 degree-signed tags, the object
+  catalogue itself prints "RT401 °C", and rendered tests confirm they
+  survive. Mojibake comes from other transports (pasting through a
+  terminal, an ISO-8859-1 page) - fix the transport, do not degrade the
+  panel text.
+
+  ONE OWNER PER PIECE OF TEXT. Do not add a standalone label when the
+  equipment object already shows its tag; do not add a caption when the
+  value object renders tag_text. Where a sidebar row label already names
+  the signal, use a no-tag value object
+  (number_v3_60px_dark_no_conn_no_tag). Two objects printing the same
+  words is a defect, not redundancy.
+
+
+R11 - 7a-9 BAD vs GOOD (rewrite)
+---------------------------------
+The existing list is sound but mixes measurable failures with taste. Split
+it so each line is testable, and remove the two that use object count as a
+proxy for quality.
+
+Replacement:
+
+  7a-9 HOW A VENT PANEL IS JUDGED. Every line here is testable; the test
+  is in VENTILATION-QA-CHECKLIST.md.
+
+  STRUCTURAL (Stage A) - the JSON is malformed or the vocabulary is wrong
+   - an obj_id that is not in the catalogue (renders as a broken box)
+   - counts that do not equal the array lengths
+   - object names not sequential object_0..object_N
+   - a panel.image_svg on a Ventilasjon panel
+   - a missing or replaced background
+
+  GEOMETRIC (Stage B) - the drawing does not read as ductwork
+   - a duct run broken into segments that do not meet
+   - a connector that stops short of the duct it should land on
+   - a vertical crossover that does not reach both horizontal runs
+   - a damper cleared by SHORTENING the duct instead of overlaying it
+   - a cluster split: equipment moved without its value, output or alarm
+   - a fan pointing against its run's airflow direction
+
+  VISUAL (Stage C) - it parses and it renders, and it is still wrong
+   - a value box overlapping a tag, another value, or a control
+   - an alarm bell on top of the component instead of beside it
+   - an LED outside its pill, or covering the numeric value
+   - a heading that is off-centre because widths were equalised
+   - "gr C" where the panel should print °C
+   - a hover tooltip captured in the QA screenshot and mistaken for
+     panel content
+
+  LINKING (Stage D)
+   - a source plant's driver_id, unit_id or link_tag carried into a demo
+   - an invented driver id, unit id, file path or panel target
+   - alias_text stripped during sanitization (it is what a human links
+     by afterwards)
+
+  NOT A DEFECT, and not to be "fixed":
+   - a value box sitting on the duct it belongs to
+   - a con_* connector edge landing ON its duct
+   - a damper symbol overlaying a continuous duct column
+   - an equipment body straddling the run it conditions
+   - an object count lower or higher than the reference, when every
+     required role is present and no coordinate was invented
+
+
+R12 - 7a-10 VERIFICATION REPORT (rewrite)
+------------------------------------------
+Replacement:
+
+  7a-10 VERIFICATION REPORT. Before you answer, run
+  VENTILATION-QA-CHECKLIST.md and report:
+
+    1. Which case (7a-0) and which precedence rank (section 0) you used,
+       named explicitly.
+    2. Stage A: counts vs array lengths, name sequence, every obj_id
+       resolved against the catalogue, envelope fields present, no
+       image_svg.
+    3. Stage B: each of the ten required roles present or explicitly
+       accounted for; cluster offsets preserved; duct runs continuous.
+    4. Stage C: the six zoomed crops rendered and inspected - bypass
+       column, heat recovery, lower equipment train, and the three
+       sidebar sections.
+    5. Stage D: no source-plant identifier anywhere; alias_text intact.
+    6. A role-by-role comparison against the reference, listing the roles
+       that MOVED. Not a count of differing array slots.
+
+  IF ANY VISUAL CHECK FAILS, RESTART FROM THE RETAINED SOURCE EXPORT.
+  Do not patch an already damaged derivative: a panel that has been
+  hand-corrected twice no longer matches any reference, and the next
+  correction has nothing to measure against. Keep the source export
+  unmodified for exactly this reason.
+
+  Do not present a hand-drawn approximation as the final preview when
+  real Designer rendering is available. When it is not, label the preview
+  as approximate - you are not the IWMAC renderer.
+
+
+R13 - 7a-11 TEMPLATE FIDELITY (rewrite the pointer, keep the rules)
+--------------------------------------------------------------------
+The subsection's opening currently points at a CLAUDE.md section that is
+being restructured. Only the pointer changes; the CLONE THE WHOLE VISUAL
+GRAMMAR rules and the preserve/sanitize table below it stay verbatim.
+
+Anchor: "7a-11 TEMPLATE FIDELITY WHEN THE USER SUPPLIES A JSON. Rank 1 of
+the EVIDENCE PRIORITY above. Full rules, the 17-item visual acceptance
+list and the worked lesson: iwmac-designer-reference/CLAUDE.md,
+'Ventilation panel fidelity and template-matching rules'."
+
+Replacement:
+
+  7a-11 TEMPLATE FIDELITY WHEN THE USER SUPPLIES A JSON. Rank 1 of
+  section 0. The measured rules are in
+  VENTILATION-GEOMETRY-CONTRACT.md; the acceptance tests are in
+  VENTILATION-QA-CHECKLIST.md; the worked lesson - why a 53-object
+  conceptual rebuild was rejected in favour of editing the supplied
+  102-object export - is in iwmac-designer-reference/CLAUDE.md section
+  17b.
+
+
+R14 - SECTION 9 SELF-CHECK (rewrite)
+-------------------------------------
+Two lines were corrected in place already (encoding, overlap). The
+remaining defect is structural: the list does not distinguish checks that
+apply to every panel from checks that apply to one panel type, so an agent
+building a Maskin panel reads ventilation checks and vice versa.
+
+Replacement:
+
+  9. SELF-CHECK BEFORE ANSWERING
+  ------------------------------
+  EVERY PANEL
+  [] format iwmac-designer-panel, version 1, counts match array length
+  [] every obj_id is from the allowlist / catalogue - none invented,
+     spelling preserved exactly (numberV3_filter_with_diff_press,
+     V3_58px_fan_left_nrm, number_v3_cooler_2-way are all correct)
+  [] every object has ALL 17 template fields; driver_id = "driver_id" and
+     linked = "false" - UNLESS the user supplied the parameters dump for
+     linking (8b): then linked objects carry the dump's driver_id +
+     unit_id + linked "true", and id STILL says "driver_id"
+  [] positions inside the canvas (list panels 7c excepted), integer
+     pixels, and no overlap outside the intentional classes in section 5
+  [] tag_text on text objects, alias_text on linkable objects, UTF-8 text
+     (°C, æøå) - not plain-ASCII substitutes
+  [] names are object_0..object_N, sequential, with no duplicates
+  [] no driver_id, unit_id or link_tag copied out of a source plant's
+     export into a demo - and none invented
+  [] you named the precedence rank (section 0) you worked from
+  [] raw JSON only - no fences, no commentary
+
+  LIST PANELS (7c) ONLY
+  [] counts.containers equals the containers array length and every
+     container follows the 7c template exactly
+  [] rows may run past the canvas; nothing else may
+
+  VENTILASJON (7a) ONLY
+  [] no panel.image_svg; background is the blank sidebar, preserved
+  [] the layout is traced from a NAMED reference or from the user's
+     supplied JSON - never invented
+  [] all ten required roles present (7a-3), functional clusters intact,
+     right-hand control sidebar present
+  [] z-index bands per 7a-5, written through verbatim by the importer
+  [] you ran VENTILATION-QA-CHECKLIST.md and reported stages A-D
+
+  EVERY PANEL, LAST
+  [] any preview picture you show was drawn from these coordinates and
+     you labelled it approximate
+
+
+WHAT IS DELIBERATELY NOT CHANGED
+---------------------------------
+- Sections 1, 2, 3, 6, 7, 7b, 7c, 7d, 8 and 8b are untouched. The audit
+  found no defect in them. Section 2's envelope description in particular
+  is the most-used part of the file and is correct.
+- The allowlist keeps every entry. Only its column header changed, and
+  that is already applied in place.
+- No coordinate is deleted from 7a. The duplication with
+  VENTILATION-GEOMETRY-CONTRACT.md is resolved by marking ownership (R8),
+  not by removing the numbers - deleting them would break the
+  self-contained property that lets this file be uploaded alone.
+- 7c and 7d are not scope-tagged in this pass. They are class-4 geometry
+  for other panel types and deserve the same treatment the ventilation
+  contract received, from more than one measured export each. That is
+  listed under "Evidence required" in DOCUMENTATION-AUDIT.md.

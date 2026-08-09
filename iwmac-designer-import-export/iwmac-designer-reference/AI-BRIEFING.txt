@@ -196,7 +196,9 @@ alias_text. Everything else stays literally as written here:
 - zIndex: ALWAYS "default".
 - positions/sizes: plain integers (pixels).
 
-4. OBJECT ALLOWLIST (production-proven; obj_id | W x H | role)
+4. OBJECT ALLOWLIST (production-proven; obj_id | default size | role)
+   The size column is what the palette inserts, not a placement rule. A
+   production export of the same panel type outranks it.
 --------------------------------------------------------------
 TEXT (text goes in tag_text; alias_text empty):
   number_v3_header_grey75      | set W 250-300 x 20 | grey section header bar
@@ -307,20 +309,33 @@ grey box.
 - Table-style: organize in section columns roughly 300 px wide
   (x = 20, 320, 640, 960).
 - Table-style: each section has a header bar (number_v3_header_grey75,
-  W 260-280) then rows every 28-30 px starting ~35 px below the header.
+  W 250-280; the Ventilasjon sidebar uses exactly 250x20) then rows
+  every 28-30 px starting ~35 px below the header.
 - A value row = label at column x+5 (W 100-150) + value at x+150..180.
-- Never overlap objects. Leave 8+ px gaps. EXCEPTION: on a schematic
-  panel a value box deliberately sits on top of the duct or pipe it
-  belongs to - that is what the z-index bands (7a-5) are for.
+- Never overlap objects. Leave 8+ px gaps. Overlap is measured on
+  RENDERED extents, not on posWidth: a left-aligned label whose text is
+  narrower than its box does not overlap its neighbour.
+  EXCEPTIONS - four classes, all intentional, none of them a defect to
+  "fix" (7a-5 is what the z-index bands are for):
+  1. a value box sitting on the duct or pipe it belongs to;
+  2. a con_* connector edge landing ON its duct - a stub that stops
+     short is the defect;
+  3. a damper symbol laid over a continuous duct column - NEVER shorten
+     the duct to clear it;
+  4. an equipment body straddling the run it conditions.
+  Anything outside that list is a real overlap. See
+  VENTILATION-GEOMETRY-CONTRACT.md for the measured exception table.
 - Table-style: title number_v3_label_12px_bold at top-left; alarm bell
   top-right (~x 1240). A schematic panel has neither - never add a
   title bar or a corner bell to a Ventilasjon panel.
-- TEXT ENCODING: the Insert JSON flow reads files as UTF-8, and production
-  panels do contain Norwegian letters, degree signs and m3-superscripts -
-  those survive the real pipeline. BUT if your output travels through any
-  non-UTF-8 channel (copy-paste through terminals, old mail systems) they
-  mojibake. Safe default: plain ASCII ("gr C", "hoyfart", "gasskjoler");
-  Norwegian/degree characters are acceptable when the user asks for them.
+- TEXT ENCODING: emit UTF-8. The Insert JSON flow reads files as UTF-8,
+  production panels carry Norwegian letters, degree signs and
+  m3-superscripts, and rendered tests confirm they survive the real
+  pipeline. Write "°C", never "gr C"; write "høyfart", never
+  "hoyfart". The catalogue itself uses "RT401 °C".
+  The mojibake risk lives in other channels (pasting through a terminal,
+  an ISO-8859-1 page, old mail) - that is a transport problem to fix at
+  the transport, not a reason to degrade the panel text.
 
 6. WHAT THE FIELDS MEAN (SO YOU FILL THEM RIGHT)
 ------------------------------------------------
@@ -456,7 +471,7 @@ one you picked in the verification report (7a-10):
            number_v3_dummy_resirc_damp_vert (407,310) 40x40.
 - CONNECTOR RULE - this is what makes it read as ductwork: a con_down
   value box sits ABOVE the run with its connector touching the duct
-  ("RT502 gr C" at (985,174) over the extract run, "RT401 gr C" at
+  ("RT502 °C" at (985,174) over the extract run, "RT401 °C" at
   (985,417) over the supply run); a con_top box sits BELOW the run with
   its top edge at the duct's bottom edge (damper "KA501 %" at (24,218),
   fan output "LR501 %" at (157,236); supply "KA401 %" (337,461),
@@ -477,12 +492,12 @@ object's top-left corner.
   pressure in tag_text ("QD401 Pa") - do NOT add a separate value box -
   plus an alarm bell above it (+8,-45 supply, +61,-46 extract).
 - HEATING COIL: number_v3_heater_3_way + frost alarm at (-22,-36) +
-  coil temps con_right "RT510 gr C" (535,518) and con_left "RT410 gr C"
+  coil temps con_right "RT510 °C" (535,518) and con_left "RT410 °C"
   (610,490) + power con_left "SB510 %" (620,570) + pump
   V3_21px_single_pump_grey_green_up (601,527) + valve
   v3_3w_valve_right_down_nrm (602,572).
 - COOLING COIL: number_v3_cooler_2-way + alarm at (+1,-30) + "SB520 %"
-  con_top (453,532) + "RT420 gr C" con_left (482,486) + "RT520 gr C"
+  con_top (453,532) + "RT420 °C" con_left (482,486) + "RT520 °C"
   con_right (408,486).
 - HEAT RECOVERY: number_360_vg_rot + alarm at (+12,+160) + "LX001 %"
   con_top (288,484) + efficiency box "Virk.gr %" (288,537).
@@ -557,7 +572,7 @@ driver id, unit id, link tag, parameter id or navigation target id: an
 invented id is worse than an empty one because it looks linked and is
 not.
 
-7a-8 TAG CONVENTION. tag_text = instrument code + unit ("RT401 gr C",
+7a-8 TAG CONVENTION. tag_text = instrument code + unit ("RT401 °C",
 "RF401 m3/h", "KA401 %", "QD401 Pa"); alias_text = the sentence a human
 reads. Codes follow the vent controller: RT=temp, RF=flow,
 RH=humidity, KA=damper, LR=motor/output, LX=rotor, QD=filter pressure,
@@ -937,7 +952,7 @@ PROCEDURE per linkable object:
 1. Find the unit: unit_name matches the panel's system (360.001 ->
    "360.001 Ventilasjon") - fixes unit_id and the driver prefix.
 2. Find the row whose alias_text matches the object's signal (use the
-   object's alias_text/tag_text: "RT401 gr C" -> "Actual supply
+   object's alias_text/tag_text: "RT401 °C" -> "Actual supply
    temperature", fan JV401 -> "Supply motor ON/OFF", QD401 -> supply
    filter, alarm bell -> the component's alarm row).
 3. Write into the object: driver_id = the row's driver_id (verbatim),
@@ -998,9 +1013,11 @@ it per 7a-7 before reusing it as a demo.
    linked = "false" - UNLESS the user supplied the parameters dump for
    linking (8b): then linked objects carry the dump's driver_id +
    unit_id + linked "true", and id STILL says "driver_id"
-[] positions inside the canvas (list panels 7c excepted), no overlaps,
-   integer pixels
-[] tag_text on text objects, alias_text on linkable objects, ASCII only
+[] positions inside the canvas (list panels 7c excepted), integer
+   pixels, and no overlap outside the four intentional classes in
+   section 5
+[] tag_text on text objects, alias_text on linkable objects, UTF-8
+   text (°C, æøå) - not plain-ASCII substitutes
 [] graphics [] empty; containers [] too UNLESS this is a list panel (7c),
    then counts.containers equals the containers array length and every
    container follows the 7c template exactly

@@ -466,9 +466,11 @@ def main() -> None:
         "`RT401 °C`). Objects with `Tag: no` show nothing but their own graphic."
     )
     add(
-        "5. **`W×H` is the placement size in pixels** on the 1400×750 canvas. "
-        "Pipe/duct pieces are meant to be stretched along their run (`posWidth`); "
-        "symbols are not."
+        "5. **`W×H` is the toolbox default size, not a placement rule.** It is what "
+        "the palette inserts; a production export of the same panel type outranks "
+        "it, and real placements routinely differ (`number_v3_header_grey75` is "
+        "60×25 here and 250×20 on every Ventilasjon sidebar). Pipe/duct pieces are "
+        "meant to be stretched along their run (`posWidth`); symbols are not."
     )
     add(
         "6. **`Production use` is evidence, not advice** — placements counted in "

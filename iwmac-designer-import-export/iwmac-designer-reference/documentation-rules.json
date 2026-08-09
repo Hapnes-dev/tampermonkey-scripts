@@ -1,0 +1,421 @@
+{
+  "_note": "Machine-readable extract of the IWMAC Designer panel-generation rules. Hand-authored 2026-08-09 from the audit in DOCUMENTATION-AUDIT.md and the measurements in VENTILATION-GEOMETRY-CONTRACT.md. Prose documents remain authoritative; this file exists so a validator can check a generated panel without parsing Markdown. Every geometry value carries the evidence id it was measured from.",
+  "schema_version": 1,
+  "generated": "2026-08-09",
+  "scope_tags": {
+    "GLOBAL": "Applies to every panel type.",
+    "VENT": "Applies to Ventilasjon panels only.",
+    "REF-9099": "Measured from one production export of plant 9099 (or its committed masked twin). Reproduce it when cloning that panel; do not universalise it to another AHU without evidence.",
+    "SCREENSHOT": "Derived from a rendered screenshot, not from JSON or source. Weaker than a measured export - it can be re-measured but has not been.",
+    "ADVISORY": "Judgement, not a measured or code-derived fact. May be overridden with a stated reason."
+  },
+  "evidence": {
+    "E1": {
+      "file": "C:/Users/Thomas/Downloads/iwmac-panel_9099_360-001-ventilasjon_recommended.json",
+      "committed": false,
+      "why_not_committed": "Carries a live plant id and real driver ids; repo policy masks reference JSONs before commit.",
+      "plant": "9099",
+      "panel": "360.001 Ventilasjon",
+      "canvas": [1400, 750],
+      "single_objects": 102,
+      "distinct_obj_ids": 41,
+      "containers": 0,
+      "graphics": 0,
+      "linked_objects": 102,
+      "degree_tags": 13,
+      "gr_c_tags": 0
+    },
+    "E2": {
+      "file": "reference_data/real-vent-panel-example.json",
+      "committed": true,
+      "single_objects": 102,
+      "distinct_obj_ids": 41,
+      "degree_tags": 13,
+      "relation_to_E1": "Same AHU, revised layout. Matched by role: 79 of 102 objects geometrically identical, 21 moved, 1 only in E1, 2 only in E2. Never diff these two by array index - the files order objects differently and an index diff reports 85/84/66 differences that are not real."
+    },
+    "E3": {
+      "file": "reference_data/real-vent-panel-example-2.json",
+      "committed": true,
+      "single_objects": 92,
+      "distinct_obj_ids": 39,
+      "degree_tags": 8,
+      "notes": "A different plant's 360.001. Adds z-index bands 20 and 300. Has NO bypass column at all, places the electric heater at (459,412) with tag LI401, puts the third sidebar header at y400, and duplicates sub_page_link_btn_* at identical coordinates. Proof that the bypass cluster and the y357 header are REF-9099, not VENT."
+    }
+  },
+  "source_precedence": [
+    {"rank": 1, "source": "A panel JSON or screenshot supplied with the current task"},
+    {"rank": 2, "source": "A real production export of the same panel type"},
+    {"rank": 3, "source": "VENTILATION-GEOMETRY-CONTRACT.md (measured geometry)"},
+    {"rank": 4, "source": "Panel-specific rules in iwmac-designer-reference/CLAUDE.md"},
+    {"rank": 5, "source": "AI-BRIEFING.txt"},
+    {"rank": 6, "source": "PANEL-TYPE-GUIDE.md"},
+    {"rank": 7, "source": "DESIGN-OBJECT-CATALOG.md"},
+    {"rank": 8, "source": "Generic visual-design advice"},
+    {"rule": "Never average conflicting coordinates. Take the value from the highest-ranked source that has one."}
+  ],
+  "global_invariants": {
+    "envelope": {
+      "format": "iwmac-designer-panel",
+      "version": 1,
+      "required_top_level": ["format", "version", "generator", "source_plant_id", "panel_name", "panel_width", "panel_height", "counts", "background_embedded", "panel"],
+      "required_panel": ["plant_id", "panel_name", "panel_width", "panel_height", "org_image_name", "image_name", "saved_by", "single_objects", "containers", "graphics"],
+      "note": "Committed reference JSONs in this repo wrap the same document as {_note, envelope:{...}}. A live userscript export is flat. A reader must accept both: env = doc.get('envelope', doc)."
+    },
+    "counts_must_equal_array_lengths": true,
+    "object_fields": ["obj_id", "name", "id", "posWidth", "posHeight", "posLeft", "posTop", "zIndex", "tag_text", "linked", "link_name", "link_tag", "sub_group", "driver_id", "unit_id", "unit_ref", "alias_text"],
+    "object_field_count": 17,
+    "naming": {
+      "pattern": "object_<n>",
+      "start": 0,
+      "sequential": true,
+      "duplicates_allowed": false
+    },
+    "geometry_type": "integer pixels",
+    "obj_id_rule": {
+      "must_exist_in": "reference_data/all-design-objects.json",
+      "spelling": "verbatim - do not normalise capitalisation or 'correct' historic spelling",
+      "examples_that_look_wrong_and_are_not": ["numberV3_filter_with_diff_press", "numberV3_outside_temp", "number_v3_cooler_2-way"],
+      "on_violation": "An id with no palette entry renders as a broken undefined-class box."
+    },
+    "encoding": {
+      "output": "UTF-8",
+      "degree_symbol": "\u00b0C",
+      "forbidden": "gr C",
+      "evidence": "Insert JSON reads files as UTF-8; production exports carry 13 (E1/E2) and 8 (E3) degree tags and zero 'gr C'; DESIGN-OBJECT-CATALOG.md itself prints RT401 \u00b0C.",
+      "note": "The mojibake risk lives in other transports (terminal paste, the ISO-8859-1 page, old mail). Fix the transport; do not degrade the panel text.",
+      "scope": "GLOBAL"
+    },
+    "unlinked_demo_contract": {
+      "id": "driver_id",
+      "driver_id": "driver_id",
+      "linked": "false",
+      "link_name": "",
+      "link_tag": "",
+      "unit_id": "",
+      "unit_ref": "",
+      "sub_group": "",
+      "alias_text": "PRESERVE - it is what a human links by afterwards",
+      "source_plant_id": "",
+      "panel.plant_id": "",
+      "prohibition": "Never invent a driver id, unit id, parameter id, file path or panel target. An invented id looks linked and is not."
+    },
+    "quality_metric": {
+      "object_count_is_not_a_target": true,
+      "target": "coverage of the production roles present in the reference",
+      "scope": "GLOBAL"
+    }
+  },
+  "panel_types": {
+    "ventilation": {
+      "identity": "A process schematic drawn with palette objects, plus a right-hand control sidebar. Not a dashboard and not a table-style panel.",
+      "canvas": {
+        "width": 1400,
+        "height": 750,
+        "scope": "VENT",
+        "evidence": ["E1", "E2", "E3"],
+        "override": "Match the plant if a supplied export says otherwise. 1400x755 and 1280x1024 also exist in the fleet."
+      },
+      "background": {
+        "org_image_name": "00-blank-sidebar-1400x750",
+        "background_embedded": true,
+        "image_data": "the ~8 KB blank-sidebar PNG data URI, byte-identical across E1 and E2",
+        "image_svg": null,
+        "image_svg_prohibited": true,
+        "rule": "Objects-only means the ducts and equipment are Designer objects, NOT that the standard embedded background is removed. Never author an SVG process drawing behind a vent panel. Never bake live values, LEDs, alarms, fans, coils or dampers into a background.",
+        "sidebar_starts_at_x": 1150,
+        "scope": "VENT"
+      },
+      "composition": {
+        "extract_run": "upper",
+        "supply_run": "lower",
+        "run_separation_px": 242,
+        "heat_recovery": "spans both runs",
+        "crossover": "a vertical column joining the two runs",
+        "room_endpoint": "right",
+        "sidebar": "from x1150 to the canvas edge",
+        "scope": "VENT",
+        "evidence": ["E1", "E2"]
+      },
+      "z_indexes": {
+        "mode": "explicit bands OR the literal string \"default\" - never mixed in one panel",
+        "bands": {
+          "5": {"role": "ducts, pipes, headers", "count_E1": 10},
+          "15": {"role": "dummy airflow arrows", "count_E1": 3},
+          "20": {"role": "sub-page navigation buttons", "count_E1": 0, "seen_in": ["E3"]},
+          "40": {"role": "equipment bodies", "count_E1": 7},
+          "110": {"role": "value, setpoint and json boxes", "count_E1": 47},
+          "300": {"role": "seen only in E3", "count_E1": 0, "seen_in": ["E3"]},
+          "375": {"role": "alarms, LEDs, pumps, valves", "count_E1": 12},
+          "1100": {"role": "labels", "count_E1": 23}
+        },
+        "default_mode_note": "Emitting \"default\" everywhere is legal, but then array order IS stacking order: ducts first, labels last.",
+        "importer_behaviour": "The importer writes zIndex through verbatim; it substitutes \"default\" only when the field is missing.",
+        "scope": "VENT",
+        "evidence": ["E1", "E3"]
+      },
+      "duct_runs": {
+        "scope": "REF-9099",
+        "evidence": ["E1"],
+        "objects": [
+          {"role": "extract run", "obj_id": "number_v3_exhaust_pipe_horisontal", "posLeft": 24, "posTop": 200, "posWidth": 1025, "posHeight": 18},
+          {"role": "fresh-air run", "obj_id": "number_v3_fresh_pipe_horisontal", "posLeft": 24, "posTop": 442, "posWidth": 260, "posHeight": 18},
+          {"role": "supply run", "obj_id": "number_v3_supply_pipe_horisontal", "posLeft": 337, "posTop": 442, "posWidth": 710, "posHeight": 18}
+        ],
+        "connector_rule": {
+          "con_down": "value box sits ABOVE the run it reads",
+          "con_top": "value box sits BELOW the run it reads",
+          "edge": "the connector edge must land ON the duct; a stub that stops short is a defect",
+          "scope": "VENT"
+        }
+      },
+      "clusters": {
+        "principle": "Every major component is atomic. Move a cluster with ONE translation vector applied to every member. Never leave an alarm, an output or a temperature behind.",
+        "offset_convention": "[dx, dy] from the component's own posLeft/posTop.",
+        "scope": "REF-9099",
+        "evidence": ["E1"],
+        "items": {
+          "bypass": {
+            "atomic": true,
+            "anchor": [411, 211],
+            "note": "REF-9099 only. E3 has no bypass column at all - a unit with no recirculation leg omits the whole cluster.",
+            "members": [
+              {"obj_id": "number_v3_exhaust_connector_up", "posLeft": 411, "posTop": 211, "posWidth": 18, "posHeight": 50, "offset": [0, 0]},
+              {"obj_id": "number_v3_exhaust_pipe_vertical", "posLeft": 411, "posTop": 254, "posWidth": 18, "posHeight": 75, "offset": [0, 43]},
+              {"obj_id": "number_v3_supply_pipe_vertical", "posLeft": 411, "posTop": 329, "posWidth": 18, "posHeight": 75, "offset": [0, 118]},
+              {"obj_id": "number_v3_supply_connector_down", "posLeft": 411, "posTop": 399, "posWidth": 18, "posHeight": 50, "offset": [0, 188]},
+              {"obj_id": "number_v3_dummy_resirc_damp_vert", "posLeft": 407, "posTop": 310, "posWidth": 40, "posHeight": 40, "offset": [-4, 99]},
+              {"role": "KA502 value", "posLeft": 429, "posTop": 317, "posWidth": 62, "posHeight": 22, "offset": [18, 106]}
+            ],
+            "column_continuous_from_y": 211,
+            "column_continuous_to_y": 449,
+            "intentional_overlaps": [
+              {"pair": "exhaust_connector_up / exhaust_pipe_vertical", "px": 7},
+              {"pair": "supply_pipe_vertical / supply_connector_down", "px": 5},
+              {"pair": "dummy_resirc_damp_vert over the duct column", "px": 40, "rule": "The damper OVERLAYS a continuous duct column. NEVER shorten the vertical duct to make space for the damper."}
+            ]
+          },
+          "heat_recovery": {
+            "atomic": true,
+            "obj_id": "number_360_vg_rot",
+            "posLeft": 282, "posTop": 149, "posWidth": 60, "posHeight": 343,
+            "members": [
+              {"role": "alarm", "offset": [12, 160]},
+              {"role": "LX001 output %", "offset": [6, 335]},
+              {"role": "Virk.gr efficiency", "offset": [6, 388]},
+              {"role": "RT402 temperature", "offset": [75, 268]}
+            ],
+            "note": "Frost-protection value where the unit has one. No duplicate decorative label - the rotor object carries its own tag."
+          },
+          "extract_fan": {
+            "atomic": true,
+            "obj_id": "V3_58px_fan_left_nrm",
+            "posLeft": 187, "posTop": 179, "posWidth": 59, "posHeight": 59,
+            "E2_posLeft": 152,
+            "members": [
+              {"role": "airflow value", "offset": [-2, -39]},
+              {"role": "motor output value", "offset": [6, 57]},
+              {"role": "alarm", "offset": [12, -19], "E2_offset": [45, -19]}
+            ]
+          },
+          "supply_fan": {
+            "atomic": true,
+            "obj_id": "V3_58px_fan_right_nrm",
+            "posLeft": 795, "posTop": 421, "posWidth": 59, "posHeight": 59,
+            "members": [
+              {"role": "airflow value", "offset": [-2, -40]},
+              {"role": "motor output value", "offset": [5, 55]},
+              {"role": "alarm", "offset": [48, -18]}
+            ]
+          },
+          "extract_filter": {
+            "atomic": true,
+            "obj_id": "numberV3_filter_with_diff_press",
+            "posLeft": 466, "posTop": 154,
+            "members": [{"role": "alarm", "offset": [61, -46]}]
+          },
+          "supply_filter": {
+            "atomic": true,
+            "obj_id": "numberV3_filter_with_diff_press",
+            "posLeft": 171, "posTop": 397,
+            "E2_posLeft": 189,
+            "members": [{"role": "alarm", "offset": [28, -45], "E2_offset": [8, -45]}]
+          },
+          "cooler": {
+            "atomic": true,
+            "obj_id": "number_v3_cooler_2-way",
+            "posLeft": 456, "posTop": 409, "posWidth": 38, "posHeight": 132,
+            "members": [
+              {"role": "alarm", "offset": [1, -30]},
+              {"role": "caption", "offset": [8, 3]},
+              {"role": "RT510", "offset": [-48, 83]},
+              {"role": "RT410", "offset": [29, 85]},
+              {"role": "SB520", "offset": [-4, 123]}
+            ],
+            "warning": "E1 and E2 swap RT4xx and RT5xx on the same coils. Copy POSITIONS from the reference and instrument CODES from the target plant."
+          },
+          "heating_coil": {
+            "atomic": true,
+            "obj_id": "number_v3_heater_3_way",
+            "posLeft": 583, "posTop": 413, "posWidth": 40, "posHeight": 210,
+            "members": [
+              {"role": "alarm", "offset": [-22, -36]},
+              {"role": "RT520", "offset": [-47, 111]},
+              {"role": "RT420", "offset": [26, 84]},
+              {"role": "SB510", "offset": [37, 157]},
+              {"role": "circulation pump", "offset": [18, 114]},
+              {"role": "3-way valve", "offset": [19, 159]}
+            ]
+          },
+          "electric_heater": {
+            "atomic": true,
+            "obj_id": "number_v3_el_heater",
+            "posLeft": 697, "posTop": 413, "posWidth": 40, "posHeight": 85,
+            "E2_posLeft": 693,
+            "members": [{"role": "SB520 output value", "offset": [-3, 80]}],
+            "note": "E3 places its electric heater at (459,412) with tag LI401 - a different unit, not a correction."
+          },
+          "room_endpoint": {
+            "atomic": true,
+            "obj_id": "number_360_room",
+            "posLeft": 1044, "posTop": 159, "posWidth": 100, "posHeight": 339,
+            "members": [
+              {"role": "RP501", "offset": [20, 117]},
+              {"role": "CO2 box", "offset": [27, 131]},
+              {"role": "RT600", "offset": [26, 158]},
+              {"role": "temperature box", "offset": [27, 172]}
+            ]
+          }
+        }
+      },
+      "sidebar": {
+        "scope": "REF-9099",
+        "evidence": ["E1", "E2"],
+        "identical_across_E1_E2": true,
+        "object_count": 36,
+        "starts_at_x": 1150,
+        "sections": [
+          {"caption": "Status og vendere", "obj_id": "number_v3_header_grey75", "posLeft": 1150, "posTop": 0, "posWidth": 250, "posHeight": 20},
+          {"caption": "Vifteregulering", "obj_id": "number_v3_header_grey75", "posLeft": 1150, "posTop": 165, "posWidth": 250, "posHeight": 20},
+          {"caption": "Temperaturregulering", "obj_id": "number_v3_header_grey75", "posLeft": 1150, "posTop": 357, "posWidth": 250, "posHeight": 20, "note": "E3 places this header at y400."}
+        ],
+        "header_size_note": "250x20 in every vent reference. The palette default for number_v3_header_grey75 is 60x25; AI-AGENT-INSTRUCTIONS previously said 260x20 in one place and 250x20 in another. 250x20 is the measured value.",
+        "label_column_x": 1160,
+        "label_baseline_offset_from_value": 5,
+        "columns": {
+          "supply": {"caption": "Tilluft", "value_posLeft": 1260, "value_posWidth": 62, "centre": 1291},
+          "extract": {"caption": "Avtrekk", "value_posLeft": 1330, "value_posWidth": 62, "centre": 1361}
+        },
+        "column_headings": {
+          "obj_id": "number_v3_label_11px_norm",
+          "production_geometry": [
+            {"text": "Tilluft", "posLeft": 1276, "posTop": 190, "posWidth": 50, "posHeight": 20},
+            {"text": "Avtrekk", "posLeft": 1341, "posTop": 190, "posWidth": 50, "posHeight": 20}
+          ],
+          "corrected_geometry": [
+            {"text": "Tilluft", "posLeft": 1275, "posTop": 190, "rendered_width": 32, "centre": 1291},
+            {"text": "Avtrekk", "posLeft": 1341, "posTop": 190, "rendered_width": 40, "centre": 1361}
+          ],
+          "why": "number_v3_label_11px_norm renders LEFT-ALIGNED from posLeft. posWidth does not centre the text, so equal posWidth values do NOT imply visually centred text.",
+          "formula": "posLeft = C - W/2, where C is the column centre and W is the RENDERED text width",
+          "scope": "SCREENSHOT"
+        },
+        "rows": {
+          "fan_block": {"x_supply": 1260, "x_extract": 1330, "y": [205, 230, 255], "extra": [{"x": 1330, "y": 279}, {"x": 1332, "y": 308}]},
+          "temperature_block": {"x": 1329, "y": [385, 410, 435]},
+          "pitch": 25,
+          "value_size": [62, 22]
+        },
+        "spacing": {
+          "box_to_box_vertical_gap": 3,
+          "label_box_to_next_value_box_gap": 0,
+          "rule": "A tag caption rendered above a value box collides with the value below it at this pitch. Prefer number_v3_60px_dark_no_conn_no_tag where the row label already names the signal; use number_v3_60px_dark_no_conn (with caption) only where no row label exists.",
+          "scope": "REF-9099"
+        },
+        "leds": {
+          "objects": ["V3_led_16px_circ_grey_red", "V3_led_16px_circ_grey_yellow"],
+          "posLeft": [1317, 1362],
+          "posTop": 75
+        }
+      },
+      "led_placement": {
+        "scope": "SCREENSHOT",
+        "rules": [
+          {
+            "target": "Aggregatstatus LED",
+            "rule": "Fully inside the Aggregatstatus value pill, not covering the numeric value, retaining right and vertical padding."
+          },
+          {
+            "target": "LV402 status LED",
+            "rule": "Lower-left interior of the LV402 body. Not centred over the tag, not outside the body, not overlapping the output value below.",
+            "body_bounds": {"x0": 697, "x1": 737, "y0": 413, "y1": 498},
+            "led": {"posLeft": 700, "posTop": 466, "posWidth": 13, "posHeight": 13}
+          }
+        ],
+        "containment_test": "led.x0 >= body.x0 AND led.y0 >= body.y0 AND led.x1 <= body.x1 AND led.y1 <= body.y1"
+      },
+      "text_rules": {
+        "value_ownership": [
+          {"rule": "No standalone label when the equipment object already renders its own tag.", "scope": "VENT"},
+          {"rule": "No second caption when a value object renders tag_text.", "scope": "VENT"},
+          {"rule": "Signal description goes in alias_text.", "scope": "GLOBAL"},
+          {"rule": "Instrument code + unit goes in tag_text, and only on objects that render a tag.", "example": "RT401 \u00b0C, KA401 %", "scope": "GLOBAL"},
+          {"rule": "Use a no-tag value object when a row label already names the value.", "scope": "VENT"}
+        ],
+        "alignment": {
+          "left_aligned_objects": ["number_v3_label_11px_norm"],
+          "rule": "Position left-aligned labels by rendered text width, not by box width.",
+          "centring_formula": "posLeft = C - W/2",
+          "tolerance_px": 2,
+          "scope": "SCREENSHOT"
+        }
+      },
+      "overlap_rules": {
+        "detection": "Compare RENDERED extents, not posWidth. A left-aligned label whose text is narrower than its box does not overlap its neighbour even when the boxes intersect.",
+        "intentional": [
+          "a value box sitting on the duct or pipe it belongs to",
+          "a con_* connector edge landing ON its duct",
+          "a damper symbol laid over a continuous duct column",
+          "an equipment body straddling the run it conditions",
+          "a status LED inside its own equipment body"
+        ],
+        "everything_else_is_a_defect": true,
+        "never": "Never shorten a duct to clear a damper.",
+        "scope": "VENT"
+      },
+      "alarm_rules": {
+        "placement": "Beside the guarded component, never over its tag, value or control.",
+        "check_at": "native size",
+        "duplicate_or_decorative_alarm": "defect",
+        "scope": "VENT"
+      },
+      "required_roles": [
+        "extract fan", "supply fan", "supply filter", "extract filter",
+        "rotary heat recovery", "cooler", "heating coil", "electric heater",
+        "room/zone endpoint", "bypass damper (where the unit has a recirculation leg)"
+      ],
+      "qa": {
+        "checklist_file": "VENTILATION-QA-CHECKLIST.md",
+        "stages": ["A structural", "B geometry", "C visual", "D linking/sanitization", "E import/save"],
+        "render_crops": [
+          {"name": "bypass", "region": [380, 190, 520, 470]},
+          {"name": "heat recovery", "region": [260, 130, 500, 510]},
+          {"name": "lower equipment train", "region": [420, 380, 900, 620]},
+          {"name": "sidebar - Status og vendere", "region": [1150, 0, 1400, 165]},
+          {"name": "sidebar - Vifteregulering", "region": [1150, 165, 1400, 357]},
+          {"name": "sidebar - Temperaturregulering", "region": [1150, 357, 1400, 500]}
+        ],
+        "on_failure": "Restart from the retained source export. Do not patch an already damaged derivative.",
+        "tooltip_rule": "Move the pointer off every panel object before capturing a QA screenshot. A Designer hover tooltip is runtime UI, not panel content."
+      },
+      "evidence_required": [
+        "Rendered text widths for every sidebar label object other than Tilluft and Avtrekk - the centring formula needs W per string per font.",
+        "Whether number_v3_label_12px_bold and the other label objects also render left-aligned, or only 11px_norm.",
+        "The Aggregatstatus pill's measured bounds, so LED containment can be checked numerically rather than by eye.",
+        "The frost-protection value's cluster offset from number_360_vg_rot - E1 has no frost value to measure.",
+        "The minimum vertical gap at which a tag caption stops colliding with the value box below it.",
+        "Whether the y357 vs y400 third-header position tracks section content height or is plant preference.",
+        "A production export of a vent panel WITH a bypass on a plant other than 9099, to promote the bypass geometry from REF-9099 to VENT."
+      ]
+    }
+  }
+}
