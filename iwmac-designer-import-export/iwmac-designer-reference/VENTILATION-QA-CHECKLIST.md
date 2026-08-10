@@ -16,26 +16,81 @@ Keep the source export unmodified for the whole session. It is the restart point
 
 ---
 
+## Stage 0 — Run the validator
+
+Everything in stages A and B, plus the nine relationship checks below, is
+implemented in [validate-ventilation-panel.py](validate-ventilation-panel.py).
+Run it first; it is deterministic, dependency-free, and takes under a second.
+
+```bash
+python validate-ventilation-panel.py panel.json --profile PROFILE-9099-ROTOR-DEMO
+```
+
+Drop `--profile` when no named profile is the template — the global rules still
+run and only the profile-scoped `V-P*` rules are skipped. `--json` emits findings
+as JSON. Exit code is non-zero when there is at least one error.
+
+**Zero errors is the bar for delivery.** Warnings are read and explained, not
+ignored: each is either a real finding or a known production quirk, and your
+report must say which.
+
+### The nine relationship checks
+
+These are the defects that structurally valid JSON still carries. Each row is
+executable — the rule id is the implementation.
+
+| # | Check | Rule | Fails when |
+|---|---|---|---|
+| 0.1 | **Duplicate role objects** | `V-G04`, `V-P07` | A caption duplicates a tag an equipment or value object already renders (`Cool`, `Rotor`, `VGV`, `Kurver`, `KA502`), or a role the profile deliberately omits is present — a second differential-pressure box beside a filter, a decorative rotor label |
+| 0.2 | **Incomplete clusters** | `V-P01` | A cluster is missing a required member. The canonical case: `SB510 %` present with no circulation pump and no 3-way valve |
+| 0.3 | **Connector-to-target attachment** | `V-G03` | A `con_*` value box sits on the wrong side of its target, or its connector edge does not meet the target's edge. `con_down` above · `con_top` below · `con_left` right · `con_right` left |
+| 0.4 | **One alarm per guarded role** | `V-G05`, `V-P06` | Two bells guard the *same* component; a bell is detached from any component; a bell overlaps a caption; a profile alarm is off its recorded coordinate |
+| 0.5 | **One KA value per damper** | `V-G07` | A `KA` position code appears on more than one object — the signature of a stale copy left behind by a move |
+| 0.6 | **Sidebar uniqueness** | `V-G06` | A section, row label, header or value object is emitted twice, or two sidebar objects share a coordinate |
+| 0.7 | **Sequential names** | `V-S03`, `V-S04` | Names are not `object_0…object_N`, have gaps or duplicates, or an object is missing one of the 17 fields |
+| 0.8 | **Rendered text collisions** | `V-P08` | Two rendered glyph runs come within the 4 px floor. **Reported as a warning, never an error** — rendered widths here are estimates (stage C7) |
+| 0.9 | **Degree-sign preservation** | `V-S09` | `°C` has been degraded to `gr C`, or the file does not decode as UTF-8 |
+
+Checks 0.2, 0.3 (profile-scoped variants), 0.4's coordinate half, and 0.8 require
+`--profile`. Without it they do not run, and the panel is unverified on those
+axes — say so rather than reporting a clean run.
+
+**Two known-good duplications the validator deliberately allows.** `SB520 %`
+appears twice in the canonical profile (cooling output and electric-heater
+regulator power, different `alias_text`), which is why 0.5 is scoped to `KA`
+codes and must not be widened to every tag string. And room-endpoint value
+objects carry a single-space `tag_text` on purpose, with separate
+`number_v3_label_8px_norm` captions. Neither is a defect.
+
+---
+
 ## Stage A — Structural
 
-Machine-checkable. Run before rendering anything.
+Machine-checkable. **Stage 0 runs all of this** — the table is the human-readable
+form, and the rule column says which check owns each row. Use the inline script
+below only when the validator is unavailable.
 
-| # | Check | Pass condition |
-|---|---|---|
-| A1 | The file parses | `json.loads` succeeds on the final text |
-| A2 | Envelope | `format` = `iwmac-designer-panel`, `version` = `1` |
-| A3 | Counts match reality | `counts.single_objects` = `len(panel.single_objects)`; same for `containers` and `graphics` |
-| A4 | Sequential names | `panel.single_objects[i].name` = `object_{i}` for every i, from `object_0`, no gaps |
-| A5 | All ids exist | every `obj_id` is a key in [reference_data/design-object-catalog.json](reference_data/design-object-catalog.json) → `objects` |
-| A6 | All 17 fields | every object has `obj_id, name, id, posWidth, posHeight, posLeft, posTop, zIndex, tag_text, linked, link_name, link_tag, sub_group, driver_id, unit_id, unit_ref, alias_text` |
-| A7 | Integer geometry | all four position fields are integers, not floats or strings |
-| A8 | Inside the canvas | `0 ≤ posLeft`, `posLeft + posWidth ≤ panel_width`; same vertically |
-| A9 | No `image_svg` | `panel` has no `image_svg` key — **Ventilasjon never authors one** |
-| A10 | Empty collections | `containers` = `[]`, `graphics` = `[]` |
-| A11 | Background | `org_image_name` = `00-blank-sidebar-1400x750`, `background_embedded` = `true`, `image_data` present |
-| A12 | No legacy V2 ids | none of `alarm_anim.gif`, `number6`, `red_led_small`, or any other V2 id |
-| A13 | UTF-8 | the file decodes as UTF-8; `°` appears literally, not as `°`, `gr C`, or mojibake |
-| A14 | No trailing prose | the output is one JSON object, nothing before `{` or after `}`, no comments |
+| # | Check | Rule | Pass condition |
+|---|---|---|---|
+| A1 | The file parses | — | `json.loads` succeeds on the final text |
+| A2 | Envelope | `V-S01` | `format` = `iwmac-designer-panel`, `version` = `1` |
+| A3 | Counts match reality | `V-S02` | `counts.single_objects` = `len(panel.single_objects)`; same for `containers` and `graphics` |
+| A4 | Sequential names | `V-S04` | `panel.single_objects[i].name` = `object_{i}` for every i, from `object_0`, no gaps |
+| A5 | All ids exist | `V-G02` | every `obj_id` is a key in [reference_data/design-object-catalog.json](reference_data/design-object-catalog.json) → `objects` |
+| A6 | All 17 fields | `V-S03` | every object has `obj_id, name, id, posWidth, posHeight, posLeft, posTop, zIndex, tag_text, linked, link_name, link_tag, sub_group, driver_id, unit_id, unit_ref, alias_text` |
+| A7 | Integer geometry | `V-S05` | all four position fields are integers, not floats or strings |
+| A8 | Inside the canvas | `V-S05` | `0 ≤ posLeft`, `posLeft + posWidth ≤ panel_width`; same vertically |
+| A9 | No `image_svg` | `V-S07` | `panel` has no `image_svg` key — **Ventilasjon never authors one** |
+| A10 | Empty collections | `V-S07` | `containers` = `[]`, `graphics` = `[]` |
+| A11 | Background | `V-S07` | `org_image_name` = `00-blank-sidebar-1400x750`, `background_embedded` = `true`, `image_data` present |
+| A12 | No legacy V2 ids | `V-G02` | none of `alarm_anim.gif`, `number6`, `red_led_small`, or any other V2 id |
+| A13 | UTF-8 | `V-S09` | the file decodes as UTF-8; `°` appears literally, not as `°`, `gr C`, or mojibake |
+| A14 | No trailing prose | — | the output is one JSON object, nothing before `{` or after `}`, no comments |
+
+> **A7 is stricter than the host.** The Designer parses geometry with `parseInt`,
+> so it accepts `"120px"` and truncates `"196.5"` to 196. This contract requires
+> plain integers anyway, because a value the host silently reinterprets is a value
+> the next reader will misread.
 
 ```bash
 python - <<'PY'
@@ -84,15 +139,23 @@ Checked against the source export. No rendering needed.
 | B9 | Bypass cluster | if present: all six objects at the §3 offsets from the anchor; the duct column continuous y 211…449 |
 | B10 | Cluster integrity | every cluster in §5 is complete — no fan without its airflow value, no coil without its temperatures |
 | B11 | Cluster offsets | each member's offset from its anchor matches §5 |
-| B12 | `con_top` boxes | top edge is at the duct's bottom edge |
-| B13 | `con_down` boxes | bottom edge is at the duct's top edge |
+| B12 | `con_top` boxes | top edge is at the **target's** bottom edge — the target is not always the duct (§6) |
+| B13 | `con_down` boxes | bottom edge is at the target's top edge |
 | B14 | Alarm count | one bell per guarded role, no duplicates, no decorative bells |
 | B15 | No panel content in the sidebar band | schematic objects end before x 1150 |
 | B16 | Sidebar objects on the sidebar | every sidebar object has `posLeft ≥ 1150` |
+| B17 | One position value per damper | each `KA` code appears on exactly one object; no stale duplicate left by a move |
+| B18 | Inlet damper family | matches the selected template — production flow dampers or recirculation dummies, not a mixture (§5.9a / §5.9b) |
 
 **B10 is the check that catches the most damage.** A cluster missing one member
 renders as an unlabelled fan or a coil with no temperature, which reads as a
 different unit rather than as a defect.
+
+**B14 is keyed on (parameter, component), not on the parameter alone.** A unit
+with two like components legitimately repeats an alias: production reference E3
+guards its extract and fresh-air dampers with two `Malf. damper` alarms 243 px
+apart. Two different dampers are two different roles. Only two bells on the *same*
+component are a duplicate.
 
 ---
 
@@ -104,6 +167,35 @@ different unit rather than as a defect.
 
 No scaling, no thumbnail. Scaled renders hide 1–3 px collisions, which is the size
 of most of the defects in this list.
+
+**Preferred: the Designer itself.** Import the panel and look at it. That is the
+only render that shows the real artwork, and nothing below replaces it.
+
+**Offline fallback: `render-ventilation-panel.py`.** When the host is not
+reachable — which is the normal case for an agent — this produces an HTML page
+with every object drawn as its exact box at its exact coordinates, coloured by
+z-index band, with the real tag text in the real font:
+
+```
+python render-ventilation-panel.py panel.json -o preview.html
+```
+
+Open it at a **1400×750 viewport at 100% zoom**, or the rendered extents mean
+nothing. Two limits, both deliberate:
+
+- **It cannot show artwork.** Sprites are served by the host and are not in this
+  repository, so C11 and any judgement about symbol orientation or shading still
+  need the real thing. Label anything produced this way as approximate.
+- **It cannot place connector text exactly.** A plain label draws its tag at its
+  own top-left and those glyph positions are exact. The `con_left`, `con_right`,
+  `con_top` and `con_down` families inset their text past a connector stub whose
+  width is recorded nowhere, so the script centres their text and draws it
+  **brown**. A collision between two black runs is a finding; one involving a
+  brown run is a question for the host, not a defect report. The `_tag_up_center`
+  family is handled exactly — the id states both the direction and the alignment.
+
+Guessing that inset would make the preview look authoritative while being wrong.
+Leave it approximate and flagged.
 
 ### C2. Zoomed crops
 
@@ -147,6 +239,7 @@ attached to the component it reports on.
 | `supply_pipe_vertical` ∩ `supply_connector_down` | 5 px | Same |
 | `dummy_resirc_damp_vert` ∩ the duct column | full duct width | The damper overlays a continuous duct |
 | `dummy_resirc_damp_hor` ∩ a horizontal run | full duct height | Same |
+| `V3_horis_damper_flow-left_nrm` / `-right_nrm` ∩ its inlet run | full duct height | The production flow damper overlays the run exactly as the dummy does (§5.9b) |
 | `con_top` / `con_down` / `con_left` / `con_right` value box ∩ its duct | connector edge only | The connector is drawn to touch |
 | Equipment body ∩ its duct run | body straddles the run | Coils and fans sit on the duct |
 | An LED ∩ its equipment body | LED fully inside | §9 of the geometry contract |
@@ -177,6 +270,19 @@ Production places `Avtrekk` at x 1341, exactly `1361 − 40/2`. `Tilluft` at the
 production x of 1276 is 1 px right of centre for a 32 px rendered width; the
 corrected value is **1275**.
 
+> **This check is advisory, and `V-P08` reports it as a warning — never an error.**
+> The 32 px and 40 px readings are supplied values that no image here verified, and
+> two independent checks contradict them: Arial advance widths at 11 px give 26 and
+> 37, and production renders `A-Alarm` / `B-Alarm` on a **45 px pitch** at x 1305
+> and 1350, byte-identical across E1, E2 and E4 on two different plants — which
+> caps `A-Alarm` near 41 px, while scaling the model up to fit `Tilluft` at 32
+> would make it 48 and put the pair in collision. Production renders that row on
+> two plants, so it is evidence and the estimate is not.
+>
+> **Do not re-space a production row to satisfy this check.** Measure the rendered
+> widths at native scale first; until then, a ±2 px miss is a note in your report,
+> not a correction to the panel. Contract §7.2 and §12.1-6 carry the open item.
+
 ### C8. Every `°C` renders
 
 Count the degree signs in the render and compare to the count in the JSON. A
@@ -189,9 +295,18 @@ mismatch means an encoding failure somewhere in the pipeline. Reference: 13 in t
 
 | LED | Parent | Pass condition |
 |---|---|---|
-| LV402 status | `number_v3_el_heater`, x 697…737, y 413…498 | LED 13×13 at (700, 466); fully inside; lower-left; does not cover the tag; ≥ 14 px clear of the `SB520 %` box at y 493 |
+| LV402 run status | `number_v3_el_heater`, x 697…737, y 413…498 | `V3_led_13px_circ_grey_green` 13×13 at **(703, 460)**, offset (+6, +47) from the heater anchor; fully inside; does not cover the tag; **≥ 20 px** clear of the `SB520 %` box at y 493 (`V-P05`) |
 | Aggregatstatus | its value pill | fully inside; does not cover the numeric value; visible right and vertical padding retained |
 | A/B alarm | — | production places these **beside** the switch, not inside it — do not "fix" them into it |
+
+**The superseded reading is (700, 466) with an unknown variant**, from the earlier
+`SCREENSHOT` scope. E4 closed it: the object is
+`V3_led_13px_circ_grey_green`, and its `alias_text` — "Status,-Electric heater run
+status" — is what makes grey→green for running evidenced rather than inferred. A
+panel still carrying (700, 466) is failing `V-P05`, not preserving history.
+
+**It is a status indicator, not an alarm.** Do not add a bell here to "complete"
+the cluster.
 
 ### C10. Sidebar rows do not collide
 
@@ -253,21 +368,36 @@ Expected output: nothing. Any hit is a D5 failure.
 
 ## Regression checklist — run before generating any new ventilation panel
 
-Nine questions. Answer all nine before emitting a single object.
+Twelve questions. Answer all twelve before emitting a single object. The
+procedure that acts on the answers is
+[VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md).
 
-1. **Which export am I cloning?** Name the file. If there is none, say so
+1. **Which of the four cases is this?** New demo · copy of a production layout ·
+   modification of a supplied export · background artwork (which is refused —
+   Ventilasjon has none). Say which, in the first line of the answer.
+2. **Which export am I cloning?** Name the file. If there is none, say so
    explicitly — the panel is then invented, and every coordinate needs a reason.
-2. **Have I retained an unmodified copy of it?** It is the restart point for a QA
+3. **Have I retained an unmodified copy of it?** It is the restart point for a QA
    failure.
-3. **Which rules here are `REF-9099` rather than `VENT`?** A reference-specific
-   coordinate copied onto a different unit is a defect, not fidelity.
-4. **Does this unit have a bypass leg?** If not, the entire x-411 column is
+4. **Is a named profile the template?** If yes, the run must use `--profile`, and
+   the `V-P*` rules apply. If no, say that the profile-scoped axes are unverified
+   rather than reporting a clean run.
+5. **Which rules here are `REF-9099` or `PROFILE-9099-ROTOR-DEMO` rather than
+   `VENT`?** A scoped coordinate copied onto a different unit is a defect, not
+   fidelity. `VENT` is the only tag that generalizes.
+6. **Does this unit have a bypass leg?** If not, the entire x-411 column is
    omitted — one of the three exports has no bypass at all.
-5. **Where is the third sidebar header in my source?** y 357 and y 400 both occur.
-6. **Am I emitting `°C` and not `gr C`?**
-7. **Am I using z bands and not `"default"`, with no mixture?**
-8. **Which overlaps in my panel are intentional?** List them before rendering. Any
-   overlap not on the C5 list is a defect.
-9. **Have I invented any instrument code, driver id, unit id or panel target?**
-   Codes come from the target plant's parameter inventory; positions come from the
-   reference. Never the reverse.
+7. **Where is the third sidebar header in my source?** y 357 and y 400 both occur.
+8. **How many sidebar value columns does each section need?** Two (x 1260 /
+   x 1330) when the row carries a supply and an extract value; one (x 1329) with
+   `number_v3_60px_dark_no_conn_no_tag` when the row label already names the
+   signal.
+9. **Am I emitting `°C` and not `gr C`?**
+10. **Am I using z bands and not `"default"`, with no mixture?**
+11. **Which overlaps in my panel are intentional?** List them before rendering. Any
+    overlap not on the C5 list is a defect.
+12. **Have I invented any instrument code, driver id, unit id, file path or panel
+    target?** Codes come from the target plant's parameter inventory; positions
+    come from the reference. Never the reverse. A gap you cannot close is recorded
+    in your report and in contract §12 — it is never filled with a plausible
+    number.

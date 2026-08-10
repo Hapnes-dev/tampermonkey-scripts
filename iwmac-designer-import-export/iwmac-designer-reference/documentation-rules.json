@@ -1,13 +1,18 @@
 {
-  "_note": "Machine-readable extract of the IWMAC Designer panel-generation rules. Hand-authored 2026-08-09 from the audit in DOCUMENTATION-AUDIT.md and the measurements in VENTILATION-GEOMETRY-CONTRACT.md. Prose documents remain authoritative; this file exists so a validator can check a generated panel without parsing Markdown. Every geometry value carries the evidence id it was measured from.",
-  "schema_version": 1,
-  "generated": "2026-08-09",
+  "_note": "Machine-readable extract of the IWMAC Designer panel-generation rules. Hand-authored 2026-08-09 from the audit in DOCUMENTATION-AUDIT.md and the measurements in VENTILATION-GEOMETRY-CONTRACT.md, extended 2026-08-10 with panel_types.list_panel measured from LIST-PANEL-GENERATION-CONTRACT.md; the profiles block was generated from the committed fixture so the contract and the fixture cannot drift apart. Prose documents remain authoritative; this file exists so a validator can check a generated panel without parsing Markdown. Every geometry value carries the evidence id it was measured from.",
+  "schema_version": 2,
+  "generated": "2026-08-10",
   "scope_tags": {
     "GLOBAL": "Applies to every panel type.",
     "VENT": "Applies to Ventilasjon panels only.",
     "REF-9099": "Measured from one production export of plant 9099 (or its committed masked twin). Reproduce it when cloning that panel; do not universalise it to another AHU without evidence.",
     "SCREENSHOT": "Derived from a rendered screenshot, not from JSON or source. Weaker than a measured export - it can be re-measured but has not been.",
-    "ADVISORY": "Judgement, not a measured or code-derived fact. May be overridden with a stated reason."
+    "ADVISORY": "Judgement, not a measured or code-derived fact. May be overridden with a stated reason.",
+    "PROFILE-9099-ROTOR-DEMO": "Geometry of the corrected 9099-style rotor AHU demo, measured from evidence E4 after native-scale visual review. Reproduce it when the task asks for that demo. It is a scoped profile, not a fact about every AHU: where it disagrees with REF-9099 production, both are recorded and the disagreement is deliberate.",
+    "LIST": "Applies to list panels (spjeldliste and any long tabular listing) only. Measured from two spjeldliste exports that agree; reproduce it when generating one.",
+    "TEMPLATE-SPECIFIC": "Measured from a single export and not independently confirmed. Reproduce it when cloning that template; do not universalise it.",
+    "MASKIN": "Applies to Maskin / machine-room panels. Confirmed on the plant-10229 AK-PC 782A CO2 booster export (E9/E10) and consistent with the fleet survey in PANEL-TYPE-GUIDE.md. A rule tagged MASKIN that rests on E9 alone says so in its own evidence list.",
+    "TEMPLATE-10229": "Geometry of one named Maskin template: the plant-10229 AK-PC 782A booster with 3 MT + 3 LT compressors, gas cooler, receiver and heat recovery, measured from E9 and committed sanitized as E10. Reproduce it when that template is the selected source. A different machine room legitimately differs - never promote a TEMPLATE-10229 coordinate to MASKIN without a second export."
   },
   "evidence": {
     "E1": {
@@ -16,7 +21,10 @@
       "why_not_committed": "Carries a live plant id and real driver ids; repo policy masks reference JSONs before commit.",
       "plant": "9099",
       "panel": "360.001 Ventilasjon",
-      "canvas": [1400, 750],
+      "canvas": [
+        1400,
+        750
+      ],
       "single_objects": 102,
       "distinct_obj_ids": 41,
       "containers": 0,
@@ -40,29 +48,220 @@
       "distinct_obj_ids": 39,
       "degree_tags": 8,
       "notes": "A different plant's 360.001. Adds z-index bands 20 and 300. Has NO bypass column at all, places the electric heater at (459,412) with tag LI401, puts the third sidebar header at y400, and duplicates sub_page_link_btn_* at identical coordinates. Proof that the bypass cluster and the y357 header are REF-9099, not VENT."
+    },
+    "E4": {
+      "file": "tests/fixtures/ventilation-9099-rotor-demo.json",
+      "committed": true,
+      "sanitized": true,
+      "plant": "",
+      "panel": "360.001 Ventilasjon",
+      "canvas": [
+        1400,
+        750
+      ],
+      "single_objects": 97,
+      "distinct_obj_ids": 43,
+      "containers": 0,
+      "graphics": 0,
+      "linked_objects": 0,
+      "degree_tags": 13,
+      "gr_c_tags": 0,
+      "role": "The corrected rotor demo, after render-and-review. Authoritative for PROFILE-9099-ROTOR-DEMO only. Every id and driver_id is the literal placeholder driver_id; no plant-prefixed driver id, unit id or live binding survives.",
+      "relation_to_E1_E2": "Same AHU family. Keeps the E2 fan and supply-filter positions, and deliberately departs from both E1 and E2 on the inlet dampers, the KA connector direction, the outdoor temperature block, the pump variant, the LED and five alarm coordinates. Each departure is listed in profiles.PROFILE-9099-ROTOR-DEMO and in documentation-change-log.md."
+    },
+    "E5": {
+      "file": "C:/Users/Thomas/Downloads/iwmac-panel_5295_360-001-spjeldliste_ny.json",
+      "committed": false,
+      "why_not_committed": "Carries a live plant id and real driver ids; repo policy masks reference JSONs before commit.",
+      "plant": "5295",
+      "panel": "360.001 spjeldliste ny",
+      "canvas": [
+        "1400px",
+        "750px"
+      ],
+      "single_objects": 55,
+      "containers": 25,
+      "graphics": 0,
+      "generator": "IWMAC Designer Helper",
+      "saved_by": "copilot",
+      "background_embedded": true,
+      "rows": 25,
+      "groups": 2,
+      "linked_container_items": 126,
+      "notes": "Agent-authored in Insert format (saved_by \"copilot\", generator \"IWMAC Designer Helper\", not the userscript's own \"IWDIE\"). Precedence rank 1 as the export supplied with the task, but weaker than E6 as production evidence. Where E5 and E6 agree, the fact is LIST; where only E5 shows it, TEMPLATE-SPECIFIC.",
+      "substitution_disclosure": "The task named iwmac-panel_5295_360-001-spjeldliste_20260810-0852.json, which does not exist anywhere under C:/Users/Thomas. This file is the same plant, the same panel and exported_at 06:52:20.942Z on the same day. The brief asks for 'any user-supplied production spjeldliste export, especially <that name>', so the stop condition is not triggered."
+    },
+    "E6": {
+      "file": "reference_data/real-spjeldliste-example.json",
+      "committed": true,
+      "plant": "NNNNN",
+      "panel": "360.004 spjeldliste",
+      "canvas": [
+        "1400px",
+        "750px"
+      ],
+      "single_objects": 383,
+      "containers": 208,
+      "graphics": 0,
+      "generator": "IWDIE v1.2.0",
+      "saved_by": "user",
+      "background_embedded": false,
+      "rows": 208,
+      "groups": 21,
+      "linked_container_items": 420,
+      "wrapper": "Committed as {_note, envelope:{...}}. A reader must unwrap: env = doc.get('envelope', doc).",
+      "notes": "The normative list-panel template. Its _note wrapper states the banner zIndex is \"155\"; the envelope says \"5\" (conflict L-1). The envelope is authoritative."
+    },
+    "E7": {
+      "file": "C:/Users/Thomas/Downloads/Spjeld liste med sjaktspjeld 06.02.26_with_driver_id_no.xlsx",
+      "committed": false,
+      "why_not_committed": "Customer data.",
+      "kind": "source workbook",
+      "sheet": "Sheet1",
+      "data_rows": 1104,
+      "columns": 26,
+      "notes": "28 rows carry System nr. == 360.001 - the source table behind E5. Its *_driver_id_no columns appear nowhere in E5's driver ids, so they are not the binding key."
+    },
+    "E8": {
+      "file": "C:/Users/Thomas/Downloads/Spjeldliste_360.001_companion.json",
+      "committed": false,
+      "kind": "negative example",
+      "size_bytes": 1048,
+      "format": "iwmac-designer-task-companion",
+      "notes": "A worked instance of the output-discipline anti-pattern: a task-companion wrapper returned instead of a Designer panel. The importer cannot read it. Retained as evidence for LIST-PANEL-GENERATION-CONTRACT.md section 15."
+    },
+    "E9": {
+      "file": "iwmac-panel_10229_maskin_20260810-1033.json (user Downloads, plant 10229, NOT committed)",
+      "committed": false,
+      "sanitized": false,
+      "panel": "Maskin",
+      "generator": "IWDIE v1.7.0",
+      "role": "The production export supplied with the 2026-08-10 Maskin documentation task. Highest-precedence source for Maskin geometry, object vocabulary, z-indexes, ordering, background fields, aliases and role coverage. Carries live plant bindings and is therefore not committed."
+    },
+    "E10": {
+      "file": "reference_data/maskin-10229-sanitized.json",
+      "committed": true,
+      "sanitized": true,
+      "plant": "",
+      "panel": "Maskin",
+      "role": "E9 with its bindings replaced by the unlinked-demo contract and nothing else touched. Produced by build-maskin-fixture.py. Authoritative for TEMPLATE-10229 geometry; a demo, not a production export, for bindings.",
+      "derived_from": "E9",
+      "dropped": [
+        "panel.image_svg_trace"
+      ]
+    },
+    "E11": {
+      "file": "reference_data/generated-maskin-example.json",
+      "committed": true,
+      "sanitized": true,
+      "panel": "Maskin",
+      "role": "An AUTHORED demo: 63 objects on an AI-authored image_svg background, insert-verified, aliases taken from E12. Its coordinates were composed, not measured, and its zIndex is \"default\" throughout. Valid as a worked example of the unlinked-demo contract and of image_svg authoring. NOT a geometry source: where it disagrees with E9/E10, E9/E10 win."
+    },
+    "E12": {
+      "file": "reference_data/maskin-akpc-link-map.json",
+      "committed": true,
+      "role": "Alias to Danfoss AK-PC parameter map, 64/64 exact alias matches on a masked production panel, plus the relink recipe and the driver-id anatomy. This is why alias_text survives sanitization."
+    },
+    "E13": {
+      "file": "tests/fixtures/maskin-compressor-bank/",
+      "committed": true,
+      "sanitized": true,
+      "role": "Miniature 96x64 instrumented fixture for the compressor-bank editing procedure: source panel, edited full panel, background-only patch and expectations. Its marker colours, canvas and (+24,0) pitch are test instrumentation, never production geometry."
     }
   },
   "source_precedence": [
-    {"rank": 1, "source": "A panel JSON or screenshot supplied with the current task"},
-    {"rank": 2, "source": "A real production export of the same panel type"},
-    {"rank": 3, "source": "VENTILATION-GEOMETRY-CONTRACT.md (measured geometry)"},
-    {"rank": 4, "source": "Panel-specific rules in iwmac-designer-reference/CLAUDE.md"},
-    {"rank": 5, "source": "AI-BRIEFING.txt"},
-    {"rank": 6, "source": "PANEL-TYPE-GUIDE.md"},
-    {"rank": 7, "source": "DESIGN-OBJECT-CATALOG.md"},
-    {"rank": 8, "source": "Generic visual-design advice"},
-    {"rule": "Never average conflicting coordinates. Take the value from the highest-ranked source that has one."}
+    {
+      "rank": 1,
+      "source": "A panel JSON or screenshot supplied with the current task"
+    },
+    {
+      "rank": 2,
+      "source": "A production export of the same panel and system type"
+    },
+    {
+      "rank": 3,
+      "source": "The measured geometry contract for the panel type, scope-tagged: VENTILATION-GEOMETRY-CONTRACT.md for vent panels, LIST-PANEL-GENERATION-CONTRACT.md for list panels, MASKIN-GENERATION-CONTRACT.md for Maskin panels"
+    },
+    {
+      "rank": 4,
+      "source": "Panel-specific rules in iwmac-designer-reference/CLAUDE.md"
+    },
+    {
+      "rank": 5,
+      "source": "AI-BRIEFING.txt (its accepted revision is applied in place; AI-BRIEFING-REVISED.txt is a record, not a second contract)"
+    },
+    {
+      "rank": 6,
+      "source": "PANEL-TYPE-GUIDE.md"
+    },
+    {
+      "rank": 7,
+      "source": "DESIGN-OBJECT-CATALOG.md"
+    },
+    {
+      "rank": 8,
+      "source": "Generic visual-design advice"
+    },
+    {
+      "rule": "Never average conflicting coordinates. Take the value from the highest-ranked source that has one."
+    },
+    {
+      "rule": "When no source at any rank has the value, mark the gap and stop. Do not invent a coordinate, obj_id, driver id, unit id, parameter alias, file path or navigation target."
+    },
+    {
+      "rule": "A scoped profile under profiles.* sits at rank 3 alongside the geometry contract and applies only inside its own scope. It never overrides a supplied export or a production export of the same panel."
+    }
   ],
   "global_invariants": {
     "envelope": {
       "format": "iwmac-designer-panel",
       "version": 1,
-      "required_top_level": ["format", "version", "generator", "source_plant_id", "panel_name", "panel_width", "panel_height", "counts", "background_embedded", "panel"],
-      "required_panel": ["plant_id", "panel_name", "panel_width", "panel_height", "org_image_name", "image_name", "saved_by", "single_objects", "containers", "graphics"],
+      "required_top_level": [
+        "format",
+        "version",
+        "generator",
+        "source_plant_id",
+        "panel_name",
+        "panel_width",
+        "panel_height",
+        "counts",
+        "background_embedded",
+        "panel"
+      ],
+      "required_panel": [
+        "plant_id",
+        "panel_name",
+        "panel_width",
+        "panel_height",
+        "org_image_name",
+        "image_name",
+        "saved_by",
+        "single_objects",
+        "containers",
+        "graphics"
+      ],
       "note": "Committed reference JSONs in this repo wrap the same document as {_note, envelope:{...}}. A live userscript export is flat. A reader must accept both: env = doc.get('envelope', doc)."
     },
     "counts_must_equal_array_lengths": true,
-    "object_fields": ["obj_id", "name", "id", "posWidth", "posHeight", "posLeft", "posTop", "zIndex", "tag_text", "linked", "link_name", "link_tag", "sub_group", "driver_id", "unit_id", "unit_ref", "alias_text"],
+    "object_fields": [
+      "obj_id",
+      "name",
+      "id",
+      "posWidth",
+      "posHeight",
+      "posLeft",
+      "posTop",
+      "zIndex",
+      "tag_text",
+      "linked",
+      "link_name",
+      "link_tag",
+      "sub_group",
+      "driver_id",
+      "unit_id",
+      "unit_ref",
+      "alias_text"
+    ],
     "object_field_count": 17,
     "naming": {
       "pattern": "object_<n>",
@@ -74,14 +273,18 @@
     "obj_id_rule": {
       "must_exist_in": "reference_data/all-design-objects.json",
       "spelling": "verbatim - do not normalise capitalisation or 'correct' historic spelling",
-      "examples_that_look_wrong_and_are_not": ["numberV3_filter_with_diff_press", "numberV3_outside_temp", "number_v3_cooler_2-way"],
+      "examples_that_look_wrong_and_are_not": [
+        "numberV3_filter_with_diff_press",
+        "numberV3_outside_temp",
+        "number_v3_cooler_2-way"
+      ],
       "on_violation": "An id with no palette entry renders as a broken undefined-class box."
     },
     "encoding": {
       "output": "UTF-8",
-      "degree_symbol": "\u00b0C",
+      "degree_symbol": "°C",
       "forbidden": "gr C",
-      "evidence": "Insert JSON reads files as UTF-8; production exports carry 13 (E1/E2) and 8 (E3) degree tags and zero 'gr C'; DESIGN-OBJECT-CATALOG.md itself prints RT401 \u00b0C.",
+      "evidence": "Insert JSON reads files as UTF-8; production exports carry 13 (E1/E2) and 8 (E3) degree tags and zero 'gr C'; DESIGN-OBJECT-CATALOG.md itself prints RT401 °C.",
       "note": "The mojibake risk lives in other transports (terminal paste, the ISO-8859-1 page, old mail). Fix the transport; do not degrade the panel text.",
       "scope": "GLOBAL"
     },
@@ -97,13 +300,33 @@
       "alias_text": "PRESERVE - it is what a human links by afterwards",
       "source_plant_id": "",
       "panel.plant_id": "",
-      "prohibition": "Never invent a driver id, unit id, parameter id, file path or panel target. An invented id looks linked and is not."
+      "prohibition": "Never invent a driver id, unit id, parameter id, file path or panel target. An invented id looks linked and is not.",
+      "scope_exception": "List panels do NOT follow this contract. Production list panels carry linked \"true\", link_name \"link_name\" and driver_id \"\" on every object. See panel_types.list_panel.bindings, which overrides this block for that panel type, and preserves the same safety guarantee through a different invariant."
     },
     "quality_metric": {
       "object_count_is_not_a_target": true,
       "target": "coverage of the production roles present in the reference",
       "scope": "GLOBAL"
-    }
+    },
+    "container_fields": [
+      "id",
+      "unique_id",
+      "name",
+      "type",
+      "container_type",
+      "className",
+      "header_footer",
+      "linked",
+      "linked_to",
+      "width",
+      "height",
+      "left",
+      "top",
+      "zIndex",
+      "items",
+      "title"
+    ],
+    "container_field_count": 16
   },
   "panel_types": {
     "ventilation": {
@@ -112,7 +335,11 @@
         "width": 1400,
         "height": 750,
         "scope": "VENT",
-        "evidence": ["E1", "E2", "E3"],
+        "evidence": [
+          "E1",
+          "E2",
+          "E3"
+        ],
         "override": "Match the plant if a supplied export says otherwise. 1400x755 and 1280x1024 also exist in the fleet."
       },
       "background": {
@@ -134,32 +361,91 @@
         "room_endpoint": "right",
         "sidebar": "from x1150 to the canvas edge",
         "scope": "VENT",
-        "evidence": ["E1", "E2"]
+        "evidence": [
+          "E1",
+          "E2"
+        ]
       },
       "z_indexes": {
         "mode": "explicit bands OR the literal string \"default\" - never mixed in one panel",
         "bands": {
-          "5": {"role": "ducts, pipes, headers", "count_E1": 10},
-          "15": {"role": "dummy airflow arrows", "count_E1": 3},
-          "20": {"role": "sub-page navigation buttons", "count_E1": 0, "seen_in": ["E3"]},
-          "40": {"role": "equipment bodies", "count_E1": 7},
-          "110": {"role": "value, setpoint and json boxes", "count_E1": 47},
-          "300": {"role": "seen only in E3", "count_E1": 0, "seen_in": ["E3"]},
-          "375": {"role": "alarms, LEDs, pumps, valves", "count_E1": 12},
-          "1100": {"role": "labels", "count_E1": 23}
+          "5": {
+            "role": "ducts, pipes, headers",
+            "count_E1": 10
+          },
+          "15": {
+            "role": "dummy airflow arrows",
+            "count_E1": 3
+          },
+          "20": {
+            "role": "sub-page navigation buttons",
+            "count_E1": 0,
+            "seen_in": [
+              "E3"
+            ]
+          },
+          "40": {
+            "role": "equipment bodies",
+            "count_E1": 7
+          },
+          "110": {
+            "role": "value, setpoint and json boxes",
+            "count_E1": 47
+          },
+          "300": {
+            "role": "seen only in E3",
+            "count_E1": 0,
+            "seen_in": [
+              "E3"
+            ]
+          },
+          "375": {
+            "role": "alarms, LEDs, pumps, valves",
+            "count_E1": 12
+          },
+          "1100": {
+            "role": "labels",
+            "count_E1": 23
+          }
         },
         "default_mode_note": "Emitting \"default\" everywhere is legal, but then array order IS stacking order: ducts first, labels last.",
         "importer_behaviour": "The importer writes zIndex through verbatim; it substitutes \"default\" only when the field is missing.",
         "scope": "VENT",
-        "evidence": ["E1", "E3"]
+        "evidence": [
+          "E1",
+          "E3"
+        ]
       },
       "duct_runs": {
         "scope": "REF-9099",
-        "evidence": ["E1"],
+        "evidence": [
+          "E1"
+        ],
         "objects": [
-          {"role": "extract run", "obj_id": "number_v3_exhaust_pipe_horisontal", "posLeft": 24, "posTop": 200, "posWidth": 1025, "posHeight": 18},
-          {"role": "fresh-air run", "obj_id": "number_v3_fresh_pipe_horisontal", "posLeft": 24, "posTop": 442, "posWidth": 260, "posHeight": 18},
-          {"role": "supply run", "obj_id": "number_v3_supply_pipe_horisontal", "posLeft": 337, "posTop": 442, "posWidth": 710, "posHeight": 18}
+          {
+            "role": "extract run",
+            "obj_id": "number_v3_exhaust_pipe_horisontal",
+            "posLeft": 24,
+            "posTop": 200,
+            "posWidth": 1025,
+            "posHeight": 18
+          },
+          {
+            "role": "fresh-air run",
+            "obj_id": "number_v3_fresh_pipe_horisontal",
+            "posLeft": 24,
+            "posTop": 442,
+            "posWidth": 260,
+            "posHeight": 18
+          },
+          {
+            "role": "supply run",
+            "obj_id": "number_v3_supply_pipe_horisontal",
+            "posLeft": 337,
+            "posTop": 442,
+            "posWidth": 710,
+            "posHeight": 18
+          }
         ],
         "connector_rule": {
           "con_down": "value box sits ABOVE the run it reads",
@@ -172,158 +458,525 @@
         "principle": "Every major component is atomic. Move a cluster with ONE translation vector applied to every member. Never leave an alarm, an output or a temperature behind.",
         "offset_convention": "[dx, dy] from the component's own posLeft/posTop.",
         "scope": "REF-9099",
-        "evidence": ["E1"],
+        "evidence": [
+          "E1"
+        ],
         "items": {
           "bypass": {
             "atomic": true,
-            "anchor": [411, 211],
+            "anchor": [
+              411,
+              211
+            ],
             "note": "REF-9099 only. E3 has no bypass column at all - a unit with no recirculation leg omits the whole cluster.",
             "members": [
-              {"obj_id": "number_v3_exhaust_connector_up", "posLeft": 411, "posTop": 211, "posWidth": 18, "posHeight": 50, "offset": [0, 0]},
-              {"obj_id": "number_v3_exhaust_pipe_vertical", "posLeft": 411, "posTop": 254, "posWidth": 18, "posHeight": 75, "offset": [0, 43]},
-              {"obj_id": "number_v3_supply_pipe_vertical", "posLeft": 411, "posTop": 329, "posWidth": 18, "posHeight": 75, "offset": [0, 118]},
-              {"obj_id": "number_v3_supply_connector_down", "posLeft": 411, "posTop": 399, "posWidth": 18, "posHeight": 50, "offset": [0, 188]},
-              {"obj_id": "number_v3_dummy_resirc_damp_vert", "posLeft": 407, "posTop": 310, "posWidth": 40, "posHeight": 40, "offset": [-4, 99]},
-              {"role": "KA502 value", "posLeft": 429, "posTop": 317, "posWidth": 62, "posHeight": 22, "offset": [18, 106]}
+              {
+                "obj_id": "number_v3_exhaust_connector_up",
+                "posLeft": 411,
+                "posTop": 211,
+                "posWidth": 18,
+                "posHeight": 50,
+                "offset": [
+                  0,
+                  0
+                ]
+              },
+              {
+                "obj_id": "number_v3_exhaust_pipe_vertical",
+                "posLeft": 411,
+                "posTop": 254,
+                "posWidth": 18,
+                "posHeight": 75,
+                "offset": [
+                  0,
+                  43
+                ]
+              },
+              {
+                "obj_id": "number_v3_supply_pipe_vertical",
+                "posLeft": 411,
+                "posTop": 329,
+                "posWidth": 18,
+                "posHeight": 75,
+                "offset": [
+                  0,
+                  118
+                ]
+              },
+              {
+                "obj_id": "number_v3_supply_connector_down",
+                "posLeft": 411,
+                "posTop": 399,
+                "posWidth": 18,
+                "posHeight": 50,
+                "offset": [
+                  0,
+                  188
+                ]
+              },
+              {
+                "obj_id": "number_v3_dummy_resirc_damp_vert",
+                "posLeft": 407,
+                "posTop": 310,
+                "posWidth": 40,
+                "posHeight": 40,
+                "offset": [
+                  -4,
+                  99
+                ]
+              },
+              {
+                "role": "KA502 value",
+                "posLeft": 429,
+                "posTop": 317,
+                "posWidth": 62,
+                "posHeight": 22,
+                "offset": [
+                  18,
+                  106
+                ]
+              }
             ],
             "column_continuous_from_y": 211,
             "column_continuous_to_y": 449,
             "intentional_overlaps": [
-              {"pair": "exhaust_connector_up / exhaust_pipe_vertical", "px": 7},
-              {"pair": "supply_pipe_vertical / supply_connector_down", "px": 5},
-              {"pair": "dummy_resirc_damp_vert over the duct column", "px": 40, "rule": "The damper OVERLAYS a continuous duct column. NEVER shorten the vertical duct to make space for the damper."}
+              {
+                "pair": "exhaust_connector_up / exhaust_pipe_vertical",
+                "px": 7
+              },
+              {
+                "pair": "supply_pipe_vertical / supply_connector_down",
+                "px": 5
+              },
+              {
+                "pair": "dummy_resirc_damp_vert over the duct column",
+                "px": 40,
+                "rule": "The damper OVERLAYS a continuous duct column. NEVER shorten the vertical duct to make space for the damper."
+              }
             ]
           },
           "heat_recovery": {
             "atomic": true,
             "obj_id": "number_360_vg_rot",
-            "posLeft": 282, "posTop": 149, "posWidth": 60, "posHeight": 343,
+            "posLeft": 282,
+            "posTop": 149,
+            "posWidth": 60,
+            "posHeight": 343,
             "members": [
-              {"role": "alarm", "offset": [12, 160]},
-              {"role": "LX001 output %", "offset": [6, 335]},
-              {"role": "Virk.gr efficiency", "offset": [6, 388]},
-              {"role": "RT402 temperature", "offset": [75, 268]}
+              {
+                "role": "alarm",
+                "offset": [
+                  12,
+                  160
+                ]
+              },
+              {
+                "role": "LX001 output %",
+                "offset": [
+                  6,
+                  335
+                ]
+              },
+              {
+                "role": "Virk.gr efficiency",
+                "offset": [
+                  6,
+                  388
+                ]
+              },
+              {
+                "role": "RT402 temperature",
+                "offset": [
+                  75,
+                  268
+                ]
+              }
             ],
             "note": "Frost-protection value where the unit has one. No duplicate decorative label - the rotor object carries its own tag."
           },
           "extract_fan": {
             "atomic": true,
             "obj_id": "V3_58px_fan_left_nrm",
-            "posLeft": 187, "posTop": 179, "posWidth": 59, "posHeight": 59,
+            "posLeft": 187,
+            "posTop": 179,
+            "posWidth": 59,
+            "posHeight": 59,
             "E2_posLeft": 152,
             "members": [
-              {"role": "airflow value", "offset": [-2, -39]},
-              {"role": "motor output value", "offset": [6, 57]},
-              {"role": "alarm", "offset": [12, -19], "E2_offset": [45, -19]}
+              {
+                "role": "airflow value",
+                "offset": [
+                  -2,
+                  -39
+                ]
+              },
+              {
+                "role": "motor output value",
+                "offset": [
+                  6,
+                  57
+                ]
+              },
+              {
+                "role": "alarm",
+                "offset": [
+                  12,
+                  -19
+                ],
+                "E2_offset": [
+                  45,
+                  -19
+                ]
+              }
             ]
           },
           "supply_fan": {
             "atomic": true,
             "obj_id": "V3_58px_fan_right_nrm",
-            "posLeft": 795, "posTop": 421, "posWidth": 59, "posHeight": 59,
+            "posLeft": 795,
+            "posTop": 421,
+            "posWidth": 59,
+            "posHeight": 59,
             "members": [
-              {"role": "airflow value", "offset": [-2, -40]},
-              {"role": "motor output value", "offset": [5, 55]},
-              {"role": "alarm", "offset": [48, -18]}
+              {
+                "role": "airflow value",
+                "offset": [
+                  -2,
+                  -40
+                ]
+              },
+              {
+                "role": "motor output value",
+                "offset": [
+                  5,
+                  55
+                ]
+              },
+              {
+                "role": "alarm",
+                "offset": [
+                  48,
+                  -18
+                ]
+              }
             ]
           },
           "extract_filter": {
             "atomic": true,
             "obj_id": "numberV3_filter_with_diff_press",
-            "posLeft": 466, "posTop": 154,
-            "members": [{"role": "alarm", "offset": [61, -46]}]
+            "posLeft": 466,
+            "posTop": 154,
+            "members": [
+              {
+                "role": "alarm",
+                "offset": [
+                  61,
+                  -46
+                ]
+              }
+            ]
           },
           "supply_filter": {
             "atomic": true,
             "obj_id": "numberV3_filter_with_diff_press",
-            "posLeft": 171, "posTop": 397,
+            "posLeft": 171,
+            "posTop": 397,
             "E2_posLeft": 189,
-            "members": [{"role": "alarm", "offset": [28, -45], "E2_offset": [8, -45]}]
+            "members": [
+              {
+                "role": "alarm",
+                "offset": [
+                  28,
+                  -45
+                ],
+                "E2_offset": [
+                  8,
+                  -45
+                ]
+              }
+            ]
           },
           "cooler": {
             "atomic": true,
             "obj_id": "number_v3_cooler_2-way",
-            "posLeft": 456, "posTop": 409, "posWidth": 38, "posHeight": 132,
+            "posLeft": 456,
+            "posTop": 409,
+            "posWidth": 38,
+            "posHeight": 132,
             "members": [
-              {"role": "alarm", "offset": [1, -30]},
-              {"role": "caption", "offset": [8, 3]},
-              {"role": "RT510", "offset": [-48, 83]},
-              {"role": "RT410", "offset": [29, 85]},
-              {"role": "SB520", "offset": [-4, 123]}
+              {
+                "role": "alarm",
+                "offset": [
+                  1,
+                  -30
+                ]
+              },
+              {
+                "role": "caption",
+                "offset": [
+                  8,
+                  3
+                ]
+              },
+              {
+                "role": "RT510",
+                "offset": [
+                  -48,
+                  83
+                ]
+              },
+              {
+                "role": "RT410",
+                "offset": [
+                  29,
+                  85
+                ]
+              },
+              {
+                "role": "SB520",
+                "offset": [
+                  -4,
+                  123
+                ]
+              }
             ],
             "warning": "E1 and E2 swap RT4xx and RT5xx on the same coils. Copy POSITIONS from the reference and instrument CODES from the target plant."
           },
           "heating_coil": {
             "atomic": true,
             "obj_id": "number_v3_heater_3_way",
-            "posLeft": 583, "posTop": 413, "posWidth": 40, "posHeight": 210,
+            "posLeft": 583,
+            "posTop": 413,
+            "posWidth": 40,
+            "posHeight": 210,
             "members": [
-              {"role": "alarm", "offset": [-22, -36]},
-              {"role": "RT520", "offset": [-47, 111]},
-              {"role": "RT420", "offset": [26, 84]},
-              {"role": "SB510", "offset": [37, 157]},
-              {"role": "circulation pump", "offset": [18, 114]},
-              {"role": "3-way valve", "offset": [19, 159]}
+              {
+                "role": "alarm",
+                "offset": [
+                  -22,
+                  -36
+                ]
+              },
+              {
+                "role": "RT520",
+                "offset": [
+                  -47,
+                  111
+                ]
+              },
+              {
+                "role": "RT420",
+                "offset": [
+                  26,
+                  84
+                ]
+              },
+              {
+                "role": "SB510",
+                "offset": [
+                  37,
+                  157
+                ]
+              },
+              {
+                "role": "circulation pump",
+                "offset": [
+                  18,
+                  114
+                ]
+              },
+              {
+                "role": "3-way valve",
+                "offset": [
+                  19,
+                  159
+                ]
+              }
             ]
           },
           "electric_heater": {
             "atomic": true,
             "obj_id": "number_v3_el_heater",
-            "posLeft": 697, "posTop": 413, "posWidth": 40, "posHeight": 85,
+            "posLeft": 697,
+            "posTop": 413,
+            "posWidth": 40,
+            "posHeight": 85,
             "E2_posLeft": 693,
-            "members": [{"role": "SB520 output value", "offset": [-3, 80]}],
+            "members": [
+              {
+                "role": "SB520 output value",
+                "offset": [
+                  -3,
+                  80
+                ]
+              }
+            ],
             "note": "E3 places its electric heater at (459,412) with tag LI401 - a different unit, not a correction."
           },
           "room_endpoint": {
             "atomic": true,
             "obj_id": "number_360_room",
-            "posLeft": 1044, "posTop": 159, "posWidth": 100, "posHeight": 339,
+            "posLeft": 1044,
+            "posTop": 159,
+            "posWidth": 100,
+            "posHeight": 339,
             "members": [
-              {"role": "RP501", "offset": [20, 117]},
-              {"role": "CO2 box", "offset": [27, 131]},
-              {"role": "RT600", "offset": [26, 158]},
-              {"role": "temperature box", "offset": [27, 172]}
+              {
+                "role": "RP501",
+                "offset": [
+                  20,
+                  117
+                ]
+              },
+              {
+                "role": "CO2 box",
+                "offset": [
+                  27,
+                  131
+                ]
+              },
+              {
+                "role": "RT600",
+                "offset": [
+                  26,
+                  158
+                ]
+              },
+              {
+                "role": "temperature box",
+                "offset": [
+                  27,
+                  172
+                ]
+              }
             ]
           }
         }
       },
       "sidebar": {
         "scope": "REF-9099",
-        "evidence": ["E1", "E2"],
+        "evidence": [
+          "E1",
+          "E2"
+        ],
         "identical_across_E1_E2": true,
         "object_count": 36,
         "starts_at_x": 1150,
         "sections": [
-          {"caption": "Status og vendere", "obj_id": "number_v3_header_grey75", "posLeft": 1150, "posTop": 0, "posWidth": 250, "posHeight": 20},
-          {"caption": "Vifteregulering", "obj_id": "number_v3_header_grey75", "posLeft": 1150, "posTop": 165, "posWidth": 250, "posHeight": 20},
-          {"caption": "Temperaturregulering", "obj_id": "number_v3_header_grey75", "posLeft": 1150, "posTop": 357, "posWidth": 250, "posHeight": 20, "note": "E3 places this header at y400."}
+          {
+            "caption": "Status og vendere",
+            "obj_id": "number_v3_header_grey75",
+            "posLeft": 1150,
+            "posTop": 0,
+            "posWidth": 250,
+            "posHeight": 20
+          },
+          {
+            "caption": "Vifteregulering",
+            "obj_id": "number_v3_header_grey75",
+            "posLeft": 1150,
+            "posTop": 165,
+            "posWidth": 250,
+            "posHeight": 20
+          },
+          {
+            "caption": "Temperaturregulering",
+            "obj_id": "number_v3_header_grey75",
+            "posLeft": 1150,
+            "posTop": 357,
+            "posWidth": 250,
+            "posHeight": 20,
+            "note": "E3 places this header at y400."
+          }
         ],
         "header_size_note": "250x20 in every vent reference. The palette default for number_v3_header_grey75 is 60x25; AI-AGENT-INSTRUCTIONS previously said 260x20 in one place and 250x20 in another. 250x20 is the measured value.",
         "label_column_x": 1160,
         "label_baseline_offset_from_value": 5,
         "columns": {
-          "supply": {"caption": "Tilluft", "value_posLeft": 1260, "value_posWidth": 62, "centre": 1291},
-          "extract": {"caption": "Avtrekk", "value_posLeft": 1330, "value_posWidth": 62, "centre": 1361}
+          "supply": {
+            "caption": "Tilluft",
+            "value_posLeft": 1260,
+            "value_posWidth": 62,
+            "centre": 1291
+          },
+          "extract": {
+            "caption": "Avtrekk",
+            "value_posLeft": 1330,
+            "value_posWidth": 62,
+            "centre": 1361
+          }
         },
         "column_headings": {
           "obj_id": "number_v3_label_11px_norm",
           "production_geometry": [
-            {"text": "Tilluft", "posLeft": 1276, "posTop": 190, "posWidth": 50, "posHeight": 20},
-            {"text": "Avtrekk", "posLeft": 1341, "posTop": 190, "posWidth": 50, "posHeight": 20}
+            {
+              "text": "Tilluft",
+              "posLeft": 1276,
+              "posTop": 190,
+              "posWidth": 50,
+              "posHeight": 20
+            },
+            {
+              "text": "Avtrekk",
+              "posLeft": 1341,
+              "posTop": 190,
+              "posWidth": 50,
+              "posHeight": 20
+            }
           ],
           "corrected_geometry": [
-            {"text": "Tilluft", "posLeft": 1275, "posTop": 190, "rendered_width": 32, "centre": 1291},
-            {"text": "Avtrekk", "posLeft": 1341, "posTop": 190, "rendered_width": 40, "centre": 1361}
+            {
+              "text": "Tilluft",
+              "posLeft": 1275,
+              "posTop": 190,
+              "rendered_width": 32,
+              "centre": 1291
+            },
+            {
+              "text": "Avtrekk",
+              "posLeft": 1341,
+              "posTop": 190,
+              "rendered_width": 40,
+              "centre": 1361
+            }
           ],
           "why": "number_v3_label_11px_norm renders LEFT-ALIGNED from posLeft. posWidth does not centre the text, so equal posWidth values do NOT imply visually centred text.",
           "formula": "posLeft = C - W/2, where C is the column centre and W is the RENDERED text width",
           "scope": "SCREENSHOT"
         },
         "rows": {
-          "fan_block": {"x_supply": 1260, "x_extract": 1330, "y": [205, 230, 255], "extra": [{"x": 1330, "y": 279}, {"x": 1332, "y": 308}]},
-          "temperature_block": {"x": 1329, "y": [385, 410, 435]},
+          "fan_block": {
+            "x_supply": 1260,
+            "x_extract": 1330,
+            "y": [
+              205,
+              230,
+              255
+            ],
+            "extra": [
+              {
+                "x": 1330,
+                "y": 279
+              },
+              {
+                "x": 1332,
+                "y": 308
+              }
+            ]
+          },
+          "temperature_block": {
+            "x": 1329,
+            "y": [
+              385,
+              410,
+              435
+            ]
+          },
           "pitch": 25,
-          "value_size": [62, 22]
+          "value_size": [
+            62,
+            22
+          ]
         },
         "spacing": {
           "box_to_box_vertical_gap": 3,
@@ -332,8 +985,14 @@
           "scope": "REF-9099"
         },
         "leds": {
-          "objects": ["V3_led_16px_circ_grey_red", "V3_led_16px_circ_grey_yellow"],
-          "posLeft": [1317, 1362],
+          "objects": [
+            "V3_led_16px_circ_grey_red",
+            "V3_led_16px_circ_grey_yellow"
+          ],
+          "posLeft": [
+            1317,
+            1362
+          ],
           "posTop": 75
         }
       },
@@ -347,22 +1006,50 @@
           {
             "target": "LV402 status LED",
             "rule": "Lower-left interior of the LV402 body. Not centred over the tag, not outside the body, not overlapping the output value below.",
-            "body_bounds": {"x0": 697, "x1": 737, "y0": 413, "y1": 498},
-            "led": {"posLeft": 700, "posTop": 466, "posWidth": 13, "posHeight": 13}
+            "body_bounds": {
+              "x0": 697,
+              "x1": 737,
+              "y0": 413,
+              "y1": 498
+            },
+            "led": {
+              "posLeft": 700,
+              "posTop": 466,
+              "posWidth": 13,
+              "posHeight": 13
+            }
           }
         ],
         "containment_test": "led.x0 >= body.x0 AND led.y0 >= body.y0 AND led.x1 <= body.x1 AND led.y1 <= body.y1"
       },
       "text_rules": {
         "value_ownership": [
-          {"rule": "No standalone label when the equipment object already renders its own tag.", "scope": "VENT"},
-          {"rule": "No second caption when a value object renders tag_text.", "scope": "VENT"},
-          {"rule": "Signal description goes in alias_text.", "scope": "GLOBAL"},
-          {"rule": "Instrument code + unit goes in tag_text, and only on objects that render a tag.", "example": "RT401 \u00b0C, KA401 %", "scope": "GLOBAL"},
-          {"rule": "Use a no-tag value object when a row label already names the value.", "scope": "VENT"}
+          {
+            "rule": "No standalone label when the equipment object already renders its own tag.",
+            "scope": "VENT"
+          },
+          {
+            "rule": "No second caption when a value object renders tag_text.",
+            "scope": "VENT"
+          },
+          {
+            "rule": "Signal description goes in alias_text.",
+            "scope": "GLOBAL"
+          },
+          {
+            "rule": "Instrument code + unit goes in tag_text, and only on objects that render a tag.",
+            "example": "RT401 °C, KA401 %",
+            "scope": "GLOBAL"
+          },
+          {
+            "rule": "Use a no-tag value object when a row label already names the value.",
+            "scope": "VENT"
+          }
         ],
         "alignment": {
-          "left_aligned_objects": ["number_v3_label_11px_norm"],
+          "left_aligned_objects": [
+            "number_v3_label_11px_norm"
+          ],
           "rule": "Position left-aligned labels by rendered text width, not by box width.",
           "centring_formula": "posLeft = C - W/2",
           "tolerance_px": 2,
@@ -389,20 +1076,81 @@
         "scope": "VENT"
       },
       "required_roles": [
-        "extract fan", "supply fan", "supply filter", "extract filter",
-        "rotary heat recovery", "cooler", "heating coil", "electric heater",
-        "room/zone endpoint", "bypass damper (where the unit has a recirculation leg)"
+        "extract fan",
+        "supply fan",
+        "supply filter",
+        "extract filter",
+        "rotary heat recovery",
+        "cooler",
+        "heating coil",
+        "electric heater",
+        "room/zone endpoint",
+        "bypass damper (where the unit has a recirculation leg)"
       ],
       "qa": {
         "checklist_file": "VENTILATION-QA-CHECKLIST.md",
-        "stages": ["A structural", "B geometry", "C visual", "D linking/sanitization", "E import/save"],
+        "stages": [
+          "A structural",
+          "B geometry",
+          "C visual",
+          "D linking/sanitization",
+          "E import/save"
+        ],
         "render_crops": [
-          {"name": "bypass", "region": [380, 190, 520, 470]},
-          {"name": "heat recovery", "region": [260, 130, 500, 510]},
-          {"name": "lower equipment train", "region": [420, 380, 900, 620]},
-          {"name": "sidebar - Status og vendere", "region": [1150, 0, 1400, 165]},
-          {"name": "sidebar - Vifteregulering", "region": [1150, 165, 1400, 357]},
-          {"name": "sidebar - Temperaturregulering", "region": [1150, 357, 1400, 500]}
+          {
+            "name": "bypass",
+            "region": [
+              380,
+              190,
+              520,
+              470
+            ]
+          },
+          {
+            "name": "heat recovery",
+            "region": [
+              260,
+              130,
+              500,
+              510
+            ]
+          },
+          {
+            "name": "lower equipment train",
+            "region": [
+              420,
+              380,
+              900,
+              620
+            ]
+          },
+          {
+            "name": "sidebar - Status og vendere",
+            "region": [
+              1150,
+              0,
+              1400,
+              165
+            ]
+          },
+          {
+            "name": "sidebar - Vifteregulering",
+            "region": [
+              1150,
+              165,
+              1400,
+              357
+            ]
+          },
+          {
+            "name": "sidebar - Temperaturregulering",
+            "region": [
+              1150,
+              357,
+              1400,
+              500
+            ]
+          }
         ],
         "on_failure": "Restart from the retained source export. Do not patch an already damaged derivative.",
         "tooltip_rule": "Move the pointer off every panel object before capturing a QA screenshot. A Designer hover tooltip is runtime UI, not panel content."
@@ -415,6 +1163,3535 @@
         "The minimum vertical gap at which a tag caption stops colliding with the value box below it.",
         "Whether the y357 vs y400 third-header position tracks section content height or is plant preference.",
         "A production export of a vent panel WITH a bypass on a plant other than 9099, to promote the bypass geometry from REF-9099 to VENT."
+      ],
+      "profiles": {
+        "available": [
+          "PROFILE-9099-ROTOR-DEMO"
+        ],
+        "rule": "Select exactly one profile before placing any object, and name it in the verification report. Geometry outside the selected profile is not evidence for the panel you are building.",
+        "default_for_new_rotor_demo": "PROFILE-9099-ROTOR-DEMO"
+      }
+    },
+    "list_panel": {
+      "identity": "A long tabular listing built from CONTAINERS - one objects_container per table row - with the banner, column headers, vertical dividers, group stripes and dotted separators in single_objects. The only container-built panel type. Test: a repeating multi-column cell group, tens or hundreds of times.",
+      "owner_document": "LIST-PANEL-GENERATION-CONTRACT.md",
+      "canvas": {
+        "panel_width": "1400px",
+        "panel_height": "750px",
+        "type": "string with the px suffix, at envelope level and inside panel - NOT an integer",
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ],
+        "note": "The value is handed to iw_set_base_image(doc.panel_width, doc.panel_height) unchanged. A bare number is not a stylistic variant."
+      },
+      "background": {
+        "org_image_name": "00-blank-1400x750",
+        "background_embedded": "either - true in E5 (embedded data URI), false in E6 (image_name references the same blank)",
+        "image_name": "\"\" when background_embedded is true; the blank's name when it is false",
+        "rule": "The blank 1400x750 template, not the sidebar blank the ventilation panels use. Never bake table content into a background.",
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "composition": {
+        "graphics": 0,
+        "rows_live_in": "panel.containers",
+        "scaffold_lives_in": "panel.single_objects",
+        "scaffold_object_ids": {
+          "previous_page_tekn_box_no": 1,
+          "number_v3_label_12px_bold_white": 4,
+          "number_v3_label_12px_bold": 14,
+          "number_v3_header_appgrey": 13,
+          "number_v3_header_grey50": "14 stacked copies per highlighted row",
+          "number_v3_label_8px_norm": "variable - dotted separators, no derivable placement rule"
+        },
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "z_indexes": {
+        "mode": "explicit strings on every object - \"default\" is never used in a list panel",
+        "bands": {
+          "3": "group stripe (number_v3_header_grey50)",
+          "4": "the CONTAINER zIndex - an INTEGER, not a string",
+          "5": "banner and the twelve 3 px dividers",
+          "155": "the single 11 px half-table divider at x 790",
+          "900": "all text - headers, titles, cells, separators"
+        },
+        "type_split": "Container zIndex is the integer 4. Object zIndex is a string. Both are reproduced verbatim.",
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "containers": {
+        "fields": [
+          "id",
+          "unique_id",
+          "name",
+          "type",
+          "container_type",
+          "className",
+          "header_footer",
+          "linked",
+          "linked_to",
+          "width",
+          "height",
+          "left",
+          "top",
+          "zIndex",
+          "items",
+          "title"
+        ],
+        "field_count": 16,
+        "constants": {
+          "id": "objects_container",
+          "type": "container_c",
+          "container_type": "objects_container",
+          "className": "objects_container",
+          "header_footer": [],
+          "linked": "0",
+          "linked_to": "0",
+          "title": "Objects Container",
+          "zIndex": 4,
+          "width": 1544,
+          "height": 23,
+          "left": 19
+        },
+        "constants_note": "id is the constant string \"objects_container\" on every row - it is NOT the row index and NOT the object-level id sentinel \"driver_id\". linked and linked_to are the strings \"0\". Verified on 25/25 containers in E5 and 208/208 in E6.",
+        "sequential": {
+          "unique_id": "custom_<i>",
+          "name": "objects_container_<i>",
+          "start": 0,
+          "no_gaps": true,
+          "id_does_not_participate": true
+        },
+        "importer_gate": "load_new_ver_containers routes on unique_id.indexOf(\"custom_\"). A container whose unique_id lacks that prefix takes the .template() branch, which is an empty stub - the container silently vanishes.",
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "columns": {
+        "roles": [
+          {
+            "role": "damper_tag",
+            "header_text": "Spjeldnr.",
+            "header_left_x": 83,
+            "header_right_x": 863,
+            "header_y": 90,
+            "cell_left_x": 0,
+            "cell_right_x": 786,
+            "item_name_left": "object_14",
+            "item_name_right": "object_13"
+          },
+          {
+            "role": "room",
+            "header_text": "Romnr.",
+            "header_left_x": 259,
+            "header_right_x": 1048,
+            "header_y": 92,
+            "cell_left_x": 239,
+            "cell_right_x": 1031,
+            "item_name_left": "object_44",
+            "item_name_right": "object_29"
+          },
+          {
+            "role": "design_min",
+            "header_text": "Prosj. min. m3/h",
+            "header_left_x": 330,
+            "header_right_x": 1119,
+            "header_y": 92,
+            "cell_left_x": 342,
+            "cell_right_x": 1131,
+            "item_name_left": "object_40",
+            "item_name_right": "object_25"
+          },
+          {
+            "role": "design_max",
+            "header_text": "Prosj. maks. m3/h",
+            "header_left_x": 433,
+            "header_right_x": 1222,
+            "header_y": 92,
+            "cell_left_x": 445,
+            "cell_right_x": 1234,
+            "item_name_left": "object_37",
+            "item_name_right": "object_22"
+          },
+          {
+            "role": "measured",
+            "header_text": "Erverdi",
+            "header_left_x": 555,
+            "header_right_x": 1344,
+            "header_y": 91,
+            "cell_left_x": 530,
+            "cell_right_x": 1319,
+            "item_name_left": "object_46",
+            "item_name_right": "object_49"
+          },
+          {
+            "role": "setpoint_flow",
+            "header_text": "SP.pådrag m3/h",
+            "header_left_x": 614,
+            "header_right_x": 1403,
+            "header_y": 92,
+            "cell_left_x": 609,
+            "cell_right_x": 1398,
+            "item_name_left": "object_47",
+            "item_name_right": "object_50"
+          },
+          {
+            "role": "damper_angle",
+            "header_text": "Spjeldvinkel %",
+            "header_left_x": 710,
+            "header_right_x": 1499,
+            "header_y": 91,
+            "cell_left_x": 698,
+            "cell_right_x": 1494,
+            "item_name_left": "object_48",
+            "item_name_right": "object_51"
+          }
+        ],
+        "cell_pos_top": {
+          "static": 3,
+          "live": 0
+        },
+        "cell_size": [
+          50,
+          20
+        ],
+        "header_object": "number_v3_label_12px_bold",
+        "right_half_offset": "NOT a constant. +780 for damper_tag, +789 for the other six headers. Use the table, never an offset.",
+        "header_text_rule": "Copied verbatim from the template, including the ASCII 3 in \"m3/h\". Norwegian characters are UTF-8 (\"SP.p\\u00e5drag\").",
+        "single_source_values": {
+          "room_right_cell_x": "E6 only",
+          "measured/setpoint_flow/damper_angle cells": "E5 only - all six live-cell x values",
+          "scope": "TEMPLATE-SPECIFIC"
+        },
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "geometry": {
+        "banner": {
+          "obj_id": "previous_page_tekn_box_no",
+          "size": [
+            1570,
+            57
+          ],
+          "pos": [
+            15,
+            50
+          ],
+          "zIndex": "5"
+        },
+        "half_table_titles": {
+          "obj_id": "number_v3_label_12px_bold_white",
+          "size": [
+            50,
+            20
+          ],
+          "y": 63,
+          "x": [
+            288,
+            520,
+            894,
+            1127
+          ],
+          "tag_text": " ",
+          "note": "Blank (a single space) in all eight instances across both exports. Populate only if the task supplies text."
+        },
+        "dividers": {
+          "obj_id": "number_v3_header_appgrey",
+          "count": 13,
+          "placement": [
+            {
+              "x": 232,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 321,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 427,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 543,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 605,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 703,
+              "y": 88,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 790,
+              "y": 86,
+              "width": 11,
+              "zIndex": "155"
+            },
+            {
+              "x": 1021,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 1110,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 1216,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 1332,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 1394,
+              "y": 87,
+              "width": 3,
+              "zIndex": "5"
+            },
+            {
+              "x": 1492,
+              "y": 88,
+              "width": 3,
+              "zIndex": "5"
+            }
+          ],
+          "height_formula": "last_row_top + row_height - divider_top - 2",
+          "height_shorthand": "last_row_top - 66, with row_height 23 and divider_top 87",
+          "verified": {
+            "E5": {
+              "last_row_top": 606,
+              "height": 540
+            },
+            "E6": {
+              "last_row_top": 4646,
+              "height": 4580
+            }
+          },
+          "recompute_on": "every row added or removed"
+        },
+        "rows": {
+          "first_row_top": 106,
+          "row_pitch": 20,
+          "row_height": 23,
+          "group_gap_pitch": 40,
+          "overlap_note": "Pitch 20 with height 23 means consecutive rows overlap by 3 px. Production behaviour in both exports, not a defect.",
+          "normal_next_top": "previous_top + row_pitch",
+          "group_next_top": "previous_top + group_gap_pitch",
+          "table_height": "last_row_top + row_height - table_origin_top"
+        },
+        "overflow": {
+          "horizontal": "Structural and always present: banner and stripes are 1570 px wide at x 15 on a 1400 px canvas, and the right half runs past 1400. Both exports. Do not 'fix' it.",
+          "vertical": "E6's last row top is 4646 on a 750 px canvas. The page scrolls."
+        },
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "groups": {
+        "boundary": "a container top delta of 40 instead of 20",
+        "source": "the source table's group key - never inferred from tag numbering or row content",
+        "measured": {
+          "E5": {
+            "groups": 2,
+            "group_first_row_tops": [
+              106,
+              506
+            ],
+            "group_sizes": [
+              19,
+              6
+            ],
+            "row_count": 25,
+            "last_row_top": 606,
+            "deltas": {
+              "20": 23,
+              "40": 1
+            }
+          },
+          "E6": {
+            "groups": 21,
+            "group_first_row_tops": [
+              106,
+              226,
+              486,
+              626,
+              726,
+              946,
+              1086,
+              1306,
+              1506,
+              1786,
+              2026,
+              2186,
+              2366,
+              3126,
+              3266,
+              3446,
+              3666,
+              3866,
+              4106,
+              4226,
+              4586
+            ],
+            "group_sizes": [
+              5,
+              12,
+              6,
+              4,
+              10,
+              6,
+              10,
+              9,
+              13,
+              11,
+              7,
+              8,
+              37,
+              6,
+              8,
+              10,
+              9,
+              11,
+              5,
+              17,
+              4
+            ],
+            "row_count": 208,
+            "last_row_top": 4646,
+            "deltas": {
+              "20": 187,
+              "40": 20
+            }
+          }
+        },
+        "stripe": {
+          "obj_id": "number_v3_header_grey50",
+          "pos_left": 15,
+          "size": [
+            1570,
+            20
+          ],
+          "zIndex": "3",
+          "link_tag": "NA",
+          "generation_rule": "one stripe per group at group_first_row_top - 2",
+          "generation_rule_scope": "ADVISORY",
+          "production_disagrees": "The stripe is NOT a group marker. E6 stripes 15 of 21 group starts and adds 2 stripes inside one group; E5 stripes 1 of 2. Every stripe position carries exactly 14 stacked identical copies in both files. No predicate tested reproduces the placement.",
+          "on_edit": "preserve a supplied export's stripes exactly, including duplicates, skips and mid-group extras"
+        },
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "sides": {
+        "convention": "Two half-tables separated by the 11 px divider at x 790. Left half x 0-786, right half x 786-1494 within the container.",
+        "numbering_evidence": "Right half is 5-series only in both exports. Left half is 4-series, 6-series and unnumbered; 6-series is about 70 % of E6's left column.",
+        "supply_extract_claim": "NOT confirmed. Every right-half alias in E5 names tilluft (supply), contradicting the supply-left/extract-right reading.",
+        "scope_of_numbering": "TEMPLATE-SPECIFIC",
+        "row_band": "Right-half rows mostly occupy their own containers below the left block; only 1-2 mixed containers per file.",
+        "on_ambiguity": "If the side cannot be determined from explicit source data, stop. Do not guess from the tag number.",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "bindings": {
+        "object_constants": {
+          "id": "driver_id",
+          "linked": "true",
+          "link_name": "link_name",
+          "sub_group": "",
+          "unit_ref": "",
+          "link_tag": {
+            "default": "",
+            "NA_on": [
+              "number_v3_header_appgrey",
+              "number_v3_header_grey50"
+            ]
+          },
+          "alias_text_when_unlinked": "new text"
+        },
+        "measured_over": "1397 objects (single_objects + container items) across E5 and E6",
+        "overrides": "global_invariants.unlinked_demo_contract, for list panels only",
+        "override_reason": "The GLOBAL unlinked contract asks for linked \"false\", link_name \"\" and driver_id \"driver_id\". Production list panels carry linked \"true\", link_name \"link_name\" and driver_id \"\" on 100 % of objects, banner and headers included. Emitting the GLOBAL form would make a generated list differ from every existing one in every object and destroy role-based diffing.",
+        "safety_invariant": "A generated list panel must contain no non-empty driver_id, unit_id or alias_text other than values copied verbatim from supplied data. Empty is the unlinked state here; \"false\" is not required and is not observed.",
+        "modes": {
+          "static_unlinked": "obj_id number_v3_label_12px_bold, posTop 3, tag_text from the source table",
+          "dynamic_unlinked_placeholder": "obj_id number_v3_value_only, posTop 0, tag_text null, bindings empty",
+          "same_plant_linked": "copy driver_id, unit_id and alias_text verbatim from the supplied source. Those three and no others.",
+          "cross_plant": "strip the three copied fields. The row's damper_tag cell is what identifies the point to re-link, not alias_text."
+        },
+        "prohibitions": [
+          "Never convert a static value into a fake linked field.",
+          "Never copy source-plant driver ids into a generic demo.",
+          "Never assemble a driver_id from parts - <DRIVERNAME> and unit_id are not derivable.",
+          "Never invent a plant id, unit id, navigation target or alias."
+        ],
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "artefacts": {
+        "note": "Preserve when modifying a supplied export; do not copy into a clean new template. Full matrix in LIST-PANEL-GENERATION-CONTRACT.md section 11.2.",
+        "preserve_not_copy": [
+          "#c1 / #c2 bookkeeping driver ids on design_min / design_max cells - emit \"\" instead",
+          "14 stacked copies of each group stripe - emit 1",
+          "group starts with no stripe, and stripes inside a group",
+          "dotted separators at y values matching neither rows nor groups"
+        ],
+        "not_artefacts": [
+          "linked \"true\" on unbindable objects - the universal state, all objects in both exports",
+          "link_name \"link_name\"",
+          "alias_text \"new text\" on unlinked objects",
+          "link_tag \"NA\" on dividers and stripes",
+          "3 px row overlap",
+          "horizontal overflow past the canvas"
+        ],
+        "scope": "LIST",
+        "evidence": [
+          "E5",
+          "E6"
+        ]
+      },
+      "required_roles": [
+        "damper_tag",
+        "room",
+        "design_min",
+        "design_max",
+        "measured",
+        "setpoint_flow",
+        "damper_angle"
+      ],
+      "qa": {
+        "checklist_file": "LIST-PANEL-GENERATION-CONTRACT.md section 12",
+        "check_count": 32,
+        "stages": [
+          "A envelope",
+          "B objects",
+          "C containers",
+          "D geometry",
+          "E bindings",
+          "F output discipline"
+        ],
+        "test_file": "tests/test_list_panel_contract.py",
+        "test_command": "python -m unittest tests.test_list_panel_contract -v",
+        "test_note": "44 tests. Reads its constants from this file, so a rule and its test cannot drift apart, and validates the contract's own worked examples against them. The E5 tests skip on a checkout that lacks the uncommitted export.",
+        "on_failure": "Restart from the retained source export. Do not patch an already damaged derivative."
+      },
+      "evidence_required": [
+        "A third spjeldliste export, from a plant other than 5295 or NNNNN, to promote the header and divider x tables from LIST to confirmed-across-plants.",
+        "A production export written by the userscript itself (generator IWDIE) with live bindings, to separate E5's agent-authored form from production form.",
+        "Any export where the four white half-table title labels carry text.",
+        "The rule, if any, governing which rows carry a grey50 stripe.",
+        "The rule, if any, governing dotted-separator placement.",
+        "Whether first_row_top 106 varies with banner height - only one banner height (57) has been observed.",
+        "The <DRIVERNAME> and unit_id lookup - per-device and plant-internal; nine pairs observed in E5 with no derivable pattern."
+      ]
+    },
+    "maskin": {
+      "identity": {
+        "name": "Maskin / machine room",
+        "owner_document": "MASKIN-GENERATION-CONTRACT.md",
+        "description": "The machine-room overview of a CO2 booster refrigeration pack: MT and LT compressor banks, gas cooler / condenser, receiver, high-pressure and receiver valves, optional heat recovery, and a right-hand status strip.",
+        "controller": {
+          "family": "Danfoss AK-PC pack controller",
+          "measured_on_E9": "AK-PC 782A (V3_akpc_782A_suct suction strips, V3_akpc_783_781A_782A_cond condenser strip)",
+          "note": "The six compressor status strips on E9 use V3_akpc_772_781_781A_783_contr. Recorded as measured; do not infer a controller model from a strip id."
+        },
+        "linking": "alias_text IS the Danfoss parameter name. Relink by EXACT alias match - never fuzzy, never positional. See evidence E12."
+      },
+      "owner_document": "MASKIN-GENERATION-CONTRACT.md",
+      "canvas": {
+        "width": 1400,
+        "height": 750,
+        "scope": "MASKIN",
+        "evidence": [
+          "E9",
+          "E10"
+        ],
+        "override": "Match the plant if a supplied export says otherwise."
+      },
+      "background": {
+        "ownership": "The background owns ALL artwork: enclosure, pipes, equipment symbols, valves, static labels, the empty value pills and the grey information panel. Dynamic objects own live values, status strips, LEDs and pumps, and nothing else.",
+        "never": "Never bake a live number, state or colour into the background, and never draw a value box in artwork that a dynamic object will also render.",
+        "family": "Advansor-style CO2 booster drawing on the light skin. reference_data/maskin-drawing-method.txt is the artwork doctrine; reference_data/maskin-light-style-reference.png is the canonical look. Never draw a Maskin on a dark background.",
+        "fields": {
+          "converted": "\"true\" plus panel.image_data (a data: URI) is how a raster background travels in an export",
+          "image_svg": "AI-authored vector background. Validated by iwdieValidateSvg and converted by iwdieSvgToDataUrl on insert.",
+          "image_svg_trace": "WRITTEN BY EXPORT, NEVER BY A GENERATOR. It is an automatic vector trace of the raster background, supplied to an AI as input, and the insert path deletes it. Emitting it is a defect.",
+          "priority_on_insert": [
+            "a background file picked in the dialog",
+            "panel.image_svg",
+            "panel.image_data"
+          ]
+        }
+      },
+      "composition": {
+        "single_objects": 66,
+        "containers": 0,
+        "graphics": 0,
+        "distinct_obj_ids": 11,
+        "scope": "TEMPLATE-10229",
+        "evidence": [
+          "E9",
+          "E10"
+        ],
+        "note": "Fleet median is 59 objects across 39 Maskin panels (PANEL-TYPE-GUIDE.md). 66 is this template, not a target."
+      },
+      "z_indexes": {
+        "mode": "explicit bands OR the literal string \"default\" - never mixed in one panel",
+        "bands": {
+          "110": {
+            "count_E10": 2,
+            "obj_ids": [
+              "number_v3_60px_no_conn",
+              "number_v3_custom_json_obj"
+            ]
+          },
+          "360": {
+            "count_E10": 9,
+            "obj_ids": [
+              "V3_akpc_772_781_781A_783_contr",
+              "V3_akpc_782A_suct",
+              "V3_akpc_783_781A_782A_cond"
+            ]
+          },
+          "375": {
+            "count_E10": 3,
+            "obj_ids": [
+              "V3_21px_single_pump_grey_green_down",
+              "V3_led_13px_circ_grey_green",
+              "V3_ok_alarm_nrm"
+            ]
+          },
+          "1000": {
+            "count_E10": 1,
+            "obj_ids": [
+              "V3_81x21_enebled_disabled_nrm"
+            ]
+          },
+          "1100": {
+            "count_E10": 51,
+            "obj_ids": [
+              "number_v3_value_only",
+              "number_v3_white_value_only"
+            ]
+          }
+        },
+        "scope": "MASKIN",
+        "evidence": [
+          "E9",
+          "E10"
+        ],
+        "conflict": "These are NOT the Ventilasjon bands. On a vent panel 110 is value/setpoint boxes and 1100 is labels; on Maskin E9, 1100 is the value pills and 110 is the two json/no-conn boxes. The bands are per panel type. Never carry a vent band onto a Maskin panel.",
+        "default_mode_note": "\"default\" is legal - the userscript fills it in when zIndex is missing - but then array order IS stacking order. E9 uses explicit bands, so on E9 array order does not affect stacking."
+      },
+      "object_vocabulary": {
+        "number_v3_value_only": {
+          "count_E10": 44,
+          "sizes": [
+            "50x20"
+          ],
+          "z_bands": [
+            "1100"
+          ]
+        },
+        "number_v3_white_value_only": {
+          "count_E10": 7,
+          "sizes": [
+            "50x20"
+          ],
+          "z_bands": [
+            "1100"
+          ]
+        },
+        "V3_akpc_772_781_781A_783_contr": {
+          "count_E10": 6,
+          "sizes": [
+            "81x21"
+          ],
+          "z_bands": [
+            "360"
+          ]
+        },
+        "V3_akpc_782A_suct": {
+          "count_E10": 2,
+          "sizes": [
+            "81x21"
+          ],
+          "z_bands": [
+            "360"
+          ]
+        },
+        "V3_ok_alarm_nrm": {
+          "count_E10": 1,
+          "sizes": [
+            "61x21"
+          ],
+          "z_bands": [
+            "375"
+          ]
+        },
+        "V3_81x21_enebled_disabled_nrm": {
+          "count_E10": 1,
+          "sizes": [
+            "81x21"
+          ],
+          "z_bands": [
+            "1000"
+          ]
+        },
+        "V3_led_13px_circ_grey_green": {
+          "count_E10": 1,
+          "sizes": [
+            "13x13"
+          ],
+          "z_bands": [
+            "375"
+          ]
+        },
+        "V3_akpc_783_781A_782A_cond": {
+          "count_E10": 1,
+          "sizes": [
+            "81x21"
+          ],
+          "z_bands": [
+            "360"
+          ]
+        },
+        "number_v3_custom_json_obj": {
+          "count_E10": 1,
+          "sizes": [
+            "40x20"
+          ],
+          "z_bands": [
+            "110"
+          ]
+        },
+        "number_v3_60px_no_conn": {
+          "count_E10": 1,
+          "sizes": [
+            "62x22"
+          ],
+          "z_bands": [
+            "110"
+          ]
+        },
+        "V3_21px_single_pump_grey_green_down": {
+          "count_E10": 1,
+          "sizes": [
+            "21x21"
+          ],
+          "z_bands": [
+            "375"
+          ]
+        }
+      },
+      "roles": {
+        "MT compressor column": {
+          "count_E10": 10,
+          "aliases": [
+            "C2 MT status",
+            "C1 MT status",
+            "C3 MT status",
+            "C2 MT capacity",
+            "C1 MT capacity",
+            "C3 MT capacity",
+            "C1 MT Runtime total",
+            "C2 MT Runtime total",
+            "C3 MT Runtime total",
+            "C1 MT VSD 1 speed"
+          ]
+        },
+        "LT compressor column": {
+          "count_E10": 10,
+          "aliases": [
+            "C1 LT status",
+            "C2 LT status",
+            "C3 LT status",
+            "C1 LT capacity",
+            "C2 LT capacity",
+            "C3 LT capacity",
+            "C1 LT Runtime total",
+            "C2 LT Runtime total",
+            "C3 LT Runtime total",
+            "C1 LT VSD 1 speed"
+          ]
+        },
+        "MT suction group": {
+          "count_E10": 9,
+          "aliases": [
+            "Sd-MT",
+            "Control status MT",
+            "Suction ref. To-MT",
+            "Suction temp. To-MT",
+            "Suction temp. To-MT",
+            "Superheat MT",
+            "Ss-MT",
+            "Running capacity MT",
+            "Requested cap. MT"
+          ]
+        },
+        "LT suction group": {
+          "count_E10": 9,
+          "aliases": [
+            "Control status LT",
+            "Sd-LT",
+            "Suction ref. To-LT",
+            "Suction temp. To-LT",
+            "To opt. offset LT",
+            "Superheat LT",
+            "Ss-LT",
+            "Running capacity LT",
+            "Requested cap. LT"
+          ]
+        },
+        "Heat recovery": {
+          "count_E10": 10,
+          "aliases": [
+            "Hr pump running",
+            "Hr pump speed",
+            "Hr reference",
+            "HR Consumer request",
+            "Shr8",
+            "Shr4",
+            "Shr3",
+            "Shr2",
+            "V3hr",
+            "Hr enable"
+          ]
+        },
+        "Receiver": {
+          "count_E10": 3,
+          "aliases": [
+            "Prec reference",
+            "Prec",
+            "Vrec OD"
+          ]
+        },
+        "High pressure / gas cooler": {
+          "count_E10": 13,
+          "aliases": [
+            "Cond. ctrl.",
+            "Sc3",
+            "Cond. capacity",
+            "Cond. requested cap.",
+            "Pc",
+            "Sgc",
+            "Tc",
+            "V3gc",
+            "Cond. control status",
+            "Shp",
+            "Pgc reference",
+            "Pgc",
+            "Vhp OD"
+          ]
+        },
+        "Alarm / IO": {
+          "count_E10": 2,
+          "aliases": [
+            "u17 Ther Air",
+            "--- DI1 Alarm"
+          ]
+        }
+      },
+      "setpoint_pill": {
+        "rule": "number_v3_white_value_only is the setpoint / reference pill; number_v3_value_only is the measurement pill.",
+        "alias_markers": [
+          "reference",
+          "ref.",
+          "consumer request",
+          "ctrl."
+        ],
+        "evidence": [
+          "E9",
+          "E10"
+        ],
+        "measured": "7 of 7 white pills carry a marker; 0 of 59 measurement pills do. 'Requested cap. MT/LT' and 'Cond. requested cap.' are measurements despite the word 'requested' - which is why the marker is 'consumer request', not 'request'.",
+        "severity": "warning",
+        "scope": "MASKIN"
+      },
+      "compressor_columns": {
+        "measured": {
+          "MT": {
+            "status": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "V3_akpc_772_781_781A_783_contr",
+                  "left": 73,
+                  "top": 289,
+                  "zIndex": "360"
+                },
+                {
+                  "compressor": 2,
+                  "obj_id": "V3_akpc_772_781_781A_783_contr",
+                  "left": 152,
+                  "top": 288,
+                  "zIndex": "360"
+                },
+                {
+                  "compressor": 3,
+                  "obj_id": "V3_akpc_772_781_781A_783_contr",
+                  "left": 234,
+                  "top": 289,
+                  "zIndex": "360"
+                }
+              ],
+              "pitch": [
+                [
+                  79,
+                  -1
+                ],
+                [
+                  82,
+                  1
+                ]
+              ]
+            },
+            "capacity": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "number_v3_value_only",
+                  "left": 86,
+                  "top": 326,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 2,
+                  "obj_id": "number_v3_value_only",
+                  "left": 167,
+                  "top": 325,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 3,
+                  "obj_id": "number_v3_value_only",
+                  "left": 246,
+                  "top": 326,
+                  "zIndex": "1100"
+                }
+              ],
+              "pitch": [
+                [
+                  81,
+                  -1
+                ],
+                [
+                  79,
+                  1
+                ]
+              ]
+            },
+            "runtime": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "number_v3_value_only",
+                  "left": 86,
+                  "top": 362,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 2,
+                  "obj_id": "number_v3_value_only",
+                  "left": 167,
+                  "top": 362,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 3,
+                  "obj_id": "number_v3_value_only",
+                  "left": 247,
+                  "top": 362,
+                  "zIndex": "1100"
+                }
+              ],
+              "pitch": [
+                [
+                  81,
+                  0
+                ],
+                [
+                  80,
+                  0
+                ]
+              ]
+            },
+            "vsd": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "number_v3_value_only",
+                  "left": 87,
+                  "top": 403,
+                  "zIndex": "1100"
+                }
+              ],
+              "pitch": []
+            }
+          },
+          "LT": {
+            "status": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "V3_akpc_772_781_781A_783_contr",
+                  "left": 72,
+                  "top": 614,
+                  "zIndex": "360"
+                },
+                {
+                  "compressor": 2,
+                  "obj_id": "V3_akpc_772_781_781A_783_contr",
+                  "left": 152,
+                  "top": 614,
+                  "zIndex": "360"
+                },
+                {
+                  "compressor": 3,
+                  "obj_id": "V3_akpc_772_781_781A_783_contr",
+                  "left": 232,
+                  "top": 615,
+                  "zIndex": "360"
+                }
+              ],
+              "pitch": [
+                [
+                  80,
+                  0
+                ],
+                [
+                  80,
+                  1
+                ]
+              ]
+            },
+            "capacity": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "number_v3_value_only",
+                  "left": 87,
+                  "top": 651,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 2,
+                  "obj_id": "number_v3_value_only",
+                  "left": 167,
+                  "top": 651,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 3,
+                  "obj_id": "number_v3_value_only",
+                  "left": 246,
+                  "top": 651,
+                  "zIndex": "1100"
+                }
+              ],
+              "pitch": [
+                [
+                  80,
+                  0
+                ],
+                [
+                  79,
+                  0
+                ]
+              ]
+            },
+            "runtime": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "number_v3_value_only",
+                  "left": 87,
+                  "top": 687,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 2,
+                  "obj_id": "number_v3_value_only",
+                  "left": 167,
+                  "top": 687,
+                  "zIndex": "1100"
+                },
+                {
+                  "compressor": 3,
+                  "obj_id": "number_v3_value_only",
+                  "left": 246,
+                  "top": 687,
+                  "zIndex": "1100"
+                }
+              ],
+              "pitch": [
+                [
+                  80,
+                  0
+                ],
+                [
+                  79,
+                  0
+                ]
+              ]
+            },
+            "vsd": {
+              "cells": [
+                {
+                  "compressor": 1,
+                  "obj_id": "number_v3_value_only",
+                  "left": 87,
+                  "top": 722,
+                  "zIndex": "1100"
+                }
+              ],
+              "pitch": []
+            }
+          }
+        },
+        "scope": "TEMPLATE-10229",
+        "evidence": [
+          "E9",
+          "E10"
+        ],
+        "rule": "A compressor column is an atomic cluster: status strip, capacity pill, runtime pill, and a VSD pill only where the machine has one. Clone the whole column with ONE translation vector; never copy the status strip alone.",
+        "pitch_note": "Measured centre pitch is 79-82 px in x with a 0-1 px y jitter that is in the source. Do not average it to a round number and do not 'correct' the jitter when reproducing this template."
+      },
+      "role_translations_mt_to_lt": {
+        "measured": {
+          "C1 MT Runtime total": {
+            "to": "C1 LT Runtime total",
+            "delta": [
+              1,
+              325
+            ]
+          },
+          "C1 MT VSD 1 speed": {
+            "to": "C1 LT VSD 1 speed",
+            "delta": [
+              0,
+              319
+            ]
+          },
+          "C1 MT capacity": {
+            "to": "C1 LT capacity",
+            "delta": [
+              1,
+              325
+            ]
+          },
+          "C1 MT status": {
+            "to": "C1 LT status",
+            "delta": [
+              -1,
+              325
+            ]
+          },
+          "C2 MT Runtime total": {
+            "to": "C2 LT Runtime total",
+            "delta": [
+              0,
+              325
+            ]
+          },
+          "C2 MT capacity": {
+            "to": "C2 LT capacity",
+            "delta": [
+              0,
+              326
+            ]
+          },
+          "C2 MT status": {
+            "to": "C2 LT status",
+            "delta": [
+              0,
+              326
+            ]
+          },
+          "C3 MT Runtime total": {
+            "to": "C3 LT Runtime total",
+            "delta": [
+              -1,
+              325
+            ]
+          },
+          "C3 MT capacity": {
+            "to": "C3 LT capacity",
+            "delta": [
+              0,
+              325
+            ]
+          },
+          "C3 MT status": {
+            "to": "C3 LT status",
+            "delta": [
+              -2,
+              326
+            ]
+          },
+          "Control status MT": {
+            "to": "Control status LT",
+            "delta": [
+              0,
+              28
+            ]
+          },
+          "Requested cap. MT": {
+            "to": "Requested cap. LT",
+            "delta": [
+              1,
+              326
+            ]
+          },
+          "Running capacity MT": {
+            "to": "Running capacity LT",
+            "delta": [
+              1,
+              325
+            ]
+          },
+          "Sd-MT": {
+            "to": "Sd-LT",
+            "delta": [
+              369,
+              313
+            ]
+          },
+          "Ss-MT": {
+            "to": "Ss-LT",
+            "delta": [
+              -71,
+              324
+            ]
+          },
+          "Suction ref. To-MT": {
+            "to": "Suction ref. To-LT",
+            "delta": [
+              -69,
+              324
+            ]
+          },
+          "Superheat MT": {
+            "to": "Superheat LT",
+            "delta": [
+              -69,
+              325
+            ]
+          }
+        },
+        "scope": "TEMPLATE-10229",
+        "evidence": [
+          "E9",
+          "E10"
+        ],
+        "note": "The compressor rows translate by about (0,+325). The suction-group readouts do NOT share one vector - Sd, Ss, Superheat and the suction references each move differently because the LT circuit is drawn elsewhere on the artwork. There is no single MT->LT vector for the panel."
+      },
+      "absent_by_design": {
+        "roles": [
+          "C2 MT VSD 1 speed",
+          "C3 MT VSD 1 speed",
+          "C2 LT VSD 1 speed",
+          "C3 LT VSD 1 speed"
+        ],
+        "why": "On E9 only C1 carries a VSD row, on each suction group. C2 and C3 are fixed-speed: status, capacity and runtime only. Cloning C1 to make a C4 imports a VSD row the machine does not have."
+      },
+      "anomalies": [
+        {
+          "object": "object_48",
+          "alias": "Hr pump speed",
+          "finding": "tag_text is ' ' (a single space), not empty",
+          "treatment": "preserved verbatim in E10; do not normalise it away when copying this template"
+        },
+        {
+          "object": "object_49",
+          "alias": "u17 Ther Air",
+          "finding": "tag_text is ' ' (a single space), not empty",
+          "treatment": "preserved verbatim in E10; do not normalise it away when copying this template"
+        },
+        {
+          "object": "object_53",
+          "alias": "Hr pump running",
+          "finding": "tag_text is ' ' (a single space), not empty",
+          "treatment": "preserved verbatim in E10; do not normalise it away when copying this template"
+        },
+        {
+          "object": [
+            "object_1",
+            "object_59"
+          ],
+          "alias": "Suction temp. To-MT",
+          "finding": "2 objects share this alias at (581,257) and (626,257), and in E9 they shared one driver id",
+          "treatment": "preserved in E10 and reported as a WARNING by the validator. Whether it is intentional is open evidence - do not silently delete one."
+        }
+      ],
+      "bindings": {
+        "production_export": {
+          "id": "driver_id (host literal on every object)",
+          "link_name": "link_name (host literal on every object)",
+          "driver_id": "<plant>_<controller path>_<parameter>_<index>, or empty on an object the designer never linked",
+          "linked": "\"true\" whenever driver_id is not the literal placeholder - INCLUDING when driver_id is empty. That is host behaviour (V3scripts.js), not a defect.",
+          "unit_id": "the AK-PC unit address, identical across the pack"
+        },
+        "demo": "global_invariants.unlinked_demo_contract, unchanged.",
+        "mode_discriminator": "The literal string \"driver_id\" in driver_id. A generated demo emits it on every object; a production export never does - an unlinked production object carries an EMPTY driver_id."
+      },
+      "sanitization": {
+        "replace": {
+          "envelope.source_plant_id": "",
+          "panel.plant_id": "",
+          "panel.saved_by": "",
+          "panel.org_image_name": "",
+          "panel.image_name": "",
+          "object.id": "driver_id",
+          "object.driver_id": "driver_id",
+          "object.linked": "false",
+          "object.link_name": "",
+          "object.link_tag": "",
+          "object.unit_id": "",
+          "object.unit_ref": "",
+          "object.sub_group": ""
+        },
+        "preserve": [
+          "obj_id",
+          "name",
+          "posLeft",
+          "posTop",
+          "posWidth",
+          "posHeight",
+          "zIndex",
+          "tag_text",
+          "alias_text",
+          "array order",
+          "panel.image_data",
+          "panel.converted",
+          "panel.panel_width",
+          "panel.panel_height"
+        ],
+        "drop": [
+          "panel.image_svg_trace"
+        ],
+        "why_alias_survives": "alias_text is the selector a human relinks by (evidence E12). Stripping it makes the fixture unrelinkable and destroys the role inventory.",
+        "generator": "build-maskin-fixture.py"
+      },
+      "request_classes": {
+        "new_unlinked_demo": {
+          "output": "a full panel document with the unlinked-demo contract on every object",
+          "background": "author image_svg, or state that the background is supplied separately",
+          "insert": "empty canvas only - Insert JSON appends"
+        },
+        "linked_copy": {
+          "output": "a full panel document keeping every supplied binding, with the driver-id plant prefix rewritten to the target plant",
+          "background": "carry panel.image_data through unchanged",
+          "insert": "empty canvas only",
+          "never": "Never invent a driver id, unit id or plant id. If the target plant's prefix was not supplied, stop and ask."
+        },
+        "modify_supplied_export": {
+          "output": "the ENTIRE supplied document, with only the requested objects changed or appended",
+          "rule": "The supplied panel is the whole geometric template. Every untouched object keeps every field byte-for-byte.",
+          "insert": "empty canvas only - inserting a full document onto a populated canvas duplicates every object"
+        },
+        "background_only_patch": {
+          "output": "panel.image_data (or image_svg) changed; counts all zero; single_objects, containers and graphics all empty",
+          "rule": "This is the correct answer whenever the target canvas already carries its objects and only the artwork changes."
+        }
+      },
+      "insert_semantics": "Insert JSON APPENDS to the live canvas - it never clears it, and it renames every inserted object from the canvas child index. A full panel document belongs on an EMPTY canvas unless duplication is intended.",
+      "required_roles": {
+        "rule": "A Maskin panel that claims a suction group must carry that group's readouts, and a compressor that exists must carry status, capacity and runtime.",
+        "per_suction_group": [
+          "Control status",
+          "Running capacity",
+          "Requested cap.",
+          "Suction temp. To-",
+          "Suction ref. To-",
+          "Superheat",
+          "Ss-",
+          "Sd-"
+        ],
+        "per_compressor": [
+          "status",
+          "capacity",
+          "Runtime total"
+        ],
+        "per_compressor_optional": [
+          "VSD 1 speed"
+        ],
+        "scope": "TEMPLATE-10229",
+        "evidence": [
+          "E9",
+          "E10"
+        ]
+      },
+      "qa": {
+        "checklist_file": "MASKIN-QA-CHECKLIST.md",
+        "stages": [
+          "A structural",
+          "B geometry",
+          "C visual",
+          "D linking/sanitization",
+          "E import/save"
+        ],
+        "checks": [
+          "Reparse the emitted JSON.",
+          "counts equals each array length.",
+          "All 17 object fields present on every object.",
+          "Names sequential object_0..object_N unless a preserved source dictates otherwise.",
+          "Every obj_id present in reference_data/all-design-objects.json.",
+          "No live plant id, driver id, unit id, link target or saved_by identity in anything committed.",
+          "Geometry, sizes, zIndex, aliases and ordering match the source unless a documented rule changes them.",
+          "Render at 1400x750 with the real background AND the dynamic-object overlay; inspect MT bank, LT bank, gas cooler, heat recovery, receiver/valves and the right-hand status strip.",
+          "Compare by role key (obj_id + alias_text + tag_text), never by array index.",
+          "python validate-maskin-panel.py PANEL.json [--profile TEMPLATE-10229]",
+          "python -m unittest tests.test_maskin_10229_contract"
+        ],
+        "render_crops": "Derived, not listed. render-maskin-panel.py computes one crop per entry in panel_types.maskin.roles from the role's own object bounding box, so the crops cannot drift from the role inventory. Do not hand-place them here.",
+        "test_command_note": "The repo convention is per-module. `python -m unittest discover -s tests` fails with ImportError: Start directory is not importable, because tests/ has no __init__.py.",
+        "on_failure": "Restart from the retained source export or the sanitized fixture. Do not stack compensating edits on an already damaged derivative."
+      },
+      "evidence_required": [
+        "A second Maskin production export from a different plant, to separate MASKIN from TEMPLATE-10229. Every geometry rule here currently rests on E9 alone.",
+        "A Maskin panel with 4 or more compressors per suction group, to confirm that the compressor pitch continues at ~80 px.",
+        "A Maskin panel whose LT bank has a VSD compressor other than C1, to confirm that the VSD row is a per-compressor property and not a C1-only convention.",
+        "Whether the two objects sharing driver_id ~206_7 on E9 are intentional or a leftover. Recorded as an anomaly, not corrected."
+      ]
+    }
+  },
+  "profiles": {
+    "PROFILE-9099-ROTOR-DEMO": {
+      "title": "Corrected 9099-style rotor AHU, unlinked demo",
+      "scope": "PROFILE-9099-ROTOR-DEMO",
+      "evidence": "E4",
+      "derived_from": "tests/fixtures/ventilation-9099-rotor-demo.json",
+      "canvas": [
+        1400,
+        750
+      ],
+      "object_count": 97,
+      "distinct_obj_ids": 43,
+      "background": {
+        "org_image_name": "00-blank-sidebar-1400x750",
+        "background_embedded": true,
+        "image_svg_prohibited": true
+      },
+      "applies_when": "The request is a new unlinked 9099-style rotor AHU demo and the task supplies no export of its own. A supplied export or a production export of the same panel outranks this profile at every coordinate.",
+      "clusters": [
+        {
+          "role": "extract fan",
+          "required": true,
+          "anchor": {
+            "obj_id": "V3_58px_fan_left_nrm",
+            "tag": "JV501",
+            "pos": [
+              152,
+              179
+            ],
+            "size": [
+              59,
+              59
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "airflow value",
+              "obj_id": "number_v3_R_60px_no_conn_tag_up_center",
+              "tag": "RF501 m3/h",
+              "offset": [
+                -2,
+                -39
+              ]
+            },
+            {
+              "role": "motor output",
+              "obj_id": "number_v3_R_45px_con_top",
+              "tag": "LR501 %",
+              "offset": [
+                5,
+                57
+              ]
+            },
+            {
+              "role": "alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Common Alarm - extract fan",
+              "offset": [
+                45,
+                -19
+              ]
+            }
+          ],
+          "note": "Fan cluster is body + airflow + motor output + alarm. Place all four or none."
+        },
+        {
+          "role": "supply fan",
+          "required": true,
+          "anchor": {
+            "obj_id": "V3_58px_fan_right_nrm",
+            "tag": "JV401",
+            "pos": [
+              795,
+              421
+            ],
+            "size": [
+              59,
+              59
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "airflow value",
+              "obj_id": "number_v3_R_60px_no_conn_tag_up_center",
+              "tag": "RF401 m3/h",
+              "offset": [
+                -2,
+                -40
+              ]
+            },
+            {
+              "role": "motor output",
+              "obj_id": "number_v3_R_45px_con_top",
+              "tag": "LR401 %",
+              "offset": [
+                5,
+                55
+              ]
+            },
+            {
+              "role": "alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Common Alarm - supply air fan",
+              "offset": [
+                48,
+                -18
+              ]
+            }
+          ]
+        },
+        {
+          "role": "extract filter",
+          "required": true,
+          "anchor": {
+            "obj_id": "numberV3_filter_with_diff_press",
+            "tag": "QD501 Pa",
+            "pos": [
+              466,
+              154
+            ],
+            "size": [
+              90,
+              83
+            ],
+            "zIndex": "110"
+          },
+          "members": [
+            {
+              "role": "alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Filter alarm for extract filter",
+              "offset": [
+                32,
+                -48
+              ]
+            }
+          ],
+          "note": "The filter object renders its own differential pressure in tag_text. Never add a second pressure box."
+        },
+        {
+          "role": "supply filter",
+          "required": true,
+          "anchor": {
+            "obj_id": "numberV3_filter_with_diff_press",
+            "tag": "QD401 Pa",
+            "pos": [
+              189,
+              397
+            ],
+            "size": [
+              90,
+              83
+            ],
+            "zIndex": "110"
+          },
+          "members": [
+            {
+              "role": "alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Filter alarm for supply filter",
+              "offset": [
+                10,
+                -45
+              ]
+            }
+          ],
+          "note": "Shares an obj_id with the extract filter: resolve it by tag_text, never by obj_id alone."
+        },
+        {
+          "role": "rotary heat recovery",
+          "required": true,
+          "anchor": {
+            "obj_id": "number_360_vg_rot",
+            "pos": [
+              282,
+              149
+            ],
+            "size": [
+              60,
+              343
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Rotary heat exchanger &#150; rotation alarm (only with OJ-RHX2M)",
+              "offset": [
+                12,
+                160
+              ]
+            },
+            {
+              "role": "rotor output",
+              "obj_id": "number_v3_R_45px_con_top",
+              "tag": "LX001 %",
+              "offset": [
+                6,
+                335
+              ]
+            },
+            {
+              "role": "efficiency",
+              "obj_id": "number_v3_R_45px_no_conn_bott_center",
+              "tag": "Virk.gr %",
+              "offset": [
+                6,
+                388
+              ]
+            },
+            {
+              "role": "efficiency temperature",
+              "obj_id": "number_v3_R_45px_con_down",
+              "tag": "RT402 °C",
+              "offset": [
+                75,
+                267
+              ]
+            }
+          ],
+          "note": "No decorative Rotor or VGV caption: the rotor object renders its own body. Only profile-supported temperatures."
+        },
+        {
+          "role": "cooling coil",
+          "required": true,
+          "anchor": {
+            "obj_id": "number_v3_cooler_2-way",
+            "pos": [
+              456,
+              409
+            ],
+            "size": [
+              38,
+              132
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Common Alarm - cooling",
+              "offset": [
+                2,
+                -24
+              ]
+            },
+            {
+              "role": "cooling output",
+              "obj_id": "number_v3_R_45px_con_top",
+              "tag": "SB520 %",
+              "offset": [
+                -3,
+                123
+              ]
+            },
+            {
+              "role": "coil temperature in",
+              "obj_id": "number_v3_R_45px_con_right",
+              "tag": "RT520 °C",
+              "offset": [
+                -48,
+                77
+              ]
+            },
+            {
+              "role": "coil temperature out",
+              "obj_id": "number_v3_R_45px_con_left",
+              "tag": "RT420 °C",
+              "offset": [
+                26,
+                77
+              ]
+            }
+          ],
+          "note": "This profile carries no Cool caption. REF-9099 production has one at (464,412); do not reintroduce it here."
+        },
+        {
+          "role": "water heating coil",
+          "required": true,
+          "anchor": {
+            "obj_id": "number_v3_heater_3_way",
+            "tag": "LV401",
+            "pos": [
+              583,
+              413
+            ],
+            "size": [
+              40,
+              210
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "frost alarm",
+              "obj_id": "V3_R_34px_circular_alarm_nrm",
+              "alias": "Alarm,-Heating coil frost alarm",
+              "offset": [
+                1,
+                -35
+              ]
+            },
+            {
+              "role": "coil temperature in",
+              "obj_id": "number_v3_R_45px_con_right",
+              "tag": "RT510 °C",
+              "offset": [
+                -48,
+                105
+              ]
+            },
+            {
+              "role": "coil temperature out",
+              "obj_id": "number_v3_R_45px_con_left",
+              "tag": "RT410 °C",
+              "offset": [
+                27,
+                77
+              ]
+            },
+            {
+              "role": "heating output",
+              "obj_id": "number_v3_R_45px_con_left",
+              "tag": "SB510 %",
+              "offset": [
+                37,
+                157
+              ]
+            },
+            {
+              "role": "circulation pump",
+              "obj_id": "V3_21px_single_pump_grey_green_down",
+              "tag": "JP410",
+              "alias": "Most Used,-Heating relay 1",
+              "offset": [
+                18,
+                114
+              ]
+            },
+            {
+              "role": "3-way valve",
+              "obj_id": "v3_3w_valve_right_down_nrm",
+              "alias": "new text",
+              "offset": [
+                19,
+                159
+              ]
+            }
+          ],
+          "note": "SB510 % without both the circulation pump and the 3-way valve is a cluster-integrity failure."
+        },
+        {
+          "role": "electric heater",
+          "required": true,
+          "anchor": {
+            "obj_id": "number_v3_el_heater",
+            "tag": "LV402",
+            "pos": [
+              697,
+              413
+            ],
+            "size": [
+              40,
+              85
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "heater output",
+              "obj_id": "number_v3_R_45px_no_conn_bott_center",
+              "tag": "SB520 %",
+              "offset": [
+                -3,
+                80
+              ]
+            },
+            {
+              "role": "run-status LED",
+              "obj_id": "V3_led_13px_circ_grey_green",
+              "alias": "Status,-Electric heater run status",
+              "offset": [
+                6,
+                47
+              ]
+            }
+          ],
+          "note": "The LED must stay fully inside the heater body and must not cover the LV402 tag or the output value."
+        },
+        {
+          "role": "room endpoint",
+          "required": true,
+          "anchor": {
+            "obj_id": "number_360_room",
+            "pos": [
+              1044,
+              159
+            ],
+            "size": [
+              100,
+              339
+            ],
+            "zIndex": "40"
+          },
+          "members": [
+            {
+              "role": "CO2 caption",
+              "obj_id": "number_v3_label_8px_norm",
+              "tag": "RP501 ppm",
+              "offset": [
+                24,
+                85
+              ]
+            },
+            {
+              "role": "CO2 value",
+              "obj_id": "number_v3_R_45px_no_conn_tag_up_left",
+              "alias": "Current value,-CO2 concentration recorded by CO2 sensor",
+              "offset": [
+                28,
+                97
+              ]
+            },
+            {
+              "role": "room temperature caption",
+              "obj_id": "number_v3_label_8px_norm",
+              "tag": "RT600 °C",
+              "offset": [
+                28,
+                143
+              ]
+            },
+            {
+              "role": "room temperature value",
+              "obj_id": "number_v3_R_45px_no_conn_tag_up_left",
+              "alias": "Current value,-Actual room temperature",
+              "offset": [
+                28,
+                157
+              ]
+            }
+          ],
+          "note": "Both value objects carry an EMPTY tag_text on purpose; the 8px labels supply the caption. Not a duplicate-caption defect."
+        },
+        {
+          "role": "bypass / recirculation column",
+          "required": true,
+          "anchor": {
+            "obj_id": "number_v3_exhaust_connector_up",
+            "pos": [
+              411,
+              211
+            ],
+            "size": [
+              18,
+              50
+            ],
+            "zIndex": "5"
+          },
+          "members": [
+            {
+              "role": "exhaust duct",
+              "obj_id": "number_v3_exhaust_pipe_vertical",
+              "alias": "new text",
+              "offset": [
+                0,
+                43
+              ]
+            },
+            {
+              "role": "supply duct",
+              "obj_id": "number_v3_supply_pipe_vertical",
+              "alias": "new text",
+              "offset": [
+                0,
+                118
+              ]
+            },
+            {
+              "role": "supply connector",
+              "obj_id": "number_v3_supply_connector_down",
+              "alias": "new text",
+              "offset": [
+                0,
+                188
+              ]
+            },
+            {
+              "role": "recirculation damper",
+              "obj_id": "number_v3_dummy_resirc_damp_vert",
+              "alias": "new text",
+              "offset": [
+                -4,
+                99
+              ]
+            },
+            {
+              "role": "damper position",
+              "obj_id": "number_v3_R_45px_con_left",
+              "tag": "KA502 %",
+              "offset": [
+                18,
+                106
+              ]
+            }
+          ],
+          "note": "The damper OVERLAYS a continuous duct column running y211 to y449. Never shorten the duct to clear the damper."
+        },
+        {
+          "role": "smoke detector",
+          "required": true,
+          "anchor": {
+            "obj_id": "V3_led_18px_circ_grey_red",
+            "pos": [
+              893,
+              422
+            ],
+            "size": [
+              18,
+              18
+            ],
+            "zIndex": "375"
+          },
+          "members": [
+            {
+              "role": "stub line",
+              "obj_id": "number_v3_dummy_6x15_Line_Small_Down",
+              "alias": "new text",
+              "offset": [
+                6,
+                16
+              ]
+            },
+            {
+              "role": "caption",
+              "obj_id": "number_v3_label_8px_norm",
+              "tag": "RY401",
+              "offset": [
+                -7,
+                -12
+              ]
+            }
+          ]
+        }
+      ],
+      "inlet_dampers": {
+        "rule": "Exactly one position value per inlet damper, and it MUST be a con_down box above the damper whose connector edge meets the damper body.",
+        "accepted_obj_ids": [
+          "V3_horis_damper_flow-left_nrm",
+          "V3_horis_damper_flow-right_nrm"
+        ],
+        "prohibited_obj_ids": [
+          "number_v3_dummy_resirc_damp_hor"
+        ],
+        "prohibited_reason": "number_v3_dummy_resirc_damp_hor is production-real - REF-9099 / E2 uses it at (28,182) and (30,424) at 42x42 - but it is not the object this profile uses. Substituting it here is a profile violation, not a palette violation.",
+        "direction_rule": "Damper flow direction follows airflow: flow-left on the extract run, flow-right on the fresh-air run.",
+        "required": [
+          {
+            "role": "extract/outdoor damper",
+            "obj_id": "V3_horis_damper_flow-left_nrm",
+            "pos": [
+              75,
+              196
+            ],
+            "size": [
+              36,
+              26
+            ],
+            "zIndex": "40",
+            "value": {
+              "obj_id": "number_v3_R_45px_con_down",
+              "tag": "KA501 %",
+              "pos": [
+                71,
+                163
+              ],
+              "size": [
+                46,
+                38
+              ],
+              "connector": "con_down",
+              "offset_from_damper": [
+                -4,
+                -33
+              ]
+            }
+          },
+          {
+            "role": "fresh-air damper",
+            "obj_id": "V3_horis_damper_flow-right_nrm",
+            "pos": [
+              96,
+              438
+            ],
+            "size": [
+              36,
+              26
+            ],
+            "zIndex": "40",
+            "value": {
+              "obj_id": "number_v3_R_45px_con_down",
+              "tag": "KA401 %",
+              "pos": [
+                93,
+                405
+              ],
+              "size": [
+                46,
+                38
+              ],
+              "connector": "con_down",
+              "offset_from_damper": [
+                -3,
+                -33
+              ]
+            }
+          }
+        ]
+      },
+      "fixed_objects": [
+        {
+          "role": "outdoor temperature information block",
+          "obj_id": "numberV3_outside_temp",
+          "tag": "RT001 °C",
+          "pos": [
+            16,
+            17
+          ],
+          "size": [
+            79,
+            50
+          ],
+          "zIndex": "110",
+          "note": "Upper-left corner, NOT on the fresh-air duct in this profile. REF-9099 production places it at (20,301) with tag RT-90. The duct-mounted outdoor reading in this profile is RT901 °C at (133,417)."
+        },
+        {
+          "role": "duct value RT501 °C",
+          "obj_id": "number_v3_R_45px_con_down",
+          "tag": "RT501 °C",
+          "pos": [
+            985,
+            174
+          ],
+          "size": [
+            46,
+            38
+          ],
+          "zIndex": "110"
+        },
+        {
+          "role": "duct value RT401 °C",
+          "obj_id": "number_v3_R_45px_con_down",
+          "tag": "RT401 °C",
+          "pos": [
+            985,
+            417
+          ],
+          "size": [
+            46,
+            38
+          ],
+          "zIndex": "110"
+        },
+        {
+          "role": "duct value RH501 %",
+          "obj_id": "number_v3_R_45px_con_down",
+          "tag": "RH501 %",
+          "pos": [
+            887,
+            176
+          ],
+          "size": [
+            46,
+            38
+          ],
+          "zIndex": "110"
+        },
+        {
+          "role": "duct value RH401 %",
+          "obj_id": "number_v3_R_45px_con_down",
+          "tag": "RH401 %",
+          "pos": [
+            929,
+            415
+          ],
+          "size": [
+            46,
+            38
+          ],
+          "zIndex": "110"
+        },
+        {
+          "role": "duct value RT901 °C",
+          "obj_id": "number_v3_R_45px_con_down",
+          "tag": "RT901 °C",
+          "pos": [
+            133,
+            417
+          ],
+          "size": [
+            46,
+            38
+          ],
+          "zIndex": "110"
+        }
+      ],
+      "alarms": [
+        {
+          "role": "extract fan",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Common Alarm - extract fan",
+          "pos": [
+            197,
+            160
+          ]
+        },
+        {
+          "role": "supply fan",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Common Alarm - supply air fan",
+          "pos": [
+            843,
+            403
+          ]
+        },
+        {
+          "role": "extract filter",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Filter alarm for extract filter",
+          "pos": [
+            498,
+            106
+          ]
+        },
+        {
+          "role": "supply filter",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Filter alarm for supply filter",
+          "pos": [
+            199,
+            352
+          ]
+        },
+        {
+          "role": "rotary heat recovery",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Rotary heat exchanger &#150; rotation alarm (only with OJ-RHX2M)",
+          "pos": [
+            294,
+            309
+          ]
+        },
+        {
+          "role": "cooling coil",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Common Alarm - cooling",
+          "pos": [
+            458,
+            385
+          ]
+        },
+        {
+          "role": "water heating coil",
+          "obj_id": "V3_R_34px_circular_alarm_nrm",
+          "alias": "Alarm,-Heating coil frost alarm",
+          "pos": [
+            584,
+            378
+          ]
+        }
+      ],
+      "led_containment": {
+        "role": "electric heater run status",
+        "obj_id": "V3_led_13px_circ_grey_green",
+        "body_obj_id": "number_v3_el_heater",
+        "pos": [
+          703,
+          460
+        ],
+        "size": [
+          13,
+          13
+        ],
+        "offset": [
+          6,
+          47
+        ],
+        "body_bounds": [
+          697,
+          413,
+          737,
+          498
+        ],
+        "superseded_position": [
+          700,
+          466
+        ],
+        "superseded_note": "VENTILATION-GEOMETRY-CONTRACT.md section 9.1 previously recorded (700,466) with the LED variant unknown, scope SCREENSHOT. E4 resolves both: V3_led_13px_circ_grey_green at (703,460)."
+      },
+      "sidebar": {
+        "starts_at_x": 1150,
+        "headers": [
+          {
+            "caption": "Status og vendere",
+            "pos": [
+              1150,
+              0
+            ],
+            "size": [
+              250,
+              20
+            ]
+          },
+          {
+            "caption": "Vifteregulering",
+            "pos": [
+              1150,
+              165
+            ],
+            "size": [
+              250,
+              20
+            ]
+          },
+          {
+            "caption": "Temperaturregulering",
+            "pos": [
+              1150,
+              357
+            ],
+            "size": [
+              250,
+              20
+            ]
+          }
+        ],
+        "value_columns": {
+          "supply": {
+            "caption": "Tilluft",
+            "x": 1260,
+            "centre": 1291
+          },
+          "extract": {
+            "caption": "Avtrekk",
+            "x": 1330,
+            "centre": 1361
+          }
+        },
+        "no_tag_value_object": "number_v3_60px_dark_no_conn_no_tag",
+        "no_tag_rule": "Where a separate row label already names the signal, use number_v3_60px_dark_no_conn_no_tag so the value object renders no second caption.",
+        "min_rendered_separation_px": 4,
+        "centring_rule": "number_v3_label_11px_norm renders left-aligned from posLeft, so a caption is centred on a column by posLeft = centre - W/2 where W is the RENDERED text width, not posWidth. Measured at 11 px: Tilluft = 32, Avtrekk = 40. Measure any other string before centring it.",
+        "measured_text_width": {
+          "Tilluft": 32,
+          "Avtrekk": 40
+        },
+        "known_good_rows": [
+          {
+            "y": 59,
+            "captions": [
+              "A-Alarm",
+              "B-Alarm"
+            ],
+            "pitch": 45,
+            "evidence": "E1, E2 and E4 - byte-identical at posLeft 1305 and 1350 on two different plants",
+            "note": "Two captions on one row, each above its own alarm LED (x 1317 red, x 1362 yellow, y 75). A rendered-width estimate puts them within 4 px of each other, but production renders this pitch on two independent plants, so the evidence outranks the estimate. Do not respace this row."
+          }
+        ]
+      },
+      "absent_by_design": [
+        {
+          "role": "sub-page navigation buttons",
+          "reason": "No navigation target is known for an unlinked demo. Remove the object rather than leave a misleading link.",
+          "detect": {
+            "obj_id_prefixes": [
+              "sub_page",
+              "number_v3_sub_page"
+            ]
+          }
+        },
+        {
+          "role": "Cool caption on the cooling coil",
+          "reason": "REF-9099 has it; this profile does not. Do not reintroduce.",
+          "detect": {
+            "label_texts": [
+              "Cool"
+            ]
+          }
+        },
+        {
+          "role": "Rotor / VGV decorative captions",
+          "reason": "The rotor object renders its own body.",
+          "detect": {
+            "label_texts": [
+              "Rotor",
+              "VGV"
+            ]
+          }
+        },
+        {
+          "role": "second filter differential-pressure box",
+          "reason": "The filter object already renders QD501/QD401 in tag_text.",
+          "detect": {
+            "value_tag_prefixes": [
+              "QD"
+            ],
+            "note": "The filter object renders QD501/QD401 from its own tag_text. A separate value box carrying a QD code is the duplicate this rule exists to catch."
+          }
+        },
+        {
+          "role": "separate 8px KA captions beside the inlet dampers",
+          "reason": "REF-9099 pairs each con_top KA value with an 8px label. This profile's con_down value renders its own tag.",
+          "detect": {
+            "label_text_prefixes": [
+              "KA"
+            ]
+          }
+        }
+      ],
+      "known_good_duplications": [
+        {
+          "tag": "SB520 %",
+          "count": 2,
+          "where": [
+            "cooling coil output at (453,532)",
+            "electric heater output at (694,493)"
+          ],
+          "reason": "The AHU controller reuses the SB520 code for two different powers. Both are production-real and carry different alias_text. Do not deduplicate."
+        }
+      ],
+      "open_evidence": [
+        "Rendered text width of the 11 px sidebar labels. Two screenshot readings exist - Tilluft 32 px, Avtrekk 40 px - and they disagree with Arial advance widths (26 and 37) and with production: the A-Alarm / B-Alarm pair renders on a 45 px pitch on two plants, which caps A-Alarm near 41 px, while scaling the model to fit Tilluft would make it 48. Until the widths are measured at native scale, the validator estimates from Arial metrics and every width-dependent finding is a warning.",
+        "Whether the circulation pump should be _down (this profile and the current task) or _up (E2 and E3 both record _up at the same coordinate). Both ids are palette-valid; only a native-scale render decides.",
+        "The frost-protection value's offset from number_360_vg_rot - no evidence file has one."
+      ],
+      "absent_by_design_rule": "Each entry names a role this profile deliberately does not carry, and a detect block a validator can evaluate. Reintroduce one only on evidence from a source that outranks this profile."
+    },
+    "TEMPLATE-10229": {
+      "title": "Plant-10229 AK-PC 782A CO2 booster machine room",
+      "scope": "TEMPLATE-10229",
+      "evidence": [
+        "E9",
+        "E10"
+      ],
+      "derived_from": "reference_data/maskin-10229-sanitized.json, generated by build-maskin-rules.py",
+      "panel_type": "maskin",
+      "canvas": [
+        1400,
+        750
+      ],
+      "object_count": 66,
+      "distinct_obj_ids": 11,
+      "background": {
+        "converted": "true",
+        "image_data_chars": 123966,
+        "image_svg": false,
+        "note": "The raster background travels with the fixture. It is the artwork every coordinate below was measured against; rendering the objects without it proves nothing."
+      },
+      "applies_when": "The task supplies this template, names TEMPLATE-10229, or asks for a copy of the 10229 machine room. It does NOT apply to an arbitrary Maskin panel.",
+      "objects": [
+        {
+          "name": "object_0",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Superheat MT",
+          "tag_text": "",
+          "left": 588,
+          "top": 298,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_1",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Suction temp. To-MT",
+          "tag_text": "",
+          "left": 581,
+          "top": 257,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_2",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Pc",
+          "tag_text": "",
+          "left": 56,
+          "top": 72,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_3",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Sd-MT",
+          "tag_text": "",
+          "left": 55,
+          "top": 191,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_4",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Superheat LT",
+          "tag_text": "",
+          "left": 519,
+          "top": 623,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_5",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Suction temp. To-LT",
+          "tag_text": "",
+          "left": 511,
+          "top": 582,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_6",
+          "obj_id": "V3_akpc_772_781_781A_783_contr",
+          "alias_text": "C1 LT status",
+          "tag_text": "",
+          "left": 72,
+          "top": 614,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_7",
+          "obj_id": "V3_akpc_772_781_781A_783_contr",
+          "alias_text": "C2 MT status",
+          "tag_text": "",
+          "left": 152,
+          "top": 288,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_8",
+          "obj_id": "V3_akpc_772_781_781A_783_contr",
+          "alias_text": "C1 MT status",
+          "tag_text": "",
+          "left": 73,
+          "top": 289,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_9",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Vrec OD",
+          "tag_text": "",
+          "left": 761,
+          "top": 479,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_10",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Vhp OD",
+          "tag_text": "",
+          "left": 938,
+          "top": 412,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_11",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Pgc",
+          "tag_text": "",
+          "left": 1057,
+          "top": 406,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_12",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Shp",
+          "tag_text": "",
+          "left": 1058,
+          "top": 345,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_13",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Prec",
+          "tag_text": "",
+          "left": 814,
+          "top": 398,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_14",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "Prec reference",
+          "tag_text": "",
+          "left": 814,
+          "top": 373,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_15",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "Pgc reference",
+          "tag_text": "",
+          "left": 1058,
+          "top": 381,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_16",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "Suction ref. To-LT",
+          "tag_text": "",
+          "left": 511,
+          "top": 557,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_17",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "Suction ref. To-MT",
+          "tag_text": "",
+          "left": 580,
+          "top": 233,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_18",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Ss-MT",
+          "tag_text": "",
+          "left": 589,
+          "top": 325,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_19",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Ss-LT",
+          "tag_text": "",
+          "left": 518,
+          "top": 649,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_20",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Cond. capacity",
+          "tag_text": "",
+          "left": 904,
+          "top": 47,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_21",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Sgc",
+          "tag_text": "",
+          "left": 1017,
+          "top": 72,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_22",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C1 MT capacity",
+          "tag_text": "",
+          "left": 86,
+          "top": 326,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_23",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C1 LT capacity",
+          "tag_text": "",
+          "left": 87,
+          "top": 651,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_24",
+          "obj_id": "V3_ok_alarm_nrm",
+          "alias_text": "--- DI1 Alarm",
+          "tag_text": "",
+          "left": 1169,
+          "top": 86,
+          "width": 61,
+          "height": 21,
+          "zIndex": "375"
+        },
+        {
+          "name": "object_25",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Requested cap. MT",
+          "tag_text": "",
+          "left": 15,
+          "top": 361,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_26",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Running capacity MT",
+          "tag_text": "",
+          "left": 15,
+          "top": 326,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_27",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Requested cap. LT",
+          "tag_text": "",
+          "left": 16,
+          "top": 687,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_28",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Running capacity LT",
+          "tag_text": "",
+          "left": 16,
+          "top": 651,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_29",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Shr4",
+          "tag_text": "",
+          "left": 474,
+          "top": 59,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_30",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Shr3",
+          "tag_text": "",
+          "left": 578,
+          "top": 59,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_31",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Shr2",
+          "tag_text": "",
+          "left": 644,
+          "top": 70,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_32",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "Hr reference",
+          "tag_text": "",
+          "left": 428,
+          "top": 22,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_33",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "HR Consumer request",
+          "tag_text": "",
+          "left": 367,
+          "top": 23,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_34",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C1 LT Runtime total",
+          "tag_text": "",
+          "left": 87,
+          "top": 687,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_35",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C1 MT Runtime total",
+          "tag_text": "",
+          "left": 86,
+          "top": 362,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_36",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Sc3",
+          "tag_text": "",
+          "left": 840,
+          "top": 47,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_37",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Cond. requested cap.",
+          "tag_text": "",
+          "left": 969,
+          "top": 47,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_38",
+          "obj_id": "number_v3_white_value_only",
+          "alias_text": "Cond. ctrl.",
+          "tag_text": "",
+          "left": 1017,
+          "top": 46,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_39",
+          "obj_id": "V3_81x21_enebled_disabled_nrm",
+          "alias_text": "Hr enable",
+          "tag_text": "",
+          "left": 1169,
+          "top": 325,
+          "width": 81,
+          "height": 21,
+          "zIndex": "1000"
+        },
+        {
+          "name": "object_40",
+          "obj_id": "V3_led_13px_circ_grey_green",
+          "alias_text": "V3hr",
+          "tag_text": "",
+          "left": 596,
+          "top": 85,
+          "width": 13,
+          "height": 13,
+          "zIndex": "375"
+        },
+        {
+          "name": "object_41",
+          "obj_id": "V3_akpc_782A_suct",
+          "alias_text": "Control status LT",
+          "tag_text": "",
+          "left": 1171,
+          "top": 238,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_42",
+          "obj_id": "V3_akpc_782A_suct",
+          "alias_text": "Control status MT",
+          "tag_text": "",
+          "left": 1171,
+          "top": 210,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_43",
+          "obj_id": "V3_akpc_783_781A_782A_cond",
+          "alias_text": "Cond. control status",
+          "tag_text": "",
+          "left": 1170,
+          "top": 267,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_44",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Tc",
+          "tag_text": "",
+          "left": 54,
+          "top": 103,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_45",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Sd-LT",
+          "tag_text": "",
+          "left": 424,
+          "top": 504,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_46",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C2 MT capacity",
+          "tag_text": "",
+          "left": 167,
+          "top": 325,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_47",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C2 MT Runtime total",
+          "tag_text": "",
+          "left": 167,
+          "top": 362,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_48",
+          "obj_id": "number_v3_custom_json_obj",
+          "alias_text": "Hr pump speed",
+          "tag_text": " ",
+          "left": 583,
+          "top": 21,
+          "width": 40,
+          "height": 20,
+          "zIndex": "110"
+        },
+        {
+          "name": "object_49",
+          "obj_id": "number_v3_60px_no_conn",
+          "alias_text": "u17 Ther Air",
+          "tag_text": " ",
+          "left": 1169,
+          "top": 58,
+          "width": 62,
+          "height": 22,
+          "zIndex": "110"
+        },
+        {
+          "name": "object_50",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C1 MT VSD 1 speed",
+          "tag_text": "",
+          "left": 87,
+          "top": 403,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_51",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C1 LT VSD 1 speed",
+          "tag_text": "",
+          "left": 87,
+          "top": 722,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_52",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Shr8",
+          "tag_text": "",
+          "left": 430,
+          "top": 59,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_53",
+          "obj_id": "V3_21px_single_pump_grey_green_down",
+          "alias_text": "Hr pump running",
+          "tag_text": " ",
+          "left": 560,
+          "top": 21,
+          "width": 21,
+          "height": 21,
+          "zIndex": "375"
+        },
+        {
+          "name": "object_54",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C3 MT capacity",
+          "tag_text": "",
+          "left": 246,
+          "top": 326,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_55",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C3 MT Runtime total",
+          "tag_text": "",
+          "left": 247,
+          "top": 362,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_56",
+          "obj_id": "V3_akpc_772_781_781A_783_contr",
+          "alias_text": "C3 MT status",
+          "tag_text": "",
+          "left": 234,
+          "top": 289,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_57",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "To opt. offset LT",
+          "tag_text": "",
+          "left": 557,
+          "top": 582,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_58",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "V3gc",
+          "tag_text": "",
+          "left": 1065,
+          "top": 156,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_59",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "Suction temp. To-MT",
+          "tag_text": "",
+          "left": 626,
+          "top": 257,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_60",
+          "obj_id": "V3_akpc_772_781_781A_783_contr",
+          "alias_text": "C2 LT status",
+          "tag_text": "",
+          "left": 152,
+          "top": 614,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_61",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C2 LT capacity",
+          "tag_text": "",
+          "left": 167,
+          "top": 651,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_62",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C2 LT Runtime total",
+          "tag_text": "",
+          "left": 167,
+          "top": 687,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_63",
+          "obj_id": "V3_akpc_772_781_781A_783_contr",
+          "alias_text": "C3 LT status",
+          "tag_text": "",
+          "left": 232,
+          "top": 615,
+          "width": 81,
+          "height": 21,
+          "zIndex": "360"
+        },
+        {
+          "name": "object_64",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C3 LT capacity",
+          "tag_text": "",
+          "left": 246,
+          "top": 651,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        },
+        {
+          "name": "object_65",
+          "obj_id": "number_v3_value_only",
+          "alias_text": "C3 LT Runtime total",
+          "tag_text": "",
+          "left": 246,
+          "top": 687,
+          "width": 50,
+          "height": 20,
+          "zIndex": "1100"
+        }
+      ],
+      "compressor_columns": {
+        "MT": {
+          "status": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "V3_akpc_772_781_781A_783_contr",
+                "left": 73,
+                "top": 289,
+                "zIndex": "360"
+              },
+              {
+                "compressor": 2,
+                "obj_id": "V3_akpc_772_781_781A_783_contr",
+                "left": 152,
+                "top": 288,
+                "zIndex": "360"
+              },
+              {
+                "compressor": 3,
+                "obj_id": "V3_akpc_772_781_781A_783_contr",
+                "left": 234,
+                "top": 289,
+                "zIndex": "360"
+              }
+            ],
+            "pitch": [
+              [
+                79,
+                -1
+              ],
+              [
+                82,
+                1
+              ]
+            ]
+          },
+          "capacity": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "number_v3_value_only",
+                "left": 86,
+                "top": 326,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 2,
+                "obj_id": "number_v3_value_only",
+                "left": 167,
+                "top": 325,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 3,
+                "obj_id": "number_v3_value_only",
+                "left": 246,
+                "top": 326,
+                "zIndex": "1100"
+              }
+            ],
+            "pitch": [
+              [
+                81,
+                -1
+              ],
+              [
+                79,
+                1
+              ]
+            ]
+          },
+          "runtime": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "number_v3_value_only",
+                "left": 86,
+                "top": 362,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 2,
+                "obj_id": "number_v3_value_only",
+                "left": 167,
+                "top": 362,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 3,
+                "obj_id": "number_v3_value_only",
+                "left": 247,
+                "top": 362,
+                "zIndex": "1100"
+              }
+            ],
+            "pitch": [
+              [
+                81,
+                0
+              ],
+              [
+                80,
+                0
+              ]
+            ]
+          },
+          "vsd": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "number_v3_value_only",
+                "left": 87,
+                "top": 403,
+                "zIndex": "1100"
+              }
+            ],
+            "pitch": []
+          }
+        },
+        "LT": {
+          "status": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "V3_akpc_772_781_781A_783_contr",
+                "left": 72,
+                "top": 614,
+                "zIndex": "360"
+              },
+              {
+                "compressor": 2,
+                "obj_id": "V3_akpc_772_781_781A_783_contr",
+                "left": 152,
+                "top": 614,
+                "zIndex": "360"
+              },
+              {
+                "compressor": 3,
+                "obj_id": "V3_akpc_772_781_781A_783_contr",
+                "left": 232,
+                "top": 615,
+                "zIndex": "360"
+              }
+            ],
+            "pitch": [
+              [
+                80,
+                0
+              ],
+              [
+                80,
+                1
+              ]
+            ]
+          },
+          "capacity": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "number_v3_value_only",
+                "left": 87,
+                "top": 651,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 2,
+                "obj_id": "number_v3_value_only",
+                "left": 167,
+                "top": 651,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 3,
+                "obj_id": "number_v3_value_only",
+                "left": 246,
+                "top": 651,
+                "zIndex": "1100"
+              }
+            ],
+            "pitch": [
+              [
+                80,
+                0
+              ],
+              [
+                79,
+                0
+              ]
+            ]
+          },
+          "runtime": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "number_v3_value_only",
+                "left": 87,
+                "top": 687,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 2,
+                "obj_id": "number_v3_value_only",
+                "left": 167,
+                "top": 687,
+                "zIndex": "1100"
+              },
+              {
+                "compressor": 3,
+                "obj_id": "number_v3_value_only",
+                "left": 246,
+                "top": 687,
+                "zIndex": "1100"
+              }
+            ],
+            "pitch": [
+              [
+                80,
+                0
+              ],
+              [
+                79,
+                0
+              ]
+            ]
+          },
+          "vsd": {
+            "cells": [
+              {
+                "compressor": 1,
+                "obj_id": "number_v3_value_only",
+                "left": 87,
+                "top": 722,
+                "zIndex": "1100"
+              }
+            ],
+            "pitch": []
+          }
+        }
+      },
+      "role_translations_mt_to_lt": {
+        "C1 MT Runtime total": {
+          "to": "C1 LT Runtime total",
+          "delta": [
+            1,
+            325
+          ]
+        },
+        "C1 MT VSD 1 speed": {
+          "to": "C1 LT VSD 1 speed",
+          "delta": [
+            0,
+            319
+          ]
+        },
+        "C1 MT capacity": {
+          "to": "C1 LT capacity",
+          "delta": [
+            1,
+            325
+          ]
+        },
+        "C1 MT status": {
+          "to": "C1 LT status",
+          "delta": [
+            -1,
+            325
+          ]
+        },
+        "C2 MT Runtime total": {
+          "to": "C2 LT Runtime total",
+          "delta": [
+            0,
+            325
+          ]
+        },
+        "C2 MT capacity": {
+          "to": "C2 LT capacity",
+          "delta": [
+            0,
+            326
+          ]
+        },
+        "C2 MT status": {
+          "to": "C2 LT status",
+          "delta": [
+            0,
+            326
+          ]
+        },
+        "C3 MT Runtime total": {
+          "to": "C3 LT Runtime total",
+          "delta": [
+            -1,
+            325
+          ]
+        },
+        "C3 MT capacity": {
+          "to": "C3 LT capacity",
+          "delta": [
+            0,
+            325
+          ]
+        },
+        "C3 MT status": {
+          "to": "C3 LT status",
+          "delta": [
+            -2,
+            326
+          ]
+        },
+        "Control status MT": {
+          "to": "Control status LT",
+          "delta": [
+            0,
+            28
+          ]
+        },
+        "Requested cap. MT": {
+          "to": "Requested cap. LT",
+          "delta": [
+            1,
+            326
+          ]
+        },
+        "Running capacity MT": {
+          "to": "Running capacity LT",
+          "delta": [
+            1,
+            325
+          ]
+        },
+        "Sd-MT": {
+          "to": "Sd-LT",
+          "delta": [
+            369,
+            313
+          ]
+        },
+        "Ss-MT": {
+          "to": "Ss-LT",
+          "delta": [
+            -71,
+            324
+          ]
+        },
+        "Suction ref. To-MT": {
+          "to": "Suction ref. To-LT",
+          "delta": [
+            -69,
+            324
+          ]
+        },
+        "Superheat MT": {
+          "to": "Superheat LT",
+          "delta": [
+            -69,
+            325
+          ]
+        }
+      },
+      "absent_by_design": {
+        "roles": [
+          "C2 MT VSD 1 speed",
+          "C3 MT VSD 1 speed",
+          "C2 LT VSD 1 speed",
+          "C3 LT VSD 1 speed"
+        ],
+        "why": "On E9 only C1 carries a VSD row, on each suction group. C2 and C3 are fixed-speed: status, capacity and runtime only. Cloning C1 to make a C4 imports a VSD row the machine does not have."
+      },
+      "anomalies": [
+        {
+          "object": "object_48",
+          "alias": "Hr pump speed",
+          "finding": "tag_text is ' ' (a single space), not empty",
+          "treatment": "preserved verbatim in E10; do not normalise it away when copying this template"
+        },
+        {
+          "object": "object_49",
+          "alias": "u17 Ther Air",
+          "finding": "tag_text is ' ' (a single space), not empty",
+          "treatment": "preserved verbatim in E10; do not normalise it away when copying this template"
+        },
+        {
+          "object": "object_53",
+          "alias": "Hr pump running",
+          "finding": "tag_text is ' ' (a single space), not empty",
+          "treatment": "preserved verbatim in E10; do not normalise it away when copying this template"
+        },
+        {
+          "object": [
+            "object_1",
+            "object_59"
+          ],
+          "alias": "Suction temp. To-MT",
+          "finding": "2 objects share this alias at (581,257) and (626,257), and in E9 they shared one driver id",
+          "treatment": "preserved in E10 and reported as a WARNING by the validator. Whether it is intentional is open evidence - do not silently delete one."
+        }
       ]
     }
   }

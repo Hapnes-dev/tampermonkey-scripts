@@ -256,6 +256,35 @@ PICK_BY_TASK = [
     ("Values fed by the JSON plugin",
      ["number_v3_60px_json_obj", "number_v3_custom_json_obj"],
      "Only when the plant actually runs the JSON plugin."),
+    ("List panel object set (spjeldliste)",
+     ["previous_page_tekn_box_no", "number_v3_label_12px_bold_white",
+      "number_v3_label_12px_bold", "number_v3_header_appgrey",
+      "number_v3_header_grey50", "number_v3_value_only",
+      "number_v3_label_8px_norm"],
+     "The complete scaffold and cell set of a container-built list panel, in "
+     "emission order: banner, four blank half-table title slots, 14 column "
+     "headers, 13 vertical dividers, one grey50 stripe per group, then the row "
+     "cells - 12px_bold for static text, value_only for live values. The "
+     "8px_norm dotted separator appears in production but its placement is "
+     "author-driven: preserve it when editing an export, do not generate it. "
+     "Measured geometry and the generation algorithm: "
+     "LIST-PANEL-GENERATION-CONTRACT.md."),
+    ("Maskin object set (CO2 rack machine room)",
+     ["number_v3_value_only", "number_v3_white_value_only",
+      "V3_akpc_772_781_781A_783_contr", "V3_akpc_782A_suct",
+      "V3_akpc_783_781A_782A_cond", "V3_ok_alarm_nrm",
+      "V3_81x21_enebled_disabled_nrm", "V3_led_13px_circ_grey_green",
+      "V3_21px_single_pump_grey_green_down", "number_v3_custom_json_obj",
+      "number_v3_60px_no_conn"],
+     "The complete vocabulary of one measured production machine picture "
+     "(66 objects, 11 distinct ids): value_only for every measurement, "
+     "white_value_only for setpoints and references, one AK-PC strip per "
+     "group type, and single instances of the alarm, enable, LED, pump and "
+     "two no-connection boxes. The machine drawing owns all artwork, so this "
+     "set contains no pipes, symbols or labels. The sizes in the table below "
+     "are toolbox defaults: production places every AK-PC strip at 81x21. "
+     "Measured geometry, roles and z-index bands: "
+     "MASKIN-GENERATION-CONTRACT.md."),
 ]
 
 

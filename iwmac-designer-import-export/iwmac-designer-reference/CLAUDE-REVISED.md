@@ -1,5 +1,36 @@
 # CLAUDE-REVISED.md — revision specification for `CLAUDE.md`
 
+> ## STATUS AS OF 2026-08-10: NOT APPLIED. PARTIALLY SUPERSEDED.
+>
+> **`CLAUDE.md` is the authoritative host document. This file is a proposal.**
+> Nothing below has been applied to `CLAUDE.md`, so the two are not two
+> contracts — one is the document and one is a plan for it. Where they
+> disagree, `CLAUDE.md` describes the repository as it actually is.
+>
+> **What is already superseded.** R1–R8 all assume that measured ventilation
+> geometry has nowhere to live. It now does:
+> [VENTILATION-GEOMETRY-CONTRACT.md](VENTILATION-GEOMETRY-CONTRACT.md) exists,
+> is scope-tagged, carries an evidence id on every coordinate, and is backed by
+> [documentation-rules.json](documentation-rules.json),
+> [validate-ventilation-panel.py](validate-ventilation-panel.py) and a
+> regression fixture. The *destination* half of every MOVE verdict in R6 and R7
+> is therefore already built. What remains unapplied is only the *deletion* half
+> — removing the relocated paragraphs from `CLAUDE.md` §17b and leaving a
+> pointer.
+>
+> **Do not perform those deletions from this file alone.** It was written before
+> the contract existed and its line numbers (“replace lines 398–491”) refer to a
+> `CLAUDE.md` that has since been edited. Any future application must re-derive
+> the anchors and verify, paragraph by paragraph, that the contract really does
+> carry the fact being removed.
+>
+> **One correction was applied to `CLAUDE.md` directly rather than through this
+> file:** §17b.3 rule 3 listed `V3_horis_damper_flow-left_nrm` /
+> `-right_nrm` among eight "bad substitutions". That is true of the E1/E2
+> revision of the 9099 panel and false as a general rule — both objects are
+> production-real, and the corrected rotor profile requires them. See
+> [documentation-change-log.md](documentation-change-log.md) and contract §5.9b.
+
 **This file is a specification, not a replacement file.** `CLAUDE.md` is 101 766
 characters across 576 lines, and the instruction for this audit was explicitly
 *"do not delete existing technical details merely to shorten the documentation"*.

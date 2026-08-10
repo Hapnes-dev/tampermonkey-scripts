@@ -1,0 +1,17 @@
+# Regenerable output of the tools in this folder. Everything listed here can be
+# recreated from a committed input, so it is local state rather than content.
+#
+# validate-ventilation-panel.py and the test suite
+__pycache__/
+*.pyc
+
+# Scratch from the menu survey that feeds build-object-catalog.py. Batches of
+# extracted menu JS plus their merge output - regenerable, and not documentation.
+survey-tmp/
+
+# render-ventilation-panel.py writes its preview alongside its input by default,
+# or wherever -o points. A preview is a QA artifact, not documentation: it is
+# approximate by construction (no host artwork) and must never be read as a
+# record of what a panel looks like.
+*-preview.html
+_preview-*.html

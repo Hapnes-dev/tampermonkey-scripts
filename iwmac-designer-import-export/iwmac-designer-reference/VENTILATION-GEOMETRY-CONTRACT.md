@@ -11,18 +11,33 @@ real export. Nothing here is estimated, rounded, or averaged.
 
 ## How to read this file
 
-**Source precedence.** When two sources disagree, take the higher rank. Never
-average conflicting coordinates.
+### Source precedence — normative
+
+When two sources disagree, take the higher rank. **Never average conflicting
+coordinates.** A supplied export becomes the geometric template.
 
 | Rank | Source |
 |---|---|
 | 1 | A panel JSON or screenshot supplied with the current task |
-| 2 | A production export of the same panel type |
-| 3 | Panel-specific rules in [CLAUDE.md](CLAUDE.md) |
-| 4 | [AI-BRIEFING.txt](AI-BRIEFING.txt) |
-| 5 | [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) |
-| 6 | [DESIGN-OBJECT-CATALOG.md](DESIGN-OBJECT-CATALOG.md) |
-| 7 | Generic visual-design advice |
+| 2 | A production export of the same panel **and system type** |
+| 3 | **This file** — `VENTILATION-GEOMETRY-CONTRACT.md` |
+| 4 | Panel-specific rules in [CLAUDE.md](CLAUDE.md) |
+| 5 | [AI-BRIEFING.txt](AI-BRIEFING.txt) or its accepted revision |
+| 6 | [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) |
+| 7 | [DESIGN-OBJECT-CATALOG.md](DESIGN-OBJECT-CATALOG.md) |
+| 8 | Generic visual-design advice |
+
+This is the same eight-rank list held machine-readably in
+[documentation-rules.json](documentation-rules.json) → `source_precedence`.
+Earlier revisions of this file carried a seven-rank list that omitted the
+geometry contract itself, and briefing §7a carried a five-rank list that omitted
+both it and the catalogue. Those are superseded; there is one list.
+
+**When evidence is missing, mark the gap and stop.** Do not invent a coordinate,
+`obj_id`, driver id, unit id, parameter alias, file path, or navigation target.
+Unresolved questions go in §12, not into a plausible number.
+
+### Scope tags
 
 **Every rule carries a scope tag.** Do not promote a tag by inference.
 
@@ -31,8 +46,95 @@ average conflicting coordinates.
 | `GLOBAL` | Holds for every IWMAC Designer panel of any type |
 | `VENT` | Holds for every Ventilasjon panel; confirmed in two or more independent production exports |
 | `REF-9099` | Measured in the 9099 export family only. A different AHU may legitimately differ |
+| `PROFILE-9099-ROTOR-DEMO` | Geometry of one named, corrected profile (§0). Applies **only** when that profile is the selected template |
 | `SCREENSHOT` | Derived from a visual correction stated in the task. **Not present in any export inspected here.** Outranks production under precedence rank 1, and is recorded as unverified |
 | `ADVISORY` | Judgement or convention, not a measurement |
+
+`VENT` is the only tag that generalizes. A `REF-9099` or `PROFILE-*` coordinate
+placed on a different AHU without evidence is the failure mode this tagging
+exists to prevent.
+
+## 0. Profiles and the atomic cluster model
+
+### 0.1 The profile registry
+
+A **profile** is a complete, internally consistent set of geometry for one AHU
+configuration, evidenced by one file. Select exactly one before placing anything,
+and say which one you selected.
+
+| Profile | Evidence | Recovery | Bypass | Water heating | Electric heater | Inlet dampers |
+|---|---|---|---|---|---|---|
+| `PROFILE-9099-ROTOR-DEMO` | **E4** — [tests/fixtures/ventilation-9099-rotor-demo.json](tests/fixtures/ventilation-9099-rotor-demo.json) | rotor | yes | yes | yes | production horizontal flow dampers |
+| *(unnamed, E1/E2 revision)* | E1, E2 | rotor | yes | yes | yes | `number_v3_dummy_resirc_damp_hor` |
+| *(unnamed, E3 plant)* | E3 | rotor | **no** | yes | yes (different unit) | `V3_horis_damper_flow-*` |
+
+Only the first is a *profile* in the machine-readable sense: it is the one
+declared in [documentation-rules.json](documentation-rules.json) → `profiles`,
+and the only one the validator can enforce with `--profile`. The other two rows
+are evidence sets, listed so that a coordinate found in this file can always be
+traced to the configuration it was measured on.
+
+**The three are the same panel type and not the same panel.** E4 is the corrected
+revision; E1 and E2 are earlier revisions of the same AHU; E3 is a different
+plant. Where they disagree, this file records **all** the readings and names
+which one the profile takes — it never averages them.
+
+### 0.2 Every component is an atomic cluster
+
+A cluster is **an anchor, its members, and their offsets from that anchor**. The
+offsets are the contract; the absolute positions are one instantiation of it.
+
+- **Relocate a cluster with one translation vector applied to every member.**
+- **A cluster is complete or it is a defect.** A heating coil with a `SB510 %`
+  output but no circulation pump and no 3-way valve fails cluster integrity even
+  though every object in it is individually legal.
+- **Never leave a member behind** — an alarm, an output, a pump or a caption that
+  did not move with its anchor is the most common visual defect in a generated
+  panel.
+
+Machine-readable form: `profiles.<name>.clusters[]` in
+[documentation-rules.json](documentation-rules.json), each with `anchor`,
+`members[]` (`role`, `obj_id`, `offset`, `required`), and the roles that must be
+absent.
+
+### 0.3 Validator rule ids
+
+Every rule below is enforced by
+[validate-ventilation-panel.py](validate-ventilation-panel.py). Three namespaces,
+and the split matters: **`V-S*` and `V-G*` run on every panel, `V-P*` run only
+when a profile is selected.**
+
+| Id | Enforces | Sections |
+|---|---|---|
+| `V-S01` | Envelope shape, version, non-empty panel | §1 |
+| `V-S02` | `counts` equals array lengths | §11 |
+| `V-S03` | All 17 object fields present | §11 |
+| `V-S04` | Names sequential `object_0…object_N`, no gaps or duplicates | §11 |
+| `V-S05` | Integer geometry, inside the canvas | §1 |
+| `V-S06` | Explicit z bands, never mixed with `default` | §2 |
+| `V-S07` | Canvas, background, no `image_svg`, empty `containers`/`graphics` | §1 |
+| `V-S08` | Binding contract — demo placeholders, or production host literals | §11 |
+| `V-S09` | UTF-8: `°C` preserved, never `gr C` | §7.1 |
+| `V-G02` | Every `obj_id` exists in the palette | §5 |
+| `V-G03` | Connector direction matches the target's side | §6 |
+| `V-G04` | No free-standing caption duplicating a rendered tag | §7 |
+| `V-G05` | One alarm per guarded role, beside it, clear of captions | §10 |
+| `V-G06` | Sidebar uniqueness: no duplicate rows, headers or coordinates | §8 |
+| `V-G07` | Exactly one position value per `KA` code | §5.9 |
+| `V-P00` | The named profile exists | §0.1 |
+| `V-P01`, `V-P02` | Cluster anchors and member offsets | §0.2, §3–§5 |
+| `V-P03` | Inlet damper objects, sizes and value sides | §5.9 |
+| `V-P04` | Fixed information blocks (outdoor temperature) | §5.9 |
+| `V-P05` | Equipment-body LED inside its body, at the corrected position | §9.1 |
+| `V-P06` | Profile alarm coordinates | §10 |
+| `V-P07` | Roles the profile deliberately does not carry | §7 |
+| `V-P08` | Sidebar caption centring | §7.2 |
+
+**There is no `V-G01`.** The id was never issued; the global relationship rules
+start at `V-G02`. Do not renumber to close the gap — the ids are referenced by
+name from the test suite, this file, [VENTILATION-QA-CHECKLIST.md](VENTILATION-QA-CHECKLIST.md)
+and [VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md), and a
+renumber would silently repoint every one of them.
 
 ## Evidence base
 
@@ -41,6 +143,24 @@ average conflicting coordinates.
 | **E1** | `iwmac-panel_9099_360-001-ventilasjon_recommended.json` (user Downloads, plant 9099, **not committed**) | 102 | 41 | 1400×750 | `00-blank-sidebar-1400x750`, embedded, 7 986 B |
 | **E2** | [reference_data/real-vent-panel-example.json](reference_data/real-vent-panel-example.json) | 102 | 41 | 1400×750 | same |
 | **E3** | [reference_data/real-vent-panel-example-2.json](reference_data/real-vent-panel-example-2.json) | 92 | 39 | 1400×750 | same |
+| **E4** | [tests/fixtures/ventilation-9099-rotor-demo.json](tests/fixtures/ventilation-9099-rotor-demo.json) — the sanitized `PROFILE-9099-ROTOR-DEMO` fixture | 97 | 43 | 1400×750 | same |
+
+**E1, E2 and E4 are three revisions of one AHU; E3 is a different plant.** E4 is
+the corrected revision and the only committed *demo*: 97 objects all carrying the
+`"driver_id"` placeholder, `source_plant_id` empty, no real driver id, unit id or
+plant metadata anywhere in it.
+
+**That placeholder is also the mode discriminator**, and the split is total
+rather than statistical: 0 of the 194 production objects in E2 and E3 carry the
+literal `"driver_id"`, and 97 of E4's 97 do. The validator reads it to choose
+between the demo binding contract and the production one — an unlinked object in
+a *real* export carries an **empty** `driver_id`, which is not the placeholder.
+
+| File | Objects | Real driver ids | `"driver_id"` placeholder | Empty | `source_plant_id` |
+|---|---|---|---|---|---|
+| E2 | 102 | 57 | 0 | 45 | `NNNNN` |
+| E3 | 92 | 55 | 0 | 37 | `NNNNN` |
+| E4 | 97 | 0 | 97 | 0 | `""` |
 
 All 121 `obj_id` values used across E1–E3 exist in
 [reference_data/design-object-catalog.json](reference_data/design-object-catalog.json)
@@ -169,11 +289,36 @@ text near it is the two value boxes, which render their own tags. Do not add a
 ## 5. Equipment clusters — copy whole, never split
 
 **Relocate a cluster by adding one translation vector to every member.** The
-offsets, not the absolute positions, are the contract.
+offsets, not the absolute positions, are the contract. See §0.2 for the model and
+`V-P01`/`V-P02` for the enforcement.
 
-### 5.1 Extract fan — `REF-9099`
+**Required roles per component type** — a cluster missing one of these is
+incomplete regardless of how the objects look:
 
-Anchor `V3_58px_fan_left_nrm` (187, 179) 59×59 z 40, tag `JV501`.
+| Component | Required roles | Optional roles |
+|---|---|---|
+| Fan | body, airflow value, motor output, alarm | — |
+| Filter | `numberV3_filter_with_diff_press` body (renders its own `QD…` pressure), one alarm | — |
+| Rotor | body, alarm, output `LX001 %`, efficiency | profile-supported temperatures |
+| Cooling coil | body, cooling output, alarm | profile-supported temperatures |
+| Water-heating coil | body, output, alarm, **circulation pump**, **3-way valve** | temperatures |
+| Electric heater | body, output, run-status LED | profile-supported alarm/status roles |
+| Bypass / recirculation | continuous vertical duct, damper overlay, position value | caption |
+
+**Prohibited by construction:** a second differential-pressure box beside a
+filter; a decorative `Rotor` or `VGV` label; a `SB510 %` heating output on a coil
+with no pump and no valve. Each of these is a specific `V-P07` / `V-G04` failure,
+not a matter of taste.
+
+### 5.1 Extract fan
+
+Anchor `V3_58px_fan_left_nrm` 59×59 z 40, tag `JV501`. Offsets are stable across
+all four files; the anchor x is not.
+
+| Anchor position | Scope |
+|---|---|
+| (187, 179) | `REF-9099` — E1 |
+| **(152, 179)** | `PROFILE-9099-ROTOR-DEMO` — E2, E4 |
 
 | Role | `obj_id` / tag | x | y | w | h | z | Offset |
 |---|---|---|---|---|---|---|---|
@@ -181,6 +326,11 @@ Anchor `V3_58px_fan_left_nrm` (187, 179) 59×59 z 40, tag `JV501`.
 | Airflow | `number_v3_R_60px_no_conn_tag_up_center`, `RF501 m3/h` | 185 | 140 | 62 | 22 | 110 | (−2, −39) |
 | Motor output | `number_v3_R_45px_con_top`, `LR501 %` | 193 | 236 | 46 | 38 | 110 | (+6, +57) |
 | Alarm | `V3_R_34px_circular_alarm_nrm` | 199 | 160 | 34 | 34 | 375 | (+12, −19) |
+
+**Profile alarm position: (197, 160)** — E4, offset (+45, −19) from the anchor at
+x 152. The task brief quoted "(198, 94) or the exact latest fixture coordinate";
+the fixture is the latest and it reads 197, 160. `V-P06` enforces the fixture
+value.
 
 ### 5.2 Supply fan — `REF-9099`
 
@@ -205,16 +355,21 @@ Place the alarm dy at −19 from the fan; choose dx so the bell clears the fan b
 and its neighbours, and state the value used. Do not treat +45 as normative — it
 is E2's extract fan only.
 
-### 5.3 Extract filter — `REF-9099`
+### 5.3 Extract filter
 
 | Role | `obj_id` / tag | x | y | w | h | z | Offset |
 |---|---|---|---|---|---|---|---|
 | Filter body | `numberV3_filter_with_diff_press`, `QD501 Pa` | 466 | 154 | 90 | 83 | 110 | (0, 0) |
 | Alarm | `V3_R_34px_circular_alarm_nrm` | 527 | 108 | 34 | 34 | 375 | (+61, −46) |
 
-Identical in E1 and E2.
+The body is identical in E1, E2 and E4. The alarm is not.
 
-### 5.4 Supply filter — `REF-9099`
+| Alarm position | Offset | Scope |
+|---|---|---|
+| (527, 108) | (+61, −46) | `REF-9099` — E1, E2 |
+| **(498, 106)** | **(+32, −48)** | `PROFILE-9099-ROTOR-DEMO` — E4, and the value the task brief states |
+
+### 5.4 Supply filter
 
 | Role | `obj_id` / tag | x | y | w | h | z | Offset |
 |---|---|---|---|---|---|---|---|
@@ -224,12 +379,18 @@ Identical in E1 and E2.
 E2 places the same filter at x 189 with its alarm at (+8, −45). dy is stable, dx
 is not.
 
+**Profile:** E4 keeps the E2 body at **x 189** and moves the alarm to
+**(199, 352)**, offset (+10, −45) — the absolute alarm coordinate the task brief
+states. `V-P06` enforces (199, 352).
+
 **The filter carries its own differential pressure in `tag_text`.** Do not add a
-separate value box for it — `VENT`, true in E1, E2 and E3.
+separate value box for it — `VENT`, true in E1, E2, E3 and E4. A second box
+carrying a `QD` code is the specific defect `V-P07` catches.
 
-### 5.5 Cooling coil — `REF-9099`
+### 5.5 Cooling coil
 
-Anchor `number_v3_cooler_2-way` (456, 409) 38×132 z 40.
+Anchor `number_v3_cooler_2-way` (456, 409) 38×132 z 40 — the same position in
+E1, E2 and E4.
 
 | Role | `obj_id` / tag | x | y | w | h | z | Offset |
 |---|---|---|---|---|---|---|---|
@@ -240,7 +401,21 @@ Anchor `number_v3_cooler_2-way` (456, 409) 38×132 z 40.
 | Coil temp, right of run | `number_v3_R_45px_con_left`, `RT410 °C` | 485 | 494 | 62 | 22 | 110 | (+29, +85) |
 | Cooling power | `number_v3_R_45px_no_conn_bott_center`, `SB520 %` | 452 | 532 | 46 | 22 | 110 | (−4, +123) |
 
-### 5.6 Heating coil — `REF-9099`
+**Profile differences** — `PROFILE-9099-ROTOR-DEMO`, from E4:
+
+| Role | E1 / E2 | E4 | Note |
+|---|---|---|---|
+| Alarm | (457, 379), offset (+1, −30) | **(458, 385)**, offset (+2, −24) | the brief's stated cooling-alarm coordinate; `V-P06` |
+| Cooling power | `number_v3_R_45px_no_conn_bott_center` (452, 532) 46×22 | **`number_v3_R_45px_con_top` (453, 532) 46×38** | the profile attaches the output to the duct instead of floating it |
+| Caption `Cool` | present | **absent** | see §7 and `V-P07` — the coil renders no tag of its own, but the profile carries no decorative label either |
+| Coil temperatures | `RT510` / `RT410` | **absent** | this profile carries only profile-supported temperatures; do not re-add them without evidence |
+
+**`SB520 %` legitimately appears twice in E4** — once as the cooling output here
+and once as the electric heater's regulator power (§5.7), with different
+`alias_text`. Duplicate-value detection is therefore scoped to `KA` codes
+(`V-G07`) and must not be widened to every tag string.
+
+### 5.6 Heating coil
 
 Anchor `number_v3_heater_3_way` (583, 413) 40×210 z 40, tag `LV401`.
 
@@ -254,6 +429,28 @@ Anchor `number_v3_heater_3_way` (583, 413) 40×210 z 40, tag `LV401`.
 | Circulation pump | `V3_21px_single_pump_grey_green_up`, `JP410` | 601 | 527 | 21 | 21 | 375 | (+18, +114) |
 | 3-way valve | `v3_3w_valve_right_down_nrm` | 602 | 572 | 22 | 18 | 375 | (+19, +159) |
 
+**Cluster integrity is the point of this cluster.** `SB510 %`, the pump and the
+3-way valve are one unit. A panel that shows the heating output with no pump and
+no valve is incomplete — `V-P01` fails it — and that specific omission is the
+defect the task brief calls out by name.
+
+**Profile frost-alarm position: (584, 378)** — E4, offset (+1, −35), against
+E1/E2's (561, 377) at offset (−22, −36). The profile puts the bell to the right
+of the coil body instead of the left. `V-P06` enforces (584, 378).
+
+**Pump orientation is unresolved and must not be averaged.**
+
+| Reading | Source |
+|---|---|
+| `V3_21px_single_pump_grey_green_up` | E1 and E2 — two production exports |
+| **`V3_21px_single_pump_grey_green_down`** | E4 and the task brief — precedence rank 1 |
+
+Both are legal 21×21 palette entries at the same coordinate (601, 527). The
+profile takes `_down` because the supplied correction outranks production; the
+production reading is recorded here and in §12 rather than discarded. If a future
+export of this AHU shows `_up`, that is rank-2 evidence against a rank-1
+correction and the question reopens — do not silently switch.
+
 > **Instrument codes are plant-specific; the positions are not.** E1 and E2 place
 > the four coil temperatures at effectively the same coordinates but swap which
 > loop is numbered 4xx and which 5xx: E1 has `RT510`/`RT410` on the cooler and
@@ -261,21 +458,35 @@ Anchor `number_v3_heater_3_way` (583, 413) 40×210 z 40, tag `LV401`.
 > from the reference and the **code** from the target plant's parameter inventory.
 > Never copy a code across plants because the coordinate matched.
 
-### 5.7 Electric heater — `REF-9099`
+### 5.7 Electric heater
 
 Anchor `number_v3_el_heater` (697, 413) 40×85 z 40, tag `LV402`.
 **Body bounds x 697…737, y 413…498.**
 
-| Role | `obj_id` / tag | x | y | w | h | z | Offset |
-|---|---|---|---|---|---|---|---|
-| Heater body | `number_v3_el_heater`, `LV402` | 697 | 413 | 40 | 85 | 40 | (0, 0) |
-| Regulator power | `number_v3_R_45px_no_conn_bott_center`, `SB520 %` | 694 | 493 | 46 | 22 | 110 | (−3, +80) |
+| Role | `obj_id` / tag | x | y | w | h | z | Offset | Scope |
+|---|---|---|---|---|---|---|---|---|
+| Heater body | `number_v3_el_heater`, `LV402` | 697 | 413 | 40 | 85 | 40 | (0, 0) | `REF-9099`, E1 and E4 |
+| Regulator power | `number_v3_R_45px_no_conn_bott_center`, `SB520 %` | 694 | 493 | 46 | 22 | 110 | (−3, +80) | `REF-9099`, E1 and E4 |
+| **Run-status LED** | `V3_led_13px_circ_grey_green` | **703** | **460** | 13 | 13 | 375 | **(+6, +47)** | `PROFILE-9099-ROTOR-DEMO`, E4 |
 
 E2 places the body at x 693 (bounds 693…733); E3 uses the same `obj_id` at
 (459, 412) with tag `LI401`, on a different unit. **The 40×85 body size is stable
-across all three; the x position is not.**
+across all four files; the x position is not.**
 
-The heater body carries no alarm in any export.
+The heater body carries **no alarm** in any export. The LED is a status
+indicator, not an alarm — do not add a bell here to "complete" the cluster.
+
+**LED containment is a hard constraint**, enforced by `V-P05`:
+
+| Check | Value |
+|---|---|
+| LED bounds | x 703…716, y 460…473 |
+| Inside the body (697…737, 413…498)? | yes — margins left 6, right 21, top 47, bottom 25 |
+| Clear of the `LV402` tag the body renders? | yes |
+| Clear of `SB520 %` (starts y 493)? | yes — 20 px |
+| Superseded position | **(700, 466)** — the earlier `SCREENSHOT` reading; `V-P05` rejects it |
+
+See §9.1 for how the 13 px variant was resolved.
 
 ### 5.8 Room / zone endpoint — `VENT` (body), `REF-9099` (satellites)
 
@@ -293,7 +504,14 @@ The two value boxes have an **empty-looking** `tag_text` of a single space — t
 caption above each one is a separate 8 px label. This is the "row label already
 names the value" pattern of §7.
 
-### 5.9 Outside-air inlet and end dampers — `REF-9099`
+### 5.9 Inlet dampers and the outdoor-temperature block
+
+**Object choice here is profile-scoped, not global.** Both damper families are
+production-real, and an earlier revision of [CLAUDE.md](CLAUDE.md) rule 3 listed
+`V3_horis_damper_flow-*` among eight "bad substitutions" — which was true of the
+E1/E2 revision and false as a general rule. Select by profile.
+
+#### 5.9a Recirculation-dummy variant — `REF-9099` (E1, E2)
 
 | Role | `obj_id` / tag | x | y | w | h | z |
 |---|---|---|---|---|---|---|
@@ -307,8 +525,78 @@ names the value" pattern of §7.
 | Exhaust arrow | `number_v3_dummy_21x17_Arrow_Left` | 2 | 200 | 21 | 17 | 15 |
 | Intake arrow | `number_v3_dummy_21x17_Arrow_Right` | 2 | 443 | 21 | 17 | 15 |
 
-E3 uses `V3_horis_damper_flow-left_nrm` / `-right_nrm` 36×26 at z 40 instead, on a
-unit with no recirculation.
+Here the values are `con_top` because their target is the **duct**: they sit
+below the run with the connector pointing up at it.
+
+E3 uses `V3_horis_damper_flow-left_nrm` / `-right_nrm` 36×26 at z 40 on a unit
+with no recirculation, at (30, 195) and (30, 438).
+
+#### 5.9b Production flow-damper variant — `PROFILE-9099-ROTOR-DEMO` (E4)
+
+**This is the corrected variant.** Use the production horizontal damper objects,
+not a generic recirculation dummy, and attach each position value to the damper
+rather than to the duct.
+
+| Role | `obj_id` / tag | x | y | w | h | z |
+|---|---|---|---|---|---|---|
+| Outdoor temp block | `numberV3_outside_temp`, `RT001 °C` | **16** | **17** | 79 | 50 | 110 |
+| Extract damper | `V3_horis_damper_flow-left_nrm` | 75 | 196 | 36 | 26 | 40 |
+| Fresh-air damper | `V3_horis_damper_flow-right_nrm` | 96 | 438 | 36 | 26 | 40 |
+| Extract damper position | `number_v3_R_45px_con_down`, `KA501 %` | 71 | 163 | 46 | 38 | 110 |
+| Fresh-air damper position | `number_v3_R_45px_con_down`, `KA401 %` | 93 | 405 | 46 | 38 | 110 |
+| Duct outdoor temperature | `number_v3_R_45px_con_down`, `RT901 °C` | 133 | 417 | 46 | 38 | 110 |
+
+Rules this variant carries, all enforced:
+
+- **Damper direction follows airflow** — `flow-left` on the extract run,
+  `flow-right` on the fresh-air run (`V-P03`).
+- **`con_down`, not `con_top`** — the value sits **above** its damper and points
+  down at it. The connector direction changed because the *target* changed from
+  the duct to the damper, not as a style preference (§6, `V-G03`).
+- **Exactly one position value per damper.** No separate 8 px `KA501` / `KA401`
+  captions: the `con_down` box renders its own tag, so a caption beside it is the
+  duplicate `V-P07` catches, and a second value box carrying the same `KA` code
+  is what `V-G07` catches. A stale duplicate left behind by an edit is a defect
+  on any plant, which is why the one-value-per-`KA`-code rule is global while the
+  object choice is not.
+- **Do not substitute `number_v3_dummy_resirc_damp_hor`** for these inlet
+  dampers. The vertical recirculation dummy in §3 is a different role and stays.
+
+**Outdoor temperature is a fixed information block in this profile.**
+`numberV3_outside_temp` sits in the upper-left corner at **(16, 17), 79×50,
+zIndex 110** — *not* on the fresh-air duct. The duct-mounted outdoor reading in
+this profile is a separate `con_down` box, `RT901 °C` at (133, 417). Any text
+elsewhere in the documentation saying the outdoor-temperature object always sits
+at the fresh-air inlet describes the E1/E2 revision, where it is at (20, 301),
+and does not generalize. `V-P04` pins the profile position; a supplied production
+export still overrides it under rank 1.
+
+> **OPEN — the `KA401 %` / `RT901 °C` adjacency, measured 2026-08-10.**
+> These two boxes overlap. `KA401 %` occupies x 93–139, y 405–443 and
+> `RT901 °C` occupies x 133–179, y 417–455, so they share a **6 × 26 px**
+> rectangle, and in a browser render their glyphs come within **≈ 1 px** of each
+> other. Both are `number_v3_R_45px_con_down`, so neither box is wider than the
+> profile says.
+>
+> **This adjacency does not exist in production.** E2 carries `RT901 °C` at
+> exactly (133, 417) — identical to this profile — but places `KA401 %` at
+> (25, 461) as a `con_top` box, far away. The overlap was created by moving
+> `KA401 %` to (93, 405) per the corrected profile while keeping production's
+> `RT901 °C`. It is therefore a consequence of change 27, not a production quirk
+> like the duplicated `SB520 %` in §11.
+>
+> **Nothing here is changed to resolve it**, because resolving it would mean
+> inventing a coordinate for one of two objects that each come from evidence:
+> `KA401 %` (93, 405) from the task brief at rank 1, `RT901 °C` (133, 417) from
+> E2 at rank 2. Precedence does not adjudicate between two *different* objects,
+> only between conflicting claims about the same one.
+>
+> **What to do.** An agent generating from this profile MUST reproduce both
+> coordinates as given and MUST NOT nudge either to open a gap. Whoever next has
+> the real 9099 panel in front of them should read off the true placement and
+> record it here, at which point this note is superseded. Until then the
+> adjacency is documented, pinned by a regression test, and explicitly not a
+> licence to move anything.
 
 ### 5.10 Smoke detector — `REF-9099`
 
@@ -329,14 +617,32 @@ unit with no recirculation.
 Extract centreline **y 209**, supply centreline **y 451**, runs **242 px** apart —
 identical in E1, E2 and E3. The fresh/supply split point moves with the unit.
 
-**Connector rule.** This is what makes the drawing read as ductwork:
+**Connector rule.** This is what makes the drawing read as ductwork, and it is
+the single rule that most often separates a production-looking panel from a
+diagram. **A value must be attached to the thing it describes.**
 
-- `number_v3_R_45px_con_down` (46×38) sits **above** a run, connector touching the
-  duct from above. E1: `RT502 °C` (985, 175) over the extract run, `RT401 °C`
-  (985, 417) over the supply run.
-- `number_v3_R_45px_con_top` (46×38) sits **below** a run, its top edge at the
-  duct's bottom edge. E1: `KA501 %` (24, 218) — duct bottom is y 218; `LR501 %`
-  (193, 236).
+| Object suffix | Sits | Points | Its edge must meet |
+|---|---|---|---|
+| `con_down` | **above** the target | down | the target's top edge |
+| `con_top` | **below** the target | up | the target's bottom edge |
+| `con_left` | to the **right** of the target | left | the target's right edge |
+| `con_right` | to the **left** of the target | right | the target's left edge |
+
+The name describes **where the connector stub leaves the box**, not where the box
+goes — `con_top` means the stub exits the top, so the box is underneath. Getting
+this backwards produces a bubble with a stub pointing into empty space.
+
+The target may be a duct, an equipment body, a valve or a damper. Whatever it is,
+**the connector edge must visibly meet it**; a value floating near its target is
+a defect, not an approximation (`V-G03`).
+
+Measured instances:
+
+- `number_v3_R_45px_con_down` (46×38) over a run — E1: `RT502 °C` (985, 175) over
+  the extract run, `RT401 °C` (985, 417) over the supply run. Over a *damper* —
+  E4: `KA501 %` (71, 163) above the damper at (75, 196).
+- `number_v3_R_45px_con_top` (46×38) below a run, its top edge at the duct's
+  bottom edge — E1: `KA501 %` (24, 218), duct bottom y 218; `LR501 %` (193, 236).
 - `number_v3_R_45px_con_left` / `_con_right` (62×22) attach horizontally, used on
   vertical ducts and on coil bodies.
 
@@ -407,6 +713,19 @@ corroboration, not verification.
 
 When emitting the headings, set `posLeft` from the formula and leave `posWidth` at
 the production value of 50; the width is inert for a left-aligned label.
+
+> **Every rendered width in this file is an estimate, and no rule may fail a
+> panel on the strength of one.** The two supplied readings disagree with two
+> independent checks: Arial advance widths at 11 px give 26 and 37, not 32 and
+> 40; and production renders `A-Alarm` / `B-Alarm` on a **45 px pitch** at
+> x 1305 and 1350 — byte-identical in E1, E2 and E4, on two different plants —
+> which caps `A-Alarm` near 41 px, while scaling the model up to fit `Tilluft`
+> at 32 would make it 48 and put the two captions in collision. Production
+> renders that row on two plants, so it is evidence and the estimate is not.
+> The validator therefore estimates from Arial metrics, tolerates 3 px on any
+> overlap it derives from an estimate, and reports width-dependent findings as
+> warnings (`V-P08`). Recorded as open evidence in §12 and in
+> `documentation-rules.json` → `open_evidence`.
 
 ## 8. Sidebar contract — `VENT` structure, `REF-9099` rows
 
@@ -526,31 +845,39 @@ wherever the row label already explains the signal.**
 Minimum acceptable rendered-glyph separation for a new row: **4 px**. `ADVISORY` —
 production's own margin is ≈ 6 px and nothing in the exports establishes a floor.
 
-## 9. LED placement — `SCREENSHOT`
+## 9. LED placement
 
-Both rules below come from visual corrections stated in the task. **Neither
-configuration exists in E1, E2 or E3**, so neither is production-verified here.
+### 9.1 Equipment-body LED (LV402) — `PROFILE-9099-ROTOR-DEMO`
 
-### 9.1 Equipment-body LED (LV402)
+**Resolved by E4.** The earlier reading was `SCREENSHOT`-scoped with the variant
+unknown; the fixture settles both the object and the position.
 
-| Property | Value |
-|---|---|
-| Parent | `number_v3_el_heater`, bounds **x 697…737, y 413…498** |
-| LED | 13×13 at **x 700, y 466** |
-| LED bounds | x 700…713, y 466…479 |
-| Interior margins | left 3 px, bottom 19 px, right 24 px, top 53 px |
+| Property | Current — E4 | Superseded — the earlier screenshot reading |
+|---|---|---|
+| `obj_id` | **`V3_led_13px_circ_grey_green`** | unknown; "pick by state semantics" |
+| Position | **(703, 460)**, offset (+6, +47) | (700, 466) |
+| Bounds | x 703…716, y 460…473 | x 700…713, y 466…479 |
+| Interior margins | left 6, right 21, top 47, bottom 25 | left 3, bottom 19, right 24, top 53 |
+| Clearance to `SB520 %` (y 493) | 20 px | 14 px |
 
-Placement: **lower-left interior of the body.** Not centred over the tag, not
-outside the body, and not overlapping the `SB520 %` output box below (which starts
-at y 493 — the LED ends at y 479, a 14 px clearance).
+Parent: `number_v3_el_heater`, bounds **x 697…737, y 413…498**.
 
-`obj_id`: the 13 px LED family exists in the catalogue —
-`V3_led_13px_circ_grey_red`, `_grey_green`, `_grey_yellow`, `_green_grey`,
-`_red_grey`, and the `_int` and `_square` variants. Pick by state semantics:
-grey→red for fault, grey→green for running. → *Evidence required*, §12: no export
-inspected here places a 13 px LED, so the intended variant is unconfirmed.
+**grey→green for running** is now evidenced, not inferred: E4's LED carries
+`alias_text` "Status,-Electric heater run status". The 13 px family also holds
+`_grey_red`, `_grey_yellow`, `_green_grey`, `_red_grey` and the `_int` and
+`_square` variants — pick by state semantics for a *different* role, but this
+role is settled.
 
-### 9.2 Status pill LED (Aggregatstatus)
+Placement rule, unchanged in substance and now anchored to a real coordinate:
+**fully inside the body**, not centred over the tag, not outside it, and clear of
+the output box below. `V-P05` fails a panel whose LED escapes the body bounds or
+sits at the superseded (700, 466).
+
+### 9.2 Status pill LED (Aggregatstatus) — `SCREENSHOT`, still unresolved
+
+This rule comes from a visual correction stated in the task. **No such
+configuration exists in E1, E2, E3 or E4**, so it is not production-verified and
+the profile does not carry it.
 
 The LED must sit **fully inside** the Aggregatstatus value pill, must not cover
 the numeric value, and must retain visible right and vertical padding.
@@ -562,16 +889,47 @@ sit **outside** it, at x 1317 and 1362 against a pill ending at x 1390 — i.e.
 production does *not* place those LEDs inside that pill. The requested layout is a
 different design and the pill's geometry is unknown.
 
-## 10. Alarms — `VENT`
+## 10. Alarms
 
-- **Beside the guarded component, never over it.** Every one of the seven
-  `V3_R_34px_circular_alarm_nrm` in E1 sits clear of its equipment body.
+### 10.1 Global rules — `VENT`
+
+- **One alarm per guarded role.** E1 and E4 both have exactly seven bells for
+  seven guarded roles: extract fan, supply fan, extract filter, supply filter,
+  rotor, cooling, heating frost. No bell appears twice on the same component.
+- **Beside the guarded component, never over it**, and above or immediately
+  beside it. Every `V3_R_34px_circular_alarm_nrm` in E1 sits clear of its
+  equipment body.
 - **Never over a tag, a value or an equipment control.**
 - **Checked at native rendering size**, 34×34 for the standard bell.
-- **A repeated or decorative alarm is a defect.** E1 has exactly seven bells for
-  seven guarded roles: extract fan, supply fan, extract filter, supply filter,
-  rotor, cooling, heating frost. No bell appears twice.
 - z `"375"` — above equipment (40) and values (110), below labels (1100).
+
+> **Role uniqueness is keyed on (parameter, component), not on the parameter
+> alone.** A unit with two like components legitimately repeats an alias:
+> production reference E3 guards its extract and fresh-air dampers with two
+> `Malf. damper` alarms 243 px apart. Two different dampers are two different
+> roles. Only two bells on the *same* component are the duplicate `V-G05`
+> reports.
+
+### 10.2 Profile alarm coordinates — `PROFILE-9099-ROTOR-DEMO`
+
+Absolute positions from E4, each 34×34 at z `"375"`. These are **profile
+geometry** — do not universalize them to a different AHU.
+
+| Guarded role | x | y | Offset from its anchor | E1 / E2 reading |
+|---|---|---|---|---|
+| Extract fan | 197 | 160 | (+45, −19) from (152, 179) | (199, 160) at anchor 187 |
+| Supply fan | 843 | 403 | (+48, −18) from (795, 421) | same |
+| Extract filter | 498 | 106 | (+32, −48) from (466, 154) | (527, 108) |
+| Supply filter | 199 | 352 | (+10, −45) from (189, 397) | (197, 352) at anchor 189 |
+| Rotary heat exchanger | 294 | 309 | (+12, +160) from (282, 149) | same |
+| Cooling | 458 | 385 | (+2, −24) from (456, 409) | (457, 379) |
+| Heating / frost | 584 | 378 | (+1, −35) from (583, 413) | (561, 377) |
+
+Three properties are tested per bell: clear of the component it guards, clear of
+every caption, and unique for its (role, component) pair. The caption-overlap
+test compares an exact alarm rectangle against an *estimated* label rectangle, so
+it tolerates 3 px and is a warning rather than an error on a production export —
+see §7.2 on why rendered label widths are estimates here.
 
 ## 11. Linking and sanitization — `GLOBAL`
 
@@ -610,9 +968,27 @@ looks linked and is not — worse than an empty one.
 > not the `"driver_id"` placeholder a generated panel must emit. An export is
 > evidence of what the host writes, not a template for what an AI writes.
 
+**That asymmetry is what tells the two modes apart, and it is a total split, not a
+heuristic.** Across the three files measured here, production exports carry the
+`"driver_id"` placeholder on **0 of 194** objects while the sanitized demo carries
+it on **97 of 97**. `V-S08` uses exactly that test to decide which mode it is in,
+and it is the reason the checklist's structural rules can be strict on a demo
+without failing every production reference handed to it (see §0.3 and the table
+in §2).
+
+E4 — [`tests/fixtures/ventilation-9099-rotor-demo.json`](tests/fixtures/ventilation-9099-rotor-demo.json) —
+is the worked example of this whole section: 97 objects, 97 placeholders, zero
+real driver ids, zero unit ids, `source_plant_id` empty. Diff a candidate demo
+against it rather than against E1 or E2, which are linked production files.
+
 ## 12. Evidence required
 
-Open questions this contract could not close from the material available.
+An open item here is a **licence to stop, not a licence to guess**. If a task needs
+one of these numbers, say which one is missing and what would settle it. Do not
+fill the hole with a plausible coordinate — that is the failure this section
+exists to prevent.
+
+### 12.1 Still open
 
 1. **`iwmac-panel_9099_360-001-ventilasjon_20260809-1857.json` does not exist.**
    The named input is absent from Downloads, Documents and Desktop. The only 9099
@@ -621,21 +997,45 @@ Open questions this contract could not close from the material available.
    must be re-measured against it.
 2. **No screenshots were supplied.** Every `SCREENSHOT` rule rests on the task's
    stated corrections, not on an image verified here. That covers §7.2's rendered
-   text widths and §9's two LED placements.
-3. **The 13 px LED variant for LV402 is unknown** (§9.1) — the family exists in the
-   catalogue but no export places one.
+   text widths and §9.2's status-pill LED.
+3. **The circulation pump's vertical variant is disputed** (§5.6). E1 and E2 — two
+   production exports of this AHU — record `V3_21px_single_pump_grey_green_up`;
+   the supplied correction and E4 record `_down`, at the same coordinate
+   (601, 527), and both are legal 21×21 palette entries. The profile takes `_down`
+   because rank 1 outranks rank 2, but **the disagreement is unresolved, not
+   settled**. A fresh export of this AHU showing `_up` reopens it; do not switch
+   silently in either direction.
 4. **The Aggregatstatus pill has no known geometry** (§9.2) — the name appears in
-   no export.
+   no export, and no configuration matching it exists in E1, E2, E3 or E4.
 5. **Rotor frost protection** (§4) — no export carries a frost-protection value on
    the rotor. If the target unit has one, its position is undetermined.
-6. **Rendered text metrics are not measured.** The 32 px and 40 px widths in §7.2
-   are supplied values. There is no font-metric table for
-   `number_v3_label_11px_norm`, so the centring formula cannot be applied to a
-   third heading without measuring that heading's rendered width first.
+6. **Rendered text metrics are not measured, and the two supplied readings are
+   contradicted** (§7.2). `Tilluft` 32 px and `Avtrekk` 40 px disagree with Arial
+   advance widths (26 and 37) and with production's 45 px `A-Alarm` / `B-Alarm`
+   pitch, which is byte-identical across E1, E2 and E4 on two plants. Until the
+   widths are measured at native scale, the validator estimates from Arial metrics
+   and reports every width-dependent finding as a **warning** (`V-P08`), never an
+   error. Mirrored in `documentation-rules.json` → `open_evidence[0]`.
 7. **No minimum-gap value is established by production** (§8.5). The 4 px floor is
    advisory.
 
+### 12.2 Closed by E4
+
+Recorded so a later revision does not reopen them from the old text.
+
+| Was open | Closed by | Now in |
+|---|---|---|
+| The 13 px LED variant for LV402 was unknown — the family existed in the catalogue but no export placed one | E4 places `V3_led_13px_circ_grey_green` at (703, 460), `alias_text` "Status,-Electric heater run status" | §5.7, §9.1, `V-P05` |
+| Whether the inlet dampers are recirculation dummies or production flow dampers | Both, in different revisions of the same AHU — E1/E2 dummies, E3 and E4 flow dampers | §5.9a / §5.9b, `V-P03` |
+| Whether the outdoor-temperature block belongs on the fresh-air duct | Profile-scoped: (20, 301) in E1/E2, (16, 17) corner block in E4 — and E4 *also* carries a duct-mounted `RT901 °C` | §5.9b, `V-P04` |
+| Five alarm coordinates that disagreed between the contract text and the fixture | E4 read directly | §10.2, `V-P06` |
+
 ## 13. Panel-type scope summary
+
+**Read the scope column before copying the fact.** Only `VENT` rows generalize to
+any AHU. A `PROFILE-9099-ROTOR-DEMO` row is enforceable **only** when that profile
+is the selected template (§0.1); a `REF-9099` row describes the E1/E2 revision of
+one unit; a `SCREENSHOT` row rests on a stated correction no image here verified.
 
 | Fact | Scope |
 |---|---|
@@ -645,13 +1045,26 @@ Open questions this contract could not close from the material available.
 | Room `number_360_room` (1044,159) 100×339 | `VENT` |
 | Sidebar headers 250×20 at x 1150; sections 1 and 2 at y 0 and y 165 | `VENT` |
 | Setpoint boxes 62×22; columns x 1260 / x 1330; 25 px pitch; label at value y + 5 | `VENT` |
-| Z bands 5 / 15 / 20 / 40 / 110 / 300 / 375 / 1100 | `VENT` |
+| Z bands 5 / 15 / 20 / 40 / 110 / 300 / 375 / 1100, never mixed with `default` | `VENT` |
 | `°C` in `tag_text`, never `gr C` | `VENT` |
+| A cluster is anchor + members + offsets, and moves whole (§0.2) | `VENT` |
+| One alarm per guarded role, keyed on (parameter, component) | `VENT` |
+| Connector suffix fixes which side of the target the box sits on (§6) | `VENT` |
 | Third sidebar header y | **varies** — 357 (E1, E2), 400 (E3) |
 | Bypass column at x 411 | `REF-9099` — absent from E3 |
-| Every cluster offset in §5 | `REF-9099` |
+| Every cluster offset in §5 unless a profile row below overrides it | `REF-9099` |
+| Inlet dampers as `number_v3_dummy_resirc_damp_hor` (§5.9a) | `REF-9099` |
+| Outdoor temp `numberV3_outside_temp` on the fresh-air duct at (20, 301) | `REF-9099` |
 | Coil instrument codes (`RT410`/`RT510` versus `RT420`/`RT520`) | plant-specific |
 | Fan alarm dx | **not stable** — 12, 45, 48 across three fans |
-| `Tilluft` x 1275, `Avtrekk` x 1341, rendered widths 32 / 40 | `SCREENSHOT` |
-| LV402 LED 13×13 at (700, 466) | `SCREENSHOT` |
-| Aggregatstatus LED inside its pill | `SCREENSHOT`, geometry unknown |
+| Extract fan body (152, 179); alarm (197, 160) | `PROFILE-9099-ROTOR-DEMO` |
+| Inlet dampers `V3_horis_damper_flow-left_nrm` (75,196) / `-right_nrm` (96,438), 36×26 (§5.9b) | `PROFILE-9099-ROTOR-DEMO` |
+| `con_down` `KA501 %` (71,163) and `KA401 %` (93,405), 46×38, one per damper | `PROFILE-9099-ROTOR-DEMO` |
+| Outdoor temp `numberV3_outside_temp` `RT001 °C` (16,17) 79×50, zIndex 110, corner block | `PROFILE-9099-ROTOR-DEMO` |
+| Duct-mounted `con_down` `RT901 °C` (133,417) 46×38 | `PROFILE-9099-ROTOR-DEMO` |
+| Seven alarm coordinates in §10.2 | `PROFILE-9099-ROTOR-DEMO` |
+| Heating cluster: pump (601,527), 3-way valve (602,572), `SB510 %` (620,570) | `PROFILE-9099-ROTOR-DEMO` |
+| LV402 run-status LED `V3_led_13px_circ_grey_green` 13×13 at (703, 460) | `PROFILE-9099-ROTOR-DEMO` |
+| Cooling output as `number_v3_R_45px_con_top` (453, 532); no `Cool` caption | `PROFILE-9099-ROTOR-DEMO` |
+| `Tilluft` x 1275, `Avtrekk` x 1341, rendered widths 32 / 40 | `SCREENSHOT` — contradicted, §7.2 and §12.1-6 |
+| Aggregatstatus LED inside its pill | `SCREENSHOT`, geometry unknown, in no export |

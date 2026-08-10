@@ -1,4 +1,9 @@
-# Documentation change log — ventilation generation contract
+# Documentation change log — panel generation contracts
+
+Parts 1–4 (2026-08-09 and 2026-08-10) cover the **ventilation** generation
+contract. [Part 5](#part-5--2026-08-10-the-list-panel-generation-contract)
+(2026-08-10) covers the **list panel** (spjeldliste) generation contract and uses
+its own finding ids, `L-1`–`L-16`.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -19,6 +24,32 @@ Evidence ids:
 | E1 | `iwmac-panel_9099_360-001-ventilasjon_recommended.json` (user Downloads) | 102 objects, live plant id — **not committed** |
 | E2 | [reference_data/real-vent-panel-example.json](reference_data/real-vent-panel-example.json) | 102 objects, masked |
 | E3 | [reference_data/real-vent-panel-example-2.json](reference_data/real-vent-panel-example-2.json) | 92 objects, different plant |
+| E4 | [tests/fixtures/ventilation-9099-rotor-demo.json](tests/fixtures/ventilation-9099-rotor-demo.json) | 97 objects, 43 distinct `obj_id`s — the sanitized corrected rotor profile, added 2026-08-10 (Part 4) |
+| E5 | `iwmac-panel_5295_360-001-spjeldliste_ny.json` (user Downloads) | List panel. Plant 5295, system 360.001, 55 `single_objects` + 25 containers, 78 live cells — **not committed** (live plant id). Added 2026-08-10 (Part 5) |
+| E6 | [reference_data/real-spjeldliste-example.json](reference_data/real-spjeldliste-example.json) | List panel. System 360.004, plant masked, 383 `single_objects` + 208 containers, no live bindings. The normative list template. Added 2026-08-10 (Part 5) |
+| E7 | `Spjeld liste med sjaktspjeld 06.02.26_with_driver_id_no.xlsx` (user Downloads) | The source workbook behind E5. 1 104 data rows × 26 columns; 28 rows carry `System nr. == 360.001` — **not committed** (customer data). Added 2026-08-10 (Part 5) |
+| E8 | `Spjeldliste_360.001_companion.json` (user Downloads) | 1 048 bytes, `"format": "iwmac-designer-task-companion"`. A negative example — the output-discipline anti-pattern. Added 2026-08-10 (Part 5) |
+| E9 | `iwmac-panel_10229_maskin_20260810-1033.json` (user Downloads) | Maskin. Plant 10229, `IWDIE v1.7.0`, 66 `single_objects`, 11 distinct `obj_id`s, embedded 123 966-char raster background plus a 2 241 097-char `image_svg_trace` — **not committed** (live plant id, 64 real driver ids, named author). Added 2026-08-10 (Part 6) |
+| E10 | [reference_data/maskin-10229-sanitized.json](reference_data/maskin-10229-sanitized.json) | E9 with its bindings replaced and nothing else touched: same 66 objects, same geometry, sizes, `zIndex`, `tag_text`, `alias_text`, array order and byte-identical `image_data`. The committed `TEMPLATE-10229` reference. Added 2026-08-10 (Part 6) |
+| E11 | [reference_data/generated-maskin-example.json](reference_data/generated-maskin-example.json) | An authored Maskin demo — 63 objects, 9 distinct ids, authored `image_svg`, every `zIndex` `"default"`. Reclassified in Part 6 from worked example to **negative example**. Added 2026-08-10 (Part 6) |
+| E12 | [reference_data/maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) | alias → Danfoss AK-PC parameter map; the source of link names. Added 2026-08-10 (Part 6) |
+| E13 | [tests/fixtures/maskin-compressor-bank/](tests/fixtures/maskin-compressor-bank/) | Miniature instrumented fixture, 96×64. Test instrumentation, **not** production geometry. Added 2026-08-10 (Part 6) |
+
+Scope tag added 2026-08-10: `PROFILE-9099-ROTOR-DEMO`, for geometry that is a
+property of one named profile rather than of ventilation panels in general. `VENT`
+remains the only tag that generalizes to every ventilation panel.
+
+Two further scope tags added 2026-08-10 with Part 5: `LIST`, for rules that hold
+for list panels and are confirmed by both list exports, and `TEMPLATE-SPECIFIC`,
+for values measured from a single export and therefore not yet generalizable.
+`TEMPLATE-SPECIFIC` is the list-panel counterpart of `REF-9099`; it is named for
+the template rather than for a plant because a list template is copied between
+plants.
+
+Two further scope tags added 2026-08-10 with Part 6: `MASKIN`, for rules that
+hold for every machine picture, and `TEMPLATE-10229`, for geometry measured from
+the one production export supplied with that task. `TEMPLATE-10229` is the
+Maskin counterpart of `REF-9099` — a profile, not a plant claim.
 
 ---
 
@@ -255,6 +286,10 @@ overrides an earlier paragraph in practice.
 the worst-case cap. The next edit to that file must trim before it adds. Measure
 first — the command is in `CLAUDE.md` §17b and in finding F8.
 
+> **Superseded 2026-08-10.** The file was replaced wholesale (Part 4, change 45).
+> The warning still holds; only the figure moved. Current measurement: **7 958
+> characters LF, 7 991 worst-case CRLF, 33 lines — nine characters of headroom.**
+
 ---
 
 ## Part 2 — new documents
@@ -266,6 +301,13 @@ of information that previously had no owner (F5, F6, F7).
 |---|---|---|---|
 | [VENTILATION-GEOMETRY-CONTRACT.md](VENTILATION-GEOMETRY-CONTRACT.md) | **Measured panel geometry** — coordinates, cluster offsets, z-bands, sidebar rows, the intentional-overlap table, the centring formula. 13 sections, every rule scope-tagged. | The fourth information class had no home. Geometry was scattered across CLAUDE.md prose, AI-BRIEFING §7a and PANEL-TYPE-GUIDE, in three partly-conflicting forms. | **Normative**; each rule individually tagged GLOBAL / VENT / REF-9099 / SCREENSHOT / ADVISORY |
 | [VENTILATION-QA-CHECKLIST.md](VENTILATION-QA-CHECKLIST.md) | **Executable QA** — Stage A structural (A1–A14, with an inline Python validator), B geometry (B1–B16), C visual (C1–C11, with the zoomed-crop region table and a ±2 px centring tolerance), D linking/sanitization (D1–D9), E import/save, plus a 9-question regression checklist. | The existing QA text was a 10-step prose list with no pass/fail criteria and no commands. | **Normative** |
+
+> **Correction, 2026-08-10.** Two statements in the table above are no longer true of
+> the files they describe. The QA checklist's **±2 px centring tolerance is no longer a
+> pass/fail criterion** — it was demoted to a warning because it rests on an estimated
+> glyph width (Part 4, change 31), and a Stage 0 was added ahead of Stage A. The
+> `AI-AGENT-INSTRUCTIONS-REVISED.txt` row's "not yet swapped in" is superseded: it was
+> **applied on 2026-08-10** and that file is now a stub (Part 4, changes 45–46).
 | [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md) | The findings F1–F21 in severity bands, the duplicate-rule register, the 10-row contradiction register, rules to add/remove, and the Evidence-required list. | Record of why each change above was made. | Reference |
 | [AI-AGENT-INSTRUCTIONS-REVISED.txt](AI-AGENT-INSTRUCTIONS-REVISED.txt) | A restructured 17-paragraph replacement for the Copilot Studio instructions field: adds an explicit PRECEDENCE paragraph, a TEXT ALIGNMENT paragraph, and a VENT OVERLAP paragraph. **7 943 characters / 7 976 worst-case CRLF / 0 angle brackets.** | The in-place edits fixed the live file's facts but could not restructure it inside the character budget. | **Normative** (proposed replacement — not yet swapped in) |
 | [documentation-rules.json](documentation-rules.json) | The same rules, machine-readable, so a validator can check a generated panel without parsing Markdown. Structure: `source_precedence`, `global_invariants`, `panel_types.ventilation.{canvas,background,z_indexes,clusters,sidebar,text_rules,overlap_rules,qa}`. | Requested deliverable; also the only form a script can consume. | **Normative** (mirror of the prose; prose wins on conflict) |
@@ -282,10 +324,1008 @@ existing technical details merely to shorten the documentation"*. A full rewrite
 would have had to either reproduce every retained paragraph verbatim or silently
 drop detail; the specification form does neither.
 
-| File | Form | Applying it |
-|---|---|---|
-| [CLAUDE-REVISED.md](CLAUDE-REVISED.md) | Ordered disposition of every section of `CLAUDE.md`, with full replacement text for each section that changes and a keep/move/delete verdict for each that does not. | Mechanical — each entry names the exact anchor text. |
-| [AI-BRIEFING-REVISED.txt](AI-BRIEFING-REVISED.txt) | Same form for `AI-BRIEFING.txt`, including the full text of the restructured §7a header and the new precedence preamble. | Mechanical. |
+| File | Form | Applying it | Status as of 2026-08-10 |
+|---|---|---|---|
+| [CLAUDE-REVISED.md](CLAUDE-REVISED.md) | Ordered disposition of every section of `CLAUDE.md`, with full replacement text for each section that changes and a keep/move/delete verdict for each that does not. | Mechanical — each entry names the exact anchor text. | **NOT APPLIED, partially superseded** — see Part 4, change 48 |
+| [AI-BRIEFING-REVISED.txt](AI-BRIEFING-REVISED.txt) | Same form for `AI-BRIEFING.txt`, including the full text of the restructured §7a header and the new precedence preamble. | Mechanical. | **FULLY APPLIED** — R1–R14, see Part 4, changes 43–44 and 47 |
 
 The factual corrections in Part 1 are **already live** in both files; what remains
 in Part 3 is the structural separation of the four information classes.
+
+> **Update, 2026-08-10.** That separation is now done for the ventilation half. The
+> geometry, the procedure and the acceptance tests each have an owning document, so
+> the *destination* of every MOVE verdict in both specifications exists. What is left
+> unapplied is only the *deletion* half of `CLAUDE-REVISED.md` R6/R7, and its line
+> anchors have since gone stale. Each of the three revision files now carries a status
+> block at its head saying which of those states it is in; read that block before
+> treating any of them as outstanding work.
+
+---
+
+# Part 4 — 2026-08-10: the corrected 9099 rotor profile
+
+Driven by a task brief that supplied the corrected geometry for one ventilation
+panel, obtained by repeated render-and-review of a 9099-style rotor AHU. The brief
+required that geometry be recorded as **a named profile, not as facts about every
+AHU**, and that a machine-readable form and regression tests exist for it.
+
+New evidence: **E4**, a sanitized fixture built from that corrected panel. New scope
+tag: `PROFILE-9099-ROTOR-DEMO`.
+
+**The organizing correction of this pass.** Most of the ventilation geometry recorded
+before today was stated as though it applied to ventilation panels generally, when in
+fact it had been measured on one or two panels. Two production references then
+disagreed with each other on dampers, on outdoor temperature and on the circulation
+pump — not because either was wrong, but because they are different units. Every
+change below either attaches a scope to a coordinate that previously had none, or
+corrects a coordinate against newer evidence, or converts a prose rule into a check
+that runs.
+
+---
+
+## Rules changed
+
+#### 26. Inlet dampers: two damper families, both production-real (supersedes CLAUDE.md rule 3)
+
+| | |
+|---|---|
+| **Original** | `CLAUDE.md` §17b.3 rule 3 listed `V3_horis_damper_flow-left_nrm` and `V3_horis_damper_flow-right_nrm` among **eight substituted ids that "appear nowhere in the reference"** — i.e. as evidence of a bad generation. The contract's §5.9 recorded only the recirculation dummies. `AI-BRIEFING.txt` 7a-6 qualified the dummies with "on a unit without recirculation". |
+| **Revised** | Both families are production-real and are **not alternatives**. Contract §5.9 split into **§5.9a** (`REF-9099` recirculation dummies, E2 at (28,182) and (30,424)) and **§5.9b** (`PROFILE-9099-ROTOR-DEMO` flow dampers: extract `V3_horis_damper_flow-left_nrm` (75,196) 36×26, fresh-air `V3_horis_damper_flow-right_nrm` (96,438) 36×26). Which family a panel uses is a property of the selected template, not of whether the unit recirculates. Direction follows airflow. `number_v3_dummy_resirc_damp_hor` MUST NOT be substituted for a profile inlet damper. |
+| **Reason** | A generic blacklist built from one comparison. Rule 3 recorded what one demo substituted for **one** template and was then read as a global prohibition, which would reject the corrected panel outright. |
+| **Source** | E3 carries both flow dampers at (30,195) and (30,438), 36×26. E4 carries the recirculation column **and** both flow dampers — verified this session. The other six substitutions in rule 3 stand. |
+| **Status** | **Normative** · §5.9a `REF-9099`, §5.9b `PROFILE-9099-ROTOR-DEMO` |
+| **Files** | `CLAUDE.md` (rules 3 and 12), `VENTILATION-GEOMETRY-CONTRACT.md` §5.9a/§5.9b, `AI-BRIEFING.txt` 7a-6, `documentation-rules.json`, validator rule `V-P05` |
+
+#### 27. Damper position values: `con_top` below → `con_down` above, and exactly one per damper
+
+| | |
+|---|---|
+| **Original** | KA501 as a `con_top` object at (24,218) and KA401 at (25,461), each with a separate `number_v3_label_8px_norm` caption beside it. |
+| **Revised** | `number_v3_R_45px_con_down` `KA501 %` at **(71,163)** 46×38 and `KA401 %` at **(93,405)** 46×38, sitting **above** their dampers with the stub pointing down, and **no separate caption** — the value object renders its own tag. Exactly one position value per damper; a second `KA\d{3}` value for the same damper is a defect, not a duplicate to tolerate. |
+| **Reason** | The old pair placed the value below the damper and then needed a caption to say what it was. The corrected panel attaches the value to the damper it describes and drops the caption, which also removes two of the free-standing captions flagged by `V-G04`. |
+| **Source** | E4, verified this session: both objects present at those coordinates, no companion caption. |
+| **Status** | **Normative** · `PROFILE-9099-ROTOR-DEMO` |
+| **Files** | contract §5.9b, `documentation-rules.json`, validator `V-P05`/`V-G04`, QA B-stage, tests |
+
+#### 28. Outdoor temperature is not always on the fresh-air duct
+
+| | |
+|---|---|
+| **Original** | `numberV3_outside_temp` with `RT-90`, placed on the fresh-air inlet at (20,301) — stated without a scope, so readable as a general rule. |
+| **Revised** | Placement is **profile-specific**. In `PROFILE-9099-ROTOR-DEMO` it is a fixed information block in the upper-left corner: **(16,17), 79×50, zIndex 110, `RT001 °C`** — deliberately *not* on the duct. E2 places it on the duct; E3 has none at all. The same profile *also* carries a duct-mounted `RT901 °C` at (133,417), so the two are distinct roles and not a relocation of one object. A supplied production export still overrides all of this under rank 1. |
+| **Reason** | A single unscoped coordinate for an object whose placement genuinely varies by unit. An agent following it would move a correct block. |
+| **Source** | E4 verified this session: `numberV3_outside_temp` (16,17) 79×50 z=110 `RT001 °C`; `number_v3_R_45px_con_down` (133,417) `RT901 °C`. E2 confirms the duct placement for its own panel. |
+| **Status** | **Normative** · `PROFILE-9099-ROTOR-DEMO` for (16,17); `REF-9099` for the duct placement |
+| **Files** | contract §5.8, `documentation-rules.json`, validator `V-P06`, QA, tests |
+
+#### 29. Five alarm coordinates corrected, and alarm uniqueness re-keyed
+
+| | |
+|---|---|
+| **Original** | Extract fan (199,160), extract filter (527,108), supply filter (197,352), cooling (457,379), heating/frost (561,377). Uniqueness was checked on `alias_text` alone. |
+| **Revised** | Extract fan **(197,160)**, extract filter **(498,106)**, supply filter **(199,352)**, cooling **(458,385)**, heating/frost **(584,378)**; rotor **(294,309)** and supply fan **(843,403)** confirmed unchanged. All seven are `V3_R_34px_circular_alarm_nrm`, 34×34, zIndex 375. Uniqueness is keyed on **(alias, nearest guarded component)**: one alarm per guarded role, clear of the component and of any caption. |
+| **Reason** | The old figures came from a screenshot reading of an earlier revision. The re-keying is the more important half: E3 legitimately carries two `Malf. damper` alarms 243 px apart on two different dampers, so keying on the alias alone failed a correct production panel. Keying on the pair still fails two alarms on **one** component, which is the defect the brief asked for. |
+| **Source** | E4, all seven verified this session. E3 objects 83/84 at (27,219) and (27,462) for the re-keying. The brief offered "(198,94) *or the exact latest fixture coordinate*" for the extract fan; the fixture coordinate (197,160) was taken, as the brief permits. |
+| **Status** | **Normative** · `PROFILE-9099-ROTOR-DEMO` for the coordinates; the uniqueness key is `VENT` |
+| **Files** | contract §5.1/§5.3/§5.4/§5.5/§5.6/§10.1/§10.2, `documentation-rules.json`, validator `V-G05`, QA B14, `AI-BRIEFING.txt` 7a-8, tests |
+
+#### 30. The LV402 run-status LED: variant and position resolved
+
+| | |
+|---|---|
+| **Original** | "13×13 at (700,466), variant unknown" — tagged `SCREENSHOT`, with the variant recorded as an open question. |
+| **Revised** | `V3_led_13px_circ_grey_green` at **(703,460)**, 13×13, zIndex 375 — offset **(+6,+47)** from the `number_v3_el_heater` anchor `LV402` at (697,413), 40×85. The LED MUST sit fully inside the heater body and MUST NOT cover the tag or the output value. |
+| **Reason** | An unresolved variant means an agent picks one, and the old position put the LED 6 px lower, at the edge of the body. |
+| **Source** | E4, verified this session. |
+| **Status** | **Normative** · `PROFILE-9099-ROTOR-DEMO` |
+| **Files** | contract §9.1, QA C9, `documentation-rules.json`, validator `V-P07`, tests |
+
+#### 31. Rendered-glyph width is an estimate, so no rule may fail a panel on one (supersedes revision spec R9)
+
+| | |
+|---|---|
+| **Original** | `AI-BRIEFING-REVISED.txt` **R9** specified a QA check that **fails** a panel whose sidebar caption is off-centre by more than **±2 px**, computed from screenshot-read widths of 32 px for `Tilluft` and 40 px for `Avtrekk`. The QA checklist carried the same ±2 px tolerance as a pass/fail criterion. |
+| **Revised** | The centring **formula is kept**; the tolerance became validator rule **`V-P08`, reported as a WARNING and never as an error**. The two widths are now labelled estimates wherever they appear. |
+| **Reason** | The two figures are screenshot readings and Arial at 11 px gives 26 and 37 instead. Production renders `A-Alarm` and `B-Alarm` on a fixed 45 px pitch at x 1305 and x 1350, byte-identical across E1, E2 and E4 on two different plants, which caps `A-Alarm` near 41 px — so the pitch is fixed and the caption width is not what positions it. A rule that fails a panel on an estimated glyph width will reject correct panels, and the validator is deliberately dependency-free (no PIL, no fontTools), so it cannot measure text properly. |
+| **Source** | E1/E2/E4 sidebar rows; Arial 11 px metrics. |
+| **Status** | **Advisory** — warning only · `PROFILE-9099-ROTOR-DEMO` |
+| **Files** | contract §7.2 and §12.1 item 6, QA C7, `AI-BRIEFING.txt` 7a-4, `AI-AGENT-INSTRUCTIONS.txt`, validator `V-P08`, `open_evidence[0]` in `documentation-rules.json` |
+
+#### 32. The circulation-pump variant is disputed, and recorded as disputed
+
+| | |
+|---|---|
+| **Original** | Contract §5.6 and `AI-BRIEFING.txt` §7a-3 both specified `V3_21px_single_pump_grey_green_up`, stated as settled. |
+| **Revised** | The brief and E4 use `V3_21px_single_pump_grey_green_**down**` at (601,527), 21×21, offset (+18,+114) from the `LV401` anchor at (583,413). Both variants are palette-valid at the same size. `_down` wins for this profile under precedence rank 1, and **the dispute is stated rather than silently resolved** — contract §12.1 item 3, `AI-BRIEFING.txt` 7a-3, and a flag on `CLAUDE.md` rule 12. |
+| **Reason** | E2 and E3 both use `_up`; two production panels against one corrected panel is not enough to overturn either, and picking one silently would hide that from the next agent. |
+| **Source** | E4 verified this session: `V3_21px_single_pump_grey_green_down` (601,527) 21×21 tag `JP410`. E2/E3 carry `_up`. |
+| **Status** | **Normative for this profile**, open in general · `PROFILE-9099-ROTOR-DEMO` |
+| **Files** | contract §5.6/§12.1, `AI-BRIEFING.txt` 7a-3, `CLAUDE.md` rule 12, `documentation-rules.json` |
+
+#### 33. Water-heating and electric-heating clusters are atomic
+
+| | |
+|---|---|
+| **Original** | Cluster members were listed as component inventory, with no rule that a partial cluster is a defect. |
+| **Revised** | Every component is an **atomic cluster** — an anchor, its members, and each member's offset from that anchor — and a cluster is relocated by applying one translation vector to every member. Concretely for this profile: `SB510 %` (`number_v3_R_45px_con_left`, (620,570), offset (+37,+157) from `LV401`) requires **both** the circulation pump (601,527) and the 3-way valve `v3_3w_valve_right_down_nrm` (602,572), and a panel carrying the value without them **fails cluster integrity**. Same for fan, filter, rotor, cooling, electric-heater and bypass clusters. |
+| **Reason** | The most common generated defect was a plausible-looking value with no mechanism behind it. Stating members as an inventory does not catch that; stating them as a cluster with a completeness rule does. |
+| **Source** | E4, all three objects verified this session at the stated coordinates. |
+| **Status** | **Normative** · cluster model `VENT`; the offsets `PROFILE-9099-ROTOR-DEMO` |
+| **Files** | contract §5 and §9, `VENTILATION-AUTHORING-GUIDE.md`, `documentation-rules.json` → `profiles.PROFILE-9099-ROTOR-DEMO.clusters`, validator `V-P01`–`V-P04`, QA, tests |
+
+#### 34. Bypass: never shorten the duct to clear the damper
+
+| | |
+|---|---|
+| **Original** | Covered only by the general overlap exceptions (change 16). |
+| **Revised** | Stated as its own rule wherever the bypass is described: the vertical duct stays **continuous** and the damper **overlays** it. Shortening a duct to clear a damper is a defect. |
+| **Reason** | It is the specific failure the overlap exception exists to prevent, and it kept recurring while it was only implicit. |
+| **Source** | E1 bypass column: an unbroken run y211→y449 under a 40×40 damper. |
+| **Status** | **Normative** · `VENT` |
+| **Files** | contract §5.7, `AI-BRIEFING.txt` §5, authoring guide, preflight §6, QA |
+
+#### 35. Two production quirks that MUST NOT be "fixed"
+
+| | |
+|---|---|
+| **Original** | Duplicate-value detection was stated generally, and a blank `tag_text` was treated as an omission. |
+| **Revised** | Two documented exceptions. **(a)** `SB520 %` appears **twice** in E4 — once as the cooling output, once as the electric-heater output, with different `alias_text`. Duplicate-value detection is therefore scoped to `KA\d{3}` position codes only. **(b)** Room-endpoint value objects carry a **single-space** `tag_text` on purpose, with adjacent `number_v3_label_8px_norm` captions supplying `RP501 ppm` and `RT600 °C`. |
+| **Reason** | Both look like defects to a naive checker and are not. Without this, a validator "fixes" a correct production panel. |
+| **Source** | E4. |
+| **Status** | **Normative** · `VENT` |
+| **Files** | contract §5.5, authoring-guide failure catalogue, QA stage 0, `AI-BRIEFING.txt` 7a-9 "NOT A DEFECT" list, validator |
+
+#### 36. Sidebar sections are built exactly once
+
+| | |
+|---|---|
+| **Original** | Header size and row pitch were specified; nothing said a section may not be emitted twice. |
+| **Revised** | Each section is built **once**: no duplicate row label, no duplicate value object, no two objects at the same coordinate, no label colliding with `Tilluft` or `Avtrekk`. Header bars stay **250×20 at x 1150**. Where a separate row label already names the signal, the value object MUST be `number_v3_60px_dark_no_conn_no_tag` so it renders no second caption. |
+| **Reason** | Re-emitting a section is the most common sidebar defect and produced most of the duplicate captions seen in review. |
+| **Source** | E1/E2/E4 sidebars. E3's three stacked `sub_page_link_btn_*` at y 629 are production copy-paste debris, which is why coordinate collisions are an **error on a generated demo and a warning on a production export** (change 39). |
+| **Status** | **Normative** · `VENT` |
+| **Files** | contract §7, QA, `documentation-rules.json`, validator `V-G06`, tests |
+
+---
+
+## Rules made executable
+
+The prose rules above were also written as code. `documentation-rules.json` gained a
+`profiles` block, and `validate-ventilation-panel.py` was added to run it.
+
+| Rule id | Checks | Scope |
+|---|---|---|
+| `V-S*` | Structural: 17 fields, `counts` vs array lengths, sequential `object_0..N`, integer pixels, canvas bounds, z-band purity, empty `containers`/`graphics`, no `image_svg` | global |
+| `V-G*` | Relationships: connector attachment, free-standing captions, alarm-per-role, coordinate collisions, cluster completeness | global |
+| `V-P*` | Profile geometry: cluster anchors and offsets, damper family and position values, outdoor-temperature block, LED containment, caption centring | only when `--profile` selects a profile |
+
+Three scoping decisions worth recording, because each was made **after** running the
+checks against real production exports and finding them wrong:
+
+#### 37. `V-S08` withdrawn — "linked is true but driver_id is empty" is not a defect
+
+| | |
+|---|---|
+| **Original** | A candidate check asserting that a `linked="true"` object must carry a non-empty `driver_id`. |
+| **Revised** | **Removed**, with the reason recorded in the validator docstring so it is not re-added. |
+| **Reason** | It produced **45 errors on E2 and 37 on E3** — every one a correct production object. The host sets `linked="true"` whenever `driver_id !== "driver_id"` (`V3scripts.js:514`), and an **empty** `driver_id` is not the placeholder, so production exports legitimately carry linked-but-empty objects. My inference was simply wrong about the host. |
+| **Source** | E2: 45 linked-with-empty vs 57 linked-with-real. E3: 37 vs 55. |
+| **Status** | Withdrawn |
+
+Two further candidate checks were rejected the same way and are recorded as rejected:
+`driver_id` is **not** always plant-prefixed (E3's navigation objects carry `"1"`,
+`"3"`, `"6"` and a pdf path), and `unit_ref` being empty on two samples is not a rule.
+
+#### 38. The demo/production discriminator
+
+| | |
+|---|---|
+| **Revised** | `detect_mode()` classifies a panel by one signal: a generated demo emits the literal `"driver_id"` placeholder on **every** object; a production export **never** does. |
+| **Reason** | Several checks must be errors on a generated panel and warnings on a production one. That needs a reliable discriminator, not a guess. |
+| **Source** | **0 placeholders across 194 production objects; 97 across 97 demo objects.** A total split, not a heuristic. |
+| **Status** | **Normative** · global |
+
+#### 39. Severity by mode, for three relationship rules
+
+| | |
+|---|---|
+| **Original** | `V-G04` (free-standing caption), `V-G05` (alarm uniqueness) and `V-G06` (coordinate collision) fired as errors on every panel. |
+| **Revised** | Error on a generated demo, **warning** on a production export. `V-G07` (cluster completeness) is profile-scoped and does not run without `--profile`. |
+| **Reason** | Together with change 37, the unscoped forms produced **495 errors on E2 and 96 on E3** — both correct production panels. A validator that fails its own reference data teaches an agent to ignore it. |
+| **Source** | E2, E3. Both now report **0 errors**. |
+| **Status** | **Normative** · global |
+
+#### 40. Two mechanical traps recorded in the validator
+
+`parseInt` semantics — the host parses geometry with `parseInt`, so `"120px"` → 120
+and `"196.5"` → 196. `as_int()`/`px()` mirror the host exactly; `is_integer_px()` is
+deliberately **stricter**, because the contract requires integer pixels even where the
+host would tolerate a fraction. A `ValueError` on `"196.5"` was fixed by adding `px()`,
+not by weakening the test.
+
+Label-overlap tolerance — `LABEL_OVERLAP_TOLERANCE = 3` px, because a 1 px overlap
+between `object_22` and the `Cool` caption in E2 was an artifact of an **estimated**
+label height. Same principle as change 31: never fail a panel on an estimated glyph
+extent.
+
+**Rule-id numbering.** There is **no `V-G01`** — the id was never issued. The gap is
+deliberate and documented in contract §0.3; do not renumber to close it.
+
+---
+
+## Files added or replaced
+
+| # | File | Change | Status |
+|---|---|---|---|
+| 41 | [tests/fixtures/ventilation-9099-rotor-demo.json](tests/fixtures/ventilation-9099-rotor-demo.json) | **New.** The sanitized canonical fixture (E4): 97 objects, 43 distinct `obj_id`s, 13 `°` tags. Verified this session: **0 objects carry a non-placeholder binding**, `source_plant_id` and `plant_id` both empty, `id` and `driver_id` the literal `"driver_id"` throughout, `linked` false. No real driver ids, unit ids, personal metadata or live plant bindings. | **Normative** · `PROFILE-9099-ROTOR-DEMO` |
+| 42 | `validate-ventilation-panel.py` | **New.** Dependency-free (no PIL, no fontTools) — it deliberately cannot measure text, which is why every width-dependent finding is a warning. Accepts both the committed `{_note, envelope}` wrapper and a flat live export via `envelope_of()`. | **Normative** |
+| 43 | [tests/test_ventilation_profile_9099.py](tests/test_ventilation_profile_9099.py) | **New.** 47 tests covering the brief's 14 required regression conditions, plus paired negative tests — e.g. two alarms on **one** component still fail, which is what proves change 29's re-keying did not simply disable the check. Python `unittest`, the existing convention. | **Normative** |
+| 44 | [VENTILATION-GEOMETRY-CONTRACT.md](VENTILATION-GEOMETRY-CONTRACT.md) | **Refactored**, 657 → 1037 lines. Reorganized by profile and by atomic cluster; the 8-rank precedence list moved to the front matter; §0 profile registry; §12.1 seven open items and §12.2 four items closed by E4; §13 scope summary. **No existing evidence or measurement was deleted** — the brief forbade shortening by deletion, so superseded figures are retained with their supersession noted. | **Normative** |
+| 45 | [VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md) | **New**, ~380 lines. The procedure: select a profile, place clusters, attach values, verify. Carries the decision table (rotor vs plate recovery, bypass present or absent, water heating present or absent, electric heater present or absent, one vs two sidebar value columns, navigation target known or unknown) and the failure catalogue. | **Normative** |
+| 46 | [VENTILATION-QA-CHECKLIST.md](VENTILATION-QA-CHECKLIST.md) | **Extended**, 273 → ~400 lines. New **Stage 0** (checks 0.1–0.9) runs before Stage A. C9 corrected for the LED (change 30); C7's ±2 px tolerance demoted to a warning (change 31). | **Normative** |
+| 47 | [documentation-rules.json](documentation-rules.json) | **Extended** with `profiles.PROFILE-9099-ROTOR-DEMO` — anchors, members, offsets, object ids, connector relationships, required and optional roles — plus `open_evidence`. | **Normative** (prose still wins on conflict) |
+| 48 | [VENTILATION-COPILOT-PREFLIGHT.md](VENTILATION-COPILOT-PREFLIGHT.md) | **New.** The embeddable preflight block: **exactly 80 lines, 5 071 characters, 5 151 worst-case CRLF, zero `<` or `>`**. Written to be pasted whole into a Copilot system prompt or attached as a knowledge file. | **Normative** |
+
+---
+
+## The three revision specifications
+
+#### 49. `AI-BRIEFING-REVISED.txt` — R1–R14 fully applied
+
+All fourteen revisions are now present in `AI-BRIEFING.txt`, including **R14**, which
+split §9's flat 11-item self-check into four blocks — EVERY PANEL, LIST PANELS (7c)
+ONLY, VENTILASJON (7a) ONLY, EVERY PANEL LAST — because the flat list made an agent
+building a Maskin panel read ventilation checks and vice versa. Every original check
+was preserved and redistributed; none was dropped.
+
+**Two items were applied in corrected form**, and the file now says so at its head so
+that no future agent "restores" the specification text:
+
+- **R2** specifies a **seven**-rank precedence list that omits
+  `VENTILATION-GEOMETRY-CONTRACT.md` entirely. The canonical list is **eight** ranks.
+  Applied as eight, with R2's consequence bullet renumbered from "rank 6 loses to
+  rank 2" to rank 7 to match.
+- **R9** is change 31 above.
+
+**Three changes were applied that the specification does not contain**: the
+connector-direction table in 7a-2, the circulation-pump dispute in 7a-3 (change 32),
+and the correction of 7a-6's "on a unit without recirculation" qualifier (change 26).
+
+#### 50. `CLAUDE-REVISED.md` — R7 deliberately **not** applied
+
+R7 would replace `CLAUDE.md` lines 398–491 with a twelve-rule disposition table
+(rules 1/2/4/6/6b/7 MOVE→contract, 9/10/11 MOVE→QA checklist, 3/5/8 SPLIT, 12
+KEEP-rewritten). It was **not applied**, for two reasons: its line anchors are stale
+after this session's edits to `CLAUDE.md`, and the destination documents it
+presupposes now exist in a different shape. The targeted contradiction it was meant to
+fix was applied to `CLAUDE.md` **directly** instead (changes 51–53). The file now
+carries a status block saying it is a proposal, not outstanding work.
+
+#### 51. `AI-AGENT-INSTRUCTIONS.txt` replaced; the REVISED file reduced to a stub
+
+The revision was measured before acting rather than after: current file 7 998
+worst-case characters over 25 lines, revision 7 976 over 33, 40 diff lines. The
+revision is a genuine superset — it **adds** PRECEDENCE, TEXT ALIGNMENT, VENTILASJON
+and VENT OVERLAP blocks and tightens six others **without dropping a rule** — so it
+was applied rather than merely marked.
+
+Applied through a script that asserts its own preconditions: five anchored
+single-occurrence replacements each guarded against a missing anchor, an assertion
+that no `<` or `>` survives, an assertion that the worst case stays under 8 000, and a
+CRLF write. Two of the five replacements are the corrections from changes 31 and 49
+(eight ranks, and widths marked as estimates); three are cosmetic contractions to stay
+under the cap. **Result: 7 958 characters LF, 7 991 worst case, 33 lines — nine
+characters of headroom.**
+
+`AI-AGENT-INSTRUCTIONS-REVISED.txt` was then reduced to a 2 490-byte stub. Keeping the
+applied text in two places would guarantee drift, and the stub is shaped so it cannot
+be mistaken for pasteable content: it says what was applied, records the two
+corrections, and states the field's limits — 8 000 **characters** not bytes, one extra
+character per line from CRLF, and the rejection of `<` and `>` — with the measuring
+command inline.
+
+#### 52–53. `CLAUDE.md` §17b.3 — three edits
+
+| | |
+|---|---|
+| **52** | Rules 3 and 12 corrected for the damper finding — change 26. Rule 12 also now flags the pump-variant dispute — change 32. |
+| **53** | The intro sentence **"This is the authoritative implementation and QA contract"** was **deleted**. It was true when written and false once the contract, guide, checklist and validator existed. Replaced with a five-row routing table naming which document owns a coordinate, a procedure, an acceptance test, the machine-readable form, and the Copilot block. The measurements below it are retained **unedited** as the record of what was seen in the 9099 export on 2026-08-09; where one disagrees with the contract, **the contract wins**, because it carries the newer evidence and the scope tag saying which panels the number applies to. |
+
+---
+
+### Findings from the verification pass (54–56)
+
+These three came out of actually rendering the fixture and measuring it, rather than
+out of the brief. They are recorded here because a later agent re-running the same
+render will meet all three and needs to know which are defects.
+
+#### 54. The `KA401 %` / `RT901 °C` overlap — OPEN, deliberately unresolved
+
+| | |
+|---|---|
+| **Measured** | `KA401 %` occupies x 93–139, y 405–443; `RT901 °C` occupies x 133–179, y 417–455. They share a **6 × 26 px** rectangle and their rendered glyphs come within **≈ 1 px**. Both are `number_v3_R_45px_con_down`, so neither box is oversized. |
+| **Not a production quirk** | E2 carries `RT901 °C` at exactly (133, 417) — the same coordinate — but places `KA401 %` at **(25, 461)** as a `con_top` box, nowhere near it. The overlap was **created by change 27**, which moved `KA401 %` to (93, 405) per the corrected profile while the duct temperature stayed where production has it. |
+| **Why nothing was changed** | Resolving it means inventing a coordinate for one of two objects that each rest on evidence: `KA401 %` from the task brief at rank 1, `RT901 °C` from E2 at rank 2. Precedence adjudicates conflicting claims about *one* object; it says nothing about two different objects that happen to collide. The brief's own rule applies — mark the gap, do not invent geometry. |
+| **Status** | Recorded as an OPEN note in contract §5.9b and pinned by `MeasuredToleranceTest`, which fails if either coordinate moves **or** if the overlap changes size. Whoever next sees the real 9099 panel should read off the true placement and supersede the note. |
+| **Files** | `VENTILATION-GEOMETRY-CONTRACT.md` §5.9b, `tests/test_ventilation_profile_9099.py` |
+
+#### 55. The extract-fan alarm's 15 × 2 px overlap is **not** a defect
+
+| | |
+|---|---|
+| **Measured** | The extract-fan alarm (197, 160, 34 × 34) overlaps the `RF501 m3/h` box (150, 140, 62 × 22) by 15 × 2 px at one corner. |
+| **Verdict** | Not a defect. `RF501 m3/h` is `number_v3_R_60px_no_conn_tag_up_center`, so its tag renders **above** its own box; the shared sliver contains no glyphs, and the alarm carries no text. The rule is "clear of tags and values" (change 29) — clear of *text*, not of bounding boxes, which the four intentional overlap classes in contract §11 already establish. |
+| **Note** | The brief gave this alarm as "(198, 94) *or the exact latest fixture coordinate*". The fixture has (197, 160); the permission clause covers taking the fixture value, as recorded in change 29. |
+
+#### 56. `render-ventilation-panel.py` cannot place connector text, and now says so
+
+| | |
+|---|---|
+| **Original** | The renderer drew every tag at its box's top-left. |
+| **Problem found** | That is right for a plain label and wrong for two families. `KA502 %` looked occluded by the recirculation dummy when it is correct — intentional overlap class 2, the `con_left` stub landing on its target. The `_tag_up_center` family was drawn inside its box when the id says the tag renders above it, which is what made finding 55 look like a collision. |
+| **Revised** | `text_placement()` applies what the `obj_id` actually states: `_tag_up_center` renders above the box, centred, and is **exact**. The `con_*` families are centred and drawn **brown**, flagged as approximate, because the side is readable from the name but the stub width is recorded nowhere in this repository. The legend counts them — 18 of 52 tags in the fixture. |
+| **Why not just measure the inset** | It is not in the catalogue, the exports or the screenshots. Guessing it would make the preview look authoritative while being wrong, which is the failure this contract exists to prevent. A flagged approximation is honest; an invented offset is not. |
+| **Effect on the verification result** | With the correction, the fixture renders with **zero glyph overlaps** and **zero** exactly-placed pairs closer than 4 px. The single sub-4 px pair is change 54's, and it involves approximate placement — which is why it is reported as open rather than as a pass. |
+| **Files** | `render-ventilation-panel.py`, `VENTILATION-QA-CHECKLIST.md` C1 |
+
+---
+
+## What this pass deliberately did not do
+
+- **Did not delete technical facts to shorten anything.** Superseded measurements are
+  retained with their supersession recorded, per the brief.
+- **Did not invent an `obj_id`, coordinate, driver id, unit id, alias, file path or
+  navigation target.** Where evidence was missing it became an open item in contract
+  §12.1 (seven of them) rather than a number.
+- **Did not universalize the profile.** Every coordinate from this brief carries
+  `PROFILE-9099-ROTOR-DEMO`. `VENT` was used only for rules that hold for any
+  ventilation panel: the cluster model, connector attachment, alarm-per-role,
+  sidebar-built-once, and the two production quirks in change 35.
+- **Did not resolve the circulation-pump variant.** Two production panels say `_up`,
+  the corrected panel says `_down`; the profile records `_down` and the dispute stays
+  open (change 32).
+
+---
+
+# Part 5 — 2026-08-10: the list panel generation contract
+
+A separate pass, with its own brief and its own evidence. It does not touch any
+ventilation rule. Finding ids are `L-1`–`L-16` and refer to the conflict table in
+[LIST-PANEL-GENERATION-CONTRACT.md](LIST-PANEL-GENERATION-CONTRACT.md) §16.1.
+
+Evidence: **E5**–**E8** in the table at the head of this file. Two of the four
+are uncommitted (live plant id, customer data), so every measurement below is
+reproduced in the contract and in `documentation-rules.json`, which are committed.
+
+**Source precedence used**, highest first: the export supplied with the task
+(E5) → a production export of the same panel type (E6) → panel-specific rules in
+`CLAUDE.md` → `AI-BRIEFING.txt` → `PANEL-TYPE-GUIDE.md` → `DESIGN-OBJECT-CATALOG.md`.
+Where E5 and E6 agree, the rule is tagged `LIST`. Where only one shows a value, it
+is `TEMPLATE-SPECIFIC`. No coordinate was averaged.
+
+**One substitution, disclosed.** The brief named
+`iwmac-panel_5295_360-001-spjeldliste_20260810-0852.json`. No file of that name
+exists anywhere under `C:\Users\Thomas`. `iwmac-panel_5295_360-001-spjeldliste_ny.json`
+is the same plant, the same panel, and `exported_at 2026-08-10T06:52:20.942Z` — the
+same export, saved under a different name. The brief asks for "any user-supplied
+production spjeldliste export, especially" that one, so the stop condition does not
+fire. It is recorded as E5 with the substitution noted in
+`documentation-rules.json` → `evidence.E5.substitution_disclosure`.
+
+**One provenance caveat.** E5 reports `generator "IWMAC Designer Helper"` and
+`saved_by "copilot"`. The userscript emits `generator "IWDIE v<version>"`, so E5
+was written by an agent in Insert format, not by the Designer. It keeps precedence
+rank 1 as the export supplied with the task, but it is weaker than E6 as evidence
+of what production looks like. Every rule tagged `LIST` is confirmed by both.
+
+---
+
+## Rules changed
+
+### 57. `AI-BRIEFING.txt` §7c — the list-panel section rewritten
+
+| | |
+|---|---|
+| **Original** | A short paragraph describing the spjeldliste as an example of an unusual panel, with partial geometry and no container schema. |
+| **Problem found** | It was the only list-panel documentation, it was incomplete, and what it did contain duplicated rules that now have an owner. An agent reading only this file could not build a valid container. |
+| **Revised** | Rewritten as a normative summary that names [LIST-PANEL-GENERATION-CONTRACT.md](LIST-PANEL-GENERATION-CONTRACT.md) as owner, then carries enough detail to work standalone: the scaffold object set with geometry, the container template in full, the divider-height formula, the column x table, the binding contract, and the four request classes. |
+| **Reason** | The brief asks for one owner per rule and summaries elsewhere — not deletion. `AI-BRIEFING.txt` is pasted into environments where the contract is not available, so the fallback detail stays. |
+| **Source** | E5 + E6. |
+| **Files** | `AI-BRIEFING.txt` §7c, plus the routing table at §0 and the self-check list at the end. |
+| **Status** | **Normative** · LIST |
+
+### 58. `PANEL-TYPE-GUIDE.md` — list panels classified
+
+| | |
+|---|---|
+| **Original** | The guide covered the 41-plant survey's panel families. List panels were mentioned in passing and not classified. |
+| **Revised** | A new section places list panels as the second container-built family, distinguishes the spjeldliste from other long tabular listings, and points at the contract for generation. It states plainly that the survey did not cover them, so they carry no fleet statistics — their evidence is two exports. |
+| **Reason** | A reader choosing a panel type needs to know that a list is not a table-style blank panel and is not built the same way. |
+| **Source** | E5 + E6; the survey's own scope. |
+| **Files** | `PANEL-TYPE-GUIDE.md` |
+| **Status** | **Normative** · LIST |
+
+### 59. `CLAUDE.md` — host behaviour for containers, and Gotcha #25 extended
+
+| | |
+|---|---|
+| **Added** | A host-behaviour note stating what the Designer does with containers — the collector, the `unique_id.indexOf("custom_")` route in `load_new_ver_containers`, and the empty `.template()` branch a non-`custom_` container falls into — and referring generation to the contract. |
+| **Extended** | Gotcha #25 now records the divider-height formula and that horizontal overflow is structural, not a defect. |
+| **Reason** | The importer gate is a host fact, not a generation rule: a container whose `unique_id` lacks the `custom_` prefix is dropped **silently**, with no error and no visible object. That belongs in the host document, and it is the single most expensive thing to rediscover. |
+| **Source** | The mirrored Designer sources; confirmed against both exports, where all 233 containers use `custom_<i>`. |
+| **Files** | `CLAUDE.md` §6a, Gotcha #25 |
+| **Status** | **Normative** · LIST |
+
+### 60. `DESIGN-OBJECT-CATALOG.md` — list panel object set, added through the generator
+
+| | |
+|---|---|
+| **Added** | A "List panel object set (spjeldliste)" row to the object-set table: the seven `obj_id`s a list panel uses, in emission order, with what each one is for. |
+| **How** | Through `build-object-catalog.py`, **not** by hand. The catalogue header says it is generated; a hand edit would be overwritten on the next rebuild and would silently disagree with the generator in the meantime. |
+| **Reason** | The brief permits the entry only if the generation process supports it. It does — object sets are a hand-curated list inside the generator, and the counts beside each id are computed from the palette. |
+| **Source** | E5 + E6 for the set; the palette for the counts. |
+| **Files** | `build-object-catalog.py`, `DESIGN-OBJECT-CATALOG.md` (regenerated) |
+| **Status** | **Normative** · LIST |
+
+### 61. `documentation-rules.json` — `panel_types.list_panel`
+
+| | |
+|---|---|
+| **Added** | `panel_types.list_panel` with sixteen blocks — `identity`, `owner_document`, `canvas`, `background`, `composition`, `z_indexes`, `containers`, `columns`, `geometry`, `groups`, `sides`, `bindings`, `artefacts`, `required_roles`, `qa`, `evidence_required` — mirroring the shape of `panel_types.ventilation`. Evidence ids **E5**–**E8**. Scope tags `LIST` and `TEMPLATE-SPECIFIC`. `global_invariants.container_fields` and `container_field_count` (16). `source_precedence` rank 3 now names both geometry contracts instead of only the ventilation one. |
+| **How** | Every geometry value was **derived from the exports at write time** by a script that asserts agreement between E5 and E6 before emitting, rather than transcribed from the contract prose. Four of the assertions would have failed on the contract's first-draft values; see changes 65–68. |
+| **Reason** | The brief asks for machine-readable list-panel invariants if the schema supports them. It does: `panel_types` and `evidence` are open maps, and the file round-trips byte-exactly through `json.dumps(ensure_ascii=False, indent=2)`, so a scripted rewrite cannot reflow the ventilation content. |
+| **Verification** | The ventilation block, the profiles block and evidence E1–E4 compare equal before and after. The file is CRLF, no BOM, and Norwegian characters survive as UTF-8. |
+| **Files** | `documentation-rules.json` (+646 / −6 lines from this pass alone) |
+| **Status** | **Normative** · LIST |
+
+### 62. `AI-BRIEFING-REVISED.txt` — deliberately not applied
+
+| | |
+|---|---|
+| **Action** | None. |
+| **Reason** | Line 4 reads `STATUS AS OF 2026-08-10: FULLY APPLIED. DO NOT APPLY IT AGAIN.` The brief instructs the same. Re-applying it would have reverted change 57. |
+| **Status** | No change |
+
+---
+
+## The unlinked-object conflict, and why the GLOBAL rule was scoped rather than followed
+
+`global_invariants.unlinked_demo_contract` says an unlinked generated panel must
+carry `linked "false"`, `link_name ""` and `driver_id "driver_id"`. Every object
+in both list exports carries `linked "true"`, `link_name "link_name"` and
+`driver_id ""` — 1 319 of 1 319, including the banner, the column headers and the
+dividers, which cannot be bound to anything.
+
+Following the GLOBAL rule would make a generated list panel differ from every
+existing one in **every object**, which destroys role-based diffing — the one
+technique that makes a list panel reviewable at all.
+
+The rule exists to stop an agent shipping a panel that *looks* linked and is not.
+That danger lives in the invented identifier, not in the flag. So the resolution
+keeps the guarantee and changes the mechanism:
+
+> A generated list panel must contain no non-empty `driver_id`, `unit_id` or
+> `alias_text` other than values copied verbatim from supplied data.
+
+Empty is the unlinked state in a list panel. `"false"` is not required and is not
+observed. `unlinked_demo_contract` now carries a `scope_exception` naming
+`panel_types.list_panel.bindings` as its override for this panel type; the
+ventilation rule is unchanged. Recorded as L-13.
+
+---
+
+## Conflicts resolved (L-1 – L-11)
+
+Each row is a claim that existed in the documentation, or that the shape of the
+data invited, and what the exports actually show. Full detail, with section
+references, in the contract §16.1.
+
+| id | Claim | Measured | Winning source |
+|---|---|---|---|
+| L-1 | Banner `zIndex` is `"155"` | `"5"`. `"155"` belongs to the 11 px half-table divider at x 790 | E5 + E6 |
+| L-2 | Live-cell x is roughly 540 / 600 / 700 | 530 / 609 / 698 left, 1 319 / 1 398 / 1 494 right | E5 + E6 |
+| L-3 | Production leaves the three value columns for later hand-linking | E5 populates and links all three — 78 live cells | E5, rank 1 |
+| L-4 | The right half is the left half at +780 | +780 for `damper_tag` only; +789 for the other six headers. Cell offsets 786 / 792 / 789 / 789 / 789 / 789 / 796 | E5 + E6 |
+| L-5 | Dividers are "mirrored" on the right | Exactly +789, all six | E5 + E6 |
+| L-6 | 400-series left, 500-series right | Right is 5-series only; left is 4-series, 6-series and unnumbered, with 6-series about 70 % of E6's left column | E5 + E6 |
+| L-7 | Both halves share the same row band | False. Right-half rows mostly sit in their own containers below the left block — 1–2 mixed containers per file | E5 + E6 |
+| L-8 | Supply-side left, extract-side right | Contradicted: every right-half alias in E5 names *tilluft* (supply) | E5 |
+| L-9 | Right-half `Romnr.` x undocumented | Header 1 048, cell 1 031. The cell is E6-only, so `TEMPLATE-SPECIFIC` | E5 + E6 |
+| L-10 | "One stripe per group" | Sound as a generation rule, but production does not follow it — see change 63 | E5 + E6 |
+| L-11 | The four half-table title labels carry titles | `tag_text` is `" "` in all eight instances across both files | E5 + E6 |
+
+### 63. The group stripe is not a group marker
+
+| | |
+|---|---|
+| **Original** | The stripe placement rule was stated as `stripe_top = group_first_row_top - 2`, one per group. |
+| **Problem found** | The formula is right wherever a stripe exists, but the premise is not. E6 has 21 groups and 17 stripe positions: 15 group starts are striped, **6 are not**, and **2 stripes sit inside a group** (y 3 144 and 3 164 — the second and third rows of the group starting at 3 126). E5 has 2 groups and stripes only the first. So `stripe ⇔ group start` fails in both directions. |
+| **Also measured** | Every stripe position carries **exactly 14 stacked identical copies** — 14 at one y in E5, 238 at 17 distinct y in E6. Only one is visible. |
+| **Best predicate tried** | "The row's damper tag ends in `SQ40x`" matches 16 of the 17 striped rows — and also 6 unstriped rows. Not the rule. |
+| **Revised** | The stripe is documented as an **author-applied row highlight** whose placement is not derivable from the export. The generation rule stays `one per group at group_first_row_top - 2`, explicitly tagged `ADVISORY`, and emits **one** copy, not fourteen. When modifying a supplied export the stripes are left exactly as they are, duplicates and skips included. |
+| **Source** | E5 + E6. |
+| **Files** | contract §8.7, §11.2, §16.2; `documentation-rules.json` → `panel_types.list_panel.groups.stripe` |
+| **Status** | **Advisory** for generation · `LIST` for the measurement |
+
+### 64. Blank cells — production does both, so the rule is advisory and checkable
+
+| | |
+|---|---|
+| **Problem found** | The brief asks which missing source fields may be left blank. Production does not answer consistently: E6 **omits** the `room` cell entirely in 31 of 185 left rows and E5 in 2 of 21, while 5 E6 rows and 2 E5 rows carry a `room` cell with blank text. Nothing in the data predicts which. |
+| **Revised** | Generated output **keeps the object and sets `tag_text ""`**, so every row carries the same role set. |
+| **Reason** | It is the only one of the two behaviours that can be checked mechanically — validation check 16 asserts an identical item-role set across containers — and it keeps role-based diffing usable. Stated as `ADVISORY` with the production split disclosed, not as a discovered rule. |
+| **Source** | E5 + E6. |
+| **Files** | contract §2.4, §12 check 16 |
+| **Status** | **Advisory** · LIST |
+
+---
+
+## Five defects in this contract's own first draft (L-12 – L-16)
+
+These were not found in the existing documentation. They were written **into the
+new contract** from schema intuition, and caught before commit — the first four
+by re-measuring the exports while mirroring the values into
+`documentation-rules.json`, the fifth by running the new test suite (change 70)
+against the result. Three had already been copied into `AI-BRIEFING.txt` §7c,
+where they would have read as production evidence.
+
+All five are the same failure: writing what the schema ought to say instead of
+reading what the export does say.
+
+### 65. L-12 — the container constants
+
+| | |
+|---|---|
+| **Written** | `"id": 0` (the row index), `"linked": "false"`, `"linked_to": ""`, `"title": ""`. |
+| **Measured** | `"id": "objects_container"` — a constant string on every row, neither the row index nor the object-level `id` sentinel `"driver_id"`. `"linked"` and `"linked_to"` are the **strings** `"0"`. `"title"` is `"Objects Container"`. 25/25 containers in E5 and 208/208 in E6. |
+| **Note** | Only `unique_id` (`custom_<i>`) and `name` (`objects_container_<i>`) carry the row number. `id` does not participate in the sequence. |
+| **Files corrected** | `AI-BRIEFING.txt` §7c; contract §3.4, §5.1, §5.3, §12 check 14, both worked examples |
+
+### 66. L-13 — the object constants
+
+| | |
+|---|---|
+| **Written** | The ventilation unlinked sentinels: `linked "false"`, `link_name ""`, `driver_id "driver_id"`, and a descriptive `alias_text` naming the column. |
+| **Measured** | Over 1 319 objects across both exports: `id` is `"driver_id"` (1 319/1 319) · `linked` is `"true"` (1 319/1 319) · `link_name` is `"link_name"` (1 319/1 319) · `sub_group` and `unit_ref` are `""` · `driver_id` is `""` on every unlinked object · `alias_text` is the literal `"new text"` on all 881 unlinked objects · `link_tag` is `""` except `"NA"` on `number_v3_header_appgrey` and `number_v3_header_grey50`, 264/264 of those. |
+| **Consequence** | Resolved as described under "The unlinked-object conflict" above, and recorded as a scoped override rather than a change to the GLOBAL rule. |
+| **Files corrected** | contract §4.2 (new), §4.3–§4.6, §10.1–§10.5, §11.2, §12 checks 24–26, every JSON example |
+
+### 67. L-14 — the canvas dimensions are strings
+
+| | |
+|---|---|
+| **Written** | `"panel_width": 1400`, `"panel_height": 750`. |
+| **Measured** | The **strings** `"1400px"` and `"750px"`, at envelope level and inside `panel`, in both exports and in the userscript's own Insert-help template. The value is handed to `iw_set_base_image(doc.panel_width, doc.panel_height, …)` unchanged, so a bare number is not a stylistic variant. |
+| **Files corrected** | contract §3.1, §3.2, §3.4, §13.1 — six occurrences plus the envelope-field table |
+
+### 68. L-15 — E5's group count
+
+| | |
+|---|---|
+| **Written** | "E5: 3 groups, sizes 15 / 6 / 4, first-row tops 106 / 506 / 606." |
+| **Measured** | **2** groups, sizes 19 and 6, first-row tops 106 and 506. E5's 24 `top` deltas are 23 × 20 and exactly one × 40; 606 is the last row of the second group, not the start of a third. |
+| **Found by** | The `documentation-rules.json` generator derives group starts from the delta sequence instead of accepting a written figure, and the group sizes then had to sum to the row count. |
+| **Files corrected** | contract §8.6, §8.7, §16.2, evidence table |
+
+### 69. L-16 — the container key order
+
+| | |
+|---|---|
+| **Written** | `… zIndex, title, items` — `title` placed on the header line, before the item array, in the §5.1 field table and in all seven example containers. |
+| **Measured** | The collector emits `… zIndex, items, title`: `title` is a merged custom attribute appended after the item array (`container_tool.js:2254-2262`). 233/233 containers across E5 and E6. |
+| **Found by** | `tests/test_list_panel_contract.py` (change 70) — it reads `global_invariants.container_fields` out of `documentation-rules.json` and asserts the contract's own examples match it key for key. |
+| **Severity** | The mildest of the five: key order changes no behaviour, because `load_new_ver_containers` reads every field by name. It is recorded anyway — the examples are what an agent copies, and a reordered row defeats the byte-diff against a production export that catches the other four. |
+| **Files corrected** | contract §5.1 (table row order + a note naming the collector line), §3.4, §13.1 (four containers), §13.2, §16.1 (new L-16 row), §18 |
+
+### 70. `tests/test_list_panel_contract.py` — the contract made executable
+
+| | |
+|---|---|
+| **Added** | 44 tests, the executable form of contract §17. Run with `python -m unittest tests.test_list_panel_contract -v` from `iwmac-designer-reference/`. |
+| **What it pins** | (1) the measured constants — every threshold comes from `documentation-rules.json` → `panel_types.list_panel`, never from a literal in the test, so a rule and its test cannot drift apart; (2) the contract's own worked examples — the fenced JSON blocks are parsed out of the Markdown and validated against those same rules; (3) the two production exports E5 and E6, including the places where they disagree with the generation rules. |
+| **How it reads the contract** | Blocks are keyed by the section heading above them, not by index. Indexing would reintroduce the exact failure mode §6 forbids for objects, and a heading shift would silently test the wrong document. |
+| **Stripe rule, both directions** | One test asserts the ADVISORY rule (one stripe per group, no duplicates) on the generated example; a second asserts that E6 does **not** follow it — 6 group starts unstriped, 2 mid-group rows striped, exactly 14 stacked copies per stripe position. A later "correction" of the production fixture now fails instead of passing. |
+| **Coverage caveat** | E5 lives outside the repository (live plant id), so its tests **skip** on a clean checkout. A green run there has verified less than a green run on a machine that has the file. |
+| **Result** | 44 passed, 0 skipped on the authoring machine. Found L-16 (change 69). |
+| **Files** | `tests/test_list_panel_contract.py` (new, LF); contract §17 rewritten as §17.1 Fixtures + §17.2 The executable form |
+
+### 71. `reference_data/real-spjeldliste-example.json` — the `_note` wrapper corrected
+
+| | |
+|---|---|
+| **Scope** | The prose `_note` only. The `envelope` object is byte-unchanged: still 383 / 208 / 0, still parses, and the test suite still passes against it. |
+| **Corrected** | The banner zIndex (given as 155, measured `"5"` — the only `"155"` object in the file is the 11 px centre divider at x 790: finding L-1) and the closing sanitization advice (told generators to emit `driver_id "driver_id"` + `linked "false"`, which is the ventilation contract, not the list-panel one: finding L-13). |
+| **Added** | The evidence id E6 and a pointer to `LIST-PANEL-GENERATION-CONTRACT.md` as the owner; the scaffold census with counts; the container-vs-item zIndex type split; the divider-height formula; the object constants measured across all 1171 objects; and the stripe artefact restated as measured (238 objects, 17 distinct tops, 14 copies each, not aligned to the 21 group starts) rather than as "14 per group, use ONE". |
+| **Why it mattered** | This file is loaded as knowledge next to the briefing. Its `_note` is the first thing an agent reads about list panels, and two of its statements contradicted the contract built from the same envelope. |
+
+### 72. `AI-BRIEFING.txt` — two surviving L-13 leftovers
+
+| | |
+|---|---|
+| **Scope** | Two paragraphs that still taught the ventilation unlinked sentinels for **list-panel** cells after L-13 had been corrected in the contract. Found by reading the briefing diff rather than trusting the earlier "§7c rewritten" note (change 57). |
+| **§7c, the cell templates** | Said the static and live cells carry "the standard unlinked convention - id `driver_id`, driver_id `driver_id`, linked `false`, link_name ``, link_tag ``", and told the agent to put the damper tag plus the column role into `alias_text`. Replaced with the measured list-panel constants (`id "driver_id"`, `linked "true"`, `link_name "link_name"`, `driver_id ""`, `alias_text "new text"`, 1 319/1 319 objects), the replacement safety rule, and the reason not to write the column role into the alias: 881/881 unlinked cells read `"new text"`, and a human links a placeholder by the row's damper-tag cell. |
+| **§8b step 6, "leave uncertain objects unlinked"** | Gave one definition of "unlinked" — `driver_id "driver_id"`, `linked "false"` — inside a linking procedure whose own step 5 names "spjeldliste text cells". Now states both: the ventilation form on a normal panel, and `driver_id ""` with the row template's `linked "true"` left alone in a list panel. |
+| **Checked and left alone** | The same sentinels at §7a-7 ("strip the source plant", explicitly the ventilation demo case) and in the Maskin compressor-bank section. Both are correctly scoped to panel types where the GLOBAL rule holds. |
+| **Why it mattered** | The contract was right and the file an agent actually receives as knowledge was wrong. A correction applied in one document does not propagate; each copy has to be re-read. This is the same failure as L-12 – L-16, one level up. |
+| **Files corrected** | `AI-BRIEFING.txt` §7c cell templates, §8b step 6 |
+
+---
+
+## Files changed in Part 5
+
+| File | Change | Committed before this pass? |
+|---|---|---|
+| `LIST-PANEL-GENERATION-CONTRACT.md` | **New.** 18 sections, LF line endings. Corrected for L-12 – L-16 before delivery | No — new file |
+| `tests/test_list_panel_contract.py` | **New.** 44 tests, LF line endings (change 70) — found L-16 | No — new file |
+| `AI-BRIEFING.txt` | §7c rewritten (change 57); §0 routing table and self-check list updated; two surviving L-13 leftovers corrected in §7c and §8b (change 72) | Yes |
+| `PANEL-TYPE-GUIDE.md` | List-panel section added (change 58) | Yes |
+| `CLAUDE.md` | §6a host-behaviour note; Gotcha #25 extended (change 59) | Yes |
+| `build-object-catalog.py` | List panel object set added to the generator (change 60) | Yes |
+| `DESIGN-OBJECT-CATALOG.md` | Regenerated from the above — not hand-edited | Yes |
+| `documentation-rules.json` | `panel_types.list_panel`, evidence E5–E8, two scope tags, container invariants, precedence rank 3 (change 61); `qa.test_file` / `test_command` (change 70) | Yes |
+| `reference_data/real-spjeldliste-example.json` | `_note` prose corrected (change 71). **Envelope untouched** | Yes |
+| `documentation-change-log.md` | This part | Yes |
+| `AI-BRIEFING-REVISED.txt` | **Untouched**, deliberately (change 62) | Yes |
+
+The working tree also carries substantial uncommitted **ventilation** work from
+Parts 1–4 that predates this pass. Nothing in Part 5 touches it.
+
+---
+
+## What Part 5 deliberately did not do
+
+- **Did not invent an `obj_id`, coordinate, driver id, unit id, alias, plant id or
+  navigation target.** Where a value is required but not derivable, the templates
+  carry the literal placeholder `"<COPY_FROM_SOURCE>"` and §14 gives the exact
+  failure message to emit instead of guessing.
+- **Did not universalize one export's geometry.** Seven values appear in only one
+  file — the right-half `room` cell x, and all six live-cell x values — and are
+  tagged `TEMPLATE-SPECIFIC` rather than `LIST`.
+- **Did not average a conflicting coordinate.** Every one of L-1 – L-16 names a
+  winning source.
+- **Did not resolve the stripe placement rule, the separator placement rule, or
+  the `<DRIVERNAME>` and `unit_id` lookup.** All three are listed as open in
+  contract §16.2 with what would settle them.
+- **Did not claim the 400/500 numbering convention as truth.** It is evidence from
+  one production style, contradicted on the supply/extract reading by E5's own
+  aliases (L-6, L-8). Where the side cannot be read from explicit source data, the
+  contract stops rather than guessing.
+- **Did not add a wrapper format.** E8 is retained as a negative example precisely
+  because a task-companion wrapper is not a Designer panel and the importer cannot
+  read it.
+
+---
+
+# Part 6 — 2026-08-10: the Maskin (machine room) generation contract
+
+A separate pass with its own brief and its own evidence. It changes no
+ventilation and no list-panel rule. Conflict ids are `M-1`–`M-6` and refer to the
+table in [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) §12;
+validator rule ids are `M-S*` (structural), `M-G*` (relationship) and `M-P*`
+(profile-scoped), mirroring the ventilation namespaces.
+
+Evidence: **E9**–**E13** in the table at the head of this file. E9 is uncommitted
+— a live plant id, 64 real driver ids, a real unit id and a named author — so
+every measurement below is reproduced from **E10**, which is E9 sanitized and is
+in the repository.
+
+**Source precedence used**, highest first: the export supplied with the task (E9)
+→ `CLAUDE.md` host behaviour → `AI-BRIEFING.txt` → `PANEL-TYPE-GUIDE.md` →
+`DESIGN-OBJECT-CATALOG.md` (valid vocabulary only). No coordinate was averaged.
+No measurement was generalized past the profile it came from: geometry is tagged
+`TEMPLATE-10229`; only behaviour confirmed as a property of machine pictures is
+tagged `MASKIN`.
+
+**One premise in the brief did not survive contact with the repository.** The
+brief describes the failure to audit as "a generic 12-object authored SVG demo".
+No 12-object Maskin artifact exists anywhere in the repository:
+`generated-maskin-example.json` (E11) carries 63 objects and 215 drawable SVG
+elements. The failure *class* the brief names is real and is documented in
+contract §13 against the artifact that does exist. The 12-object file is not
+invented here, and no claim is made about it.
+
+---
+
+## Rules changed
+
+### 73. `MASKIN-GENERATION-CONTRACT.md` — a new owner for measured Maskin geometry
+
+| | |
+|---|---|
+| **Original** | No document owned Maskin geometry. Coordinates, roles and z-index bands were scattered across `AI-BRIEFING.txt`, `CLAUDE.md` and a P&ID paragraph in `AI-AGENT-INSTRUCTIONS.txt`, none of them measured from an export. |
+| **Problem found** | The only worked Maskin reference in the repository was an authored demo (E11) whose geometry matches production nowhere — see change 82. An agent following the repository produced a plausible panel with every readout off its drawn pill. |
+| **Revised** | **New file, 15 sections.** Routing table; the 8-rank source precedence in machine-readable form; the profile registry; the atomic-cluster model; the `M-S*`/`M-G*`/`M-P*` rule ids; the evidence base with E9's envelope verbatim and the mode discriminator; canvas and composition; background ownership and the four background fields; the z-index bands; the object vocabulary; the complete 8-role inventory with per-object geometry; compressor clusters with measured pitch; suction groups; the setpoint-pill rule; the anomalies; linking and sanitization; the four request classes; the conflict register; the negative example; and what evidence is still missing. |
+| **Reason** | The brief requires one live owner per rule and forbids inventing geometry. Measured geometry needed an owner that is neither the host document nor the output contract. |
+| **Source** | E9, reproduced from E10. |
+| **Files** | `MASKIN-GENERATION-CONTRACT.md` (new) |
+| **Status** | **Normative** · `MASKIN` and `TEMPLATE-10229`, tagged per rule |
+
+### 74. `MASKIN-AUTHORING-GUIDE.md` — the procedure, separated from the measurements
+
+| | |
+|---|---|
+| **Original** | Procedure was mixed into `AI-BRIEFING.txt` and a five-paragraph section of `CLAUDE.md`, interleaved with host facts and with geometry. |
+| **Revised** | **New file.** Ten ordered steps: classify the request into one of four classes, select the profile, decide background ownership *before* placing anything, place clusters whole, choose objects by role, land every pill on a drawn pill, sanitize or preserve, and report what could not be verified. Closes with an 11-row failure catalogue. |
+| **Reason** | Authoring procedure and measured geometry rot at different rates and are read at different moments. Keeping them in one document is what produced the duplicated, drifting Maskin rules this pass had to reconcile. |
+| **Source** | E9/E10 for every value quoted; the procedure itself derives from the host behaviour already recorded in `CLAUDE.md`. |
+| **Files** | `MASKIN-AUTHORING-GUIDE.md` (new) |
+| **Status** | **Normative** · `MASKIN` |
+
+### 75. `MASKIN-QA-CHECKLIST.md` — structural and visual QA are separate requirements
+
+| | |
+|---|---|
+| **Original** | No Maskin QA document. The implicit bar was "the JSON parses and inserts". |
+| **Revised** | **New file.** Stages 0/A/B/C/D/E. Stage C — render at native 1400×750 on the real background, one crop per role — is mandatory and cannot be satisfied by any validator. Carries the exact per-module test commands and the note that `python -m unittest discover -s tests` fails here because `tests/` has no `__init__.py`, with an explicit instruction not to "fix" that by adding one. |
+| **Reason** | The brief states it directly: correctness may not be claimed from JSON parsing alone. Every defect the render found in E11 was invisible to the parser. |
+| **Source** | The repository's own test convention; the visual pass run in this session. |
+| **Files** | `MASKIN-QA-CHECKLIST.md` (new) |
+| **Status** | **Normative** · `MASKIN` |
+
+### 76. `MASKIN-COPILOT-PREFLIGHT.md` — the retrieval-friendly short form
+
+| | |
+|---|---|
+| **Original** | Nothing equivalent for Maskin; the ventilation counterpart already existed. |
+| **Revised** | **New file.** 18 numbered plain-text items: precedence, request class, the never-invent rule, background ownership, structure, the z-bands, object-by-role, the setpoint-pill rule, cluster atomicity, the MT→LT trap, the pill-on-pill rule, alias as link key, the unlinked-demo contract, preserving production anomalies, UTF-8, the verification order, Insert-appends, and what to report. |
+| **Reason** | A Copilot agent that loads one Maskin file should load this one. It is a knowledge file, not the instructions field, so the 8 000-character cap does not apply — it measures **8 435 characters** (worst-case CRLF 8 570) and carries **0** angle brackets, so it stays paste-safe either way. |
+| **Source** | A compression of changes 73–75; every number in it is E9/E10. |
+| **Files** | `MASKIN-COPILOT-PREFLIGHT.md` (new) |
+| **Status** | **Normative** · `MASKIN` — a summary of owned rules; the contract wins on conflict |
+
+### 77. `reference_data/maskin-10229-sanitized.json` — the committed reference, built by script
+
+| | |
+|---|---|
+| **Original** | The only committed Maskin panel was E11, an authored demo. Nothing in the repository showed what a production machine picture looks like. |
+| **Revised** | **New fixture, 66 objects, 161 166 bytes**, generated by `build-maskin-fixture.py` from E9. Preserved exactly: geometry, `obj_id`, sizes, `zIndex`, `tag_text` (63 empty plus the three single-space values), `alias_text` (65 distinct), array order, and the `image_data` raster **byte-identical** at 123 966 characters. Replaced: `id` and `driver_id` → the literal `"driver_id"`; `linked` → `"false"`; `unit_id`, `unit_ref`, `link_tag`, `sub_group`, `source_plant_id`, `plant_id` and `saved_by` → empty. Dropped: the 2 241 097-character `image_svg_trace`. |
+| **Reason** | The brief forbids committing live plant bindings and prescribes exactly this preservation set. Aliases are preserved deliberately: they are the relink key, so stripping them would destroy the fixture's main purpose. |
+| **Source** | E9 → E10 via `build-maskin-fixture.py`; residue re-checked by validator rule `M-S10`. |
+| **Files** | `build-maskin-fixture.py` (new), `reference_data/maskin-10229-sanitized.json` (new) |
+| **Status** | **Normative** · `TEMPLATE-10229` |
+
+### 78. `documentation-rules.json` — `panel_types.maskin`, through its generator
+
+| | |
+|---|---|
+| **Original** | The machine-readable rule file covered ventilation and list panels. It had no Maskin entry, so no Maskin rule was queryable or scope-tagged in machine form. |
+| **Revised** | `panel_types.maskin` added, with `identity`, `owner_document`, `canvas`, `background`, `composition`, `z_indexes`, `object_vocabulary`, `roles`, `setpoint_pill`, `compressor_columns`, `role_translations_mt_to_lt`, `absent_by_design`, `anomalies`, `bindings`, `sanitization`, `request_classes`, `insert_semantics`, `required_roles`, `qa` and `evidence_required`; evidence E9–E13; the scope tags `MASKIN` and `TEMPLATE-10229`. |
+| **How** | Through `build-maskin-rules.py`, **not** by hand. Its only flag is `--check`; a bare invocation writes. Two generator defects were fixed at the generator and the file regenerated: a stale `discover -s tests` QA command that cannot run here, and a `qa` block whose shape diverged from the ventilation one. |
+| **Reason** | The brief forbids hand-editing generated artifacts, and a hand fix would have been silently reverted on the next regeneration. |
+| **Source** | E9/E10. |
+| **Files** | `build-maskin-rules.py` (new), `documentation-rules.json` |
+| **Status** | **Normative** · tagged per rule |
+
+### 79. `validate-maskin-panel.py` and `tests/test_maskin_10229_contract.py` — the contract made executable
+
+| | |
+|---|---|
+| **Original** | No Maskin validator. A Maskin panel could only be checked by reading it. |
+| **Revised** | **New validator**, rule ids `M-S01`–`M-S10` (structural), `M-G01`–`M-G07` (relationship) and `M-P01`–`M-P05` (profile-scoped), with `--profile`, `--mode {demo,production}` and `--json`, exit 1 on any error. Comparison is by **role key** — `obj_id` + `alias_text` + `tag_text` — never by array index. **New test module, 62 tests**, covering the fixture baseline, each structural rule, the relationship rules, the `TEMPLATE-10229` profile and the generated artifacts. |
+| **Two false positives, found by the tests and fixed** | `M-S07` fired on E9's own `image_svg_trace`; severity is now mode-dependent and mode detection runs before the background check (conflict `M-3`). `M-S08` fired on `saved_by "copilot"`; identity checks moved into the `M-S10` residue rule. |
+| **Reason** | A contract nobody can run drifts from the code it describes. Every new validator rule got a regression test, as the brief requires. |
+| **Source** | E9/E10/E11. |
+| **Files** | `validate-maskin-panel.py` (new), `tests/test_maskin_10229_contract.py` (new) |
+| **Status** | **Normative** · each rule id carries its own scope |
+
+### 80. `render-maskin-panel.py` — native-size visual QA
+
+| | |
+|---|---|
+| **Original** | No way to see a Maskin panel without inserting it into the live Designer. |
+| **Revised** | **New renderer.** Emits a native 1400×750 preview of the real background with the dynamic-object overlay, plus one zoomed crop per role group, deriving the crop regions from `documentation-rules.json` → `panel_types.maskin.roles[*].aliases` rather than from hardcoded rectangles. |
+| **Reason** | Stage C of the QA checklist is not optional and cannot be automated away; it needed a repeatable way to produce the crops. Two capture defects were fixed while using it: silent clipping of wide crops (`CROP_MAX_WIDTH` 1360, per-region scale), and the in-app browser being unavailable, which is why the previews render through local headless Chrome. |
+| **Source** | E10 plus the committed background raster. |
+| **Files** | `render-maskin-panel.py` (new) |
+| **Status** | **Procedural** · `MASKIN` |
+
+### 81. `DESIGN-OBJECT-CATALOG.md` — the Maskin object set, added through the generator
+
+| | |
+|---|---|
+| **Original** | The catalogue's object-set table had a list-panel row and no Maskin row. The 11 ids a machine picture actually uses were not retrievable as a set. |
+| **Revised** | A `Maskin object set (CO2 rack machine room)` row listing all 11 measured ids in role order, stating that the machine drawing owns all artwork — so the set contains no pipes, symbols or labels — and that the sizes in the table below are toolbox defaults, because production places every AK-PC strip at 81×21. |
+| **How** | Through `build-object-catalog.py`, **not** by hand, then regenerated (`797 objects, 11 menus, 266 panels scanned`). The diff against HEAD is exactly the one generated row plus its Part 5 list entry. |
+| **Reason** | The brief assigns valid vocabulary to this file and forbids hand-editing generated catalogues. |
+| **Source** | E9's `obj_id` frequency table; the fleet counts beside each id come from the generator's own survey. |
+| **Files** | `build-object-catalog.py`, `DESIGN-OBJECT-CATALOG.md` (regenerated) |
+| **Status** | **Normative** · `MASKIN` |
+
+### 82. `generated-maskin-example.json` reclassified — worked example to negative example
+
+| | |
+|---|---|
+| **Original** | `AI-BRIEFING.txt`: `- Worked example: generated-maskin-example.json`. `CLAUDE.md` §17b listed it as the Maskin sample to copy. |
+| **Revised** | Both now label it a **negative example** and route copying to `reference_data/maskin-10229-sanitized.json`. `CLAUDE.md` §17b carries the measured audit; `AI-BRIEFING.txt` carries the short form and points at contract §13. |
+| **The audit, by role and never by array index** | 63 objects against 66; 9 distinct `obj_id`s against 11. **Three roles missing** — the entire third LT compressor (`C3 LT status`, `C3 LT capacity`, `C3 LT Runtime total`). **One role invented** (`Liq. inj. status MT`). **Two `obj_id` substitutions.** Every `zIndex` is `"default"` where production uses five numeric bands. An authored `image_svg` where production owns a raster `image_data`. Of the **62 role instances the two files share, 0 sit at the production coordinates** — median displacement 23.2 px, mean 36.6, max 157.7, with 41 roles more than 20 px out and 13 more than 50 px. Validated against the profile it claims to represent it raises **90 errors and 6 warnings**; validated with no profile it raises **0 errors and 1 warning**. |
+| **Reason** | It parses, it inserts, and it is wrong — which is precisely why it was being copied. The brief asks for this failure to be documented as a negative example, not deleted and not treated as a template. |
+| **Source** | E11 against E10, paired by role key with deterministic minimum-cost matching. |
+| **Files** | `AI-BRIEFING.txt`, `CLAUDE.md` §17b, `MASKIN-GENERATION-CONTRACT.md` §13. The example file itself is **unchanged** |
+| **Status** | **Normative** · `MASKIN` |
+
+### 83. `CLAUDE.md` — the compressor-bank procedure replaced by routing plus host facts
+
+| | |
+|---|---|
+| **Original** | `### Editing an existing Maskin compressor bank from an exported panel JSON` — five prose paragraphs mixing host behaviour, authoring procedure and unmeasured geometry, plus a test command. |
+| **Problem found** | This is the host-behaviour document. Procedure and geometry in it constitute a second competing contract, and the geometry in those paragraphs was not measured from any export. |
+| **Revised** | Replaced by `### Maskin (CO₂ rack / machine room) — where the rules live, and the host facts`: a 7-row routing table, then the five facts that genuinely belong to the host. (1) The z-index list elsewhere in this file is ventilation-scoped and Maskin inverts it (`M-1`; recorded, not averaged). (2) `linked="true"` is set on load whenever `driver_id !== "driver_id"`, **including when it is empty** (`V3scripts.js:514`) — which is why E9 contains two such objects. (3) A production export never emits the literal `"driver_id"`; that is the mode discriminator. (4) `panel.image_svg_trace` is an Export **input** that `applyImportCore` deletes on Insert, so it is never output. (5) Insert appends and renames every object from the live canvas child index. §17b gained a normative bullet for the sanitized fixture. |
+| **Reason** | One owner per rule. The host document keeps what only it can know and routes the rest. |
+| **Source** | The mirrored Designer sources for the host facts; E9/E10 for the counts. |
+| **Files** | `CLAUDE.md` §17b and the Maskin section |
+| **Status** | **Normative** · `GLOBAL` for the host behaviour, `MASKIN` for the routing |
+
+### 84. `CLAUDE.md` — the Maskin test command corrected
+
+| | |
+|---|---|
+| **Original** | A bare `python -m unittest …` line with no working directory stated. |
+| **Revised** | `Regression fixtures and tests — run from iwmac-designer-reference/ (the repo convention is per-module; discover -s tests fails because tests/ has no __init__.py):` above `python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_10229_contract`. |
+| **Reason** | The documented command has to be the one that actually runs. Checked against every `python -m unittest` line in the repository's Markdown before standardizing. |
+| **Source** | Run in this session: 78 tests, OK. |
+| **Files** | `CLAUDE.md` |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 85. `PANEL-TYPE-GUIDE.md` — the Maskin section rewritten
+
+| | |
+|---|---|
+| **Original** | A short section giving the fleet statistics (39 panels, median 59 objects, ~98% linked), a rough object mix, and a "Best copy sources" list naming the authored demo. |
+| **Problem found** | It read as a specification while owning nothing, and the best source it named was the negative example. The median was also being read as a target. |
+| **Revised** | Opens with a routing blockquote — five rows naming the contract, the authoring guide, the QA checklist, `documentation-rules.json` with the validator command, and the preflight — and states plainly that the section is style summary and fleet context and does **not** own geometry. Keeps the fleet statistics and adds "the median is a fleet statistic, not a target. The measured reference profile is 66 objects; neither number is a pass mark." Expands the object mix, adds the 8-item role inventory, states that the background owns all artwork, states that an alias is never renamed and never stripped during sanitization, and replaces "Best copy sources" with a 4-item named-best-references precedence list ending in the negative example. |
+| **Reason** | Panel-type identity, role inventory, background family and linking method belong here per the brief's target architecture; measured coordinates do not. |
+| **Source** | The 41-plant survey for the fleet numbers; E9/E10 for the roles. |
+| **Files** | `PANEL-TYPE-GUIDE.md` |
+| **Status** | **Normative** for the routing and the roles · `MASKIN`; the fleet statistics remain **Advisory** |
+
+### 86. `AI-BRIEFING.txt` — routing, precedence, and the Maskin block
+
+| | |
+|---|---|
+| **Original** | The "what it does not own" table listed the ventilation and list-panel owners only. The §0 precedence rank 3 named `VENTILATION-GEOMETRY-CONTRACT.md`. The Maskin material was a `MASKIN ARTWORK` header plus an editing procedure written before any export had been measured. |
+| **Revised** | Five edits. (1) The ownership table gained rows for the Maskin contract, authoring guide, QA checklist, validator and both preflights, and the reprinted-number paragraph now ends "Maskin geometry is NOT reprinted here: there is one owner, and it is MASKIN-GENERATION-CONTRACT.md." (2) Precedence rank 3 now names the contract *for each panel type*. (3) A new `MASKIN (MACHINE PICTURE) - ROUTING FIRST` block names the four documents, the fixture and the validator command, and carries the two envelope-level facts an agent cannot get elsewhere: the z-bands are not the ventilation bands, and a production export never emits the literal `"driver_id"`. (4) The worked-example bullet became the negative-example bullet (change 82). (5) The compressor-bank block now opens with routing plus "the five rules that are envelope-level", requires a pitch reused from a **named** pair rather than an average, and requires comparison by role key. |
+| **Reason** | This file is the output contract and the routing hub. It should say where the Maskin rules live and stop restating them. |
+| **Source** | E9/E10; the host facts from `CLAUDE.md`. |
+| **Files** | `AI-BRIEFING.txt` |
+| **Status** | **Normative** · `GLOBAL` for the envelope facts, `MASKIN` for the routing |
+
+### 87. `AI-BRIEFING.txt` — the relinking section records the duplicate-alias anomaly
+
+| | |
+|---|---|
+| **Original** | The relinking procedure's step 2 said that the same alias appearing twice means the same row, with no caveat. |
+| **Revised** | Adds that this is measured production behaviour and not always the intent: on E9, `Suction temp. To-MT` appears on two adjacent pills that the artwork labels "To °C" and "To offset", both bound to one driver id, where the LT row binds its second pill to `To opt. offset LT`. Preserve and report; any corrective is **Advisory** and needs the plant's own parameter dump. Points at contract §9.3. |
+| **Reason** | An agent that "tidies" this silently changes what a production panel displays. The brief requires anomalies to be reported, not corrected. |
+| **Source** | E9 `object_1` and `object_59` — both at y257, x581 and x626, one driver id — confirmed against the rendered artwork in the visual pass. |
+| **Files** | `AI-BRIEFING.txt`, `MASKIN-GENERATION-CONTRACT.md` §9.3 |
+| **Status** | **Normative** to preserve · the correction itself is **Advisory** · `TEMPLATE-10229` |
+
+### 88. `AI-AGENT-INSTRUCTIONS.txt` — Maskin routing added inside the 8 000-character cap
+
+The file is pasted into the M365 Copilot Studio instructions field, which caps at
+8 000 characters and rejects `<` and `>`. It had **9 characters of headroom**, so
+the Maskin block had to be paid for. Every cut below removes text that has a live
+owner elsewhere; none removes a rule.
+
+| | |
+|---|---|
+| **Added** | `MASKIN = CO2 rack. The drawing owns ALL artwork; objects add live values only. Read MASKIN-COPILOT-PREFLIGHT.md; MASKIN-GENERATION-CONTRACT.md owns every coordinate, role and z band, scope-tagged. Name the case as for vent; copy reference_data/maskin-10229-sanitized.json, NOT generated-maskin-example.json (NEGATIVE example). z bands 110/360/375/1000/1100, not "default", not the vent bands. Clusters are atomic, a measured pitch never averaged, every pill on a drawn pill.` — 509 characters |
+| **Cut 1** | `FROM A P&ID OR SYSTEM DESCRIPTION. One row per compressor (label, run LED, capacity %, hours), MT/LT groups with an akpc strip each; Po/Pc/Prec/Pgc to TRYKK; Ss/Sd/Sgc to TEMPERATURER; gas cooler to fan icon + fan/HV/GBV % boxes + cond strip; receiver to Prec + temps; heat recovery Shr its own section. Sensor names go in alias_text.` → removed. Unmeasured rack geometry, now owned in measured form by contract §5. The Maskin block occupies its place |
+| **Cut 2** | `VENTILATION-GEOMETRY-CONTRACT.md;` → `the panel type's geometry contract;` in the precedence line. Three contracts now exist; each panel-type block names its own |
+| **Cut 3** | ` Vent: Tilluft x1275, Avtrekk x1341 (measured; widths are estimates).` → removed. A reprinted coordinate that `VENTILATION-GEOMETRY-CONTRACT.md` owns — and flags there as contradicted by production by 1 px, which a reprint cannot express |
+| **Cut 4** | `to drag onto the plan: bell 12,0 + 40px_no_conn_no_tag 7,22 + cooling_nrm 10,35 + defrost_nrm 28,38, all on ONE case controller.` → `to drag onto the plan; the 4 offsets are in briefing THE CASE CLUSTER, all on ONE case controller.` Same four offsets, owned by `AI-BRIEFING.txt` § THE CASE CLUSTER with its evidence — 28 occurrences across 16 stores |
+| **Cut 5** | MODE D's inline rules → `follow briefing MODE D - labelled cabinets and rooms only, simplified plan as image_svg, one cluster per position, aliases from the plan labels.` `AI-BRIEFING.txt` § MODE D - BYGGEPLAN UPLOAD owns them, including the gondolas-and-dimension-lines exclusion |
+| **Moved, not cut** | The duplicated UTF-8 sentence left the LAYOUT line, and the self-check entry widened from `UTF-8 °C not gr C;` to `UTF-8 - °C not gr C, keep Norwegian letters and m³;`. The file still states the rule once, in full |
+| **Also changed** | Self-check `zIndex "default" (7c and vent bands excepted)` → `(7c, vent and maskin bands excepted)`. Without this the file's own check would reject a correct Maskin panel |
+| **Character count** | **7 991 → 7 965** worst-case CRLF (LF 7 958 → 7 932). Headroom under the cap: **9 → 35**. Angle brackets: **0**, unchanged. `°C` and `m³` verified present after the edit |
+| **Reason** | The brief requires this file to stay within its documented Copilot Studio restrictions, with the Maskin detail in knowledge files. |
+| **Source** | E9/E10 for the block; the named owner documents for each cut. |
+| **Files** | `AI-AGENT-INSTRUCTIONS.txt` |
+| **Status** | **Normative** · `MASKIN` for the block, `GLOBAL` for the self-check changes |
+
+### 89. The `*-REVISED` files — deliberately not applied
+
+| | |
+|---|---|
+| **Decision** | `AI-AGENT-INSTRUCTIONS-REVISED.txt`, `AI-BRIEFING-REVISED.txt` and `CLAUDE-REVISED.md` were **not** given Maskin content and were not promoted. |
+| **Reason** | The brief says to treat `*-REVISED` files as change records or proposals per their own status header, never automatically as live contracts. Mirroring Part 6 into them would create exactly the second competing contract the brief forbids. |
+| **Files** | none |
+| **Status** | **Advisory** · `GLOBAL` |
+
+---
+
+## Conflicts resolved
+
+Recorded in full in [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) §12.
+**No conflict was resolved by averaging.**
+
+| Id | Conflict | Decision |
+|---|---|---|
+| **M-1** | `CLAUDE.md` z-bands (110 values, 1100 labels) against E9 (1100 value and setpoint pills, 110 json and no-connection boxes) | Both kept. The `CLAUDE.md` list is scoped `VENT`; the Maskin bands are scoped `MASKIN`. Bands are a property of the panel type |
+| **M-2** | Compressor rows translate MT→LT by ≈(0,+325); the suction readouts do not — `Sd` moves (369,313), `Ss` (−71,324) | The vector is recorded **per role**, never per panel. Applying the compressor vector panel-wide moves seven readouts onto empty artwork |
+| **M-3** | `image_svg_trace` is present in E9 and forbidden in output | Severity is mode-dependent: **error** for authored output, **warning** on a detected production export. The host deletes the field on Insert |
+| **M-4** | 66 objects (E9) against the 59-object fleet median | Neither is a target. Object count is justified role by role against the selected profile |
+| **M-5** | `Suction temp. To-MT` on two adjacent pills sharing one driver id, where LT binds its second pill to `To opt. offset LT` | Recorded as a measured anomaly with artwork evidence; **not corrected**. Any corrective is **Advisory** |
+| **M-6** | `DESIGN-OBJECT-CATALOG.md` sizes against measured placement sizes | The catalogue's sizes are toolbox defaults. The contract wins on placement geometry; the catalogue keeps vocabulary |
+
+---
+
+## Verification run for Part 6
+
+| Command, from `iwmac-designer-reference/` | Result |
+|---|---|
+| `python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_10229_contract` | Ran 78 tests — **OK** |
+| `python -m unittest tests.test_build_ventilation_corpus tests.test_list_panel_contract tests.test_maskin_compressor_bank tests.test_ventilation_profile_9099 tests.test_maskin_10229_contract` | Ran 188 tests — **OK** |
+| `python validate-maskin-panel.py reference_data/maskin-10229-sanitized.json --profile TEMPLATE-10229` | 0 errors, 1 warning |
+| `python validate-maskin-panel.py <the supplied export> --profile TEMPLATE-10229` | 0 errors, 3 warnings |
+| `python validate-maskin-panel.py reference_data/generated-maskin-example.json --profile TEMPLATE-10229` | **90 errors**, 6 warnings — change 82 |
+| `python build-maskin-rules.py --check` | clean; the file is generated, never hand-edited |
+| `python build-object-catalog.py` | 797 objects, 11 menus, 266 panels scanned — diff is the one generated row |
+
+Visual QA ran at native 1400×750 on the real background, one crop per role group.
+It confirmed three things no validator can see: every value box lands on an empty
+pill drawn in the artwork; `Prec reference` sits on a visibly darker drawn pill
+than `Prec` 25 px below it, which is what the setpoint-pill rule encodes; and the
+MT and LT columns each draw three status strips, three capacity pills and three
+runtime pills but only **one** VSD pill, under C1 — which is why
+`absent_by_design` exists, and why a fourth compressor is cloned from C3 and
+never from C1.
+
+---
+
+## Files changed in Part 6
+
+| File | Change | Existed before? |
+|---|---|---|
+| `MASKIN-GENERATION-CONTRACT.md` | **New.** Measured-geometry owner, 15 sections (73) | No |
+| `MASKIN-AUTHORING-GUIDE.md` | **New.** Procedure and failure catalogue (74) | No |
+| `MASKIN-QA-CHECKLIST.md` | **New.** Stages 0–E; visual QA mandatory (75) | No |
+| `MASKIN-COPILOT-PREFLIGHT.md` | **New.** 18-item short form, 8 435 chars (76) | No |
+| `build-maskin-fixture.py` | **New.** Sanitizer, E9 → E10 (77) | No |
+| `reference_data/maskin-10229-sanitized.json` | **New.** 66 objects, no live bindings (77) | No |
+| `build-maskin-rules.py` | **New.** Generator for `panel_types.maskin` (78) | No |
+| `documentation-rules.json` | `panel_types.maskin`, evidence E9–E13, two scope tags — regenerated, not hand-edited (78) | Yes |
+| `validate-maskin-panel.py` | **New.** `M-S*` / `M-G*` / `M-P*` rules (79) | No |
+| `tests/test_maskin_10229_contract.py` | **New.** 62 tests (79) | No |
+| `render-maskin-panel.py` | **New.** Native-size preview and per-role crops (80) | No |
+| `build-object-catalog.py` | Maskin object set added to the generator (81) | Yes |
+| `DESIGN-OBJECT-CATALOG.md` | Regenerated from the above — not hand-edited (81) | Yes |
+| `CLAUDE.md` | §17b fixture bullet and negative-example audit; Maskin section replaced by routing plus five host facts; test command corrected (82–84) | Yes |
+| `PANEL-TYPE-GUIDE.md` | Maskin section rewritten (85) | Yes |
+| `AI-BRIEFING.txt` | Ownership table, precedence, Maskin routing block, negative example, compressor-bank block, relinking anomaly (82, 86, 87) | Yes |
+| `AI-AGENT-INSTRUCTIONS.txt` | Maskin routing inside the 8 000-character cap; five reprint cuts (88) | Yes |
+| `documentation-change-log.md` | This part; evidence E9–E13 and two scope tags added at the head | Yes |
+| `reference_data/generated-maskin-example.json` | **Untouched.** Reclassified in the documents that cite it, not edited (82) | Yes |
+| `AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt`, `CLAUDE-REVISED.md` | **Untouched**, deliberately (89) | Yes |
+
+---
+
+## What Part 6 deliberately did not do
+
+- **Did not invent a coordinate, `obj_id`, driver id, unit id, alias, plant id,
+  file path or navigation target.** Where the brief's premise and the repository
+  disagreed — the "12-object demo" — the disagreement is stated, not reconciled.
+- **Did not generalize one export.** Every coordinate in the contract is tagged
+  `TEMPLATE-10229`. Only behaviour independently confirmed as a property of
+  machine pictures is tagged `MASKIN`. There is exactly one measured profile, and
+  the contract says so.
+- **Did not average a conflicting value.** `M-1`–`M-6` each name a winner or keep
+  both under different scopes. The compressor pitch stays a measured 79–82 px
+  with a named pair, never a constant.
+- **Did not correct a production anomaly.** The three single-space `tag_text`
+  values, the two objects that are `linked:"true"` with an empty `driver_id`, and
+  the duplicate `Suction temp. To-MT` binding are preserved in the fixture and
+  reported in the contract.
+- **Did not commit the supplied export.** It stays outside the repository. E10
+  reproduces every measurement without a plant id, a driver id, a unit id or an
+  author name.
+- **Did not delete the negative example.** E11 is retained and cited as one,
+  because the failure it demonstrates — a panel that parses, validates without a
+  profile, inserts cleanly, and is still wrong on all 62 shared roles — is the
+  specific thing this pass exists to prevent.
+- **Did not resolve six open evidence items.** Contract §14 lists them with what
+  would settle each: a second Maskin export from a different plant, a fixed-speed
+  rack, a rack with more than three compressors per suffix, the plant's own
+  parameter dump for the duplicate alias, an AK-PC model other than 782A, and a
+  Maskin panel on a canvas other than 1400×750. A stated gap is a deliverable; a
+  guess is not.

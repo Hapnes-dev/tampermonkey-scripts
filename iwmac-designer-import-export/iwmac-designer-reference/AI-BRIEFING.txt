@@ -1,21 +1,107 @@
 IWMAC DESIGNER PANEL GENERATION - AI BRIEFING
 ==============================================
-Self-contained contract for any AI (Copilot agent, Claude, GPT) that generates
+The output contract for any AI (Copilot agent, Claude, GPT) that generates
 an "iwmac-designer-panel" .json file. The file is inserted into the IWMAC
 Designer with the "Insert JSON..." button (IWMAC Designer Import/Export
-userscript, Panel JSON section under Manage Files). Give this briefing plus
-generated-panel-example.json to the AI as knowledge. The complete object
-catalogues (reference_data/all-design-objects.json and controls-registry.json)
-are optional extra knowledge - the allowlist in section 4 is enough for most
-panels.
+userscript, Panel JSON section under Manage Files).
 
-WHICH OBJECT DO I USE? DESIGN-OBJECT-CATALOG.md names all 797 palette
-objects in plain language - what each one looks like, its size, whether it
-takes a tag or a link, its states, and how many times the 266 surveyed
-production panels actually placed it. Its "Pick by task" table answers
-"I need a value box / an alarm / a damper / a page link" directly. Upload
-it alongside this briefing; reference_data/design-object-catalog.json is
-the same data machine-readable, keyed by obj_id.
+WHAT THIS FILE OWNS: the envelope, the 17-field object template, the object
+allowlist, the layout rules, the per-panel-type recipes, the linking
+procedure and the self-check. It is enough on its own to produce a valid
+panel.
+
+WHAT IT DOES NOT OWN, and where to look instead:
+  which obj_id draws what ......... DESIGN-OBJECT-CATALOG.md
+                                    (797 objects, "Pick by task" table)
+  exact ventilation geometry ...... VENTILATION-GEOMETRY-CONTRACT.md
+                                    (measured, with evidence ids and
+                                    scope tags)
+  exact Maskin geometry, roles,
+  z-bands, anomalies .............. MASKIN-GENERATION-CONTRACT.md
+                                    (measured, with evidence ids and
+                                    scope tags)
+  building a list panel from a
+  table (spjeldliste) ............. LIST-PANEL-GENERATION-CONTRACT.md
+                                    (measured geometry, column mapping,
+                                    the 11-step algorithm, validation)
+  how to author a vent panel ...... VENTILATION-AUTHORING-GUIDE.md
+                                    (the 10-step procedure and the
+                                    six-axis decision table)
+  how to author a Maskin panel .... MASKIN-AUTHORING-GUIDE.md
+                                    (the 10-step procedure, the four
+                                    request classes, failure catalogue)
+  is my panel correct ............. VENTILATION-QA-CHECKLIST.md
+                                    MASKIN-QA-CHECKLIST.md
+  the same rules for a validator .. documentation-rules.json
+                                    (run validate-ventilation-panel.py
+                                    or validate-maskin-panel.py)
+  a block for a Copilot prompt .... VENTILATION-COPILOT-PREFLIGHT.md
+                                    MASKIN-COPILOT-PREFLIGHT.md
+  how the Designer itself works ... iwmac-designer-reference/CLAUDE.md
+
+Sections 7a and 7c reprint the ventilation and list-panel measurements so
+this briefing stays usable when it is the only file uploaded. WHERE A
+REPRINTED NUMBER DISAGREES WITH VENTILATION-GEOMETRY-CONTRACT.md (7a),
+LIST-PANEL-GENERATION-CONTRACT.md (7c) OR MASKIN-GENERATION-CONTRACT.md
+(the MASKIN blocks), THE CONTRACT WINS - it carries the evidence id, the
+scope tag and the measurement date, and this file does not. Maskin
+geometry is NOT reprinted here: there is one owner, and it is
+MASKIN-GENERATION-CONTRACT.md.
+
+Give this briefing plus reference_data/generated-panel-example.json to the
+AI as knowledge. reference_data/all-design-objects.json and
+controls-registry.json are optional extra knowledge; the allowlist in
+section 4 covers most panels.
+
+0. SOURCE PRECEDENCE (NORMATIVE - APPLIES TO EVERY PANEL TYPE)
+--------------------------------------------------------------
+When two sources disagree, the higher rank wins. Name the rank you used in
+your verification report. This is the same list as
+VENTILATION-GEOMETRY-CONTRACT.md's and MASKIN-GENERATION-CONTRACT.md's
+front matter and documentation-rules.json -> source_precedence; there is
+exactly one list, and it is not restated anywhere else.
+
+  1. A panel JSON or screenshot supplied with the current task.
+  2. A real production export of the same panel type and system type
+     (reference_data/*.json).
+  3. The measured, evidence-tagged geometry contract for the panel type
+     in hand: VENTILATION-GEOMETRY-CONTRACT.md for a Ventilasjon panel,
+     MASKIN-GENERATION-CONTRACT.md for a Maskin / machine-room panel,
+     LIST-PANEL-GENERATION-CONTRACT.md for a spjeldliste or any other
+     container-built list panel.
+  4. Panel-specific rules in iwmac-designer-reference/CLAUDE.md.
+  5. This briefing.
+  6. PANEL-TYPE-GUIDE.md.
+  7. DESIGN-OBJECT-CATALOG.md.
+  8. Generic visual-design advice.
+
+DO NOT AVERAGE CONFLICTING COORDINATES. Use the highest-precedence source.
+Two anchors that disagree are two different panels, not one panel measured
+twice: splitting the difference produces a layout that matches neither and
+that no site will recognise.
+
+Three consequences that catch agents out:
+
+- A SIZE IN THE ALLOWLIST OR THE CATALOGUE IS A TOOLBOX DEFAULT, NOT A
+  PLACEMENT. Rank 7 loses to rank 2. Seven objects in the ventilation
+  references are placed at a size the catalogue does not list - the sidebar
+  header is 60x25 in the palette and 250x20 on every real ventilation
+  panel.
+
+- A SUPPLIED JSON OUTRANKS EVERY MEASUREMENT PRINTED IN THIS FILE. Its
+  coordinates, sizes, z-indexes, object vocabulary and ordering are the
+  template. The numbers in 7a were measured from a different export.
+
+- OBJECT COUNT IS NOT A QUALITY TARGET. Coverage of the required production
+  roles is the target (7a-3 lists them). A panel is not better for having
+  more objects, and not worse for having fewer - it is wrong when a
+  required role is missing or a coordinate was invented.
+
+WHEN THE EVIDENCE DOES NOT EXIST, SAY SO. Do not guess a coordinate to fill
+a gap, and never invent an obj_id, driver id, unit id, parameter alias,
+file path or navigation target. Report what is missing and what you would
+need to measure it. A stated gap is recoverable; an invented number is not,
+because nothing downstream marks it as invented.
 
 1. WHAT YOU ARE MAKING
 ----------------------
@@ -88,9 +174,32 @@ with artwork - see section 7a, "VENTILATION UNIT".
    dialog's background picker (v1.1.0+) embeds it for them.
 Set the envelope's "background_embedded": true when 1 or 2 is used.
 
-MASKIN (MACHINE PICTURE) ARTWORK - when asked to draw or modify a
-machine-picture background, follow maskin-drawing-method.txt (knowledge
-file; companion image maskin-light-style-reference.png) exactly:
+MASKIN (MACHINE PICTURE) - ROUTING FIRST. Everything measured about a
+Maskin panel - canvas, background ownership, the z-index bands, the
+eleven obj_ids, the eight named role clusters with their coordinates,
+the compressor pitch, the MT-to-LT translations, the anomalies, the
+sanitization contract and the four request classes - lives in
+MASKIN-GENERATION-CONTRACT.md, WHICH IS AUTHORITATIVE ON CONFLICT. The
+procedure is MASKIN-AUTHORING-GUIDE.md, the acceptance tests are
+MASKIN-QA-CHECKLIST.md, the promptable digest is
+MASKIN-COPILOT-PREFLIGHT.md, and the committed 66-object production
+fixture to copy is reference_data/maskin-10229-sanitized.json. Validate
+with: python validate-maskin-panel.py PANEL.json --profile TEMPLATE-10229
+Two Maskin facts that belong here because they are envelope-level and
+catch agents out on every panel type:
+- The z-index list in section 5 of this file and in CLAUDE.md is
+  VENTILATION-scoped. Maskin uses different bands (110 / 360 / 375 /
+  1000 / 1100, contract section 3). Applying the ventilation bands to a
+  Maskin puts every value pill underneath the artwork.
+- A production export never emits the literal string "driver_id". Its
+  unlinked objects carry an EMPTY driver_id, and the host then sets
+  linked "true" anyway (CLAUDE.md section 5). A generated demo MUST emit
+  the literal placeholder. That asymmetry is how you tell the two modes
+  apart, and the validator keys on it.
+
+MASKIN ARTWORK - when asked to draw or modify a machine-picture
+background, follow maskin-drawing-method.txt (knowledge file; companion
+image maskin-light-style-reference.png) exactly:
 - Layout doctrine: MT compressor group upper-left, LT group lower-left,
   oil separator on the discharge riser top-left, gas cooler (white box
   with fan circles) top-right, heat-recovery HX branch top-center,
@@ -112,12 +221,22 @@ file; companion image maskin-light-style-reference.png) exactly:
   ships with this kit.
 - Vrec is the receiver FLASH-GAS valve: draw it on the cyan
   suction-side line, never on the yellow liquid line.
-- Worked example: generated-maskin-example.json - a complete generated
-  Maskin (light skin image_svg drawn per the method + 63 objects with
-  the canonical maskin-akpc-link-map aliases), insert-verified 63/63
-  with the background applied.
+- NEGATIVE example, corrected 2026-08-10: generated-maskin-example.json
+  was listed here as a worked example. It is not one. It is an authored
+  image_svg demo, and measured against the production export it drops
+  three roles (the entire third LT compressor), invents one, substitutes
+  two purpose-built obj_ids with generic value pills, emits
+  zIndex "default" on all 63 objects, and places 0 of the 62 shared
+  roles at the production coordinates. It insert-verifies 63/63 and is
+  still wrong - which is the lesson. The audit is
+  MASKIN-GENERATION-CONTRACT.md section 13. Copy
+  reference_data/maskin-10229-sanitized.json instead.
 
 Editing an existing Maskin compressor bank from an exported panel JSON
+The full procedure, the four request classes and the failure catalogue
+are MASKIN-AUTHORING-GUIDE.md; the measured cluster geometry and the
+compressor pitch are MASKIN-GENERATION-CONTRACT.md sections 5-6. The
+five rules that are envelope-level:
 - Decide the deliverable BEFORE editing. A background-only patch changes
   image_data and has zero counts plus empty single_objects, containers and
   graphics. An entire/full JSON preserves the complete source document and
@@ -133,7 +252,9 @@ Editing an existing Maskin compressor bank from an exported panel JSON
   alias_text; NEVER invent a driver ID.
 - Treat the compressor column as one template and apply one measured vector to
   its compressor art, upper/lower branches, static label, empty pills and
-  requested object coordinates. Background owns pipes, equipment, labels,
+  requested object coordinates. Reuse a pitch measured from a NAMED pair and
+  say which pair - the production pitch is 79 to 82 px, and averaging it into
+  a constant is forbidden. Background owns pipes, equipment, labels,
   status/pill artwork and empty fields; dynamic objects own live state/values.
 - Preserve source alpha or mask intended foreground pixels only; NEVER paste an
   opaque rectangular crop. Sample every source's centerline, colour, alpha,
@@ -143,10 +264,11 @@ Editing an existing Maskin compressor bank from an exported panel JSON
 - Reparse full JSON; check counts, sequential names, the exact object diff and
   protected existing fields. Render full panel, zoomed bank and background plus
   dynamic overlay; a background-only preview cannot prove overlay alignment.
+  Compare by role key (obj_id + alias_text + tag_text), NEVER by array index.
   Restart from the original export after any failed iteration.
 Complete procedure and four checklists: reference_data/maskin-drawing-method.txt
 Regression fixture/test: tests/fixtures/maskin-compressor-bank/ and
-tests/test_maskin_compressor_bank.py
+tests/test_maskin_compressor_bank.py plus tests/test_maskin_10229_contract.py
 
 READING THE EXISTING DRAWING: "image_svg_trace" (v1.5.0). Exported panel
 jsons MAY carry panel.image_svg_trace - an automatic VECTOR TRACE of the
@@ -336,6 +458,11 @@ grey box.
   The mojibake risk lives in other channels (pasting through a terminal,
   an ISO-8859-1 page, old mail) - that is a transport problem to fix at
   the transport, not a reason to degrade the panel text.
+- SECTION 5 IS THE TABLE-STYLE DEFAULT. Sections 7a (ventilation), 7c
+  (list panels) and 7d (hotels) override it IN FULL - not rule by rule.
+  When you are on one of those panel types, section 5's columns, row
+  pitch, title position and alarm-bell position do not apply at all. Say
+  which section you are working under before you place anything.
 
 6. WHAT THE FIELDS MEAN (SO YOU FILL THEM RIGHT)
 ------------------------------------------------
@@ -364,23 +491,41 @@ generated from Advansor PID 80.0012 (ValuePack 3x2-1R).
 --------------------------------------------------------------
 A vent panel is a PROCESS SCHEMATIC drawn with objects, plus a control
 sidebar on the right. It is not a table-style dashboard, and THIS
-SECTION OVERRIDES SECTION 5: no 300 px section columns, no title
-top-left, no alarm bell top-right. Every coordinate below is the
-literal posLeft/posTop/posWidth/posHeight of a sanitized real
-production export. Copy them. Do not invent a visual language.
+SECTION OVERRIDES SECTION 5 IN FULL: no 300 px section columns, no
+title top-left, no alarm bell top-right.
 
-EVIDENCE PRIORITY. Rank the ground truth like this and name the rank
-you used: 1) a panel JSON the user supplied in this conversation; 2) a
-production reference in reference_data/; 3) PANEL-TYPE-GUIDE.md; 4)
-DESIGN-OBJECT-CATALOG.md; 5) an invented layout - only when no
-production reference exists for the panel type at all. When the user
-supplies an existing JSON and asks for something that should look like
-it, THAT JSON IS THE AUTHORITATIVE GEOMETRIC TEMPLATE: its coordinates,
-sizes, z-indexes and object vocabulary override every measured anchor
-printed below, which were taken from a different export. Never replace
-a detailed production layout with a reduced conceptual diagram. Full
-rules and QA checklists: iwmac-designer-reference/CLAUDE.md, section
-"Ventilation panel fidelity and template-matching rules".
+Every coordinate below is the literal posLeft/posTop/posWidth/posHeight
+of a sanitized real production export. Copy them. Do not invent a
+visual language.
+
+PROVENANCE. The measurements in 7a-2 through 7a-6 are evidence E2
+(reference_data/real-vent-panel-example.json, 102 objects) except where
+marked E3 (real-vent-panel-example-2.json, 92 objects).
+VENTILATION-GEOMETRY-CONTRACT.md carries the same measurements with
+their evidence ids, scope tags and two further exports (E1, and the
+sanitized fixture E4), and IT IS AUTHORITATIVE ON CONFLICT. This
+section exists so the briefing works when it is uploaded alone.
+
+SCOPE WARNING. E2 and E3 are two different AHUs. A number measured on
+one of them is not a fact about every ventilation panel. The contract
+tags each measurement GLOBAL, VENT, REF-9099, PROFILE-9099-ROTOR-DEMO
+or SCREENSHOT, and only VENT generalizes. When you copy a coordinate
+out of 7a, say which unit you took it from.
+
+SOURCE PRECEDENCE: see section 0. It governs every panel type, not just
+this one. Name the rank you used in the verification report (7a-10).
+
+The ventilation-specific consequence: WHEN THE USER SUPPLIES AN
+EXISTING JSON AND ASKS FOR SOMETHING THAT SHOULD LOOK LIKE IT, THAT
+JSON IS THE AUTHORITATIVE GEOMETRIC TEMPLATE. Its coordinates, sizes,
+z-indexes and object vocabulary override every measured anchor printed
+below, which were taken from a different export. Never replace a
+detailed production layout with a reduced conceptual diagram, and never
+merge two exports' anchors into an average.
+
+The procedure for building one - classify, select a template, place
+clusters whole, attach values, sanitize, validate, render, report - is
+VENTILATION-AUTHORING-GUIDE.md.
 
 TWO COMMITTED normative references - and no others when the user has
 supplied none of their own (rank 2 of EVIDENCE PRIORITY). Both are real
@@ -394,6 +539,23 @@ B) reference_data/real-vent-panel-example-2.json - a second plant's AHU,
    obj_ids, BACNET drivers.
 Default to A. Choose B when the unit has a plate/battery recovery coil
 instead of a rotor, an aux coil, or a sub-page navigation row.
+
+C) tests/fixtures/ventilation-9099-rotor-demo.json - evidence E4, and
+   NOT a production export: it is the sanitized canonical fixture for
+   the rotor profile PROFILE-9099-ROTOR-DEMO. 97 objects, 43 distinct
+   obj_ids, source_plant_id "", and the literal "driver_id" placeholder
+   on all 97. Use it as the worked example of what a correct unlinked
+   demo looks like, and as the diff target when you check your own
+   demo. Do not use it as a source of production driver ids - it has
+   none, by design.
+
+Do not diff two references by array index. The array order is not paint
+order and is not stable between exports: matched index by index, A and
+a third production export of the same AHU differ in 85 positions;
+matched by ROLE, 79 of 102 objects are geometrically identical and 21
+moved. Compare by role - a workable key is (obj_id, alias_text),
+falling back to (obj_id, nearest neighbour) for unlabelled scaffold
+objects - and report the moved roles, not a count of differing slots.
 
 7a-0 CLASSIFY THE REQUEST BEFORE WRITING ANY JSON. Four cases. Name the
 one you picked in the verification report (7a-10):
@@ -440,8 +602,15 @@ one you picked in the verification report (7a-10):
   coordinates as the JSON and represent the whole 1400x750 composition
   including the dynamic objects. Say the preview is approximate: you
   are not the IWMAC renderer. Never draw a nicer picture than the JSON.
+- "OBJECTS ONLY" IS ABOUT THE DRAWING, NOT THE BACKGROUND. It means the
+  ducts, equipment, values, symbols and controls are Designer objects
+  rather than painted artwork. The panel still carries a real embedded
+  background image - dropping it is a regression. What is forbidden is
+  authoring a panel.image_svg process drawing. This is the most misread
+  rule in the kit.
 
 7a-2 THE SKELETON (measured, reference A; all values in px)
+[E2. Contract sections 1 and 6 are authoritative on conflict.]
 - Canvas 1400x750, blank-sidebar background, 0 containers, 0 graphics.
 - EXTRACT RUN, airflow right-to-left: number_v3_exhaust_pipe_horisontal
   at (24,200) 1025x18. Centreline y 209.
@@ -469,20 +638,34 @@ one you picked in the verification report (7a-10):
            room-temperature boxes at x 1072.
   recirc   number_v3_dummy_resirc_damp_hor (28,182) and (30,424) 42x42,
            number_v3_dummy_resirc_damp_vert (407,310) 40x40.
-- CONNECTOR RULE - this is what makes it read as ductwork: a con_down
-  value box sits ABOVE the run with its connector touching the duct
-  ("RT502 °C" at (985,174) over the extract run, "RT401 °C" at
-  (985,417) over the supply run); a con_top box sits BELOW the run with
-  its top edge at the duct's bottom edge (damper "KA501 %" at (24,218),
-  fan output "LR501 %" at (157,236); supply "KA401 %" (337,461),
-  "LR401 %" (800,476)).
+- CONNECTOR RULE - this is what makes it read as ductwork. The suffix
+  names the direction the stub POINTS, so it also fixes which side of
+  the target the box sits on:
+
+     suffix      box sits          stub points   must visibly meet
+     con_down    ABOVE the target  down          the target's top edge
+     con_top     BELOW the target  up            the target's bottom edge
+     con_left    RIGHT of target   left          the target's right edge
+     con_right   LEFT of target    right         the target's left edge
+
+  The target is whatever the value describes - a duct, a coil, a valve,
+  a damper - not always a duct. A connector that stops short of its
+  target is a defect; a value box with no target under its stub is a
+  floating bubble and is also a defect.
+  Measured on E2: "RT502 °C" con_down at (985,174) over the extract run,
+  "RT401 °C" con_down at (985,417) over the supply run; damper "KA501 %"
+  con_top at (24,218), fan output "LR501 %" con_top at (157,236); supply
+  "KA401 %" (337,461), "LR401 %" (800,476).
 - The schematic occupies y 140..600 and the sidebar y 0..470. Nothing
   is centred on the canvas and nothing is stretched to fill it.
 
 7a-3 FUNCTIONAL CLUSTERS - copy whole, never split
-Relocate a cluster by adding ONE translation vector to every member and
-keeping the internal offsets. Offsets below are from the equipment
-object's top-left corner.
+[E2. Contract section 5 is authoritative; it lists the required roles
+ and the per-cluster offset tables, per profile.]
+A cluster is one anchor plus its members at fixed offsets. It is atomic:
+relocate it by adding ONE translation vector to every member and keeping
+the internal offsets. A cluster is complete or it is a defect - a
+missing member is not a smaller panel, it is a wrong one.
 - FAN: fan 59x59 + flow value number_v3_R_60px_no_conn_tag_up_center
   ("RF501 m3/h") at (-2,-39) + motor output con_top ("LR501 %") at
   (+5,+57) + V3_R_34px_circular_alarm_nrm at (+45,-19). The supply fan
@@ -491,11 +674,22 @@ object's top-left corner.
 - FILTER: numberV3_filter_with_diff_press carries its own differential
   pressure in tag_text ("QD401 Pa") - do NOT add a separate value box -
   plus an alarm bell above it (+8,-45 supply, +61,-46 extract).
-- HEATING COIL: number_v3_heater_3_way + frost alarm at (-22,-36) +
-  coil temps con_right "RT510 °C" (535,518) and con_left "RT410 °C"
-  (610,490) + power con_left "SB510 %" (620,570) + pump
-  V3_21px_single_pump_grey_green_up (601,527) + valve
-  v3_3w_valve_right_down_nrm (602,572).
+- HEATING COIL: number_v3_heater_3_way + frost alarm at (-22,-36) [E2;
+  the rotor profile measures it at (584,378), offset (+1,-35) - contract
+  5.6] + coil temps con_right "RT510 °C" (535,518) and con_left
+  "RT410 °C" (610,490) + power con_left "SB510 %" (620,570) + pump
+  (601,527) + valve v3_3w_valve_right_down_nrm (602,572).
+  THE PUMP VARIANT IS DISPUTED AND UNRESOLVED. E1 and E2 record
+  V3_21px_single_pump_grey_green_up; the corrected 9099 rotor profile
+  and its fixture E4 record V3_21px_single_pump_grey_green_down. Both
+  are legal 21x21 palette entries at the same coordinate. The profile
+  takes _down because task-supplied evidence outranks a production
+  export (section 0 rank 1), NOT because _up was disproved. Contract
+  12.1 item 3 keeps the item open; take the variant from whichever
+  source you are actually copying, and say which.
+  ALL SIX MEMBERS OR NONE. A panel carrying "SB510 %" but no
+  circulation pump and no 3-way valve fails cluster integrity - the
+  output value describes equipment that is not on the drawing.
 - COOLING COIL: number_v3_cooler_2-way + alarm at (+1,-30) + "SB520 %"
   con_top (453,532) + "RT420 °C" con_left (482,486) + "RT520 °C"
   con_right (408,486).
@@ -506,6 +700,10 @@ you copy a whole cluster. Never leave an alarm, an output or a
 temperature behind, and never let one float away from its equipment.
 
 7a-4 THE SIDEBAR (measured, reference A) - KEEP IT
+[E2, with E3 variants marked. Contract section 8 is authoritative.]
+Build each section EXACTLY ONCE. Duplicate row labels, duplicate value
+objects and two objects at the same coordinate are defects, not
+redundancy.
 - Three number_v3_header_grey75 250x20 at x 1150, y 0 / 165 / 357
   (reference B: 0 / 165 / 400): "Status og vendere", "Vifteregulering",
   "Temperaturregulering".
@@ -524,12 +722,43 @@ temperature behind, and never let one float away from its equipment.
 - Temperature setpoints: number_v3_60px_dark_no_conn_no_tag 62x22 at
   x 1329, y 385 / 410 / 435 (Sp. romtemperatur, Maks and Min
   tilluftstemperatur).
+- ONE OWNER PER PIECE OF TEXT. Where a separate row label already names
+  the signal, use the no-tag value object
+  number_v3_60px_dark_no_conn_no_tag so the value renders no second
+  caption. Two objects printing the same words is a defect.
+
+COLUMN HEADINGS ARE NOT CENTRED BY GIVING THEM EQUAL WIDTHS.
+number_v3_label_11px_norm renders its text LEFT-ALIGNED inside its box,
+so two headings with identical posWidth over two identical columns still
+print off-centre. Position by rendered text width instead:
+
+    posLeft = column_centre - rendered_text_width / 2
+
+Supply column: boxes x1260 w62, centre 1291, "Tilluft" at x1275.
+Extract column: boxes x1330 w62, centre 1361, "Avtrekk" at x1341. DO NOT
+ASSUME EQUAL OBJECT WIDTHS IMPLY VISUALLY CENTRED TEXT.
+
+RENDERED WIDTH IS AN ESTIMATE, AND NO RULE MAY FAIL A PANEL ON ONE.
+The 32 px and 40 px caption widths that go with those anchors are
+screenshot readings; Arial at 11 px gives 26 and 37 instead, and
+production renders "A-Alarm"/"B-Alarm" on a fixed 45 px pitch at x 1305
+and 1350 - byte-identical across E1, E2 and E4 on two different plants -
+which caps "A-Alarm" near 41 px and contradicts any model scaled to make
+"Tilluft" 32. Contract 7.2 gives the derivation and 12.1 item 6 keeps it
+open. The validator therefore reports every width-dependent finding as a
+WARNING (rule V-P08), never an error. Do not re-space a production row
+to satisfy an estimate.
+
 This sidebar is the strongest visual signature of a production vent
 panel. Drop it and the result looks generic however good the schematic.
 
-7a-5 Z-INDEX BANDS. The import writes zIndex through verbatim (it only
-supplies "default" when the field is missing), so use the production
-bands - they are what puts a value box on top of a duct:
+7a-5 Z-INDEX BANDS
+[E2, confirmed on E1, E3 and E4. Contract section 2 is authoritative.]
+The import writes zIndex through verbatim (it only supplies "default"
+when the field is missing), so use the production bands - they are what
+puts a value box on top of a duct. NEVER MIX EXPLICIT BANDS WITH
+"default" ON ONE VENTILASJON PANEL: pick bands throughout, or array
+order throughout.
    5    ducts, pipes, connectors, section header bars
    15   dummy arrows and short lines
    20   sub-page navigation buttons (reference B)
@@ -541,8 +770,18 @@ If you emit zIndex "default" instead, you MUST order the array
 back-to-front (ducts first, labels last): equal z means DOM order.
 
 7a-6 EXTRA VOCABULARY (reference B, measured)
+[E3. Contract section 5 lists which roles each one replaces.]
    V3_horis_damper_flow-left_nrm (30,195) / -right_nrm (30,438) 36x26,
-   z 40 - end dampers on a unit without recirculation.
+   z 40 - production inlet dampers.
+   CORRECTION: the old qualifier "on a unit without recirculation" is
+   wrong as a general rule. The corrected 9099 rotor profile carries the
+   recirculation column AND these flow dampers, at (75,196) and (96,438)
+   with a con_down position value above each. Which damper family a
+   panel uses is a property of the selected template, not of whether the
+   unit recirculates: E2's revision uses number_v3_dummy_resirc_damp_hor
+   for the inlets, E3's and the rotor profile use these. Take the family
+   from your template and do not substitute one for the other. Contract
+   5.9a / 5.9b.
    number_360_vg_vb_kb (293,165) 38x312 - battery/plate heat recovery.
    number_360_cb_aux (808,410) 37x220, tag LK401 - aux coil.
    number_v3_dummy_2way_motor_right (830,593) 26x19, z 300.
@@ -578,38 +817,133 @@ reads. Codes follow the vent controller: RT=temp, RF=flow,
 RH=humidity, KA=damper, LR=motor/output, LX=rotor, QD=filter pressure,
 JV=fan, JP=pump, LV=coil/valve, SB=power, RP=CO2, RY=smoke.
 
-7a-9 BAD vs GOOD - a vent panel is judged on exactly these
-BAD   a two-card dashboard of headings and KPI boxes matching no real
-      export; an image_svg with ducts or equipment drawn into it; one
-      guessed obj_id repeated everywhere; invented driver ids, or a
-      reusable demo still carrying the source plant's links; values and
-      alarms detached from their equipment; a layout that ignores the
-      production sidebar and the process order; a polished preview
-      whose geometry does not match the JSON; decorative UI the
-      reference never had.
-GOOD  geometry and object families derived from a NAMED real export;
-      the production blank (or blank-sidebar) background; real duct,
-      connector, equipment, sensor, status, label and value objects;
-      whole functional clusters at their measured relative positions;
-      source links stripped but useful aliases kept; JSON and preview
-      generated from one set of coordinates; the structural checks
-      below all pass; the reference named in the report.
+Write the real degree symbol: "RT401 °C". Never "gr C". The Insert flow
+reads UTF-8, production exports carry 13 degree-signed tags, the object
+catalogue itself prints "RT401 °C", and rendered tests confirm they
+survive. Mojibake comes from other transports (pasting through a
+terminal, an ISO-8859-1 page) - fix the transport, do not degrade the
+panel text. The same holds for "m3" written as m3 with a superscript
+three, "høyfart" and every Norwegian letter.
 
-7a-10 VERIFICATION REPORT. Re-parse your own JSON and check: counts
-equal array lengths; names are object_0..object_N, sequential, no
-duplicates; every obj_id exists in all-design-objects.json; positions
-in bounds (or overflowing on purpose, and you say why); no source
-driver_id, unit_id or link_tag survived; no panel.image_svg; the
-preview matches the JSON geometry. Then report in 10 lines or fewer:
-the case you picked (7a-0), the reference you copied, object count and
-distinct obj_id count, the checks above, and anything you could NOT
-verify. Where the host requires the answer to be raw JSON only, deliver
-the JSON as the file/answer and put the report in the accompanying
-chat message - never as comments inside the JSON.
+ONE OWNER PER PIECE OF TEXT. Do not add a standalone label when the
+equipment object already shows its tag; do not add a caption when the
+value object renders tag_text. Two objects printing the same words is a
+defect, not redundancy - the repeat offenders are KA502, Cool, Rotor,
+VGV and Kurver. Emit one of those captions only when the production
+export you selected actually contains it.
 
-7a-11 TEMPLATE FIDELITY WHEN THE USER SUPPLIES A JSON. Rank 1 of the
-EVIDENCE PRIORITY above. Full rules, the 17-item visual acceptance
-list and the worked lesson: iwmac-designer-reference/CLAUDE.md,
+ONE POSITION VALUE PER DAMPER, ONE ALARM PER GUARDED ROLE. A second
+KA501 or KA401 box left over from an earlier revision is a defect even
+when both render legibly. Alarm uniqueness is keyed on (signal,
+component): two dampers on one unit legitimately carry two "Malf.
+damper" alarms - E3 has exactly that, 243 px apart - but two alarms on
+ONE component do not.
+
+7a-9 HOW A VENT PANEL IS JUDGED. Every line here is testable; the test
+is in VENTILATION-QA-CHECKLIST.md and, where a rule id is given, in
+validate-ventilation-panel.py.
+
+STRUCTURAL (Stage A) - the JSON is malformed or the vocabulary is wrong
+ - an obj_id that is not in the catalogue (renders as a broken box)
+ - counts that do not equal the array lengths                   V-S01
+ - object names not sequential object_0..object_N        V-S03, V-S04
+ - non-integer or out-of-canvas coordinates                     V-S05
+ - zIndex mixing explicit bands with "default"                  V-S06
+ - a panel.image_svg on a Ventilasjon panel                     V-S07
+ - a missing or replaced background                             V-S07
+ - "gr C" where the panel should print °C                       V-S09
+
+GEOMETRIC (Stage B) - the drawing does not read as ductwork
+ - a duct run broken into segments that do not meet
+ - a connector that stops short of the target it should land on V-G03
+ - a vertical crossover that does not reach both horizontal runs
+ - a damper cleared by SHORTENING the duct instead of overlaying it
+ - a cluster split: equipment moved without its value, output,
+   alarm, pump or valve                                         V-P01
+ - a fan pointing against its run's airflow direction
+ - two position values on one damper                            V-G07
+ - two alarms guarding one component                     V-G05, V-P06
+ - an inlet damper from a different template's family
+
+VISUAL (Stage C) - it parses and it renders, and it is still wrong
+ - a value box overlapping a tag, another value, or a control
+ - an alarm bell on top of the component instead of beside it
+ - an LED outside its body, or covering the tag or the value    V-P05
+ - a duplicate free-standing caption                            V-G04
+ - a duplicated or coincident sidebar row                       V-G06
+ - a heading that is off-centre because widths were equalised   V-P08
+ - a hover tooltip captured in the QA screenshot and mistaken for
+   panel content
+
+LINKING (Stage D)
+ - a source plant's driver_id, unit_id or link_tag carried into a
+   demo                                                         V-S08
+ - an invented driver id, unit id, file path or panel target
+ - alias_text stripped during sanitization (it is what a human links
+   by afterwards)
+
+NOT A DEFECT, and not to be "fixed":
+ - a value box sitting on the duct it belongs to
+ - a con_* connector edge landing ON its target
+ - a damper symbol overlaying a continuous duct column
+ - an equipment body straddling the run it conditions
+ - an object count lower or higher than the reference, when every
+   required role is present and no coordinate was invented
+ - the same output code on two different components with different
+   alias_text (E4 carries SB520 % on both the cooling coil and the
+   electric heater - production, deliberate)
+ - a room-endpoint value object whose tag_text is a single space, its
+   caption supplied by a separate label object
+
+7a-10 VERIFICATION REPORT. Before you answer, run
+VENTILATION-QA-CHECKLIST.md - which starts by running
+
+  python validate-ventilation-panel.py <panel.json> \
+         --profile PROFILE-9099-ROTOR-DEMO
+
+(drop --profile when no profile applies, and SAY you dropped it rather
+than reporting a clean run: the cluster, attachment, alarm-placement and
+text checks do not run without it). Zero errors is the bar for delivery.
+Then report:
+
+  1. Which case (7a-0) and which precedence rank (section 0) you used,
+     named explicitly.
+  2. Stage A: counts vs array lengths, name sequence, every obj_id
+     resolved against the catalogue, envelope fields present, no
+     image_svg, background preserved.
+  3. Stage B: each required role present or explicitly accounted for;
+     cluster offsets preserved; duct runs continuous; every value
+     attached to its target.
+  4. Stage C: the zoomed crops rendered and inspected - inlet dampers,
+     both fans, rotor and bypass, both filters, cooling coil, water
+     heating coil, electric heater, room endpoint, and every sidebar
+     section.
+  5. Stage D: no source-plant identifier anywhere; alias_text intact.
+  6. A role-by-role comparison against the reference, listing the roles
+     that MOVED. Not a count of differing array slots.
+  7. Everything you could not verify, named, with what you would need to
+     resolve it. A stated gap is a valid deliverable; a guess is not.
+
+IF ANY VISUAL CHECK FAILS, RESTART FROM THE RETAINED SOURCE EXPORT. Do
+not patch an already damaged derivative: a panel that has been
+hand-corrected twice no longer matches any reference, and the next
+correction has nothing to measure against. Keep the source export
+unmodified for exactly this reason.
+
+Do not present a hand-drawn approximation as the final preview when real
+Designer rendering is available. When it is not, label the preview as
+approximate - you are not the IWMAC renderer.
+
+Where the host requires the answer to be raw JSON only, deliver the JSON
+as the file/answer and put the report in the accompanying chat message -
+never as comments inside the JSON.
+
+7a-11 TEMPLATE FIDELITY WHEN THE USER SUPPLIES A JSON. Rank 1 of
+section 0. The measured rules are in VENTILATION-GEOMETRY-CONTRACT.md;
+the procedure is in VENTILATION-AUTHORING-GUIDE.md; the acceptance
+tests are in VENTILATION-QA-CHECKLIST.md; the worked lesson - why a
+53-object conceptual rebuild was rejected in favour of editing the
+supplied 102-object export - is in iwmac-designer-reference/CLAUDE.md,
 "Ventilation panel fidelity and template-matching rules".
  - CLONE THE WHOLE VISUAL GRAMMAR. panel_width/height, background type,
    org_image_name, embedded image_data, sidebar width and start x, and
@@ -760,33 +1094,56 @@ vertically 27 px apart.
 
 7c. LIST PANELS (SPJELDLISTE) - MODE C
 --------------------------------------
-When the user asks for a "spjeldliste" (damper list) or any long tabular
-listing, the house style is a full-width TABLE - the one panel type built
-from CONTAINERS. Normative reference: reference_data/
-real-spjeldliste-example.json (a real production 360.004 Spjeldliste,
-plant masked: 383 scaffold objects + 208 row containers, 21 system groups).
+OWNER: LIST-PANEL-GENERATION-CONTRACT.md. That file is the normative
+source for generating a list panel from a table - request classes, source
+column mapping, the full measured geometry, binding modes, the artifact
+preservation matrix, the validation contract, error messages and two
+worked examples. Read it before generating one. This section is the
+summary and the standalone fallback.
+
+Normative reference exports: reference_data/real-spjeldliste-example.json
+(production 360.004, plant masked, 383 scaffold objects + 208 row
+containers, 21 groups) and any spjeldliste export supplied with the task.
+
+WHAT IT IS. A "spjeldliste" (damper list), or any long tabular listing, is
+the ONE panel type built from CONTAINERS: one objects_container per table
+row, everything else - banner, headers, dividers, group stripes - in
+single_objects. graphics stays []. Test: if a row repeats an identical
+multi-column cell group tens or hundreds of times, it is a list panel.
 
 SCAFFOLDING (single_objects; the ONE place zIndex is NOT "default" -
 layering matters: stripes "3" under container rows 4 under dividers "5"
 under text "900"):
-- previous_page_tekn_box_no 1570x57 at x 15 y 50, zIndex "155": top banner
-  with back navigation. Put number_v3_label_12px_bold_white title labels
-  ON it (y ~63) - one per half-table.
-- Column headers: number_v3_label_12px_bold at y ~90: Spjeldnr. x 83,
-  Romnr. x 259, Prosj. min. m3/h x 330, Prosj. maks. m3/h x 433,
-  Erverdi x 555, SP.paadrag m3/h x 614, Spjeldvinkel % x 710; the same
-  set repeated for the right half-table at x +780.
-- Vertical dividers: number_v3_header_appgrey, zIndex "5", 3 px wide by
-  table height (e.g. 3 x 4580) at each column boundary (x 232, 321, 427,
-  543, 605, 703 and mirrored right half), and an 11 px one at x 790
-  separating the two half-tables.
-- Group highlight: ONE number_v3_header_grey50 1570x20, zIndex "3", behind
-  the FIRST row of each system group (2 px above the row top).
-- Optional dotted row separators: number_v3_label_8px_norm whose tag_text
-  is a long run of dots, one per row line.
+- previous_page_tekn_box_no 1570x57 at x 15 y 50, zIndex "5": top banner
+  with back navigation. Four number_v3_label_12px_bold_white 50x20 labels
+  sit on it at y 63, x 288 / 520 / 894 / 1127 - blank (tag_text " ") in
+  every production export inspected; put half-table titles there only if
+  the task supplies them.
+- Column headers: number_v3_label_12px_bold 50x20, zIndex "900".
+  Left half:  Spjeldnr. x 83 y 90, Romnr. x 259 y 92,
+              Prosj. min. m3/h x 330 y 92, Prosj. maks. m3/h x 433 y 92,
+              Erverdi x 555 y 91, SP.pådrag m3/h x 614 y 92,
+              Spjeldvinkel % x 710 y 91.
+  Right half: 863, 1048, 1119, 1222, 1344, 1403, 1499 - same y values.
+  The right half is NOT a constant offset: +780 for Spjeldnr., +789 for
+  the other six. Use the table, never an offset.
+  Header text is copied verbatim, including the ASCII 3 in "m3/h".
+- Vertical dividers: 13 x number_v3_header_appgrey, all of one height.
+  Twelve are 3 px: x 232, 321, 427, 543, 605 (y 87), 703 (y 88), zIndex
+  "5", and the right-hand six at exactly left + 789 - 1021, 1110, 1216,
+  1332, 1394 (y 87), 1492 (y 88). One is 11 px at x 790 y 86, zIndex
+  "155", separating the two half-tables.
+  divider_height = last_row_top + row_height - divider_top - 2, i.e.
+  last_row_top - 66 with the standard 23 px row and divider_top 87.
+  Recompute it whenever a row is added or removed.
+- Group highlight: ONE number_v3_header_grey50, posLeft 15, 1570x20,
+  zIndex "3", link_tag "NA", at group_first_row_top - 2.
+- Dotted separators (number_v3_label_8px_norm, tag_text a run of dots):
+  present in production, placement author-driven and not derivable. Do
+  not generate them; preserve them when editing a supplied file.
 
-ROWS - one container per damper, EXACT template (all fields, note zIndex
-is a NUMBER on the container but a STRING on items):
+ROWS - one container per damper, EXACT template (note zIndex is an INTEGER
+on the container but a STRING on items):
 {
   "id": "objects_container",
   "unique_id": "custom_0",
@@ -803,31 +1160,74 @@ is a NUMBER on the container but a STRING on items):
   "items": [ ...cell objects... ],
   "title": "Objects Container"
 }
-unique_id/name index sequential (custom_0, custom_1, ... - Insert renumbers
-to avoid collisions). top: first row 106, +20 per row; a new system group
-starts at the PREVIOUS ROW's top + 40 (exactly one blank row slot as the
-gap - not +40 on top of the usual +20). One group per ventilation system /
-building section.
+Container "id" is the CONSTANT STRING "objects_container" on every row - it
+is not the row index, and it is not the object-level "id" sentinel
+"driver_id". "linked" and "linked_to" are the STRINGS "0", not "false" and
+not "". "title" is "Objects Container" on all 233 production containers.
+Only unique_id and name carry the row number, sequential from 0 with no
+gaps. Verified on 25/25 containers in E5 and 208/208 in E6. top: first row
+106, +20 per row; a new system group starts at the PREVIOUS ROW's top + 40
+(exactly one blank row slot as the gap - not +40 on top of the usual +20).
+One group per ventilation system / building section. Rows overlap by 3 px
+by design (pitch 20, height 23); any other delta is a defect.
 
-CELLS (container items): number_v3_label_12px_bold 50x20, posTop 3,
-zIndex "900", posLeft RELATIVE to the container: 0 = damper tag
-("1101H7=360.004-SQ401" style), 239 = room number ("7.062", omit if
-unknown), 342 = prosjektert min m3/h, 445 = prosjektert maks m3/h.
-Right half-table cells: 786 / 1031 / 1131 / 1234. Production groups
-supply-side dampers (400-series SQ4xx/SK4xx) in the left half and
-extract-side (500-series SQ5xx/SK5xx) in the right half, same row band.
-Static text goes in tag_text; keep driver_id "driver_id", linked "false",
-alias_text "new text" (nothing in these rows is linked).
-The Erverdi / SP.paadrag / Spjeldvinkel % columns exist only as headers -
-production leaves those cells unpopulated for later hand-linking. If the
-user explicitly wants live cells, add number_v3_value_only 50x20 items at
-posLeft ~540 / ~600 / ~700 (+786 right) with the standard unlinked
-convention and the damper name in alias_text.
+CELLS (container items), posLeft RELATIVE to the container:
+  role            left   right   item name (left / right)
+  damper tag        0     786    object_14 / object_13
+  room number     239    1031    object_44 / object_29
+  prosj. min      342    1131    object_40 / object_25
+  prosj. maks     445    1234    object_37 / object_22
+  Erverdi         530    1319    object_46 / object_49
+  SP.pådrag       609    1398    object_47 / object_50
+  Spjeldvinkel    698    1494    object_48 / object_51
+Static text cell: number_v3_label_12px_bold 50x20, posTop 3, zIndex "900",
+value in tag_text. Live value cell: number_v3_value_only 50x20, posTop 0,
+zIndex "900", tag_text null (not "" - the collector writes tag_text
+unconditionally and the renderer overwrites it with the live value).
+Both carry the LIST-PANEL object constants, which are NOT the ventilation
+unlinked sentinels: id "driver_id", linked "true", link_name "link_name",
+link_tag "", sub_group "", unit_ref "", alias_text "new text", and
+driver_id "" while the cell is unbound. Measured on 1319 of 1319 objects
+across both exports - conflict L-13, LIST-PANEL-GENERATION-CONTRACT.md
+section 4.2. The safety rule that replaces the "driver_id" placeholder: a
+generated list panel must contain NO non-empty driver_id, unit_id or
+alias_text other than values copied verbatim from supplied data.
+Do not write the column role into alias_text: 881 of 881 unlinked cells
+read "new text", and a human links a placeholder by the row's damper-tag
+cell, not by the alias. A real binding copies driver_id,
+unit_id, unit_ref, link_tag, sub_group and alias_text VERBATIM from data
+supplied with the task. A driver id is NEVER assembled from a BACnet
+address: six of its eight segments do reproduce from the address, the
+driver-name segment and unit_id do not, and the result binds to nothing.
+Item names collide freely across rows - the host does not resolve items by
+name. Reuse the map above; do not invent a scheme.
 
-DO NOT IMITATE two author artifacts you will see in the real file:
-14 identical grey50 stripes stacked per group (emit ONE), and
-driver_id "#c1"/"#c2" + linked "true" on the static min/maks cells (a
-bookkeeping convention the designer merely round-trips).
+The Erverdi / SP.pådrag / Spjeldvinkel % columns are the live ones. One
+production export leaves them as headers only, another populates and links
+all three. The request decides; if live output is asked for and no driver
+data was supplied, stop and say so rather than inventing bindings.
+
+LEFT / RIGHT. The observed convention is that 5-series component numbers
+(SQ5xx, SK5xx) go in the right half and 4-series, 6-series and unnumbered
+tags in the left. It is a convention of one production style, not a rule:
+it is not an airflow-direction split (every right-half alias in the
+supplied 360.001 export reads "tilluft"), and right-half rows mostly sit
+in their OWN containers below the left block rather than beside them -
+only one or two mixed rows per file. If the side cannot be read from
+explicit data, generate a single-side table or stop; never guess.
+
+OVERFLOW. Horizontal overflow is structural: the banner and stripes end at
+x 1585 on a 1400 px canvas. Vertical overflow follows the row count.
+Rows may run past the canvas; nothing else may.
+
+DO NOT IMITATE the author artifacts in a real file when generating a NEW
+panel - 14 identical grey50 stripes stacked per group (emit ONE), groups
+with no stripe at all and mid-group extra stripes, ad-hoc dotted
+separators, driver_id "#c1"/"#c2" plus linked "true" on static cells, and
+linked "true" on unbindable scaffold objects. When MODIFYING a supplied
+export, preserve every one of them: removing them buries the real change
+in a diff nobody asked for. Full matrix in
+LIST-PANEL-GENERATION-CONTRACT.md.
 
 7d. HOTELS / MULTI-BUILDING PLANTS (NAV HUBS, ROMKONTROLL, TAPPEVANN)
 ---------------------------------------------------------------------
@@ -965,8 +1365,12 @@ PROCEDURE per linkable object:
 5. Dummies never link: pipes, connectors, arrows, labels, headers,
    stripes, banner, spjeldliste text cells.
 6. Only link matches you are CONFIDENT about. Leave uncertain objects
-   unlinked (driver_id "driver_id", linked "false") and tell the user
-   which ones you skipped - a wrong link is worse than no link.
+   unlinked and tell the user which ones you skipped - a wrong link
+   is worse than no link. "Unlinked" is panel-type specific: on a
+   normal panel it is driver_id "driver_id", linked "false"; in a
+   LIST PANEL (7c) it is driver_id "" with the row template's own
+   linked "true" left alone - never write the "driver_id"
+   placeholder into a list cell (conflict L-13, section 7c).
 
 RELINKING A WHOLE MACHINE PICTURE (Maskin). A common request: "link out
 all the parameters on this machine picture with this dump and give me
@@ -988,6 +1392,12 @@ EXACT alias-to-alias string match. So:
 The canonical 64-signal map (alias -> obj_id + parameter group anatomy
 763=MT block / 764=LT / 230+i=Ci status / 240+i=Ci capacity / 337=VSD):
 reference_data/maskin-akpc-link-map.json.
+Step 2's "same alias twice = same row" is measured production behaviour,
+not a shortcut: the 10229 export carries "Suction temp. To-MT" on two
+adjacent pills sharing one driver id, where the LT row binds its second
+pill to "To opt. offset LT" instead. Preserve it and report it; a
+corrective needs that plant's own dump and is ADVISORY
+(MASKIN-GENERATION-CONTRACT.md section 9.3).
 
 Normative material in reference_data/: real-vent-panel-example.json (a
 linked production vent panel) and driver-parameters-sample.sql (the
@@ -1007,8 +1417,11 @@ it per 7a-7 before reusing it as a demo.
 
 9. SELF-CHECK BEFORE ANSWERING
 ------------------------------
+EVERY PANEL
 [] format iwmac-designer-panel, version 1, counts match array length
-[] every obj_id is from the allowlist / catalogue - none invented
+[] every obj_id is from the allowlist / catalogue - none invented,
+   spelling preserved exactly (numberV3_filter_with_diff_press,
+   V3_58px_fan_left_nrm, number_v3_cooler_2-way are all correct)
 [] every object has ALL 17 template fields; driver_id = "driver_id" and
    linked = "false" - UNLESS the user supplied the parameters dump for
    linking (8b): then linked objects carry the dump's driver_id +
@@ -1018,15 +1431,44 @@ it per 7a-7 before reusing it as a demo.
    section 5
 [] tag_text on text objects, alias_text on linkable objects, UTF-8
    text (°C, æøå) - not plain-ASCII substitutes
-[] graphics [] empty; containers [] too UNLESS this is a list panel (7c),
-   then counts.containers equals the containers array length and every
-   container follows the 7c template exactly
 [] names are object_0..object_N, sequential, with no duplicates
 [] no driver_id, unit_id or link_tag copied out of a source plant's
-   export into a demo (vent: 7a-7) - and none invented
-[] Ventilasjon: no panel.image_svg, background is the blank sidebar,
-   the layout is traced from a NAMED reference (7a), functional
-   clusters are intact and the right-hand control sidebar is present
+   export into a demo - and none invented; no invented file path or
+   navigation target either
+[] graphics [] empty; containers [] too, unless this is a list panel
+[] you named the precedence rank (section 0) you worked from
+[] raw JSON only - no fences, no commentary
+
+LIST PANELS (7c) ONLY
+[] counts.containers equals the containers array length and every
+   container follows the 7c template exactly
+[] container id / unique_id / name sequential from 0, no gaps, no dupes
+[] container zIndex is the INTEGER 4; every item zIndex is the STRING
+   "900" - the type, not just the value
+[] consecutive container top deltas are only 20 or 40, and the 40s
+   number exactly one fewer than the groups
+[] all 13 dividers carry the same recomputed height,
+   last_row_top + row_height - divider_top - 2
+[] one group stripe per group at group_first_row_top - 2
+[] column x values taken from the table in 7c, not from an offset
+[] no driver_id, unit_id or alias invented - copied, sentinel, or stop
+[] rows may run past the canvas; nothing else may
+[] you ran the LIST-PANEL-GENERATION-CONTRACT.md section 12 checks
+
+VENTILASJON (7a) ONLY
+[] no panel.image_svg; background is the blank sidebar, preserved
+[] the layout is traced from a NAMED reference or from the user's
+   supplied JSON - never invented
+[] every required role present (7a-3), functional clusters intact,
+   right-hand control sidebar present and built exactly once
+[] every value attached to its target by the correct con_* direction
+[] one position value per damper; one alarm per guarded component
+[] z-index bands per 7a-5, never mixed with "default"
+[] validate-ventilation-panel.py reports zero errors, and you said
+   whether you ran it with --profile
+[] you ran VENTILATION-QA-CHECKLIST.md and reported stages A-D
+
+EVERY PANEL, LAST
 [] any preview picture you show was drawn from these coordinates and
    you labelled it approximate
-[] raw JSON only - no fences, no commentary
+[] anything you could not verify is named in the report, not guessed

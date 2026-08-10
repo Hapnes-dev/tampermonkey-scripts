@@ -1,6 +1,42 @@
 AI-BRIEFING-REVISED.txt - revision specification for AI-BRIEFING.txt
 =====================================================================
 
+STATUS AS OF 2026-08-10: FULLY APPLIED. DO NOT APPLY IT AGAIN.
+---------------------------------------------------------------
+Every change specified below - R1 through R14 - is now present in
+AI-BRIEFING.txt. This file is retained as the record of what changed and
+why. It is NOT an outstanding work item and it is NOT a second contract.
+AI-BRIEFING.txt is the only normative briefing; where the two disagree,
+AI-BRIEFING.txt wins by definition, because it is the applied state.
+
+TWO ITEMS WERE APPLIED IN CORRECTED FORM. The corrections are deliberate
+and evidence-backed. Do not "restore" the specification text over them:
+
+ - R2 (SOURCE PRECEDENCE) specifies a SEVEN-rank list that omits
+   VENTILATION-GEOMETRY-CONTRACT.md entirely. The canonical list is
+   EIGHT ranks - the same list appears in the contract's front matter and
+   in documentation-rules.json -> source_precedence. Section 0 of
+   AI-BRIEFING.txt therefore carries eight ranks, and R2's consequence
+   bullet "Rank 6 loses to rank 2" was renumbered to rank 7 to match.
+
+ - R9 (sidebar caption centring) specifies a QA check that fails a panel
+   whose caption is off centre by more than 2 px, measured against
+   screenshot-read widths of 32 px (Tilluft) and 40 px (Avtrekk). Arial
+   at 11 px gives 26 and 37 instead, and production renders "A-Alarm"
+   and "B-Alarm" on a fixed 45 px pitch at x 1305 and x 1350 -
+   byte-identical across E1, E2 and E4 on two different plants - which
+   caps "A-Alarm" near 41 px. A rendered width is an estimate, and no
+   rule may fail a panel on an estimate. The centring formula was kept;
+   the tolerance became validator rule V-P08, a WARNING, never an error.
+
+THREE CHANGES WERE APPLIED THAT THIS SPECIFICATION DOES NOT CONTAIN,
+because their evidence arrived with the corrected 9099 rotor profile
+after this file was written: the connector-direction table in 7a-2, the
+circulation-pump variant dispute in 7a-3 (open item, see
+VENTILATION-GEOMETRY-CONTRACT.md section 12.1 item 3), and the
+correction of 7a-6's "on a unit without recirculation" damper qualifier.
+All three are recorded in documentation-change-log.md.
+
 THIS IS A SPECIFICATION, NOT A REPLACEMENT FILE.
 
 AI-BRIEFING.txt is 61,407 characters across 1,031 lines and the instruction
