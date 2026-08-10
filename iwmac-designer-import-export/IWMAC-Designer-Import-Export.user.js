@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.8.0
+// @version      1.8.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.8.0';
+var IWDIE_VERSION = '1.8.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2620,15 +2620,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- apply (replace or add) ---------- */
+    /** Canvas children, for the insert bookkeeping. Counts every child of
+     *  #control_container except the hidden landing field the host re-appends
+     *  — deliberately not keyed on name="object_N", because containers and
+     *  tables carry other names. */
     function canvasObjectCount() {
       var cc = document.getElementById('control_container');
       if (!cc) return 0;
       var n = 0;
       for (var i = 0; i < cc.children.length; i++) {
-        var nm = cc.children[i].getAttribute('name') || '';
-        if (/^object_\d+$/.test(nm) || /^objects_container/.test(nm)) n++;
+        if (cc.children[i].id === 'objects_landing_field') continue;
+        n++;
       }
       return n;
+    }
+
+    /** Does the panel already hold something? Export answers this with the
+     *  host's own serializer, so the replace-or-add question asks the same way:
+     *  a DOM scan and getPanelDataFromDOM() disagree on container, table and
+     *  graphics panels, and when the scan undercounts, the canvas reads as
+     *  empty and the import adds on top of a full panel without asking.
+     *
+     *  Called only from applyImportCore, at the one point where nothing has
+     *  been touched yet — the same place export collects, and never between
+     *  the clear and the host loaders, whose scratch buffers this resets the
+     *  way the host's own save path does (container_tool.js). Any failure
+     *  falls back to the DOM count rather than blocking the import. */
+    function canvasContentCount() {
+      if (typeof W.getPanelDataFromDOM !== 'function') return canvasObjectCount();
+      try {
+        W.obj_data = []; W.container_data = []; W.container_items = [];
+        var imgName = '';
+        try { imgName = W.$('#main_image').attr('main_image') || ''; } catch (e) {}
+        var doc = W.getPanelDataFromDOM(currentPlantId(), currentPanelName(), imgName, W.get_user_name());
+        if (!doc) return canvasObjectCount();
+        return (doc.single_objects || []).length +
+          (doc.containers || []).length +
+          (doc.graphics || []).length;
+      } catch (e) {
+        return canvasObjectCount();
+      }
     }
 
     /** After appending, renumber name="object_N" sequentially so no two canvas
@@ -2652,8 +2683,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  same reason loadedGraphic.loader resets it: graphics replace, never
      *  merge. This touches the DOM only — the stored panel is unchanged until
      *  the user presses the designer's own Save. */
-    function clearCanvasForReplace() {
-      var removed = canvasObjectCount();
+    function clearCanvasForReplace(knownCount) {
+      var removed = (typeof knownCount === 'number' && knownCount > 0) ? knownCount : canvasObjectCount();
       try { W.objectList.clear(); } catch (e) {}
       try { W.designContainers.clear(); } catch (e) {}
       try { W.table_container.clear(); } catch (e) {}
@@ -2693,15 +2724,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Validation passed and nothing has been touched yet — this is the point
       // to ask replace-or-add. An empty canvas has nothing to replace, so it
       // skips straight through.
-      var existing = canvasObjectCount();
+      var existing = canvasContentCount();
       if (existing > 0) {
-        openModeChooser(existing, function (replace) { applyImportDoc(res.doc, v, pendingBg, replace); });
+        openModeChooser(existing, function (replace) { applyImportDoc(res.doc, v, pendingBg, replace, existing); });
         return;
       }
-      applyImportDoc(res.doc, v, pendingBg, false);
+      applyImportDoc(res.doc, v, pendingBg, false, 0);
     }
 
-    function applyImportDoc(rawDoc, v, pendingBg, replace) {
+    function applyImportDoc(rawDoc, v, pendingBg, replace, existing) {
       var doc = iwdieNormalizeDoc(rawDoc);
       // AI-authored artwork: panel.image_svg (raw SVG text) -> embedded background.
       // A file picked in the modal takes precedence over the JSON's SVG.
@@ -2749,7 +2780,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       // Every question has been answered by now, so clearing here is the last
       // point at which nothing has been changed yet.
-      var cleared = replace ? clearCanvasForReplace() : 0;
+      var cleared = replace ? clearCanvasForReplace(existing) : 0;
 
       // append via the host's own loaders (the templates insert path)
       var before = canvasObjectCount();
