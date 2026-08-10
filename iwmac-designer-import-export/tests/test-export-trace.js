@@ -28,7 +28,11 @@ function envelope(imageData) {
 }
 
 async function run() {
-  assert.equal(api.IWDIE_VERSION, '1.7.0');
+  // The two version strings must not drift: Tampermonkey updates on the header
+  // @version, while the UI and the export envelope report IWDIE_VERSION.
+  const headerVersion = /^\/\/ @version\s+(\S+)/m.exec(fs.readFileSync(SCRIPT, 'utf8'));
+  assert.ok(headerVersion, 'no @version header found');
+  assert.equal(api.IWDIE_VERSION, headerVersion[1]);
   assert.equal(envelope(null).version, 1);
   assert.equal(api.sanitizeName('Maskin Panel'), 'maskin-panel');
   assert.equal(api.parsePayload(envelope(null)).doc.panel_name, 'Maskin');

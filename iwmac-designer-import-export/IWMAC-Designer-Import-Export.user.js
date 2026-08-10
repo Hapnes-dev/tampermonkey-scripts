@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.7.0
+// @version      1.8.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.7.0';
+var IWDIE_VERSION = '1.8.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2451,17 +2451,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var panel = document.createElement('div');
       panel.className = 'iwdie-panel';
       panel.innerHTML = [
-        '<h3>Insert panel JSON</h3>',
-        '<div>Objects are <b>added</b> to the current canvas (nothing is deleted). On an empty panel this recreates the exported panel 1:1. Nothing is saved to the server until you use the designer’s own Save buttons.</div>',
-        '<label>Optional: background image (PNG/JPG) — pick it BEFORE the .json</label>',
+        '<h3>Import panel JSON</h3>',
+        '<div>Rebuilds an exported panel on this canvas. If the panel already holds objects you are asked first whether to <b>replace</b> them or <b>add</b> to them. Nothing reaches the server — the panel only changes on screen until you press the designer’s own Save.</div>',
+        '<label>1. Background image (PNG/JPG) — optional, pick it before the .json</label>',
         '<input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
-        '<label>Pick the exported .json file</label>',
+        '<div class="iwdie-hint">Only needed when the export carries no background of its own.</div>',
+        '<label>2. The exported .json file</label>',
         '<input type="file" id="iwdie_file" accept=".json,application/json">',
-        '<div class="iwdie-drop" id="iwdie_drop">…or drop the file here</div>',
-        '<label>…or paste the JSON text</label>',
-        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Lim inn / paste the JSON here…"></textarea>',
+        '<div class="iwdie-drop" id="iwdie_drop">…or drop the .json here</div>',
+        '<label>…or paste the JSON text instead</label>',
+        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Paste the exported JSON here…"></textarea>',
         '<div>',
-        '  <button class="iwdie-btn" id="iwdie_paste_btn">Insert pasted JSON</button>',
+        '  <button class="iwdie-btn" id="iwdie_paste_btn">Import the pasted JSON</button>',
         '  <button class="iwdie-btn iwdie-secondary" id="iwdie_cancel_btn">Cancel</button>',
         '</div>'
       ].join('\n');
@@ -2566,7 +2567,59 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
-    /* ---------- apply (append) ---------- */
+    /* ---------- replace-or-add chooser (v1.8.0) ---------- */
+    var modeOverlay = null;
+
+    function closeModeChooser() {
+      if (modeOverlay) { modeOverlay.remove(); modeOverlay = null; }
+      document.removeEventListener('keydown', onModeChooserKeydown, true);
+    }
+
+    /** Escape is deliberately not swallowed: the import modal's own handler
+     *  runs too, so one press cancels the whole import rather than dropping
+     *  the user back into a half-answered dialog. */
+    function onModeChooserKeydown(ev) {
+      if (ev.key === 'Escape') closeModeChooser();
+    }
+
+    /** The canvas already holds objects, so the import has two honest
+     *  outcomes. Ask before anything is touched; cancelling changes nothing.
+     *  `choose` is called with true for replace, false for add. */
+    function openModeChooser(existing, choose) {
+      closeModeChooser();
+      var n = existing + ' object' + (existing === 1 ? '' : 's');
+      modeOverlay = document.createElement('div');
+      modeOverlay.className = 'iwdie-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'iwdie-panel';
+      panel.innerHTML = [
+        '<button class="iwdie-x" id="iwdie_mode_x" title="Cancel (Esc)">×</button>',
+        '<h3>This panel is not empty</h3>',
+        '<div>The canvas already holds <b>' + n + '</b>. Choose what the import should do with them:</div>',
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn" id="iwdie_mode_replace">Replace — clear the panel first</button>',
+        '  <div>Clears the ' + n + ' already on the canvas, then inserts the file, so you get <b>an exact copy of the export</b>. The background image only changes if the file carries one. The stored panel is untouched — reload without saving and the old content is back.</div>',
+        '</div>',
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn" id="iwdie_mode_add">Add — keep what is here</button>',
+        '  <div>Inserts the file <b>on top of</b> what is already there, for merging two panels. Importing the same file twice this way leaves every object duplicated.</div>',
+        '</div>',
+        '<div class="iwdie-hint">Esc or a click outside cancels. Either choice only changes the screen — the server copy is written by the designer’s own Save.</div>'
+      ].join('\n');
+      modeOverlay.appendChild(panel);
+      document.body.appendChild(modeOverlay);
+      document.addEventListener('keydown', onModeChooserKeydown, true);
+      modeOverlay.addEventListener('mousedown', function (ev) {
+        if (ev.target === modeOverlay) { closeModeChooser(); toast('Import cancelled — nothing was changed.'); }
+      });
+      panel.querySelector('#iwdie_mode_x').addEventListener('click', function () {
+        closeModeChooser(); toast('Import cancelled — nothing was changed.');
+      });
+      panel.querySelector('#iwdie_mode_replace').addEventListener('click', function () { closeModeChooser(); choose(true); });
+      panel.querySelector('#iwdie_mode_add').addEventListener('click', function () { closeModeChooser(); choose(false); });
+    }
+
+    /* ---------- apply (replace or add) ---------- */
     function canvasObjectCount() {
       var cc = document.getElementById('control_container');
       if (!cc) return 0;
@@ -2592,6 +2645,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /** Replace mode: empty the canvas the way the host's own full-panel load
+     *  does (DesignPanelHandler.renderPanel — the two caches first, then
+     *  #control_container). The hidden landing field is kept, because only
+     *  iw_set_image_org re-appends it. The graphics registry is reset for the
+     *  same reason loadedGraphic.loader resets it: graphics replace, never
+     *  merge. This touches the DOM only — the stored panel is unchanged until
+     *  the user presses the designer's own Save. */
+    function clearCanvasForReplace() {
+      var removed = canvasObjectCount();
+      try { W.objectList.clear(); } catch (e) {}
+      try { W.designContainers.clear(); } catch (e) {}
+      try { W.table_container.clear(); } catch (e) {}
+      var cc = document.getElementById('control_container');
+      if (cc) {
+        var landing = document.getElementById('objects_landing_field');
+        if (landing && !cc.contains(landing)) landing = null;
+        try { W.$(cc).html(''); } catch (e) { cc.innerHTML = ''; }
+        if (landing) cc.appendChild(landing);
+      }
+      try { if (W.loadedGraphic) W.loadedGraphic.loaded = []; } catch (e) {}
+      return removed;
+    }
+
     /** Read the optional background image picked in the modal (null if none). */
     function readPendingBackground(cb) {
       var inp = importOverlay ? importOverlay.querySelector('#iwdie_bgfile') : null;
@@ -2614,7 +2690,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (v.errors.length) { showErrors(v.errors, v.warnings, iwdieDiagnoseDoc(res.doc, v.errors, v.warnings)); return; }
       if (!hostReady()) { showErrors(['IWMAC Designer host functions are not available (page not fully loaded?).']); return; }
 
-      var doc = iwdieNormalizeDoc(res.doc);
+      // Validation passed and nothing has been touched yet — this is the point
+      // to ask replace-or-add. An empty canvas has nothing to replace, so it
+      // skips straight through.
+      var existing = canvasObjectCount();
+      if (existing > 0) {
+        openModeChooser(existing, function (replace) { applyImportDoc(res.doc, v, pendingBg, replace); });
+        return;
+      }
+      applyImportDoc(res.doc, v, pendingBg, false);
+    }
+
+    function applyImportDoc(rawDoc, v, pendingBg, replace) {
+      var doc = iwdieNormalizeDoc(rawDoc);
       // AI-authored artwork: panel.image_svg (raw SVG text) -> embedded background.
       // A file picked in the modal takes precedence over the JSON's SVG.
       if (!pendingBg && doc.image_svg) {
@@ -2648,7 +2736,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (doc.converted === 'true' && doc.image_data) {
         var hasBg = false;
         try { hasBg = (W.$('#main_image').css('background-image') || 'none') !== 'none'; } catch (e) {}
-        if (!hasBg || window.confirm('Also replace the panel background image with the one embedded in the file?')) {
+        // Replace mode already means "make this panel look like the export",
+        // so the background follows without a second question.
+        if (!hasBg || replace || window.confirm('Also replace the panel background image with the one embedded in the file?')) {
           try {
             W.iw_set_base_image(doc.panel_width, doc.panel_height, doc.image_data);
             if (doc.org_image_name) { W.$('#main_image').attr('org_image_name', doc.org_image_name); }
@@ -2656,6 +2746,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           } catch (e) { toast('Background could not be applied: ' + e, true); }
         }
       }
+
+      // Every question has been answered by now, so clearing here is the last
+      // point at which nothing has been changed yet.
+      var cleared = replace ? clearCanvasForReplace() : 0;
 
       // append via the host's own loaders (the templates insert path)
       var before = canvasObjectCount();
@@ -2685,7 +2779,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       closeImportPanel();
       var added = canvasObjectCount() - before;
-      var msg = 'Inserted ' + iwdieSummarize(doc) + rebindNote +
+      var msg = (cleared ? 'Replaced the panel — cleared ' + cleared + ' object' + (cleared === 1 ? '' : 's') + ' and inserted ' : 'Inserted ') +
+        iwdieSummarize(doc) + rebindNote +
         (appliedBg ? ', background applied' : '') +
         (skippedGraphics ? ', ' + skippedGraphics + ' graphics skipped (canvas already has graphics)' : '') +
         '.\nNothing is saved yet — use the designer’s own Save buttons when happy.';

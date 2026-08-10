@@ -17,13 +17,18 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 3. Open the designer on the **target** plant, *New → Create Panel* (or load an existing panel to combine into).
 4. Click **Insert JSON…**, pick/drop/paste the export.
 5. If the file comes from another plant, the script offers to **rewrite the driver-id plant prefixes** (`10113_…` → `<target>_…`) so objects can link to the target plant's drivers.
-6. Objects are **added** to the canvas (nothing is deleted); on an empty panel that's a 1:1 copy. The embedded background is applied if the canvas has none (or after a confirm if it does).
-7. Nothing touches the server until you use the designer's own **Save** buttons (*Compile Panel for Plant* / *Sync Panels with Plant*).
+6. If the target panel already holds objects, the script asks what to do with them:
+   **Replace** clears the canvas first, so you end up with an exact copy of the export;
+   **Add** inserts on top of what is there, for merging two panels. An empty panel skips
+   the question and simply gets a 1:1 copy. The embedded background is applied when the
+   canvas has none, or when you chose Replace — otherwise it asks first.
+7. Nothing touches the server until you use the designer's own **Save** buttons (*Compile Panel for Plant* / *Sync Panels with Plant*). That includes Replace: it only clears the screen, so reloading without saving brings the old panel back.
 
-> **Editing an existing Maskin background:** **Insert JSON appends objects.** Use a
-> background-only patch with empty object arrays when applying artwork to a populated
-> panel. Insert an entire/full export only on an empty canvas unless duplicate objects
-> are intentional. See [Editing an existing Maskin compressor bank from an exported
+> **Editing an existing Maskin background:** choose **Add** and apply a background-only
+> patch with empty object arrays — that leaves every existing object untouched.
+> **Replace** is for putting a full export onto a panel whose current content you no
+> longer want; adding a full export instead duplicates every object. See [Editing an
+> existing Maskin compressor bank from an exported
 > panel JSON](iwmac-designer-reference/reference_data/maskin-drawing-method.txt) for
 > object-preservation, measured-raster, and overlay-QA rules.
 
@@ -33,7 +38,8 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 |---|---|
 | Background image | Base64-embedded into the export (the host's own `converted`/`image_data` format), re-applied on insert; or attach a PNG/JPG in the Insert dialog to give an image-less panel its artwork |
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
-| Name collisions on insert | Canvas object names renumbered after append (same policy as the designer's own paste) |
+| A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
+| Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
 | Empty canvas / not-a-panel-file / VV sketch file | Blocked with an itemised error panel, canvas untouched |
 | Server writes | Never — export reads the DOM, insert only renders; saving stays 100 % in the host's own buttons |
 | Bookkeeping | Host's own `UpdateObjectWorker` runs after insert, exactly like the designer's paste |
@@ -103,6 +109,7 @@ Canonical plant `9099` is outside that MENY batch: panel `360.001 Ventilasjon` j
 - The sidebar is static HTML loaded with `innerHTML +=` — that re-serializes existing children and silently kills `addEventListener` handlers, so the injected buttons use **inline `onclick` attributes** calling `window.__IWDIE.*` (exactly how the host's own sidebar buttons survive). An idempotent interval re-adds/de-dupes the fieldset if the sidebar is ever re-rendered.
 - **Export** calls the host's own collector `getPanelDataFromDOM(...)` (the same function the designer's save uses) after mirroring the host's pre-save global resets — no DOM re-implementation, byte-compatible documents.
 - **Insert** drives the host's own loaders (`DesignPanelHandler.load_new_ver_objects` / `load_new_ver_containers` — the code path behind the designer's template insert), then renumbers `object_N` names from the live child index (the same policy as the designer's `Duplicator` paste) and runs `UpdateObjectWorker()`.
+- **Replace** clears the canvas the way the host's own full-panel load does — `objectList.clear()`, `designContainers.clear()`, `table_container.clear()`, then `#control_container` emptied and the graphics registry reset, mirroring `DesignPanelHandler.renderPanel`. The hidden `#objects_landing_field` is preserved, and the graphics registry reset is what lets an import's own graphics load (`loadedGraphic.loader` replaces rather than merges). DOM only: no request is made, so the stored panel is untouched until Save.
 - Background embed/apply uses the host's own `converted:"true"` + `image_data` document format consumed by `renderPanel`/`iw_set_base_image`.
 - Console surface: `window.__IWDIE` (`doExport`, `openImportPanel`, `applyImport`, `doExportBackgroundAi`, `_collect`). Pure helpers are `module.exports`-ed for Node unit checks (incl. `buildImagePdf` — the PDF writer is pure/synchronous and structurally unit-tested: header, MediaBox, stream lengths, xref offsets).
 
