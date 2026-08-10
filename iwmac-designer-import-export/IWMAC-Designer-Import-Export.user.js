@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.8.1
+// @version      1.9.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.8.1';
+var IWDIE_VERSION = '1.9.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1990,6 +1990,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-choice>div{margin-top:6px;color:#445;font-size:12.5px;line-height:1.45}',
       '.iwdie-choice .iwdie-btn{margin:0}',
       '.iwdie-hint{color:#778;font-size:11.5px;margin-top:6px}',
+      /* Fact strip for the mid-import questions — the numbers the answer
+         depends on, out of the prose and impossible to miss. */
+      '.iwdie-facts{margin:10px 0;padding:10px 12px;border:1px solid #cfdcea;border-radius:6px;background:#eef4fa;font-size:13px;line-height:1.6}',
+      '.iwdie-facts div+div{margin-top:4px}',
+      '.iwdie-facts code{font:12px Consolas,monospace;background:#fff;border:1px solid #d5dbe1;border-radius:3px;padding:1px 5px}',
+      '.iwdie-arrow{color:#2f6fb2;font-weight:700;margin:0 6px}',
       '#manager_widget_iwdie fieldset{margin-top:4px}',
       /* The host hard-codes #manager_div to height:900px (overflow-y:auto);
          the added full-size button rows make the content taller, so the
@@ -2441,6 +2447,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function onPanelKeydown(ev) {
+      // A mid-import question owns Escape while it is open: the native
+      // confirm() it replaces blocked the page, so Escape answered the
+      // question and never reached this modal. (The replace-or-add chooser is
+      // deliberately the other way round — see onModeChooserKeydown.)
+      if (confirmOverlay) return;
       if (ev.key === 'Escape') { closeImportPanel(); ev.stopPropagation(); }
     }
 
@@ -2619,6 +2630,72 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       panel.querySelector('#iwdie_mode_add').addEventListener('click', function () { closeModeChooser(); choose(false); });
     }
 
+    /* ---------- mid-import question (v1.9.0) ----------
+       Replaces the two window.confirm() calls. A native confirm renders as a
+       browser-chrome strip with OK/Cancel, so the consequence of each answer
+       had to be squeezed into one prose blob and the buttons said nothing.
+       Here each answer is its own labelled button with its consequence
+       underneath, in the same modal as the rest of the import. */
+    var confirmOverlay = null;
+    var confirmAnswer = null;
+
+    function closeConfirmDialog() {
+      if (confirmOverlay) { confirmOverlay.remove(); confirmOverlay = null; }
+      confirmAnswer = null;
+      document.removeEventListener('keydown', onConfirmKeydown, true);
+    }
+
+    /** Escape answers "no" and the import continues — exactly what Escape did
+     *  to the native confirm this replaces. onPanelKeydown stands down while
+     *  the question is open so one press cannot also close the import modal. */
+    function onConfirmKeydown(ev) {
+      if (ev.key !== 'Escape') return;
+      var answer = confirmAnswer;
+      closeConfirmDialog();
+      ev.stopPropagation();
+      if (answer) answer(false);
+    }
+
+    /** A two-outcome question asked mid-import. Both outcomes continue the
+     *  import — neither is a cancel, which is why there is no × here.
+     *  `answer` is called with true for the primary option, false for the
+     *  secondary one.
+     *
+     *  opts: { title, intro, facts[], yes:{label,desc}, no:{label,desc} } */
+    function openConfirmDialog(opts, answer) {
+      closeConfirmDialog();
+      confirmAnswer = answer;
+      confirmOverlay = document.createElement('div');
+      confirmOverlay.className = 'iwdie-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'iwdie-panel';
+      panel.innerHTML = [
+        '<h3>' + opts.title + '</h3>',
+        '<div>' + opts.intro + '</div>',
+        (opts.facts && opts.facts.length
+          ? '<div class="iwdie-facts">' + opts.facts.map(function (f) { return '<div>' + f + '</div>'; }).join('') + '</div>'
+          : ''),
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn" id="iwdie_confirm_yes">' + opts.yes.label + '</button>',
+        '  <div>' + opts.yes.desc + '</div>',
+        '</div>',
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn iwdie-secondary" id="iwdie_confirm_no">' + opts.no.label + '</button>',
+        '  <div>' + opts.no.desc + '</div>',
+        '</div>',
+        '<div class="iwdie-hint">Esc or a click outside chooses “' + opts.no.label + '”. Either way the import continues, and nothing reaches the server until you press the designer’s own Save.</div>'
+      ].join('\n');
+      confirmOverlay.appendChild(panel);
+      document.body.appendChild(confirmOverlay);
+      document.addEventListener('keydown', onConfirmKeydown, true);
+
+      function pick(yes) { closeConfirmDialog(); answer(yes); }
+      confirmOverlay.addEventListener('mousedown', function (ev) { if (ev.target === confirmOverlay) pick(false); });
+      panel.querySelector('#iwdie_confirm_yes').addEventListener('click', function () { pick(true); });
+      panel.querySelector('#iwdie_confirm_no').addEventListener('click', function () { pick(false); });
+      try { panel.querySelector('#iwdie_confirm_yes').focus(); } catch (e) {}
+    }
+
     /* ---------- apply (replace or add) ---------- */
     /** Canvas children, for the insert bookkeeping. Counts every child of
      *  #control_container except the hidden landing field the host re-appends
@@ -2752,73 +2829,113 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var source = iwdieDetectSourcePlant(doc);
       var rebindNote = '';
 
-      if (source && target && source !== target) {
-        var n = iwdieCountRebindable(doc, source);
-        if (n > 0 && window.confirm('This panel comes from plant ' + source + ' — you are on plant ' + target + '.\n\nRewrite ' + n + ' driver id' + (n === 1 ? '' : 's') + ' from "' + source + '_…" to "' + target + '_…"?\n\n(OK = rewrite so objects can link to this plant’s drivers. Cancel = keep original ids.)')) {
-          var rb = iwdieRebindDriverIds(doc, source, target);
-          doc = rb.doc;
-          rebindNote = ', ' + rb.rebound + ' driver ids rebound ' + source + '→' + target;
-        }
+      // The two questions below are modals now, so the rest of the import is
+      // their continuation rather than the next statement. Order is unchanged:
+      // rebind, then background, then the canvas itself.
+      var n = (source && target && source !== target) ? iwdieCountRebindable(doc, source) : 0;
+      if (n > 0) {
+        openConfirmDialog({
+          title: 'This panel comes from another plant',
+          intro: 'Its objects are bound to driver ids from the plant it was exported from. They will not link to anything here until those ids are rewritten.',
+          facts: [
+            'Exported from plant <code>' + esc(source) + '</code><span class="iwdie-arrow">→</span>you are on plant <code>' + esc(target) + '</code>',
+            '<b>' + n + '</b> driver id' + (n === 1 ? '' : 's') + ' can be rewritten'
+          ],
+          yes: {
+            label: 'Rewrite the driver ids',
+            desc: 'Rewrites <code>' + esc(source) + '_…</code> to <code>' + esc(target) + '_…</code> so the objects link to this plant’s drivers. Ids that name no driver here are left alone and listed afterwards.'
+          },
+          no: {
+            label: 'Keep the original ids',
+            desc: 'The objects come in exactly as exported — useful when you are only after the layout. Nothing will show live values until the ids are fixed.'
+          }
+        }, function (rewrite) {
+          if (rewrite) {
+            var rb = iwdieRebindDriverIds(doc, source, target);
+            doc = rb.doc;
+            rebindNote = ', ' + rb.rebound + ' driver ids rebound ' + source + '→' + target;
+          }
+          askBackground();
+        });
+      } else {
+        askBackground();
       }
-      var foreign = iwdieListForeignDriverIds(doc, target);
 
       // background: only touch it if the import carries one
-      var appliedBg = false;
-      if (doc.converted === 'true' && doc.image_data) {
+      function askBackground() {
+        if (doc.converted !== 'true' || !doc.image_data) { finish(false); return; }
         var hasBg = false;
         try { hasBg = (W.$('#main_image').css('background-image') || 'none') !== 'none'; } catch (e) {}
         // Replace mode already means "make this panel look like the export",
         // so the background follows without a second question.
-        if (!hasBg || replace || window.confirm('Also replace the panel background image with the one embedded in the file?')) {
-          try {
-            W.iw_set_base_image(doc.panel_width, doc.panel_height, doc.image_data);
-            if (doc.org_image_name) { W.$('#main_image').attr('org_image_name', doc.org_image_name); }
-            appliedBg = true;
-          } catch (e) { toast('Background could not be applied: ' + e, true); }
+        if (!hasBg || replace) { finish(applyBackground()); return; }
+        openConfirmDialog({
+          title: 'The file carries its own background image',
+          intro: 'This panel already has a background. The imported objects are positioned against the background the file was exported on, so keeping yours can leave them sitting over the wrong drawing.',
+          yes: {
+            label: 'Use the file’s background',
+            desc: 'Swaps this panel’s background for the embedded one, so the objects land where they were drawn.'
+          },
+          no: {
+            label: 'Keep the current background',
+            desc: 'Your background stays and the objects are inserted on top of it.'
+          }
+        }, function (useFileBg) {
+          finish(useFileBg ? applyBackground() : false);
+        });
+      }
+
+      function applyBackground() {
+        try {
+          W.iw_set_base_image(doc.panel_width, doc.panel_height, doc.image_data);
+          if (doc.org_image_name) { W.$('#main_image').attr('org_image_name', doc.org_image_name); }
+          return true;
+        } catch (e) { toast('Background could not be applied: ' + e, true); return false; }
+      }
+
+      function finish(appliedBg) {
+        var foreign = iwdieListForeignDriverIds(doc, target);
+
+        // Every question has been answered by now, so clearing here is the last
+        // point at which nothing has been changed yet.
+        var cleared = replace ? clearCanvasForReplace(existing) : 0;
+
+        // append via the host's own loaders (the templates insert path)
+        try {
+          var handler = new W.DesignPanelHandler();
+          if (doc.single_objects.length) handler.load_new_ver_objects(doc.single_objects);
+          if (doc.containers.length) handler.load_new_ver_containers(doc.containers);
+        } catch (e) {
+          showErrors(['The designer refused the objects: ' + e]);
+          return;
         }
-      }
+        renumberCanvasNames();
 
-      // Every question has been answered by now, so clearing here is the last
-      // point at which nothing has been changed yet.
-      var cleared = replace ? clearCanvasForReplace(existing) : 0;
-
-      // append via the host's own loaders (the templates insert path)
-      var before = canvasObjectCount();
-      try {
-        var handler = new W.DesignPanelHandler();
-        if (doc.single_objects.length) handler.load_new_ver_objects(doc.single_objects);
-        if (doc.containers.length) handler.load_new_ver_containers(doc.containers);
-      } catch (e) {
-        showErrors(['The designer refused the objects: ' + e]);
-        return;
-      }
-      renumberCanvasNames();
-
-      var skippedGraphics = 0;
-      if (doc.graphics.length) {
-        var canvasHasGraphics = false;
-        try { canvasHasGraphics = Object.keys(W.loadedGraphic.loaded || {}).length > 0; } catch (e) {}
-        if (!canvasHasGraphics && W.loadedGraphic && typeof W.loadedGraphic.loader === 'function') {
-          try { W.loadedGraphic.loader(doc.graphics); } catch (e) { skippedGraphics = doc.graphics.length; }
-        } else {
-          skippedGraphics = doc.graphics.length;
+        var skippedGraphics = 0;
+        if (doc.graphics.length) {
+          var canvasHasGraphics = false;
+          try { canvasHasGraphics = Object.keys(W.loadedGraphic.loaded || {}).length > 0; } catch (e) {}
+          if (!canvasHasGraphics && W.loadedGraphic && typeof W.loadedGraphic.loader === 'function') {
+            try { W.loadedGraphic.loader(doc.graphics); } catch (e) { skippedGraphics = doc.graphics.length; }
+          } else {
+            skippedGraphics = doc.graphics.length;
+          }
         }
-      }
 
-      try { W.UpdateObjectWorker(); } catch (e) {}
-      try { if (!document.getElementById('mouse_selector') && typeof W.make_mouse_selector === 'function') W.make_mouse_selector(); } catch (e) {}
+        try { W.UpdateObjectWorker(); } catch (e) {}
+        try { if (!document.getElementById('mouse_selector') && typeof W.make_mouse_selector === 'function') W.make_mouse_selector(); } catch (e) {}
 
-      closeImportPanel();
-      var added = canvasObjectCount() - before;
-      var msg = (cleared ? 'Replaced the panel — cleared ' + cleared + ' object' + (cleared === 1 ? '' : 's') + ' and inserted ' : 'Inserted ') +
-        iwdieSummarize(doc) + rebindNote +
-        (appliedBg ? ', background applied' : '') +
-        (skippedGraphics ? ', ' + skippedGraphics + ' graphics skipped (canvas already has graphics)' : '') +
-        '.\nNothing is saved yet — use the designer’s own Save buttons when happy.';
-      if (foreign.length) {
-        msg += '\n⚠ ' + foreign.length + ' object(s) still reference drivers from another plant and will not link here.';
+        closeImportPanel();
+        var msg = (cleared ? 'Replaced the panel — cleared ' + cleared + ' object' + (cleared === 1 ? '' : 's') + ' and inserted ' : 'Inserted ') +
+          iwdieSummarize(doc) + rebindNote +
+          (appliedBg ? ', background applied' : '') +
+          (skippedGraphics ? ', ' + skippedGraphics + ' graphics skipped (canvas already has graphics)' : '') +
+          '.\nNothing is saved yet — use the designer’s own Save buttons when happy.';
+        if (foreign.length) {
+          msg += '\n⚠ ' + foreign.length + ' object(s) still reference drivers from another plant and will not link here.';
+        }
+        toast(msg, foreign.length > 0, 9000);
       }
-      toast(msg, foreign.length > 0, 9000);
     }
 
     /* ---------- console surface + install ---------- */
