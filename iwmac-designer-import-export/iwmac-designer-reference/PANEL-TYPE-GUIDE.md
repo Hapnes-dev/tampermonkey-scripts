@@ -6,7 +6,7 @@ A per-panel-type style guide, mined 2026-08-08 from the live compiled panels of 
 
 - Canvas: **1400×750 px** is the standard. 1280×1024 only appears on older-era panels — do not build new ones at that size.
 - Style era: **modern V3 objects only** — zero legacy `V2_*` objects anywhere in this fleet.
-- Containers and graphics: **empty on almost every panel** — panels are flat `single_objects` over a background PNG. Two exceptions, both container-built: 9914's room-card panels, and **list panels** (spjeldliste — one container per row, see the section at the end).
+- Containers and graphics: **empty on almost every panel** — panels are flat `single_objects` over a background PNG. Three exceptions, all container-built: 9914's room-card panels, **list panels** (spjeldliste — one container per row) and the **room-control table** (one `table_container` holding the whole grid). Both table families are documented in the sections at the end.
 - Backgrounds: nearly every panel has an embedded PNG background. Two families: a drawn schematic (Maskin, Energi, VGV, Kondens — 30–130 KB) or the ~6 KB blank canvas on which Ventilasjon panels draw their duct layout using objects.
 - Backup convention: keep the old version as a hidden panel suffixed `_old` / `Gammel` / `_copy` — never overwrite history.
 - Visibility: main panels `visible=1`; detail/backup panels `visible=4` (hidden from the list, reachable via navigation buttons).
@@ -169,7 +169,7 @@ The smallest panel type: energy-meter values on a meter-tree drawing.
 
 The only plant in **this survey** using containers at scale: `Romtype1/3/4`, `romtypevav1-3`, and per-room `Rom NNN` panels (1 object + 3–15 containers each), plus `Plan 1`/`Plan 2` floor plans with 14 room-card containers. This is the **room-control card pattern** (same idea as the hotel `rc_box` cards, CLAUDE.md §17b) — study 9914 before building per-room panels for a store with tenant/office zones.
 
-The list panels below are the other container-built family. The 41-plant survey behind this guide did not cover them, so they carry no fleet statistics here — their evidence is two production exports, documented in [LIST-PANEL-GENERATION-CONTRACT.md](LIST-PANEL-GENERATION-CONTRACT.md).
+The two table families below are the other container-built panels. The 41-plant survey behind this guide did not cover either, so they carry no fleet statistics here — their evidence is production exports: two for the list panels ([LIST-PANEL-GENERATION-CONTRACT.md](LIST-PANEL-GENERATION-CONTRACT.md)) and one for the room-control table ([ROMKONTROLL-GENERATION-CONTRACT.md](ROMKONTROLL-GENERATION-CONTRACT.md)).
 
 ## List panels (spjeldliste and other long tabular lists)
 
@@ -200,3 +200,54 @@ A full-width table: **one `objects_container` per row**, scaffold in `single_obj
 - **The left/right split follows the tag series** (5-series right; 4-, 6-series and unnumbered left), not airflow direction, and it is a convention rather than a rule.
 
 **Generating one from a table: [LIST-PANEL-GENERATION-CONTRACT.md](LIST-PANEL-GENERATION-CONTRACT.md).** It owns the request classes, the column mapping manifest, the 11-step algorithm, all measured geometry, the binding modes, the preservation matrix, the validation contract and two worked examples. [AI-BRIEFING.txt](AI-BRIEFING.txt) §7c is its standalone summary. Committed reference export: [reference_data/real-spjeldliste-example.json](reference_data/real-spjeldliste-example.json).
+
+## Room-control table (`Tabell romkontroll alle plan`)
+
+The **third** container-built family, and the one most easily mistaken for the
+other two. Not surveyed in the 41-plant sample; measured from one production
+export (plant 8653, evidence E18).
+
+**How to tell it apart.** A spjeldliste repeats one identical row group tens or
+hundreds of times — one `objects_container` per row. A room-control table is a
+**rooms × signals matrix**: one row per room, one column per signal, headers
+repeating down the page, all of it inside **one** `table_container`. The
+`Romkontroll` floor plans of the hotel fleet (CLAUDE.md §17b) and the 9914
+Hunstad room cards above are the same *subject* drawn a different way — room
+cards over a floor-plan image, one panel per floor. A request naming a *table*,
+or *alle plan*, is this panel; a request naming a *plan* or a floor is not.
+
+- **Two layers, and the split is the whole design.** The container's items draw
+  the grid — column titles, room numbers and the empty cell rectangles — and
+  carry **no** bindings (`driver_id` is `""` on all 1,802). The
+  `single_objects` carry the live values and the alarm indicators, one per
+  cell, 1,551 of 1,553 bound. A cell is two records; neither layer alone is a
+  panel.
+- **One container, 22 keys** — the spjeldliste's 16 plus `container_type`
+  `"table_container"`, `title` `"Table Container"`, and the six table-state
+  fields `num_of_rows`, `num_of_col`, `descr_width`, `val_width`, `cells`,
+  `last_y`. Conflict **RC-C1**: both container shapes are real and neither is
+  the general case.
+- **`unique_id` must contain `custom_`.** Without it the host routes the
+  container to `.template()`, an empty stub, and the whole grid **silently
+  vanishes on Insert** — no error, a panel that looks like a blank canvas.
+- **Item `zIndex` is the string `"5"`**, not the spjeldliste's `"900"`;
+  container `zIndex` is the integer `4` in both families.
+- **It does not fit the canvas, and is not meant to.** E18 declares
+  1400 × 750 and reaches x 3,120 / y 1,690 — 2.2× and 2.25×. 31 signal columns
+  at 90 px is 2,790 px of table before anything else. Compressing it to fit,
+  or dropping rooms or columns to fit, is the defect; the plant view scrolls.
+- **`number_v3_cell_grey25` is absent from the object catalogue.** It is used
+  1,700 times here and lives in `reference_data/controls-registry.json`, not in
+  the palette dump — conflict **RC-C2**, and the reason the validator resolves
+  object ids against both registries.
+
+**Generating one: [ROMKONTROLL-GENERATION-CONTRACT.md](ROMKONTROLL-GENERATION-CONTRACT.md).**
+It owns the classification test, the envelope, the container, object selection,
+all measured geometry, the column → signal mapping, the three output modes, the
+validation contract, the conflicts and the two rejected generations.
+Procedure: [ROMKONTROLL-AUTHORING-GUIDE.md](ROMKONTROLL-AUTHORING-GUIDE.md).
+Acceptance gate: [ROMKONTROLL-QA-CHECKLIST.md](ROMKONTROLL-QA-CHECKLIST.md).
+Promptable digest: [ROMKONTROLL-COPILOT-PREFLIGHT.md](ROMKONTROLL-COPILOT-PREFLIGHT.md).
+Committed reference export:
+[reference_data/romkontroll-8653-sanitized.json](reference_data/romkontroll-8653-sanitized.json)
+— one building, measured; not a design target for another.

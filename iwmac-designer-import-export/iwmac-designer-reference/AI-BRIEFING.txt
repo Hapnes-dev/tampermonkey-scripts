@@ -5,12 +5,27 @@ an "iwmac-designer-panel" .json file. The file is inserted into the IWMAC
 Designer with the "Insert JSON..." button (IWMAC Designer Import/Export
 userscript, Panel JSON section under Manage Files).
 
+ROUTE FIRST. If a user asks for a .json file after discussing an IWMAC
+panel, preserve the panel context and generate an iwmac-designer-panel
+document. Do not serialize the source data into a custom JSON schema. If a
+known-good export is attached, inspect it before generating or modifying the
+panel; use it as the panel-type example and preserve its structural
+conventions unless a normative contract requires otherwise.
+AI-REQUEST-ROUTING.md owns that decision and names the panel type; this file
+tells you how to build what it names. Reading this file first and skipping
+the routing step is how both failures in ROMKONTROLL-GENERATION-CONTRACT.md
+section 13 happened.
+
 WHAT THIS FILE OWNS: the envelope, the 17-field object template, the object
 allowlist, the layout rules, the per-panel-type recipes, the linking
 procedure and the self-check. It is enough on its own to produce a valid
 panel.
 
 WHAT IT DOES NOT OWN, and where to look instead:
+  which request this is, and which
+  panel type answers it ........... AI-REQUEST-ROUTING.md
+                                    (read it before this file; owns the
+                                    terminology aliases and the routes)
   which obj_id draws what ......... DESIGN-OBJECT-CATALOG.md
                                     (797 objects, "Pick by task" table)
   exact ventilation geometry ...... VENTILATION-GEOMETRY-CONTRACT.md
@@ -30,6 +45,15 @@ WHAT IT DOES NOT OWN, and where to look instead:
   table (spjeldliste) ............. LIST-PANEL-GENERATION-CONTRACT.md
                                     (measured geometry, column mapping,
                                     the 11-step algorithm, validation)
+  a room-control table across all
+  floors ("Tabell romkontroll
+  alle plan") ..................... ROMKONTROLL-GENERATION-CONTRACT.md
+                                    (ONE table_container, not one
+                                    container per row - different
+                                    family from the spjeldliste,
+                                    conflict RC-C1; authoring guide,
+                                    QA checklist and preflight beside
+                                    it, validate-romkontroll-panel.py)
   how to author a vent panel ...... VENTILATION-AUTHORING-GUIDE.md
                                     (the 10-step procedure and the
                                     six-axis decision table)
@@ -42,13 +66,16 @@ WHAT IT DOES NOT OWN, and where to look instead:
   is my panel correct ............. VENTILATION-QA-CHECKLIST.md
                                     MASKIN-QA-CHECKLIST.md
                                     OVERSIKT-QA-CHECKLIST.md
+                                    ROMKONTROLL-QA-CHECKLIST.md
   the same rules for a validator .. documentation-rules.json
                                     (run validate-ventilation-panel.py,
-                                    validate-maskin-panel.py or
-                                    validate-oversikt-panel.py)
+                                    validate-maskin-panel.py,
+                                    validate-oversikt-panel.py or
+                                    validate-romkontroll-panel.py)
   a block for a Copilot prompt .... VENTILATION-COPILOT-PREFLIGHT.md
                                     MASKIN-COPILOT-PREFLIGHT.md
                                     OVERSIKT-COPILOT-PREFLIGHT.md
+                                    ROMKONTROLL-COPILOT-PREFLIGHT.md
   how the Designer itself works ... iwmac-designer-reference/CLAUDE.md
 
 Sections 7a and 7c reprint the ventilation and list-panel measurements, and
@@ -1189,11 +1216,21 @@ Normative reference exports: reference_data/real-spjeldliste-example.json
 (production 360.004, plant masked, 383 scaffold objects + 208 row
 containers, 21 groups) and any spjeldliste export supplied with the task.
 
+SCOPE - THERE ARE TWO CONTAINER-BUILT FAMILIES, AND THIS IS ONE OF THEM.
+Everything in 7c is measured on the spjeldliste and is tagged LIST, not
+GLOBAL. A room-control table across all floors is the other family: ONE
+container of container_type "table_container" holding the whole grid, items
+at zIndex "5" rather than "900", and a 22-key container instead of these 16.
+Route by the shape of the source, not by the word "list": a repeated
+per-row cell group is 7c; a rooms x signals matrix is
+ROMKONTROLL-GENERATION-CONTRACT.md. Conflict RC-C1 - both are real, neither
+is the general case, and neither document is rewritten to match the other.
+
 WHAT IT IS. A "spjeldliste" (damper list), or any long tabular listing, is
-the ONE panel type built from CONTAINERS: one objects_container per table
-row, everything else - banner, headers, dividers, group stripes - in
-single_objects. graphics stays []. Test: if a row repeats an identical
-multi-column cell group tens or hundreds of times, it is a list panel.
+built from CONTAINERS: one objects_container per table row, everything else
+- banner, headers, dividers, group stripes - in single_objects. graphics
+stays []. Test: if a row repeats an identical multi-column cell group tens
+or hundreds of times, it is a list panel.
 
 SCAFFOLDING (single_objects; the ONE place zIndex is NOT "default" -
 layering matters: stripes "3" under container rows 4 under dividers "5"
@@ -1384,6 +1421,15 @@ RT501, a 3-way valve, JP501 pump + alarm bell, VV/KV/VVC 10px markers,
 tank labels NT00x. The rc_* boxes are reused here as generic
 measure-point cards.
 
+ROMKONTROLL - TWO DIFFERENT PANELS SHARE THE WORD. "Romkontroll" here
+means the per-floor FLOOR PLAN below: one panel per floor, room cards drawn
+over a floor-plan PNG, 1400 x 750. A request for a TABLE - "tabell
+romkontroll alle plan", every room on every floor in one grid - is not this
+panel and is not in this briefing: it is ONE table_container, it has no
+background image, and it is legitimately taller than the viewport. Route it
+to ROMKONTROLL-GENERATION-CONTRACT.md. Do not build a table by tiling the
+floor-plan cluster below, and do not clamp a table to 1400 x 750.
+
 ROMKONTROLL FLOOR PLAN (1400 x 750 on a floor-plan PNG): supply pipe
 1000 x 18 across the top (arrow right), one connector_up drop per room;
 on the drop: rc_load_vav_60 "Posisjon %" + dummy_resirc_damp_vert +
@@ -1510,9 +1556,14 @@ EVERY PANEL
    linked = "false" - UNLESS the user supplied the parameters dump for
    linking (8b): then linked objects carry the dump's driver_id +
    unit_id + linked "true", and id STILL says "driver_id"
-[] positions inside the canvas (list panels 7c excepted), integer
-   pixels, and no overlap outside the four intentional classes in
-   section 5
+[] positions inside the canvas - EXCEPT list panels (7c) and
+   room-control tables, whose content legitimately runs past
+   panel_width / panel_height and is scrolled by the plant view.
+   Conflict RC-C5: the underlying rule (CLAUDE.md gotcha #25) always
+   permitted this, only this self-check line was narrower. Owner of the
+   exception for tables: ROMKONTROLL-GENERATION-CONTRACT.md section 8.
+   Integer pixels, and no overlap outside the four intentional classes
+   in section 5
 [] tag_text on text objects, alias_text on linkable objects, UTF-8
    text (°C, æøå) - not plain-ASCII substitutes
 [] names are object_0..object_N, sequential, with no duplicates
@@ -1520,6 +1571,7 @@ EVERY PANEL
    export into a demo - and none invented; no invented file path or
    navigation target either
 [] graphics [] empty; containers [] too, unless this is a list panel
+   (7c, one per row) or a room-control table (exactly one)
 [] you named the precedence rank (section 0) you worked from
 [] raw JSON only - no fences, no commentary
 
@@ -1538,6 +1590,29 @@ LIST PANELS (7c) ONLY
 [] no driver_id, unit_id or alias invented - copied, sentinel, or stop
 [] rows may run past the canvas; nothing else may
 [] you ran the LIST-PANEL-GENERATION-CONTRACT.md section 12 checks
+
+ROOM-CONTROL TABLE ("tabell romkontroll alle plan") ONLY
+This panel type is NOT in this briefing. The list below is the routing
+gate, not the contract - ROMKONTROLL-GENERATION-CONTRACT.md is.
+[] you routed it as a table, not as a 7c list and not as a 7d floor plan
+[] exactly ONE container, container_type "table_container", and its
+   unique_id contains "custom_" - without that substring the host
+   silently drops the whole container on Insert
+[] container zIndex is the INTEGER 4; every item zIndex is the STRING
+   "5" - not "900", which is the 7c value
+[] num_of_col and num_of_rows equal the measured grid, and
+   last_y = last_row_top + row_height
+[] id "driver_id" and link_name "link_name" on every object, and
+   linked "true" wherever driver_id is not the literal "driver_id" -
+   the host's own rule, not a style choice
+[] the parameters dump was supplied => mode C, real driver_id/unit_id
+   and byte-identical alias_text; a fully placeholdered file is a
+   TEMPLATE and you only emit one when a template was asked for
+[] the table is allowed to be taller than the canvas - reported, never
+   compressed to fit
+[] validate-romkontroll-panel.py reports zero errors, and you ran
+   --compare against the known-good export whenever one existed
+[] you ran ROMKONTROLL-QA-CHECKLIST.md and reported its stages
 
 VENTILASJON (7a) ONLY
 [] no panel.image_svg; background is the blank sidebar, preserved

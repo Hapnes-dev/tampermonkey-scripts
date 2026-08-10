@@ -14,7 +14,9 @@
     "MASKIN": "Applies to Maskin / machine-room panels. Confirmed on the plant-10229 AK-PC 782A CO2 booster export (E9/E10) and consistent with the fleet survey in PANEL-TYPE-GUIDE.md. A rule tagged MASKIN that rests on E9 alone says so in its own evidence list.",
     "TEMPLATE-10229": "Geometry of one named Maskin template: the plant-10229 AK-PC 782A booster with 3 MT + 3 LT compressors, gas cooler, receiver and heat recovery, measured from E9 and committed sanitized as E10. Reproduce it when that template is the selected source. A different machine room legitimately differs - never promote a TEMPLATE-10229 coordinate to MASKIN without a second export.",
     "OVERSIKT": "Applies to Oversikt / store-overview panels - the spatial floor-plan panel type, including case-position panels and byggeplan-derived overviews. Confirmed on the plant-10113 production export (E14/E15) and on the 194-panel drawing survey. Does NOT apply to the navigation-hub Oversikt of a hotel panel set, which is an icon-tile menu and shares only the name.",
-    "TEMPLATE-10113": "Geometry and cluster inventory of ONE named Oversikt: the plant-10113 store overview, 1400x750, 72 objects in 21 controller clusters over an embedded store-plan PNG. Reproduce it when repairing or copying THAT panel. Never treat its counts as a target for another store - a store has as many clusters as it has cooling positions."
+    "TEMPLATE-10113": "Geometry and cluster inventory of ONE named Oversikt: the plant-10113 store overview, 1400x750, 72 objects in 21 controller clusters over an embedded store-plan PNG. Reproduce it when repairing or copying THAT panel. Never treat its counts as a target for another store - a store has as many clusters as it has cooling positions.",
+    "ROMKONTROLL": "Applies to the room-control TABLE panel type - one wide scrolling table with one row per room and one column per parameter, built from a single table_container whose items draw the grid while canvas single_objects carry the live values. Measured on the plant-8653 production export (E18/E19). Does NOT apply to the Romkontroll FLOOR PLAN of a hotel panel set (AI-BRIEFING.txt 7d), which is a spatial panel of rc_box room cards with no container at all, and does NOT apply to the spjeldliste list panel, which builds one container per row (LIST-PANEL-GENERATION-CONTRACT.md). The three share the words 'room control' or 'list' and nothing structural.",
+    "TEMPLATE-8653-ROMKONTROLL": "Geometry, column set and room set of ONE named room-control table: the plant-8653 hotel, 34 columns x 50 rooms over 8 floors, 1553 canvas objects and 1802 container items. Reproduce it when repairing or copying THAT panel. Never treat its counts as a target for another building - a building has as many rows as it has room controllers and as many columns as its controllers share."
   },
   "evidence": {
     "E1": {
@@ -205,6 +207,45 @@
       "role": "Seven synthetic negatives derived from E15, each breaking exactly one rule: dashboard regrouping, nine-cluster reconstruction, a cluster moved out of its room, a duplicated cluster, stripped links, a missing embedded background, and a forced four-object assumption that invents cooling and defrost bindings on partial clusters. tests/test_oversikt_10113_contract.py builds them in memory; the CLI writes them to survey-tmp/ for hand runs.",
       "why_the_documents_are_not_committed": "Each embeds the same 48 kB store-plan PNG, and base64 does not delta-compress - seven copies would add most of a megabyte to express seven one-line differences. The mutation is the artifact worth versioning. Same reasoning as tests/test_maskin_10229_contract.py, which mutates its fixture in memory rather than shipping a file per defect.",
       "warning": "forced-four-object deliberately contains driver ids naming parameters those controllers do not expose. Never copy an object out of it."
+    },
+    "E18": {
+      "file": "iwmac-panel_8653_tabell-romkontroll-alle-plan_20260810-2157.json (user Downloads, plant 8653, NOT committed)",
+      "committed": false,
+      "why_not_committed": "Carries a live plant id and 1552 real driver ids; repo policy masks reference JSONs before commit.",
+      "sanitized": false,
+      "panel": "Tabell romkontroll alle plan",
+      "generator": "IWDIE v1.7.0 - a real userscript export of a live panel",
+      "size_bytes": 1894376,
+      "role": "The known-good export supplied with the 2026-08-10 room-control task. Highest-precedence source for everything geometric about this panel type, and the only production evidence that the table_container family exists. Must not be modified."
+    },
+    "E19": {
+      "file": "reference_data/romkontroll-8653-sanitized.json",
+      "committed": true,
+      "sanitized": true,
+      "masked_not_unlinked": true,
+      "panel": "Tabell romkontroll alle plan",
+      "derived_from": "E18",
+      "role": "E18 with the plant number masked to NNNN inside every driver id and the plant/author fields blanked, and nothing else touched: same 1553 objects, same container, same 1802 items, same geometry, sizes, zIndex, tag_text, alias_text, unit_id, array order and byte-identical image_data. The committed TEMPLATE-8653-ROMKONTROLL reference. Produced by build-romkontroll-fixture.py.",
+      "dropped": [
+        "panel.image_svg_trace"
+      ]
+    },
+    "E20": {
+      "file": "iw_gen_driver_parameters (3).sql (user Downloads, NOT committed)",
+      "committed": false,
+      "why_not_committed": "A 10 315-row phpMyAdmin dump of a live plant's parameter table.",
+      "kind": "parameter source",
+      "encoding": "UTF-8",
+      "rows": 10315,
+      "distinct_driver_ids": 10315,
+      "distinct_unit_ids": 91,
+      "role": "The authoritative source for every driver_id, unit_id, alias_text and engineering unit on plant 8653. Cross-checked against E18: 0 driver ids missing, 0 unit_id mismatches, 1551 of 1551 alias_text values byte-identical."
+    },
+    "E21": {
+      "file": "Tabell_romkontroll_alle_plan.json and Romkontroll_alle_plan_IWMAC_Designer.json (user Downloads, NOT committed)",
+      "committed": false,
+      "kind": "negative example",
+      "role": "The two failed attempts at this panel, and the reason this documentation exists. 13.1 is a custom dataset that is not a panel document; 13.2 is a correct envelope around a placeholder overview with 59 of 1553 objects and no container. Both parsed cleanly. Reproduced synthetically by build-romkontroll-negatives.py so the validator is tested against them without committing either file."
     }
   },
   "source_precedence": [
@@ -3201,6 +3242,689 @@
           "treatment": "preserved verbatim in E15; do not normalise it away"
         }
       ]
+    },
+    "romkontroll_table": {
+      "identity": {
+        "name": "Romkontroll table (Tabell romkontroll alle plan)",
+        "aliases": [
+          "tabell romkontroll alle plan",
+          "romkontroll alle plan",
+          "room control table",
+          "room-control table",
+          "all floors table",
+          "tabell romkontroll",
+          "romkontrolltabell"
+        ],
+        "one_line": "One panel per building: every room controller as a row, every shared parameter as a column, live values read straight off the grid.",
+        "classification_test": [
+          "Exactly one container, container_type table_container.",
+          "The container's items draw the grid and carry no bindings.",
+          "The canvas single_objects carry the bindings, one per populated cell.",
+          "One row per room; the room number is a container item, not an object.",
+          "Content is far wider and taller than the declared canvas."
+        ],
+        "not_this_panel_type": {
+          "romkontroll_floor_plan": "Room cards (rc_box) placed on a floor drawing, one panel per floor, no container. AI-BRIEFING.txt 7d.",
+          "spjeldliste": "One container_c per table row, 208 of them. LIST-PANEL-GENERATION-CONTRACT.md. Its 'one container per row' rule is false for this panel type - conflict RC-C1.",
+          "data_file": "A JSON description of the rooms and their parameters is not a panel document. That is rejected generation 13.1."
+        }
+      },
+      "owner_document": "ROMKONTROLL-GENERATION-CONTRACT.md",
+      "companion_documents": {
+        "routing": "AI-REQUEST-ROUTING.md",
+        "procedure": "ROMKONTROLL-AUTHORING-GUIDE.md",
+        "acceptance": "ROMKONTROLL-QA-CHECKLIST.md",
+        "copilot": "ROMKONTROLL-COPILOT-PREFLIGHT.md",
+        "fixture": "reference_data/romkontroll-8653-sanitized.json",
+        "validator": "validate-romkontroll-panel.py"
+      },
+      "canvas": {
+        "width": 1400,
+        "height": 750,
+        "scope": "ROMKONTROLL",
+        "evidence": [
+          "E18",
+          "E19"
+        ],
+        "note": "the declared viewport. The content is far larger - see viewport_versus_content."
+      },
+      "viewport_versus_content": {
+        "rule": "panel_height is a VIEWPORT, not a clipping boundary. The plant view scrolls. A room-control table cannot fit the declared canvas and is not supposed to.",
+        "evidence": [
+          "E18",
+          "E19"
+        ],
+        "host_behaviour": "Nothing in the designer or the plant view clamps to panel_width / panel_height - CLAUDE.md gotcha 25, established on the spjeldliste (content to y 4646 on a nominal 1400x750 panel).",
+        "prohibited": [
+          "compressing the table to fit the declared canvas",
+          "dropping rooms or columns to fit",
+          "rescaling geometry to fit",
+          "raising panel_width / panel_height to match the content - the reference declares 1400x750 and the host is content with that"
+        ],
+        "measured": {
+          "declared": {
+            "panel_width": "1400px",
+            "panel_height": "750px"
+          },
+          "measured": {
+            "min_left": 240,
+            "max_right": 3120,
+            "min_top": 113,
+            "max_bottom": 1690
+          },
+          "overflow": {
+            "horizontal": 1720,
+            "vertical": 940
+          }
+        }
+      },
+      "composition": {
+        "two_layers": {
+          "grid": "container items - one header cell per column per band, one body cell per column per row. They draw the table and carry no bindings.",
+          "values": "canvas single_objects - one per populated cell, centred in it, carrying the binding.",
+          "why_it_matters": "A file with only the value layer has no table. A file with only the grid layer has no values. Rejected generation 13.2 had neither - it had labels."
+        },
+        "counts": {
+          "single_objects": 1553,
+          "containers": 1,
+          "graphics": 0,
+          "container_items": 1802
+        },
+        "graphics": "always empty on this panel type",
+        "background": {
+          "background_embedded": true,
+          "converted": "true",
+          "image_data_chars": 5610,
+          "image_svg": false,
+          "rule": "the blank canvas. The grid is drawn by the container, never painted. Never author image_svg for this panel type, and never emit image_svg_trace - the importer deletes it."
+        }
+      },
+      "z_indexes": {
+        "mode": "explicit bands - never the literal string \"default\"",
+        "bands": {
+          "110": {
+            "count": 1551,
+            "objects": "every grid object - values, alarms and the reset control"
+          },
+          "1100": {
+            "count": 2,
+            "objects": "the two free-text annotations under the table"
+          }
+        },
+        "scope": "ROMKONTROLL",
+        "evidence": [
+          "E18",
+          "E19"
+        ],
+        "conflict": "These are not the Maskin bands and not the Ventilasjon bands. Container items sit at 5, every grid object at 110, the two annotations at 1100. The bands are per panel type."
+      },
+      "object_fields": {
+        "count": 17,
+        "constants_on_this_panel_type": {
+          "id": "driver_id",
+          "posHeight": 20,
+          "linked": "true",
+          "link_name": "link_name",
+          "link_tag": "",
+          "sub_group": "",
+          "unit_ref": ""
+        },
+        "note": "linked 'true' with an empty driver_id is host behaviour (V3scripts.js:514), not a claim about the binding."
+      },
+      "object_vocabulary": {
+        "number_v3_value_only": {
+          "count": 1300,
+          "sizes": [
+            {
+              "width": 80,
+              "height": 20,
+              "count": 1300
+            }
+          ],
+          "role": "every numeric value and every writable setpoint - temperatures, percentages, alarm LIMITS, curve points, and the read-only booleans that are fan-stage and reset states"
+        },
+        "V3_R_20px_anim_rg_alarm_nrm": {
+          "count": 250,
+          "sizes": [
+            {
+              "width": 20,
+              "height": 20,
+              "count": 250
+            }
+          ],
+          "role": "alarm STATE only. On E18 it is used for exactly the 250 Digital IO boolean r signals whose menu code is an _AL / _ALH / _ALL alarm - never for an alarm limit, which is a setpoint in degrees and gets a value box"
+        },
+        "number_v3_label_11px_norm": {
+          "count": 2,
+          "sizes": [
+            {
+              "width": 50,
+              "height": 20,
+              "count": 2
+            }
+          ],
+          "role": "free-text annotation under the table"
+        },
+        "number_v3_60px_json_obj": {
+          "count": 1,
+          "sizes": [
+            {
+              "width": 60,
+              "height": 20,
+              "count": 1
+            }
+          ],
+          "role": "the one writable manual-reset control"
+        }
+      },
+      "object_selection": {
+        "allowlist": "present in DESIGN-OBJECT-CATALOG.md OR in reference_data/controls-registry.json - conflict RC-C2",
+        "alarm_rule": "an alarm object binds to an alarm STATE. An alarm LIMIT is a setpoint in engineering units and gets a value box. A read-only boolean is not automatically an alarm.",
+        "prohibited": [
+          "one text-label obj_id for every cell",
+          "an obj_id the catalogue marks inactive, outdated or unsupported",
+          "an obj_id that appears in neither registry"
+        ]
+      },
+      "container": {
+        "count": 1,
+        "keys": [
+          "cells",
+          "className",
+          "container_type",
+          "descr_width",
+          "header_footer",
+          "height",
+          "id",
+          "last_y",
+          "left",
+          "linked",
+          "linked_to",
+          "name",
+          "num_of_col",
+          "num_of_rows",
+          "title",
+          "top",
+          "type",
+          "unique_id",
+          "val_width",
+          "width",
+          "zIndex"
+        ],
+        "key_count": 22,
+        "attributes": {
+          "id": "objects_container",
+          "unique_id": "custom_0",
+          "name": "objects_container_0",
+          "type": "container_c",
+          "container_type": "table_container",
+          "className": "objects_container",
+          "header_footer": [],
+          "linked": "0",
+          "linked_to": "0",
+          "width": 405,
+          "height": 72,
+          "left": 5,
+          "top": 5,
+          "zIndex": 4,
+          "title": "Table Container",
+          "num_of_rows": "50",
+          "num_of_col": "34",
+          "descr_width": "300",
+          "val_width": "100",
+          "cells": "true",
+          "last_y": "1625"
+        },
+        "item_count": 1802,
+        "item_census": {
+          "number_v3_cell_grey25": {
+            "count": 1700,
+            "sizes": [
+              {
+                "width": 90,
+                "height": 27,
+                "count": 1550
+              },
+              {
+                "width": 100,
+                "height": 27,
+                "count": 100
+              },
+              {
+                "width": 130,
+                "height": 27,
+                "count": 50
+              }
+            ]
+          },
+          "number_v3_header_grey75": {
+            "count": 102,
+            "sizes": [
+              {
+                "width": 90,
+                "height": 85,
+                "count": 93
+              },
+              {
+                "width": 100,
+                "height": 85,
+                "count": 6
+              },
+              {
+                "width": 130,
+                "height": 85,
+                "count": 3
+              }
+            ]
+          }
+        },
+        "item_constants": {
+          "id": "driver_id",
+          "zIndex": "5",
+          "linked": "true",
+          "link_name": "link_name",
+          "link_tag": "NA",
+          "sub_group": "",
+          "driver_id": "",
+          "unit_id": "",
+          "unit_ref": "",
+          "alias_text": "new text"
+        },
+        "notes": {
+          "unique_id": "must contain 'custom_'. load_new_ver_containers routes on unique_id.indexOf('custom_') and the other branch, .template(), is an empty stub - a container without it SILENTLY VANISHES on Insert (V3scripts.js:528, :684).",
+          "width_height": "do not describe the table. The grid is drawn by the items; these are the container's own box.",
+          "header_item_naming": "header items have name == tag_text; every body cell is named 'driver_id'. Nothing resolves a container item by name.",
+          "bindings": "container items carry NO bindings. driver_id '', unit_id '', link_tag 'NA', alias_text 'new text' on all of them."
+        }
+      },
+      "table": {
+        "origin": {
+          "left": 5,
+          "top": 5
+        },
+        "columns": {
+          "count": 34,
+          "widths": [
+            {
+              "width": 90,
+              "count": 31
+            },
+            {
+              "width": 100,
+              "count": 2
+            },
+            {
+              "width": 130,
+              "count": 1
+            }
+          ],
+          "carrying_objects": 31,
+          "label_columns": [
+            0,
+            1,
+            16
+          ],
+          "gutter": 0
+        },
+        "rows": {
+          "count": 50,
+          "height": 27,
+          "first_rel_top": 105,
+          "last_rel_top": 1598,
+          "pitch": [
+            {
+              "delta": 27,
+              "count": 47
+            },
+            {
+              "delta": 112,
+              "count": 2
+            }
+          ],
+          "pitch_note": "the larger delta is a row that follows a header band: row height + header height"
+        },
+        "header_bands": {
+          "count": 3,
+          "height": 85,
+          "rel_tops": [
+            20,
+            699,
+            1378
+          ],
+          "pitch": 679,
+          "body_rows_per_band": [
+            22,
+            22,
+            6
+          ],
+          "repeat_rule": "one band every N body rows, where N is what fits a screen. The last band carries the remainder."
+        },
+        "last_y": {
+          "value": "1625",
+          "rule": "last body row rel top + row height"
+        },
+        "placement_formula": {
+          "posLeft": "container.left + cell.posLeft + (cell.posWidth - posWidth) / 2",
+          "posTop": "container.top + cell.posTop + floor((row_height - posHeight) / 2)",
+          "note": "objects are centred in their cell. The formula reproduces every grid object in the fixture; the annotation cluster below the table is hand-placed and is listed as an anomaly."
+        },
+        "cell_offsets": {
+          "per_obj_id": {
+            "number_v3_value_only": [
+              {
+                "dx": 5,
+                "dy": 3,
+                "count": 1300
+              }
+            ],
+            "V3_R_20px_anim_rg_alarm_nrm": [
+              {
+                "dx": 35,
+                "dy": 3,
+                "count": 250
+              }
+            ],
+            "number_v3_60px_json_obj": [
+              {
+                "dx": 17,
+                "dy": 45,
+                "count": 1
+              }
+            ],
+            "number_v3_label_11px_norm": [
+              {
+                "dx": 63,
+                "dy": 31,
+                "count": 1
+              },
+              {
+                "dx": 77,
+                "dy": 67,
+                "count": 1
+              }
+            ]
+          },
+          "outside_any_column_or_row": 0
+        },
+        "missing_signal": "leaves the cell EMPTY - no object at all. Never a placeholder object, never a zero, never a dash."
+      },
+      "rooms": {
+        "count": 50,
+        "source": "the container item in the first column of each body row - the room number is a CELL, not a canvas object",
+        "ordering": "ascending as integers, not as strings",
+        "floor_rule": "the leading digit of the room number - derived, never asked",
+        "ascending": true,
+        "duplicates": [],
+        "per_floor": {
+          "2": 3,
+          "3": 3,
+          "4": 4,
+          "5": 8,
+          "6": 8,
+          "7": 8,
+          "8": 8,
+          "9": 8
+        },
+        "grouping": "no floor header rows, no divider rows, no spacer rows. The floor is legible from the room number alone.",
+        "repeat_label_column": "the room-number column is repeated partway across so a scrolled row stays identifiable"
+      },
+      "identifiers": {
+        "rule": "driver_id, unit_id and alias_text are COPIED VERBATIM from the plant's iw_gen_driver_parameters dump. The driver_id is stored ready-made in the parameter row; it is never constructed.",
+        "prohibited": [
+          "constructing a driver_id from its parts",
+          "concatenating a driver_id from a plant prefix and a menu code",
+          "adapting a driver_id from another room or another plant",
+          "normalizing alias_text whitespace - the aliases carry double spaces and empty bracket pairs, and they are matched byte for byte",
+          "inventing an obj_id, unit_id, plant_id or navigation target",
+          "marking an object linked without a verified binding",
+          "replacing a real identifier with a placeholder in mode C"
+        ],
+        "cross_check": "python build-romkontroll-fixture.py <export.json> --sql <iw_gen_driver_parameters.sql> reports, per class: driver ids missing from the dump, unit_id mismatches, and alias_text differences. On E18 x E20 all three are zero across 1551 bound objects.",
+        "encoding": "The dump is UTF-8. Reading it as latin-1 produces mojibake in every Norwegian alias and every degree sign, and the mojibake then travels into the panel as a real binding value."
+      },
+      "output_modes": {
+        "A_data_only": {
+          "produce_when": "The user explicitly asked for extracted data, an API payload or a data table.",
+          "shape": "any custom structure - it is not a panel document"
+        },
+        "B_unlinked_template": {
+          "produce_when": "The user explicitly asked for a reusable template or unlinked skeleton, OR no binding data exists for the plant.",
+          "shape": "The COMPLETE panel - same columns, same rows, same object types, same geometry - with driver_id the literal 'driver_id', linked 'false', unit_id ''. A skeleton that also drops the container and the value objects is not mode B; it is rejected generation 13.2.",
+          "placeholders_legal": true
+        },
+        "C_linked_panel": {
+          "produce_when": "Binding data exists. THIS IS THE DEFAULT whenever a plant parameter export is attached.",
+          "shape": "Every driver_id, unit_id and alias_text copied verbatim from the iw_gen_driver_parameters dump. No placeholder anywhere. A signal the dump does not carry leaves an EMPTY cell, never a placeholder.",
+          "placeholders_legal": false
+        },
+        "partial_binding": "If the dump covers only part of the panel, emit mode C for what is bound, leave the rest empty, and name exactly what could not be bound. Do not downgrade the whole file to mode B."
+      },
+      "input_routing": {
+        "a_json_request_in_an_iwmac_context": "Is a request for an iwmac-designer-panel document, not for a generic JSON export. AI-REQUEST-ROUTING.md 1.",
+        "context_inheritance": "'trenger .json fil', 'send den som fil', 'now as JSON' after a panel discussion inherit the panel task. Serializing the analysis instead is rejected generation 13.1.",
+        "known_good_export_attached": "Inspect it before generating or modifying. It outranks every document in this repository (source precedence rank 1).",
+        "sql_dump_attached": "Mode C. A parameter dump is binding data; falling back to placeholders with the dump in hand is rejected generation 13.2.",
+        "owner_document": "AI-REQUEST-ROUTING.md"
+      },
+      "preserve_and_patch": {
+        "rule": "A supplied export is the geometric and compositional template. Preserve and patch; never rebuild.",
+        "do_not_touch": {
+          "linked_true_with_empty_driver_id": "Host behaviour: load_new_ver_objects sets linked='true' whenever driver_id !== 'driver_id', including when it is empty (V3scripts.js:514). Not a defect, not to be tidied.",
+          "container_item_link_tag_NA": "Every one of the 1802 items carries link_tag 'NA' and alias_text 'new text'. Host artefacts of the table builder, round-tripped by the collector.",
+          "container_width_height": "width 405 / height 72 do not describe the table. They are the container's own box, left over from creation. Correcting them invents a number.",
+          "image_data": "The background is the blank canvas. The grid is drawn by the container, not painted."
+        },
+        "structural_edits": {
+          "add_column": "append at the functionally correct position, shift the columns to its right, add one header cell per band and one body cell per row, bump num_of_col, add one canvas object per room that has the signal",
+          "add_room": "insert in integer order, add one body cell per column, add the canvas objects, shift every row below down by the row height, recompute the header bands, bump num_of_rows and last_y",
+          "relink": "change driver_id, unit_id and alias_text together, from the same dump row. Changing one alone binds to the wrong parameter."
+        }
+      },
+      "sanitization": {
+        "convention": "masked production, not unlinked demo",
+        "rewrite": [
+          "the plant number inside every driver_id, to NNNN",
+          "envelope source_plant_id and panel.plant_id",
+          "panel.saved_by"
+        ],
+        "preserve": [
+          "unit_id",
+          "alias_text",
+          "linked",
+          "geometry",
+          "zIndex",
+          "tag_text",
+          "array order",
+          "the container and all of its items",
+          "image_data"
+        ],
+        "drop": [
+          "panel.image_svg_trace"
+        ],
+        "why": "The column set, the room set and the signal roles are what a comparison is built from. Blanking unit_id and alias_text the unlinked-demo way would destroy the evidence the profile exists to carry.",
+        "residue_check": "build-romkontroll-fixture.py refuses to write a fixture that still contains the source plant number anywhere outside image_data."
+      },
+      "verification": {
+        "validator": "validate-romkontroll-panel.py",
+        "modes": {
+          "--check": "schema, objects, table, bindings - R-S*, R-T*, R-B*",
+          "--source-sql": "every identifier against the plant's dump - R-B6..R-B9",
+          "--compare SOURCE CANDIDATE": "structural and geometric diff - R-C*",
+          "--profile TEMPLATE-8653-ROMKONTROLL": "this building's own numbers - R-P*"
+        },
+        "rule_namespaces": {
+          "R-S": "schema and object well-formedness",
+          "R-T": "the table: container, grid, placement",
+          "R-B": "bindings",
+          "R-P": "profile - one named building only",
+          "R-C": "comparison against a known-good export"
+        },
+        "cannot_detect": [
+          "a well-formed driver_id naming a parameter the controller does not expose - only --source-sql sees that, and only for the supplied dump",
+          "a column ordered in a way that is legal but unreadable",
+          "whether the room set is the set the operator wanted",
+          "whether the panel renders as intended - nothing here renders"
+        ],
+        "do_not_weaken": "A rule that a generated file fails is changed in the contract with evidence and recorded in documentation-change-log.md, never relaxed silently to make one generation pass."
+      },
+      "conflicts": [
+        {
+          "id": "RC-C1",
+          "between": [
+            "LIST-PANEL-GENERATION-CONTRACT.md 1.1 - 'one objects_container per table row'",
+            "E18 - ONE table_container for the entire 34x50 grid"
+          ],
+          "resolution": "Both are correct within their scope. The spjeldliste family builds one container_c per row (208 on the reference). The room-control table family builds one table_container for the whole grid. Neither document is rewritten; both are scoped.",
+          "scope_of_each": {
+            "LIST": "spjeldliste and damper-list panels",
+            "ROMKONTROLL": "room-control tables"
+          },
+          "normative": true
+        },
+        {
+          "id": "RC-C2",
+          "between": [
+            "DESIGN-OBJECT-CATALOG.md - number_v3_cell_grey25 is absent",
+            "E18 - number_v3_cell_grey25 is used 1700 times in production"
+          ],
+          "resolution": "The obj_id allowlist becomes 'present in DESIGN-OBJECT-CATALOG.md OR in reference_data/controls-registry.json'. The cell type exists in the controls registry as a host-generated table-cell control (obj_type 'dummy', canLink false, classname css_v3_cell_grey25) - it is not a palette object because no one drags it onto a canvas; table_container.build emits it. Validation is widened by evidence, not weakened to make a file pass.",
+          "evidence": [
+            "E18",
+            "E19",
+            "reference_data/controls-registry.json"
+          ],
+          "normative": true
+        },
+        {
+          "id": "RC-C3",
+          "between": [
+            "AI-AGENT-INSTRUCTIONS.txt - the unlinked placeholder template, taught as the shape of every generated panel",
+            "This panel type's default output mode C"
+          ],
+          "resolution": "The unlinked template is mode B, not the universal shape. AI-AGENT-INSTRUCTIONS.txt is labelled accordingly and given a room-control route. This was the direct cause of rejected generation 13.2.",
+          "normative": true
+        },
+        {
+          "id": "RC-C4",
+          "between": [
+            "The 2026-08-10 request's proposed eight-level source hierarchy",
+            "The repository's single source_precedence list"
+          ],
+          "resolution": "The repository list stands - a second precedence list would be a second owner for the same rule. The request's intent is met by a companion table mapping kind-of-fact to authoritative source (ROMKONTROLL-GENERATION-CONTRACT.md, 'Which source owns which kind of fact'). The difference is recorded rather than resolved by renumbering.",
+          "normative": false
+        },
+        {
+          "id": "RC-C5",
+          "between": [
+            "AI-BRIEFING.txt 9 - the EVERY PANEL self-check requires object positions inside the canvas",
+            "E18 - content to x 3120 and y 1690 on a declared 1400x750 canvas"
+          ],
+          "resolution": "The self-check's exception, already granted to list panels, is widened to room-control tables. Content beyond the viewport is reported, never corrected.",
+          "evidence": [
+            "E18",
+            "E19"
+          ],
+          "normative": true
+        }
+      ],
+      "rejected_generations": [
+        {
+          "id": "13.1",
+          "file": "Tabell_romkontroll_alle_plan.json",
+          "size_bytes": 1580000,
+          "shape": "A custom dataset: schema_version, kilde, utvalg, plan_tolkning, antall_romkontrollere, planoversikt, romkontrollere.",
+          "defects": [
+            "not a panel document - no format, no version, no panel",
+            "no single_objects, no containers, no geometry, no obj_id"
+          ],
+          "root_cause": "routing - a .json request was read as a data request",
+          "caught_by": [
+            "routing, before generation",
+            "R-S2",
+            "R-S3",
+            "R-S4"
+          ],
+          "note": "The room analysis inside it was correct. The analysis was right and the routing was wrong."
+        },
+        {
+          "id": "13.2",
+          "file": "Romkontroll_alle_plan_IWMAC_Designer.json",
+          "size_bytes": 30000,
+          "shape": "A correct envelope wrapped around a placeholder overview: 59 objects (50 number_v3_label_11px_norm + 9 number_v3_header_grey75), 0 containers, 0 graphics.",
+          "defects": [
+            "no table_container - the panel type's defining structure absent",
+            "59 objects against 1553 - 96 percent of the content missing",
+            "labels and headings only - no value objects, no alarm objects",
+            "every object linked 'false', driver_id 'driver_id', unit_id '' - with the parameter dump attached and every binding available",
+            "zIndex 'default' on all 59",
+            "link_name '' where the host writes 'link_name'",
+            "an unlinked template nobody asked for"
+          ],
+          "root_cause": "the unlinked placeholder template taught as universal - conflict RC-C3",
+          "caught_by": [
+            "R-T1",
+            "R-S10",
+            "R-S11",
+            "R-C3",
+            "R-C8",
+            "R-P1"
+          ],
+          "note": "It parsed, and it passed every envelope and count check. Parsing is not usability."
+        }
+      ],
+      "anomalies": {
+        "annotation_cluster_below_the_grid": {
+          "objects": [
+            {
+              "name": "object_1550",
+              "obj_id": "number_v3_60px_json_obj",
+              "left": 1422,
+              "top": 1648,
+              "tag_text": " ",
+              "alias_text": "Skriv 1 for resett",
+              "zIndex": "110"
+            },
+            {
+              "name": "object_1551",
+              "obj_id": "number_v3_label_11px_norm",
+              "left": 1378,
+              "top": 1634,
+              "tag_text": "Settes til 1 for manuell resett",
+              "alias_text": "new text",
+              "zIndex": "1100"
+            },
+            {
+              "name": "object_1552",
+              "obj_id": "number_v3_label_11px_norm",
+              "left": 1392,
+              "top": 1670,
+              "tag_text": "OBS! Må settes til 0 igjen.",
+              "alias_text": "new text",
+              "zIndex": "1100"
+            }
+          ],
+          "note": "a manual-reset control and its two instruction labels, placed under the last body row rather than in a cell. Hand-placed: they do not satisfy the centring formula. Keep them when editing this panel; do not treat them as a required feature of the panel type."
+        },
+        "uneven_column_object_counts": {
+          "counts": {
+            "50": 29,
+            "51": 1,
+            "52": 1
+          },
+          "note": "most signal columns carry one object per room. Columns that carry more include the annotation cluster; a column that carries fewer has rooms whose controller does not expose the signal. Both are legitimate - the panel does not pad."
+        },
+        "repeated_header_title": {
+          "titles": [
+            "Room"
+          ],
+          "note": "the room-number column is deliberately repeated partway across, so two headers share a caption."
+        },
+        "container_box_does_not_describe_the_table": {
+          "width": 405,
+          "height": 72,
+          "note": "see preserve_and_patch.do_not_touch"
+        }
+      }
     }
   },
   "profiles": {
@@ -7047,6 +7771,905 @@
           "treatment": "preserved verbatim in E15; do not normalise it away"
         }
       ]
+    },
+    "TEMPLATE-8653-ROMKONTROLL": {
+      "title": "Plant-8653 hotel room-control table (Tabell romkontroll alle plan)",
+      "scope": "TEMPLATE-8653-ROMKONTROLL",
+      "evidence": [
+        "E18",
+        "E19",
+        "E20"
+      ],
+      "derived_from": "reference_data/romkontroll-8653-sanitized.json, generated by build-romkontroll-rules.py",
+      "panel_type": "romkontroll_table",
+      "canvas": [
+        1400,
+        750
+      ],
+      "content_extent": {
+        "min_left": 240,
+        "max_right": 3120,
+        "min_top": 113,
+        "max_bottom": 1690
+      },
+      "object_count": 1553,
+      "container_item_count": 1802,
+      "column_count": 34,
+      "room_count": 50,
+      "distinct_obj_ids": 4,
+      "background": {
+        "converted": "true",
+        "image_data_chars": 5610,
+        "image_svg": false,
+        "note": "the blank canvas travels with the fixture. The grid is drawn by the container."
+      },
+      "applies_when": "The task supplies this panel, names TEMPLATE-8653-ROMKONTROLL, or asks for a repair or copy of the 8653 room-control table. It does NOT apply to another building: another building has different rooms, different controllers and a different set of shared parameters. A profile failure on another plant means the profile does not apply, not that the panel is wrong.",
+      "container_attributes": {
+        "id": "objects_container",
+        "unique_id": "custom_0",
+        "name": "objects_container_0",
+        "type": "container_c",
+        "container_type": "table_container",
+        "className": "objects_container",
+        "header_footer": [],
+        "linked": "0",
+        "linked_to": "0",
+        "width": 405,
+        "height": 72,
+        "left": 5,
+        "top": 5,
+        "zIndex": 4,
+        "title": "Table Container",
+        "num_of_rows": "50",
+        "num_of_col": "34",
+        "descr_width": "300",
+        "val_width": "100",
+        "cells": "true",
+        "last_y": "1625"
+      },
+      "columns": [
+        {
+          "index": 0,
+          "rel_left": 0,
+          "abs_left": 5,
+          "width": 100,
+          "title": "Room",
+          "objects": 0,
+          "kind": "label"
+        },
+        {
+          "index": 1,
+          "rel_left": 100,
+          "abs_left": 105,
+          "width": 130,
+          "title": "Beskrivelse",
+          "objects": 0,
+          "kind": "label"
+        },
+        {
+          "index": 2,
+          "rel_left": 230,
+          "abs_left": 235,
+          "width": 90,
+          "title": "Romtemperatur °C (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 3,
+          "rel_left": 320,
+          "abs_left": 325,
+          "width": 90,
+          "title": "Lokal børverdijustering °C (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 4,
+          "rel_left": 410,
+          "abs_left": 415,
+          "width": 90,
+          "title": "Kalkulert SP °C (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 5,
+          "rel_left": 500,
+          "abs_left": 505,
+          "width": 90,
+          "title": "Utgang ventilmotor varme % (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 6,
+          "rel_left": 590,
+          "abs_left": 595,
+          "width": 90,
+          "title": "Utgang ventilmotor kjøling % (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 7,
+          "rel_left": 680,
+          "abs_left": 685,
+          "width": 90,
+          "title": "Start trinn 1 fancoil vifte (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 8,
+          "rel_left": 770,
+          "abs_left": 775,
+          "width": 90,
+          "title": "Start trinn 2 fancoil vifte (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 9,
+          "rel_left": 860,
+          "abs_left": 865,
+          "width": 90,
+          "title": "Start trinn 3 fancoil vifte (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 10,
+          "rel_left": 950,
+          "abs_left": 955,
+          "width": 90,
+          "title": "Alarm høy temp rom (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 11,
+          "rel_left": 1040,
+          "abs_left": 1045,
+          "width": 90,
+          "title": "Alarm lav temp rom (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 12,
+          "rel_left": 1130,
+          "abs_left": 1135,
+          "width": 90,
+          "title": "Feil på føler (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 13,
+          "rel_left": 1220,
+          "abs_left": 1225,
+          "width": 90,
+          "title": "Grenseverdi alarm høy temp rom °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 14,
+          "rel_left": 1310,
+          "abs_left": 1315,
+          "width": 90,
+          "title": "Grenseverdi alarm lav temp °C (rw)",
+          "objects": 52,
+          "kind": "signal"
+        },
+        {
+          "index": 15,
+          "rel_left": 1400,
+          "abs_left": 1405,
+          "width": 90,
+          "title": "Resetter lokal justering av SP kl. 10 (hverdager), 12 (helg) (rw)",
+          "objects": 51,
+          "kind": "signal"
+        },
+        {
+          "index": 16,
+          "rel_left": 1490,
+          "abs_left": 1495,
+          "width": 100,
+          "title": "Room",
+          "objects": 0,
+          "kind": "label"
+        },
+        {
+          "index": 17,
+          "rel_left": 1590,
+          "abs_left": 1595,
+          "width": 90,
+          "title": "Temp.føler gulv bad °C (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 18,
+          "rel_left": 1680,
+          "abs_left": 1685,
+          "width": 90,
+          "title": "SP Temp. bad °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 19,
+          "rel_left": 1770,
+          "abs_left": 1775,
+          "width": 90,
+          "title": "Styring varmekabel bad % (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 20,
+          "rel_left": 1860,
+          "abs_left": 1865,
+          "width": 90,
+          "title": "Alarm høy temp bad (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 21,
+          "rel_left": 1950,
+          "abs_left": 1955,
+          "width": 90,
+          "title": "Alarm lav temp bad (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 22,
+          "rel_left": 2040,
+          "abs_left": 2045,
+          "width": 90,
+          "title": "Grenseverdi alarm høy temp bad °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 23,
+          "rel_left": 2130,
+          "abs_left": 2135,
+          "width": 90,
+          "title": "Grenseverdi alarm lav temp bad °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 24,
+          "rel_left": 2220,
+          "abs_left": 2225,
+          "width": 90,
+          "title": "Kurve rt601 lavest romsettpunkt °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 25,
+          "rel_left": 2310,
+          "abs_left": 2315,
+          "width": 90,
+          "title": "Kurve rt601 senket romsettpunkt °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 26,
+          "rel_left": 2400,
+          "abs_left": 2405,
+          "width": 90,
+          "title": "Kurve rt601 forhøyet romsettpunkt °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 27,
+          "rel_left": 2490,
+          "abs_left": 2495,
+          "width": 90,
+          "title": "Kurve rt601 høyt romsettpunkt °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 28,
+          "rel_left": 2580,
+          "abs_left": 2585,
+          "width": 90,
+          "title": "Kurve rt601 lav utetemp °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 29,
+          "rel_left": 2670,
+          "abs_left": 2675,
+          "width": 90,
+          "title": "Kurve rt601 medium lav utetemp °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 30,
+          "rel_left": 2760,
+          "abs_left": 2765,
+          "width": 90,
+          "title": "Kurve RT601 Høy utetemp °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 31,
+          "rel_left": 2850,
+          "abs_left": 2855,
+          "width": 90,
+          "title": "Kurve RT601 Høyest utetemp °C (rw)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 32,
+          "rel_left": 2940,
+          "abs_left": 2945,
+          "width": 90,
+          "title": "Kalkulert SP rt601 °C (r)",
+          "objects": 50,
+          "kind": "signal"
+        },
+        {
+          "index": 33,
+          "rel_left": 3030,
+          "abs_left": 3035,
+          "width": 90,
+          "title": "Temp.føler ute fra sd °C (r)",
+          "objects": 50,
+          "kind": "signal"
+        }
+      ],
+      "rows": [
+        {
+          "index": 0,
+          "rel_top": 105,
+          "abs_top": 110,
+          "room": "212"
+        },
+        {
+          "index": 1,
+          "rel_top": 132,
+          "abs_top": 137,
+          "room": "214"
+        },
+        {
+          "index": 2,
+          "rel_top": 159,
+          "abs_top": 164,
+          "room": "221"
+        },
+        {
+          "index": 3,
+          "rel_top": 186,
+          "abs_top": 191,
+          "room": "312"
+        },
+        {
+          "index": 4,
+          "rel_top": 213,
+          "abs_top": 218,
+          "room": "314"
+        },
+        {
+          "index": 5,
+          "rel_top": 240,
+          "abs_top": 245,
+          "room": "321"
+        },
+        {
+          "index": 6,
+          "rel_top": 267,
+          "abs_top": 272,
+          "room": "402"
+        },
+        {
+          "index": 7,
+          "rel_top": 294,
+          "abs_top": 299,
+          "room": "412"
+        },
+        {
+          "index": 8,
+          "rel_top": 321,
+          "abs_top": 326,
+          "room": "414"
+        },
+        {
+          "index": 9,
+          "rel_top": 348,
+          "abs_top": 353,
+          "room": "421"
+        },
+        {
+          "index": 10,
+          "rel_top": 375,
+          "abs_top": 380,
+          "room": "502"
+        },
+        {
+          "index": 11,
+          "rel_top": 402,
+          "abs_top": 407,
+          "room": "504"
+        },
+        {
+          "index": 12,
+          "rel_top": 429,
+          "abs_top": 434,
+          "room": "506"
+        },
+        {
+          "index": 13,
+          "rel_top": 456,
+          "abs_top": 461,
+          "room": "508"
+        },
+        {
+          "index": 14,
+          "rel_top": 483,
+          "abs_top": 488,
+          "room": "510"
+        },
+        {
+          "index": 15,
+          "rel_top": 510,
+          "abs_top": 515,
+          "room": "512"
+        },
+        {
+          "index": 16,
+          "rel_top": 537,
+          "abs_top": 542,
+          "room": "514"
+        },
+        {
+          "index": 17,
+          "rel_top": 564,
+          "abs_top": 569,
+          "room": "521"
+        },
+        {
+          "index": 18,
+          "rel_top": 591,
+          "abs_top": 596,
+          "room": "602"
+        },
+        {
+          "index": 19,
+          "rel_top": 618,
+          "abs_top": 623,
+          "room": "604"
+        },
+        {
+          "index": 20,
+          "rel_top": 645,
+          "abs_top": 650,
+          "room": "606"
+        },
+        {
+          "index": 21,
+          "rel_top": 672,
+          "abs_top": 677,
+          "room": "608"
+        },
+        {
+          "index": 22,
+          "rel_top": 784,
+          "abs_top": 789,
+          "room": "610"
+        },
+        {
+          "index": 23,
+          "rel_top": 811,
+          "abs_top": 816,
+          "room": "612"
+        },
+        {
+          "index": 24,
+          "rel_top": 838,
+          "abs_top": 843,
+          "room": "614"
+        },
+        {
+          "index": 25,
+          "rel_top": 865,
+          "abs_top": 870,
+          "room": "621"
+        },
+        {
+          "index": 26,
+          "rel_top": 892,
+          "abs_top": 897,
+          "room": "702"
+        },
+        {
+          "index": 27,
+          "rel_top": 919,
+          "abs_top": 924,
+          "room": "704"
+        },
+        {
+          "index": 28,
+          "rel_top": 946,
+          "abs_top": 951,
+          "room": "706"
+        },
+        {
+          "index": 29,
+          "rel_top": 973,
+          "abs_top": 978,
+          "room": "708"
+        },
+        {
+          "index": 30,
+          "rel_top": 1000,
+          "abs_top": 1005,
+          "room": "710"
+        },
+        {
+          "index": 31,
+          "rel_top": 1027,
+          "abs_top": 1032,
+          "room": "712"
+        },
+        {
+          "index": 32,
+          "rel_top": 1054,
+          "abs_top": 1059,
+          "room": "714"
+        },
+        {
+          "index": 33,
+          "rel_top": 1081,
+          "abs_top": 1086,
+          "room": "721"
+        },
+        {
+          "index": 34,
+          "rel_top": 1108,
+          "abs_top": 1113,
+          "room": "802"
+        },
+        {
+          "index": 35,
+          "rel_top": 1135,
+          "abs_top": 1140,
+          "room": "804"
+        },
+        {
+          "index": 36,
+          "rel_top": 1162,
+          "abs_top": 1167,
+          "room": "806"
+        },
+        {
+          "index": 37,
+          "rel_top": 1189,
+          "abs_top": 1194,
+          "room": "808"
+        },
+        {
+          "index": 38,
+          "rel_top": 1216,
+          "abs_top": 1221,
+          "room": "810"
+        },
+        {
+          "index": 39,
+          "rel_top": 1243,
+          "abs_top": 1248,
+          "room": "812"
+        },
+        {
+          "index": 40,
+          "rel_top": 1270,
+          "abs_top": 1275,
+          "room": "814"
+        },
+        {
+          "index": 41,
+          "rel_top": 1297,
+          "abs_top": 1302,
+          "room": "821"
+        },
+        {
+          "index": 42,
+          "rel_top": 1324,
+          "abs_top": 1329,
+          "room": "902"
+        },
+        {
+          "index": 43,
+          "rel_top": 1351,
+          "abs_top": 1356,
+          "room": "904"
+        },
+        {
+          "index": 44,
+          "rel_top": 1463,
+          "abs_top": 1468,
+          "room": "906"
+        },
+        {
+          "index": 45,
+          "rel_top": 1490,
+          "abs_top": 1495,
+          "room": "908"
+        },
+        {
+          "index": 46,
+          "rel_top": 1517,
+          "abs_top": 1522,
+          "room": "910"
+        },
+        {
+          "index": 47,
+          "rel_top": 1544,
+          "abs_top": 1549,
+          "room": "912"
+        },
+        {
+          "index": 48,
+          "rel_top": 1571,
+          "abs_top": 1576,
+          "room": "914"
+        },
+        {
+          "index": 49,
+          "rel_top": 1598,
+          "abs_top": 1603,
+          "room": "921"
+        }
+      ],
+      "rooms": [
+        "212",
+        "214",
+        "221",
+        "312",
+        "314",
+        "321",
+        "402",
+        "412",
+        "414",
+        "421",
+        "502",
+        "504",
+        "506",
+        "508",
+        "510",
+        "512",
+        "514",
+        "521",
+        "602",
+        "604",
+        "606",
+        "608",
+        "610",
+        "612",
+        "614",
+        "621",
+        "702",
+        "704",
+        "706",
+        "708",
+        "710",
+        "712",
+        "714",
+        "721",
+        "802",
+        "804",
+        "806",
+        "808",
+        "810",
+        "812",
+        "814",
+        "821",
+        "902",
+        "904",
+        "906",
+        "908",
+        "910",
+        "912",
+        "914",
+        "921"
+      ],
+      "header_bands": {
+        "count": 3,
+        "height": 85,
+        "rel_tops": [
+          20,
+          699,
+          1378
+        ],
+        "pitch": 679,
+        "body_rows_per_band": [
+          22,
+          22,
+          6
+        ],
+        "repeat_rule": "one band every N body rows, where N is what fits a screen. The last band carries the remainder."
+      },
+      "row_geometry": {
+        "count": 50,
+        "height": 27,
+        "first_rel_top": 105,
+        "last_rel_top": 1598,
+        "pitch": [
+          {
+            "delta": 27,
+            "count": 47
+          },
+          {
+            "delta": 112,
+            "count": 2
+          }
+        ],
+        "pitch_note": "the larger delta is a row that follows a header band: row height + header height"
+      },
+      "cell_offsets": {
+        "per_obj_id": {
+          "number_v3_value_only": [
+            {
+              "dx": 5,
+              "dy": 3,
+              "count": 1300
+            }
+          ],
+          "V3_R_20px_anim_rg_alarm_nrm": [
+            {
+              "dx": 35,
+              "dy": 3,
+              "count": 250
+            }
+          ],
+          "number_v3_60px_json_obj": [
+            {
+              "dx": 17,
+              "dy": 45,
+              "count": 1
+            }
+          ],
+          "number_v3_label_11px_norm": [
+            {
+              "dx": 63,
+              "dy": 31,
+              "count": 1
+            },
+            {
+              "dx": 77,
+              "dy": 67,
+              "count": 1
+            }
+          ]
+        },
+        "outside_any_column_or_row": 0
+      },
+      "obj_id_census": {
+        "number_v3_value_only": {
+          "count": 1300,
+          "sizes": [
+            {
+              "width": 80,
+              "height": 20,
+              "count": 1300
+            }
+          ],
+          "role": "every numeric value and every writable setpoint - temperatures, percentages, alarm LIMITS, curve points, and the read-only booleans that are fan-stage and reset states"
+        },
+        "V3_R_20px_anim_rg_alarm_nrm": {
+          "count": 250,
+          "sizes": [
+            {
+              "width": 20,
+              "height": 20,
+              "count": 250
+            }
+          ],
+          "role": "alarm STATE only. On E18 it is used for exactly the 250 Digital IO boolean r signals whose menu code is an _AL / _ALH / _ALL alarm - never for an alarm limit, which is a setpoint in degrees and gets a value box"
+        },
+        "number_v3_label_11px_norm": {
+          "count": 2,
+          "sizes": [
+            {
+              "width": 50,
+              "height": 20,
+              "count": 2
+            }
+          ],
+          "role": "free-text annotation under the table"
+        },
+        "number_v3_60px_json_obj": {
+          "count": 1,
+          "sizes": [
+            {
+              "width": 60,
+              "height": 20,
+              "count": 1
+            }
+          ],
+          "role": "the one writable manual-reset control"
+        }
+      },
+      "z_bands": {
+        "110": {
+          "count": 1551,
+          "objects": "every grid object - values, alarms and the reset control"
+        },
+        "1100": {
+          "count": 2,
+          "objects": "the two free-text annotations under the table"
+        }
+      },
+      "anomalies": {
+        "annotation_cluster_below_the_grid": {
+          "objects": [
+            {
+              "name": "object_1550",
+              "obj_id": "number_v3_60px_json_obj",
+              "left": 1422,
+              "top": 1648,
+              "tag_text": " ",
+              "alias_text": "Skriv 1 for resett",
+              "zIndex": "110"
+            },
+            {
+              "name": "object_1551",
+              "obj_id": "number_v3_label_11px_norm",
+              "left": 1378,
+              "top": 1634,
+              "tag_text": "Settes til 1 for manuell resett",
+              "alias_text": "new text",
+              "zIndex": "1100"
+            },
+            {
+              "name": "object_1552",
+              "obj_id": "number_v3_label_11px_norm",
+              "left": 1392,
+              "top": 1670,
+              "tag_text": "OBS! Må settes til 0 igjen.",
+              "alias_text": "new text",
+              "zIndex": "1100"
+            }
+          ],
+          "note": "a manual-reset control and its two instruction labels, placed under the last body row rather than in a cell. Hand-placed: they do not satisfy the centring formula. Keep them when editing this panel; do not treat them as a required feature of the panel type."
+        },
+        "uneven_column_object_counts": {
+          "counts": {
+            "50": 29,
+            "51": 1,
+            "52": 1
+          },
+          "note": "most signal columns carry one object per room. Columns that carry more include the annotation cluster; a column that carries fewer has rooms whose controller does not expose the signal. Both are legitimate - the panel does not pad."
+        },
+        "repeated_header_title": {
+          "titles": [
+            "Room"
+          ],
+          "note": "the room-number column is deliberately repeated partway across, so two headers share a caption."
+        },
+        "container_box_does_not_describe_the_table": {
+          "width": 405,
+          "height": 72,
+          "note": "see preserve_and_patch.do_not_touch"
+        }
+      },
+      "objects_not_listed": "The 1553 object records are not duplicated here. They are the fixture; listing them would double this file without adding a fact. Everything a validator needs - the grid, the columns, the rooms, the offsets, the censuses - is measured above."
     }
   }
 }

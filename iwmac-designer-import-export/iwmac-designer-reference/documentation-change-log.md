@@ -4,10 +4,15 @@ Parts 1–4 (2026-08-09 and 2026-08-10) cover the **ventilation** generation
 contract. [Part 5](#part-5--2026-08-10-the-list-panel-generation-contract)
 (2026-08-10) covers the **list panel** (spjeldliste) generation contract and uses
 its own finding ids, `L-1`–`L-16`. [Part 6](#part-6--2026-08-10-the-maskin-machine-room-generation-contract)
-covers the **Maskin** (machine room) contract, conflict ids `M-1`–`M-6`, and
+covers the **Maskin** (machine room) contract, conflict ids `M-1`–`M-6`,
 [Part 7](#part-7--2026-08-10-the-oversikt-store-overview-generation-contract)
 covers the **Oversikt** (store overview / case position / byggeplan) contract,
-conflict ids `OV-C1`–`OV-C3`.
+conflict ids `OV-C1`–`OV-C3`, and
+[Part 8](#part-8--2026-08-10-the-room-control-table-tabell-romkontroll-alle-plan-generation-contract)
+covers the **room-control table** (`Tabell romkontroll alle plan`) contract,
+conflict ids `RC-C1`–`RC-C5`. Part 8 also adds the first `GLOBAL` document that
+is not about a panel type at all — [AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md),
+which owns *which* deliverable a request is asking for.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -42,6 +47,10 @@ Evidence ids:
 | E15 | [reference_data/oversikt-10113-sanitized.json](reference_data/oversikt-10113-sanitized.json) | E14 with the plant number masked to `NNNNN` inside every driver id and the plant/author/background-filename fields blanked. Same 72 objects, same 21 clusters, same geometry, sizes, `zIndex`, `tag_text`, `alias_text`, `unit_id`, array order and byte-identical `image_data`. The committed `TEMPLATE-10113` reference. Added 2026-08-10 (Part 7) |
 | E16 | `Coop_Prix_Breiviken_overview.json` (10 624 bytes) and `..._v2.json` (54 227 bytes) (user Downloads) | The two failed attempts of the 2026-08-10 incident: a dashboard grouping with no background, and a 9-of-21-cluster reconstruction. Negative examples — **not committed**. Added 2026-08-10 (Part 7) |
 | E17 | [build-oversikt-negatives.py](build-oversikt-negatives.py) | Seven synthetic negatives derived from E15, one broken rule each. Generator committed, output not. Added 2026-08-10 (Part 7) |
+| E18 | `iwmac-panel_8653_tabell-romkontroll-alle-plan_20260810-2157.json` (user Downloads) | Room-control table. Plant 8653, 1 894 376 bytes, **1 553 `single_objects` + exactly 1 `table_container`** holding 1 802 grid items, 34 columns × 50 room controllers on 8 floors, 1 551 live bindings, content reaching x 3 120 / y 1 690 on a declared 1400 × 750 viewport — **not committed** (live plant id, 1 551 real driver ids). The known-good export supplied with the task and, per the brief, **never modified**: every measurement in Part 8 is read from it and reproduced from E19. Added 2026-08-10 (Part 8) |
+| E19 | [reference_data/romkontroll-8653-sanitized.json](reference_data/romkontroll-8653-sanitized.json) | E18 with the plant number masked to `NNNN` inside every driver id and the plant/author/background-filename fields blanked. 1 275 328 bytes. Same 1 553 objects, same container, same 1 802 items, same geometry, sizes, `zIndex`, `tag_text`, `alias_text`, `unit_id`, `linked` and array order. The committed `TEMPLATE-8653-ROMKONTROLL` reference. Added 2026-08-10 (Part 8) |
+| E20 | `iw_gen_driver_parameters (3).sql` (user Downloads) | The plant's parameter dump, 5 002 553 bytes: **10 315 rows, 10 315 distinct `driver_id`**. All 1 551 bindings in E19 resolve in it with `unit_id` and `alias_text` byte-identical — the evidence for the verbatim-copy rule (contract §7.2) — **not committed** (customer data). Five tests skip unless `IWMAC_ROMKONTROLL_SQL` points at it. Added 2026-08-10 (Part 8) |
+| E21 | `Tabell_romkontroll_alle_plan.json` (1.58 MB) and `Romkontroll_alle_plan_IWMAC_Designer.json` (30 KB) | The two rejected generations of the 2026-08-10 incident: a custom dataset that was not a panel, and a 59-object unlinked placeholder overview. **Recorded from the task's own description — the files themselves were not supplied to this pass** and are not committed. Their shapes are reproduced synthetically by [build-romkontroll-negatives.py](build-romkontroll-negatives.py) (`dataset-not-a-panel`, `placeholder-overview`), which is what the rule ids in contract §13 are measured against. Added 2026-08-10 (Part 8) |
 
 Scope tag added 2026-08-10: `PROFILE-9099-ROTOR-DEMO`, for geometry that is a
 property of one named profile rather than of ventilation panels in general. `VENT`
@@ -67,6 +76,17 @@ weight here: the fleet survey in `reference_data/panel-conventions.json` and the
 measured `TEMPLATE-10113` geometry disagree on cluster offsets and on the shape
 of a partial cluster, and both are recorded rather than blended (`OV-C1`,
 `OV-C3`).
+
+Two further scope tags added 2026-08-10 with Part 8: `ROMKONTROLL`, for rules
+that hold for every room-control table, and `TEMPLATE-8653-ROMKONTROLL`, for
+geometry measured from the one export supplied with that task. It is the
+room-control counterpart of `REF-9099`, `TEMPLATE-10229` and `TEMPLATE-10113` —
+a profile, not a plant claim. The distinction is load-bearing here for a reason
+the earlier panel types did not have: a room-control table's column set *is* the
+building's signal set, so **34 columns and 50 rooms describe one building and
+nothing else**. What generalizes is the two-layer structure, not a count.
+`ROMKONTROLL` is also deliberately *not* `LIST`: the two table families are built
+differently and the difference is recorded as `RC-C1` rather than reconciled.
 
 ---
 
@@ -1671,3 +1691,401 @@ The preview HTML produced by `render-oversikt-panel.py` matches `.gitignore`'s
   overlaps against a store plan, the origin of the single-space `tag_text`, the
   incident's PDF, and a byggeplan-derived Oversikt. A stated gap is a
   deliverable; a guess is not.
+
+---
+
+# Part 8 — 2026-08-10: the room-control table (Tabell romkontroll alle plan) generation contract
+
+A separate pass with its own brief and its own evidence. It changes no
+ventilation, Maskin or Oversikt rule, and it changes no list-panel rule either —
+it adds three **scope statements** to the list contract that say where the LIST
+family ends (change 114). Conflict ids are `RC-C1`–`RC-C5` and refer to the table
+in [ROMKONTROLL-GENERATION-CONTRACT.md](ROMKONTROLL-GENERATION-CONTRACT.md) §12.
+Validator rule ids are `R-S*` (structural), `R-T*` (table relationships), `R-B*`
+(bindings), `R-P*` (profile-scoped) and `R-C*` (source-versus-candidate
+comparison). `R-B*` is new to this pass: no earlier panel type has a mode
+discriminator, because no earlier failure was *an unlinked file delivered as a
+linked one*.
+
+Evidence: **E18**–**E21** in the table at the head of this file. E18 is the
+known-good export supplied with the task. Per the brief's first quality
+constraint it was **not modified**, and being a live plant id with 1 551 real
+driver ids it is not committed either, so every measurement below is reproduced
+from **E19**, which is E18 masked and is in the repository. E20, the plant's
+parameter dump, is what makes the verbatim-copy rule checkable.
+
+**Source precedence used**, highest first — the repository's own list, not a new
+one: the export supplied with the task (E18) → the parameter dump (E20) → the
+host behaviour recorded in `CLAUDE.md` → the panel-type contract →
+`AI-BRIEFING.txt` → `PANEL-TYPE-GUIDE.md` → `DESIGN-OBJECT-CATALOG.md` (valid
+vocabulary only) → generic design advice. No coordinate was averaged. Geometry is
+tagged `TEMPLATE-8653-ROMKONTROLL`; only behaviour confirmed as a property of
+room-control tables is tagged `ROMKONTROLL`.
+
+**The failure this pass exists to prevent is not a malformed panel, and not a
+panel missing half the building — it is a request that was never routed.** The
+first rejected generation answered "trenger .json fil" by serializing its own
+analysis into a schema it invented. The second answered a linked-panel request
+with the unlinked mode-B template, faithfully, because that was the only object
+template its instructions carried. Neither failure is reachable by a schema
+check: by the time a validator runs, the wrong deliverable already exists. That
+is why the first new file in this pass is a routing document and not a contract,
+and why change 116 spends 8 000-character-cap budget on a route rather than on
+more facts.
+
+---
+
+## Rules changed
+
+### 104. `AI-REQUEST-ROUTING.md` — a `GLOBAL` owner for "which deliverable is this?"
+
+| | |
+|---|---|
+| **Original** | Nothing owned intent routing. `PANEL-TYPE-GUIDE.md` routes between panel *types* — but only once it is already settled that a panel is wanted. `AI-BRIEFING.txt` opens by assuming it ("You generate IWMAC Designer panel files"). No document anywhere said what to do with *"trenger .json fil"*, *"generer en Tabell romkontroll alle plan"*, or *"create a room-control table panel from this SQL export"*. |
+| **Problem found** | Both 2026-08-10 failures (E21) happened before any rule in this repository could apply. §13 of the contract traces them: failure 1 produced a correct room analysis in a custom schema, failure 2 produced a correct envelope with placeholder contents. Every document that could have stopped either one is a document neither request ever reached. |
+| **Revised** | **New file, 230 lines.** A search-terms header naming the phrasings the page must answer to, in Norwegian and English; **§1** the routing trigger and its vocabulary; **§1.1** the two verbatim route statements; **§1.2** context inheritance — a `.json` request inside a panel conversation inherits the panel task; **§1.3** when it really *is* a data request, so the rule cannot be read as "never emit data"; **§2** which panel type, as a discriminator on the shape of the source rather than on the word used; **§3** which output mode; **§4** do not invent, normative for every panel type; **§5** before generating; **§6** after generating; **§7** owners. |
+| **The two statements are reproduced word for word** | *"If a user asks for a .json file after discussing an IWMAC panel, preserve the panel context and generate an iwmac-designer-panel document. Do not serialize the source data into a custom JSON schema."* and *"If a known-good export is attached, inspect it before generating or modifying the panel. Use it as the panel-type example and preserve its structural conventions unless a normative contract requires otherwise."* They are quoted, not paraphrased, because they are the strings a retrieval index has to match. |
+| **Mode C is the default** | §3 makes the linked panel the default output whenever a plant parameter dump is attached, and says so in one sentence at the top of the section rather than as a consequence to be derived. Failure 2 is exactly the derivation not being made. |
+| **Reason** | The brief requires intent routing to be owned, discoverable by keyword, and sufficient on the first page. One owner per rule means this cannot live as a paragraph in four files. |
+| **Source** | E21 for the failure shapes; the trigger vocabulary from the request wordings recorded in the task; the mode-C default from E18 + E20. |
+| **Files** | `AI-REQUEST-ROUTING.md` (new) |
+| **Status** | **Normative** · `GLOBAL` — it owns routing for every panel type, not just this one |
+
+### 105. `ROMKONTROLL-GENERATION-CONTRACT.md` — a new owner for measured room-control-table geometry
+
+| | |
+|---|---|
+| **Original** | No document owned this panel type. The word *romkontroll* in the repository meant the **hotel floor plan** (`AI-BRIEFING.txt` §7d, `rc_*` card objects over a drawing). A "tabell romkontroll alle plan" request therefore landed on the floor-plan rules, on the spjeldliste rules, or on nothing. |
+| **Problem found** | The panel type that produced the incident had no owner, no example, no vocabulary and no validator, while sharing its name with a panel type that has all four. |
+| **Revised** | **New file, 1 036 lines / 62 086 characters, 15 sections.** Routing and the companion table (which source is authoritative for which *kind* of fact); source precedence, scope tags and evidence; **§1** what this panel type is, with a classification test to run first and an explicit list of what it may not be; **§2** the envelope, every field classified; **§3** all 17 `single_objects` fields with real examples, the seven constants, and §3.1 on `linked` being host behaviour rather than an assertion; **§4** the container and its 1 802 items; **§5** object selection by signal role, with §5.1 the measured alarm rule; **§6** geometry — origin, columns, rows and header bands, where an object sits inside its cell, z-index, rooms and floors, missing signals; **§7** verbatim extraction from `iw_gen_driver_parameters`, with the cross-check and encoding; **§8** viewport versus content extent; **§9** the measured column → signal map; **§10** the three output modes; **§11** the validation contract, including §11.6 on what the validator cannot see; **§12** conflicts `RC-C1`–`RC-C5`; **§13** the two rejected generations traced defect by defect; **§14** regression tests; **§15** the scope summary. |
+| **Reason** | The brief requires one live owner per rule, a documented envelope, all 17 fields, object-selection rules by signal role, exact parameter extraction and the across-all-floors table rules. Splitting them across existing files would have produced the third description of the same panel that `OV-C1` already shows is how contradictions start. |
+| **Source** | E18, reproduced from E19; E20 for §7; `container_tool.js` and `V3scripts.js` for host behaviour, cited by line. |
+| **Files** | `ROMKONTROLL-GENERATION-CONTRACT.md` (new) |
+| **Status** | **Normative** · `ROMKONTROLL` and `TEMPLATE-8653-ROMKONTROLL`, tagged per rule |
+
+### 106. `ROMKONTROLL-AUTHORING-GUIDE.md` — the procedure, with the fifteen questions inside it
+
+| | |
+|---|---|
+| **Original** | No procedure existed for this panel type. |
+| **Revised** | **New file, 233 lines, six sections:** what you need before starting; **§2 the pre-generation checklist — fifteen questions, answered in writing before a single object is emitted**; building a new table; copying a table to another plant; editing a supplied export; **§6 the post-generation acceptance gate**. |
+| **The fifteen questions** | They are ordered so that the ones that change the deliverable come first — is this a table or a floor plan, is a dump attached, is a known-good export attached, is the output linked or a template — and the geometry questions come last. A question that cannot be answered is a **stop**: the deliverable is then the answered subset plus the named gap, the same shape of rule as the Oversikt guide's step-3 hard stop (change 91). |
+| **The acceptance gate** | §6 requires the **actual downloadable `.json` file** as the deliverable. An answer that describes the panel, summarizes it, links to it, or offers to produce it on request does not pass the gate — which is the discipline `E8` established for list panels, restated here because the incident's first failure was a file that *was* produced and was the wrong document. |
+| **Reason** | The brief requires a pre-generation checklist and a post-generation acceptance gate as separate artifacts. Procedure and measured geometry rot at different rates; Parts 6 and 7 separated them for the same reason. |
+| **Source** | E18/E19/E20 for every value quoted; the procedure from the host behaviour in `CLAUDE.md`. |
+| **Files** | `ROMKONTROLL-AUTHORING-GUIDE.md` (new) |
+| **Status** | **Normative** · `ROMKONTROLL` |
+
+### 107. `ROMKONTROLL-QA-CHECKLIST.md` — eight stages, starting before generation
+
+| | |
+|---|---|
+| **Original** | No QA document for this panel type. The implicit bar was "the JSON parses and inserts" — which **both** failed generations clear, the first because a dataset is valid JSON and the second because a placeholder panel is a valid panel. |
+| **Revised** | **New file, 178 lines.** **Stage 0 — routing, before anything is generated**; Stage 1 the file parses and is the right document; Stage 2 objects are well formed; Stage 3 the table is a table; Stage 4 bindings are real; Stage 5 comparison with the known-good example; Stage 6 profile (same plant only); Stage 7 delivery. It closes with *"The two failures this checklist exists to catch"*, which names for each failure the stage that stops it **and the rules that stay silent, with the reason each one is silent**. |
+| **Stage 0 is the whole point** | Every other stage in every QA document in this repository runs on an artifact. Stage 0 runs on the *request*. A checklist that begins after generation cannot catch a routing failure, and both incidents were routing failures. |
+| **The rule this pass then applied to itself** | Stage 4 states that when the checklist and the validator disagree, the **measurement wins and the document is corrected** — the validator is never relaxed to match the prose. Change 118 records where this pass had to obey its own rule. |
+| **Reason** | The brief requires an enumerated acceptance gate and forbids weakening validation to make generated files pass. |
+| **Source** | The repository's own QA convention (changes 92, and the Maskin checklist before it); the rule ids are the measured ones from the runs in this file. |
+| **Files** | `ROMKONTROLL-QA-CHECKLIST.md` (new) |
+| **Status** | **Normative** · `ROMKONTROLL` |
+
+### 108. `ROMKONTROLL-COPILOT-PREFLIGHT.md` — the retrieval-friendly short form
+
+| | |
+|---|---|
+| **Original** | Nothing equivalent for this panel type; the ventilation, Maskin and Oversikt counterparts already existed. |
+| **Revised** | **New file, 170 lines, three blocks.** **Block A** is the text to paste into a Copilot prompt: routing, the two-layer rule, the container, the verbatim-identifier rule, the viewport rule, output modes, the object vocabulary and the deliverable. **Block B** names the failure modes explicitly — dataset-instead-of-panel, placeholder-instead-of-linked, compressed-to-viewport, constructed driver ids, one container per row. **Block C** is the self-check to require *in the answer*, so the assistant reports its own counts rather than being asked for them afterwards. It closes with what to upload alongside it. |
+| **Size** | **8 027 characters** (worst-case CRLF 8 197), 11 angle brackets. It is a knowledge file, not the instructions field, so the 8 000-character cap does not apply — the same distinction recorded for `OVERSIKT-COPILOT-PREFLIGHT.md` in change 93. Only `AI-AGENT-INSTRUCTIONS.txt` is capped. |
+| **Discoverability** | Block A opens with the search terms from `AI-REQUEST-ROUTING.md` so that a retrieval index which surfaces only one room-control file surfaces one that routes correctly. |
+| **Reason** | The brief requires Copilot discoverability terms and a short form an agent can carry whole. |
+| **Source** | A compression of changes 104–107; every number in it is E18/E19/E20. |
+| **Files** | `ROMKONTROLL-COPILOT-PREFLIGHT.md` (new) |
+| **Status** | **Normative** · `ROMKONTROLL` — a summary of owned rules; the contract wins on conflict |
+
+### 109. `reference_data/romkontroll-8653-sanitized.json` — masked, deliberately not unlinked
+
+| | |
+|---|---|
+| **Original** | No room-control table of any kind was committed. Nothing in the repository showed what one looks like, which is why the brief's "use this good panel as the example" had nothing to point at. |
+| **Revised** | **New fixture, 1 275 328 bytes**, generated by `build-romkontroll-fixture.py` from E18. Preserved exactly: all 1 553 `single_objects` with `obj_id`, geometry, sizes, `zIndex`, `tag_text`, `alias_text`, `unit_id`, `linked "true"` and array order; the single `table_container` with all 22 keys (`unique_id "custom_0"`, `zIndex 4`, `num_of_col "34"`, `num_of_rows "50"`, `descr_width "300"`, `val_width "100"`, `last_y "1625"`); all 1 802 container items with `zIndex "5"`, `driver_id ""`, `link_tag "NA"`, `alias_text "new text"`; and the background. Masked: the plant number inside every driver id → `NNNN`. Blanked: `plant_id`, `source_plant_id`, `saved_by`, `org_image_name`, `image_name`. |
+| **Why masked and not unlinked** | Same reasoning as change 94, and stronger here. `build-maskin-fixture.py` replaces every binding with the literal `"driver_id"` — right for a geometry template, wrong for a fixture whose job is to prove that **50 rooms × 34 columns survive a round trip**. Room identity lives in `unit_id` and in the driver id; blanking them would delete the structure the fixture exists to carry, and would additionally make the fixture indistinguishable from failure 2. |
+| **Anomalies preserved, not corrected** | The two objects that carry no binding at all, the three annotation objects that sit below the last row (`object_1550`–`object_1552`, the manual-reset cluster), the `number_v3_60px_json_obj` used once, and the two `zIndex "1100"` objects are all kept as they are in production and reported by the validator as warnings. Correcting a production anomaly in a reference fixture teaches the anomaly is a defect. |
+| **Reason** | The brief forbids committing live plant bindings and requires a real reference example rather than a duplicated export. |
+| **Source** | E18 → E19 via `build-romkontroll-fixture.py`, whose `--report` re-derives every count in the contract. |
+| **Files** | `build-romkontroll-fixture.py` (new, 752 lines), `reference_data/romkontroll-8653-sanitized.json` (new) |
+| **Status** | **Normative** · `TEMPLATE-8653-ROMKONTROLL` |
+
+### 110. `documentation-rules.json` — `panel_types.romkontroll_table`, through its generator
+
+| | |
+|---|---|
+| **Original** | The machine-readable rule file covered ventilation, list panels, Maskin and Oversikt. It had no room-control-table entry, so no rule of this panel type was queryable or scope-tagged in machine form. |
+| **Revised** | `panel_types.romkontroll_table` added with 22 keys: `identity`, `owner_document`, `companion_documents`, `canvas`, `viewport_versus_content`, `composition`, `z_indexes`, `object_fields`, `object_vocabulary`, `object_selection`, `container`, `table`, `rooms`, `identifiers`, `output_modes`, `input_routing`, `preserve_and_patch`, `sanitization`, `verification`, `conflicts`, `rejected_generations`, `anomalies`. Plus the `TEMPLATE-8653-ROMKONTROLL` profile with its measured column set, row pitch and counts; evidence `E18`–`E21`; and the scope tags `ROMKONTROLL` and `TEMPLATE-8653-ROMKONTROLL`. |
+| **How** | Through `build-romkontroll-rules.py`, **not** by hand — 1 152 lines, `--check` its only flag, a bare invocation writes. `--check` is asserted by the test module, so a hand edit or a stale file is a test failure. `build-oversikt-rules.py --check` and `build-maskin-rules.py --check` still report up to date, so the new block disturbed neither. |
+| **Reason** | The brief forbids hand-editing generated artifacts. The file's own `_note` says the same thing. |
+| **Source** | E18/E19/E20. |
+| **Files** | `build-romkontroll-rules.py` (new), `documentation-rules.json` |
+| **Status** | **Normative** · tagged per rule |
+
+### 111. `validate-romkontroll-panel.py` — five rule namespaces, four modes, and a mode discriminator
+
+| | |
+|---|---|
+| **Original** | No validator for this panel type. A room-control table could only be checked by reading it, and reading a 1 553-object grid is exactly the check that does not happen. |
+| **Revised** | **New validator, 1 444 lines.** `--check` (the default, also reachable as a bare path argument) runs the `R-S*` structural and `R-T*` table rules plus `R-B*` bindings. `--profile TEMPLATE-8653-ROMKONTROLL` adds `R-P*`, holding a named panel against its recorded column and room inventory **with no source file to hand**. `--compare SOURCE.json CANDIDATE.json` adds `R-C*`: dropped objects, dropped or altered container, missing columns, missing rooms, moved cells, lost bindings, envelope drift. `--source-sql dump.sql` adds `R-B6`, which resolves every binding against `iw_gen_driver_parameters`. |
+| **Matching is by room and column, never by array index** | Insert renames every object from the live canvas child index, so two exports of one panel order their objects differently. `R-C5` reports median cell displacement, which is 0,0 for a faithful copy and undefined — not zero — when there is no grid to compare. |
+| **`R-B1` reports the output mode instead of demanding bindings** | `Panel.mode()` returns `"C"` (linked), `"B"` (template), `"mixed"`, `"unbound"` or `"empty"`, and `R-B1` errors **only** for `"unbound"`. A file where every object is placeholdered is a legitimate mode-B template; it is wrong as an answer to a linked-panel request, and that wrongness is a **routing** verdict, made before the validator runs. `R-B3` is what fires the moment placeholders and real ids are mixed. This asymmetry is stated in the contract, the guide, the checklist and the preflight, because reading it as "the validator will catch failure 2's placeholders" is precisely the mistake change 118 records. |
+| **The allowlist was widened by evidence, and only by evidence** | `load_allowlist()` resolves `R-S12` against the **union** of `all-design-objects.json` (797 palette ids) and `controls-registry.json` (1 769 render definitions, 991 of them palette-less), and emits a note naming any registry-only id rather than passing over it silently. An id in neither source is still an error; the 39 ids the catalogue marks `Inactive_IBT` / `Outdated____IBT` are still rejected. This is conflict `RC-C2`, and it is a widening by measurement — `number_v3_cell_grey25` appears 1 700 times on a production export — not a check relaxed to make a file pass. |
+| **Reason** | The brief requires a deterministic validator plus a comparison mode against the known-good fixture, and forbids weakening validation. |
+| **Source** | E18/E19/E20/E21. |
+| **Files** | `validate-romkontroll-panel.py` (new) |
+| **Status** | **Normative** · each rule id carries its own scope |
+
+### 112. `build-romkontroll-negatives.py` and `tests/test_romkontroll_8653_contract.py` — the contract made executable
+
+| | |
+|---|---|
+| **Original** | Nothing executable existed for this panel type, and the two failures existed only as prose in the task. |
+| **Revised** | **`build-romkontroll-negatives.py`** (356 lines) derives **nine** negatives from E19, one broken rule each: `dataset-not-a-panel` and `placeholder-overview` reproduce the two real failures; `column-dropped`, `compressed-to-viewport`, `container-dropped`, `constructed-driver-ids`, `half-linked`, `non-custom-unique-id` and `text-sorted-rooms` reproduce the failure modes the contract predicts. **`tests/test_romkontroll_8653_contract.py`** (864 lines) runs **97 tests**: the fixture's measured anatomy, the rules file being current, every negative's exact error set, and the two failures' rule ids. Five tests skip unless `IWMAC_ROMKONTROLL_SQL` points at E20, which is not committed. |
+| **The regression test the brief asked for** | `--compare` of E19 against itself is asserted clean, which is the "regression test using the attached export" in the form the repository can actually carry: E18 cannot be committed, E19 is E18 with the plant masked, and the SQL-backed assertions run whenever the dump is present and skip loudly when it is not. |
+| **The one honest asymmetry** | `constructed-driver-ids` **passes** `--check`, `--profile` and `--compare` — 0 errors, exit 0. A fabricated but well-formed driver id is indistinguishable from a real one without the dump. With `--source-sql` it fails immediately: `R-B6  1551 driver_id(s) do not exist in the dump - constructed, adapted from another plant, or invented`. This is stated in the contract §11.6, in QA stage 4 and in `R-B1`'s own runtime note, because a validator that is quiet about what it cannot see is worse than no validator. |
+| **Reason** | The brief requires validator/test updates and a regression test built on the attached export. |
+| **Source** | E19 for every negative; E20 for the five skipped tests; E21 for the two reproduced failures. |
+| **Files** | `build-romkontroll-negatives.py` (new), `tests/test_romkontroll_8653_contract.py` (new) |
+| **Status** | **Normative** · `ROMKONTROLL` |
+
+### 113. `CLAUDE.md` — the routing block, the fixture bullet, and five host facts
+
+| | |
+|---|---|
+| **Original** | The kit list opened with `AI-BRIEFING.txt`. Nothing routed a request before it, and nothing in the file mentioned a room-control table; `romkontroll` appeared only as the hotel floor plan in the §17b hotel anatomy. |
+| **Revised** | Three additions. (1) `AI-REQUEST-ROUTING.md` is now the **first** entry in the kit list, labelled *"read this one first"*, with one sentence on why it exists: both 2026-08-10 failures were routing failures, not schema failures. (2) A `reference_data/romkontroll-8653-sanitized.json` bullet describing the two-layer table pattern and closing with *"34 columns, 50 rooms and 1 553 objects are the measurement of this one building, not a design target for any other"*. (3) A new section, **"Romkontroll table (tabell romkontroll alle plan) — where the rules live, and the host facts"**: an owner table routing each kind of question, three rules worth carrying without opening the contract, and **five host facts** — `custom_` or the grid silently vanishes; `linked="true"` is set on load whenever `driver_id !== "driver_id"`, empty included; the 1 802 container items are scaffold, not data; nothing clamps to `panel_width`/`panel_height`; Insert appends and renames from the live canvas child index. |
+| **Why the host facts stay here and the geometry does not** | This file owns host behaviour — what the Designer does to a document on load. The contract owns what the document must contain. Splitting them that way is what keeps one owner per rule when both files describe the same container. |
+| **Reason** | The brief requires the first page of AI-facing documentation to be sufficient for correct routing. |
+| **Source** | `V3scripts.js:514`, `:528`, `:684`, `container_tool.js:2048`, `:3699-3849` for the host facts; E18/E19 for the counts. |
+| **Files** | `CLAUDE.md` |
+| **Status** | **Normative** · `GLOBAL` (host facts) and `ROMKONTROLL` (the routing table) |
+
+### 114. `LIST-PANEL-GENERATION-CONTRACT.md` — three scope lines, and not one rule changed
+
+| | |
+|---|---|
+| **Original** | §1.1: a list panel is *"the **one panel type built out of containers**… one container per table row"*. §5.1 describes the 16 container keys as *the* container shape. §12 check 9 requires every `obj_id`, objects **and items**, to appear in `DESIGN-OBJECT-CATALOG.md`. |
+| **Problem found** | All three are true of the spjeldliste family and false of the room-control table, which is also container-built, uses **one** container with **22** keys, and draws its cells with `number_v3_cell_grey25` — an id used 1 700 times in production and absent from the catalogue and from the 797-id palette. Left as written, the list contract silently claims authority over a panel type it never measured. |
+| **Revised** | Three inserted scope statements, each naming its conflict id and the owner of the resolution. §1.1 gains a blockquote scoping "the one panel type built out of containers" to the `objects_container` family (`RC-C1`). §5.1 gains a note that 16 keys is the `objects_container` shape and a `table_container` carries 22 (`RC-C1`). §12 gains a blockquote after check 12 stating that check 9 is `LIST`, that room-control tables resolve against the union of the palette and the controls registry, and that this is a widening **by evidence** — with the palette/registry/registry-only/retired counts (797 / 1 769 / 991 / 39) quoted (`RC-C2`). |
+| **What did not change** | No LIST rule was rewritten, renumbered, weakened or moved. Every check keeps its wording and its authority over spjeldliste panels. The insertions say where the family ends; they do not say the family is wrong. |
+| **Reason** | The brief requires global rules to be distinguished from panel-type-specific ones, conflicts recorded rather than silently resolved, and one authoritative owner per rule. |
+| **Source** | E18/E19 measured against E6; `reference_data/all-design-objects.json` and `reference_data/controls-registry.json` counted directly. |
+| **Files** | `LIST-PANEL-GENERATION-CONTRACT.md` |
+| **Status** | **Normative** · `LIST` — scope statements only |
+
+### 115. `AI-BRIEFING.txt` — routed first, and the word *romkontroll* disambiguated
+
+| | |
+|---|---|
+| **Original** | The file opened straight into the contract. Its "WHAT IT DOES NOT OWN" list named the panel-type contracts but no routing document. §7c described list panels as *"the ONE panel type built from CONTAINERS"*. §7d used *romkontroll* for the hotel floor plan without qualification. The §9 self-check required *"positions inside the canvas (list panels 7c excepted)"* and *"containers [] too, unless this is a list panel"*. |
+| **Revised** | Six edits. (1) A new **"ROUTE FIRST."** paragraph at the top of the file carrying both verbatim route statements, naming `AI-REQUEST-ROUTING.md` as the owner of the routing decision, and stating plainly: *"Reading this file first and skipping the routing step is how both failures in ROMKONTROLL-GENERATION-CONTRACT.md section 13 happened."* (2) "WHAT IT DOES NOT OWN" gains `AI-REQUEST-ROUTING.md` as its **first** entry and a room-control-table entry pointing at the contract (*"ONE table_container, not one container per row… conflict RC-C1"*); the QA-checklist, validator and preflight lines gain their ROMKONTROLL counterparts. (3) §7c gains a SCOPE paragraph — everything in 7c is measured on the spjeldliste and is `LIST`, not `GLOBAL`; *"route by the shape of the source, not by the word 'list': a repeated per-row cell group is 7c; a rooms × signals matrix is ROMKONTROLL-GENERATION-CONTRACT.md"* — and "the ONE panel type built from CONTAINERS" is softened to "built from CONTAINERS". (4) §7d gains **"ROMKONTROLL — TWO DIFFERENT PANELS SHARE THE WORD"** above the floor-plan block. (5) The §9 canvas check is widened to *"EXCEPT list panels (7c) and room-control tables"*, with the note that `CLAUDE.md` gotcha #25 always permitted this and only the self-check line was narrower (`RC-C5`). (6) §9 gains a full room-control-table self-check block, and the graphics/containers line becomes *"containers [] too, unless this is a list panel (7c, one per row) or a room-control table (exactly one)"*. |
+| **Reason** | The brief requires the first page of AI-facing documentation to route correctly, and requires the routing statements to be discoverable verbatim. `RC-C5` additionally requires the self-check not to contradict a rule the repository already had. |
+| **Source** | E18/E19; `CLAUDE.md` §19 gotcha #25 for the viewport rule. |
+| **Files** | `AI-BRIEFING.txt` |
+| **Status** | **Normative** · `GLOBAL` (the route-first block, the §9 widening) and `LIST` / `ROMKONTROLL` (the scope paragraphs) |
+
+### 116. `AI-AGENT-INSTRUCTIONS.txt` — the room-table route inside the 8 000-character cap
+
+| | |
+|---|---|
+| **Original** | One universal object template — `zIndex "default"`, `linked "false"`, `driver_id "driver_id"`, `link_name ""` — presented as *the* OBJECT entry, plus *"containers (empty except spjeldliste)"*, plus a LAYOUT rule requiring positions inside the canvas. E18 contradicts all four, and failure 2 followed every one of them faithfully. This is conflict `RC-C3`, and it is the reason the fix had to land **here**, in the file Copilot actually loads, rather than in a document it never reads. |
+| **Revised** | Five changes. (1) A new routing paragraph: *"ROMKONTROLL TABLE ("tabell romkontroll alle plan") = rooms x signals grid; not the 7d floor plan, not 7c. ONE container, container_type "table_container", unique_id must contain custom_ or the host drops it; container zIndex 4, items "5"; num_of_col/num_of_rows/last_y match the grid; taller than the canvas ON PURPOSE - report it, never compress. Dump supplied = link it (LINKING). ROMKONTROLL-GENERATION-CONTRACT.md owns it; check with validate-romkontroll-panel.py."* (2) The OBJECT entry is relabelled *"the UNLINKED template; LINKING and ROMKONTROLL override zIndex, linked, link_name, driver_id"* — the single most load-bearing word change in this pass, because failure 2 was the universal reading of that template. (3) `containers` becomes *"(empty except spjeldliste and room tables)"*. (4) LAYOUT gains *"(lists and room tables may run past; the view scrolls)"*. (5) The self-check gains the ROMKONTROLL exceptions on `zIndex` and on canvas bounds, and ends *"containers only spjeldliste or one room table"*. |
+| **Paid for in cuts, not by exceeding the cap** | CORE FACT merged into line 1; the vent equipment ids replaced by *"Vent equipment ids: trace VENTILATION-GEOMETRY-CONTRACT.md."*; MASKIN's "pitch measured never averaged" dropped (PRECEDENCE already forbids averaging) and "(a NEGATIVE example)" → "(NEGATIVE)"; OVERSIKT's "(72 objects, 21 clusters - evidence, not a target)" → "(evidence, not a target)" and "owns every rule and coordinate" → "owns every rule"; VENTILASJON lost three sentences that the geometry contract already owns; HOUSE STYLE panel names and MODE B/D compressed; BACKGROUND, TEXT ALIGNMENT, LAYOUT and VENT OVERLAP trimmed. Nothing normative was deleted — every cut is either a duplicate of a rule stated elsewhere in the same file or a pointer to the document that owns it. |
+| **Measured** | **7 914 characters, worst-case CRLF 7 949, 51 characters of headroom, 0 angle brackets.** The cap counts characters, not bytes, and a CRLF working tree adds one per line; the worst case is what must clear 8 000. |
+| **The PRECEDENCE line was left byte-for-byte intact** | `RC-C4`. The task that commissioned this pass proposed a different ordering — `CLAUDE.md` at rank 2, the panel-type contract at 4. The repository's list is one list printed in six files; reordering it in one of them would create the second competing precedence the brief forbids. The requester's intent is met instead by the contract's companion table, which answers "which source owns which *kind* of fact" without competing with precedence. |
+| **Reason** | The brief requires the routing rules to reach the agent that failed. That agent reads this file and this file only. |
+| **Source** | E18/E19/E21. |
+| **Files** | `AI-AGENT-INSTRUCTIONS.txt` |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 117. `PANEL-TYPE-GUIDE.md` — the third container-built family
+
+| | |
+|---|---|
+| **Original** | The common-rules bullet named two exceptions to "panels are flat object lists": 9914's room-card panels and list panels. The lead-in to the list-panel section spoke of "the table family". Nothing described a room-control table. |
+| **Revised** | Three edits. The common-rules bullet now reads *"Three exceptions, all container-built: 9914's room-card panels, **list panels** (spjeldliste — one container per row) and the **room-control table** (one `table_container` holding the whole grid)"*. The lead-in becomes *"The two table families below…"*, naming both contracts. And a new section, **"Room-control table (`Tabell romkontroll alle plan`)"**: how to tell it apart from a spjeldliste and from the hotel floor plan; the two-layer split with its measured evidence (all 1 802 container items carry `driver_id ""`; 1 551 of 1 553 canvas objects are bound); one container with 22 keys; `custom_` or the grid vanishes; item `zIndex "5"` against the spjeldliste's `"900"`; the panel does not fit the canvas and is not meant to (x 3 120 / y 1 690); `number_v3_cell_grey25` absent from the catalogue; and the file pointers, closing *"one building, measured; not a design target for another"*. |
+| **Reason** | The guide is where an agent looks to tell panel types apart. A panel type it does not list is a panel type that gets misrouted. |
+| **Source** | E18/E19, measured against E6. |
+| **Files** | `PANEL-TYPE-GUIDE.md` |
+| **Status** | **Normative** · `GLOBAL` (the routing bullet) and `ROMKONTROLL` (the section) |
+
+### 118. Defects found in this pass's own first draft — corrected against the measurement
+
+| | |
+|---|---|
+| **Why this entry exists** | The brief forbids weakening validation to make files pass and forbids overwriting historical findings. The mirror of both rules is that when a **document** this pass wrote disagrees with the **validator** this pass wrote, the disagreement is resolved by measuring and the document is corrected — in the open, not silently. Three defects were found this way, all in text written earlier in this same pass. |
+| **Defect 1 — rule ids credited to the wrong check** | Contract §13.2 originally credited `R-B1` and `R-C4` with catching failure 2. Measured: a fully placeholdered file is mode `"B"`, so `R-B1` does not error, and with no container there is no grid, so `R-C4`/`R-C5` have nothing to measure. What actually fires is `R-S10`, `R-S11`, `R-T1` under `--check` and `R-C3` + `R-C8` under `--compare`, 32 findings in total. **The table was corrected to the measurement; the validator was not widened to the table.** |
+| **Defect 2 — the half-linked rule** | The QA checklist and contract §11.3 named `R-B1` as the rule that fires on a panel where some objects are bound and some are placeholders. It is `R-B3` (and `R-B4`), because `Panel.mode()` returns `"mixed"` there and `R-B1` errors only for `"unbound"`. This surfaced as a **test failure** — `AssertionError: 'R-B1' not found in {'R-B3','R-B4'}` — and the test expectation was the thing corrected, per the checklist's own stage-4 rule. Two tests were added to pin the corrected ids so the prose cannot drift back. |
+| **Defect 3 — a wrong file name** | The contract named a test module that does not exist. Corrected to `tests/test_romkontroll_8653_contract.py`, which is also the name the repository's convention predicts. |
+| **Prose miscounts** | Two counts written from memory rather than measured — the number of skipped tests and the number of `R-C` findings on failure 2 — were corrected to 5 and 32. Both now come from a run recorded in this file. |
+| **Files** | `ROMKONTROLL-GENERATION-CONTRACT.md`, `ROMKONTROLL-QA-CHECKLIST.md`, `build-romkontroll-rules.py`, `tests/test_romkontroll_8653_contract.py` |
+| **Status** | **Normative** — the corrected ids · **Advisory** — the practice of recording them |
+
+### 119. What was deliberately left alone
+
+| | |
+|---|---|
+| **Decision** | **E18, the known-good export, was not modified in any way** — not reformatted, not renamed, not moved, not committed. |
+| **Reason** | The brief's first quality constraint. Everything Part 8 needed from it is in E19, which is E18 with the plant masked and nothing else touched. |
+| **Decision** | `LIST-PANEL-GENERATION-CONTRACT.md`'s rules were **not** rewritten to cover both table families, and no LIST rule was restated inside the room-control contract. |
+| **Reason** | `RC-C1`. Two families, two contracts, three scope lines marking the border, and links where a rule would otherwise be duplicated. Merging them would produce one document that is authoritative for neither. |
+| **Decision** | `AI-BRIEFING.txt` §7d's hotel **floor-plan** Romkontroll rules were **not** edited. |
+| **Reason** | They are correct for the panel type they describe. The ambiguity was that the word was unqualified, so the fix is a disambiguation block above them, not a change to them. |
+| **Decision** | `reference_data/panel-conventions.json`, `AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt` and `CLAUDE-REVISED.md` were **not** touched. |
+| **Reason** | Same as changes 89 and 103: the survey is fleet-level evidence, and the `-REVISED` files are change records per their own status headers. Mirroring Part 8 into them would create the second competing contract the brief forbids. |
+| **Decision** | **No renderer was written**, although Part 7 shipped `render-oversikt-panel.py`. |
+| **Reason** | A store overview is verified by *looking* at it — clusters sit on cases or they do not. A 3 120 × 1 690 grid of 1 553 identical value pills is not decided by looking; it is decided by `--compare` and by `--source-sql`. A renderer nobody would use is a second source of truth with no reader. Stated here so the asymmetry with Part 7 is a decision on the record rather than an omission. |
+| **Files** | none |
+| **Status** | **Advisory** · `GLOBAL` |
+
+---
+
+## Conflicts resolved
+
+Recorded in full in [ROMKONTROLL-GENERATION-CONTRACT.md](ROMKONTROLL-GENERATION-CONTRACT.md) §12.
+**No conflict was resolved by averaging, and none was resolved by editing the
+older rule out of the way.**
+
+| Id | Conflict | Decision |
+|---|---|---|
+| **RC-C1** | `LIST-PANEL-GENERATION-CONTRACT.md` §1.1 calls the list panel *"the one panel type built out of containers… one container per table row"*; §5.1 documents 16 container keys. E18 is container-built with **one** container carrying **22** keys and all 1 802 cells. | Both true of their own family. `LIST` is scoped to the **spjeldliste family** (`objects_container`, one per row, items `zIndex "900"`); the room-control contract owns the **`table_container` family** (one container, `num_of_rows`/`num_of_col`/`last_y`, items `zIndex "5"`). Three scope lines added to LIST; neither contract rewritten to cover both (change 114) |
+| **RC-C2** | LIST §12 check 9 requires every `obj_id` — objects **and** items — to be in `DESIGN-OBJECT-CATALOG.md`. `number_v3_cell_grey25` is used **1 700×** on E18 and is in neither the catalogue nor the 797-id palette; it exists only in `controls-registry.json` (`168 × 25`, `zindex 5`, `css_v3_cell_grey25`, `obj_type "dummy"`, `canLink false`), one of **991** registry definitions with no palette entry | The catalogue stays authoritative for **palette-placed** objects; host-generated **table-cell** types are authoritative in the controls registry. The allowlist becomes "catalogue **or** controls registry" — never "catalogue or anything". An id in neither is still an error, the 39 retired ids are still rejected, and registry-only ids are **named in a note** rather than admitted silently. A widening by evidence, not a relaxation (change 111) |
+| **RC-C3** | `AI-AGENT-INSTRUCTIONS.txt` teaches one universal object template (`zIndex "default"`, `linked "false"`, `driver_id "driver_id"`, `link_name ""`) and "containers (empty except spjeldliste)". E18 contradicts all four, and failure 2 followed all four faithfully | The universal template is the **mode-B** template and is now labelled as such in the file itself. Linked panels and table panels each get an explicit route. The 8 000-character cap is honoured by **paying for the route in cuts** — nothing normative removed, every cut a duplicate or a pointer (change 116) |
+| **RC-C4** | The commissioning task proposed a source hierarchy with `CLAUDE.md` at rank 2 and the panel-type contract at 4. The repository's single precedence list has the contract at 3 and `CLAUDE.md` at 4 | **The repository list stands**, byte-for-byte, in all six files that print it. Reordering it in one would create a second precedence list — the exact failure mode the brief's "one authoritative owner per rule" exists to prevent. The requester's intent is met by the contract's **companion table**, which answers "which source owns which kind of fact" and does not compete with precedence. Recorded, not silently reconciled |
+| **RC-C5** | `AI-BRIEFING.txt` §9 self-check requires *"positions inside the canvas (list panels 7c excepted)"*. A room-control table is not a 7c list panel and its content is 2.2× the canvas width and 2.25× its height | The exception is widened to *"list panels and room-control tables"*, with contract §8 as the owner. The underlying rule — `CLAUDE.md` §19 gotcha #25, "nothing clamps to `panel_width`/`panel_height`, the plant view scrolls" — **already permitted this**; only the self-check line was narrower than the rule it was checking (change 115) |
+
+---
+
+## Verification run for Part 8
+
+All commands run from `iwmac-designer-reference/`.
+
+| Command | Result |
+|---|---|
+| `python -m unittest tests.test_romkontroll_8653_contract` | Ran 97 tests in 4.718s — **OK (skipped=5)** |
+| `python -m unittest tests.test_oversikt_10113_contract tests.test_maskin_10229_contract tests.test_maskin_compressor_bank tests.test_list_panel_contract tests.test_ventilation_profile_9099 tests.test_build_ventilation_corpus` | Ran 244 tests in 0.680s — **OK**, no regression in any earlier panel type |
+| `python build-romkontroll-rules.py --check` | `documentation-rules.json is up to date` |
+| `python build-oversikt-rules.py --check` | `documentation-rules.json is up to date` — the new block disturbed neither |
+| `python build-maskin-rules.py --check` | `documentation-rules.json is up to date` |
+| `python validate-romkontroll-panel.py reference_data/romkontroll-8653-sanitized.json` | **0 errors, 1 warning**, exit 0 |
+| `… --profile TEMPLATE-8653-ROMKONTROLL` | **0 errors, 1 warning**, exit 0 |
+| `… --compare reference_data/romkontroll-8653-sanitized.json reference_data/romkontroll-8653-sanitized.json` | **0 errors, 1 warning**, exit 0 — `INFO R-C5 1550 cell(s) present in both; median displacement 0,0; 0 moved` |
+| `… --source-sql "iw_gen_driver_parameters (3).sql"` | `INFO R-B6 10315 parameter rows, 10315 distinct driver_id`; the mask normalization named explicitly; **`all 1551 driver_id(s) resolve in the dump`** — with `unit_id` and `alias_text` byte-identical on every one |
+| `python build-romkontroll-negatives.py --out survey-tmp/romkontroll-negative` | 9 fixtures written |
+
+The single warning on every clean run is `R-T10 3 object(s) sit below the last
+row — the annotation cluster pattern … object_1550, object_1551, object_1552`:
+the manual-reset cluster, a production anomaly **preserved and reported, never
+corrected**. The clean runs also print `INFO R-T16` (content reaches x 3 120,
+y 1 690 on a declared 1400 × 750 viewport — expected, contract §8), `INFO R-B1`
+(output mode C — linked panel) and, without the dump, `INFO R-B6 no --source-sql:
+an invented driver_id is indistinguishable from a real one here. Run it with the
+dump`.
+
+Every negative, in `--compare` against the fixture.
+
+| Negative | exit | errors / warnings | The rules that caught it |
+|---|---|---|---|
+| `dataset-not-a-panel` (failure 1) | 1 | 7 / 44 | `R-S2`, `R-S3`, `R-S4`, `R-C1`, `R-C3`, `R-C8` — it has no `format`, no `version`, no `panel`, no `single_objects` |
+| `placeholder-overview` (failure 2) | 1 | 5 / 32 | `R-S10` (`zIndex "default"`), `R-S11` (`link_name ""` instead of the literal), `R-T1` (no container), `R-C3`, `R-C8`; plus 21 × `R-C6`, 6 × `R-C2` census and 3 × `R-C1` as warnings |
+| `container-dropped` | 1 | 2 / 21 | `R-T1`, `R-C3` |
+| `non-custom-unique-id` | 1 | 1 / 2 | `R-T2` — the silent-vanish case; nothing else in the file is wrong |
+| `compressed-to-viewport` | 1 | 4 / 2 | `R-T10`, `R-T11`, `R-T13` — squeezing 3 120 × 1 690 of content into 1400 × 750 |
+| `column-dropped` | 1 | 2 / 4 | `R-T4`, `R-C4` |
+| `text-sorted-rooms` | 1 | 2 / 2 | `R-T12`, `R-C3` — rooms ordered as text rather than by floor and number |
+| `half-linked` | 1 | 2 / 1 | `R-B3`, `R-C7` — **not** `R-B1`, which reports mode `"mixed"`; see change 118 |
+| `constructed-driver-ids` | **0** | 0 / 1 | **none** without the dump. With `--source-sql`: `R-B6 1551 driver_id(s) do not exist in the dump - constructed, adapted from another plant, or invented`, exit 1 |
+
+**`constructed-driver-ids` passing a bare `--check` is the asymmetry of this
+panel type**, and it is the exact counterpart of Part 7's nine-cluster
+reconstruction passing structural validation. A driver id that is well-formed but
+fabricated is indistinguishable from a real one inside the document; only the
+plant's parameter dump can tell them apart. That is stated in contract §11.6, in
+QA stage 4, in the preflight's Block B and in `R-B1`'s runtime note — and it is
+why §7.1's rule is *copy verbatim*, never construct.
+
+No visual QA was run, deliberately: see change 119.
+
+---
+
+## Files changed in Part 8
+
+| File | Change | Existed before? |
+|---|---|---|
+| `AI-REQUEST-ROUTING.md` | **New.** `GLOBAL` intent-routing owner, 7 sections, the two verbatim statements (104) | No |
+| `ROMKONTROLL-GENERATION-CONTRACT.md` | **New.** Measured-geometry owner, 15 sections, 1 036 lines (105) | No |
+| `ROMKONTROLL-AUTHORING-GUIDE.md` | **New.** Procedure, the fifteen pre-generation questions, the acceptance gate (106) | No |
+| `ROMKONTROLL-QA-CHECKLIST.md` | **New.** Stages 0–7; stage 0 runs on the request, not the artifact (107) | No |
+| `ROMKONTROLL-COPILOT-PREFLIGHT.md` | **New.** Blocks A/B/C, 8 027 chars (108) | No |
+| `build-romkontroll-fixture.py` | **New.** Masking sanitizer, E18 → E19, plus `--report` (109) | No |
+| `reference_data/romkontroll-8653-sanitized.json` | **New.** 1 553 objects, 1 table container, 1 802 items, plant masked (109) | No |
+| `build-romkontroll-rules.py` | **New.** Generator for `panel_types.romkontroll_table` (110) | No |
+| `documentation-rules.json` | `panel_types.romkontroll_table` (22 keys), the `TEMPLATE-8653-ROMKONTROLL` profile, evidence E18–E21, two scope tags — regenerated, not hand-edited (110) | Yes |
+| `validate-romkontroll-panel.py` | **New.** `R-S*` / `R-T*` / `R-B*` / `R-P*` / `R-C*`; `--check`, `--profile`, `--compare`, `--source-sql` (111) | No |
+| `build-romkontroll-negatives.py` | **New.** Nine negatives, including both real failures (112) | No |
+| `tests/test_romkontroll_8653_contract.py` | **New.** 97 tests, 5 skipping without the dump (112) | No |
+| `CLAUDE.md` | Routing file first in the kit list; the fixture bullet; the room-control-table section with five host facts (113) | Yes |
+| `LIST-PANEL-GENERATION-CONTRACT.md` | Three scope statements (§1.1, §5.1, §12); no rule changed (114) | Yes |
+| `AI-BRIEFING.txt` | Route-first header with both verbatim statements; routing and romkontroll entries in "does not own"; §7c scope; §7d disambiguation; §9 widened and a new self-check block (115) | Yes |
+| `AI-AGENT-INSTRUCTIONS.txt` | Room-table route added inside the cap; the OBJECT template relabelled as the unlinked one; containers, LAYOUT and self-check corrected; paid for in itemized cuts; 7 914 chars / 7 949 worst case (116) | Yes |
+| `PANEL-TYPE-GUIDE.md` | Three container-built families; the room-control-table section (117) | Yes |
+| `../README.md` | The kit list now names `AI-REQUEST-ROUTING.md` first, and the instructions-field character count is corrected from 7 971 to the measured **7 914** — a claim change 116 falsified | Yes |
+| `documentation-change-log.md` | This part; evidence E18–E21 and two scope tags added at the head | Yes |
+| `reference_data/panel-conventions.json` | **Untouched**, deliberately (119) | Yes |
+| `AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt`, `CLAUDE-REVISED.md` | **Untouched**, deliberately (119) | Yes |
+| `iwmac-panel_8653_tabell-romkontroll-alle-plan_20260810-2157.json` (E18) | **Not modified, not committed** — the brief's first constraint (119) | n/a |
+
+The negatives written to `survey-tmp/romkontroll-negative/` are regenerated on
+demand and are not committed, matching the Oversikt and Maskin convention.
+
+---
+
+## What Part 8 deliberately did not do
+
+- **Did not modify the known-good export.** E18 is byte-identical to the file
+  supplied with the task. Every measurement is reproduced from E19, and
+  `build-romkontroll-fixture.py --report` re-derives all of them.
+- **Did not invent a coordinate, `obj_id`, driver id, unit id, alias, room name,
+  column or plant id.** Where a fact could not be measured it is listed as an
+  open item in contract §15 rather than filled in. The verbatim-copy rule (§7.1)
+  is the same principle applied to the generator's own output.
+- **Did not generalize one export.** Every geometry figure is tagged
+  `TEMPLATE-8653-ROMKONTROLL`. 34 columns, 50 rooms, 8 floors, 1 553 objects and
+  1 802 items describe one building. Only structure — two layers, one container,
+  `custom_`, verbatim identifiers, viewport-not-boundary — is tagged
+  `ROMKONTROLL`.
+- **Did not weaken a validation rule to make anything pass.** The one allowlist
+  widening (`RC-C2`) is driven by a production id used 1 700 times, names the
+  registry-only ids it admits, and still rejects an id present in neither
+  registry and all 39 retired ids. Where this pass's own prose disagreed with the
+  validator, the prose was corrected — change 118 records all three cases.
+- **Did not resolve a conflict by averaging or by deletion.** `RC-C1`–`RC-C5`
+  each name a winner or keep both under explicit scopes, and the older rule keeps
+  its wording in every case. `RC-C4` is a conflict with the commissioning task
+  itself, recorded rather than quietly adopted.
+- **Did not overwrite a historical finding.** Findings continue at 104; evidence
+  continues at E18; conflicts use the fresh `RC-C*` namespace; validator rules
+  use the fresh `R-*` namespace. Nothing from Parts 1–7 was renumbered, reworded
+  or removed.
+- **Did not present a count as a target.** Every count in every new document is
+  annotated where it appears, and `R-P*`, `R-C2` and `PANEL-TYPE-GUIDE.md` all
+  repeat the caveat at the point of use.
+- **Did not correct a production anomaly.** The three annotation objects below
+  the last row, the two objects with no binding, the single `number_v3_60px_json_obj`
+  and the two `zIndex "1100"` objects are preserved in E19 and reported as
+  warnings.
+- **Did not commit the supplied export, the parameter dump, or either failed
+  generation.** E18, E20 and E21 stay outside the repository; E19 reproduces
+  every measurement without a plant id or a live driver id, and the negatives
+  builder reproduces both failure shapes synthetically.
+- **Did not build a renderer.** Stated as a decision, with its reason, in change
+  119.
+- **Did not claim to have inspected files it was not given.** E21 is recorded
+  from the task's own description of the two rejected generations; the files
+  themselves were not supplied to this pass, and the evidence table says so.
