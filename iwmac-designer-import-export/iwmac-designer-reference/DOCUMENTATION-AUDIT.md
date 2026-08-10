@@ -3,6 +3,13 @@
 Audit of the documentation set that an AI reads before generating a
 `360.NNN Ventilasjon` panel. Date: 2026-08-09.
 
+> **This file now carries two audits.** Everything down to "Files changed by
+> this audit" is the ventilation audit of 2026-08-09, findings **F1–F21**,
+> unchanged. The [addendum](#addendum--2026-08-10-the-oversikt-store-overview-incident)
+> at the end audits the same document set against the **Oversikt** (store
+> overview) panel type after a real failure, findings **F22–F28**, using the same
+> severity scale.
+
 **Objective.** Make the set reliable enough that another AI produces a
 production-quality panel without repeated visual corrections.
 
@@ -621,3 +628,240 @@ Open items. **Nothing below was guessed.**
 | [DESIGN-OBJECT-CATALOG.md](DESIGN-OBJECT-CATALOG.md) | Regenerated from the corrected generator |
 
 **No production reference JSON was modified.** No parameter ID was invented.
+
+---
+
+# Addendum — 2026-08-10: the Oversikt (store overview) incident
+
+**Scope.** Everything above is the ventilation audit of 2026-08-09 and is
+unchanged. This addendum audits the same document set against a different panel
+type, after a real failure. It uses the same severity scale and continues the
+finding numbering at **F22**. Nothing above was re-measured, and no ventilation
+or Maskin rule was touched.
+
+**Evidence.** E14–E17, defined in the table at the head of
+[documentation-change-log.md](documentation-change-log.md), which owns them.
+Briefly: **E14** is the production export supplied with the task — 650 882 bytes,
+72 objects, 21 controller clusters, plant 10113, uncommitted because it carries a
+live plant id and 72 real driver ids. **E15** is E14 masked and committed as
+[reference_data/oversikt-10113-sanitized.json](reference_data/oversikt-10113-sanitized.json);
+every measurement below is reproducible from it. **E16** is the two failed
+attempts, 10 624 and 54 227 bytes, also uncommitted. **E17** is the seven
+synthetic negatives.
+
+**Documents audited against E14/E15:** [CLAUDE.md](CLAUDE.md),
+[AI-BRIEFING.txt](AI-BRIEFING.txt),
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt),
+[PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) and
+[reference_data/panel-conventions.json](reference_data/panel-conventions.json).
+
+## The incident
+
+A store-layout PDF and a production Oversikt export were supplied together, with
+a request to create or repair the panel.
+
+1. The first attempt read the PDF and produced a **dashboard-like grouping** —
+   objects regrouped into cards and rows rather than placed on the store plan.
+   10 624 bytes.
+2. The second attempt imitated the *appearance* of a store overview but rebuilt
+   it from the drawing: **9 controller clusters, some misplaced**. 54 227 bytes.
+3. The supplied export holds **72 objects in 21 controller clusters** — 21 alarm
+   bells, 21 value boxes, 15 cooling symbols and 15 defrost symbols.
+
+So the second attempt delivered **43 %** of the store's instrumented positions,
+and it did so from a file that was already correct and already in hand. The
+correct recovery was never a rebuild: it was to preserve the supplied export and
+patch only what the request actually changed.
+
+**The failure mode is not a malformed panel.** Both attempts parse. The
+nine-cluster reconstruction has valid structure, a real background, correct
+object vocabulary, clean bindings and no overlaps — it inserts without an error
+and looks like an Oversikt. It is simply missing more than half the store, and
+nothing inside a single document says how many controllers a store has.
+
+## Root cause
+
+Seven findings. Each is a property of the documentation set, not of the agent
+that read it.
+
+### F22 (S1 — wrong). MODE D authorized rebuilding a panel that was already supplied
+
+`AI-BRIEFING.txt` §7b MODE D applied to **any** byggeplan or store-plan upload:
+draw a simplified plan, place one cluster per position, take aliases from the
+plan labels. It carried no clause excluding the case where a production export
+of the same panel was also supplied.
+`AI-AGENT-INSTRUCTIONS.txt` carried the same mode in compressed form, with the
+same omission.
+
+This is the exact path the incident took. An agent holding both a PDF and an
+export followed the mode that matched the *PDF*, because that was the only mode
+whose trigger it recognized. **Fixed** in both files: MODE D is now gated on *no
+production export of the panel existing*, its result must be labelled a draft,
+and both files state that with an export in hand the export is patched instead.
+
+### F23 (S1 — wrong). One cluster geometry was published as if it were universal
+
+The case cluster appeared once, in `panel-conventions.json`, as a fleet median
+over 28 occurrences from 16 stores — and was reprinted in `CLAUDE.md` with no
+scope tag. It reads as *the* cluster geometry. It is the geometry of **no single
+panel**: it separates the cooling and defrost symbols by (18, 3), while on E15
+those two symbols are deliberately **coincident** on all 15 clusters that have
+them.
+
+**Fixed** by recording both measurements side by side with explicit scope tags —
+`FLEET-194` and `TEMPLATE-10113` — and an instruction not to average them
+(conflict `OV-C1`). The survey file was **not** overwritten: it is the only
+fleet-level evidence in the repository, and replacing its median with one store's
+numbers would be the averaging the source-precedence rule forbids.
+
+### F24 (S3 — misleading). A hand-off was documented as a layout
+
+MODE B emits one cluster per position on a **90 px grid**. That is legitimate —
+it is a *kit* the human drags onto the floor plan after insert. Nothing said so.
+Read as a layout, it produces precisely the dashboard the first attempt
+delivered.
+
+**Fixed**: MODE B in both the briefing and the instructions file now states that
+a kit is a hand-off and must be labelled one, and that a delivered panel whose
+clusters sit in a grid is a defect (conflict `OV-C2`). `O-G06` detects it.
+
+### F25 (S2 — undetermined). Cluster membership had no stated rule
+
+Every worked example showed four objects per controller. Nothing said whether
+four was a requirement, a convention or a coincidence. On E15, **15 of 21**
+clusters carry all four roles and **6 carry alarm plus value only** — those six
+controllers do not expose cooling or defrost.
+
+Left undetermined, an agent picks a number, and both available guesses are
+wrong: force four and it invents bindings; drop to two and it deletes real ones.
+**Fixed**: coverage is derived from the source in every document that mentions
+it, `PANEL-TYPE-GUIDE.md` carries a "not always four" rule, and the validator
+reports partial clusters as `INFO`, never as a warning — a warning would push
+authors to "repair" real panels.
+
+### F26 (S2 — undetermined). No step in any procedure counted anything
+
+There was no Oversikt procedure at all, and the generic ones never inventory the
+source. An agent could complete every documented step and still not know that
+twelve controllers were missing, because no step asked.
+
+**Fixed**: `OVERSIKT-AUTHORING-GUIDE.md` step 3 is a controller-and-case
+inventory with a **hard stop** — if the inventory cannot be completed, the
+deliverable is the inventory plus a named gap, not a panel.
+
+### F27 (S4 — structural). No document owned the Oversikt rules
+
+The cluster was described in three files, in three different shapes, none of
+them authoritative: a fleet median in `panel-conventions.json`, a 90 px kit grid
+in `AI-BRIEFING.txt` §7b, and a prose summary in `PANEL-TYPE-GUIDE.md`. This is
+the same category-4 gap F19 recorded for ventilation, on a different panel type.
+
+**Fixed**: `OVERSIKT-GENERATION-CONTRACT.md` is the single owner; the other four
+files carry routing tables pointing at it and keep only what they own.
+
+### F28 (S3 — misleading). Structural validity was the whole acceptance bar
+
+The implicit bar was "the JSON parses and inserts". The nine-cluster
+reconstruction clears it. So does a panel with every cluster in the wrong room.
+
+**Fixed**: `OVERSIKT-QA-CHECKLIST.md` separates necessary from sufficient in
+Stage 0 and states in the file what the validator cannot see; the compare mode
+exists specifically to catch what a single document cannot express; and Stage F
+(render and look at it) cannot be satisfied by any script.
+
+## Corrective controls
+
+| Finding | Control | Where it lives |
+|---|---|---|
+| F22 | MODE D gated on no export existing; preserve-and-patch outranks every mode below it | `AI-BRIEFING.txt` §7b, `AI-AGENT-INSTRUCTIONS.txt` |
+| F22 | `O-C01`/`O-C03` — dropped objects and missing controllers are errors in compare mode | `validate-oversikt-panel.py` |
+| F23 | Both measurements published with scope tags and a do-not-average rule | `CLAUDE.md`, `AI-BRIEFING.txt`, contract §12 (`OV-C1`) |
+| F24 | Kit must be labelled a kit; lattice detection | briefing/instructions MODE B; `O-G06` |
+| F25 | Coverage derived from the source; partial clusters are `INFO`; padding is an error | contract §8, `O-G05`, `O-C05` |
+| F26 | Inventory step with a hard stop before any edit | `OVERSIKT-AUTHORING-GUIDE.md` step 3 |
+| F27 | One owner document; routing tables in the other four files | `OVERSIKT-GENERATION-CONTRACT.md` |
+| F28 | Staged QA; mandatory render; `--compare` and `--profile` modes | `OVERSIKT-QA-CHECKLIST.md`, `validate-oversikt-panel.py` |
+| all | The rules as data, regenerated not hand-edited, with `--check` asserted by a test | `build-oversikt-rules.py`, `documentation-rules.json` |
+
+**The load-bearing one is `--compare`.** Omission cannot be detected inside a
+single document, so no amount of prose or structural validation would have
+caught this incident. Comparison against the supplied source would have caught
+it on the first attempt, in one command.
+
+## Files changed by this addendum
+
+| File | Change |
+|---|---|
+| [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) | **New.** Measured geometry, coverage contract, conflicts `OV-C1`–`OV-C3`, the incident (§13), open evidence (§15) |
+| [OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) | **New.** 11-step procedure with the inventory hard stop |
+| [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) | **New.** Stage 0 and Stages A–G |
+| [OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) | **New.** 20-item short form for a Copilot knowledge file |
+| [validate-oversikt-panel.py](validate-oversikt-panel.py) | **New.** `--check`, `--profile`, `--compare` |
+| [build-oversikt-rules.py](build-oversikt-rules.py) | **New.** Generator for `panel_types.oversikt`; `--check` |
+| [build-oversikt-fixture.py](build-oversikt-fixture.py) | **New.** Masking sanitizer, E14 → E15 |
+| [build-oversikt-negatives.py](build-oversikt-negatives.py) | **New.** Seven negatives |
+| [render-oversikt-panel.py](render-oversikt-panel.py) | **New.** Native-size preview with source-ghost overlay |
+| [reference_data/oversikt-10113-sanitized.json](reference_data/oversikt-10113-sanitized.json) | **New.** The masked reference, 72 objects |
+| [tests/test_oversikt_10113_contract.py](tests/test_oversikt_10113_contract.py) | **New.** 56 tests |
+| [documentation-rules.json](documentation-rules.json) | `panel_types.oversikt`, the `TEMPLATE-10113` profile, E14–E17, two scope tags — regenerated |
+| [CLAUDE.md](CLAUDE.md) | F23, F27 applied; Oversikt routing and five host facts added |
+| [AI-BRIEFING.txt](AI-BRIEFING.txt) | F22, F23, F24, F25, F27 applied in place |
+| [AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) | F22, F24, F27 applied in place, inside the 8 000-character cap |
+| [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) | F25, F27 applied in place |
+| [documentation-change-log.md](documentation-change-log.md) | Part 7; evidence E14–E17 |
+| [reference_data/panel-conventions.json](reference_data/panel-conventions.json) | **Unchanged, deliberately** — see F23 |
+
+`AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt` and
+`CLAUDE-REVISED.md` were **not** given Oversikt content: per their own status
+headers they are change records, and mirroring the contract into them would
+recreate the multiple-owner problem F27 records.
+
+## Tests added
+
+Run from `iwmac-designer-reference/`. The repository convention is per-module —
+`discover -s tests` fails because `tests/` has no `__init__.py`.
+
+| Command | Covers | Result |
+|---|---|---|
+| `python -m unittest tests.test_oversikt_10113_contract` | The fixture's structure and counts, controller identity and matching under renumbering, each of the seven negatives failing on the rule it breaks, and `build-oversikt-rules.py --check` | Ran 56 tests — **OK** |
+| `python -m unittest tests.test_maskin_10229_contract tests.test_maskin_compressor_bank tests.test_list_panel_contract tests.test_ventilation_profile_9099 tests.test_build_ventilation_corpus` | Regression across every earlier panel type | Ran 188 tests — **OK** |
+| `python validate-oversikt-panel.py reference_data/oversikt-10113-sanitized.json [--profile TEMPLATE-10113]` | The reference passes clean in both modes | 0 errors, 2 warnings, exit 0 |
+| `python validate-oversikt-panel.py --compare <src> <src>` | The legitimate case: partial clusters preserved | 0 errors, exit 0 |
+| `python build-oversikt-negatives.py --out survey-tmp/oversikt-negatives` then `--compare` each | All seven negatives | exit 1 on all seven |
+
+The two warnings on the clean runs are the `O-G07` overlaps — two production
+adjacencies preserved from E14 and deliberately not corrected.
+
+**The negative that matters most is `nine-cluster-reconstruction`**, the incident
+itself. It **passes** a bare `--check` and fails only under `--compare` or
+`--profile TEMPLATE-10113`, with `O-C03` naming all twelve missing controllers.
+That asymmetry is stated in every document this addendum lists, because it is
+the lesson.
+
+## Remaining evidence gaps
+
+Nine open items, owned by [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md)
+§15, which states what would settle each. Summarized here so the audit reads
+standalone; §15 wins on any difference.
+
+1. **One export, one store, one chain.** Every Oversikt coordinate in the
+   repository comes from E14. There is exactly one measured profile.
+2. **The fleet survey cannot be re-derived.** `panel-conventions.json` records a
+   median over 28 clusters from 16 stores; those source exports are not in the
+   repository, so `OV-C1` and `OV-C3` cannot be resolved, only recorded.
+3. **Navigation is unobserved.** All 72 objects carry the placeholder
+   `link_name` `"link_name"` and empty `link_tag`, `sub_group` and `unit_ref`.
+4. **Why six clusters carry only two roles is inferred, not confirmed.** The 15
+   four-role clusters are all `000:NNN`; the 6 two-role ones are exactly
+   `C50`–`C52` and `U86`–`U88`. A parameter dump would settle it.
+5. **Canvas.** Only 1400 × 750 has been seen for this panel type.
+6. **The two `O-G07` overlaps** are recorded as genuine adjacencies on the store
+   plan; that reading has not been confirmed against the plan itself.
+7. **The 21 single-space `tag_text` values** have no known origin.
+8. **The incident's PDF was not retained**, so the specific way it under-listed
+   positions cannot be measured.
+9. **Byggeplan as an input class is unmeasured** — no Oversikt in the repository
+   is known to have been produced from one.
+
+**A stated gap is a deliverable; a guess is not.** Nothing above was inferred
+from a second source and presented as measured.

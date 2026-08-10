@@ -20,6 +20,12 @@ WHAT IT DOES NOT OWN, and where to look instead:
   z-bands, anomalies .............. MASKIN-GENERATION-CONTRACT.md
                                     (measured, with evidence ids and
                                     scope tags)
+  exact Oversikt geometry, cluster
+  shapes, coverage, anomalies ..... OVERSIKT-GENERATION-CONTRACT.md
+                                    (measured, with evidence ids and
+                                    scope tags; owns every Oversikt,
+                                    store-overview, case-position and
+                                    byggeplan rule)
   building a list panel from a
   table (spjeldliste) ............. LIST-PANEL-GENERATION-CONTRACT.md
                                     (measured geometry, column mapping,
@@ -30,18 +36,25 @@ WHAT IT DOES NOT OWN, and where to look instead:
   how to author a Maskin panel .... MASKIN-AUTHORING-GUIDE.md
                                     (the 10-step procedure, the four
                                     request classes, failure catalogue)
+  how to author an Oversikt ....... OVERSIKT-AUTHORING-GUIDE.md
+                                    (the 11-step procedure, the five
+                                    input classes, failure catalogue)
   is my panel correct ............. VENTILATION-QA-CHECKLIST.md
                                     MASKIN-QA-CHECKLIST.md
+                                    OVERSIKT-QA-CHECKLIST.md
   the same rules for a validator .. documentation-rules.json
-                                    (run validate-ventilation-panel.py
-                                    or validate-maskin-panel.py)
+                                    (run validate-ventilation-panel.py,
+                                    validate-maskin-panel.py or
+                                    validate-oversikt-panel.py)
   a block for a Copilot prompt .... VENTILATION-COPILOT-PREFLIGHT.md
                                     MASKIN-COPILOT-PREFLIGHT.md
+                                    OVERSIKT-COPILOT-PREFLIGHT.md
   how the Designer itself works ... iwmac-designer-reference/CLAUDE.md
 
-Sections 7a and 7c reprint the ventilation and list-panel measurements so
-this briefing stays usable when it is the only file uploaded. WHERE A
-REPRINTED NUMBER DISAGREES WITH VENTILATION-GEOMETRY-CONTRACT.md (7a),
+Sections 7a and 7c reprint the ventilation and list-panel measurements, and
+7b reprints the Oversikt cluster measurements, so this briefing stays usable
+when it is the only file uploaded. WHERE A REPRINTED NUMBER DISAGREES WITH
+VENTILATION-GEOMETRY-CONTRACT.md (7a), OVERSIKT-GENERATION-CONTRACT.md (7b),
 LIST-PANEL-GENERATION-CONTRACT.md (7c) OR MASKIN-GENERATION-CONTRACT.md
 (the MASKIN blocks), THE CONTRACT WINS - it carries the evidence id, the
 scope tag and the measurement date, and this file does not. Maskin
@@ -67,6 +80,8 @@ exactly one list, and it is not restated anywhere else.
   3. The measured, evidence-tagged geometry contract for the panel type
      in hand: VENTILATION-GEOMETRY-CONTRACT.md for a Ventilasjon panel,
      MASKIN-GENERATION-CONTRACT.md for a Maskin / machine-room panel,
+     OVERSIKT-GENERATION-CONTRACT.md for an Oversikt / store-overview /
+     case-position / byggeplan panel,
      LIST-PANEL-GENERATION-CONTRACT.md for a spjeldliste or any other
      container-built list panel.
   4. Panel-specific rules in iwmac-designer-reference/CLAUDE.md.
@@ -1033,6 +1048,29 @@ design. Older plants
 contain legacy V2 object ids (alarm_anim.gif, number6, red_led_small,
 sub_page_1); they still render but are NOT modern style - never emit them.
 
+OVERSIKT OWNER: OVERSIKT-GENERATION-CONTRACT.md. That file is the normative
+source for any Oversikt, store-overview, case-position or byggeplan panel -
+the input routing decision tree, the preserve-and-patch rule, the controller
+identity and coverage contract, the placement rule, background and link
+preservation, the sanitization rules, and the verification report. Read it
+before generating or repairing one. OVERSIKT-AUTHORING-GUIDE.md is the
+step-by-step procedure, OVERSIKT-QA-CHECKLIST.md the acceptance tests, and
+validate-oversikt-panel.py the same rules as code. The normative reference
+export is reference_data/oversikt-10113-sanitized.json (72 objects, 21
+controller clusters, real store-plan background). The modes below are the
+summary and the standalone fallback.
+
+THE RULE THAT OUTRANKS EVERY MODE BELOW: if the user supplies a production
+panel JSON, that document is the geometric and object-coverage template.
+PRESERVE AND PATCH, NEVER REBUILD. A PDF, a byggeplan drawing or a
+screenshot may identify equipment and room names, but it may NEVER silently
+override or reduce a supplied production export - a store-layout drawing
+routinely omits instrumented positions, so fewer positions in the drawing
+than in the JSON means the DRAWING is incomplete. Report the discrepancy and
+keep the clusters. An Oversikt is a MAP, not a dashboard: regrouping its
+objects into cards, rows or a legend destroys the only thing the panel type
+exists to show, even when every object and every binding is correct.
+
 Backgrounds: every FINISHED production panel sits on a custom PNG (floor
 plan or schematic) with objects placed on top. You cannot generate that PNG,
 so you have two modes:
@@ -1046,10 +1084,17 @@ so you have two modes:
   starting x 40 y 60), each cluster labeled via alias_text with its position
   name. The human inserts your file, then drags each cluster onto the floor
   plan. Do not try to guess floor-plan coordinates.
+  A KIT IS A HAND-OFF, NEVER A FINISHED OVERSIKT. The 90 px grid is scoped
+  to this mode alone; it is not an Oversikt layout. Say in the delivery text
+  that the file is a cluster kit awaiting placement. A panel delivered as
+  finished with its clusters still in a grid is a defect (contract OV-C2).
   MODE D - BYGGEPLAN UPLOAD (when the user uploads a store floor-plan
   drawing - a byggeplan PDF/image showing walls, rooms and the
-  refrigeration fixtures): you DO have coordinates, so deliver a complete
-  Oversikt in one file:
+  refrigeration fixtures, AND NO PRODUCTION EXPORT OF THE PANEL EXISTS):
+  you DO have coordinates, so deliver a complete Oversikt in one file.
+  If a production export IS supplied, this mode does not apply: patch that
+  export instead, using the drawing only to prove a specific difference,
+  and name each patch individually.
   1. READ the plan. Room names come from its text labels (Kjolerom,
      Fryserom, Olrom, Lager, Kontor, Spiserom...); refrigeration
      fixtures are the labeled cabinet boxes (e.g. "Fryseskap ... Dorer"
@@ -1063,25 +1108,64 @@ so you have two modes:
      with small room-name texts, subtle tinted zones for cold/freezer
      rooms. No fixtures, no values, no symbols - the objects provide
      those. Keep it as plain as the production store-plan PNGs.
-  3. PLACE one CASE CLUSTER (the 4-object pattern above; 3-object
-     variant for freezer rooms) per cooling position AT its location in
+  3. PLACE one CASE CLUSTER per cooling position AT its location in
      YOUR svg's pixel space - clusters sit ON the room/cabinet they
      monitor, alias_text named from the plan's room/cabinet labels.
+     Cluster shape follows the CASE CLUSTER block below, and a plan
+     cannot prove which relays a controller exposes: from a drawing
+     alone, emit the shape you can justify and say so. Never force four
+     objects per controller to make the panel look complete.
+  3b. LABEL THE RESULT A DRAFT. From a drawing alone you have no plant
+     id, no controller addresses and no parameter aliases, so every
+     binding is empty, the coordinates are estimated at a scale you
+     must state as a number, and the delivery text says "draft". A
+     stated gap is a valid deliverable; a guessed binding is not.
   4. Add the standard trim: panel title top-left, alarm bell top-right.
   The result inserts as a finished-looking Oversikt; the human then
   links each cluster and may later replace the background with the
   drawn PNG artwork.
 
-THE CASE CLUSTER (the standard Oversikt pattern, one per disk/rom - 28
-occurrences mined across 16 stores; offsets from the cluster's top-left,
-all four link to the same case controller; a 3-member variant without the
-cooling symbol is also common on freezer rooms):
-  V3_R_34px_circular_alarm_nrm   at dx 12, dy 0    (alarm bell)
-  number_v3_40px_no_conn_no_tag  at dx 7,  dy 22   (air temperature)
-  V3_R_28px_circular_cooling_nrm at dx 10, dy 35   (cooling relay)
-  V3_R_28px_circular_defrost_nrm at dx 28, dy 38   (defrost relay)
-Footprint ~62 x 66 px. alias_text pattern: "Disk 1 Melk alarm",
-"Disk 1 Melk lufttemp", "Disk 1 Melk kjoling", "Disk 1 Melk avriming".
+THE CASE CLUSTER (the standard Oversikt pattern, one per disk/rom; every
+member links to the SAME case controller). Two measurements, two scopes -
+NEVER AVERAGE THEM, and never average either with a supplied export.
+
+  Scope FLEET-194 (this survey: 28 occurrences mined across 16 stores, plus
+  a 3-member variant without the cooling symbol, common on freezer rooms).
+  Offsets from the cluster's top-left:
+    V3_R_34px_circular_alarm_nrm   at dx 12, dy 0    (alarm bell)
+    number_v3_40px_no_conn_no_tag  at dx 7,  dy 22   (air temperature)
+    V3_R_28px_circular_cooling_nrm at dx 10, dy 35   (cooling relay)
+    V3_R_28px_circular_defrost_nrm at dx 28, dy 38   (defrost relay)
+  Footprint ~62 x 66 px.
+
+  Scope TEMPLATE-10113 (measured object by object from the committed
+  reference export, oversikt-10113-sanitized.json - 21 clusters):
+    V3_R_34px_circular_alarm_nrm   at dx 4, dy 0
+    number_v3_40px_no_conn_no_tag  at dx 0, dy 35
+    V3_R_28px_circular_cooling_nrm at dx 7, dy 58
+    V3_R_28px_circular_defrost_nrm at dx 7, dy 58   (deliberately
+      coincident with the cooling symbol - the host draws whichever state
+      is active; this is not an overlap defect)
+  Footprint 42 x 86 on 15 clusters, 42 x 57 on the alarm-plus-value ones.
+
+COVERAGE IS DERIVED, NEVER FORCED TO FOUR. On the reference panel 15
+clusters carry all four roles and 6 carry alarm plus value only, because
+those controllers expose no cooling or defrost relay. Adding a cooling or
+defrost symbol to a two-member cluster INVENTS A BINDING. Object counts and
+cluster counts are evidence, not targets: a store has as many clusters as it
+has cooling positions, and a candidate is judged against ITS OWN source.
+
+CLUSTERS ARE ATOMIC AND SPATIAL. Place every member or none, move a cluster
+with ONE vector applied to every member, and center or anchor each cluster
+on the case, cabinet or room it monitors in the background artwork. A
+cluster on empty floor, in a margin or in a grid is a defect even when its
+bindings are perfect.
+
+Z-INDEX (Oversikt scope; these are NOT the Maskin or ventilation bands):
+the value box at 110, all three circular symbols at 375, as strings.
+
+alias_text pattern: "Disk 1 Melk alarm", "Disk 1 Melk lufttemp",
+"Disk 1 Melk kjoling", "Disk 1 Melk avriming".
 
 Other production habits: Maskin panels are dominated by bare
 number_v3_value_only readings placed over the schematic plus V3_akpc state
@@ -1467,6 +1551,30 @@ VENTILASJON (7a) ONLY
 [] validate-ventilation-panel.py reports zero errors, and you said
    whether you ran it with --profile
 [] you ran VENTILATION-QA-CHECKLIST.md and reported stages A-D
+
+OVERSIKT (7b) ONLY
+[] you named the input class - PDF only, screenshot only, background
+   plus equipment list, production JSON, or production JSON plus a
+   secondary source - and the precedence rank you worked from
+[] a supplied production JSON was PRESERVED AND PATCHED, never rebuilt;
+   no PDF or screenshot reduced the panel's cluster count
+[] the controller inventory and the coverage matrix were built BEFORE
+   any object was written, from the highest-ranked source
+[] controllers grouped by unit_id, falling back to the driver_id
+   prefix - never by spatial proximity
+[] coverage derived from the source; no cluster padded to four objects
+   and no cooling or defrost symbol added without a binding to prove it
+[] every cluster sits ON the case, cabinet or room it monitors; no
+   cluster in a grid, a margin or empty floor; clusters moved whole
+[] background embedded and preserved (image_data, converted,
+   org_image_name, image_name, dimensions); no panel.image_svg_trace
+[] bindings preserved through every layout edit - no blanked driver_id
+[] z-index 110 for the value box, 375 for the circular symbols
+[] production anomalies preserved and reported, not tidied
+[] validate-oversikt-panel.py reports zero errors, AND you ran
+   --compare SOURCE.json CANDIDATE.json whenever a source existed - a
+   clean --check alone cannot see a missing cluster
+[] you ran OVERSIKT-QA-CHECKLIST.md and reported its stages
 
 EVERY PANEL, LAST
 [] any preview picture you show was drawn from these coordinates and

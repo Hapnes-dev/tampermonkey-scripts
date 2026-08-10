@@ -18,15 +18,47 @@ A per-panel-type style guide, mined 2026-08-08 from the live compiled panels of 
 
 The floor-plan panel: case clusters placed over the store layout PNG.
 
+> **Where the Oversikt rules live (2026-08-10).** This section is the style
+> summary and the fleet context. It does **not** own geometry, cluster or
+> coverage rules — one live owner per rule.
+>
+> | You need | Read |
+> |---|---|
+> | A coordinate, a role, a z-band, a cluster rule, an anomaly — each with its evidence id and scope tag | [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) — **authoritative on any Oversikt conflict** |
+> | The procedure for building, copying or repairing one | [OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) |
+> | The acceptance tests, stage by stage | [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) |
+> | The same rules as code | [documentation-rules.json](documentation-rules.json) → `python validate-oversikt-panel.py panel.json --profile TEMPLATE-10113` |
+> | A block to paste into a Copilot system prompt or upload as a knowledge file | [OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) |
+> | The file to copy | [reference_data/oversikt-10113-sanitized.json](reference_data/oversikt-10113-sanitized.json) |
+
+Four rules that override everything below when they conflict with it:
+
+- **A supplied production JSON outranks the fleet medians and example counts on
+  this page.** The export is the geometric and object-coverage template; these
+  statistics are context for a store that has no export. Never average the two.
+- **An Oversikt is a MAP, not a dashboard.** Its information content is *where*
+  each reading sits. Regrouping the same objects into cards, rows or a legend
+  destroys the only thing the panel type exists to show, even when every object
+  and binding is correct.
+- **One logical cluster per cooling position / controller**, anchored on the case
+  or room it monitors — with partial clusters wherever the *source* proves them.
+  Cluster membership is whatever the controller exposes, not a fixed four.
+- **Visual similarity is not sufficient.** A panel that looks like production and
+  omits controllers is a worse failure than one that looks wrong, because nobody
+  catches it by looking. Complete controller coverage, verified against the
+  source, is the acceptance test.
+
 - **44 panels**, median **132 objects**, ~**95% driver-linked** — the most object-dense and most fully linked panel type.
+- **The median is a fleet statistic, not a target.** The measured reference profile is 72 objects in 21 clusters; neither number is a pass mark. A store has as many clusters as it has cooling positions — build to the *controllers* the source proves and compare controller by controller.
 - Built almost entirely from the four-object **case cluster** (one per cooling position):
   - `V3_R_34px_circular_alarm_nrm` — alarm bell (1,795 uses fleet-wide)
   - `number_v3_40px_no_conn_no_tag` — temperature box (1,769)
   - `V3_R_28px_circular_defrost_nrm` — defrost symbol (1,171)
   - `V3_R_28px_circular_cooling_nrm` — cooling symbol (970)
   - All four link to the same case controller.
+  - **Not always four.** On the measured reference, 15 clusters carry all four roles and 6 carry alarm + temperature only — those controllers expose no cooling or defrost relay. Padding a partial cluster to four invents a binding. Contract §5.3.
 - Trim: `number_v3_label_12px_bold` / `_11px_norm` labels, `V3_led_21px_circ_grey_red` LEDs, `number_v3_1440x95_footer_dark` footer bar, `number_v3_header_grey75` headers, occasional `number_v3_rc_temp_sp_60` room-temp boxes.
-- Background: the store floor plan PNG (30–70 KB).
+- Background: the store floor plan PNG (30–70 KB). It owns the static store — walls, room outlines, case boxes, captions; the objects own the live symbols only.
 - **Best copy sources:** 9982 EXTRA Fauske (240 obj, 100% linked) · 9856 EXTRA Løten (215, 100%) · 9857 EXTRA Otta (207, 100%) · 9673 Extra Vennesla (206, 100%).
 
 ## Maskin (CO₂ rack / machine room) — every plant has one

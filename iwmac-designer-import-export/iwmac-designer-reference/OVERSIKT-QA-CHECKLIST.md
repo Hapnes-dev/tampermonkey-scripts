@@ -1,0 +1,306 @@
+# Oversikt QA checklist
+
+> Acceptance tests for a store-overview panel — new, copied or patched. The
+> rules being tested live in
+> [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md); the
+> procedure that produces the panel is
+> [OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md).
+>
+> Work the stages in order. Stage 0 is cheap and catches most of it; stages A–F
+> catch what a script cannot see.
+
+## Stage 0 — Run the validator
+
+```bash
+python validate-oversikt-panel.py PANEL.json
+```
+
+When a production export was supplied — **always**, no exceptions:
+
+```bash
+python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json
+```
+
+When the panel is (or claims to be) the plant-10113 store overview:
+
+```bash
+python validate-oversikt-panel.py PANEL.json --profile TEMPLATE-10113
+```
+
+Exit status 0 means no `error` findings. `info` and `warning` findings still
+need reading — `O-G05` (partial clusters) and `O-G02` (non-cluster objects) are
+information about the panel, not complaints about it.
+
+### What the validator cannot check
+
+It reads structure and geometry. It does not know your store.
+
+| It cannot tell you | Only this can |
+|---|---|
+| Whether a cluster sits on **its own** case in the artwork | the render, stage C |
+| Whether a missing cluster is missing — **without a source** | `--compare`, or `--profile` |
+| Whether a `driver_id` names a parameter the controller actually exposes | the plant's parameter dump |
+| Whether an `alias_text` describes what the object really reads | a human who knows the plant |
+| Whether the background artwork is the right store | the render, stage C |
+| Whether a partial cluster is partial *because the controller is* | the controller's own parameter list |
+
+> **A clean run is necessary, never sufficient.** The nine-cluster
+> reconstruction that triggered this checklist passes a bare `--check` with zero
+> findings above `info`: valid envelope, real background, catalogue-valid object
+> types, clean bindings, no overlaps — and more than half the store missing.
+
+### The rule ids
+
+| Prefix | Namespace |
+|---|---|
+| `O-S*` | structure — envelope, fields, geometry, background, catalogue |
+| `O-G*` | relationships — controllers, clusters, coverage, layout shape |
+| `O-P*` | profile — this panel against a named template |
+| `O-C*` | compare — this candidate against its source |
+
+The full table with severities is contract §0.4.
+
+## Stage A — Structural
+
+Every item is checked by `--check`; verify them by reading the findings, not by
+assuming a green exit meant each one was looked at.
+
+- [ ] **Envelope** is `iwmac-designer-panel`, `version: 1`, with a `panel`
+      object. `O-S01`
+- [ ] **`counts` equals the array lengths** — `single_objects`, `containers`,
+      `graphics`. A count that disagrees is the first sign of a hand edit.
+      `O-S02`
+- [ ] **All 17 fields on every object**: `obj_id, name, id, posWidth, posHeight,
+      posLeft, posTop, zIndex, tag_text, linked, link_name, link_tag, sub_group,
+      driver_id, unit_id, unit_ref, alias_text`. No extras. `O-S03`
+- [ ] **Names are unique**, and `object_0 … object_N-1` in sequence. Duplicates
+      are an error; a gap in the sequence is a warning, because the host renames
+      from the canvas child index on insert. `O-S04`
+- [ ] **Every `obj_id` exists in the catalogue**
+      ([reference_data/all-design-objects.json](reference_data/all-design-objects.json)).
+      An unknown id renders as a broken `undefined`-class box. `O-S10`
+- [ ] **Geometry parses, is non-negative and stays on canvas.** An Oversikt does
+      not scroll — that is the list panel. `O-S05`
+- [ ] **Canvas** matches the plant. 1400 × 750 is the standard; an export that
+      says otherwise is right about its own plant. `O-S06`
+- [ ] **Text is UTF-8** — `°C`, never `gr C`, and no mojibake in `alias_text`,
+      `tag_text`, `link_name` or `sub_group`. `O-S11`
+- [ ] **`zIndex` mode is consistent**: explicit bands *or* the literal
+      `"default"` throughout — never mixed. Value boxes 110, circular symbols
+      375. `O-S12`
+- [ ] **`containers` and `graphics` are empty.** An Oversikt is single objects
+      over artwork; containers are the list-panel pattern.
+
+## Stage B — Background
+
+- [ ] **`panel.image_data` is present** and `panel.converted` is `"true"`.
+      `O-S07`
+- [ ] **`panel.image_svg_trace` is absent.** It is export-only AI input; the host
+      deletes it on insert, and emitting it is a defect. `O-S08`
+- [ ] **On a patch, the background is byte-identical to the source** —
+      `image_data`, `converted`, `org_image_name`, `image_name` and the canvas
+      dimensions. `O-C13`, `O-C14`, `O-C15`
+- [ ] **No live value, alarm colour or dynamic symbol is baked into the
+      artwork.** A drawn reading is frozen and nobody can tell by looking.
+- [ ] **The background is the light store plan.** No dark artwork, not even when
+      the plant's existing panel is dark.
+- [ ] **The artwork is the right store** — walls, rooms and cases match the plan
+      the clusters were placed against.
+
+## Stage C — Controllers, clusters and coverage
+
+This is the stage the 2026-08-10 incident would have failed.
+
+- [ ] **Every object has an identity** — a `unit_id`, or a `driver_id` whose
+      first five underscore fields give a controller. `O-G01`
+- [ ] **Clusters were grouped by identity, not by proximity.** Proximity merges
+      adjacent cases and splits nudged ones, and both look right on screen.
+- [ ] **Every source controller is present in the candidate.** The headline
+      check. `O-C03`
+- [ ] **No controller exists only in the candidate** — that is an invented
+      binding or a rewritten identity. `O-C04`
+- [ ] **No unexplained additions or removals of objects.** Each one named, with
+      a reason. `O-C01`, `O-C02`
+- [ ] **Per-controller coverage matches the source**, role by role. `O-C05`,
+      `O-P04`
+- [ ] **No role appears twice on one controller** — one controller is one
+      position, and a duplicated cluster shows two cases where there is one.
+      `O-G04`
+- [ ] **Partial clusters were left partial.** A controller with no cooling or
+      defrost relay has nothing to show; padding it to four invents a binding.
+      `O-G05` is *info*, and staying at info is the pass condition.
+- [ ] **No cluster is torn apart** — every member within the cluster span.
+      `O-G03`
+- [ ] **Per-type counts are reported** — alarm / value / cooling / defrost — and
+      **labelled as evidence, not targets**. `O-G00`
+- [ ] **The counts were judged against this panel's own source**, never against
+      another store, the fleet median, or the 21/21/15/15 of the committed
+      fixture.
+
+### The coverage matrix
+
+Reproduce it in the delivery, source versus candidate:
+
+| controller | alarm | value | cooling | defrost | label | source coordinate | background target |
+|---|---|---|---|---|---|---|---|
+
+A blank cell is a fact about the controller. It is not a gap to fill.
+
+## Stage D — Placement and layout shape
+
+Compare **by role and by controller, never by array index.** Two exports of the
+same panel routinely order their objects differently: index-by-index they look
+almost entirely different, and matched by identity they are the same drawing.
+Every `O-C*` finding is produced by identity matching for this reason.
+
+- [ ] **Every cluster is anchored on the case, cabinet or room it monitors.** A
+      cluster on empty floor or in a margin is a defect even with perfect
+      bindings.
+- [ ] **Nothing moved that was not asked to move.** A displacement over 20 px is
+      an error; below it, a nudge. `O-C06`
+- [ ] **A cluster that did move, moved whole** — one vector, every member,
+      internal offsets intact.
+- [ ] **The clusters are not on a regular lattice.** A grid of cards is a
+      **CLUSTER KIT** hand-off, and a kit must be labelled a kit, never delivered
+      as a finished panel. `O-G06`
+- [ ] **Overlaps are explained.** Coincident cooling/defrost on the *same*
+      controller is deliberate — the host draws whichever state is active.
+      Anything else needs a reason. `O-G07`
+- [ ] **No object is hidden** behind another, or stacked outside its z-band such
+      that it never renders. `O-S12`, `O-C11`
+- [ ] **No duplicate labels** — two captions naming the same case read as two
+      cases.
+- [ ] **Known anomalies survived.** An inverted cluster, a `tag_text` of a single
+      space, a duplicated alias: report them, do not tidy them.
+
+## Stage E — Links and sanitization
+
+- [ ] **No binding was blanked.** `driver_id`, `unit_id` and `alias_text` survive
+      a layout correction. `O-C07`
+- [ ] **No binding was changed** unless the task asked for it, and each change is
+      named. `O-C08`
+- [ ] **`linked` agrees with `driver_id`.** A `driver_id` with `linked` not
+      `"true"` is an error; `linked:"true"` with an empty `driver_id` is
+      legitimate host behaviour on a real export. `O-S09`
+- [ ] **No object was retyped.** A purpose-built symbol replaced by a generic
+      value pill is reported with both type names. `O-C09`
+- [ ] **No driver id was constructed.** They are copied verbatim from the plant's
+      parameter dump; the group digits differ per driver type.
+- [ ] **On a known template, no unfamiliar aliases.** An alias this template's
+      objects have never carried is the shape an invented binding takes. `O-P07`
+- [ ] **Array order is preserved on a patch.** `O-C12`
+- [ ] **For a committed reference**: the *masked production* profile was used —
+      plant field of `driver_id` → `NNNNN`, `plant_id` / `saved_by` /
+      `org_image_name` / `image_name` blanked, and **`unit_id` preserved**. The
+      global unlinked-demo contract blanks `unit_id`, which on an Oversikt
+      deletes the cluster structure the reference exists to carry. Re-run
+      [build-oversikt-fixture.py](build-oversikt-fixture.py); do not hand-edit.
+
+## Stage F — Render, and the draft rule
+
+- [ ] **A preview was rendered and looked at.**
+
+```bash
+python render-oversikt-panel.py PANEL.json -o panel-preview.html
+```
+
+```bash
+python render-oversikt-panel.py CANDIDATE.json --source SOURCE.json -o panel-preview.html
+```
+
+- [ ] **The preview embeds the actual background** and draws **all** objects. A
+      preview without the store plan proves nothing: every placement rule is
+      about where an object sits relative to the store.
+- [ ] **With a source, the ghosts line up.** Dashed source clusters under the
+      candidate make a displaced cluster obvious and a missing one unmissable.
+- [ ] **Every cluster reads as one thing** on its case — not two, not a floating
+      pair.
+- [ ] **The preview was not committed.** `*-preview.html` and `_preview-*.html`
+      are git-ignored on purpose.
+
+### If the input was a PDF or a screenshot only
+
+- [ ] **The deliverable is labelled a draft**, in the delivery text, not only in
+      a comment.
+- [ ] **Every binding is empty** — no `driver_id`, no `unit_id`, no `link_tag`.
+- [ ] **No plant id, tag or navigation target was invented.** An invented
+      binding looks linked and reads nothing.
+- [ ] **The missing evidence is disclosed by name** — no controller addresses, no
+      parameter aliases, coordinates estimated at a stated scale.
+- [ ] **For a screenshot, the scale factor is stated as a number.**
+
+## Stage G — Import and save
+
+- [ ] **Insert onto an empty canvas.** Insert *appends*; on a populated panel it
+      duplicates every object.
+- [ ] **Object names renumber on insert** — expected, from the live canvas child
+      index. Only order and uniqueness carry information.
+- [ ] **Re-export after insert and compare** with the file you inserted. Only the
+      `object_N` names may differ.
+- [ ] **A compiled panel lands `visible=1`** whatever the save popup posted.
+      Hide it afterwards via the panel-order manager if it should not be live.
+
+## The verification report
+
+Eight items — contract §11. A delivery missing any of them is incomplete.
+
+1. The input class, named exactly.
+2. The source precedence rank the geometry came from.
+3. The coverage matrix, source versus candidate.
+4. Per-type counts, labelled as evidence and not as targets.
+5. Every cluster added, removed, moved or relinked, with its reason.
+6. The exact validator commands run, and their output.
+7. The render inspected, and what was checked in it.
+8. Every evidence gap, stated as a gap and kept separate from what was verified.
+
+## Test commands
+
+Run from `iwmac-designer-reference/`. The repo convention is per-module —
+`discover -s tests` fails because `tests/` has no `__init__.py`, and adding one
+is not the fix.
+
+```bash
+python -m unittest tests.test_oversikt_10113_contract
+```
+
+```bash
+python -m unittest tests.test_maskin_10229_contract tests.test_maskin_compressor_bank tests.test_list_panel_contract tests.test_ventilation_profile_9099 tests.test_build_ventilation_corpus
+```
+
+Regenerate the rules from the fixture, and fail if they have drifted:
+
+```bash
+python build-oversikt-rules.py --check
+```
+
+Rebuild the seven negative fixtures into a scratch directory (they are
+deliberately not committed — each would embed another copy of the 48 kB store
+plan):
+
+```bash
+python build-oversikt-negatives.py --out survey-tmp/oversikt-negatives
+```
+
+## Regression prompt
+
+Run this against any agent given the kit:
+
+> *"Here is our store overview panel export and the store layout PDF. Move the
+> two clusters in the back room onto their correct cases."*
+
+It passes only if the answer:
+
+- recognises that a production JSON was supplied, and says so;
+- **preserves and patches** — returns all 72 objects, not a rebuild;
+- moves exactly two clusters, whole, each with one vector;
+- leaves the other 19 controllers untouched — geometry, bindings, order and all;
+- keeps the embedded background byte-identical;
+- treats the PDF as identification only, and reports rather than acts on any
+  position the PDF omits;
+- reports the coverage matrix and per-type counts, labelled as evidence;
+- runs `--compare` against the supplied export and shows a clean result apart
+  from the two intended `O-C06` moves.
+
+It fails if the answer rebuilds the panel from the PDF, returns fewer clusters
+than it received, pads a two-member cluster to four, blanks a binding while
+"tidying", or delivers a grid.
