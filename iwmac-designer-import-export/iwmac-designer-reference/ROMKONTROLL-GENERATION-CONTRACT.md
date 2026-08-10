@@ -1034,3 +1034,23 @@ IWMAC_ROMKONTROLL_SQL="/path/to/iw_gen_driver_parameters.sql" python -m unittest
 | One `table_container`; value/alarm object split; centred placement in a cell; header repeat; room-per-row; empty cell for a missing signal; column = one `menu` code | `ROMKONTROLL` |
 | The 34 columns and their widths, the 50 rooms, the menu codes, the header band tops, the `_AL*` suffix list, the reset cluster, the counts 1553/1802/1300/250 | `TEMPLATE-8653-ROMKONTROLL` |
 | "Prefer a production-observed `obj_id` to an unobserved one" | `ADVISORY` |
+
+---
+
+## 16. Open evidence
+
+Nine items that **cannot be settled from E18–E21 or from anything in this
+repository**. They are listed rather than guessed, and each names what would
+settle it. A stated gap is a deliverable; a plausible assumption is not.
+
+| # | Open | What would settle it |
+|---|---|---|
+| 1 | **Whether anything in §6 and §9 generalizes.** There is exactly one measured room-control table. The 90 px signal-column width, the 27 px row pitch, the three header bands, the room ordering and the column set are all `TEMPLATE-8653-ROMKONTROLL`, and nothing distinguishes "how this panel type is built" from "how this building's panel was built". | A second `Tabell romkontroll alle plan` export from a different plant. Until then `--profile` is the only mode that can assert any of it |
+| 2 | **Whether the host rebuilds container items from `num_of_col`/`num_of_rows` on load.** `container_tool.js:3699-3849` builds them when a table is *created* in the Designer; whether a document carrying the grid dimensions but no `items` array is repopulated on Insert, or arrives as an empty frame, is untested. E18 carries all 1,802 items, so authoring them is the path with evidence behind it. | Inserting a table document with an empty `items` array into a live Designer and reading the DOM back |
+| 3 | **The two objects with no binding** (`driver_id ""`, still `linked "true"` by host rule). Spares, a deleted signal, or an editing artifact — the parameter dump cannot be consulted for a row that was never referenced. | The panel's author, or a later export of the same panel |
+| 4 | **The three objects below the last row** (`object_1550`–`object_1552`, the manual-reset cluster, `zIndex "1100"` on two of them). Whether an annotation cluster outside the grid is a convention of this panel type or one author's addition. | A second export showing or not showing the same pattern |
+| 5 | **`number_v3_60px_json_obj`, used exactly once** among 1,300 `number_v3_value_only` cells. The registry defines it; what makes one cell need it is not observable from a single instance. | Another panel using it, or the signal's parameter row |
+| 6 | **`val_width "100"` against the measured 90 px signal columns.** The contract records both and lays out from the measured widths. Whether `val_width` is an authored constant, a host default, or a stale value left by an editing session is unknown. | The Designer's table-creation dialog, or a second table with different column widths |
+| 7 | **Why body cells carry `tag_text " "` — a single space rather than `""`.** The same single-space anomaly appears on the Oversikt reference (Part 7), so it is at least not unique to this panel type, but its origin is unestablished in both. | The host code path that writes cell `tag_text`, or an export made immediately after table creation |
+| 8 | **Whether column order carries meaning.** §9 maps this building's 34 columns to `menu` codes in the order they appear. Whether that order is prescribed, alphabetical in some source, or the order the author added them cannot be told from one panel. | A second export, or the Designer's column-add flow |
+| 9 | **E21 is second-hand.** The two rejected generations were described in the commissioning task, not supplied as files. `build-romkontroll-negatives.py` reproduces the described shapes and the rule ids in §13 are measured against those reproductions. If the real files differed in some respect that was not described, that difference is unknown. | The two files themselves |

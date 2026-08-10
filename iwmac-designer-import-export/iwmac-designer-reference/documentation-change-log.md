@@ -1757,7 +1757,7 @@ more facts.
 |---|---|
 | **Original** | No document owned this panel type. The word *romkontroll* in the repository meant the **hotel floor plan** (`AI-BRIEFING.txt` §7d, `rc_*` card objects over a drawing). A "tabell romkontroll alle plan" request therefore landed on the floor-plan rules, on the spjeldliste rules, or on nothing. |
 | **Problem found** | The panel type that produced the incident had no owner, no example, no vocabulary and no validator, while sharing its name with a panel type that has all four. |
-| **Revised** | **New file, 1 036 lines / 62 086 characters, 15 sections.** Routing and the companion table (which source is authoritative for which *kind* of fact); source precedence, scope tags and evidence; **§1** what this panel type is, with a classification test to run first and an explicit list of what it may not be; **§2** the envelope, every field classified; **§3** all 17 `single_objects` fields with real examples, the seven constants, and §3.1 on `linked` being host behaviour rather than an assertion; **§4** the container and its 1 802 items; **§5** object selection by signal role, with §5.1 the measured alarm rule; **§6** geometry — origin, columns, rows and header bands, where an object sits inside its cell, z-index, rooms and floors, missing signals; **§7** verbatim extraction from `iw_gen_driver_parameters`, with the cross-check and encoding; **§8** viewport versus content extent; **§9** the measured column → signal map; **§10** the three output modes; **§11** the validation contract, including §11.6 on what the validator cannot see; **§12** conflicts `RC-C1`–`RC-C5`; **§13** the two rejected generations traced defect by defect; **§14** regression tests; **§15** the scope summary. |
+| **Revised** | **New file, 1 056 lines / 65 604 characters, 16 sections.** Routing and the companion table (which source is authoritative for which *kind* of fact); source precedence, scope tags and evidence; **§1** what this panel type is, with a classification test to run first and an explicit list of what it may not be; **§2** the envelope, every field classified; **§3** all 17 `single_objects` fields with real examples, the seven constants, and §3.1 on `linked` being host behaviour rather than an assertion; **§4** the container and its 1 802 items; **§5** object selection by signal role, with §5.1 the measured alarm rule; **§6** geometry — origin, columns, rows and header bands, where an object sits inside its cell, z-index, rooms and floors, missing signals; **§7** verbatim extraction from `iw_gen_driver_parameters`, with the cross-check and encoding; **§8** viewport versus content extent; **§9** the measured column → signal map; **§10** the three output modes; **§11** the validation contract, including §11.6 on what the validator cannot see; **§12** conflicts `RC-C1`–`RC-C5`; **§13** the two rejected generations traced defect by defect; **§14** regression tests; **§15** the scope summary; **§16** nine open evidence items, each with what would settle it. |
 | **Reason** | The brief requires one live owner per rule, a documented envelope, all 17 fields, object-selection rules by signal role, exact parameter extraction and the across-all-floors table rules. Splitting them across existing files would have produced the third description of the same panel that `OV-C1` already shows is how contradictions start. |
 | **Source** | E18, reproduced from E19; E20 for §7; `container_tool.js` and `V3scripts.js` for host behaviour, cited by line. |
 | **Files** | `ROMKONTROLL-GENERATION-CONTRACT.md` (new) |
@@ -2019,7 +2019,7 @@ No visual QA was run, deliberately: see change 119.
 | File | Change | Existed before? |
 |---|---|---|
 | `AI-REQUEST-ROUTING.md` | **New.** `GLOBAL` intent-routing owner, 7 sections, the two verbatim statements (104) | No |
-| `ROMKONTROLL-GENERATION-CONTRACT.md` | **New.** Measured-geometry owner, 15 sections, 1 036 lines (105) | No |
+| `ROMKONTROLL-GENERATION-CONTRACT.md` | **New.** Measured-geometry owner, 16 sections, 1 056 lines (105) | No |
 | `ROMKONTROLL-AUTHORING-GUIDE.md` | **New.** Procedure, the fifteen pre-generation questions, the acceptance gate (106) | No |
 | `ROMKONTROLL-QA-CHECKLIST.md` | **New.** Stages 0–7; stage 0 runs on the request, not the artifact (107) | No |
 | `ROMKONTROLL-COPILOT-PREFLIGHT.md` | **New.** Blocks A/B/C, 8 027 chars (108) | No |
@@ -2053,7 +2053,7 @@ demand and are not committed, matching the Oversikt and Maskin convention.
   `build-romkontroll-fixture.py --report` re-derives all of them.
 - **Did not invent a coordinate, `obj_id`, driver id, unit id, alias, room name,
   column or plant id.** Where a fact could not be measured it is listed as an
-  open item in contract §15 rather than filled in. The verbatim-copy rule (§7.1)
+  open item in contract §16 rather than filled in. The verbatim-copy rule (§7.1)
   is the same principle applied to the generator's own output.
 - **Did not generalize one export.** Every geometry figure is tagged
   `TEMPLATE-8653-ROMKONTROLL`. 34 columns, 50 rooms, 8 floors, 1 553 objects and
