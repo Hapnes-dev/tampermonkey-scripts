@@ -54,9 +54,21 @@ python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-sco
 `--patch-scope` is what makes the check strict. It names the differences that are
 **allowed** and reports every other one, so `compressor-addition` fails a
 candidate that also moved a receiver pill, dropped an object, or left the
-background byte-identical. The scopes are `compressor-addition`,
+background byte-identical. The scopes are `compressor-addition`, `artwork-only`,
 `background-only`, `position` and `none`; omitting the flag downgrades the
 preservation findings to warnings.
+
+**For an artwork edit delivered as a full document — equipment removed, a circuit
+rerouted, a background recoloured — the scope is `artwork-only`:**
+
+```bash
+python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope artwork-only
+```
+
+The background must change and **every pre-existing object must be
+field-identical**, with nothing added and nothing dropped. `M-C06` states that
+verdict explicitly, pass or fail, because "I only changed the drawing" is exactly
+the claim this workflow makes.
 
 ### What the validator cannot check
 
@@ -79,8 +91,10 @@ every delivery carries a gaps section.
 | `M-S01…M-S10` | always | envelope, counts, fields, names, bounds, z bands, background, binding mode, encoding, residue |
 | `M-G01…M-G07` | always | palette, band ownership, setpoint pill, compressor clusters, duplicates, suction groups, pill size |
 | `M-P01…M-P05` | only with `--profile` | roles present, coordinates, z per role, absent-by-design, canvas and background fingerprint |
-| `M-C01…M-C05` | only with `--compare` | objects dropped, what may be added, columns atomic across the pair, patch scope held, background and canvas |
+| `M-C01…M-C06` | only with `--compare` | objects dropped, what may be added, columns atomic across the pair, patch scope held, background and canvas, and object preservation during an artwork-only edit |
 | `M-A01…M-A09` | **never — not validator rules** | one translation vector, alpha, per-source measurement, every row, junction continuity, artwork-before-objects, restart-not-patch, alias always, gaps reported. Enforced by stage C below and by `tests/test_maskin_compressor_bank.py` |
+| `M-A10…M-A19` | **never — not validator rules** | source retention, protection boundary, background fill, cleanup residue, routing inventory, crossings and bypasses, thickness and alpha, junction ledger and connectivity, diff scope, phase order. Enforced by stage **C0b** below, by `tests/test_maskin_equipment_removal.py` and by `maskin-visual-qa.py` |
+| `M-X01…M-X07` | **never — not validator rules** | the seven gaps that stop output instead of producing a guess. Enforced by the delivery naming them |
 
 ## Stage A — Structural
 
@@ -189,6 +203,72 @@ below is invisible once pills and strips cover the junction.
       dynamic objects that will land on them. (`M-A01`)
 - [ ] **Nothing that already existed moved.** Compare against the retained
       original, not against the previous attempt.
+
+### C0b. Equipment removal and circuit rerouting — the required evidence
+
+Run this instead of C0 when the edit **removed** static equipment, rerouted a
+circuit, or changed the background colour. Rules:
+[contract §17](MASKIN-GENERATION-CONTRACT.md#17-removing-static-equipment-and-rerouting-a-circuit--m-a10m-a19-m-c06)
+(`M-A10`–`M-A19`). Deterministic helper:
+
+```bash
+python maskin-visual-qa.py CANDIDATE.json --original SOURCE.json --spec ROUTING.json --out qa/
+```
+
+It decodes the delivered background, writes the crops and their
+nearest-neighbour magnifications, runs the pixel checks and emits
+`qa-manifest.json`. **It proves continuity, cross-section, protection and scope.
+It does not decide whether the drawing is right** — that is what the renders are
+for, and the manifest lists what it did not decide.
+
+**The deliverables. A full-panel preview alone is not acceptable evidence** — a
+one-pixel gap is invisible in a scaled screenshot:
+
+- [ ] **Background-only render at native 1400 × 750**, nothing on top.
+- [ ] **Full panel render at native size**, with the dynamic objects.
+- [ ] **A crop of the receiver, or of whichever equipment the edit was near.**
+- [ ] **One crop per edited crossing.**
+- [ ] **One crop per edited junction.**
+- [ ] **A high-magnification nearest-neighbour pixel crop of each critical
+      junction.** Nearest neighbour: any smoothing invents the continuity the
+      crop exists to check.
+- [ ] **Before-and-after crops at the same bounds**, from the retained original.
+- [ ] **A report listing every modified bounding box.**
+
+**The checks** (each one is a line in `qa-manifest.json`):
+
+- [ ] **The requested component is fully gone**, and nothing else with it.
+      (`M-A11`)
+- [ ] **Every protected component is byte-identical to the retained original** —
+      the receiver as one atomic cluster, plus every other vessel, valve, sensor
+      mark, label and neighbouring pipe on the list from phase 2. (`M-A11`)
+- [ ] **The background is the requested colour at several sampled blank points**,
+      across the main canvas *and* the sidebar, with **no fully transparent pixel
+      left**. Transparency is not a colour. (`M-A12`)
+- [ ] **No cleanup residue inside the edit masks** — no colour that belongs to no
+      circuit and no declared artwork, and no partial alpha the circuit's
+      measured profile does not have. (`M-A13`)
+- [ ] **Every non-connected crossing carries its bypass**, in the foreground
+      circuit's own style, visible at native size, with the crossed pipe still
+      continuous and the two circuits touching nowhere else. (`M-A15`)
+- [ ] **Every repaired run matches the adjacent untouched source run**, row for
+      row, alpha for alpha, horizontal and vertical measured separately.
+      (`M-A16`)
+- [ ] **The junction ledger is complete and every row passes.** One row per
+      connection the edit touched — not only the one in the latest screenshot —
+      each with both endpoints, the expected shared rectangle, the circuit's
+      colour and alpha pattern, and pass/fail. A junction fails on a background
+      gap, on a line that stops short, and on **only the antialiasing rows
+      touching while the opaque centrelines stay apart**. (`M-A17`)
+- [ ] **Each edited circuit still reaches all of its anchors** as one connected
+      component, with intentional non-connected crossings excluded. (`M-A17`)
+- [ ] **Changes outside the union of the documented edit masks are zero.**
+      (`M-A18`)
+- [ ] **If the background colour changed globally, the two diff scopes are
+      reported independently** — the background conversion and the local artwork
+      edit — and the protected foreground artwork is unchanged in both. (`M-A18`)
+- [ ] **The phases ran in order** (`M-A19`), and every failed iteration restarted
+      from the retained original rather than patching the derivative (`M-A10`).
 
 ### C1. Full panel
 
@@ -304,11 +384,18 @@ python build-maskin-rules.py --check
 ## Test commands
 
 ```bash
-python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_10229_contract
+python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_equipment_removal tests.test_maskin_10229_contract tests.test_maskin_knowledge_bundle
 ```
 
 ```bash
 python -m unittest tests.test_build_ventilation_corpus tests.test_list_panel_contract tests.test_maskin_compressor_bank tests.test_ventilation_profile_9099 tests.test_maskin_10229_contract
+```
+
+The generated artefacts have their own freshness checks; run them after touching
+any source they are built from:
+
+```bash
+python build-maskin-rules.py --check && python build-maskin-knowledge.py --check && python build-maskin-removal-fixture.py --check
 ```
 
 > **The repo convention is per-module.** `python -m unittest discover -s tests`
@@ -353,3 +440,44 @@ or because point 6 was answered by changing the drawing — four more:
 An answer that emits three loose objects, or that clones C1 and brings a VSD row
 with it, or that silently "tidies" the anomalies, fails. So does one that ships a
 faded clone, a gap at the header, or `alias_text: ""`.
+
+## Regression prompt — equipment removal and rerouting
+
+> *"Remove the internal heat exchanger in the bottom-right of this machine
+> picture and route the Liq. consumer line directly to the receiver. Normal light
+> background please."*
+
+It passes only if the answer:
+
+1. calls it an **artwork modification**, and names the class - 3 for an empty
+   canvas, 4 for a populated one, and asks or delivers both when the target is
+   not stated;
+2. removes **no Designer object**, and says so;
+3. states that the original background was decoded and retained, and that every
+   retry restarts from it (`M-A10`);
+4. lists the **protected components** before erasing - the receiver as one
+   atomic cluster, plus the neighbouring pipes, valves and labels - and the
+   smallest safe edit mask (`M-A11`);
+5. treats the **background colour as its own operation**, flattens only
+   confirmed background pixels, never all dark pixels, and samples several blank
+   points afterwards (`M-A12`);
+6. produces the **circuit-routing inventory before changing pixels**, with the
+   colours sampled from the supplied raster rather than assumed (`M-A14`);
+7. decides, explicitly, whether the new route's crossing with the suction
+   circuit **connects**, and draws a visible bypass when it does not (`M-A15`);
+8. reproduces the liquid line's own measured profile, **including its
+   antialiasing rows**, rather than a generic width (`M-A16`);
+9. delivers a **junction ledger** covering every connection the edit touched,
+   with a connected-component check that the circuit still reaches its anchors
+   (`M-A17`);
+10. reports the **pixel diff in two scopes** - background conversion and local
+    artwork - with zero changes outside the documented masks (`M-A18`);
+11. shows the **background-only render, the full-panel render, and the crops**:
+    receiver, each crossing, each junction, one nearest-neighbour magnification
+    per critical junction, and before/after at the same bounds;
+12. runs `--patch-scope artwork-only` and reports the `M-C06` verdict, while
+    saying plainly that it proves preservation and not pixels.
+
+An answer that erases a rectangle around the exchanger, flattens the canvas to
+black, draws the new line straight through the suction riser, or shows one
+scaled full-panel screenshot as its evidence, fails.

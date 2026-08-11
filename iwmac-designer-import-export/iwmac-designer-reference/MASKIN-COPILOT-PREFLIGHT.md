@@ -1,6 +1,44 @@
 IWMAC MASKIN PREFLIGHT. Machine room, CO2 booster. Work every step before
 emitting JSON.
 
+DECISION TREE. Answer all ten before writing anything. Each answer selects which
+rules apply. A question you cannot answer from the supplied evidence is a STOP
+and a reported gap, never a default - see point 22.
+
+  A LIVE OR ARTWORK. Is the request about a live value or object, or about
+    static artwork? Pipes, equipment symbols, static labels, empty pills and
+    the background are ARTWORK. If only artwork changes, no Designer object is
+    added, moved or removed - not even one whose drawn pill disappeared.
+  B SUPPLIED EXPORT. Is a panel JSON supplied? If yes it is the geometric
+    template and it outranks every document here. If no, say which profile you
+    are working from and what it does not cover.
+  C TARGET CANVAS. Are objects already present on the canvas this will be
+    inserted onto? Empty canvas takes a FULL document. Populated canvas takes
+    BACKGROUND PICTURE ONLY - a patch with zero counts and three empty arrays.
+    Insert appends; a full document on a populated canvas duplicates everything.
+  D REMOVAL. Is equipment being removed? Then list the exact component, list
+    every protected neighbour touching it, and build the smallest safe mask
+    before erasing one pixel.
+  E CROSSING. Does the new or moved route cross another circuit? Enumerate
+    every crossing, not just the obvious one.
+  F CONNECTED OR NOT. For each crossing: do the two circuits connect? A
+    junction means the pixels touch continuously. A non-connected crossing
+    means one circuit visibly bridges the other. Decide it; never leave it to
+    whatever the drawing happens to produce.
+  G PIPE STYLE. Which source pixels define each edited pipe? Sample colour,
+    thickness, per-row alpha and antialiasing rows from the supplied raster,
+    horizontal and vertical separately. There is no default width.
+  H PROTECTED. Which equipment and labels must not change? The receiver is one
+    atomic cluster - body, rounded ends, outline, internal detail, level bar,
+    labels, connection pixels. Same for every other complex symbol.
+  I JUNCTIONS. Have all affected junctions been enumerated - every connection
+    the edit touched, not only the one in the latest screenshot?
+  J VISUAL QA. Did the background-only render AND the full-panel render both
+    pass, at native size, with the required crops? One scaled preview is not
+    evidence.
+
+END DECISION TREE
+
 1 PRECEDENCE, highest first. Never average two conflicting coordinates.
   1 panel JSON or screenshot supplied with this task  2 production export of the
   same panel and machine type  3 MASKIN-GENERATION-CONTRACT.md  4 panel rules in
@@ -169,3 +207,67 @@ emitting JSON.
    compressor's Danfoss parameters are NOT in it. The group anatomy suggests
    the continuation, and suggesting is not evidence: leave it open until that
    plant's own parameter dump is supplied.
+
+21 REMOVING EQUIPMENT AND REROUTING A CIRCUIT IS AN ORDERED PROCEDURE, and the
+   order is the rule. It is an ARTWORK modification: class 3 when the target
+   canvas is empty, class 4 background-only when it is populated, and no
+   Designer object is removed unless the user names one.
+   a Decode and RETAIN the original background. Work on a copy. Every failed
+   iteration restarts from the retained original or from a checkpoint the user
+   named, never from the damaged derivative, and never from a previous preview
+   of your own. b List the protected neighbours before erasing - vessels,
+   valves, sensor marks, pipes, arrows, labels, value fields, empty pills - and
+   build the SMALLEST safe mask. Never a large rectangle across mixed artwork.
+   The receiver is ATOMIC: body, rounded ends, outline, internal detail, level
+   bar, labels, connection pixels; if a cleanup reaches its boundary, restore
+   the whole vessel from source before continuing. c Write the circuit-routing
+   inventory BEFORE changing pixels: role, sampled colour, centreline,
+   horizontal and vertical thickness, per-row alpha, antialiasing rows, start
+   and end anchors, every bend, every crossing, every junction, connected or
+   not, bypass required or not, and which run owns which arrow and label.
+   d Remove only the requested component. e Restore protected neighbours from
+   source. f Restore every underlying pipe that must stay continuous. g Draw
+   the new route in the circuit's own sampled style. h Draw the bypass at every
+   non-connected crossing. i Restore labels and arrows from source. j Validate
+   background colour, then pipe profiles, then EVERY junction. k Render the
+   background ALONE at native size, then the full panel with objects. l Emit
+   the deliverables only after both renders pass.
+   BACKGROUND COLOUR IS A SEPARATE OPERATION from equipment removal. Transparent
+   pixels are not a background colour - they show whatever is behind them, which
+   is how a panel asked for light arrives black. Flatten only confirmed
+   background pixels to the requested colour, taken from the requirement or from
+   a clean sample of the source background. NEVER replace all dark pixels: dark
+   text, outlines, arrows and symbols are artwork. Sample several blank points
+   across the canvas and the sidebar afterwards. Report the background diff and
+   the artwork diff SEPARATELY, and keep every change outside the documented
+   edit masks at zero.
+
+22 CROSSING IS NOT JUNCTION, AND A GAP IS NOT A STYLE. Junction: two segments of
+   one circuit are connected, so their opaque cores touch continuously. Crossing
+   without connection: the circuits stay separate, and one must visibly bridge
+   the other. Bend: one circuit changes direction and stays continuous.
+   Termination: a run intentionally ends at equipment, a valve, an arrow or a
+   documented endpoint. Decide which applies BEFORE drawing.
+   For a non-connected crossing: keep the underlying pipe continuous, draw the
+   bypass entirely in the foreground circuit's own measured style - legs, top
+   span and returning segment at the same thickness and alpha as the rest of
+   that circuit - leave no background gap, no dark residue and no junction dot,
+   and make it visible at NATIVE size, not only when zoomed.
+   A junction FAILS when background pixels separate the segments, when a
+   horizontal stops short of a riser, when a riser stops short of a header, when
+   only the antialiasing rows touch while the opaque centrelines stay apart, or
+   when cleanup left a break on any source row of the pipe. Check every junction
+   the edit touched programmatically, then search the circuit as connected
+   components and confirm the required anchors are in one component.
+   Thickness comes from the source, never from a rule: measure each pipe
+   independently, keep every row including partial-alpha antialiasing, treat
+   horizontal and vertical as separate measurements, and match a repaired run to
+   the ADJACENT untouched run exactly. Two opaque rows plus one faint row is not
+   a two-pixel line.
+   STOP AND REPORT THE GAP, do not guess, when: the component to remove cannot
+   be localized; it is unclear whether two crossing circuits connect; the
+   original raster is unavailable; a pipe's exact source style cannot be
+   sampled; the target background colour is unspecified and cannot be derived
+   from the evidence; a required connection anchor cannot be identified; or the
+   edit would overwrite a live value field or a protected component. Name what
+   is missing, name what would resolve it, and deliver whatever IS evidenced.

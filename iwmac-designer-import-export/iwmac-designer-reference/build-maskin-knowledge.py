@@ -141,12 +141,35 @@ def render_bullets(value, indent=0):
 
 
 def _extract_preflight_rules(text):
+    """The numbered rules, contiguous from 1. Adding one must not need a code edit.
+
+    The count is not fixed here on purpose: the preflight grows when a workflow
+    is added, and a hard-coded 20 would make the generator the thing that
+    forbids it. What is checked is that the numbering has no gap and no
+    duplicate, because a skipped number means a rule was lost in an edit.
+    """
     matches = list(re.finditer(r"(?ms)^(\d{1,2}) .+?(?=^\d{1,2} |\Z)", text))
     numbers = [int(match.group(1)) for match in matches]
-    if numbers != list(range(1, 21)):
+    if not numbers or numbers != list(range(1, len(numbers) + 1)):
         raise SystemExit(
-            "MASKIN-COPILOT-PREFLIGHT.md must contain numbered rules 1..20")
+            "MASKIN-COPILOT-PREFLIGHT.md must contain numbered rules 1..N with no "
+            f"gaps; found {numbers}")
     return [match.group(0).rstrip() for match in matches]
+
+
+def _extract_decision_tree(text):
+    """The A-J decision tree, which sits ahead of the numbered rules in both files.
+
+    It is extracted rather than restated so the bundle cannot drift from the
+    preflight, and it is rendered early in the bundle because it is the block
+    that decides which of the other rules even apply.
+    """
+    match = re.search(r"(?ms)^DECISION TREE\.(.*?)^END DECISION TREE$", text)
+    if not match:
+        raise SystemExit(
+            "MASKIN-COPILOT-PREFLIGHT.md must carry a DECISION TREE ... END "
+            "DECISION TREE block ahead of the numbered rules")
+    return ("DECISION TREE." + match.group(1)).rstrip()
 
 
 def _extract_braced_block(text, marker):
@@ -411,6 +434,7 @@ def render_bundle():
             "panel_types.maskin keys changed; update the structural renderer")
 
     preflight_rules = _extract_preflight_rules(preflight_text)
+    decision_tree = _extract_decision_tree(preflight_text)
     qa_stages, qa_commands = _extract_qa(qa_text)
     envelope = _extract_braced_block(
         briefing_text, "2. THE OUTPUT FILE - EXACT SHAPE (NORMATIVE)")
@@ -453,6 +477,15 @@ def render_bundle():
         "",
         *[f"- `{name}`" for name in source_names],
         "",
+        "## Decision tree — answer this first",
+        "",
+        "Verbatim from `MASKIN-COPILOT-PREFLIGHT.md`. It decides which of the "
+        "rules below apply, so it comes before them.",
+        "",
+        "```",
+        decision_tree,
+        "```",
+        "",
         "## Source precedence",
         "",
         *render_table(("rank", "entry key", "source / rule"), precedence_rows),
@@ -479,7 +512,7 @@ def render_bundle():
         "",
         *render_bullets(rules["evidence"]["E11"]),
         "",
-        "## The 20 preflight rules — verbatim",
+        f"## The {len(preflight_rules)} preflight rules — verbatim",
         "",
     ]
     for rule in preflight_rules:

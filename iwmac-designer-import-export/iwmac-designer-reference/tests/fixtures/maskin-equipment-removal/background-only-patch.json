@@ -1,0 +1,27 @@
+{
+ "format": "iwmac-designer-panel",
+ "version": 1,
+ "generator": "masked-regression-fixture",
+ "source_plant_id": "",
+ "panel_name": "Maskin masked removal fixture",
+ "counts": {
+  "single_objects": 0,
+  "containers": 0,
+  "graphics": 0
+ },
+ "background_embedded": true,
+ "panel": {
+  "plant_id": "",
+  "panel_name": "Maskin masked removal fixture",
+  "panel_width": "96px",
+  "panel_height": "64px",
+  "org_image_name": "masked-maskin.png",
+  "image_name": "",
+  "saved_by": "",
+  "converted": "true",
+  "image_data": "fixture:raster-after.json",
+  "single_objects": [],
+  "containers": [],
+  "graphics": []
+ }
+}

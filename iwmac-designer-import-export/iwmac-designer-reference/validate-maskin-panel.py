@@ -654,6 +654,19 @@ PATCH_SCOPES = {
         "description": ("a class-4 patch: zero counts, three empty arrays, and a "
                         "background that differs from the source"),
     },
+    # Equipment removed, a circuit rerouted, a crossing bridged - all of it in
+    # the artwork - but delivered as a FULL document because the target canvas
+    # is empty. Nothing about the objects may move: the artwork changed under
+    # them, and the drawing they were positioned against is the same drawing.
+    "artwork-only": {
+        "objects": "compare",
+        "fields": (),
+        "added": "none",
+        "background": "must-change",
+        "description": ("an artwork edit delivered as a full document: every "
+                        "pre-existing object field-identical, nothing added and "
+                        "nothing dropped, and a background that actually changed"),
+    },
     "position": {
         "objects": "compare",
         "fields": ("posLeft", "posTop"),
@@ -857,6 +870,46 @@ def check_compare_background(source_panel, candidate_panel, scope, findings):
                                     f"source means something different now"))
 
 
+def check_object_preservation(source_objects, candidate_objects, pairs, dropped,
+                              added, patch_scope, findings):
+    """M-C06: when only the artwork was edited, the object layer is untouched.
+
+    An artwork edit that is delivered as a full document has one obligation the
+    other scopes state only in pieces: the object layer comes through whole -
+    same count, same roles, every field of every object identical. It is worth
+    its own verdict line because "I only changed the drawing" is the exact claim
+    an equipment removal makes, and the diff that disproves it is one field on
+    one object out of sixty-six.
+    """
+    if patch_scope != "artwork-only":
+        return
+    if len(source_objects) != len(candidate_objects):
+        findings.append(Finding("M-C06", "error",
+                                f"object count changed: {len(source_objects)} -> "
+                                f"{len(candidate_objects)}. Scope 'artwork-only' edits "
+                                f"the drawing; a live object is removed only when the "
+                                f"user names it, and then the scope is not this one"))
+    differing = [(src, cand) for src, cand in pairs
+                 if any(src.get(field) != cand.get(field) for field in OBJECT_FIELDS)]
+    if not differing and not dropped and not added:
+        findings.append(Finding("M-C06", "info",
+                                f"object preservation held: all {len(pairs)} objects "
+                                f"matched by role key and every one of the "
+                                f"{len(OBJECT_FIELDS)} fields is identical - "
+                                f"driver_id, unit_id, unit_ref, alias_text, geometry, "
+                                f"zIndex and tag_text included"))
+        return
+    detail = "; ".join(
+        f"{src.get('alias_text') or src.get('name')}: "
+        + ", ".join(field for field in OBJECT_FIELDS if src.get(field) != cand.get(field))
+        for src, cand in differing[:8])
+    if differing:
+        findings.append(Finding("M-C06", "error",
+                                f"{len(differing)} object(s) changed during an "
+                                f"artwork-only edit: {detail}. The drawing changed "
+                                f"under the objects; the objects did not move with it"))
+
+
 def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
     """Diff a candidate against the source it was derived from.
 
@@ -931,6 +984,9 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
                                     f"{len(moved)} pre-existing object(s) differ from the "
                                     f"source: {detail}. Declare --patch-scope to turn this into "
                                     f"a pass/fail check"))
+
+    check_object_preservation(source_objects, candidate_objects, pairs, dropped,
+                              added, patch_scope, findings)
 
     findings.append(Finding("M-C00", "info",
                             f"source {len(source_objects)} objects, candidate "

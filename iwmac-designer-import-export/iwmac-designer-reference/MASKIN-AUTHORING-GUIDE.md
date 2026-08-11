@@ -15,6 +15,8 @@ output schema — it says in what order to consult them.
 | Which Danfoss parameter is behind an alias | [reference_data/maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) |
 | How to prove the result is correct | [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) |
 | The artwork and compare rules — `M-A01…M-A09`, `M-C01…M-C05` | [MASKIN-GENERATION-CONTRACT.md §16](MASKIN-GENERATION-CONTRACT.md#16-extending-a-compressor-bank--artwork-raster-and-compare-rules) |
+| The removal, rerouting, background-fill, crossing and junction rules — `M-A10…M-A19`, `M-C06`, `M-X01…M-X07` | [MASKIN-GENERATION-CONTRACT.md §17](MASKIN-GENERATION-CONTRACT.md#17-removing-static-equipment-and-rerouting-a-circuit--m-a10m-a19-m-c06) |
+| The pixel checks, as code | [maskin_raster_qa.py](maskin_raster_qa.py) · [maskin-visual-qa.py](maskin-visual-qa.py) |
 | The same rules as data / as code | [documentation-rules.json](documentation-rules.json) · [validate-maskin-panel.py](validate-maskin-panel.py) |
 
 ## The procedure
@@ -24,6 +26,7 @@ output schema — it says in what order to consult them.
 3. **Decide background ownership** before placing a single object.
 4. **Place clusters whole**, never a member at a time.
    *Extending an existing bank has its own ordered procedure — §4a.*
+   *Removing equipment and rerouting a circuit has its own — §4b.*
 5. **Choose objects by role**, never by "a box that shows a number".
 6. **Land every pill on a drawn pill.**
 7. **Sanitize the bindings** — or preserve them, depending on the class.
@@ -270,6 +273,113 @@ still the acceptance test (`MASKIN-QA-CHECKLIST.md` stage C).
 stacked on a derivative accumulate raster damage that no single edit is
 responsible for (`M-A07`).
 
+## 4b. Removing static equipment and rerouting an existing circuit
+
+**Keep this separate from §4a.** Extending a compressor bank *adds* artwork and
+objects; this *removes* artwork and moves a circuit, and almost everything that
+goes wrong is a different failure. The normative rules are
+[contract §17](MASKIN-GENERATION-CONTRACT.md#17-removing-static-equipment-and-rerouting-a-circuit--m-a10m-a19-m-c06)
+(`M-A10`–`M-A19`, `M-C06`, `M-X01`–`M-X07`); this is the order to do them in.
+
+The request that triggers it: *"remove the internal heat exchanger and route the
+Liq. consumer line directly to the receiver"*, *"take out the bottom-right
+exchanger"*, *"the liquid line should go straight to the tank"*.
+
+**First, classify — it is an artwork modification, not an object change.**
+
+| The user says | You deliver |
+|---|---|
+| "…and here is the export" (empty target canvas) | **class 3**: the entire supplied document with the new `image_data` |
+| "…the panel is already built" (populated canvas) | **class 4**: a background-only patch, zero counts, three empty arrays |
+| nothing about the canvas | Ask, or deliver both and say which file is for which canvas |
+
+**No Designer object is removed because the equipment under it was.** If a value
+pill loses its drawn pill, report it. Only the user naming a live object makes it
+an object change — and then the patch scope is no longer `artwork-only`.
+
+### The fifteen phases
+
+The order is the rule (`M-A19`). Objects placed early hide background damage;
+a background flattened early hides what the erase actually did.
+
+**1. Retain the original.** Decode `panel.image_data` and keep the raster. Work
+on a copy. The retained original is the before-image for every later comparison
+and the restart point for every failed iteration (`M-A10`).
+
+**2. Mask what must not change.** List the protected neighbours before the
+erase: vessels, valves, sensor marks, pipes, arrows, labels, value fields and
+the empty pills. **The receiver is one atomic component** — body, rounded ends,
+outline, internal detail, level bar, its labels and its connection pixels
+(`M-A11`).
+
+**3. Inventory the circuits** — colour sampled from the source, centreline, both
+thicknesses, per-row alpha, antialiasing rows, anchors, bends, crossings,
+junctions, and for each crossing whether it is connected or not (`M-A14`,
+`M-A15`). **Before any pixel changes.** This is the input to every check later.
+
+**4. Remove only the requested component.** The smallest safe mask, never a big
+rectangle across mixed artwork. If the mask has to grow, go to phase 5 for what
+it touched (`M-A11`).
+
+**5. Restore protected neighbours from source.** By pixel copy from the retained
+original. A redrawn vessel is a new vessel.
+
+**6. Restore the underlying pipes that stay.** Every run the removal or the
+cleanup crossed — from source, with its own measured profile.
+
+**7. Draw the new route** in the circuit's own sampled style: same colour, same
+per-row alpha, same thickness, and the source's corner geometry at every bend
+(`M-A16`).
+
+**8. Draw the bypass at every intentional non-connected crossing** — legs, top
+span and returning segment, all in the foreground circuit's style, visible at
+native size, with the crossed pipe's continuity preserved (`M-A15`).
+
+**9. Restore labels and arrows from source** where the edit disturbed them.
+
+**10–12. Validate: background colour, then pipe profiles, then every junction.**
+Not the junction from the screenshot — every junction the edit touched, as a
+ledger with a pass/fail per row, plus a connected-component check that the
+circuit still reaches its anchors (`M-A12`, `M-A16`, `M-A17`).
+
+**13. Render the background alone, at native size.** Nothing on top.
+
+**14. Render the complete panel with the dynamic objects.**
+
+**15. Generate the deliverables** — only after both renders pass.
+
+Background-colour conversion, if it was requested, is **its own pass** with its
+own verification, and its diff is reported separately from the artwork diff
+(`M-A12`, `M-A18`).
+
+### Verify
+
+```bash
+python maskin-visual-qa.py CANDIDATE.json --original SOURCE.json --spec ROUTING.json --out qa/
+```
+
+```bash
+python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope artwork-only
+```
+
+The first cuts the crops and runs the pixel checks; the second proves the object
+layer is untouched (`M-C06`). Neither replaces looking at the two renders — and
+the structural validator sees nothing about the drawing at all.
+
+**On any visual failure, restart from the retained original** (phase 1), not
+from the last attempt. Two compensating edits hide each other rather than
+reverting, and after three nobody can tell original artwork from introduced
+damage (`M-A10`).
+
+### Stop instead of guessing
+
+Report the gap and deliver what is evidenced when the component cannot be
+localized, when it is unclear whether two crossing circuits connect, when the
+original raster is unavailable, when a pipe's style cannot be sampled, when the
+target background colour is neither specified nor derivable, when a connection
+anchor cannot be identified, or when the edit would overwrite a live value field
+or a protected component (`M-X01`–`M-X07`).
+
 ## 5. Choose objects by role
 
 | Role | `obj_id` | Size | z |
@@ -424,3 +534,12 @@ Each of these has actually happened, here or in the ventilation work.
 | The suction branch the wrong weight | the discharge measurement was reused | §4a step 4 — measure each source line (`M-A03`) |
 | Damage that no single edit explains | the derivative was patched again | §4a — restart from the retained original (`M-A07`) |
 | A new object nobody can ever link | `alias_text` left empty because the parameter was unknown | §4a step 8 — alias always, binding when evidenced (`M-A08`, `M-A09`) |
+| Part of the receiver erased with the equipment beside it | one rectangle sized for the equipment, not for the clearance | §4b phase 2 — protected components listed first (`M-A11`) |
+| A panel asked for light delivered black | transparent pixels treated as a background colour | §4b phase 10 — transparency is not a colour (`M-A12`) |
+| Dark labels gone after a background change | every dark pixel replaced globally | §4b phase 10 — flatten confirmed background only (`M-A12`) |
+| Two circuits that read as one | a new route drawn straight through another circuit | §4b phase 8 — a non-connected crossing carries a bypass (`M-A15`) |
+| A pipe visibly the wrong weight after a repair | redrawn at a remembered width instead of the measured one | §4b phase 7 — the adjacent source run is the sample (`M-A16`) |
+| A gap where the riser meets the header | only the junction in the screenshot was checked | §4b phase 12 — the ledger enumerates every junction (`M-A17`) |
+| A pipe that looks joined and is not | the antialiasing rows touch; the opaque cores do not | §4b phase 12 — junctions join cores (`M-A17`) |
+| Artwork changed in a corner nobody looked at | the final image compared with the previous attempt | §4b phase 1 — the retained original is the before-image (`M-A18`) |
+| An object silently moved during a drawing change | the object layer re-emitted rather than carried through | §4b — `--patch-scope artwork-only` (`M-C06`) |

@@ -75,9 +75,16 @@ rejection now names the box as the way through.
 > **Editing an existing Maskin background:** tick **Background picture only** — that swaps the
 > drawing and leaves every existing object untouched. **Replace** is for putting a full export
 > onto a panel whose current content you no longer want; adding a full export instead duplicates
-> every object. See [Editing an existing Maskin compressor bank from an exported
-> panel JSON](iwmac-designer-reference/reference_data/maskin-drawing-method.txt) for
-> object-preservation, measured-raster, and overlay-QA rules.
+> every object. The drawing technique is
+> [maskin-drawing-method.txt](iwmac-designer-reference/reference_data/maskin-drawing-method.txt)
+> (`R1`–`R10`); the ordered procedures are
+> [MASKIN-AUTHORING-GUIDE.md](iwmac-designer-reference/MASKIN-AUTHORING-GUIDE.md) §4a for
+> *extending a compressor bank* and §4b for *removing static equipment and rerouting a circuit*;
+> the normative rules with their evidence are
+> [MASKIN-GENERATION-CONTRACT.md](iwmac-designer-reference/MASKIN-GENERATION-CONTRACT.md) §16–§17.
+> An artwork-only edit must change **no** Designer object — prove it with
+> `validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope artwork-only`, and
+> produce the required crops and the QA manifest with `maskin-visual-qa.py`.
 
 ## What it handles for you
 

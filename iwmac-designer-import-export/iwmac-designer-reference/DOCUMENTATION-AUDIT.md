@@ -1595,3 +1595,358 @@ Created by the incident and by the fix, not found in the documents:
 **A stated gap is a deliverable; a guess is not.** No coordinate entered any
 document from E24, no parameter name was inferred from the group anatomy, and no
 artwork rule was presented as validator-enforced.
+
+---
+
+# Addendum — 2026-08-11: removing equipment and rerouting a circuit
+
+**Scope.** Everything above is unchanged: the ventilation audit of 2026-08-09
+(F1–F21), the Oversikt incident addendum of 2026-08-10 (F22–F28), the Oversikt
+centering addendum of 2026-08-11 (F29–F35) and the compressor-bank addendum of
+2026-08-11 (F36–F41). This addendum audits the **Maskin documentation set
+against a second artwork workflow** — *remove a static component from the drawing
+and route the circuit that fed it somewhere else* — after one editing session
+produced nine distinct raster defects and no failing check. Same severity scale,
+numbering continues at **F42**. No ventilation, Oversikt, list-panel or
+room-control rule was touched, and no earlier finding was reopened.
+
+**Evidence.** Two kinds, and they are labelled differently throughout:
+
+| Label | Meaning |
+|---|---|
+| *repository evidence* | text that is or is not in a committed file, quoted or cited by section |
+| *evidence from this editing incident* (**E25**) | the observed failure sequence of the 2026-08-11 session. **The intermediate rasters were derivatives and were not retained**, so nothing was measured from them — which is the incident's own first finding |
+
+**No count in this addendum is a repository-wide frequency.** Nine defects in one
+session is a description of that session. Where a rule is said to be absent, the
+absence was checked by reading the file; where a rule is said to be misread, the
+misreading is E25's, once.
+
+**What is different about this one.** The compressor-bank addendum (F36–F41)
+found a class of rule no validator can enforce and answered it with a QA stage
+and a raster fixture. This one finds that **those rules were written for the
+workflow that produced them.** `M-A01`–`M-A09` sit under a heading that reads
+*"Extending a compressor bank"*, and every one of them is phrased around a clone:
+one translation vector, alpha copied verbatim, a copied branch connects. A
+removal task inherits none of that phrasing. The panel is the same panel and the
+pixels are the same pixels — and an agent reading the kit correctly found no rule
+that named what it was doing.
+
+**Six of the nine failures were not drawing failures.** They were an erase mask
+that was never bounded, a background operation that was never separated from an
+equipment operation, a crossing whose semantics were never decided, junctions
+that were never enumerated, a comparison that was made against the previous
+attempt, and a repair stacked on a derivative. The drawing skill was not the
+missing thing.
+
+## The incident
+
+Recorded from the session, not measured (**E25**):
+
+1. Three fixed-speed MT compressors were added successfully, by cloning the C3
+   cluster. **The §16 workflow worked.**
+2. A second request removed the internal bottom-right heat exchanger and routed
+   *Liq. consumer* directly to the receiver.
+3. An oversized erase rectangle removed part of the receiver tank.
+4. Transparent pixels and opaque black cleanup pixels together produced a black
+   background where a normal light background had been requested.
+5. A direct yellow liquid line crossed a cyan pipe with no graphical bypass.
+6. Repeated cleanup left black and partial-alpha remnants on the pipe.
+7. Yellow and cyan sections were redrawn at inconsistent apparent thickness.
+8. A cleared cyan corridor left a gap at the upper horizontal-to-vertical
+   junction.
+9. Another cleared corridor left a gap where the vertical riser met the lower
+   *M-T Suct.* header.
+10. **Structural JSON checks continued to pass throughout.** Every defect existed
+    only in `panel.image_data`.
+11. Repairing a derivative repeatedly made it progressively harder to distinguish
+    original artwork from introduced damage.
+
+## Root cause
+
+**The kit had one artwork workflow and the request was the other one.** Adding
+artwork and removing artwork fail differently: an addition's risk is that the new
+thing does not match, and a removal's risk is that something else goes with it.
+Every artwork rule in the repository on 2026-08-11 was written for the first
+risk. Nothing named the second — no protection boundary, no erase-mask
+discipline, no diff scope, and no rule that a background colour and an equipment
+removal are two operations.
+
+The second root cause is narrower and worth separating: **"look at it" was the
+whole visual control.** Stage C0 said to inspect the background alone at native
+size, which is correct and which E25 satisfied by looking at a full-panel
+screenshot. Nothing said *which crops*, at *what magnification*, against *what
+baseline* — so the evidence that would have shown a one-pixel junction gap was
+never produced, and the defect survived three review rounds.
+
+### F42 (S4 — structural). No document owned equipment removal and rerouting
+
+*Repository evidence.* [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md)
+carried §4a *"Extending a compressor bank — the ordered procedure"* and no
+counterpart. [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) §16
+is titled *"Extending a compressor bank"*. The rule ids `M-A01`–`M-A09` are all
+phrased around a clone: *"one measured translation vector"*, *"compositing must
+never multiply source alpha"*, *"a copied branch connects"*, *"artwork first,
+objects second"*. `M-A07` — restart from the retained original — is the only one
+that generalises without rewording.
+
+*Consequence.* A removal request routes to the nearest procedure and inherits
+its emphasis. E25 got the translation-vector discipline it did not need and none
+of the erase discipline it did.
+
+**Corrective.** A named, separate procedure — guide §4b — and a separate
+normative section, contract §17, with its own rule namespace `M-A10`–`M-A19`.
+The classification is stated first, because the request is an *artwork*
+modification and the most expensive early error is treating it as an object one.
+
+### F43 (S2 — undetermined). Nothing said which artwork must survive an erase
+
+*Repository evidence.* Searching the kit as it stood, the words *protect*,
+*protected* and *neighbour* appear in no artwork rule. `M-A02`'s prohibition —
+*"NEVER paste an opaque rectangular crop over pipes or unrelated art"*
+([maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) `R1`) — is
+the closest text, and it is about **pasting**, not erasing. Nothing named the
+receiver, or any other symbol, as a unit that must be complete.
+
+*Evidence from this editing incident.* The erase rectangle was sized for the
+heat exchanger and clipped the receiver, which sits beside it.
+
+**Corrective.** `M-A11`: identify the exact component, identify every protected
+neighbour, determine the smallest safe edit mask, never use a large rectangular
+erase across mixed artwork, and restore from source the moment a cleanup reaches
+a protected boundary. The receiver is declared an **atomic artwork cluster** —
+body, rounded ends, outline, internal detail, level bar, labels and connection
+pixels — as is every other complex equipment symbol. Contract §17.3 carries a
+worked negative example of the failing mask.
+
+### F44 (S2 — undetermined). Transparency and background colour were never distinguished
+
+*Repository evidence.* The background-colour rule, added in Part 12, is about
+*which colour*: *"preserve the background of a supplied production export …
+Background colour is a requirement of the job, not of this method"*
+([maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) §6,
+contract §2). **No document in the kit mentions pixel alpha in the background at
+all.** An agent asked for "the normal background" therefore has no statement that
+a transparent pixel is not one.
+
+*Evidence from this editing incident.* Transparent pixels plus opaque black
+cleanup pixels produced a black panel where a normal light background was
+requested — two different mistakes with one appearance.
+
+**Corrective.** `M-A12` names four pixel classes and forbids conflating any two:
+fully transparent, opaque source background, opaque black artwork, and
+legitimately dark text and outlines. Flatten only confirmed background pixels;
+never globally replace all dark pixels; sample several blank points across the
+canvas *and* the sidebar afterwards; and keep the colour conversion as **its own
+operation**, separately verified and separately reported.
+
+### F45 (S2 — undetermined). Crossing versus junction was never a decision
+
+*Repository evidence.* `M-A05` says *"A copied branch connects."* That is the
+only statement in the kit about two runs meeting, and it assumes they should.
+Neither *crossing*, *bypass*, *bridge* nor *bend* appears as a defined term
+anywhere in the Maskin documents, so a route that crosses another circuit has no
+rule to follow and no vocabulary to report in.
+
+*Evidence from this editing incident.* The new liquid line crossed a cyan pipe
+and was drawn straight through it, which reads as a junction between two circuits
+that are not connected.
+
+**Corrective.** `M-A15` defines four things that happen where runs meet —
+junction, crossing without connection, bend, termination — and requires the
+choice to be made *before* drawing. For a non-connected crossing: the underlying
+pipe keeps its continuity, the foreground circuit is carried over by a bypass
+drawn entirely in its own measured style, the bypass is visible at native size,
+and the two circuits touch nowhere outside the one declared crossing window.
+
+### F46 (S3 — misleading). "A copied branch connects" read as covering every junction
+
+*Repository evidence.* `M-A05` and QA stage C0's first checkbox — *"The new
+branch meets the header"* — are both scoped to the branch the edit **created**.
+Nothing covered a junction the edit **passed through**, and a cleared corridor
+damages exactly those.
+
+*Evidence from this editing incident.* Two junctions broke, neither of them on a
+newly drawn branch: the upper horizontal-to-riser join and the riser-to-header
+join, both inside corridors cleared to make room for the reroute.
+
+**Corrective.** `M-A17` requires a **junction ledger**: one row per connection the
+edit touched, with both endpoints, the expected shared rectangle, the circuit's
+colour and alpha pattern, and a pass/fail — *inspected programmatically, not only
+where a screenshot pointed*. The failure modes are enumerated, including the one
+that reads as a pass: **only the antialiasing rows touching while the opaque
+centrelines stay apart.**
+
+### F47 (S3 — misleading). "Open it at 100% zoom" was answered with a scaled screenshot
+
+*Repository evidence.* QA stage C says *"Open it at **100% zoom** — a scaled
+render hides a 6 px miss"*, and stage C0 says to decode the background and open
+it *"at 100% with nothing on top"*. Both are correct. Neither names a single
+required artefact: no crop list, no magnification, no baseline, no manifest. The
+only enumerated crops in the file are stage C2's per-role crops, which are about
+pill placement.
+
+*Evidence from this editing incident.* Review proceeded on full-panel previews.
+A one-pixel junction gap is not visible in one, and it survived until it was
+looked for deliberately.
+
+**Corrective.** Stage **C0b** enumerates the deliverables — background-only
+render at native size, full-panel render, an equipment crop, one crop per edited
+crossing, one per edited junction, a nearest-neighbour magnification of each
+critical junction, before/after at the same bounds, and a list of every modified
+bounding box — and [maskin-visual-qa.py](maskin-visual-qa.py) produces them
+deterministically with a machine-readable `qa-manifest.json`. **The manifest
+states what it does not decide**, so a passing manifest cannot be read as
+semantic image validation.
+
+### F48 (S2 — undetermined). "Restart from the retained original" never said what to retain, or when
+
+*Repository evidence.* `M-A07`, `R5` and QA stage C6 all say the same thing:
+*"After a failed visual iteration, restart from the retained original"*, *"Never
+repair the next attempt on top of an already damaged crop"*. **None of them says
+to decode and keep the original before starting**, which is what makes a restart
+possible, and none defines an acceptable checkpoint. §4a step 1 comes closest —
+*"Copy the supplied export and its decoded background out of the working set"* —
+and it is one clause inside the compressor procedure.
+
+*Evidence from this editing incident.* Repairs were stacked on the derivative,
+and by the fourth iteration original artwork and introduced damage were no longer
+separable. The intermediate rasters do not exist today, which is why this
+addendum can measure nothing from the incident.
+
+**Corrective.** `M-A10` states retention as its own numbered rule: decode and
+retain before editing, work on a separate derivative, preserve the retained
+original as the **immutable before-image**, restart from it or from a
+**specifically named** accepted checkpoint, never patch a damaged derivative, and
+never use a previous assistant preview as the geometric source while the original
+raster exists.
+
+### F49 (S3 — misleading). The anti-generic-width rules lived under "extending a compressor bank"
+
+*Repository evidence.* `M-A03`, `M-A04`, `R2` and `R3` are exactly right and
+exactly the rules E25 needed — *"an anti-aliased line is 3 rows"*, *"Visual
+equality to the source outranks any generic two-pixel line-width rule"*. All four
+sit under headings about cloning a column, and all four are phrased about *the
+copy*: **reproduce** every row the source has. A repair is not a copy, and the
+word for what E25 was doing — redrawing part of an existing run — appears
+nowhere.
+
+*Evidence from this editing incident.* Yellow and cyan sections were redrawn at
+an apparent thickness that did not match the runs they joined.
+
+**Corrective.** `M-A16` restates the measurement discipline for **repairs**, and
+adds the acceptance test the clone rules did not need: a repaired segment matches
+the **adjacent untouched source segment** exactly, so the comparison is against
+the drawing rather than against the inventory alone. It also states explicitly
+that horizontal and vertical segments of one circuit may need different sampled
+profiles — the miniature fixture is built so that they do.
+
+### F50 (S2 — undetermined). Nothing checked that a circuit still reached its anchors
+
+*Repository evidence.* Every continuity statement in the kit is local: a branch
+meets a header, a junction has no gap. There is no whole-path requirement
+anywhere, so a circuit could satisfy every stated rule at every named join and
+still be in two pieces because of a break nobody named.
+
+*Evidence from this editing incident.* Two independent breaks in one circuit. Each
+was found separately, by eye, after a screenshot.
+
+**Corrective.** `M-A17` adds the whole-path check: **search the edited circuit's
+raster as connected components and confirm the required anchors belong to the
+same component**, excluding intentional non-connected crossings.
+`maskin_raster_qa.check_connectivity` implements it, and the crossing convention
+is made explicit so the check knows what may legitimately interrupt a run.
+
+### F51 (S2 — undetermined). Nothing bounded what an artwork edit was allowed to change
+
+*Repository evidence.* `M-C04` bounds what a **JSON** patch may change, per
+declared scope, and `M-C05` compares background **lengths** and says so:
+*"a background that changed is not a background that changed correctly"*. On the
+raster side there was no scope at all. The only instruction was stage C0's
+*"Nothing that already existed moved. Compare against the retained original, not
+against the previous attempt"* — a checkbox with no method behind it.
+
+*Evidence from this editing incident.* Cleanup residue accumulated in areas
+nobody had authorised as part of the edit, and it was never systematically
+compared away.
+
+**Corrective.** `M-A18`: compare with the retained original; changes outside the
+union of the documented edit masks are **zero**; and when a background-colour
+conversion was also requested, report the two scopes **independently** and
+confirm the protected foreground artwork is unchanged in both. On the JSON side,
+`M-C06` and the new `--patch-scope artwork-only` state the object-preservation
+verdict explicitly — same count, nothing added, nothing dropped, every field of
+every object identical.
+
+## Corrective controls
+
+| Finding | Control | Where |
+|---|---|---|
+| F42 | A separate named procedure and a separate normative section, with their own rule namespace | guide §4b; contract §17; `M-A10`–`M-A19` |
+| F43 | Protection boundary; the receiver declared atomic; smallest safe mask; restore-from-source on contact | `M-A11`; `check_protected_regions`, `check_component_removed` |
+| F44 | Four pixel classes; transparency is not a colour; flatten confirmed background only; conversion is its own pass | `M-A12`; `check_background_fill` |
+| F45 | Junction / crossing / bend / termination defined; the choice made before drawing; bypass in the circuit's own style | `M-A15`; `check_crossings` |
+| F46 | A junction ledger over every connection the edit touched, with the antialiasing-only failure named | `M-A17`; `check_junctions` |
+| F47 | Stage C0b's enumerated deliverables and a deterministic crop/manifest helper that states its own limits | QA stage C0b; [maskin-visual-qa.py](maskin-visual-qa.py) |
+| F48 | Retention as its own rule: decode first, derivative separate, before-image immutable, checkpoints named | `M-A10` |
+| F49 | The measurement discipline restated for repairs, with the adjacent untouched run as the acceptance sample | `M-A16`; `check_pipe_profiles` |
+| F50 | Connected-component check over the edited circuit's required anchors | `M-A17`; `check_connectivity` |
+| F51 | Raster diff scope, reported in two scopes; object preservation as a validator verdict | `M-A18`, `M-C06`; `check_diff_scope`, `--patch-scope artwork-only` |
+| all | Ten single-defect negatives, each failing the check that names its defect | `tests/test_maskin_equipment_removal.py` |
+| all | The decision tree A–J at the head of the Copilot-facing content | preflight; generated bundle |
+
+## Files changed by this addendum
+
+| File | Change |
+|---|---|
+| [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) | New §17 (owner). Rule table, evidence base (E25, E26), routing table, scope summary and §14 evidence gaps extended |
+| [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) | New §4b — fifteen ordered phases. Ten rows added to the failure catalogue |
+| [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) | New stage C0b, `artwork-only` scope, rule-id table, test commands, a second regression prompt |
+| [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) | New §5b — pixel rules `R6`–`R10` |
+| [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) | Decision tree A–J ahead of rule 1; new rules 21 and 22 |
+| [CLAUDE.md](CLAUDE.md) | Two routing rows; host fact 6 — what *Background picture only* does |
+| [../README.md](../README.md) | The Maskin-background note now points at both procedures and the two verification commands |
+| [documentation-rules.json](documentation-rules.json) | Regenerated: `M-A10`–`M-A19`, `removal_and_rerouting`, `M-C06`, `artwork-only`, E25, E26 |
+| [MASKIN-KNOWLEDGE-BUNDLE.md](MASKIN-KNOWLEDGE-BUNDLE.md) | Regenerated; carries the decision tree and all 22 preflight rules |
+| [validate-maskin-panel.py](validate-maskin-panel.py) | `artwork-only` patch scope; `M-C06` object-preservation verdict |
+| [maskin_raster_qa.py](maskin_raster_qa.py) | New — the pixel checks, one implementation |
+| [maskin-visual-qa.py](maskin-visual-qa.py) | New — crops, magnifications, before/after pairs, `qa-manifest.json` |
+| [build-maskin-removal-fixture.py](build-maskin-removal-fixture.py) | New — the E26 fixture and its ten single-defect mutators |
+| [build-maskin-rules.py](build-maskin-rules.py) | New rule blocks and evidence entries |
+| [build-maskin-knowledge.py](build-maskin-knowledge.py) | Extracts the decision tree; accepts 1..N preflight rules |
+| `tests/test_maskin_equipment_removal.py` | New — 32 tests |
+| `tests/test_maskin_knowledge_bundle.py` | Preflight count unpinned; decision-tree and workflow-presence tests added |
+
+## Remaining evidence gaps
+
+Created by the incident and by the fix, not found in the documents:
+
+1. **The E25 rasters do not exist.** They were derivatives and were not retained
+   — the incident's own first finding. Every rule in §17 is therefore stated from
+   an observed failure sequence and exercised against an instrumented miniature.
+   **No rule in this pass has been measured against the production raster it came
+   from.** One retained before/after pair from a real removal would let the
+   protection boundaries, the crossing convention and the background sample
+   points be checked rather than reasoned.
+2. **What a real Maskin's non-connected crossing looks like is unmeasured.**
+   §17.6 states the convention the drawing method's orthogonal style can express,
+   and the fixture implements it. Whether production draws a liquid-over-suction
+   crossing as a jog, as a line break, or does not draw one at all, is not
+   established by any committed file: **no committed raster in this repository
+   contains a documented crossing.**
+3. **No production background colour has been sampled into any document.**
+   `M-A12` says to derive it from the requirement or from a clean source sample,
+   and states no value — correctly, but that means the rule has never been
+   exercised against a real panel's actual canvas colour.
+4. **Stage C0b has no recorded execution**, exactly as stage C0 had none when it
+   was introduced. `maskin-visual-qa.py` makes the artefacts reproducible; it
+   cannot make a reviewer look at them, and nothing in this repository records
+   that anyone has.
+5. **The `artwork-only` scope has not been run against a real pair.** It is
+   exercised against a five-object miniature. A 66-object production pair would
+   confirm that role-key pairing behaves the same at scale — the same limitation
+   `compressor-addition` carries.
+6. **Whether a removal should ever remove an object is unresolved by evidence.**
+   §17.1 forbids it unless the user names the object, which is a judgement about
+   safety rather than a measurement. A production case where the drawn pill is
+   gone and the binding should have gone with it would test it.

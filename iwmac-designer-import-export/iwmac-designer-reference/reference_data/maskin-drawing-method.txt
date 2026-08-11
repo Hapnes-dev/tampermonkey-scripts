@@ -176,6 +176,77 @@ one-pixel registration markers and magenta field anchors are test-only colours,
 separate from the miniature art. Run the dependency-free regression with:
   python -m unittest tests.test_maskin_compressor_bank
 
+5b. Removing equipment and rerouting a circuit - the raster technique
+----------------------------------------------------------------------------
+Same division of ownership as section 5: the ordered procedure is
+MASKIN-AUTHORING-GUIDE.md #4b, the rules with ids and evidence are
+MASKIN-GENERATION-CONTRACT.md #17 (M-A10..M-A19, M-C06, M-X01..M-X07), the
+acceptance evidence is MASKIN-QA-CHECKLIST.md stage C0b, and the pixel checks
+are maskin_raster_qa.py / maskin-visual-qa.py. What stays here is the
+technique, because that is what this file owns. Five more rules, all about
+pixels, none of them visible to any JSON check.
+
+R6. AN ERASE MASK IS A SET OF SHAPES, NOT A RECTANGLE.
+    Build the mask from the component's own outline, fill, internal detail,
+    labels and connection pixels - then subtract every protected neighbour
+    that touches it. A rectangle comfortably bigger than the equipment is
+    comfortably bigger than the clearance to whatever is beside it, and on
+    this drawing that is usually a vessel. Complex equipment symbols are
+    ATOMIC: the receiver is body + rounded ends + outline + internal coil or
+    divider + level bar + its labels + its connection pixels, and a receiver
+    missing its left wall is not a receiver with a small defect, it is a
+    different symbol. If the mask reaches a protected boundary, restore that
+    whole component from the retained original by pixel copy. Redrawing it
+    produces a new symbol that no longer matches its twins elsewhere on the
+    panel.
+
+R7. FLATTEN BY PIXEL CLASS, NEVER BY BRIGHTNESS.
+    Four classes, and only one of them is background: fully transparent
+    (alpha 0 - shows whatever the host puts behind it, which is how a picture
+    asked for light arrives black), opaque source background (the canvas
+    colour THIS drawing uses, sampled from a clean area of it), opaque black
+    artwork (line work and glyph cores), and legitimately dark text, outlines
+    and arrows. Flatten the confirmed background pixels to the sampled
+    background colour and leave the other three alone. A global
+    dark-pixels-to-light replacement takes the labels with it. Sample several
+    blank points afterwards - main canvas AND the grey information panel -
+    because one sample proves one pixel. And keep the colour conversion as its
+    own pass: merged with an equipment removal, the small diff hides inside
+    the large one.
+
+R8. A NON-CONNECTED CROSSING IS DRAWN, NOT IMPLIED.
+    Two orthogonal runs cannot both be continuous and disjoint in one raster
+    layer - at the crossing, one is drawn over the other. The convention: the
+    FOREGROUND circuit is carried over by a bypass (leg up, span across, leg
+    back down, then the run continues), drawn entirely in that circuit's own
+    measured colour, thickness and per-row alpha; the crossed circuit stays
+    continuous, interrupted by the bypass span and by nothing else. No
+    background gap, no dark residue, no junction dot. Size the jog so it reads
+    at native size - a one or two pixel offset is noise, not a bypass. And the
+    two circuits must touch nowhere else: contact away from the crossing
+    window reads as a connection, which is the opposite of what the drawing is
+    saying.
+
+R9. RESTORE CONTINUITY FROM THE SOURCE, THEN CHECK IT MECHANICALLY.
+    Clearing a corridor to make room for a new run cuts whatever else passed
+    through it. Restore those runs from the retained original, with their own
+    per-row alpha, before drawing anything new. Then check every junction the
+    edit touched - not the one in the screenshot: both endpoints, the shared
+    rectangle, and whether the OPAQUE cores overlap. A join where only the
+    antialiasing rows touch reads as connected at a glance and is not. Finish
+    with a connected-component search over the circuit's own pixels: the
+    ledger proves each join, the components prove the route.
+
+R10. DIFF AGAINST THE RETAINED ORIGINAL, IN SCOPES.
+    The comparison is always with the retained original, never with the
+    previous attempt - two compensating edits hide each other rather than
+    reverting, and after three nothing is attributable. Changes outside the
+    union of the documented edit masks must be zero. When a background-colour
+    conversion was also requested, report its diff SEPARATELY from the local
+    artwork diff and confirm the protected foreground artwork is unchanged in
+    both; one combined number always hides the smaller change, and the artwork
+    change is the smaller one.
+
 6. BACKGROUND COLOUR + THE SHIPPED TEMPLATE
 --------------------------------------------------
 Background colour is a requirement of the job, not of this method:

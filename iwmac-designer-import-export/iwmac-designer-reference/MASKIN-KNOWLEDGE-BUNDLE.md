@@ -12,6 +12,48 @@ This is a single-file rendering of the live owners listed below. On any conflict
 - `AI-BRIEFING.txt`
 - `reference_data/maskin-akpc-link-map.json`
 
+## Decision tree — answer this first
+
+Verbatim from `MASKIN-COPILOT-PREFLIGHT.md`. It decides which of the rules below apply, so it comes before them.
+
+```
+DECISION TREE. Answer all ten before writing anything. Each answer selects which
+rules apply. A question you cannot answer from the supplied evidence is a STOP
+and a reported gap, never a default - see point 22.
+
+  A LIVE OR ARTWORK. Is the request about a live value or object, or about
+    static artwork? Pipes, equipment symbols, static labels, empty pills and
+    the background are ARTWORK. If only artwork changes, no Designer object is
+    added, moved or removed - not even one whose drawn pill disappeared.
+  B SUPPLIED EXPORT. Is a panel JSON supplied? If yes it is the geometric
+    template and it outranks every document here. If no, say which profile you
+    are working from and what it does not cover.
+  C TARGET CANVAS. Are objects already present on the canvas this will be
+    inserted onto? Empty canvas takes a FULL document. Populated canvas takes
+    BACKGROUND PICTURE ONLY - a patch with zero counts and three empty arrays.
+    Insert appends; a full document on a populated canvas duplicates everything.
+  D REMOVAL. Is equipment being removed? Then list the exact component, list
+    every protected neighbour touching it, and build the smallest safe mask
+    before erasing one pixel.
+  E CROSSING. Does the new or moved route cross another circuit? Enumerate
+    every crossing, not just the obvious one.
+  F CONNECTED OR NOT. For each crossing: do the two circuits connect? A
+    junction means the pixels touch continuously. A non-connected crossing
+    means one circuit visibly bridges the other. Decide it; never leave it to
+    whatever the drawing happens to produce.
+  G PIPE STYLE. Which source pixels define each edited pipe? Sample colour,
+    thickness, per-row alpha and antialiasing rows from the supplied raster,
+    horizontal and vertical separately. There is no default width.
+  H PROTECTED. Which equipment and labels must not change? The receiver is one
+    atomic cluster - body, rounded ends, outline, internal detail, level bar,
+    labels, connection pixels. Same for every other complex symbol.
+  I JUNCTIONS. Have all affected junctions been enumerated - every connection
+    the edit touched, not only the one in the latest screenshot?
+  J VISUAL QA. Did the background-only render AND the full-panel render both
+    pass, at native size, with the required crops? One scaled preview is not
+    evidence.
+```
+
 ## Source precedence
 
 | rank | entry key | source / rule |
@@ -197,6 +239,8 @@ This is a single-file rendering of the live owners listed below. On any conflict
 | E12 | reference_data/maskin-akpc-link-map.json | Alias to Danfoss AK-PC parameter map, 64/64 exact alias matches on a masked production panel, plus the relink recipe and the driver-id anatomy. This is why alias_text survives sanitization. | committed: true |
 | E13 | tests/fixtures/maskin-compressor-bank/ | Miniature 96x64 instrumented fixture for the compressor-bank editing procedure: source panel, edited full panel, background-only patch and expectations. Its marker colours, canvas and (+24,0) pitch are test instrumentation, never production geometry. | committed: true<br>sanitized: true |
 | E24 | machine-room-demo-extra-mt-compressor-connected-pipes-matched-size.json (user Downloads, NOT committed) | The delivered fourth-MT-compressor demo: a TEMPLATE-10229 unlinked panel plus one appended compressor column (status, capacity, runtime) over a background extended with the matching artwork. | committed: false<br>sanitized: true<br>panel: Maskin<br>canvas: 1400x750<br>objects: 69<br>note: An authored demo, not a measurement. It is evidence of what the workflow produced and where it failed - the three appended objects share ONE (+81,0) offset from the C3 MT column at (234,289) / (246,326) / (247,362), which is the M-A01 single-vector rule holding, and all three carry alias_text "", which is the M-A08 defect. Never cite it for production geometry: E9 and E10 own that. |
+| E25 | the 2026-08-11 equipment-removal editing session (observed; the intermediate rasters were derivatives and were NOT retained) | The incident behind M-A10 to M-A19: three MT compressors added successfully, then the internal bottom-right heat exchanger removed and the Liq. consumer line rerouted to the receiver. Nine raster defects in one sitting - an oversized erase rectangle into the receiver, transparent plus opaque-black cleanup producing a black background, a new yellow line crossing a cyan pipe with no bypass, dark and partial-alpha remnants, inconsistent redrawn thickness on both circuits, a gap at the upper horizontal-to-vertical junction and another where the riser met the M-T Suct. header - while every structural check kept passing. | committed: false<br>sanitized: false<br>panel: Maskin<br>canvas: 1400x750<br>note: An OBSERVATION, not an artifact. No coordinate, colour, thickness or count from it appears in any rule: the images no longer exist to be measured, which is the incident's own first finding (M-A10). Findings grounded in it are labelled as evidence from this editing incident. |
+| E26 | tests/fixtures/maskin-equipment-removal/ | Miniature 96x64 instrumented fixture for the removal and rerouting workflow: a receiver beside a removable heat exchanger, an antialiased liquid line, a suction riser whose vertical profile differs from its own horizontal profile, two junctions, one intentional non-connected crossing with its bypass, transparent and opaque background pixels, and text one row from the erase target. Its ten single-defect negatives are named mutators in build-maskin-removal-fixture.py rather than committed rasters. Every value in it is test instrumentation, never production geometry and never a default. | committed: true<br>sanitized: true |
 
 ## Copy source and negative example
 
@@ -220,7 +264,7 @@ This is a single-file rendering of the live owners listed below. On any conflict
 - **panel** — Maskin
 - **role** — An AUTHORED demo: 63 objects on an AI-authored image_svg background, insert-verified, aliases taken from E12. Its coordinates were composed, not measured, and its zIndex is "default" throughout. Valid as a worked example of the unlinked-demo contract and of image_svg authoring. NOT a geometry source: where it disagrees with E9/E10, E9/E10 win.
 
-## The 20 preflight rules — verbatim
+## The 22 preflight rules — verbatim
 
 1 PRECEDENCE, highest first. Never average two conflicting coordinates.
   1 panel JSON or screenshot supplied with this task  2 production export of the
@@ -390,6 +434,70 @@ This is a single-file rendering of the live owners listed below. On any conflict
    compressor's Danfoss parameters are NOT in it. The group anatomy suggests
    the continuation, and suggesting is not evidence: leave it open until that
    plant's own parameter dump is supplied.
+
+21 REMOVING EQUIPMENT AND REROUTING A CIRCUIT IS AN ORDERED PROCEDURE, and the
+   order is the rule. It is an ARTWORK modification: class 3 when the target
+   canvas is empty, class 4 background-only when it is populated, and no
+   Designer object is removed unless the user names one.
+   a Decode and RETAIN the original background. Work on a copy. Every failed
+   iteration restarts from the retained original or from a checkpoint the user
+   named, never from the damaged derivative, and never from a previous preview
+   of your own. b List the protected neighbours before erasing - vessels,
+   valves, sensor marks, pipes, arrows, labels, value fields, empty pills - and
+   build the SMALLEST safe mask. Never a large rectangle across mixed artwork.
+   The receiver is ATOMIC: body, rounded ends, outline, internal detail, level
+   bar, labels, connection pixels; if a cleanup reaches its boundary, restore
+   the whole vessel from source before continuing. c Write the circuit-routing
+   inventory BEFORE changing pixels: role, sampled colour, centreline,
+   horizontal and vertical thickness, per-row alpha, antialiasing rows, start
+   and end anchors, every bend, every crossing, every junction, connected or
+   not, bypass required or not, and which run owns which arrow and label.
+   d Remove only the requested component. e Restore protected neighbours from
+   source. f Restore every underlying pipe that must stay continuous. g Draw
+   the new route in the circuit's own sampled style. h Draw the bypass at every
+   non-connected crossing. i Restore labels and arrows from source. j Validate
+   background colour, then pipe profiles, then EVERY junction. k Render the
+   background ALONE at native size, then the full panel with objects. l Emit
+   the deliverables only after both renders pass.
+   BACKGROUND COLOUR IS A SEPARATE OPERATION from equipment removal. Transparent
+   pixels are not a background colour - they show whatever is behind them, which
+   is how a panel asked for light arrives black. Flatten only confirmed
+   background pixels to the requested colour, taken from the requirement or from
+   a clean sample of the source background. NEVER replace all dark pixels: dark
+   text, outlines, arrows and symbols are artwork. Sample several blank points
+   across the canvas and the sidebar afterwards. Report the background diff and
+   the artwork diff SEPARATELY, and keep every change outside the documented
+   edit masks at zero.
+
+22 CROSSING IS NOT JUNCTION, AND A GAP IS NOT A STYLE. Junction: two segments of
+   one circuit are connected, so their opaque cores touch continuously. Crossing
+   without connection: the circuits stay separate, and one must visibly bridge
+   the other. Bend: one circuit changes direction and stays continuous.
+   Termination: a run intentionally ends at equipment, a valve, an arrow or a
+   documented endpoint. Decide which applies BEFORE drawing.
+   For a non-connected crossing: keep the underlying pipe continuous, draw the
+   bypass entirely in the foreground circuit's own measured style - legs, top
+   span and returning segment at the same thickness and alpha as the rest of
+   that circuit - leave no background gap, no dark residue and no junction dot,
+   and make it visible at NATIVE size, not only when zoomed.
+   A junction FAILS when background pixels separate the segments, when a
+   horizontal stops short of a riser, when a riser stops short of a header, when
+   only the antialiasing rows touch while the opaque centrelines stay apart, or
+   when cleanup left a break on any source row of the pipe. Check every junction
+   the edit touched programmatically, then search the circuit as connected
+   components and confirm the required anchors are in one component.
+   Thickness comes from the source, never from a rule: measure each pipe
+   independently, keep every row including partial-alpha antialiasing, treat
+   horizontal and vertical as separate measurements, and match a repaired run to
+   the ADJACENT untouched run exactly. Two opaque rows plus one faint row is not
+   a two-pixel line.
+   STOP AND REPORT THE GAP, do not guess, when: the component to remove cannot
+   be localized; it is unclear whether two crossing circuits connect; the
+   original raster is unavailable; a pipe's exact source style cannot be
+   sampled; the target background colour is unspecified and cannot be derived
+   from the evidence; a required connection anchor cannot be identified; or the
+   edit would overwrite a live value field or a protected component. Name what
+   is missing, name what would resolve it, and deliver whatever IS evidenced.
 
 ## Envelope shape
 
@@ -1024,6 +1132,56 @@ Kept as JSON because this is the literal object shape to copy.
 - **evidence**
   - E13
   - E24
+- **removal_and_rerouting**
+  - **owner_document** — MASKIN-GENERATION-CONTRACT.md#17
+  - **procedure** — MASKIN-AUTHORING-GUIDE.md#4b
+  - **acceptance** — MASKIN-QA-CHECKLIST.md stage C0b
+  - **enforced_by**
+    - maskin_raster_qa.py, through tests/test_maskin_equipment_removal.py
+    - maskin-visual-qa.py - crops, magnifications and qa-manifest.json
+  - **evidence**
+    - E25
+    - E26
+  - **classification**
+    - **kind** — artwork modification, not an object change
+    - **empty_target_canvas** — a full class-3 document carrying the new artwork
+    - **populated_target_canvas** — a class-4 background-only patch: zero counts, three empty arrays, inserted with Background picture only ticked
+    - **objects** — No Designer object is removed because the equipment under it was. Only the user naming a live object makes it an object change - and then the patch scope is no longer artwork-only.
+    - **insert** — Insert appends. A full document on a populated canvas duplicates every object, in place, and still renders.
+  - **pixel_classes**
+    - fully transparent - shows whatever the host puts behind it
+    - opaque source background - the canvas colour this drawing uses
+    - opaque black artwork - line work and glyph cores
+    - legitimately dark text, outlines, arrows and symbols
+  - **geometry_terms**
+    - **junction** — two segments of one circuit are functionally connected; their opaque cores touch continuously
+    - **crossing_without_connection** — the circuits remain separate; one must visibly bridge or bypass the other
+    - **bend** — one circuit changes direction and remains continuous
+    - **termination** — a pipe intentionally ends at equipment, a valve, an arrow or a documented endpoint
+  - **junction_failure_modes**
+    - one or more background pixels separate the segments
+    - a horizontal line stops short of a riser
+    - a riser stops short of a header
+    - only an antialiasing row touches while the opaque centreline remains separated
+    - cleanup left a break on any source row that belongs to the pipe
+  - **visual_qa_deliverables**
+    - background-only render at native 1400x750
+    - full panel render at native size
+    - a crop of the receiver or other affected equipment
+    - one crop per edited crossing
+    - one crop per edited junction
+    - a high-magnification nearest-neighbour pixel crop of each critical junction
+    - before-and-after crops at the same bounds
+    - a report listing every modified bounding box
+  - **visual_qa_note** — A full-panel preview alone is not acceptable evidence: small gaps are invisible in a scaled preview. maskin-visual-qa.py produces the crops and a machine-readable manifest; it proves continuity, cross-section, protection and scope, and it does NOT decide whether the drawing is right.
+  - **stop_conditions**
+    - **M-X01** — the intended component to remove cannot be localized
+    - **M-X02** — it is unclear whether two crossing circuits connect
+    - **M-X03** — the original raster is unavailable
+    - **M-X04** — a pipe's exact source style cannot be sampled
+    - **M-X05** — the target background colour is unspecified and cannot be derived from supplied evidence
+    - **M-X06** — a required connection anchor cannot be identified
+    - **M-X07** — the edit would overwrite a live value field or a protected component
 - **single_vector_vs_pitch_drift** — Conflict M-7. The 79-82 px / -1..+1 px drift in compressor_columns measures what production drew; it is not an instruction to reproduce the drift. When extending a bank, one pitch from one NAMED source pair applies to every member and to the artwork, because the artwork is a raster copy of one column at one offset and the objects must land on it.
 
 ### rules
@@ -1039,6 +1197,16 @@ Kept as JSON because this is the literal object shape to copy.
 | M-A07 | After a failed visual iteration, restart from the retained original background. | Compensating edits stacked on a derivative accumulate raster damage no single step is responsible for. | GLOBAL |
 | M-A08 | A new role carries its alias, grammar 'C&lt;n&gt; &lt;MT\|LT&gt; &lt;role&gt;', even when the plant parameter behind it is unknown. | alias_text "" on a new compressor row. The alias is the relink key, so the object can never be linked by anyone. | MASKIN |
 | M-A09 | An unresolved parameter is reported as a linking gap: name the aliases, deliver unlinked. | A plausible driver id. An invented id looks linked and is not. | MASKIN |
+| M-A10 | Decode and retain the original source background before editing; work on a separate derivative; keep the retained original as the immutable before-image; restart every failed visual iteration from it or from a specifically named accepted checkpoint. | Patching an already damaged derivative, or using a previous assistant preview as the geometric source while the original raster exists. Two compensating edits hide each other rather than reverting, and after three nobody can separate original artwork from introduced damage. | GLOBAL |
+| M-A11 | Before erasing: identify the exact component being removed, identify every protected neighbour it touches, determine the smallest safe edit mask, and restore any protected component from source the moment a cleanup reaches its boundary. The receiver is an atomic artwork cluster - body, rounded top and bottom, outline, internal divider or coil detail, level bar, nearby labels and connection pixels - and so is every other complex equipment symbol. | A large rectangular erase across mixed artwork. A rectangle comfortably bigger than the equipment is comfortably bigger than the clearance to the vessel beside it, and a partial vessel is not a vessel. | MASKIN |
+| M-A12 | Separate the four pixel classes - fully transparent, opaque source background, opaque black artwork, and legitimately dark text and outlines. Flatten only confirmed background pixels to a background colour taken from the requirement or from a clean source sample, verify several blank points across the canvas and the sidebar afterwards, and keep the colour conversion as its own operation. | Assuming transparent pixels will display as the intended background - they show whatever is behind them, which is how a panel asked for light arrives black - or globally replacing all dark pixels, which takes the labels, arrows and symbol outlines with them. | MASKIN |
+| M-A13 | An edited area carries artwork or background and nothing else: no colour that belongs to no circuit and no declared artwork, and no partial alpha the circuit's measured profile does not have. | Opaque cleanup pixels and partial-alpha ghosts left on a pipe by repeated erase-and-redraw. Both read as dirt at native size and neither is visible to any JSON check. | GLOBAL |
+| M-A14 | Complete the circuit-routing inventory BEFORE changing pixels: per edited pipe, the circuit role, the source colour sampled from the supplied raster, the centreline, horizontal and vertical thickness, per-row or per-column alpha, antialiasing rows, start and end anchors, every bend, every crossing, every junction, whether each crossing is connected, whether a bridge or bypass is required, and flow-arrow and label ownership. | Writing the inventory afterwards, which records what was drawn instead of deciding what should be; or hard-coding a circuit colour as a universal RGB default. Yellow is the receiver/liquid circuit and light cyan is MT suction as a matter of FUNCTION - the values are sampled per source. | MASKIN |
+| M-A15 | Decide which of junction, non-connected crossing, bend or termination applies before drawing. A non-connected crossing keeps the underlying pipe continuous and carries the foreground circuit over it with a bypass drawn entirely in that circuit's own measured style - legs, top span and returning segment - visible at native size, with the two circuits touching nowhere outside the declared crossing window. | A new route drawn straight through another circuit, which reads as a junction; a bypass at a different thickness from its own circuit; a background gap, dark residue or an accidental electrical-style junction dot at the crossing; a jog too small to see at native size. | MASKIN |
+| M-A16 | Measure each source pipe independently and preserve every source row or column including partial-alpha antialiasing. Apparent thickness includes the antialiasing rows. Horizontal and vertical segments of one circuit may need different sampled profiles. At bends and junctions use the source junction profile. A repaired segment matches the ADJACENT untouched source segment exactly. | '2 px everywhere'. A line that is two opaque pixels plus one partial-alpha row is not equivalent to a two-pixel opaque line: it is wider, softer, and it matches the run it joins. | GLOBAL |
+| M-A17 | Every edited pipe carries a junction ledger - one row per connection the edit touched, with both segment endpoints, the expected shared pixel rectangle, the circuit colour and alpha pattern, and a pass/fail result - inspected programmatically, plus a connected-component search confirming that the required anchors belong to one component, intentional non-connected crossings excluded. | Checking only the junction the latest screenshot showed. A junction also fails when a horizontal stops short of a riser, when a riser stops short of a header, when only an antialiasing row touches while the opaque centrelines stay separated, and when cleanup left a break on any source row belonging to the pipe. | MASKIN |
+| M-A18 | Compare the final image with the RETAINED ORIGINAL. Changes outside the union of the documented edit masks are zero, unless a background-colour conversion was also requested - and then the two diffs are reported independently and the protected foreground artwork is confirmed unchanged in both. | Comparing with the previous attempt, or reporting one combined diff number. The combined number always hides the smaller change, and the artwork change is the smaller one. | GLOBAL |
+| M-A19 | The phase order: retain the original; mask protected components; inventory circuits, crossings and junctions; remove only the requested component; restore protected neighbours from source; restore underlying pipes; draw the new route; draw the bypass geometry; restore labels and arrows; validate background colour, pipe profiles and every junction; render the background alone; render the complete panel; generate deliverables only after both renders pass. | Changing the order. Overlaying objects hides background damage, and a background flattened early hides what the erase actually did. | MASKIN |
 
 ### reproduce_per_source
 
@@ -1065,12 +1233,14 @@ Kept as JSON because this is the literal object shape to copy.
 | M-C03 | Columns are atomic across the pair: no source column thinned, no new column incomplete, and no optional row that no existing compressor on that side has (the clone-C1 trap). |
 | M-C04 | The declared patch scope held: every pre-existing object differs only within it. Without a scope, reported as warnings. |
 | M-C05 | Background and canvas. Under compressor-addition a byte-identical background is an error - objects were added over artwork that does not draw them (M-A06). |
+| M-C06 | Object preservation during an artwork-only edit: same object count, nothing added, nothing dropped, and every one of the 17 fields identical on every object - driver_id, unit_id, unit_ref, alias_text, geometry, zIndex and tag_text included. Reported explicitly, pass or fail, because 'I only changed the drawing' is precisely the claim this workflow makes. It pairs by role key, so an edit to obj_id, alias_text or tag_text surfaces as M-C01/M-C02 instead. |
 
 ### patch_scopes
 
 | scope | contract |
 |---|---|
 | compressor-addition | new complete columns, no field difference on anything pre-existing, background must change |
+| artwork-only | equipment removed, a circuit rerouted or a background recoloured, delivered as a full class-3 document: every pre-existing object field-identical, nothing added, nothing dropped, background must change |
 | background-only | class 4: zero counts, empty arrays, background must change |
 | position | posLeft/posTop only |
 | none | field-identical |
@@ -1137,6 +1307,10 @@ python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-sco
 ```
 
 ```bash
+python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope artwork-only
+```
+
+```bash
 python render-maskin-panel.py PANEL.json
 ```
 
@@ -1146,13 +1320,21 @@ pixelshot PANEL-preview.html --output /tmp/pixelbrowse --tile-height 20000 --vie
 ```
 
 ```bash
+python maskin-visual-qa.py CANDIDATE.json --original SOURCE.json --spec ROUTING.json --out qa/
+```
+
+```bash
 python build-maskin-rules.py --check
 ```
 
 ```bash
-python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_10229_contract
+python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_equipment_removal tests.test_maskin_10229_contract tests.test_maskin_knowledge_bundle
 ```
 
 ```bash
 python -m unittest tests.test_build_ventilation_corpus tests.test_list_panel_contract tests.test_maskin_compressor_bank tests.test_ventilation_profile_9099 tests.test_maskin_10229_contract
+```
+
+```bash
+python build-maskin-rules.py --check && python build-maskin-knowledge.py --check && python build-maskin-removal-fixture.py --check
 ```

@@ -395,6 +395,8 @@ The Insert JSON path accepts **AI-authored** panels, which makes "P&ID → panel
 > | A coordinate, a role, a z-band, an anomaly — each with its evidence id and scope tag | [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) — **authoritative on any Maskin conflict** |
 > | The procedure for authoring, copying or editing one | [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) |
 > | **How to add a compressor to an existing bank** — the nine ordered steps, artwork before objects, one measured translation vector, alpha copied verbatim | [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) §4a, rules `M-A01`–`M-A09` |
+> | **How to remove static equipment and reroute a circuit** — the fifteen ordered phases, the protection boundary, the background-fill contract, crossings versus junctions, the junction ledger | [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) §4b, contract §17, rules `M-A10`–`M-A19`, `M-C06`, `M-X01`–`M-X07` |
+> | Whether the pixels actually connect | [maskin_raster_qa.py](maskin_raster_qa.py) (the checks) and [maskin-visual-qa.py](maskin-visual-qa.py) (the crops and `qa-manifest.json`) |
 > | The acceptance tests, stage by stage | [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) — stage **C0** inspects the background ALONE at native size, before any object exists |
 > | The same rules as code | [documentation-rules.json](documentation-rules.json) → `python validate-maskin-panel.py panel.json --profile TEMPLATE-10229` |
 > | That an edit changed only what was authorized | `validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope compressor-addition\|background-only\|position` (`M-C01`–`M-C05`). Adding a compressor is class 3 **and** class 4 at once: one full document plus one background-only patch with zero counts and three empty arrays |
@@ -411,11 +413,12 @@ What stays here is **host behaviour**, because that is what this file owns. Five
 3. **A production export never emits the literal string `"driver_id"`.** Its unlinked objects carry an **empty** `driver_id`; only a generated demo writes the placeholder. That asymmetry is the mode discriminator the validator keys on — see §17b's linking-kit note, which says the same thing about vent panels.
 4. **`panel.image_svg_trace` is input, never output.** Export writes it for the AI to read; `applyImportCore` deletes it before rendering (§17b, §18). A Maskin source export carries a 2.2 MB trace — read it, never re-emit it.
 5. **Insert appends and renames from the live canvas child index** (§10.1, §12). A full Maskin export belongs on an empty canvas unless duplication is intended.
+6. **`Background picture only` is the import path for an artwork-only change** (§17, userscript v1.10.0). It takes the picture and nothing else: no object, container or graphic is inserted, everything already on the canvas keeps its position, and both mid-import questions are skipped. That is what makes a class-4 patch with zero counts and three empty arrays legal — without the box, the import refuses the file as an empty panel document. **Replace** is for putting a full export onto a canvas whose content you no longer want; **Add** on a populated canvas duplicates every object.
 
 Regression fixtures and tests — run from `iwmac-designer-reference/` (the repo convention is per-module; `discover -s tests` fails because `tests/` has no `__init__.py`):
 
 ```bash
-python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_10229_contract
+python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_equipment_removal tests.test_maskin_10229_contract tests.test_maskin_knowledge_bundle
 ```
 
 ### Oversikt (store overview / case positions / byggeplan) — where the rules live, and the host facts

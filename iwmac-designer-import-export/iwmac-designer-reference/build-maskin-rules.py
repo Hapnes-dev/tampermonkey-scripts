@@ -149,6 +149,46 @@ EVIDENCE = {
                 "alias_text \"\", which is the M-A08 defect. Never cite it "
                 "for production geometry: E9 and E10 own that.",
     },
+    "E25": {
+        "file": "the 2026-08-11 equipment-removal editing session (observed; "
+                "the intermediate rasters were derivatives and were NOT "
+                "retained)",
+        "committed": False,
+        "sanitized": False,
+        "panel": "Maskin",
+        "canvas": "1400x750",
+        "role": "The incident behind M-A10 to M-A19: three MT compressors added "
+                "successfully, then the internal bottom-right heat exchanger "
+                "removed and the Liq. consumer line rerouted to the receiver. "
+                "Nine raster defects in one sitting - an oversized erase "
+                "rectangle into the receiver, transparent plus opaque-black "
+                "cleanup producing a black background, a new yellow line "
+                "crossing a cyan pipe with no bypass, dark and partial-alpha "
+                "remnants, inconsistent redrawn thickness on both circuits, a "
+                "gap at the upper horizontal-to-vertical junction and another "
+                "where the riser met the M-T Suct. header - while every "
+                "structural check kept passing.",
+        "note": "An OBSERVATION, not an artifact. No coordinate, colour, "
+                "thickness or count from it appears in any rule: the images no "
+                "longer exist to be measured, which is the incident's own first "
+                "finding (M-A10). Findings grounded in it are labelled as "
+                "evidence from this editing incident.",
+    },
+    "E26": {
+        "file": "tests/fixtures/maskin-equipment-removal/",
+        "committed": True,
+        "sanitized": True,
+        "role": "Miniature 96x64 instrumented fixture for the removal and "
+                "rerouting workflow: a receiver beside a removable heat "
+                "exchanger, an antialiased liquid line, a suction riser whose "
+                "vertical profile differs from its own horizontal profile, two "
+                "junctions, one intentional non-connected crossing with its "
+                "bypass, transparent and opaque background pixels, and text one "
+                "row from the erase target. Its ten single-defect negatives are "
+                "named mutators in build-maskin-removal-fixture.py rather than "
+                "committed rasters. Every value in it is test instrumentation, "
+                "never production geometry and never a default.",
+    },
 }
 
 IDENTITY = {
@@ -435,6 +475,225 @@ ARTWORK = {
                       "not.",
             "scope": "MASKIN",
         },
+        "M-A10": {
+            "rule": "Decode and retain the original source background before "
+                    "editing; work on a separate derivative; keep the retained "
+                    "original as the immutable before-image; restart every "
+                    "failed visual iteration from it or from a specifically "
+                    "named accepted checkpoint.",
+            "defect": "Patching an already damaged derivative, or using a "
+                      "previous assistant preview as the geometric source while "
+                      "the original raster exists. Two compensating edits hide "
+                      "each other rather than reverting, and after three nobody "
+                      "can separate original artwork from introduced damage.",
+            "scope": "GLOBAL",
+        },
+        "M-A11": {
+            "rule": "Before erasing: identify the exact component being removed, "
+                    "identify every protected neighbour it touches, determine "
+                    "the smallest safe edit mask, and restore any protected "
+                    "component from source the moment a cleanup reaches its "
+                    "boundary. The receiver is an atomic artwork cluster - body, "
+                    "rounded top and bottom, outline, internal divider or coil "
+                    "detail, level bar, nearby labels and connection pixels - "
+                    "and so is every other complex equipment symbol.",
+            "defect": "A large rectangular erase across mixed artwork. A "
+                      "rectangle comfortably bigger than the equipment is "
+                      "comfortably bigger than the clearance to the vessel "
+                      "beside it, and a partial vessel is not a vessel.",
+            "scope": "MASKIN",
+        },
+        "M-A12": {
+            "rule": "Separate the four pixel classes - fully transparent, opaque "
+                    "source background, opaque black artwork, and legitimately "
+                    "dark text and outlines. Flatten only confirmed background "
+                    "pixels to a background colour taken from the requirement or "
+                    "from a clean source sample, verify several blank points "
+                    "across the canvas and the sidebar afterwards, and keep the "
+                    "colour conversion as its own operation.",
+            "defect": "Assuming transparent pixels will display as the intended "
+                      "background - they show whatever is behind them, which is "
+                      "how a panel asked for light arrives black - or globally "
+                      "replacing all dark pixels, which takes the labels, "
+                      "arrows and symbol outlines with them.",
+            "scope": "MASKIN",
+        },
+        "M-A13": {
+            "rule": "An edited area carries artwork or background and nothing "
+                    "else: no colour that belongs to no circuit and no declared "
+                    "artwork, and no partial alpha the circuit's measured "
+                    "profile does not have.",
+            "defect": "Opaque cleanup pixels and partial-alpha ghosts left on a "
+                      "pipe by repeated erase-and-redraw. Both read as dirt at "
+                      "native size and neither is visible to any JSON check.",
+            "scope": "GLOBAL",
+        },
+        "M-A14": {
+            "rule": "Complete the circuit-routing inventory BEFORE changing "
+                    "pixels: per edited pipe, the circuit role, the source "
+                    "colour sampled from the supplied raster, the centreline, "
+                    "horizontal and vertical thickness, per-row or per-column "
+                    "alpha, antialiasing rows, start and end anchors, every "
+                    "bend, every crossing, every junction, whether each crossing "
+                    "is connected, whether a bridge or bypass is required, and "
+                    "flow-arrow and label ownership.",
+            "defect": "Writing the inventory afterwards, which records what was "
+                      "drawn instead of deciding what should be; or hard-coding "
+                      "a circuit colour as a universal RGB default. Yellow is "
+                      "the receiver/liquid circuit and light cyan is MT suction "
+                      "as a matter of FUNCTION - the values are sampled per "
+                      "source.",
+            "scope": "MASKIN",
+        },
+        "M-A15": {
+            "rule": "Decide which of junction, non-connected crossing, bend or "
+                    "termination applies before drawing. A non-connected "
+                    "crossing keeps the underlying pipe continuous and carries "
+                    "the foreground circuit over it with a bypass drawn entirely "
+                    "in that circuit's own measured style - legs, top span and "
+                    "returning segment - visible at native size, with the two "
+                    "circuits touching nowhere outside the declared crossing "
+                    "window.",
+            "defect": "A new route drawn straight through another circuit, which "
+                      "reads as a junction; a bypass at a different thickness "
+                      "from its own circuit; a background gap, dark residue or "
+                      "an accidental electrical-style junction dot at the "
+                      "crossing; a jog too small to see at native size.",
+            "scope": "MASKIN",
+        },
+        "M-A16": {
+            "rule": "Measure each source pipe independently and preserve every "
+                    "source row or column including partial-alpha antialiasing. "
+                    "Apparent thickness includes the antialiasing rows. "
+                    "Horizontal and vertical segments of one circuit may need "
+                    "different sampled profiles. At bends and junctions use the "
+                    "source junction profile. A repaired segment matches the "
+                    "ADJACENT untouched source segment exactly.",
+            "defect": "'2 px everywhere'. A line that is two opaque pixels plus "
+                      "one partial-alpha row is not equivalent to a two-pixel "
+                      "opaque line: it is wider, softer, and it matches the run "
+                      "it joins.",
+            "scope": "GLOBAL",
+        },
+        "M-A17": {
+            "rule": "Every edited pipe carries a junction ledger - one row per "
+                    "connection the edit touched, with both segment endpoints, "
+                    "the expected shared pixel rectangle, the circuit colour and "
+                    "alpha pattern, and a pass/fail result - inspected "
+                    "programmatically, plus a connected-component search "
+                    "confirming that the required anchors belong to one "
+                    "component, intentional non-connected crossings excluded.",
+            "defect": "Checking only the junction the latest screenshot showed. "
+                      "A junction also fails when a horizontal stops short of a "
+                      "riser, when a riser stops short of a header, when only an "
+                      "antialiasing row touches while the opaque centrelines "
+                      "stay separated, and when cleanup left a break on any "
+                      "source row belonging to the pipe.",
+            "scope": "MASKIN",
+        },
+        "M-A18": {
+            "rule": "Compare the final image with the RETAINED ORIGINAL. Changes "
+                    "outside the union of the documented edit masks are zero, "
+                    "unless a background-colour conversion was also requested - "
+                    "and then the two diffs are reported independently and the "
+                    "protected foreground artwork is confirmed unchanged in "
+                    "both.",
+            "defect": "Comparing with the previous attempt, or reporting one "
+                      "combined diff number. The combined number always hides "
+                      "the smaller change, and the artwork change is the smaller "
+                      "one.",
+            "scope": "GLOBAL",
+        },
+        "M-A19": {
+            "rule": "The phase order: retain the original; mask protected "
+                    "components; inventory circuits, crossings and junctions; "
+                    "remove only the requested component; restore protected "
+                    "neighbours from source; restore underlying pipes; draw the "
+                    "new route; draw the bypass geometry; restore labels and "
+                    "arrows; validate background colour, pipe profiles and every "
+                    "junction; render the background alone; render the complete "
+                    "panel; generate deliverables only after both renders pass.",
+            "defect": "Changing the order. Overlaying objects hides background "
+                      "damage, and a background flattened early hides what the "
+                      "erase actually did.",
+            "scope": "MASKIN",
+        },
+    },
+    "removal_and_rerouting": {
+        "owner_document": "MASKIN-GENERATION-CONTRACT.md#17",
+        "procedure": "MASKIN-AUTHORING-GUIDE.md#4b",
+        "acceptance": "MASKIN-QA-CHECKLIST.md stage C0b",
+        "enforced_by": [
+            "maskin_raster_qa.py, through tests/test_maskin_equipment_removal.py",
+            "maskin-visual-qa.py - crops, magnifications and qa-manifest.json",
+        ],
+        "evidence": ["E25", "E26"],
+        "classification": {
+            "kind": "artwork modification, not an object change",
+            "empty_target_canvas": "a full class-3 document carrying the new "
+                                   "artwork",
+            "populated_target_canvas": "a class-4 background-only patch: zero "
+                                       "counts, three empty arrays, inserted "
+                                       "with Background picture only ticked",
+            "objects": "No Designer object is removed because the equipment "
+                       "under it was. Only the user naming a live object makes "
+                       "it an object change - and then the patch scope is no "
+                       "longer artwork-only.",
+            "insert": "Insert appends. A full document on a populated canvas "
+                      "duplicates every object, in place, and still renders.",
+        },
+        "pixel_classes": [
+            "fully transparent - shows whatever the host puts behind it",
+            "opaque source background - the canvas colour this drawing uses",
+            "opaque black artwork - line work and glyph cores",
+            "legitimately dark text, outlines, arrows and symbols",
+        ],
+        "geometry_terms": {
+            "junction": "two segments of one circuit are functionally connected; "
+                        "their opaque cores touch continuously",
+            "crossing_without_connection": "the circuits remain separate; one "
+                                           "must visibly bridge or bypass the "
+                                           "other",
+            "bend": "one circuit changes direction and remains continuous",
+            "termination": "a pipe intentionally ends at equipment, a valve, an "
+                           "arrow or a documented endpoint",
+        },
+        "junction_failure_modes": [
+            "one or more background pixels separate the segments",
+            "a horizontal line stops short of a riser",
+            "a riser stops short of a header",
+            "only an antialiasing row touches while the opaque centreline "
+            "remains separated",
+            "cleanup left a break on any source row that belongs to the pipe",
+        ],
+        "visual_qa_deliverables": [
+            "background-only render at native 1400x750",
+            "full panel render at native size",
+            "a crop of the receiver or other affected equipment",
+            "one crop per edited crossing",
+            "one crop per edited junction",
+            "a high-magnification nearest-neighbour pixel crop of each critical "
+            "junction",
+            "before-and-after crops at the same bounds",
+            "a report listing every modified bounding box",
+        ],
+        "visual_qa_note": "A full-panel preview alone is not acceptable "
+                          "evidence: small gaps are invisible in a scaled "
+                          "preview. maskin-visual-qa.py produces the crops and "
+                          "a machine-readable manifest; it proves continuity, "
+                          "cross-section, protection and scope, and it does NOT "
+                          "decide whether the drawing is right.",
+        "stop_conditions": {
+            "M-X01": "the intended component to remove cannot be localized",
+            "M-X02": "it is unclear whether two crossing circuits connect",
+            "M-X03": "the original raster is unavailable",
+            "M-X04": "a pipe's exact source style cannot be sampled",
+            "M-X05": "the target background colour is unspecified and cannot be "
+                     "derived from supplied evidence",
+            "M-X06": "a required connection anchor cannot be identified",
+            "M-X07": "the edit would overwrite a live value field or a protected "
+                     "component",
+        },
     },
     "reproduce_per_source": [
         "Compressor symbol - outline, fill, internal detail, same size.",
@@ -479,10 +738,22 @@ COMPARE = {
         "M-C05": "Background and canvas. Under compressor-addition a "
                  "byte-identical background is an error - objects were added "
                  "over artwork that does not draw them (M-A06).",
+        "M-C06": "Object preservation during an artwork-only edit: same object "
+                 "count, nothing added, nothing dropped, and every one of the 17 "
+                 "fields identical on every object - driver_id, unit_id, "
+                 "unit_ref, alias_text, geometry, zIndex and tag_text included. "
+                 "Reported explicitly, pass or fail, because 'I only changed the "
+                 "drawing' is precisely the claim this workflow makes. It pairs "
+                 "by role key, so an edit to obj_id, alias_text or tag_text "
+                 "surfaces as M-C01/M-C02 instead.",
     },
     "patch_scopes": {
         "compressor-addition": "new complete columns, no field difference on "
                                "anything pre-existing, background must change",
+        "artwork-only": "equipment removed, a circuit rerouted or a background "
+                        "recoloured, delivered as a full class-3 document: every "
+                        "pre-existing object field-identical, nothing added, "
+                        "nothing dropped, background must change",
         "background-only": "class 4: zero counts, empty arrays, background must "
                            "change",
         "position": "posLeft/posTop only",
