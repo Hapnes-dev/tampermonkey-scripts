@@ -7,8 +7,7 @@ systemskjema) into the clean HMI-style machine picture used as an IWMAC
 Designer panel background. Companion image: maskin-light-style-reference.png
 (rendered 1:1 from maskin-light-template.ai, the same template family as
 the light-background plant-9982 Maskin in real-vent/maskin examples).
-The light skin is the ONLY sanctioned look - never draw a maskin on a
-dark background.
+Background colour is not fixed by this method - see section 6.
 
 The PDF schematic is the technical source of truth; the drawing is a
 simplified operator visualization. Do not reproduce every bend or
@@ -177,18 +176,30 @@ one-pixel registration markers and magenta field anchors are test-only colours,
 separate from the miniature art. Run the dependency-free regression with:
   python -m unittest tests.test_maskin_compressor_bank
 
-6. LIGHT SKIN ONLY + THE CANONICAL TEMPLATE
+6. BACKGROUND COLOUR + THE SHIPPED TEMPLATE
 --------------------------------------------------
-There is exactly ONE sanctioned skin:
-- LIGHT: white/very light canvas, mid-grey line work - THE NORMAL LOOK
-  ("how most maskin pictures should look"). Canonical reference in this
-  kit: maskin-light-style-reference.png, rendered 1:1 from the actual
-  Illustrator source maskin-light-template.ai (Advansor 781 template).
-NEVER draw a maskin on a dark background. The kit's general "never cover
-the canvas in dark colors" rule has NO exceptions: it applies to maskin
-pictures exactly as it applies to vent/overview panels, even when the
-plant's existing maskin is a near-black one - redraw it on the light
-skin. No dark reference image ships with this kit.
+Background colour is a requirement of the job, not of this method:
+- PRESERVE the background of a supplied production export. Change it
+  only when the user explicitly asks for a background change.
+- For NEW artwork, take the background colour from the user's
+  requirement, or from the production reference chosen for the job.
+- A dark background is not a defect on colour grounds alone, and an
+  existing dark maskin does not have to be redrawn light.
+The one rendered reference that ships with this kit is
+maskin-light-style-reference.png - white/very light canvas, mid-grey
+line work - rendered 1:1 from the Illustrator source
+maskin-light-template.ai (Advansor 781 template). It is light because
+that is the template that was captured, and it describes the committed
+file rather than mandating a skin; most production maskin pictures in
+the surveyed corpus are light for the same historical reason.
+
+Everything else in this document applies at any background colour: the
+layout doctrine, the circuit colour code as function (orange = HP /
+discharge, yellow = receiver/liquid, cyan = MT suction, blue = LT
+suction), the symbol family, the EMPTY value pills, the darker setpoint
+pills, and rules R1-R5. On a dark background keep the line work and text
+readable against it - the colour changes, the contrast requirement does
+not.
 
 FACTS READ OUT OF THE PRODUCTION .AI ITSELF:
 - Artboard is exactly 1400 x 750 pt (1 px = 1 pt) - confirmed.

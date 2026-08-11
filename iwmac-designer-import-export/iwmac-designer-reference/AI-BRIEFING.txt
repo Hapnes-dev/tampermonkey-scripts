@@ -208,13 +208,16 @@ with artwork - see section 7a, "VENTILATION UNIT".
    Insert validates it, converts it to a data-URL and embeds it as the
    background - so one file delivers artwork AND objects.
    What to draw (keep it schematic, like the production PNGs):
-   - a light page background (#eef1f4-ish) and a tinted side/section zone
+   - a page background in the colour the user asked for, or the colour
+     of the production reference you were given (most production PNGs
+     are light, around #eef1f4), and a tinted side/section zone
    - a rounded-rect machine/plant enclosure with a small title text
    - the pipe, duct or tank runs that the panel's value boxes annotate,
      as thin flat bands behind them, plus flow arrows
    - dashed zone boxes around a subsystem
-   Never cover the canvas in dark colors - light backgrounds only, no
-   exceptions - and never draw values or symbols the OBJECTS already
+   Background colour is the user's call, or the chosen production
+   reference's - preserve a supplied background unless a change is
+   asked for. Never draw values or symbols the OBJECTS already
    provide (no fake numbers, LEDs or fans in the SVG). NEVER for a
    Ventilasjon panel: its ducts, dampers, coils and fans are OBJECTS
    (section 7a), so drawing them here yields a doubled, un-linkable
@@ -263,13 +266,15 @@ image maskin-light-style-reference.png) exactly:
 - One symbol family reused: compressors (MT1..n/LT1..n), fan circles,
   one valve style with its V-xxx tag adjacent, WHITE pills drawn EMPTY
   (number objects render into them), darker grey pills = setpoints.
-- ONE skin only: LIGHT (the normal look - canonical reference
-  maskin-light-style-reference.png, rendered 1:1 from the Illustrator
-  source maskin-light-template.ai; its real layers are Backround / Ror
-  / Maskinrom). NEVER draw a dark-background maskin: the no-dark-canvas
-  rule above has NO exceptions, not even when the plant's existing
-  maskin is dark - redraw it on the light skin. No dark reference image
-  ships with this kit.
+- BACKGROUND COLOUR: preserve the background of a supplied production
+  export unless the user explicitly asks for a change; for new artwork
+  take the colour from the user's requirement or from the production
+  reference chosen for the job. The kit ships one rendered reference,
+  maskin-light-style-reference.png (1:1 from the Illustrator source
+  maskin-light-template.ai; its real layers are Backround / Ror /
+  Maskinrom), and it is a light template - that describes the file that
+  happens to be committed, not a required skin. Everything else in this
+  block applies at any background colour.
 - Vrec is the receiver FLASH-GAS valve: draw it on the cyan
   suction-side line, never on the yellow liquid line.
 - NEGATIVE example, corrected 2026-08-10: generated-maskin-example.json

@@ -27,7 +27,9 @@ emitting JSON.
   background draws the enclosure, pipes, equipment symbols, every static label,
   the EMPTY white value pills and the DARKER GREY setpoint pills. Never bake a
   live number or state into artwork. Never draw a value box that an object will
-  also render. Light skin only: never draw a dark Maskin, redraw it light.
+  also render. Background colour follows the supplied export or the user's
+  requirement: preserve a supplied background unless a change is requested, and
+  a dark background is not a defect on colour grounds alone.
   NEVER EMIT panel.image_svg_trace. The export writes it as AI input and the host
   deletes it on insert. If you author new artwork, the template coordinates no
   longer apply, and you must say so.

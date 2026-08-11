@@ -4,7 +4,7 @@ PRECEDENCE, highest first: supplied panel JSON or screenshot; production export 
 
 OUTPUT FILE. Top level: format "iwmac-designer-panel", version 1, generator, source_plant_id (plant number or ""), panel_name, panel_width "1400px", panel_height "750px", counts (=array lengths), background_embedded false, panel. panel: plant_id, panel_name, same width/height, org_image_name "", image_name "", saved_by "copilot", single_objects, containers (empty except spjeldliste/room tables), graphics (empty). Vent overrides both background fields.
 
-BACKGROUND ARTWORK, optional, NEVER on Ventilasjon. Raw SVG in panel.image_svg (svg tag, viewBox 0 0 1400 750, no scripts, object pixel space). Schematic art only; never dark fills or fake values. User png base64: image_data + converted "true". background_embedded true with artwork.
+BACKGROUND ARTWORK, optional, NEVER on Ventilasjon. Raw SVG in panel.image_svg (svg tag, viewBox 0 0 1400 750, no scripts, object pixel space). Schematic art only; never fake values. Bg colour: user's call. User png base64: image_data + converted "true". background_embedded true with artwork.
 
 OBJECT entry; the UNLINKED template; LINKING and ROMKONTROLL override zIndex, linked, link_name, driver_id. All 17 fields, vary only obj_id, name index, geometry, tag_text, alias_text: obj_id, name ("object_0", sequential), id "driver_id", posWidth, posHeight, posLeft, posTop (int px), zIndex "default", tag_text, linked "false", link_name "", link_tag "", sub_group "", driver_id "driver_id", unit_id "", unit_ref "", alias_text.
 

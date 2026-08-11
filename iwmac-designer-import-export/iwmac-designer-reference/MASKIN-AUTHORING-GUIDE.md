@@ -127,8 +127,11 @@ Rules that hold in every class:
 - **Never emit `panel.image_svg_trace`.** It is what the *export* writes so an AI
   can read the drawing's geometry. `applyImportCore` deletes it on insert. Its
   presence in your output is a defect (`M-S07`).
-- **Light skin only.** Never draw a dark-background Maskin, not even when the
-  plant's existing one is dark. Redraw it light.
+- **Background colour follows the source, not this document.** Preserve the
+  background of a supplied production export unless the user explicitly asks for
+  a background change. When you author new artwork, take the background colour
+  from the user's requirement, or from the production reference chosen for the
+  job. Everything else in this section still binds at any background colour.
 
 **If you author artwork in class 1, the coordinates in the contract do not
 transfer.** You are drawing a new picture; the pills must be placed where *your*

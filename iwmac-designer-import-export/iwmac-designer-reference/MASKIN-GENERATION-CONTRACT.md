@@ -305,10 +305,17 @@ Two prohibitions, both `MASKIN`:
 The artwork doctrine — canvas layout, the circuit colour code as *function*
 (orange = HP/discharge, yellow = receiver/liquid, cyan = MT suction, blue = LT
 suction), the Illustrator layer template, the PDF→AI→PNG workflow, and the
-**light-skin-only** rule — lives in
+background-colour rule — lives in
 [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt).
-**Never draw a dark-background Maskin**, not even when the plant's existing
-Maskin is dark; redraw it on the light skin.
+
+**Background colour is not fixed by this contract**, `MASKIN`. Preserve the
+background of a supplied production export unless the user explicitly asks for a
+background change; when artwork is authored new, its background colour follows
+the user's requirement or the production reference chosen for the job. A dark
+Maskin is not a defect on colour grounds alone. Everything else in this section
+holds at any background colour: background ownership, the empty pills, the
+functional circuit colours, and objects landing inside the pills the artwork
+draws.
 
 ### 2.1 The four background fields — `GLOBAL`
 

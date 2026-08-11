@@ -35,6 +35,12 @@ see a faded clone, a two-row copy of a three-row antialiased line or a branch
 that stops 1 px short of its header, so their enforcement moves to a QA stage
 that inspects the background alone and to a raster fixture the tests fail
 against.
+[Part 12](#part-12--2026-08-11-maskin-background-colour-stops-being-mandatory)
+(2026-08-11) reopens the **Maskin** contract a third time to **withdraw** a rule
+rather than add one — the light-skin-only policy — and is the first part whose
+subject is a rule that was never evidence-backed: background colour now follows
+the supplied export or the user's requirement, and everything else about the
+background is unchanged.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -2962,3 +2968,81 @@ The task's audit questions, answered:
   edited — it had been overwritten by this pass's own first attempt.
 - **Did not answer the truncated question.** Audit question 3 is recorded as
   unanswerable, not resolved by inference.
+
+---
+
+# Part 12 — 2026-08-11: Maskin background colour stops being mandatory
+
+Part 12 removes one rule and replaces it with a narrower one. Every Maskin
+document carried a **light-skin-only** policy: the light skin was "the only
+sanctioned look", a dark-background Maskin was forbidden without exception, and
+an existing dark Maskin had to be redrawn light. That policy was never measured
+from the corpus — it was generalized from the one rendered template that happens
+to ship with the kit (`maskin-light-template.ai`, which is light) and from the
+briefing's generic "never cover the canvas in dark colors" line. It made a
+legitimate delivery — preserving the background of a dark production export —
+report as a defect on colour grounds alone.
+
+The replacement is scoped to what is actually knowable:
+
+- **Preserve the background of a supplied production export** unless the user
+  explicitly asks for a background change.
+- **For newly authored artwork**, background colour follows the user's
+  requirement, or the production reference chosen for the job.
+- **A dark background is not a defect on colour grounds alone.**
+
+Nothing else about the background moved. Background ownership, object alignment
+inside the drawn pills, the circuit colour code as *function* (orange = HP /
+discharge, yellow = receiver/liquid, cyan = MT suction, blue = LT suction), the
+empty white value pills and darker setpoint pills, the z bands, `image_svg_trace`
+as input-never-output, and QA stage C0/C all apply unchanged at any background
+colour. `maskin-drawing-method.txt` §6 gains the one requirement that colour
+does imply: line work and text stay readable against whatever background is used.
+
+### 155. The light-skin-only policy is withdrawn — Maskin scope only
+
+| | |
+|---|---|
+| **Original** | Eleven normative statements across nine files: the light skin is the *only* sanctioned look; never draw a dark-background Maskin; the no-dark-canvas rule has *no exceptions*; redraw an existing dark Maskin light; no dark reference image ships with the kit. |
+| **Problem found** | None of it was evidence-backed. The corpus is mostly light because the captured Advansor template is light — a description of what was sampled, restated as a prohibition. The rule also conflicted with the stronger, evidence-backed rule next to it: preserve a supplied production export field for field. |
+| **Revised** | The three-part background-colour rule above, stated identically in the contract, the guide, the preflight, the briefing and the generated rules. `panel_types.maskin.background` loses the light-skin clause from `family` and gains a `colour` key carrying the new rule. |
+| **Reason** | Background colour is a property of the plant and the request, not of the panel type. Everything the documentation can actually prove about a Maskin background — who owns the artwork, where the pills are, what the circuit colours mean — is independent of it. |
+| **Source** | The 2026-08-11 documentation task. No new evidence id: nothing was measured, a policy was withdrawn. |
+
+**Files**
+
+| File | Change | Applied |
+|---|---|---|
+| [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) | §2 light-skin-only paragraph replaced by the `MASKIN` background-colour rule | Yes |
+| [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) | §3 "Light skin only" bullet replaced; the other three class rules untouched | Yes |
+| [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) | Point 4's closing sentence; points unrenumbered | Yes |
+| [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) | Header note and §6 retitled `BACKGROUND COLOUR + THE SHIPPED TEMPLATE`; readability requirement added | Yes |
+| [AI-BRIEFING.txt](AI-BRIEFING.txt) | Generic SVG "light backgrounds only, no exceptions" line and the MASKIN ARTWORK "ONE skin only" bullet | Yes |
+| [AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) | "never dark fills" dropped, short neutral clause added — worst case 7 994 of 8 000 characters, headroom 16 → 6 (rule 154) | Yes |
+| [build-maskin-rules.py](build-maskin-rules.py) | `BACKGROUND["family"]` rewritten, `BACKGROUND["colour"]` added | Yes |
+| [documentation-rules.json](documentation-rules.json) | Regenerated — `panel_types.maskin.background` only | Yes |
+| [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) | Maskin background bullet | Yes |
+| `README.md` (userscript folder) | The two light-skin clauses in the AI-kit paragraph | Yes |
+| `CLAUDE.md` (iwmac-designer-reference) | The drawing-method pointer's trailing light-skin clause | Yes |
+| [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) | Cross-reference repair only — its own `ADVISORY` light rule is unchanged | Yes |
+| documentation-change-log.md | This part; index paragraph at head | Yes |
+
+## What Part 12 deliberately did not do
+
+- **Did not touch another panel type's colour rule.** Oversikt keeps its
+  `ADVISORY` light-store-plan rule and its generated `skin` string; only the
+  sentence claiming Maskin carries the same rule was repaired, because that
+  sentence became false.
+- **Did not touch a functional colour.** Orange discharge, yellow liquid, cyan
+  MT suction, blue LT suction, green running and red alarm are semantics, not
+  skin, and none of them moved.
+- **Did not touch JSON schemas, coordinates, roles, aliases, bindings, fixtures
+  or embedded backgrounds.** `documentation-rules.json` was regenerated by its
+  own builder and the diff is two lines inside `panel_types.maskin.background`.
+- **Did not remove a test.** No test enforced the light-only policy; the tests
+  for background presence, ownership, alignment, dimensions, trace removal and
+  change-scope are all still there and all still pass.
+- **Did not rewrite history.** Parts 6–11, `DOCUMENTATION-AUDIT.md` F38 and the
+  `CLAUDE.md` negative-example entry keep their references to the light skin.
+  They describe what a document said or what a file is, in the past tense, and a
+  superseded record stays true of its own date.

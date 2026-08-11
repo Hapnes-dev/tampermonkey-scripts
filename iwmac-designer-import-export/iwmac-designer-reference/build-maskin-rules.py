@@ -178,10 +178,20 @@ BACKGROUND = {
     "never": "Never bake a live number, state or colour into the background, and "
              "never draw a value box in artwork that a dynamic object will also "
              "render.",
-    "family": "Advansor-style CO2 booster drawing on the light skin. "
+    "family": "Advansor-style CO2 booster drawing. "
               "reference_data/maskin-drawing-method.txt is the artwork doctrine; "
-              "reference_data/maskin-light-style-reference.png is the canonical "
-              "look. Never draw a Maskin on a dark background.",
+              "reference_data/maskin-light-style-reference.png is the one "
+              "rendered reference that ships with the kit, and it is a light "
+              "template.",
+    "colour": "Background colour is not fixed by this contract. Preserve the "
+              "background of a supplied production export unless the user "
+              "explicitly asks for a background change; for newly authored "
+              "artwork the colour follows the user's requirement or the "
+              "production reference chosen for the job. A dark background is "
+              "not a defect on colour grounds alone. Background ownership, "
+              "object alignment, the functional circuit colours, the empty "
+              "pills, the z bands and QA stage C apply at any background "
+              "colour.",
     "fields": {
         "converted": "\"true\" plus panel.image_data (a data: URI) is how a "
                      "raster background travels in an export",

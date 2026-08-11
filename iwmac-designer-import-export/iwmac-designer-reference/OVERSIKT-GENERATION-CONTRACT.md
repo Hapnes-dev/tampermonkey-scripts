@@ -320,9 +320,11 @@ render. A drawn value is frozen at the moment the picture was made, and nobody
 can tell by looking. A drawn box under a real box is a double image at the best
 of times and a contradiction at the worst.
 
-**Light skin only.** `ADVISORY`, and the same rule the Maskin contract carries:
-never introduce a dark background, not even when the plant's existing panel is
-dark. Redraw on the light store plan.
+**Light skin only.** `ADVISORY`, and **Oversikt-scoped**: never introduce a dark
+background, not even when the plant's existing panel is dark. Redraw on the
+light store plan. The Maskin contract no longer carries an equivalent rule —
+background colour there follows the supplied export or the user's requirement
+(`MASKIN-GENERATION-CONTRACT.md` §2).
 
 ### 2.1 The four background fields — `GLOBAL`
 
