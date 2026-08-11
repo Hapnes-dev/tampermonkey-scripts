@@ -7,6 +7,7 @@ output schema — it says in what order to consult them.
 | You need | Read |
 |---|---|
 | A coordinate, a role, a z band, an anomaly | [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) — **authoritative on any geometric conflict** |
+| The complete Maskin kit in one knowledge upload | [MASKIN-KNOWLEDGE-BUNDLE.md](MASKIN-KNOWLEDGE-BUNDLE.md) — **generated; do not hand-edit** |
 | The envelope and the 17 fields | [AI-BRIEFING.txt](AI-BRIEFING.txt) |
 | What the host does on Insert / Export | [CLAUDE.md](CLAUDE.md) |
 | Whether an `obj_id` exists | [DESIGN-OBJECT-CATALOG.md](DESIGN-OBJECT-CATALOG.md) |
