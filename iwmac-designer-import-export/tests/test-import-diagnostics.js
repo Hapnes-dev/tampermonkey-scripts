@@ -98,6 +98,31 @@ function run() {
   assert.ok(/"panel" must be an object/.test(noPanel.errors[0]));
   assert.ok(noPanel.diagnosis);
 
+  /* background-only import (v1.10.0): a file whose only payload is artwork.
+     Rejected by the normal rules, accepted with allowEmpty — and only that one
+     rule is waived, so a malformed object in the file is still caught. */
+  const artOnly = api.parsePayload({
+    format: 'iwmac-designer-panel', version: 1,
+    panel: {
+      panel_width: '1400px', panel_height: '750px',
+      converted: 'true', image_data: 'data:image/png;base64,AAAA',
+      single_objects: [], containers: [], graphics: []
+    }
+  });
+  assert.ok(!artOnly.errors, 'an artwork-only envelope parses');
+  assert.ok(/document is empty/.test(api.validateDoc(artOnly.doc).errors.join(' ')),
+    'without allowEmpty an object-free document is still rejected');
+  assert.equal(api.validateDoc(artOnly.doc, { allowEmpty: true }).errors.length, 0,
+    'allowEmpty accepts the object-free document');
+  assert.ok(api.validateDoc({ single_objects: [{ posLeft: 1 }] }, { allowEmpty: true })
+    .errors.some(e => /no "obj_id"/.test(e)),
+    'allowEmpty waives only the emptiness rule');
+  assert.equal(api.docHasBackground(artOnly.doc), true, 'embedded raster counts as artwork');
+  assert.equal(api.docHasBackground({ image_svg: '<svg viewBox="0 0 1 1"></svg>' }), true,
+    'authored SVG counts as artwork');
+  assert.equal(api.docHasBackground({ converted: 'true' }), false, 'converted with no data is not artwork');
+  assert.equal(api.docHasBackground(null), false);
+
   console.log('IWMAC import diagnostics tests passed');
 }
 

@@ -111,6 +111,12 @@ meaning what they meant.
 | 3 — modification | unchanged, byte for byte |
 | 4 — background-only | the new artwork, and nothing else changes |
 
+A class-4 patch is inserted with **Background picture only — insert no objects**
+ticked in the Insert dialog (userscript v1.10.0). That is what makes the three
+empty arrays legal: without the box the import refuses the file as an empty panel
+document, and with it the artwork is swapped while every object already on the
+canvas keeps its position.
+
 Rules that hold in every class:
 
 - **Never bake a live number, state or colour into the background.**

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.0
+// @version      1.10.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.9.0';
+var IWDIE_VERSION = '1.10.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -291,10 +291,17 @@ function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
   return L.join('\n');
 }
 
-/** Structural validation. Returns {errors:[], warnings:[]} — empty errors = importable. */
-function iwdieValidateDoc(doc) {
+/** Structural validation. Returns {errors:[], warnings:[]} — empty errors = importable.
+ *
+ *  opts.allowEmpty (v1.10.0) waives the "document is empty" rejection: the
+ *  background-only import reads nothing but the artwork, so a file with no
+ *  objects at all is a legitimate input there. Every other rule still applies —
+ *  objects that *are* present are validated the same way, because a background-
+ *  only import can be run against a full export too. */
+function iwdieValidateDoc(doc, opts) {
   var errors = [];
   var warnings = [];
+  var allowEmpty = !!(opts && opts.allowEmpty);
   if (doc == null || typeof doc !== 'object' || Array.isArray(doc)) {
     return { errors: ['Panel document is not an object.'], warnings: warnings };
   }
@@ -307,7 +314,7 @@ function iwdieValidateDoc(doc) {
   var nObj = Array.isArray(so) ? so.length : 0;
   var nCon = Array.isArray(co) ? co.length : 0;
   var nGra = Array.isArray(gr) ? gr.length : 0;
-  if (nObj + nCon + nGra === 0) errors.push('Panel document is empty — no single_objects, containers or graphics.');
+  if (nObj + nCon + nGra === 0 && !allowEmpty) errors.push('Panel document is empty — no single_objects, containers or graphics.');
   if (Array.isArray(so)) {
     for (var i = 0; i < so.length; i++) {
       var o = so[i];
@@ -518,6 +525,15 @@ function iwdieValidateSvg(svg) {
   }
   if (/<script/i.test(s)) errors.push('"image_svg" must not contain <script>.');
   return errors;
+}
+
+/** Does this document carry artwork of its own — embedded raster or authored
+ *  SVG? The background-only import is exactly the case where that is the whole
+ *  payload, so the question is asked before the objects are looked at. */
+function iwdieDocHasBackground(doc) {
+  if (!doc || typeof doc !== 'object') return false;
+  if (doc.converted === 'true' && doc.image_data) return true;
+  return typeof doc.image_svg === 'string' && doc.image_svg.length > 0;
 }
 
 /** Attach a background image (data: URL) to a panel document the host-native
@@ -1989,6 +2005,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-choice{border:1px solid #d5dbe1;border-radius:6px;padding:10px 12px;margin:10px 0;background:#f7f9fb}',
       '.iwdie-choice>div{margin-top:6px;color:#445;font-size:12.5px;line-height:1.45}',
       '.iwdie-choice .iwdie-btn{margin:0}',
+      /* Background-only switch (v1.10.0). Highlighted when armed, because it
+         changes what every other control in the dialog ends up doing. */
+      '.iwdie-opt{border:1px solid #d5dbe1;border-radius:6px;padding:10px 12px;margin:10px 0;background:#f7f9fb}',
+      '.iwdie-opt.iwdie-on{border-color:#2f6fb2;background:#eef4fa}',
+      '.iwdie-opt label{display:flex;align-items:flex-start;gap:8px;margin:0;font-weight:600;cursor:pointer}',
+      '.iwdie-opt input{margin:2px 0 0}',
+      '.iwdie-opt .iwdie-hint{margin-top:6px;color:#445;font-size:12.5px;line-height:1.45}',
       '.iwdie-hint{color:#778;font-size:11.5px;margin-top:6px}',
       /* Fact strip for the mid-import questions — the numbers the answer
          depends on, out of the prose and impossible to miss. */
@@ -2464,6 +2487,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       panel.innerHTML = [
         '<h3>Import panel JSON</h3>',
         '<div>Rebuilds an exported panel on this canvas. If the panel already holds objects you are asked first whether to <b>replace</b> them or <b>add</b> to them. Nothing reaches the server — the panel only changes on screen until you press the designer’s own Save.</div>',
+        '<div class="iwdie-opt" id="iwdie_bgonly_box">',
+        '  <label for="iwdie_bgonly"><input type="checkbox" id="iwdie_bgonly"><span>Background picture only — insert no objects</span></label>',
+        '  <div class="iwdie-hint">Takes nothing from the file but its background artwork. Every object already on the canvas stays exactly where it is, and none of the file’s objects, containers or graphics are inserted — so there is no replace-or-add question and no driver-id rebinding. Use it to slide re-drawn artwork in under an existing panel.</div>',
+        '</div>',
         '<label>1. Background image (PNG/JPG) — optional, pick it before the .json</label>',
         '<input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
         '<div class="iwdie-hint">Only needed when the export carries no background of its own.</div>',
@@ -2483,6 +2510,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       importOverlay.addEventListener('mousedown', function (ev) { if (ev.target === importOverlay) closeImportPanel(); });
       panel.querySelector('#iwdie_cancel_btn').addEventListener('click', closeImportPanel);
+      var bgOnlyBox = panel.querySelector('#iwdie_bgonly');
+      bgOnlyBox.addEventListener('change', function () {
+        panel.querySelector('#iwdie_bgonly_box').classList.toggle('iwdie-on', bgOnlyBox.checked);
+      });
       panel.querySelector('#iwdie_file').addEventListener('change', function (ev) {
         if (ev.target.files && ev.target.files[0]) readFileAndImport(ev.target.files[0]);
       });
@@ -2787,29 +2818,51 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       fr.readAsDataURL(f);
     }
 
-    function applyImport(parsed) {
-      readPendingBackground(function (bg) { applyImportCore(parsed, bg); });
+    /** Is the background-only switch armed? Read at import time, not at open
+     *  time, so ticking it after picking the file still counts. */
+    function bgOnlyRequested() {
+      var box = importOverlay ? importOverlay.querySelector('#iwdie_bgonly') : null;
+      return !!(box && box.checked);
     }
 
-    function applyImportCore(parsed, pendingBg) {
+    function applyImport(parsed) {
+      var bgOnly = bgOnlyRequested();
+      readPendingBackground(function (bg) { applyImportCore(parsed, bg, bgOnly); });
+    }
+
+    function applyImportCore(parsed, pendingBg, bgOnly) {
       var res = iwdieParsePayload(parsed);
       if (res.errors) { showErrors(res.errors, null, res.diagnosis); return; }
-      var v = iwdieValidateDoc(res.doc);
-      if (v.errors.length) { showErrors(v.errors, v.warnings, iwdieDiagnoseDoc(res.doc, v.errors, v.warnings)); return; }
+      // A background-only import never reads the object arrays, so a file that
+      // carries artwork and nothing else is valid input here.
+      var v = iwdieValidateDoc(res.doc, { allowEmpty: bgOnly });
+      if (v.errors.length) {
+        // A file with artwork and no objects is not a broken export — it is a
+        // background-only patch, and the switch above is what it is for. Say so
+        // rather than making the user work out why an intact file was refused.
+        var errors = v.errors.slice();
+        if (!bgOnly && errors.length === 1 && /document is empty/.test(errors[0]) &&
+            (pendingBg || iwdieDocHasBackground(res.doc))) {
+          errors.push('It does carry a background image, though — tick “Background picture only — insert no objects” at the top of this dialog to apply just the artwork.');
+        }
+        showErrors(errors, v.warnings, iwdieDiagnoseDoc(res.doc, v.errors, v.warnings));
+        return;
+      }
       if (!hostReady()) { showErrors(['IWMAC Designer host functions are not available (page not fully loaded?).']); return; }
 
       // Validation passed and nothing has been touched yet — this is the point
       // to ask replace-or-add. An empty canvas has nothing to replace, so it
-      // skips straight through.
-      var existing = canvasContentCount();
+      // skips straight through, and so does a background-only import: it adds
+      // no objects, so there is nothing for the existing ones to collide with.
+      var existing = bgOnly ? 0 : canvasContentCount();
       if (existing > 0) {
-        openModeChooser(existing, function (replace) { applyImportDoc(res.doc, v, pendingBg, replace, existing); });
+        openModeChooser(existing, function (replace) { applyImportDoc(res.doc, v, pendingBg, replace, existing, false); });
         return;
       }
-      applyImportDoc(res.doc, v, pendingBg, false, 0);
+      applyImportDoc(res.doc, v, pendingBg, false, 0, bgOnly);
     }
 
-    function applyImportDoc(rawDoc, v, pendingBg, replace, existing) {
+    function applyImportDoc(rawDoc, v, pendingBg, replace, existing, bgOnly) {
       var doc = iwdieNormalizeDoc(rawDoc);
       // AI-authored artwork: panel.image_svg (raw SVG text) -> embedded background.
       // A file picked in the modal takes precedence over the JSON's SVG.
@@ -2825,6 +2878,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // image_data stays the real background.
       delete doc.image_svg_trace;
       if (pendingBg) { doc = iwdieAttachBackground(doc, pendingBg.dataUrl, pendingBg.name); }
+
+      // Background-only import (v1.10.0): the artwork is the whole payload.
+      // Every question below this point exists because objects are about to
+      // land on the canvas — replace-or-add, driver-id rebinding, and "this
+      // panel already has a background" (answering that one is the whole point
+      // of ticking the box). None of them apply, so the artwork goes straight
+      // on and the canvas keeps everything it already holds. iw_set_base_image
+      // only swaps the background — the object-clearing in the host's own load
+      // path lives in renderPanel, not here — which is the same reason Add mode
+      // can already apply a background over a populated canvas.
+      if (bgOnly) {
+        if (!iwdieDocHasBackground(doc)) {
+          showErrors([
+            'This file carries no background image, so “Background picture only” has nothing to apply.',
+            'Either the panel it was exported from had no artwork, or the file is objects-only by design (a 360.001 Ventilasjon panel is). Pick a PNG/JPG in step 1 to use as the background, or untick the box to insert the file’s objects instead.'
+          ], v.warnings);
+          return;
+        }
+        if (!applyBackground()) return;   // applyBackground() has already said why
+        closeImportPanel();
+        toast('Background applied' + (doc.org_image_name ? ' (' + doc.org_image_name + ')' : '') +
+          ' — no objects were inserted, and nothing already on the canvas was touched.' +
+          '\nNothing is saved yet — use the designer’s own Save buttons when happy.', false, 9000);
+        return;
+      }
+
       var target = currentPlantId();
       var source = iwdieDetectSourcePlant(doc);
       var rebindNote = '';
@@ -2978,6 +3057,7 @@ if (typeof module !== 'undefined' && module.exports) {
     validateDoc: iwdieValidateDoc,
     normalizeDoc: iwdieNormalizeDoc,
     attachBackground: iwdieAttachBackground,
+    docHasBackground: iwdieDocHasBackground,
     svgToDataUrl: iwdieSvgToDataUrl,
     validateSvg: iwdieValidateSvg,
     detectSourcePlant: iwdieDetectSourcePlant,

@@ -24,11 +24,26 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
    canvas has none, or when you chose Replace — otherwise it asks first.
 7. Nothing touches the server until you use the designer's own **Save** buttons (*Compile Panel for Plant* / *Sync Panels with Plant*). That includes Replace: it only clears the screen, so reloading without saving brings the old panel back.
 
-> **Editing an existing Maskin background:** choose **Add** and apply a background-only
-> patch with empty object arrays — that leaves every existing object untouched.
-> **Replace** is for putting a full export onto a panel whose current content you no
-> longer want; adding a full export instead duplicates every object. See [Editing an
-> existing Maskin compressor bank from an exported
+## Background picture only (v1.10.0)
+
+Tick **Background picture only — insert no objects** at the top of the Insert dialog and the
+import takes nothing from the file but its artwork. No objects, containers or graphics are
+inserted, everything already on the canvas keeps its position, and both mid-import questions —
+replace-or-add and driver-id rebinding — are skipped, because neither has anything to decide.
+
+It works on any file that carries a background: a full export (only the picture is taken), an
+artwork-only patch with empty object arrays, or an AI-authored `image_svg`. A picture picked in
+step 1 of the dialog still wins over the one inside the `.json`, so the box is also the way to
+drop a fresh PNG under a panel you do not otherwise want to touch. If the file has no artwork at
+all, the import is refused and says so — nothing on the canvas changes.
+
+Before v1.10.0 an artwork-only file was rejected outright as an empty panel document; that
+rejection now names the box as the way through.
+
+> **Editing an existing Maskin background:** tick **Background picture only** — that swaps the
+> drawing and leaves every existing object untouched. **Replace** is for putting a full export
+> onto a panel whose current content you no longer want; adding a full export instead duplicates
+> every object. See [Editing an existing Maskin compressor bank from an exported
 > panel JSON](iwmac-designer-reference/reference_data/maskin-drawing-method.txt) for
 > object-preservation, measured-raster, and overlay-QA rules.
 
@@ -36,7 +51,7 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 
 | Concern | Behaviour |
 |---|---|
-| Background image | Base64-embedded into the export (the host's own `converted`/`image_data` format), re-applied on insert; or attach a PNG/JPG in the Insert dialog to give an image-less panel its artwork |
+| Background image | Base64-embedded into the export (the host's own `converted`/`image_data` format), re-applied on insert; or attach a PNG/JPG in the Insert dialog to give an image-less panel its artwork; or import the artwork **alone** with *Background picture only*, leaving every object on the canvas where it is |
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
