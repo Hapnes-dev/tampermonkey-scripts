@@ -91,104 +91,63 @@ Pipes are simple ORTHOGONAL lines - no diagonals, no tiny bends.
   valve outlets).
 - Text large enough for the HMI export - no tiny engineering notes.
 
-5. Editing an existing Maskin compressor bank from an exported panel JSON
+5. Extending an existing Maskin compressor bank - the raster half
 ----------------------------------------------------------------------------
-This procedure is the normative contract for extending an EXISTING Maskin
-compressor bank. It applies to masked fixtures and production work, but the
-fixture's marker colours and coordinates are test instrumentation only.
-Production QA MUST sample the actual source pixels.
+This section used to carry the whole compressor-bank editing procedure, JSON
+included. It no longer does: one live owner per rule.
 
-1. Decide the deliverable before editing. A background-only patch MUST change
-   image_data, MUST declare counts of zero, and MUST keep single_objects,
-   containers and graphics empty. An entire/full JSON MUST preserve the
-   complete original panel document and every existing object array; ONLY
-   explicitly requested objects may be appended. Insert JSON APPENDS objects.
-   Insert an entire/full JSON only on an empty canvas unless duplication is
-   intentional. A populated panel that needs artwork only gets the
-   background-only patch.
-2. Inspect the source target column before adding objects. Artwork does not
-   imply live-object creation. Existing objects, including obj_id, name, id,
-   size, position, zIndex, tag/link/unit fields, driver_id, linked state and
-   alias_text, MUST remain exact unless the request explicitly authorizes a
-   particular change.
-3. Select the nearest sibling with the same operational role and treat its
-   entire compressor column as one atomic visual template. The compressor,
-   upper and lower branches, status artwork, static label, empty value pills
-   and any explicitly requested dynamic objects travel as one coordinated
-   pattern; NEVER copy only the compressor glyph.
-4. Classify fixed-speed versus VSD before cloning. In the masked example C3 is
-   the nearest fixed-speed MT sibling: it has status, capacity and runtime.
-   C1 additionally has a VSD row. A new C4 matching C3 therefore gets exactly
-   status, capacity and runtime when parameter objects were explicitly
-   requested; it MUST NOT inherit C1's VSD object.
-5. Measure one center-to-center translation vector and record it. Apply that
-   same vector to the compressor symbol, both branches, status art, labels,
-   empty pills and dynamic-object coordinates. Do not estimate separate
-   offsets for separate layers.
-6. Preserve layer ownership. Background image_data owns pipes, equipment,
-   static labels, pill/status artwork and empty fields. Dynamic objects own
-   live status and values and render above the background. NEVER bake live
-   text, state or numbers into new artwork. Clone dynamic objects ONLY when
-   the request asks for parameter boxes. New objects MUST use id and
-   driver_id equal to the literal placeholder "driver_id", linked "false",
-   blank unit_id, unit_ref, link_name, link_tag and sub_group, plus a
-   descriptive alias_text. NEVER invent a driver ID.
-7. Composite with source alpha or a mask containing only intended foreground
-   pixels. NEVER paste an opaque rectangular crop over pipes or unrelated
-   art. Restore continuous headers from the exact sampled source raster, then
-   place the compressor housing above the branches. Junction pixels are part
-   of the measured style, not cleanup detail.
-8. Remeasure every source independently: centerline, RGBA colour, alpha,
-   thickness, anti-aliasing and junction geometry. In the miniature worked
-   fixture the orange horizontal header has three sampled rows with alpha
-   191 / 255 / 64, the cyan header has two opaque rows, and vertical branches
-   have two opaque columns. These values are example-specific, NEVER defaults.
-   Visual equality to the source outranks a generic two-pixel line-width rule.
-9. Reparse and validate JSON, declared counts, sequential object_N names, the
-   exact source/output object diff and every protected existing field. Then
-   render the full panel, a zoomed compressor-bank crop and the background
-   WITH its dynamic-object overlay. A background-only preview cannot prove
-   dynamic overlay alignment. Do not claim correctness without exact raster
-   comparison and overlay QA.
-10. After any failed editing iteration, discard that derivative and restart
-    from the retained original export. Never repair the next attempt on top
-    of an already damaged crop, shifted object set or altered metadata.
+  The ordered procedure, step by step  -> MASKIN-AUTHORING-GUIDE.md #4a
+  The rules with ids and evidence      -> MASKIN-GENERATION-CONTRACT.md #16
+                                          (M-A01..M-A09, M-C01..M-C05)
+  What must be true before delivery    -> MASKIN-QA-CHECKLIST.md stage C0
+  The same rules as code               -> validate-maskin-panel.py --compare
+  The failures these rules came from   -> MASKIN-AUTHORING-GUIDE.md,
+                                          "Failure catalogue"
 
-PRE-EDIT DECISION CHECKLIST
-[ ] Retain an untouched original source export.
-[ ] Confirm background-only patch versus entire/full JSON.
-[ ] Confirm that Insert JSON appends and whether the target canvas is empty.
-[ ] Inspect the target column for existing objects before creating any.
-[ ] Classify the nearest sibling's role and fixed-speed/VSD status.
-[ ] Measure exact center-to-center pitch; record one translation vector.
+What stays here is the drawing technique, because that is what this file owns.
+Five rules, all about pixels. None of them is checkable from a panel JSON: the
+background is a base64 blob in the document, so no validator sees any of this.
 
-COMPRESSOR-BANK EDITING CHECKLIST
-[ ] Clone the nearest role-matching sibling as one atomic column.
-[ ] Reuse one vector for art, upper/lower branches, labels, pills and objects.
-[ ] Keep pipes/equipment/static labels/empty fields in the background.
-[ ] Keep live status and values in dynamic objects; do not bake live text.
-[ ] Use an alpha-safe foreground mask/composite, never an opaque crop.
-[ ] Restore headers and junctions from sampled source raster before housing.
-[ ] Clone optional dynamic objects only when the request explicitly asks.
-[ ] Use placeholder driver_id, linked false and blank link/unit fields.
+R1. COMPOSITING MUST NOT MULTIPLY SOURCE ALPHA.
+    Copy each source pixel's alpha verbatim. A mask is BINARY - a pixel is
+    carried or it is not. A soft, feathered, blurred or opacity-scaled mask
+    multiplies the source alpha, and then the entire clone - compressor
+    symbol, both pipe branches, the static labels and the empty pills - comes
+    out faded together. That uniformity is the tell: it reads as a rendering
+    problem, but it is a compositing bug, and it is invisible in every JSON
+    check that will be run afterwards.
+    Equally: NEVER paste an opaque rectangular crop over pipes or unrelated
+    art. Both errors are the same mistake - letting the mask decide alpha
+    instead of the source.
 
-POST-EDIT JSON INTEGRITY CHECKLIST
-[ ] Reparse the output JSON.
-[ ] Match declared counts to single_objects, containers and graphics lengths.
-[ ] Verify sequential object_0..object_N names and no duplicate records.
-[ ] List the exact source/output object diff: changed, added and removed.
-[ ] Protect existing driver_id, unit_id, linked, alias, type and position.
-[ ] Confirm a full JSON preserves all other source metadata and arrays.
-[ ] Confirm a background-only patch has zero counts and three empty arrays.
+R2. MEASURE EVERY SOURCE LINE INDEPENDENTLY.
+    Centerline, RGBA colour, per-row alpha, thickness, anti-aliasing and
+    junction geometry, per line, per drawing. The discharge header and the
+    suction header of the SAME panel are not the same thickness. A number
+    measured on one is evidence about that one only.
 
-POST-EDIT PIXEL/RASTER QA CHECKLIST
-[ ] Compare pipe continuity, centerline, colour and measured thickness.
-[ ] Compare alpha and anti-aliasing row/column patterns exactly.
-[ ] Inspect every orthogonal junction and housing-over-branch edge.
-[ ] Derive compressor centers from pixels and verify equal measured pitch.
-[ ] Render and compare the full panel at its actual HMI size.
-[ ] Render and compare a zoomed compressor-bank crop.
-[ ] Render the background and dynamic objects together for overlay alignment.
+R3. REPRODUCE EVERY ROW THE SOURCE HAS.
+    Including the partial-alpha anti-aliasing rows, with the source's own
+    alpha values. A three-row line whose outer row is faint is a three-row
+    line; delivering its two visible rows produces a thinner, harder pipe
+    that visibly does not match the header it joins. Visual equality to the
+    source outranks any generic two-pixel line-width rule.
+
+R4. RESTORE HEADERS AND JUNCTIONS FROM THE SAMPLED SOURCE RASTER,
+    then place the compressor housing above the branches. Junction pixels are
+    part of the measured style, not cleanup detail. Inspect the background
+    ALONE, at native size, before any object is placed on it: once the pills
+    and status strips are on top, a gap at the junction cannot be seen.
+
+R5. AFTER A FAILED ITERATION, RESTART FROM THE RETAINED ORIGINAL.
+    Never repair the next attempt on top of an already damaged crop. Two
+    compensating edits hide each other rather than reverting, and the damage
+    stops being attributable to any single step.
+
+Layer ownership is unchanged and absolute: image_data owns pipes, equipment,
+static labels, pill and status artwork and the EMPTY value fields; dynamic
+objects own live status and values. NEVER bake live text, state or numbers
+into new artwork.
 
 MASKED C3-TO-C4 WORKED EXAMPLE
 Before: C1 is MT with status/capacity/VSD/runtime. C3 is the nearest
@@ -206,31 +165,17 @@ runtime using placeholder driver_id, linked false, blank link/unit fields and
 descriptive aliases. No VSD object is added. The background anchors and all
 three dynamic-object centers use the same (+24, 0) translation.
 
+Measured in that fixture, as an illustration of R2 and R3: the orange
+horizontal header has three sampled rows with alpha 191 / 255 / 64, the cyan
+header has two opaque rows, and the vertical branches have two opaque columns.
+Two headers on one drawing, two different row counts - which is the whole point
+of measuring each line separately. These values are example-specific and are
+NEVER defaults; a production edit measures its own raster.
+
 The masked derivative is in tests/fixtures/maskin-compressor-bank/. Its
 one-pixel registration markers and magenta field anchors are test-only colours,
 separate from the miniature art. Run the dependency-free regression with:
-  python -m unittest tests/test_maskin_compressor_bank.py -v
-
-FAILED-ITERATION LESSONS
-- Adding objects before inspecting the target can duplicate existing controls.
-- Returning a patch when full JSON was requested loses the requested document.
-- Returning full JSON to a populated panel needing artwork only duplicates
-  objects because Insert JSON appends.
-- Copying a compressor without its full column breaks branches and field grid.
-- Cloning the wrong sibling imports role-specific rows such as C1's VSD.
-- An opaque crop hides continuous pipes and unrelated source pixels.
-- A nominal two-pixel line can differ from the measured raster's alpha/style.
-- A background-only preview says nothing about dynamic overlay alignment.
-- Correctness cannot be claimed without exact full, zoomed and overlay
-  comparison against the source pattern.
-
-SUCCESSFUL SEQUENCE
-Restart from the original export; classify background-only versus full output;
-inspect the target and clone the nearest role match atomically; clone dynamic
-objects only when requested; record and reuse one measured vector; composite
-with an alpha-safe mask; restore exact sampled headers, branches and junctions;
-then validate counts, the exact object diff, protected fields, raster style,
-pitch and the combined background/object overlay.
+  python -m unittest tests.test_maskin_compressor_bank
 
 6. LIGHT SKIN ONLY + THE CANONICAL TEMPLATE
 --------------------------------------------------

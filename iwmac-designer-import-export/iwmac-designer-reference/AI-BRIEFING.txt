@@ -301,23 +301,44 @@ five rules that are envelope-level:
   capacity and runtime only, never C1's extra VSD row. New objects use id and
   driver_id "driver_id", linked "false", blank link/unit fields and clear
   alias_text; NEVER invent a driver ID.
+- ARTWORK FIRST, OBJECTS SECOND. Never add a dynamic object before the artwork
+  drawing its anchor exists - a status strip with no compressor under it and a
+  value pill on white are both well-formed to every JSON check that will run.
+  And an unknown plant parameter is NEVER a reason for alias_text "": the alias
+  is the relink key, so an object without one can never be linked by anyone.
+  Give it the role's alias (grammar "C<n> <MT|LT> <role>"), ship it unlinked,
+  and REPORT the gap. maskin-akpc-link-map.json carries C1-C3 only; a fourth
+  compressor's parameters are unresolved until that plant's dump is supplied.
 - Treat the compressor column as one template and apply one measured vector to
   its compressor art, upper/lower branches, static label, empty pills and
   requested object coordinates. Reuse a pitch measured from a NAMED pair and
   say which pair - the production pitch is 79 to 82 px, and averaging it into
   a constant is forbidden. Background owns pipes, equipment, labels,
   status/pill artwork and empty fields; dynamic objects own live state/values.
-- Preserve source alpha or mask intended foreground pixels only; NEVER paste an
-  opaque rectangular crop. Sample every source's centerline, colour, alpha,
-  thickness, anti-aliasing and junction geometry exactly. The fixture's orange
-  191/255/64 three-row header, opaque two-row cyan header and opaque two-column
-  branches are example-specific measurements, not universal defaults.
+- Copy each source pixel's alpha VERBATIM; NEVER MULTIPLY it and never paste an
+  opaque rectangular crop. A mask is BINARY - a pixel is copied or it is not. A
+  soft, feathered, blurred or opacity-scaled mask multiplies the source alpha,
+  and then the compressor, its pipes, its labels and its pills all come out
+  faded TOGETHER; that uniformity is the tell. Sample every source's
+  centerline, colour, alpha, thickness, anti-aliasing and junction geometry
+  exactly, and reproduce EVERY row it has - a line that looks 2 px wide is
+  often 3 rows, the outer ones partially transparent, and dropping them makes
+  the copy thinner and harder-edged than the original. Measure each header
+  SEPARATELY: on one panel the discharge and suction headers legitimately
+  differ in thickness. The fixture's orange 191/255/64 three-row header, opaque
+  two-row cyan header and opaque two-column branches are example-specific
+  measurements, not universal defaults.
 - Reparse full JSON; check counts, sequential names, the exact object diff and
   protected existing fields. Render full panel, zoomed bank and background plus
   dynamic overlay; a background-only preview cannot prove overlay alignment.
   Compare by role key (obj_id + alias_text + tag_text), NEVER by array index.
   Restart from the original export after any failed iteration.
-Complete procedure and four checklists: reference_data/maskin-drawing-method.txt
+Extending an existing bank is nine ORDERED steps - six of the seven documented
+failures were order failures, not drawing failures: MASKIN-AUTHORING-GUIDE.md
+section 4a (rules M-A01..M-A09). Acceptance: MASKIN-QA-CHECKLIST.md stage C0,
+the background alone, at native size. Drawing doctrine and the pixel rules
+R1-R5: reference_data/maskin-drawing-method.txt. On ANY visual failure restart
+from the retained original source, never from the damaged derivative.
 Regression fixture/test: tests/fixtures/maskin-compressor-bank/ and
 tests/test_maskin_compressor_bank.py plus tests/test_maskin_10229_contract.py
 

@@ -4,6 +4,8 @@
 Usage:
     python validate-maskin-panel.py PANEL.json [--profile TEMPLATE-10229]
     python validate-maskin-panel.py PANEL.json --json
+    python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json
+                                    [--patch-scope compressor-addition]
 
 The rules are data, not code: everything panel-type- and template-specific is
 read from ``documentation-rules.json`` (``panel_types.maskin`` and
@@ -14,13 +16,16 @@ drift apart. Three namespaces:
     M-S*   structure. Runs on every panel.
     M-G*   Maskin relationships. Runs on every panel.
     M-P*   template geometry. Runs only when --profile is given.
+    M-C*   candidate against source. Runs only with --compare.
 
 WHAT THIS CANNOT DO. It cannot see the background artwork, so it cannot tell
 whether a value pill sits on the pill drawn for it, whether a status strip
-covers a compressor, or whether the heat-recovery block overlaps a pipe. Those
-are visual questions and MASKIN-QA-CHECKLIST.md stage C answers them with a
-native-size render. A clean run here is a necessary condition, never a
-sufficient one, and must never be reported as "the panel is correct".
+covers a compressor, whether a copied pipe branch reaches the header it should
+join, or whether a cloned column came out faded. Those are the M-A* rules of
+MASKIN-GENERATION-CONTRACT.md §16.1, they are about pixels, and stage C of
+MASKIN-QA-CHECKLIST.md answers them with a native-size render. A clean run here
+is a necessary condition, never a sufficient one, and must never be reported as
+"the panel is correct".
 
 Exit status is 0 when no finding has severity ``error``, 1 otherwise. This file
 performs no network access and reads nothing outside the reference directory.
@@ -625,6 +630,325 @@ def check_profile(envelope, objects, profile, out):
 
 
 # --------------------------------------------------------------------------
+# Compare - a candidate against the source it was derived from (M-C*)
+# --------------------------------------------------------------------------
+
+# What each declared patch is ALLOWED to change. Everything not named here is
+# reported, which is the opposite of how the M-S/M-G checks work: those name the
+# defect, these name the permission.
+PATCH_SCOPES = {
+    "compressor-addition": {
+        "objects": "compare",
+        "fields": (),
+        "added": "compressor-columns",
+        "background": "must-change",
+        "description": ("a compressor added to an existing bank: complete new "
+                        "compressor columns, NO field difference on any object that "
+                        "already existed, and background artwork that actually changed"),
+    },
+    "background-only": {
+        "objects": "empty",
+        "fields": (),
+        "added": "none",
+        "background": "must-change",
+        "description": ("a class-4 patch: zero counts, three empty arrays, and a "
+                        "background that differs from the source"),
+    },
+    "position": {
+        "objects": "compare",
+        "fields": ("posLeft", "posTop"),
+        "added": "none",
+        "background": "must-not-change",
+        "description": "a pure move: posLeft/posTop on existing objects, nothing else",
+    },
+    "none": {
+        "objects": "compare",
+        "fields": (),
+        "added": "none",
+        "background": "must-not-change",
+        "description": ("a no-op: the candidate must be field-identical to the source "
+                        "on every matched object, add nothing, and keep the background"),
+    },
+}
+
+# Written by the export, not by the author, so a difference here is not evidence
+# that a patch escaped its scope. Named explicitly so the exemption is auditable.
+EXPORT_ONLY_ENVELOPE_FIELDS = ("exported_at", "generator")
+
+
+def pair_by_role(source_objects, candidate_objects):
+    """Match two documents' objects by role key, never by array index.
+
+    Insert renames every object from the live canvas child index, so `object_7`
+    in the source and `object_7` in the candidate are unrelated. A role key can
+    legitimately repeat (E9 carries `Suction temp. To-MT` twice), so equal keys
+    pair in array order and the surplus falls out as dropped or added.
+    """
+    src_by_key = collections.defaultdict(list)
+    for obj in source_objects:
+        src_by_key[role_key(obj)].append(obj)
+    cand_by_key = collections.defaultdict(list)
+    for obj in candidate_objects:
+        cand_by_key[role_key(obj)].append(obj)
+
+    pairs, dropped, added = [], [], []
+    for key in src_by_key:
+        src_list, cand_list = src_by_key[key], cand_by_key.get(key, [])
+        for index, src_obj in enumerate(src_list):
+            if index < len(cand_list):
+                pairs.append((src_obj, cand_list[index]))
+            else:
+                dropped.append(src_obj)
+        added.extend(cand_list[len(src_list):])
+    for key, cand_list in cand_by_key.items():
+        if key not in src_by_key:
+            added.extend(cand_list)
+    return pairs, dropped, added
+
+
+def check_patch_scope(pairs, scope, scope_name, findings):
+    """M-C04: prove the patch changed only what it was allowed to change.
+
+    The risk in "add a fourth compressor" is not that the three new objects land
+    wrongly - a render shows that. It is that something ELSE moved: a pill
+    nudged, a zIndex normalized, an alias tidied, a tag_text trimmed. Each is
+    invisible in a diff of 69 objects and together they are a rewrite wearing a
+    patch's clothes.
+    """
+    allowed = scope["fields"]
+    escapes = collections.Counter()
+    detail = []
+    for src, cand in pairs:
+        for field in OBJECT_FIELDS:
+            before, after = src.get(field), cand.get(field)
+            if before == after or field in allowed:
+                continue
+            escapes[field] += 1
+            if len(detail) < 12:
+                detail.append(f"{src.get('alias_text') or src.get('name')}.{field}: "
+                              f"{before!r} -> {after!r}")
+    if not escapes:
+        findings.append(Finding("M-C04", "info",
+                                f"patch scope {scope_name!r} held on every pre-existing "
+                                f"object: differences are confined to "
+                                f"{scope['description']}"))
+        return
+    summary = ", ".join(f"{field} x{count}" for field, count in escapes.most_common())
+    findings.append(Finding("M-C04", "error",
+                            f"patch scope {scope_name!r} was declared, which permits "
+                            f"{scope['description']}, but {sum(escapes.values())} field "
+                            f"difference(s) escaped it: {summary}. "
+                            + "; ".join(detail)))
+
+
+def check_added_objects(added, scope, findings):
+    """M-C02: what may be added, and what an addition must carry."""
+    if not added:
+        return
+    names = ", ".join(f"{o.get('alias_text') or o.get('name')}" for o in added[:10])
+    policy = scope["added"] if scope else None
+
+    if policy == "none":
+        findings.append(Finding("M-C02", "error",
+                                f"{len(added)} object(s) added: {names}. The declared patch "
+                                f"scope adds nothing"))
+        return
+
+    if policy == "compressor-columns":
+        blank = [o for o in added if not (o.get("alias_text") or "").strip()]
+        if blank:
+            findings.append(Finding("M-C02", "error",
+                                    f"{len(blank)} added object(s) carry an empty alias_text "
+                                    f"({', '.join(str(o.get('name')) for o in blank[:6])}). On "
+                                    f"Maskin the alias IS the parameter name and the only "
+                                    f"relink key: an object added without one can never be "
+                                    f"linked, by anyone, ever (M-A08). A new compressor row "
+                                    f"takes the grammar alias 'C<n> <MT|LT> <role>' even when "
+                                    f"the plant parameter behind it is unknown - the unknown "
+                                    f"part is reported as a linking gap, not left blank"))
+        foreign = [o for o in added
+                   if (o.get("alias_text") or "").strip()
+                   and not COMPRESSOR_ALIAS.match(o.get("alias_text") or "")]
+        if foreign:
+            findings.append(Finding("M-C02", "error",
+                                    f"{len(foreign)} added object(s) are not compressor rows: "
+                                    f"{', '.join(str(o.get('alias_text')) for o in foreign[:6])}. "
+                                    f"Scope 'compressor-addition' adds compressor columns and "
+                                    f"nothing else"))
+        return
+
+    findings.append(Finding("M-C02", "warning",
+                            f"{len(added)} object(s) added: {names}. Legitimate for a class-3 "
+                            f"extension; declare --patch-scope to have it checked"))
+
+
+def check_compare_compressors(source_objects, candidate_objects, required, optional, findings):
+    """M-C03: columns are atomic across the pair, and a clone imports no row the
+    machine does not have."""
+    before, after = compressors(source_objects), compressors(candidate_objects)
+
+    for key in sorted(before):
+        missing = [row for row in before[key] if row not in after.get(key, {})]
+        if missing:
+            findings.append(Finding("M-C03", "error",
+                                    f"compressor C{key[0]} {key[1]} lost {', '.join(missing)}. "
+                                    f"The source column is the inventory; an edit that thins it "
+                                    f"is a defect even when the panel still renders"))
+
+    for key in sorted(set(after) - set(before)):
+        rows = after[key]
+        missing = [row for row in required if row not in rows]
+        if missing:
+            findings.append(Finding("M-C03", "error",
+                                    f"new compressor C{key[0]} {key[1]} is missing "
+                                    f"{', '.join(missing)}; a column is placed whole or not at "
+                                    f"all"))
+        extra = [row for row in rows if row not in required and row not in optional]
+        if extra:
+            findings.append(Finding("M-C03", "warning",
+                                    f"new compressor C{key[0]} {key[1]} carries unrecognised "
+                                    f"rows: {extra}"))
+        for row in rows:
+            if row in optional and not any(row in before[src] for src in before
+                                           if src[1] == key[1]):
+                findings.append(Finding("M-C03", "error",
+                                        f"new compressor C{key[0]} {key[1]} carries {row!r} and "
+                                        f"no existing {key[1]} compressor has one. That row was "
+                                        f"imported from a clone source, not measured from the "
+                                        f"machine - evidence decides whether a compressor has a "
+                                        f"VSD, never the column you happened to copy"))
+
+
+def check_compare_background(source_panel, candidate_panel, scope, findings):
+    """M-C05: the artwork side of the pair."""
+    before = source_panel.get("image_data") or source_panel.get("image_svg") or ""
+    after = candidate_panel.get("image_data") or candidate_panel.get("image_svg") or ""
+    policy = (scope or {}).get("background", "any")
+    changed = before != after
+
+    if before and not after:
+        findings.append(Finding("M-C05", "error",
+                                "the source carried an embedded background and the candidate "
+                                "does not. Every coordinate in the source was measured against "
+                                "that artwork"))
+        return
+    if policy == "must-change" and not changed:
+        findings.append(Finding("M-C05", "error",
+                                f"the background is byte-identical to the source "
+                                f"({len(before)} chars), and the declared scope is "
+                                f"{scope['description']}. Objects were added over artwork that "
+                                f"does not draw them: no compressor symbol, no pipe branch, no "
+                                f"pills, no labels (M-A06)"))
+    elif policy == "must-not-change" and changed:
+        findings.append(Finding("M-C05", "error",
+                                f"the background changed ({len(before)} chars -> {len(after)}) "
+                                f"and the declared scope is {scope['description']}"))
+    elif changed:
+        findings.append(Finding("M-C05", "info",
+                                f"background changed: {len(before)} chars -> {len(after)}. "
+                                f"Only a native-size render decides whether the new artwork "
+                                f"connects (M-A03, M-A05) - this compares lengths, not pixels"))
+
+    for field in ("panel_width", "panel_height"):
+        if as_int(source_panel.get(field)) != as_int(candidate_panel.get(field)):
+            findings.append(Finding("M-C05", "error",
+                                    f"panel.{field}: {source_panel.get(field)!r} -> "
+                                    f"{candidate_panel.get(field)!r}; every coordinate in the "
+                                    f"source means something different now"))
+
+
+def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
+    """Diff a candidate against the source it was derived from.
+
+    Class 3 says "preserve everything you were not asked to change". Nothing in
+    the single-document checks can see that - they judge the candidate alone. So
+    every claim of the form "I changed only X" is unproven until this runs.
+    """
+    scope = None
+    if patch_scope is not None:
+        scope = PATCH_SCOPES.get(patch_scope)
+        if scope is None:
+            findings.append(Finding("M-C04", "error",
+                                    f"unknown --patch-scope {patch_scope!r}; defined: "
+                                    f"{', '.join(sorted(PATCH_SCOPES))}"))
+            return findings
+
+    source_envelope = envelope_of(source_doc)
+    candidate_envelope = envelope_of(candidate_doc)
+    source_panel = source_envelope.get("panel") or {}
+    candidate_panel = candidate_envelope.get("panel") or {}
+    source_objects = objects_of(source_envelope)
+    candidate_objects = objects_of(candidate_envelope)
+
+    maskin = (rules.get("panel_types") or {}).get("maskin") or {}
+    required = (maskin.get("required_roles") or {}).get("per_compressor", [])
+    optional = (maskin.get("required_roles") or {}).get("per_compressor_optional", [])
+
+    check_compare_background(source_panel, candidate_panel, scope, findings)
+
+    if scope and scope["objects"] == "empty":
+        counts = candidate_envelope.get("counts") or {}
+        offenders = [name for name in ("single_objects", "containers", "graphics")
+                     if counts.get(name) or (candidate_panel.get(name) or [])]
+        if offenders:
+            findings.append(Finding("M-C01", "error",
+                                    f"scope 'background-only' means zero counts and three empty "
+                                    f"arrays; this document carries {', '.join(offenders)}. "
+                                    f"Insert appends, so a populated document dropped on the "
+                                    f"canvas that already holds these objects duplicates every "
+                                    f"one of them"))
+        else:
+            findings.append(Finding("M-C01", "info",
+                                    f"background-only patch: {len(source_objects)} source "
+                                    f"objects deliberately not carried, canvas untouched"))
+        return findings
+
+    pairs, dropped, added = pair_by_role(source_objects, candidate_objects)
+
+    if dropped:
+        names = ", ".join(str(o.get("alias_text") or o.get("name")) for o in dropped[:10])
+        findings.append(Finding("M-C01", "error",
+                                f"{len(dropped)} object(s) present in the source are missing "
+                                f"from the candidate: {names}"
+                                f"{' ...' if len(dropped) > 10 else ''}. Matched by role key "
+                                f"(obj_id + alias_text + tag_text), so this is not an ordering "
+                                f"artifact"))
+
+    check_added_objects(added, scope, findings)
+    check_compare_compressors(source_objects, candidate_objects, required, optional, findings)
+
+    if scope:
+        check_patch_scope(pairs, scope, patch_scope, findings)
+    else:
+        moved = [(s, c) for s, c in pairs
+                 if any(s.get(f) != c.get(f) for f in OBJECT_FIELDS)]
+        if moved:
+            detail = "; ".join(
+                f"{s.get('alias_text') or s.get('name')}: "
+                + ", ".join(f for f in OBJECT_FIELDS if s.get(f) != c.get(f))
+                for s, c in moved[:8])
+            findings.append(Finding("M-C04", "warning",
+                                    f"{len(moved)} pre-existing object(s) differ from the "
+                                    f"source: {detail}. Declare --patch-scope to turn this into "
+                                    f"a pass/fail check"))
+
+    findings.append(Finding("M-C00", "info",
+                            f"source {len(source_objects)} objects, candidate "
+                            f"{len(candidate_objects)}; {len(pairs)} matched by role, "
+                            f"{len(dropped)} dropped, {len(added)} added"))
+    return findings
+
+
+def validate_pair(source_doc, candidate_doc, profile_name=None, rules=None, palette=None,
+                  mode=None, patch_scope=None):
+    rules = rules if rules is not None else load_rules()
+    palette = palette if palette is not None else load_palette()
+    findings = validate(candidate_doc, profile_name, rules=rules, palette=palette, mode=mode)
+    compare(source_doc, candidate_doc, rules, findings, patch_scope=patch_scope)
+    return findings
+
+
+# --------------------------------------------------------------------------
 
 def validate(document, profile_name=None, rules=None, palette=None, mode=None):
     rules = rules if rules is not None else load_rules()
@@ -691,7 +1015,16 @@ def validate(document, profile_name=None, rules=None, palette=None, mode=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("panel", type=pathlib.Path)
+    parser.add_argument("panel", nargs="?", type=pathlib.Path,
+                        help="panel to check")
+    parser.add_argument("--compare", nargs=2, type=pathlib.Path,
+                        metavar=("SOURCE.json", "CANDIDATE.json"),
+                        help="validate the candidate AND diff it against the source. Use this "
+                             "whenever an export was supplied - it is the only mechanical proof "
+                             "that everything you were not asked to change survived (M-C*)")
+    parser.add_argument("--patch-scope", default=None, choices=sorted(PATCH_SCOPES),
+                        help="in --compare, assert that the candidate differs from the source "
+                             "ONLY within this scope (M-C04)")
     parser.add_argument("--profile", default=None,
                         help="apply a named template profile from documentation-rules.json "
                              "(TEMPLATE-10229)")
@@ -702,8 +1035,22 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
-    document = json.loads(args.panel.read_text(encoding="utf-8"))
-    findings = validate(document, args.profile, mode=args.mode)
+    if bool(args.compare) == bool(args.panel):
+        parser.error("give exactly one of PANEL.json / --compare SOURCE.json CANDIDATE.json")
+    if args.patch_scope and not args.compare:
+        parser.error("--patch-scope compares a candidate against a source; it needs "
+                     "--compare SOURCE.json CANDIDATE.json")
+
+    if args.compare:
+        source_path, subject = args.compare
+        source_doc = json.loads(source_path.read_text(encoding="utf-8"))
+        document = json.loads(subject.read_text(encoding="utf-8"))
+        findings = validate_pair(source_doc, document, args.profile, mode=args.mode,
+                                 patch_scope=args.patch_scope)
+    else:
+        subject = args.panel
+        document = json.loads(subject.read_text(encoding="utf-8"))
+        findings = validate(document, args.profile, mode=args.mode)
 
     errors = [f for f in findings if f.severity == "error"]
     warnings = [f for f in findings if f.severity == "warning"]
@@ -712,7 +1059,7 @@ def main(argv=None):
     else:
         for finding in findings:
             print(finding)
-        print(f"\n{len(errors)} error(s), {len(warnings)} warning(s) in {args.panel}")
+        print(f"\n{len(errors)} error(s), {len(warnings)} warning(s) in {subject}")
         print("Structural only. Visual QA at native size is a separate, required step - "
               "see MASKIN-QA-CHECKLIST.md stage C.")
     return 1 if errors else 0

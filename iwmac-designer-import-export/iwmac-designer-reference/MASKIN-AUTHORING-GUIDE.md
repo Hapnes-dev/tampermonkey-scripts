@@ -13,6 +13,7 @@ output schema — it says in what order to consult them.
 | How the background artwork is drawn | [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) |
 | Which Danfoss parameter is behind an alias | [reference_data/maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) |
 | How to prove the result is correct | [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) |
+| The artwork and compare rules — `M-A01…M-A09`, `M-C01…M-C05` | [MASKIN-GENERATION-CONTRACT.md §16](MASKIN-GENERATION-CONTRACT.md#16-extending-a-compressor-bank--artwork-raster-and-compare-rules) |
 | The same rules as data / as code | [documentation-rules.json](documentation-rules.json) · [validate-maskin-panel.py](validate-maskin-panel.py) |
 
 ## The procedure
@@ -21,6 +22,7 @@ output schema — it says in what order to consult them.
 2. **Select the profile** — today there is exactly one, `TEMPLATE-10229`. Say which.
 3. **Decide background ownership** before placing a single object.
 4. **Place clusters whole**, never a member at a time.
+   *Extending an existing bank has its own ordered procedure — §4a.*
 5. **Choose objects by role**, never by "a box that shows a number".
 6. **Land every pill on a drawn pill.**
 7. **Sanitize the bindings** — or preserve them, depending on the class.
@@ -160,7 +162,8 @@ pitches into a constant; the variation is hand placement, not a grid.
 **And check the artwork first.** A new compressor object needs a drawn pill to
 land in. If the background has three columns drawn and you are adding a fourth
 object column, either the artwork changes too (class 4 alongside class 3) or the
-new objects float on empty white. Say which.
+new objects float on empty white. Say which — and then follow **§4a**, which is
+the ordered procedure for actually extending the drawing.
 
 ### The suction group
 
@@ -185,6 +188,83 @@ membership follows the parameter, not the pixel neighbourhood.
 Five strips share x ≈ 1169–1171: `u17 Ther Air` (y 58), `--- DI1 Alarm` (86),
 `Control status MT` (210), `Control status LT` (238), `Cond. control status`
 (267), `Hr enable` (325). Control-status pitch is 28–29 px. Keep the column.
+
+## 4a. Extending a compressor bank — the ordered procedure
+
+The request "add a fixed-speed MT compressor to this machine picture" is **class 3
+and class 4 at once**: new objects *and* new artwork. Nine steps, in this order.
+The order is the rule — six of the seven documented failures were order failures,
+not drawing failures. Rule ids are
+[contract §16](MASKIN-GENERATION-CONTRACT.md#16-extending-a-compressor-bank--artwork-raster-and-compare-rules).
+
+**1. Retain the original.** Copy the supplied export and its decoded background
+out of the working set before touching either. Every later step may need to
+restart from them, and a derivative that has been edited twice is not a source
+(`M-A07`).
+
+**2. Name the two deliverables.** Insert **appends**. If the panel will be
+inserted onto an empty canvas, deliver the whole document with the new background
+in it. If the objects are already on the canvas and only the drawing changed,
+deliver a **background-only patch** — zero counts, three empty arrays, ticked
+*Background picture only* (§3). Never hand a populated canvas a full document.
+
+**3. Measure the source column.** One named column — the one you are cloning.
+On `TEMPLATE-10229` that is **C3, not C1**, because only C1 has a VSD row.
+Record, per element: the compressor symbol's bounding box; the discharge branch's
+row count, per-row RGBA **and per-row alpha**, and its junction geometry where it
+meets the header; the suction branch, measured separately; the status artwork;
+the static labels' glyph rendering and offsets; the empty pill rectangles.
+
+**4. Measure the two headers independently** (`M-A03`). The discharge header and
+the suction header are not the same thickness on the same drawing. Two
+measurements, two numbers, and neither substitutes for the other. A line that is
+three rows in the source — two solid and one partial-alpha — is a three-row line
+(`M-A04`); reproducing the two visible rows produces a thinner, harder pipe that
+does not match what it joins.
+
+**5. Fix one translation vector** (`M-A01`). Take the pitch from one **named**
+source pair (C2→C3, say so) and write it down as a single (dx, dy). That one
+vector places the compressor symbol, the discharge branch, the suction branch,
+the status artwork, the labels, the empty pills **and** the three or four dynamic
+objects. The 79–82 px spread recorded in the contract measures what production
+drew by hand; it is not permission to use a different number per layer
+(conflict **M-7**).
+
+**6. Extend the artwork — before any object exists** (`M-A06`). Composite the
+measured column at the vector onto the retained original. Copy each source
+pixel's alpha **verbatim**: a mask is binary. Any soft, feathered or
+opacity-scaled mask multiplies the source alpha and fades the whole clone at once
+— symbol, pipes, labels and pills together — which reads as a rendering problem
+rather than as the compositing bug it is (`M-A02`).
+
+**7. Connect the branches** (`M-A05`). Extend both headers so the new branches
+meet them, and copy the junction geometry from the source junction rather than
+approximating it. Then look at the background **on its own, at native size**,
+before placing anything: a gap is invisible once objects sit on top, and a branch
+that is correct in isolation is exactly what survives review.
+
+**8. Place the objects.** Same vector, no re-derivation. Required roles are the
+compressor cluster of §4: status strip, capacity pill, runtime pill — and a
+`VSD 1 speed` pill **only if the side you cloned already has one**. Every new
+object carries its alias, grammar `C<n> <MT|LT> <role>` (`M-A08`). If the plant's
+parameter behind that alias is unknown — as it is for C4, which
+[maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) does not
+carry — deliver it **unlinked and report the gap** (`M-A09`). Never invent a
+driver id; an invented id looks linked and is not.
+
+**9. Compare, then render.** Against the retained original:
+
+```bash
+python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope compressor-addition
+```
+
+Zero errors. That proves nothing about the pixels — `M-C05` compares base64
+lengths — so the native-size render of step 7, now with the objects on it, is
+still the acceptance test (`MASKIN-QA-CHECKLIST.md` stage C).
+
+**On any visual failure, go back to step 1**, not to step 6. Compensating edits
+stacked on a derivative accumulate raster damage that no single edit is
+responsible for (`M-A07`).
 
 ## 5. Choose objects by role
 
@@ -333,3 +413,10 @@ Each of these has actually happened, here or in the ventilation work.
 | A leaked plant id in a committed file | the fixture hand-edited instead of regenerated | §7 — change the generator |
 | A "corrected" anomaly | the duplicate MT alias looked like a bug | §7 — production is preserved; report, do not fix |
 | 2.5 MB of `image_svg_trace` in the output | the export field copied through | §3 — trace is input, never output |
+| Objects added over artwork that does not draw them | the JSON was the easy half, so it was done first | §4a step 6 — artwork first (`M-A06`) |
+| The whole new column faded | a soft mask multiplied the source alpha | §4a step 6 — a mask is binary (`M-A02`) |
+| A visible gap where the new branch meets the header | the branch was checked in isolation | §4a step 7 — inspect the background alone (`M-A05`) |
+| The new pipe thinner and harder than the one it joins | a 3-row antialiased line reproduced as its 2 visible rows | §4a step 4 — reproduce every row, with its alpha (`M-A04`) |
+| The suction branch the wrong weight | the discharge measurement was reused | §4a step 4 — measure each source line (`M-A03`) |
+| Damage that no single edit explains | the derivative was patched again | §4a — restart from the retained original (`M-A07`) |
+| A new object nobody can ever link | `alias_text` left empty because the parameter was unknown | §4a step 8 — alias always, binding when evidenced (`M-A08`, `M-A09`) |

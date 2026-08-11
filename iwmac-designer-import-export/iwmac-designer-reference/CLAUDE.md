@@ -393,11 +393,15 @@ The Insert JSON path accepts **AI-authored** panels, which makes "P&ID → panel
 > |---|---|
 > | A coordinate, a role, a z-band, an anomaly — each with its evidence id and scope tag | [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) — **authoritative on any Maskin conflict** |
 > | The procedure for authoring, copying or editing one | [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) |
-> | The acceptance tests, stage by stage | [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) |
+> | **How to add a compressor to an existing bank** — the nine ordered steps, artwork before objects, one measured translation vector, alpha copied verbatim | [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) §4a, rules `M-A01`–`M-A09` |
+> | The acceptance tests, stage by stage | [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) — stage **C0** inspects the background ALONE at native size, before any object exists |
 > | The same rules as code | [documentation-rules.json](documentation-rules.json) → `python validate-maskin-panel.py panel.json --profile TEMPLATE-10229` |
-> | A block to paste into a Copilot prompt, or upload as a knowledge file | [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) |
-> | The background drawing doctrine | [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) |
+> | That an edit changed only what was authorized | `validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope compressor-addition\|background-only\|position` (`M-C01`–`M-C05`). Adding a compressor is class 3 **and** class 4 at once: one full document plus one background-only patch with zero counts and three empty arrays |
+> | A block to paste into a Copilot prompt, or upload as a knowledge file | [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) — points **19** (ordered bank extension) and **20** (an object always carries an alias) |
+> | The background drawing doctrine, and the pixel rules `R1`–`R5` | [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) |
 > | The file to copy | [reference_data/maskin-10229-sanitized.json](reference_data/maskin-10229-sanitized.json) |
+>
+> **The artwork rules `M-A01`–`M-A09` are not validator-enforced** — no JSON check can see a faded clone, a two-row copy of a three-row antialiased line or a branch that stops 1 px short of its header. They are enforced by QA stage C0 and by `tests/test_maskin_compressor_bank.py`, which runs them against a raster fixture. **`maskin-akpc-link-map.json` covers C1–C3 only**: a fourth compressor's Danfoss parameters are not in it and may not be inferred from the group anatomy. Ship the object with its grammar alias (`C<n> <MT|LT> <role>`), `linked:"false"`, and report the gap as unresolved — an object with an empty `alias_text` can never be linked by anyone.
 
 What stays here is **host behaviour**, because that is what this file owns. Five facts that decide whether a Maskin edit survives contact with the Designer:
 

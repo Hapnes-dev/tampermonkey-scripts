@@ -155,10 +155,28 @@ ventilation validator; the numbers are independent.
 | `M-P04` | Roles the profile deliberately does not carry | §6 |
 | `M-P05` | Profile canvas and background fingerprint | §1, §2 |
 
+Two further namespaces are introduced by §16, and **only one of them is
+validator-enforced**:
+
+| Id | Enforces | Enforced by | Sections |
+|---|---|---|---|
+| `M-A01`…`M-A09` | Background artwork and raster compositing | **Not the validator.** [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) stage C and `tests/test_maskin_compressor_bank.py` | §16.1 |
+| `M-C01`…`M-C05` | A candidate against the source it was derived from | `validate-maskin-panel.py --compare` | §16.3 |
+
+`M-A*` rules are about pixels. A panel JSON does not contain the artwork's
+geometry — only a base64 blob — so no amount of JSON checking can decide whether
+a pipe connects. The `M-A*` ids exist so that a render QA finding, a regression
+test and a review comment can name the same rule; they are enforced by looking,
+and by the raster fixture tests, never by `validate-maskin-panel.py`.
+
 Run it:
 
 ```bash
 python validate-maskin-panel.py panel.json --profile TEMPLATE-10229
+```
+
+```bash
+python validate-maskin-panel.py candidate.json --compare source.json candidate.json --patch-scope compressor-addition
 ```
 
 **A clean validator run is a necessary condition, never a sufficient one.** The
@@ -175,6 +193,7 @@ pill landed on the drawn pill it belongs to. That is what §5 of
 | **E11** | [reference_data/generated-maskin-example.json](reference_data/generated-maskin-example.json) — an authored demo, **not a geometry source** | 63 | 9 | 1400×750 | authored `image_svg`, 23 898 chars, 215 drawable elements |
 | **E12** | [reference_data/maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) — alias → Danfoss AK-PC parameter map | — | — | — | — |
 | **E13** | [tests/fixtures/maskin-compressor-bank/](tests/fixtures/maskin-compressor-bank/) — miniature instrumented fixture | — | — | 96×64 | test instrumentation only |
+| **E24** | `machine-room-demo-extra-mt-compressor-connected-pipes-matched-size.json` (user Downloads, **not committed**) — the delivered fourth-MT-compressor demo | 69 | — | 1400×750 | raster `image_data`, extended |
 
 **E9 is not committed.** It carries a live plant id (`10229`), 64 real
 driver ids, a real unit id and a named author. **E10 is E9 with its bindings
@@ -209,6 +228,15 @@ panel.image_svg_trace 2 241 097 chars
 its marker colours and its `(+24,0)` compressor pitch exist so a unit test can
 assert on an exact pixel; none of them describes a real machine room. Do not
 quote them as Maskin facts.
+
+**`E24` is an authored demo, not a measurement.** It is the delivered answer to
+the recurring fourth-compressor request (§16), retained as the evidence behind
+`M-A01`, `M-A08` and conflicts M-7/M-8, not as geometry to copy. What it
+establishes, and nothing more: the three appended objects sit at `(315,289)`,
+`(327,326)` and `(328,362)` against C3 MT's `(234,289)`, `(246,326)`,
+`(247,362)` — a **uniform `(+81, 0)`** on all three members, inside `M-G04`'s
+79–82 px range and consistent with `M-A01`; and all three carry
+`alias_text: ""`, which `M-A08` now names as a defect.
 
 ### Mode discriminator — the literal `"driver_id"`
 
@@ -809,6 +837,8 @@ Rules that apply across the classes:
 | **M-4** | 66 objects (E9) vs a 59-object fleet median | Neither is a target. Object count is justified role by role against the selected template. §1 |
 | **M-5** | `Suction temp. To-MT` appears twice, on a pill the artwork labels "To offset" | Recorded as a measured anomaly with artwork evidence; **not corrected**. Any corrective is `ADVISORY` and needs the plant's own dump. §9.3 |
 | **M-6** | The DESIGN-OBJECT-CATALOG size for an id vs its measured placement size | The catalogue's sizes are toolbox defaults. **This file wins on placement geometry.** §Source precedence |
+| **M-7** | "Relocate a cluster with ONE vector" (`M-A01`, preflight 9) vs the measured per-row pitch drift of §6.1 (C1→C2 is 79/81/81, C2→C3 is 82/79/80 — no single vector describes either pair) | §6.1 **measures what production drew**; it is not an instruction to reproduce the drift. **When extending a bank, one pitch from one named source pair applies to every member and to the artwork** — the artwork is a raster copy of one column at one offset, and the objects must land on it. Name the pair. `M-G04`'s 79–82 px range still accepts it. §16.1 |
+| **M-8** | QA stage D requires `alias_text` on every object; a new compressor row whose Danfoss parameter is not in the link map has no evidenced alias, and E24 shipped all three new objects with `alias_text: ""` | **The alias is required and follows the `C<n> <MT\|LT> <role>` grammar** (`M-A08`). The alias is the relink key (§10.2) and the role name, not the plant's binding — E13 already uses `C4 MT status`. What stays unresolved is the **parameter**: no invented driver id, no invented unit, and the gap is reported (`M-A09`). An empty alias makes the object permanently unlinkable, which is a worse outcome than a stated gap. §16.1 |
 
 ## 13. The negative example — why E11 is not a Maskin reference
 
@@ -900,6 +930,21 @@ reader mistakes it for a geometry source.
 6. **A Maskin panel drawn on a different controller family.** The AK-PC strip ids
    in §4 are recorded as measured; do not infer a controller model from a strip
    id, and do not assume another pack controller uses these ids.
+7. **The Danfoss parameters behind a fourth compressor.** E12 carries C1–C3 MT
+   and LT status / capacity / `Runtime total`, plus `VSD 1 speed` on C1 only —
+   **63 signals, none of them C4.** The parameter-group anatomy in E12
+   (`230+i` = Cᵢ status, `240+i` = Cᵢ capacity, `288–299` = runtimes) *suggests*
+   the continuation, and suggesting is not evidence: whether a given plant's
+   pack controller exposes a fourth compressor block, and under which alias
+   spelling, is answered by that plant's own parameter dump. Until one is
+   supplied, a fourth column is delivered with its `C4 …` role aliases
+   (`M-A08`) and **unlinked**, and the gap is stated (`M-A09`). This is the
+   linking gap E24 hit.
+8. **A second raster with a measurably different header thickness.** `M-A03`
+   rests on one panel in which the orange discharge header and the cyan suction
+   header differ. That one observation is enough to forbid reusing a
+   measurement across sources; it is not enough to state what either thickness
+   *is* on any other panel, and this file therefore states neither.
 
 ## 15. Panel-type scope summary
 
@@ -922,3 +967,93 @@ reader mistakes it for a geometry source.
 | 3 MT + 3 LT compressors, VSD on C1 only | `TEMPLATE-10229` |
 | The three `' '` tag_texts and the duplicate MT alias | `TEMPLATE-10229` |
 | Rebinding the second MT "To offset" pill | `ADVISORY` |
+| One translation vector for artwork and objects (`M-A01`) | `MASKIN` |
+| Compositing never multiplies source alpha (`M-A02`) | `GLOBAL` |
+| Every source line remeasured independently (`M-A03`, `M-A04`) | `GLOBAL` |
+| No dynamic object without its drawn anchor (`M-A06`) | `MASKIN` |
+| Restart from the retained original after a visual failure (`M-A07`) | `GLOBAL` |
+| A new role carries its grammar alias; the parameter gap is reported (`M-A08`, `M-A09`) | `MASKIN` |
+| Compare by role key against the source before delivering (`M-C*`) | `GLOBAL` |
+
+## 16. Extending a compressor bank — artwork, raster and compare rules
+
+§6 says what a compressor column **is**. This section says what happens when a
+request adds one to a panel that already exists, because that is the request that
+arrives, and because everything expensive about it happens in the background
+raster, which no other section owns.
+
+The request shape, verbatim and recurring: *a Maskin demo is generated, then an
+extra fixed-speed MT compressor is asked for, then the background artwork is
+asked to grow a compressor symbol, a discharge branch, a suction branch, status
+artwork, static labels and empty value pills that connect to the headers already
+drawn and match the source column exactly.* Evidence: **E24**.
+
+### 16.1 Artwork rules — `M-A01`…`M-A09`
+
+**None of these is checked by `validate-maskin-panel.py`** (§0.3). They are
+enforced by a native-size render, by review, and by the raster regression tests
+in `tests/test_maskin_compressor_bank.py`.
+
+| Id | Rule |
+|---|---|
+| **`M-A01`** | **One measured translation vector.** The compressor symbol, the upper discharge branch, the lower suction branch, the status artwork, the static labels, the empty value pills **and the three dynamic objects** are placed with a single `(dx, dy)` measured once. Two vectors that differ by one pixel is a defect even when each is individually defensible. |
+| **`M-A02`** | **Compositing must never multiply source alpha.** Copy each source pixel's alpha verbatim. A soft, feathered or anti-aliased mask multiplies it, and a uniformly scaled alpha is exactly what makes a clone look faded — every pipe, label and pill at once, which reads as a rendering problem rather than as the compositing bug it is. A mask is binary: a pixel is copied or it is not. |
+| **`M-A03`** | **Every source line is remeasured independently** — row count, per-row RGBA, per-row alpha, thickness, anti-aliasing and junction geometry. The orange discharge header and the cyan suction header on the same panel are **not** the same thickness. Measuring one and reusing the number for the other is a guess wearing a measurement's clothes. |
+| **`M-A04`** | **Reproduce every row the source has, including the faint ones.** An anti-aliased line is 3 rows — a full-alpha core with a partial-alpha row on each side — and reproducing the 2 visible rows produces a thinner, harder line that does not match its own header 10 px away. Copy the per-row alpha values, do not re-derive them. |
+| **`M-A05`** | **A copied branch connects.** The new branch's endpoint meets the existing header pixel-for-pixel, with the junction geometry copied from the source junction. A gap is the single most visible artwork defect and the easiest to leave behind, because the branch itself looks right in isolation. |
+| **`M-A06`** | **Artwork first, objects second.** No dynamic object is added before the artwork that draws its anchor exists. A status strip with no compressor under it, or a value pill on white background, is a defect — and it is invisible to the validator, which sees a perfectly well-formed object. |
+| **`M-A07`** | **After a failed visual iteration, restart from the retained original.** Repeated edits to a derivative accumulate raster damage that no single step is responsible for. Keep the original source background; re-derive from it. Do not patch a chain of compensating edits. |
+| **`M-A08`** | **A new role carries its alias.** The grammar is `C<n> <MT\|LT> <role>` (§6), and it applies even when the plant parameter behind the row is unknown: `alias_text` is the relink key (§10.2), so an object shipped with an empty alias can never be linked by anyone. Emitting `alias_text: ""` on a new compressor row is a defect. |
+| **`M-A09`** | **An unresolved parameter is reported, never invented.** If the alias does not resolve in [maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json), say so, name the aliases, and deliver the panel unlinked. A stated linking gap is a valid deliverable; a plausible driver id is not (§10.3). |
+
+**Why `M-A01` and the §6.1 pitch table do not conflict** — recorded as **M-7**.
+§6.1 measures the production drift (79–82 px horizontally, −1…+1 px vertically,
+different per row). That is a **measurement of what was drawn**, not an
+instruction to reproduce the drift. When you *extend* a bank you take **one**
+pitch from **one named source pair** and apply it to every member and to the
+artwork, because the artwork is a raster copy of one column at one offset and
+the objects must land on it. Say which pair you took it from. `M-G04` still
+accepts the measured 79–82 px range, so a uniform pitch inside it passes.
+
+### 16.2 What the delivered artwork must reproduce
+
+Measured per source, never assumed. The list is the checklist, the values are
+whatever *that* panel's own source column measures:
+
+1. Compressor symbol — outline, fill, every internal detail, at the same size.
+2. Discharge branch — row count, per-row RGBA, per-row alpha, and the junction
+   into the discharge header.
+3. Suction branch — the same, measured **separately**, against the suction
+   header.
+4. Status artwork under the strip.
+5. Static labels — same glyph rendering, same anti-aliasing, same position
+   relative to the symbol.
+6. Empty value pills — **empty**. The background never draws a number (§2).
+
+### 16.3 Compare rules — `M-C01`…`M-C05`
+
+Class 3 says *preserve everything you were not asked to change* (§11). Nothing
+in the single-document checks can see that: they judge the candidate alone, and
+a candidate that quietly moved four pills passes every one of them. So the claim
+"I changed only X" is **unproven** until this runs.
+
+```bash
+python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope compressor-addition
+```
+
+| Id | Enforces |
+|---|---|
+| `M-C01` | An object present in the source is missing from the candidate — matched by role key, so ordering is not an excuse. Under `background-only`, the inverse: the patch must carry zero counts and three empty arrays |
+| `M-C02` | What may be added, and what an addition must carry — under `compressor-addition`, complete compressor rows with grammar-conformant, non-empty `alias_text` (`M-A08`) |
+| `M-C03` | Columns are atomic across the pair: no source column thinned, no new column incomplete, and **no optional row that no existing compressor on that side has** (the clone-C1 trap, §6.2) |
+| `M-C04` | The declared `--patch-scope` held: every pre-existing object differs only within it. Without a scope the same differences are reported as warnings |
+| `M-C05` | Background and canvas. Under `compressor-addition` a byte-identical background is an **error** — objects were added over artwork that does not draw them (`M-A06`) |
+
+Patch scopes: `compressor-addition` (new complete columns, no field difference on
+anything pre-existing, background must change), `background-only` (class 4: zero
+counts, empty arrays, background must change), `position` (`posLeft`/`posTop`
+only), `none` (field-identical).
+
+**What `M-C05` cannot do:** it compares base64 lengths, not pixels. A background
+that changed is not a background that changed *correctly*. `M-A01`–`M-A05` are
+still decided by looking at a native-size render.

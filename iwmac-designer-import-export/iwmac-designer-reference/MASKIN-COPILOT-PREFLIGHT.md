@@ -136,3 +136,34 @@ emitting JSON.
    and everything you could not verify. A stated gap is a valid deliverable and a
    guess is not. Passing validation is not evidence the panel is correct: the
    validator cannot see the drawing.
+
+19 EXTENDING A COMPRESSOR BANK IS AN ORDERED PROCEDURE, and the order is the
+   rule: adding a compressor is class 3 and class 4 at once, one full document
+   plus one background-only patch. a Retain the original source background
+   untouched; every retry starts from it, never from the damaged derivative,
+   because repeated edits to a derivative accumulate raster damage nobody can
+   attribute afterwards. b Measure the column you are actually copying, the
+   nearest role match, not C1. c Measure the discharge and the suction header
+   SEPARATELY: they legitimately differ in thickness on the same panel, so each
+   stays source-driven and neither number is reused for the other. d Fix ONE
+   translation vector from a NAMED pair and apply that same vector to the
+   compressor symbol, the upper discharge branch, the lower suction branch, the
+   status artwork, the static labels, the empty pills AND the dynamic objects;
+   a second vector anywhere is the defect. e EXTEND THE ARTWORK FIRST, before
+   any object exists. f Copy every source pixel's alpha VERBATIM and never
+   multiply it: a mask is BINARY. A soft, feathered or opacity-scaled mask
+   fades the whole clone together, and that uniformity is the tell. Reproduce
+   every row the source has, including partially transparent antialiasing rows,
+   or the copy comes out thinner and harder-edged. g Connect the new branches
+   continuously to the existing headers, then look at the BACKGROUND ALONE at
+   native size: a gap is invisible under the objects that will cover it.
+   h Place the objects last. On ANY visual failure go back to a, not to e.
+
+20 AN OBJECT ALWAYS CARRIES AN ALIAS. An unknown plant parameter is never a
+   reason for alias_text "": the alias is the relink key, so an object without
+   one can never be linked by anyone, ever. Give it the role's alias in the
+   grammar C n MT or LT role, emit it unlinked, and REPORT the gap as
+   unresolved. maskin-akpc-link-map.json covers C1 to C3 only; a fourth
+   compressor's Danfoss parameters are NOT in it. The group anatomy suggests
+   the continuation, and suggesting is not evidence: leave it open until that
+   plant's own parameter dump is supplied.

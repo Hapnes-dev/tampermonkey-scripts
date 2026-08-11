@@ -3,16 +3,21 @@
 Audit of the documentation set that an AI reads before generating a
 `360.NNN Ventilasjon` panel. Date: 2026-08-09.
 
-> **This file now carries three audits.** Everything down to "Files changed by
+> **This file now carries four audits.** Everything down to "Files changed by
 > this audit" is the ventilation audit of 2026-08-09, findings **F1–F21**,
 > unchanged. The [2026-08-10 addendum](#addendum--2026-08-10-the-oversikt-store-overview-incident)
 > audits the same document set against the **Oversikt** (store overview) panel
 > type after a real failure, findings **F22–F28**. The
-> [2026-08-11 addendum](#addendum--2026-08-11-the-oversikt-centering-correction)
+> [2026-08-11 centering addendum](#addendum--2026-08-11-the-oversikt-centering-correction)
 > audits the Oversikt set **against itself** after a placement correction on a
-> delivered panel, findings **F29–F35** — the first of the three whose subject is
-> a rule that was present and followed rather than missing. All three use the
-> same severity scale.
+> delivered panel, findings **F29–F35** — the first whose subject is a rule that
+> was present and followed rather than missing. The
+> [2026-08-11 compressor-bank addendum](#addendum--2026-08-11-extending-a-compressor-bank)
+> audits the **Maskin** set after seven failures in one sitting while extending a
+> compressor bank, findings **F36–F41** — the first whose subject is a class of
+> rule **no validator can enforce**, because the defects live in the panel's
+> raster background and every file that carried them was structurally perfect.
+> All four use the same severity scale.
 
 **Objective.** Make the set reliable enough that another AI produces a
 production-quality panel without repeated visual corrections.
@@ -1220,3 +1225,373 @@ found in the documents:
 **A stated gap is a deliverable; a guess is not.** No coordinate from plant 10240
 entered any document, no second profile was created from it, and nothing above
 was inferred from one store and presented as measured.
+
+---
+
+# Addendum — 2026-08-11: extending a compressor bank
+
+**Scope.** Everything above is unchanged: the ventilation audit of 2026-08-09
+(F1–F21), the Oversikt incident addendum of 2026-08-10 (F22–F28) and the
+Oversikt centering addendum of 2026-08-11 (F29–F35). This addendum audits the
+**Maskin documentation set against itself** after a recurring workflow —
+*generate a machine-room demo, then add one fixed-speed MT compressor, then
+extend the background artwork to match* — produced seven failures in one sitting.
+Same severity scale, numbering continues at **F36**. No ventilation, Oversikt,
+list-panel or room-control rule was touched, and no earlier finding was reopened.
+
+**What is different about this one.** The first two audits found rules that were
+**missing**. The third found a rule that was **present but imprecise**. This one
+finds a class of rule that **no validator can ever enforce**. A status strip
+floating on white, a clone faded by a mask that multiplied source alpha, a
+discharge branch that stops one pixel short of its header, a three-row
+antialiased line reproduced as two rows — every one of those files is
+structurally perfect. It parses, it inserts, it validates clean, every count
+matches every array length. The defect is in the pixels, and the pixels are a
+base64 blob to every check in this repository.
+
+That changes what a fix can even be. The other three addenda ended in validator
+rules. This one ends in a **QA stage that looks at the background with nothing on
+top** and a **raster fixture the tests can actually fail against**, plus one
+family of rules (`M-A01`–`M-A09`) that is documented as *deliberately not
+validator-enforced* — because claiming otherwise would be worse than the gap: a
+clean validator run on a faded clone would then read as proof.
+
+**Six of the seven failures were order failures, not drawing failures.** Objects
+placed before the artwork that draws their anchor existed; a repair attempted on
+a damaged derivative instead of the retained original; a branch drawn before
+anyone looked at the background alone. Only one was a drawing mistake in the
+ordinary sense, and even that one — the alpha multiply — is arithmetic, not
+craft.
+
+**Evidence.** **E9**, **E10** (`TEMPLATE-10229`), **E12**
+(`maskin-akpc-link-map.json`) and **E13** (the 96 × 64 instrumented fixture) as
+defined at the head of [documentation-change-log.md](documentation-change-log.md),
+plus **E24**, added by this pass: the delivered end state of the workflow, 69
+`single_objects`, unlinked, with the fourth MT compressor cloned into the
+embedded raster background. **E24 is uncommitted and is an authored demo, not a
+measurement** — it is cited for what the workflow produced and never for
+production geometry. Production compressor geometry comes from E10.
+
+**Documents and tools audited against E10, E13, E24 and the incident:**
+[MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md),
+[MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md),
+[MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md),
+[MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md),
+[reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt),
+[reference_data/maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json),
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md), [AI-BRIEFING.txt](AI-BRIEFING.txt),
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt),
+[PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md),
+[VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md), `CLAUDE.md`,
+[documentation-rules.json](documentation-rules.json),
+[validate-maskin-panel.py](validate-maskin-panel.py) and
+[tests/test_maskin_compressor_bank.py](tests/test_maskin_compressor_bank.py).
+
+## The incident
+
+A generated machine-room demo, then one sentence: *add another fixed-speed MT
+compressor.*
+
+1. The **dynamic cluster went on first** — status strip, capacity, runtime, and
+   correctly **no VSD row**, because the compressor being added has no VSD. Three
+   well-formed objects, every field present, counts consistent. They were sitting
+   on empty background.
+2. The artwork was then cloned from the source column with a **soft alpha mask**
+   that multiplied source alpha. The whole clone came out faded — symbol, pipes,
+   labels and pills together — and that uniformity read as a rendering artifact
+   rather than as the compositing bug it was.
+3. The **discharge branch did not reach the header.** A gap of a pixel or two,
+   invisible in the delivered render because the value pill sits on it.
+4. The first gap repair reproduced **two rows of a three-row antialiased line**.
+   The result was thinner and harder-edged than every other pipe on the panel.
+5. The working fix had to reproduce **every source row including its per-row
+   alpha** — which is when it became clear the cyan suction header and the orange
+   discharge header have **different measured thicknesses on the same drawing**,
+   and that reusing one number for the other was itself a defect.
+6. By then the derivative carried **cumulative raster damage from repeated
+   edits**, unattributable after the fact. The only sound move was to restart
+   from the retained original source.
+7. The three objects and the artwork had to end up on **one measured translation
+   vector**. Two vectors — one for the drawing, one for the objects — is
+   invisible in JSON and unmistakable on screen.
+
+Separately, and unresolved on purpose: the fourth compressor's Danfoss parameter
+names are **not in `maskin-akpc-link-map.json`**, which covers C1–C3. They could
+not be invented. The delivered objects shipped with `alias_text: ""`, which this
+addendum records as a defect of its own (F40).
+
+**The failure mode is, again, not a malformed panel.** Every intermediate file
+would have passed `validate-maskin-panel.py` without a warning.
+
+## Root cause
+
+Six findings. Each is a property of the documentation set — not of the agent that
+read it, and not of the panel that came out.
+
+### F36 (S4 — structural). Adding a compressor is two request classes at once, and nothing owned the join
+
+`AI-REQUEST-ROUTING.md` defines four classes: new unlinked demo · linked copy ·
+**modification of a supplied export** · **background-only patch**. Extending a
+bank is the third *and* the fourth simultaneously — one full document that must
+carry all 66 pre-existing objects back unchanged, plus one background patch with
+zero counts and three empty arrays. Nothing said a single request could be both.
+
+So each document handled its own half and none handled the join, and the join is
+where the order lives. The guide's §4 treated "add a compressor" as an instance
+of editing and said nothing about sequence; the routing table had no row for a
+request that produces two deliverables. **An unowned procedure has no order**,
+and six of the seven failures were order failures.
+
+It is S4 rather than S2 because the shape is structural and will recur: any
+future request that spans two classes lands in the same seam.
+
+**Fixed** by giving the procedure an owner and an explicit order — guide **§4a**,
+nine ordered steps with the rule ids inline: retain the original (`M-A07`) · name
+the two deliverables · measure the column actually being copied, **C3, not C1** ·
+measure the two headers independently · fix one translation vector from a named
+pair (`M-A01`) · **extend the artwork before any object exists** (`M-A06`) ·
+connect the branches (`M-A05`) · inspect the background alone · place the objects
+last (`M-A08`). And by the sentence that makes step 1 load-bearing: *on any
+visual failure go back to step 1, not to step 6.* Changes 146, 152.
+
+### F37 (S1 — wrong). The visual acceptance gate was blind to the defect class it existed to catch
+
+QA stage C renders the full panel at native size **with the objects on** and
+inspects one crop per role. Every document in the set points at it as the check
+that catches drawing defects, and `MASKIN-COPILOT-PREFLIGHT.md` point 11 says in
+so many words that only a render can see this.
+
+The evidence contradicts it. The pills and the status strip cover **exactly** the
+junction where a branch meets its header. A reviewer following stage C to the
+letter is looking at the one view in which a 1 px gap, a dropped antialiasing row
+and a faded junction are all hidden. The document states that a check catches a
+defect class it structurally cannot see, and an agent following it ships a
+defective panel believing it passed its own gate — which is S1 exactly.
+
+**Fixed** by adding stage **C0**, run only when the artwork changed and run
+**twice** — before the objects go on, and again on the delivered file. Decode
+`panel.image_data`, open it at 100 % with nothing on top, and check six things:
+the branch meets the header with the source's junction geometry (`M-A05`); the
+new column matches the cloned column row for row including partial-alpha rows
+(`M-A04`); the two headers were measured separately (`M-A03`); nothing is faded
+(`M-A02`); one vector placed artwork and objects alike (`M-A01`); and nothing
+that already existed moved, compared against the **retained original** rather
+than the previous attempt. Change 148.
+
+### F38 (S2 — undetermined). The drawing doctrine had no compositing arithmetic
+
+[reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt)
+carried the Illustrator doctrine — canvas layout, the circuit colour code as
+function, symbol and pill rules, the light-skin-only rule — and four narrative
+checklists. It was written for a **human drawing in Illustrator**. The actual
+recurring task is **raster surgery on an exported PNG**, and for that the
+document said nothing at all.
+
+Three decisions were therefore left with no basis, and all three were invented:
+whether a mask may be feathered (it may not — a pixel is copied or it is not);
+whether "2 px wide" means two rows (it usually means three, one of them partially
+transparent); and whether one measured thickness may serve two lines (it may not
+— the orange discharge and cyan suction headers legitimately differ on the same
+drawing). Each invented answer produced one of the seven failures.
+
+The tell for the first is worth recording, because it is what made the bug
+survive a look: multiplying source alpha fades the symbol, the pipes, the labels
+and the pills **by the same factor**, and uniform wrongness reads as a rendering
+artifact rather than as a copy that lost data.
+
+**Fixed** by five numbered rules replacing the four narrative checklists, which
+moved to the guide and the QA checklist where procedure and acceptance already
+live: **R1** compositing must not multiply source alpha, a mask is binary · **R2**
+measure every source line independently · **R3** reproduce every row the source
+has, including partial-alpha antialiasing rows · **R4** restore headers and
+junctions from the sampled source raster, not from an approximation · **R5**
+after a failed iteration restart from the retained original. R1–R4 are tagged
+`GLOBAL`: alpha arithmetic is not a property of machine rooms. Change 147.
+
+### F39 (S3 — misleading). A measured drift table read as an instruction to reproduce the drift
+
+Contract §6.1 publishes the compressor pitches measured on `TEMPLATE-10229` —
+C1→C2 is 79/81/81, C2→C3 is 82/79/80, with 1 px of vertical drift between rows.
+Every word of it is true. Two lines away, the cluster rule says relocate with
+**one** vector.
+
+Read together by someone extending a bank, the table looks like geometry to
+reproduce, and reproducing it puts the three objects on three slightly different
+offsets — and then the artwork on a fourth. Technically true, reliably misread:
+S3. It is also the reason the one-vector rule was never connected to the
+background at all, since the rule was written about *objects* and the drift table
+was written about *objects*, and nothing in either mentioned the drawing
+underneath.
+
+**Fixed** as conflict **M-7**, resolved by scope rather than by averaging: §6.1
+**measures what production drew by hand** and is not an instruction. When
+extending a bank, one pitch from one **named** source pair applies to every layer
+— compressor symbol, discharge branch, suction branch, status artwork, static
+labels, empty pills **and** the dynamic objects — and `M-G04`'s 79–82 px range
+still accepts it. A second vector anywhere is the defect (`M-A01`). E24's own
+three objects share exactly one (+81, 0) offset, which is the rule holding.
+Changes 146, 150.
+
+### F40 (S2 — undetermined). "Unknown parameter" had no documented outcome, so an object shipped without its relink key
+
+Two rules were both true and pointed opposite ways. QA stage D requires
+`alias_text` on every object and calls a missing alias an unlinkable object.
+`maskin-akpc-link-map.json` covers **C1–C3 only**, so a fourth compressor's
+Danfoss parameters do not exist in any evidence this repository holds, and the
+never-invent rule forbids deriving them from the group anatomy.
+
+Nothing said what to *do*. The decision was invented, and the invented answer —
+ship with `alias_text: ""` — is the worst of the three available: it satisfies no
+rule, it destroys the role name along with the parameter, and it produces an
+object **no one can ever link**, including the human with the plant's parameter
+dump in hand.
+
+**Fixed** as conflict **M-8**, resolved by separating the two things that were
+being conflated. **The alias is required** — it is the role name and the relink
+key, and it comes from the grammar `C<n> <MT|LT> <role>`. **The parameter is
+unresolved** — it is the plant's binding, it is not in the map, and it stays
+open. So the object ships with its grammar alias, `linked: "false"`, and the gap
+is **reported as unresolved** until that plant's own parameter dump is supplied
+(`M-A09`, preflight point 20). E24 shipped all three objects with the empty
+alias, which is now named a defect rather than tolerated. Changes 150, 152.
+
+### F41 (S4 — structural). Maskin could not prove an edit stayed inside its own scope, though two other panel types could
+
+Oversikt gained `--compare` in Part 7 and `--patch-scope` in Part 9. Room-control
+tables carry a verbatim-copy rule with a parameter dump behind it. Maskin had
+neither: "this is the same panel plus one compressor" was a claim with nothing
+behind it, and a class-3 edit that must return the entire supplied document had
+no check that the other 66 objects came back unchanged.
+
+That asymmetry is the S4 shape this scale names — the same control existing for
+one panel type and not another, drifting further apart with every pass. It also
+had a specific cost here: nothing could see that a column had been thinned, that
+a new column was incomplete, or that a "background-only patch" was not actually
+zero counts and three empty arrays.
+
+**Fixed** by `--compare SOURCE CANDIDATE [--patch-scope SCOPE]`, pairing by
+**role key** `(obj_id, alias_text, tag_text)` and never by array index, because
+Insert renames every object from the live canvas child index. `M-C01` nothing
+dropped · `M-C02` what may be added, and that an addition carries a non-empty
+grammar-conformant alias · `M-C03` columns atomic across the pair, including **no
+optional VSD row that no existing compressor on that side has** — the clone-C1
+trap, caught mechanically · `M-C04` the declared patch scope held · `M-C05`
+background and canvas. Four scopes: `compressor-addition`, `background-only`,
+`position`, `none`. Change 149.
+
+**What this finding does not claim.** `--compare` sees objects. It cannot see a
+faded clone or a 1 px gap, and the contract says so in the enforcement column of
+its own rule table. The artwork family is enforced by stage C0 and by the test
+module, which is a weaker guarantee honestly labelled rather than a stronger one
+implied.
+
+### This pass's own defects
+
+Following the precedent F35 set: this pass introduced an **evidence-id
+collision** — it first numbered the compressor demo `E14`, which Part 7 already
+used, and since all three rule builders write into the same
+`documentation-rules.json`, the Maskin builder silently **overwrote** a live
+Oversikt evidence record. It was found by running all three builders' `--check`,
+not by reading, and not by the tests. Renumbered to **E24**, both records
+regenerated, all three checks clean. That defect and four smaller ones are
+itemized in change 153 of the log, which owns them.
+
+The shared-namespace hazard itself is now a known property of the three builders
+and is recorded there rather than left as a surprise for the next pass.
+
+## Corrective controls
+
+| Finding | Control | Where it lives |
+|---|---|---|
+| F36 | Nine ordered steps, artwork before objects, restart from the retained original on any visual failure | guide §4a; `M-A01`–`M-A09`; preflight point 19 |
+| F37 | Stage **C0** — the background alone, at native size, nothing on top, run before the objects and again on the delivery | [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) |
+| F38 | Five pixel rules; a mask is binary; every line measured independently; every row reproduced including partial alpha | [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) `R1`–`R5` |
+| F39 | One vector from one **named** pair across artwork and objects; the pitch table declared a measurement, not an instruction | conflict `M-7`; contract §6.1 note, §16.1; `M-A01` |
+| F40 | The alias is required, the parameter is unresolved; report the gap, never empty the alias | conflict `M-8`; `M-A09`; preflight point 20; `M-C02` |
+| F41 | `--compare` + `--patch-scope`, paired by role key; columns atomic; the VSD trap caught mechanically | [validate-maskin-panel.py](validate-maskin-panel.py); `M-C01`–`M-C05` |
+| all | The artwork rules stated as **not validator-enforced**, and given a raster fixture the tests fail against | contract §16.1 enforcement column; `CLAUDE.md`; [tests/test_maskin_compressor_bank.py](tests/test_maskin_compressor_bank.py) |
+
+**The load-bearing control is stage C0's ordering, not its content.** Its six
+checks are ordinary. What makes them work is that they run on a canvas with
+**nothing on it** — the one moment in the whole procedure when the defects are
+visible at all. Every other control here makes a rule checkable; this one makes a
+rule *observable*, which is what the incident actually needed.
+
+## Files changed by this addendum
+
+| File | Change |
+|---|---|
+| [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) | §16 · §16.1 `M-A01`–`M-A09` with the enforcement column · §16.3 `M-C01`–`M-C05` · conflicts `M-7`, `M-8` · evidence `E24` · two rule-namespace rows |
+| [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) | §4a — the nine ordered steps |
+| [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) | Stage **C0** — the background alone |
+| [reference_data/maskin-drawing-method.txt](reference_data/maskin-drawing-method.txt) | `R1`–`R5` replace the four narrative checklists |
+| [validate-maskin-panel.py](validate-maskin-panel.py) | `--compare`, `--patch-scope`, `M-C01`–`M-C05`, role-key pairing, four scopes |
+| [tests/test_maskin_compressor_bank.py](tests/test_maskin_compressor_bank.py) | 16 → **45** tests; nine helpers; three new classes |
+| [tests/fixtures/maskin-compressor-bank/expectations.json](tests/fixtures/maskin-compressor-bank/expectations.json) | Six new keys; the raster fixtures themselves **unchanged** |
+| [build-maskin-rules.py](build-maskin-rules.py) | The two rule families, conflicts `M-7`/`M-8`, evidence `E24` |
+| [documentation-rules.json](documentation-rules.json) | Regenerated by all three builders, never hand-edited |
+| [AI-BRIEFING.txt](AI-BRIEFING.txt) | Artwork-first bullet; the compositing bullet rewritten around *a mask is binary*; a stale pointer to the removed checklists repaired |
+| [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) | Points **19** and **20**; 1–18 unchanged and unrenumbered |
+| `CLAUDE.md` | Four rows in the Maskin owner table; the not-validator-enforced paragraph; the C1–C3 limit of the link map |
+| [documentation-change-log.md](documentation-change-log.md) | Part 11, changes 146–154; evidence `E24`; conflicts `M-7`, `M-8` |
+| [AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) | **Unchanged, deliberately** — 7 949 characters against a hard 8 000 cap, 16 to spare. See the gaps section |
+| [reference_data/maskin-10229-sanitized.json](reference_data/maskin-10229-sanitized.json) | **Unchanged, deliberately** — it is the evidence, not a draft |
+| [reference_data/maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) | **Unchanged, deliberately** — C1–C3 is what the evidence covers |
+
+`AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt` and
+`CLAUDE-REVISED.md` were again left untouched, for the reason the 2026-08-10
+addendum gives: they are change records, and mirroring a contract into them
+recreates the multiple-owner problem F27 records.
+
+## Verification
+
+Run from `iwmac-designer-reference/`.
+
+| Command | Result |
+|---|---|
+| `python -m unittest tests.test_maskin_compressor_bank` | Ran **45** tests — **OK** (16 before this pass) |
+| `python -m unittest tests.test_maskin_10229_contract` | Ran **62** tests — **OK**, unchanged by this pass |
+| `python build-maskin-rules.py --check` | `documentation-rules.json is up to date` — exit 0 |
+| `python build-oversikt-rules.py --check` | `up to date` — exit 0. **Run because of the E14 collision, and the reason it was found** |
+| `python build-romkontroll-rules.py --check` | `up to date` — exit 0 |
+| character count of `AI-AGENT-INSTRUCTIONS.txt` | `7949` / `7984` worst-case CRLF — unchanged, against the hard 8 000 cap |
+
+Test invocation is **per module** by convention: `python -m unittest discover -s
+tests` fails here because `tests/` deliberately has no `__init__.py`, and adding
+one is not a fix.
+
+## Remaining evidence gaps
+
+Created by the incident and by the fix, not found in the documents:
+
+1. **No production export of a four-compressor Maskin exists.** `TEMPLATE-10229`
+   has 3 MT and 3 LT. Every `M-A0*` rule is therefore exercised against the
+   96 × 64 instrumented fixture (E13) and against E24, which is an authored demo.
+   **No artwork rule in this pass has been measured against a production panel
+   that actually has a fourth compressor.**
+2. **The fourth compressor's Danfoss parameters remain unresolved, by decision.**
+   `maskin-akpc-link-map.json` covers C1–C3. The group anatomy suggests the
+   continuation and suggesting is not evidence. This is a gap the documentation
+   now *requires* a future agent to report rather than close.
+3. **The real panel's antialiasing profile has never been measured into any
+   document.** The three-row orange header and two-row cyan header that the tests
+   assert are properties of the miniature fixture — instrumentation, chosen to
+   make the rule falsifiable. The rule says *measure the source*; the repository
+   does not say what the source measures.
+4. **E24 is uncommitted**, so the one real example of the clone this pass
+   regulates cannot be reproduced from the repository — the same limitation E9,
+   E14, E18, E20, E21 and E22 carry, and for the same reason.
+5. **Stage C0 has no recorded execution.** It is a human visual act on a decoded
+   PNG, and nothing in this repository records that a reviewer performed it on
+   E24 or on anything else. The stage exists; evidence that it has ever been run
+   does not. This is the honest shape of a control for a defect class no tool can
+   see, and it is stated rather than papered over.
+6. **The user prompt driving this pass arrived truncated**, cut off mid-sentence
+   inside its third audit question (`"Does it distinguish"`). Questions 1 and 2
+   are answered and closed in the log; question 3 is **recorded as unanswerable
+   rather than guessed at**, following the precedent the previous addendum set
+   for the same situation.
+
+**A stated gap is a deliverable; a guess is not.** No coordinate entered any
+document from E24, no parameter name was inferred from the group anatomy, and no
+artwork rule was presented as validator-enforced.

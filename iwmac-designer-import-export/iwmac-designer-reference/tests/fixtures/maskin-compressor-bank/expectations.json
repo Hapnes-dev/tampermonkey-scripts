@@ -31,6 +31,27 @@
     "dx": 24,
     "dy": 0
   },
+  "alias_grammar": "^C[0-9]+ (MT|LT) .+$",
+  "link_map_resolved_aliases": [
+    "C1 MT status",
+    "C1 MT capacity",
+    "C1 MT VSD",
+    "C1 MT Runtime total",
+    "C3 MT status",
+    "C3 MT capacity",
+    "C3 MT Runtime total"
+  ],
+  "unresolved_aliases": [
+    "C4 MT status",
+    "C4 MT capacity",
+    "C4 MT Runtime total"
+  ],
+  "background_rgba": [238, 241, 244, 255],
+  "clone_source_regions": [
+    {"name": "C3 discharge branch", "x": 46, "y": 11, "width": 6, "height": 37},
+    {"name": "C3 compressor body", "x": 46, "y": 53, "width": 6, "height": 7}
+  ],
+  "clone_additive_rgba": [[255, 0, 255, 255]],
   "compressor_marker_rgba": [80, 80, 80, 255],
   "compressor_centers": [[24, 58], [48, 58], [72, 58]],
   "compressor_pitch": 24,

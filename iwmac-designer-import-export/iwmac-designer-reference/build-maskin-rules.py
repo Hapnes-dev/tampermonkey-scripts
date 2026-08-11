@@ -129,6 +129,26 @@ EVIDENCE = {
                 "canvas and (+24,0) pitch are test instrumentation, never "
                 "production geometry.",
     },
+    "E24": {
+        "file": "machine-room-demo-extra-mt-compressor-connected-pipes-"
+                "matched-size.json (user Downloads, NOT committed)",
+        "committed": False,
+        "sanitized": True,
+        "panel": "Maskin",
+        "canvas": "1400x750",
+        "objects": 69,
+        "role": "The delivered fourth-MT-compressor demo: a TEMPLATE-10229 "
+                "unlinked panel plus one appended compressor column (status, "
+                "capacity, runtime) over a background extended with the "
+                "matching artwork.",
+        "note": "An authored demo, not a measurement. It is evidence of what "
+                "the workflow produced and where it failed - the three "
+                "appended objects share ONE (+81,0) offset from the C3 MT "
+                "column at (234,289) / (246,326) / (247,362), which is the "
+                "M-A01 single-vector rule holding, and all three carry "
+                "alias_text \"\", which is the M-A08 defect. Never cite it "
+                "for production geometry: E9 and E10 own that.",
+    },
 }
 
 IDENTITY = {
@@ -274,8 +294,16 @@ QA = {
         "receiver/valves and the right-hand status strip.",
         "Compare by role key (obj_id + alias_text + tag_text), never by array "
         "index.",
+        "When artwork was extended: at native size, on the background alone, "
+        "confirm the new branch meets the header with no gap, the new column "
+        "matches the source column in row count, per-row alpha and apparent "
+        "opacity, and no pre-existing pixel moved (M-A01 to M-A05). No JSON "
+        "check sees any of this.",
         "python validate-maskin-panel.py PANEL.json [--profile TEMPLATE-10229]",
-        "python -m unittest tests.test_maskin_10229_contract",
+        "python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json "
+        "[--patch-scope compressor-addition] whenever a source export exists.",
+        "python -m unittest tests.test_maskin_compressor_bank "
+        "tests.test_maskin_10229_contract",
     ],
     "render_crops": "Derived, not listed. render-maskin-panel.py computes one "
                     "crop per entry in panel_types.maskin.roles from the role's "
@@ -301,7 +329,159 @@ EVIDENCE_REQUIRED = [
     "C1-only convention.",
     "Whether the two objects sharing driver_id ~206_7 on E9 are intentional or "
     "a leftover. Recorded as an anomaly, not corrected.",
+    "The Danfoss parameters behind a fourth compressor. E12 carries C1-C3 MT "
+    "and LT status/capacity/Runtime total plus VSD 1 speed on C1 only, and no "
+    "C4 signal of any kind. The group anatomy (230+i status, 240+i capacity, "
+    "288-299 runtimes) suggests the continuation; suggesting is not evidence. "
+    "Until a plant's own parameter dump is supplied, a fourth column ships "
+    "with its C4 role aliases and unlinked, and the gap is stated (M-A08, "
+    "M-A09).",
+    "A second raster in which the discharge and suction headers differ in "
+    "thickness. One such observation forbids reusing a measurement across "
+    "sources (M-A03); it does not establish what either thickness is anywhere "
+    "else, and no number is recorded here.",
 ]
+
+# The artwork rules. Not enforced by validate-maskin-panel.py and the entry says
+# so: a panel JSON carries the background as a base64 blob, so no JSON check can
+# decide whether a pipe connects. Enforced by MASKIN-QA-CHECKLIST.md stage C and
+# by the raster fixture tests.
+ARTWORK = {
+    "owner_document": "MASKIN-GENERATION-CONTRACT.md#16",
+    "enforced_by": ["MASKIN-QA-CHECKLIST.md stage C (native-size render)",
+                    "tests/test_maskin_compressor_bank.py (raster fixture)"],
+    "not_enforced_by": "validate-maskin-panel.py. The M-A* ids exist so a render "
+                       "finding, a regression test and a review comment can name "
+                       "the same rule - not because the validator checks them.",
+    "evidence": ["E13", "E24"],
+    "rules": {
+        "M-A01": {
+            "rule": "ONE measured translation vector. The compressor symbol, the "
+                    "discharge branch, the suction branch, the status artwork, "
+                    "the static labels, the empty value pills AND the dynamic "
+                    "objects are placed with a single (dx, dy) measured once.",
+            "defect": "Two vectors that differ by one pixel, even when each is "
+                      "individually defensible.",
+            "scope": "MASKIN",
+        },
+        "M-A02": {
+            "rule": "Compositing must never multiply source alpha. Copy each "
+                    "source pixel's alpha verbatim; a mask is binary.",
+            "defect": "A soft or feathered mask scales alpha, and the whole "
+                      "clone - pipes, labels, pills - comes out faded at once, "
+                      "which reads as a rendering problem rather than as the "
+                      "compositing bug it is.",
+            "scope": "GLOBAL",
+        },
+        "M-A03": {
+            "rule": "Remeasure every source line independently: row count, "
+                    "per-row RGBA, per-row alpha, thickness, anti-aliasing and "
+                    "junction geometry.",
+            "defect": "Measuring the discharge header and reusing the number for "
+                      "the suction header. They are not the same thickness on "
+                      "the same panel.",
+            "scope": "GLOBAL",
+        },
+        "M-A04": {
+            "rule": "Reproduce every row the source has, including partial-alpha "
+                    "anti-aliasing rows, with the source's own alpha values.",
+            "defect": "An anti-aliased 3-row line reproduced as its 2 visible "
+                      "rows: thinner and harder than the header it joins.",
+            "scope": "GLOBAL",
+        },
+        "M-A05": {
+            "rule": "A copied branch connects: its endpoint meets the existing "
+                    "header pixel-for-pixel, with junction geometry copied from "
+                    "the source junction.",
+            "defect": "A gap. The branch looks correct in isolation, which is "
+                      "why this survives review.",
+            "scope": "MASKIN",
+        },
+        "M-A06": {
+            "rule": "Artwork first, objects second. No dynamic object is added "
+                    "before the artwork drawing its anchor exists.",
+            "defect": "A status strip with no compressor under it, or a value "
+                      "pill on white. The validator sees a well-formed object.",
+            "scope": "MASKIN",
+        },
+        "M-A07": {
+            "rule": "After a failed visual iteration, restart from the retained "
+                    "original background.",
+            "defect": "Compensating edits stacked on a derivative accumulate "
+                      "raster damage no single step is responsible for.",
+            "scope": "GLOBAL",
+        },
+        "M-A08": {
+            "rule": "A new role carries its alias, grammar 'C<n> <MT|LT> <role>', "
+                    "even when the plant parameter behind it is unknown.",
+            "defect": "alias_text \"\" on a new compressor row. The alias is the "
+                      "relink key, so the object can never be linked by anyone.",
+            "scope": "MASKIN",
+        },
+        "M-A09": {
+            "rule": "An unresolved parameter is reported as a linking gap: name "
+                    "the aliases, deliver unlinked.",
+            "defect": "A plausible driver id. An invented id looks linked and is "
+                      "not.",
+            "scope": "MASKIN",
+        },
+    },
+    "reproduce_per_source": [
+        "Compressor symbol - outline, fill, internal detail, same size.",
+        "Discharge branch - row count, per-row RGBA, per-row alpha, junction "
+        "into the discharge header.",
+        "Suction branch - the same, measured separately against the suction "
+        "header.",
+        "Status artwork under the strip.",
+        "Static labels - same glyph rendering, anti-aliasing and offset.",
+        "Empty value pills. The background never draws a number.",
+    ],
+    "single_vector_vs_pitch_drift": "Conflict M-7. The 79-82 px / -1..+1 px "
+                                    "drift in compressor_columns measures what "
+                                    "production drew; it is not an instruction "
+                                    "to reproduce the drift. When extending a "
+                                    "bank, one pitch from one NAMED source pair "
+                                    "applies to every member and to the artwork, "
+                                    "because the artwork is a raster copy of one "
+                                    "column at one offset and the objects must "
+                                    "land on it.",
+}
+
+# --compare / --patch-scope. Class 3 says "preserve everything you were not
+# asked to change", and no single-document check can see that.
+COMPARE = {
+    "command": "python validate-maskin-panel.py --compare SOURCE.json "
+               "CANDIDATE.json [--patch-scope SCOPE]",
+    "match_by": "role key (obj_id + alias_text + tag_text), never array index. "
+                "Insert renames every object from the live canvas child index.",
+    "rules": {
+        "M-C01": "An object present in the source is missing from the candidate. "
+                 "Under background-only, the inverse: zero counts and three "
+                 "empty arrays.",
+        "M-C02": "What may be added, and what an addition must carry - under "
+                 "compressor-addition, complete compressor rows with "
+                 "grammar-conformant, non-empty alias_text (M-A08).",
+        "M-C03": "Columns are atomic across the pair: no source column thinned, "
+                 "no new column incomplete, and no optional row that no existing "
+                 "compressor on that side has (the clone-C1 trap).",
+        "M-C04": "The declared patch scope held: every pre-existing object "
+                 "differs only within it. Without a scope, reported as warnings.",
+        "M-C05": "Background and canvas. Under compressor-addition a "
+                 "byte-identical background is an error - objects were added "
+                 "over artwork that does not draw them (M-A06).",
+    },
+    "patch_scopes": {
+        "compressor-addition": "new complete columns, no field difference on "
+                               "anything pre-existing, background must change",
+        "background-only": "class 4: zero counts, empty arrays, background must "
+                           "change",
+        "position": "posLeft/posTop only",
+        "none": "field-identical",
+    },
+    "limit": "M-C05 compares base64 lengths, not pixels. A background that "
+             "changed is not a background that changed correctly - M-A01 to "
+             "M-A05 are decided by a native-size render.",
+}
 
 # The alias markers that mark a setpoint / reference pill rather than a
 # measurement. Data, not code, because it is a naming heuristic measured on one
@@ -570,6 +750,8 @@ def build_maskin_panel_type(envelope, objects):
             "scope": "TEMPLATE-10229",
             "evidence": ["E9", "E10"],
         },
+        "artwork": ARTWORK,
+        "compare": COMPARE,
         "qa": QA,
         "evidence_required": EVIDENCE_REQUIRED,
     }

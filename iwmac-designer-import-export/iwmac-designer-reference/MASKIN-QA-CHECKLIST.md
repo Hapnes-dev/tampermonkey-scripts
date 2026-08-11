@@ -42,15 +42,33 @@ value ([VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md)):
 python validate-visual-correctness.py PANEL.json
 ```
 
+**Whenever a source export exists — a class-3 edit or a class-4 patch — also run
+compare mode.** Single-document validation cannot see what an edit destroyed:
+
+```bash
+python validate-maskin-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope compressor-addition
+```
+
+`--patch-scope` is what makes the check strict. It names the differences that are
+**allowed** and reports every other one, so `compressor-addition` fails a
+candidate that also moved a receiver pill, dropped an object, or left the
+background byte-identical. The scopes are `compressor-addition`,
+`background-only`, `position` and `none`; omitting the flag downgrades the
+preservation findings to warnings.
+
 ### What the validator cannot check
 
 - Whether a value pill landed **on** the pill drawn in the artwork.
 - Whether the artwork and the object set describe the same machine.
 - Whether an alias names the parameter the object actually shows.
 - Whether a coordinate you invented happens to look plausible.
+- **Anything at all about the pixels.** The background is a base64 blob in the
+  document; no JSON check can decide whether a pipe connects, whether a clone is
+  faded, or whether a three-row line came back as two. Compare mode gets as far
+  as "the blob changed" (`M-C05`) and stops there.
 
-Stage C exists because of the first one. The other three are why every delivery
-carries a gaps section.
+Stage C exists because of the first one and the last one. The other three are why
+every delivery carries a gaps section.
 
 ### The rule ids
 
@@ -59,6 +77,8 @@ carries a gaps section.
 | `M-S01…M-S10` | always | envelope, counts, fields, names, bounds, z bands, background, binding mode, encoding, residue |
 | `M-G01…M-G07` | always | palette, band ownership, setpoint pill, compressor clusters, duplicates, suction groups, pill size |
 | `M-P01…M-P05` | only with `--profile` | roles present, coordinates, z per role, absent-by-design, canvas and background fingerprint |
+| `M-C01…M-C05` | only with `--compare` | objects dropped, what may be added, columns atomic across the pair, patch scope held, background and canvas |
+| `M-A01…M-A09` | **never — not validator rules** | one translation vector, alpha, per-source measurement, every row, junction continuity, artwork-before-objects, restart-not-patch, alias always, gaps reported. Enforced by stage C below and by `tests/test_maskin_compressor_bank.py` |
 
 ## Stage A — Structural
 
@@ -145,6 +165,29 @@ pixelshot PANEL-preview.html --output /tmp/pixelbrowse --tile-height 20000 --vie
 then slice the tall tile into readable bands. `--tile-height 1568` truncates a
 tall preview silently — `tiles.json` still says `"complete": true`.
 
+### C0. The background alone — only when the artwork changed
+
+Run this **before** the objects go on, and again on the delivered file. Decode
+`panel.image_data` to a PNG and open it at 100% with nothing on top: every defect
+below is invisible once pills and strips cover the junction.
+
+- [ ] **The new branch meets the header.** No gap, no overshoot, and the junction
+      geometry is the source junction's, not an approximation. (`M-A05`)
+- [ ] **The new column is the same weight as the one it was cloned from.** Row
+      for row, including the partial-alpha antialiasing rows — a three-row line
+      is not two rows. (`M-A04`)
+- [ ] **Discharge and suction were measured separately.** They are not the same
+      thickness on the same drawing, and one measurement never stands in for the
+      other. (`M-A03`)
+- [ ] **Nothing is faded.** Symbol, pipes, labels and empty pills all match the
+      source column's apparent opacity. A whole clone that reads soft is the
+      signature of a mask that multiplied source alpha. (`M-A02`)
+- [ ] **One vector.** The compressor symbol, both branches, the status artwork,
+      the labels and the empty pills sit at the same single (dx, dy) as the
+      dynamic objects that will land on them. (`M-A01`)
+- [ ] **Nothing that already existed moved.** Compare against the retained
+      original, not against the previous attempt.
+
 ### C1. Full panel
 
 - [ ] The whole 1400×750 canvas is visible with the real artwork behind it.
@@ -210,8 +253,15 @@ the result is a panel nobody can diff against anything.
 - [ ] **The binding mode is the one the class requires.** A new demo emits the
       literal `"driver_id"` everywhere; a production copy never does — an
       unlinked production object carries an **empty** `driver_id`. (`M-S08`)
-- [ ] **`alias_text` is present on every object** and carries a real Danfoss
-      parameter name. Stripping it makes the panel unrelinkable.
+- [ ] **`alias_text` is present on every object.** On a role the reference
+      resolves, it is that role's real Danfoss parameter name. On a **new** role
+      whose plant parameter is not evidenced — a fourth compressor, which
+      [maskin-akpc-link-map.json](reference_data/maskin-akpc-link-map.json) does
+      not carry — the alias still follows the grammar `C<n> <MT|LT> <role>`, the
+      object ships **unlinked**, and the delivery states the gap. Unknown
+      parameter is never a reason for `alias_text: ""`: the alias is the relink
+      key, so an object without one can never be linked, by anyone, ever.
+      (`M-A08`, `M-A09`, conflict **M-8**)
 - [ ] **Nothing committed carries live state** (`M-S10`):
   - [ ] no plant id in `source_plant_id`, `plant_id`, `org_image_name`,
         `image_name` or `panel_name`;
@@ -252,7 +302,7 @@ python build-maskin-rules.py --check
 ## Test commands
 
 ```bash
-python -m unittest tests.test_maskin_10229_contract
+python -m unittest tests.test_maskin_compressor_bank tests.test_maskin_10229_contract
 ```
 
 ```bash
@@ -280,8 +330,24 @@ It passes only if the answer:
    `tag_text = " "` values and the duplicate `Suction temp. To-MT` alias;
 6. states that the background artwork has no fourth drawn column, so either the
    artwork must change too or the new pills will float;
-7. keeps the new objects unlinked with real aliases from the link map;
+7. gives each new object an alias following the grammar `C<n> <MT|LT> <role>`,
+   keeps it **unlinked**, and states that the link map carries no C4 parameter —
+   the gap is the deliverable, an invented driver id is not (`M-A08`, `M-A09`);
 8. reports the validator command and its output, and the render it inspected.
 
+And if the same answer also extends the artwork — because the user asked for it,
+or because point 6 was answered by changing the drawing — four more:
+
+9. the artwork exists **before** the objects that sit on it (`M-A06`);
+10. one measured translation vector places the artwork **and** the objects, taken
+    from a named source pair (`M-A01`);
+11. the new branches meet the existing headers, with both headers measured
+    separately and every source row reproduced with its own alpha
+    (`M-A03`, `M-A04`, `M-A05`);
+12. `--compare SOURCE.json CANDIDATE.json --patch-scope compressor-addition`
+    reports zero errors, **and** the delivery says that this proves preservation
+    and not pixels.
+
 An answer that emits three loose objects, or that clones C1 and brings a VSD row
-with it, or that silently "tidies" the anomalies, fails.
+with it, or that silently "tidies" the anomalies, fails. So does one that ships a
+faded clone, a gap at the header, or `alias_text: ""`.
