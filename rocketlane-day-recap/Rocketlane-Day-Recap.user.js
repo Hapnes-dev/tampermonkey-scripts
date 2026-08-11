@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.108
+// @version      4.109
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -37,7 +37,9 @@
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
-    const SCRIPT_VERSION   = '4.108';
+    const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
+    const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
+    const SCRIPT_VERSION   = '4.109';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1156,6 +1158,16 @@
         return parts; // en-CA emits YYYY-MM-DD
     }
 
+    // ---- Once-a-day full-scan recommendation (v4.109) ----
+    // A quick scan only covers your recent + previously-visited plants, so work done through
+    // plant-admin/designer stays invisible until a full scan runs. One full scan caches every date it
+    // finds, so a single sweep a day keeps the whole week honest — the panel recommends one when it
+    // opens and stays quiet for the rest of the day once a scan has run (or the tip was dismissed).
+    // The day boundary is Oslo local, matching every other date in the script.
+    const markFullScanRan = () => { try { GM_setValue(KEY_LAST_FULL_SCAN, todayISO()); } catch (e) {} };
+    const fullScanRanToday = () => GM_getValue(KEY_LAST_FULL_SCAN, '') === todayISO();
+    const shouldNudgeFullScan = () => !fullScanRanToday() && GM_getValue(KEY_FULLSCAN_NUDGE, '') !== todayISO();
+
     async function loadVisitsForDate(isoDate, plantIds, onProgress) {
         const username = effectiveUsername();
         const names = GM_getValue(KEY_PLANT_NAMES, {});
@@ -1546,6 +1558,12 @@
         #${PANEL_ID} .warn button[data-action="fullscan-go"] { background: #0f62fe; color: #fff; }
         #${PANEL_ID} .warn button[data-action="fullscan-cancel"] { background: #e0e0e0; color: #161616; margin-left: 6px; }
         #${PANEL_ID} .warn button[data-action="run-full"] { background: #0f62fe; color: #fff; }
+        #${PANEL_ID} .fsnudge { margin: 10px 14px 0; padding: 8px 10px; border: 1px solid #f0d6b0; background: #fff4e5; border-radius: 6px; font-size: 11.5px; line-height: 1.4; color: #8a4a09; }
+        #${PANEL_ID} .fsnudge b { color: #6b3906; }
+        #${PANEL_ID} .fsnudge-btns { margin-top: 7px; display: flex; gap: 6px; }
+        #${PANEL_ID} .fsnudge button { font-size: 11px; padding: 3px 10px; border: 1px solid #c6c6c6; border-radius: 5px; background: #fff; color: #161616; cursor: pointer; }
+        #${PANEL_ID} .fsnudge button[data-action="nudge-go"] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
+        #${PANEL_ID} .fsnudge button[data-action="nudge-go"]:hover { background: #0353e9; }
     `;
 
     function injectStyle() {
@@ -1588,6 +1606,7 @@
                     Distribute to total
                 </label>
             </div>
+            <div class="fsnudge" hidden></div>
             <div class="progress"><div style="width:0%"></div></div>
             <div class="catsum"></div>
             <div class="results"></div>
@@ -1601,6 +1620,7 @@
         const workdayInput  = panel.querySelector('[data-field=workday]');
         const normalizeChk  = panel.querySelector('[data-field=normalize]');
         const list          = panel.querySelector('.results');
+        const nudgeEl       = panel.querySelector('.fsnudge');
         const catsumEl      = panel.querySelector('.catsum');
         const totalEl       = panel.querySelector('.total');
         const progress      = panel.querySelector('.progress > div');
@@ -1841,6 +1861,8 @@
                     // visits for EVERY date in one pass and cache them all — browsing any of those dates
                     // (e.g. the rest of the month) is then instant. Then display the selected date.
                     const all = await loadUserHistoryAllDates(plantIds, iso, onProg);
+                    markFullScanRan();      // the sweep happened — today's recommendation is satisfied
+                    renderFullScanNudge();  // …so take the tip down even if this run is superseded below
                     if (seq !== scanSeq) return;
                     username = all.username; scanned = all.scanned;
                     visits = all.dates[iso] || [];
@@ -1947,6 +1969,26 @@
             list.querySelector('[data-action=fullscan-cancel]').addEventListener('click', () => openDefault());
         };
 
+        // Once-a-day recommendation, shown when the panel opens (v4.109). It sits above the results so
+        // it never competes with a scan's own status text, and it disappears for the rest of the day as
+        // soon as a full scan runs — from here, from the 🔍 button, or from ⤴ Book week's own sweep.
+        // "Not today" silences it until tomorrow; it always returns the next day.
+        const renderFullScanNudge = () => {
+            if (!shouldNudgeFullScan()) { nudgeEl.hidden = true; nudgeEl.textContent = ''; return; }
+            nudgeEl.innerHTML = `
+                <div><b>No full scan yet today.</b> What you see comes from your recent + previously-visited plants — visits made through plant-admin or the designer are missing until a full scan runs. One scan takes about a minute, briefly opens pang, and caches every date it finds.</div>
+                <div class="fsnudge-btns">
+                    <button type="button" data-action="nudge-go">🔍 Run full scan</button>
+                    <button type="button" data-action="nudge-later">Not today</button>
+                </div>`;
+            nudgeEl.hidden = false;
+            nudgeEl.querySelector('[data-action=nudge-go]').addEventListener('click', () => { nudgeEl.hidden = true; doScan('full'); });
+            nudgeEl.querySelector('[data-action=nudge-later]').addEventListener('click', () => {
+                GM_setValue(KEY_FULLSCAN_NUDGE, todayISO());
+                nudgeEl.hidden = true;
+            });
+        };
+
         searchBtn.addEventListener('click', () => doScan('refresh')); // "Refresh": re-scan the selected date (recent + footprint) and update its cache
         fullscanBtn.addEventListener('click', fullScanWithWarning);
         dateInput.addEventListener('change', openDefault);
@@ -1986,6 +2028,7 @@
             e.preventDefault();
         });
 
+        renderFullScanNudge();
         openDefault();
         return panel;
     }
@@ -3218,6 +3261,7 @@
         plantIds = [...head, ...tail];
         const all = await loadUserHistoryAllDates(plantIds, need[0], (done, total) =>
             statusCb && statusCb(`Full scan (${need.length} day${need.length === 1 ? '' : 's'} uncached) — ${done} of ${total} plants…`));
+        markFullScanRan(); // Book week swept every plant too — the panel must not recommend it again today (v4.109)
         if (!all.username) return { ok: false, reason: 'could not identify your pang user in the scan' };
         rememberUserPlants(all.username, [].concat(...Object.values(all.dates || {})));
         if (!all.failed) writeCacheDates(all.username, all.dates, all.scanned); // partial scans are never cached (silent holes)

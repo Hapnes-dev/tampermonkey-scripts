@@ -5,7 +5,7 @@ rules (version bumping, commit/push, line endings) see the **root `CLAUDE.md`**.
 in this folder's **`README.md`**. This file is the *how it actually works* doc.
 
 > Single file: `rocketlane-day-recap/Rocketlane-Day-Recap.user.js` — one big IIFE, `@grant GM_*`.
-> Current version: **4.108**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
+> Current version: **4.109**. Always bump `@version` + commit + push (Tampermonkey auto-updates).
 
 ---
 
@@ -352,7 +352,8 @@ visit now also carries `base_minutes` = the click-only floor, so commit fusion r
 cached date — legacy entries without it fall back to `estimated_minutes`) ·
 `user_plants` (`{username:[ids]}` footprint) · `pang_origin` (last-seen http/https) ·
 `pang.recent` / `pang.login.username` (mirrored from both origins) · `workday_hours` · `user_override` ·
-`last_harvest_ts` / `harvest_done`.
+`last_harvest_ts` / `harvest_done` · `last_full_scan_date` (Oslo `YYYY-MM-DD` of the last completed full
+scan) / `fullscan_nudge_dismissed` (the date the daily recommendation was dismissed on) — both v4.109.
 
 ---
 
@@ -463,6 +464,21 @@ cached date — legacy entries without it fall back to `estimated_minutes`) ·
   genuine graphic-only commit isn't mistaken for Integration evidence. Plant work only — meetings/admin/docs/training
   aren't in pang and are omitted. Also fixed the stale `SCRIPT_VERSION` const (`'4.25'` → `'4.48'`; was only the console
   log prefix).
+- **4.109** **once-a-day full-scan recommendation** (Thomas's rule: one full scan every day). Opening the
+  🏭 Plants visited panel now shows an amber `.fsnudge` tip above the results — "No full scan yet today" +
+  a **🔍 Run full scan** button (runs `doScan('full')` directly, no second confirm — the tip states the
+  cost) and **Not today**. Gating is two GM keys holding Oslo `YYYY-MM-DD` dates (`todayISO()`, so the day
+  boundary matches every other date in the script): `last_full_scan_date`, written by `markFullScanRan()`
+  the moment `loadUserHistoryAllDates` returns — in the panel's `doScan('full')` **and** in
+  `weekEnsureFullScan`, so ⤴ Book week's own sweep also satisfies the day — and `fullscan_nudge_dismissed`,
+  written by "Not today". `shouldNudgeFullScan()` = neither equals today. The mark is deliberately taken
+  *before* the `seq` guard and independently of `failed`/caching: the sweep is what the recommendation asks
+  for, so a superseded or partial scan still counts (a partial scan's own `⚠ N unreachable — not cached`
+  footer is the signal to re-run, not this tip). Deliberately NOT keyed off `full_scan_cache`: **Refresh**
+  writes that cache too from quick-scope data, so a cache hit does not prove a full scan ran. The tip is
+  independent of the date picker — it's a daily habit prompt, not a per-date warning — and returns the next
+  day whether or not it was acted on. `renderFullScanNudge` is called once when the panel is built and
+  again right after a full scan marks the day, so an open panel takes its own tip down.
 - **4.105–4.108** team-bucket **subtasks** + their Description visit-log, and the parent-attachment fix.
   Detail lives with the feature under *Book day* → "Bucket SUBTASKS" below, since it is all one mechanism.
   Short version: 4.105 books no-project plants onto a per-plant subtask of the "Oppgaver utenfor Rocketlane"
