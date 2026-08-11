@@ -116,7 +116,56 @@ async function run() {
   );
   assert.equal(invalidSvgDownloads, 0);
 
+  // v1.11.0 — an object-less panel is a background-only export, not an error.
+  assert.equal(api.countDocItems(null), 0);
+  assert.equal(api.countDocItems({single_objects: [], containers: [], graphics: []}), 0);
+  assert.equal(api.countDocItems({single_objects: [1], containers: [1, 2], graphics: []}), 3);
+  assert.equal(api.countDocItems(envelope(PNG_URL).panel), 1);
+
+  // The verbatim save names the file after whatever the bytes already are.
+  assert.equal(api.backgroundExt(PNG_URL), 'png');
+  assert.equal(api.backgroundExt(SVG_URL), 'svg');
+  assert.equal(api.backgroundExt('image/jpeg'), 'jpg');
+  assert.equal(api.backgroundExt('http://legacy.iwmac.local/img/oversikt.JPG?v=3'), 'jpg');
+  assert.equal(api.backgroundExt('http://legacy.iwmac.local/img/oversikt.gif'), 'gif');
+  assert.equal(api.backgroundExt(''), 'png', 'an unknown background still gets a usable name');
+  assert.equal(api.backgroundMime('svg'), 'image/svg+xml');
+  assert.equal(api.backgroundMime('jpg'), 'image/jpeg');
+  assert.equal(api.backgroundMime('png'), 'image/png');
+  assert.match(api.buildBackgroundFilename('10240', 'Oversikt', 'png', new Date('2026-08-11T09:15:00Z')),
+    /^iwmac-bg_10240_oversikt_\d{8}-\d{4}\.png$/);
+
+  // The background-only envelope is still a valid, re-importable document:
+  // real geometry, empty object arrays, artwork embedded.
+  const emptyPanel = {
+    plant_id: '10240', panel_name: 'Oversikt', panel_width: '1400px', panel_height: '750px',
+    single_objects: [], containers: [], graphics: [], converted: 'true', image_data: PNG_URL
+  };
+  const emptyEnv = api.buildEnvelope(emptyPanel, {exported_at: '2026-08-11T00:00:00.000Z'});
+  assert.equal(api.countDocItems(emptyEnv.panel), 0);
+  assert.equal(emptyEnv.background_embedded, true);
+  assert.equal(emptyEnv.panel_width, '1400px');
+  assert.equal(api.docHasBackground(emptyEnv.panel), true);
+  assert.equal(api.parsePayload(emptyEnv).doc.panel_name, 'Oversikt');
+  // and it carries no trace, because the empty path never runs one
+  assert.equal(emptyEnv.panel.image_svg_trace, undefined);
+
   const source = fs.readFileSync(SCRIPT, 'utf8');
+  // the old dead-end must be gone from the export path, and the collector must
+  // be the thing that got a choice — not the message reworded elsewhere
+  assert.match(source, /function collectCurrentDoc\(allowEmpty\)/);
+  assert.match(source, /buildEnvelopeAsync\(true\)/);
+  assert.match(source, /iwdieCountDocItems\(env\.panel\) === 0\) return exportBackgroundOnly\(env\)/);
+  assert.match(source, /function exportBackgroundOnly/);
+  assert.match(source, /function fetchBackgroundBytes/);
+  // both files, one message — two hostOk() calls would overwrite each other
+  assert.match(source, /downloadEnvelope\(env, '', true\)/);
+  assert.match(source, /if \(!quiet\) hostOk\('Exported '/);
+  assert.equal(/Canvas is empty[^\n]*load a panel first/.test(source), true,
+    'the empty-canvas message still exists for the truly-empty case');
+  assert.match(source, /no objects and no background picture/);
+  assert.match(source, /iwdie_ai_raw/);
+
   for (const removed of ['GM_setClipboard', 'doCopyJson', 'copyTextToClipboard', 'iwdie_copy_btn', 'Also include a VECTOR TRACE']) {
     assert.equal(source.includes(removed), false, `userscript still contains ${removed}`);
   }
@@ -132,12 +181,17 @@ async function run() {
   assert.match(readme, /three stacked buttons/);
   assert.match(readme, /automatically includes[^\n]*image_svg_trace/i);
   assert.match(readme, /does not download/i);
+  assert.match(readme, /Exporting a panel that has no objects yet \(v1\.11\.0\)/);
+  assert.match(readme, /byte-for-byte/);
+  assert.match(readme, /No vector trace runs on this path/i);
 
   const reference = fs.readFileSync(REFERENCE, 'utf8');
   assert.equal(reference.includes('doCopyJson'), false);
   assert.match(reference, /Export JSON \/ Insert JSON \/ Background/);
   assert.match(reference, /automatically includes[^\n]*image_svg_trace/i);
   assert.match(reference, /does not download/i);
+  assert.match(reference, /Object-less panel on export \(v1\.11\.0\)/);
+  assert.match(reference, /No vector trace on this path/i);
 
   console.log('IWMAC export trace tests passed');
 }

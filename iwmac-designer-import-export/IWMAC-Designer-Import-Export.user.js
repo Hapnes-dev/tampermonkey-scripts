@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.0
+// @version      1.11.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.10.0';
+var IWDIE_VERSION = '1.11.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -575,6 +575,35 @@ function iwdieParseDataUrl(dataUrl) {
 function iwdieIsSvgBackground(mimeOrUrl) {
   var s = String(mimeOrUrl == null ? '' : mimeOrUrl).toLowerCase();
   return s.indexOf('image/svg') !== -1 || /\.svg(\?|#|$)/.test(s);
+}
+
+/**
+ * File extension for saving a background verbatim. The point of a verbatim
+ * save is that nothing is re-encoded, so the name has to follow whatever the
+ * bytes already are — a data: URL's mime, or the path's own suffix.
+ */
+function iwdieBackgroundExt(mimeOrUrl) {
+  var s = String(mimeOrUrl == null ? '' : mimeOrUrl).toLowerCase();
+  if (iwdieIsSvgBackground(s)) return 'svg';
+  if (s.indexOf('image/jpeg') !== -1 || s.indexOf('image/jpg') !== -1 || /\.jpe?g(\?|#|$)/.test(s)) return 'jpg';
+  if (s.indexOf('image/gif') !== -1 || /\.gif(\?|#|$)/.test(s)) return 'gif';
+  if (s.indexOf('image/webp') !== -1 || /\.webp(\?|#|$)/.test(s)) return 'webp';
+  return 'png';
+}
+
+/** The mime that goes with iwdieBackgroundExt(), for the rare fetch that
+ *  answers without a Content-Type. */
+function iwdieBackgroundMime(ext) {
+  var e = String(ext == null ? '' : ext).toLowerCase();
+  if (e === 'svg') return 'image/svg+xml';
+  if (e === 'jpg') return 'image/jpeg';
+  return 'image/' + (e || 'png');
+}
+
+/** How many placeable items a collected panel document carries. */
+function iwdieCountDocItems(doc) {
+  if (!doc || typeof doc !== 'object') return 0;
+  return (doc.single_objects || []).length + (doc.containers || []).length + (doc.graphics || []).length;
 }
 
 /**
@@ -2133,8 +2162,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return m ? m[1] : '';
     }
 
-    /* ---------- collect current canvas into the host's own document ---------- */
-    function collectCurrentDoc() {
+    /* ---------- collect current canvas into the host's own document ----------
+       allowEmpty: an object-less panel is not automatically a mistake. A
+       background-only panel (an "Oversikt" picture nobody has linked out from
+       yet) is exactly the case where the picture still needs to come out — the
+       export path decides that, not the collector. */
+    function collectCurrentDoc(allowEmpty) {
       if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return null; }
       // the host's own save path resets these before collecting (container_tool.js)
       W.obj_data = []; W.container_data = []; W.container_items = [];
@@ -2147,7 +2180,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         toast('Collecting the panel failed: ' + e, true);
         return null;
       }
-      if (!doc || ((doc.single_objects || []).length + (doc.containers || []).length + (doc.graphics || []).length) === 0) {
+      if (!doc) { toast('Collecting the panel failed — the host returned nothing.', true); return null; }
+      if (!allowEmpty && iwdieCountDocItems(doc) === 0) {
         toast('Canvas is empty — load a panel first (Retrieve → Load), then export.', true);
         return null;
       }
@@ -2187,8 +2221,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- export ---------- */
-    function buildEnvelopeAsync() {
-      var doc = collectCurrentDoc();
+    function buildEnvelopeAsync(allowEmpty) {
+      var doc = collectCurrentDoc(allowEmpty);
       if (!doc) return Promise.resolve(null);
       return embedBackground(doc).then(function (d) { return iwdieBuildEnvelope(d); });
     }
@@ -2251,7 +2285,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    function downloadEnvelope(env, traceNote) {
+    /* quiet: the caller reports both files in one message instead — two
+       hostOk() calls would just overwrite each other. Returns the filename. */
+    function downloadEnvelope(env, traceNote, quiet) {
       var name = iwdieBuildExportFilename(env.source_plant_id, env.panel_name);
       var blob = new Blob([JSON.stringify(env, null, 2)], { type: 'application/json' });
       var url = URL.createObjectURL(blob);
@@ -2261,12 +2297,48 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       a.click();
       a.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-      hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
+      if (!quiet) hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
+      return name;
+    }
+
+    /* Background-only export (v1.11.0). An "Oversikt" panel that nobody has
+       linked out from yet collects as zero objects, and refusing to export it
+       was the one case where the button had nothing to offer — while being
+       exactly the case where the picture is what you need: hand the image to
+       an AI, let it place the link hotspots, insert the result back as JSON.
+       So: save the picture verbatim (no re-encode, no trace — a trace of a
+       photo background costs minutes and a template has no use for it) and
+       the background-only envelope beside it, as the schema to fill in. */
+    function exportBackgroundOnly(env) {
+      var url = grabBackgroundUrl();
+      var plant = env.source_plant_id, panel = env.panel_name;
+      if (!url) {
+        toast('Nothing to export — the canvas has no objects and no background picture.\n' +
+          'Load a panel first (Retrieve → Load).', true, 8000);
+        return;
+      }
+      return fetchBackgroundBytes(url).then(function (got) {
+        var ext = iwdieBackgroundExt(got.mime || url);
+        var imgName = iwdieBuildBackgroundFilename(plant, panel, ext);
+        downloadBytes(got.bytes, imgName, got.mime || iwdieBackgroundMime(ext));
+        // the envelope follows as a second download in the same gesture; both
+        // files are reported once, after the second one has actually fired
+        setTimeout(function () {
+          var jsonName = downloadEnvelope(env, '', true);
+          hostOk('Canvas is empty — exported the picture instead → ' + imgName + ' (' +
+            Math.round(got.bytes.length / 1024) + ' kB, ' + (env.panel_width || '?') + ' × ' + (env.panel_height || '?') +
+            '), plus ' + jsonName + ' as the background-only template to add objects to. ' +
+            'Chrome asks once per site before the second file — allow it, and Keep both.');
+        }, 400);
+      }).catch(function (error) {
+        toast('Could not save the background picture: ' + (error && error.message ? error.message : error), true, 8000);
+      });
     }
 
     function doExport() {
-      buildEnvelopeAsync().then(function (env) {
+      buildEnvelopeAsync(true).then(function (env) {
         if (!env) return null;
+        if (iwdieCountDocItems(env.panel) === 0) return exportBackgroundOnly(env);
         return iwdieCompleteExport(env, {
           decodeUtf8: function (bytes) { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); },
           traceRaster: traceRasterBackground,
@@ -2294,6 +2366,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { bg = W.$('#main_image').css('background-image') || ''; } catch (e) {}
       var m = /url\("?(.*?)"?\)/.exec(bg);
       return m && m[1] ? m[1] : '';
+    }
+
+    /* The background's own bytes, whatever they are — a data: URL is decoded
+       in place, a server URL is fetched. Never re-encoded, so a PNG stays the
+       exact PNG the panel shows. -> Promise<{mime, bytes}> */
+    function fetchBackgroundBytes(url) {
+      if (String(url).indexOf('data:') === 0) {
+        var parsed = iwdieParseDataUrl(url);
+        if (!parsed) return Promise.reject(new Error('the embedded background data URL could not be decoded'));
+        return Promise.resolve(parsed);
+      }
+      return fetch(url, { credentials: 'same-origin' }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var mime = (r.headers.get('content-type') || '').split(';')[0];
+        return r.arrayBuffer().then(function (ab) { return { mime: mime || '', bytes: new Uint8Array(ab) }; });
+      });
     }
 
     /* raw deflate via the browser's native zlib (Chrome 80+) */
@@ -2351,11 +2439,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return;
       }
 
-      /* Raster background: a PNG has no vectors to carry over, so offer two
+      /* Raster background: a PNG has no vectors to carry over, so offer the
          deliveries in a proper dialog (v1.6.0; used to be a bare confirm) —
          an automatic vector TRACE (editable shapes; small text becomes
-         outlines) as .svg, or the pixel-exact image as a PDF-based .ai
-         artboard. Both buttons feed the same pipeline below. */
+         outlines) as .svg, the pixel-exact image as a PDF-based .ai artboard,
+         or (v1.11.0) the picture verbatim, which is what an AI asked to place
+         link hotspots on the panel actually wants. */
+      var saveVerbatim = function () {
+        fetchBackgroundBytes(url).then(function (got) {
+          var ext = iwdieBackgroundExt(got.mime || url);
+          var name = iwdieBuildBackgroundFilename(plant, panel, ext);
+          downloadBytes(got.bytes, name, got.mime || iwdieBackgroundMime(ext));
+          hostOk('Background saved as-is → ' + name + ' (' + Math.round(got.bytes.length / 1024) + ' kB, not re-encoded).');
+        }).catch(function (e) { toast('Could not save the background picture: ' + e, true); });
+      };
+
       var startRasterExport = function (wantTrace) {
       var img = new Image();
       img.onload = function () {
@@ -2416,7 +2514,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       img.src = url;
       };
       if (!IWDIE_TRACER) { startRasterExport(false); return; }
-      openAiChooser(panel, startRasterExport);
+      openAiChooser(panel, startRasterExport, saveVerbatim);
     }
 
     /* ---------- Background → Illustrator chooser (v1.6.0) ---------- */
@@ -2431,7 +2529,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (ev.key === 'Escape') { closeAiChooser(); ev.stopPropagation(); }
     }
 
-    function openAiChooser(panelName, start) {
+    function openAiChooser(panelName, start, saveAsIs) {
       closeAiChooser();
       var escd = String(panelName == null ? '' : panelName).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       aiChooserOverlay = document.createElement('div');
@@ -2450,6 +2548,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '  <button class="iwdie-btn" id="iwdie_ai_pix">Save as .AI — pixels on artboard</button>',
         '  <div>The original image, <b>lossless and pixel-exact</b>, placed 1:1 on an artboard (1 px = 1 pt). Ideal as a reference or tracing layer under new artwork — zooming shows pixels, nothing is vector-editable.</div>',
         '</div>',
+        '<div class="iwdie-choice">',
+        '  <button class="iwdie-btn iwdie-secondary" id="iwdie_ai_raw">Save the picture as-is — .PNG / .JPG</button>',
+        '  <div>The background <b>byte-for-byte</b>, nothing re-encoded. This is the one to hand an AI (Copilot, Claude) when you want it to look at the panel and propose where the links go — an .ai or a trace only makes that harder to read.</div>',
+        '</div>',
         '<div class="iwdie-hint">Tip: if the drawing’s Illustrator source (.ai) exists in your archive, editing that beats any trace.</div>'
       ].join('\n');
       aiChooserOverlay.appendChild(panel);
@@ -2459,6 +2561,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       panel.querySelector('#iwdie_ai_x').addEventListener('click', closeAiChooser);
       panel.querySelector('#iwdie_ai_svg').addEventListener('click', function () { closeAiChooser(); start(true); });
       panel.querySelector('#iwdie_ai_pix').addEventListener('click', function () { closeAiChooser(); start(false); });
+      panel.querySelector('#iwdie_ai_raw').addEventListener('click', function () { closeAiChooser(); if (saveAsIs) saveAsIs(); });
     }
 
     /* ---------- import modal ---------- */
@@ -3070,6 +3173,9 @@ if (typeof module !== 'undefined' && module.exports) {
     buildExportFilename: iwdieBuildExportFilename,
     parseDataUrl: iwdieParseDataUrl,
     isSvgBackground: iwdieIsSvgBackground,
+    backgroundExt: iwdieBackgroundExt,
+    backgroundMime: iwdieBackgroundMime,
+    countDocItems: iwdieCountDocItems,
     buildImagePdf: iwdieBuildImagePdf,
     buildBackgroundFilename: iwdieBuildBackgroundFilename,
     buildPalette: iwdieBuildPalette,

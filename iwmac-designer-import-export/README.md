@@ -24,6 +24,38 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
    canvas has none, or when you chose Replace — otherwise it asks first.
 7. Nothing touches the server until you use the designer's own **Save** buttons (*Compile Panel for Plant* / *Sync Panels with Plant*). That includes Replace: it only clears the screen, so reloading without saving brings the old panel back.
 
+## Exporting a panel that has no objects yet (v1.11.0)
+
+An **Oversikt** panel that nobody has linked out from is a background picture and nothing else:
+`getPanelDataFromDOM` collects zero objects, zero containers, zero graphics. Until v1.11.0
+**Export JSON** refused that panel outright — *"Canvas is empty — load a panel first"* — which was
+wrong in the one case where the picture is the whole point: you want to hand the drawing to an AI,
+have it work out where the links belong, and insert the objects it proposes back as JSON.
+
+Now **Export JSON** on an object-less panel downloads two files instead of refusing:
+
+| File | What it is |
+|---|---|
+| `iwmac-bg_<plant>_<panel>_<stamp>.png` (or `.svg` / `.jpg`) | The background **byte-for-byte** — not re-encoded, not traced, not wrapped in a PDF. This is the file to give Copilot or Claude. |
+| `iwmac-panel_<plant>_<name>_<stamp>.json` | The background-only envelope: real `plant_id`, `panel_name`, `panel_width`/`panel_height` and empty `single_objects`/`containers`/`graphics` — the template the AI fills in, and proof of the exact schema Insert expects. |
+
+The picture's pixel size *is* the panel geometry (1400 × 750 on a standard panel), so coordinates
+worked out on the image land where they were meant to. **No vector trace runs on this path** — a
+trace costs minutes on a photo background and a template has no use for one; use
+*Background → Illustrator* when you actually want vectors.
+
+Two files means two of Chrome's download prompts: the multiple-file *"Download multiple files?"*
+ask (once per site — choose **Allow**), and, because the designer runs on plain `http`, the
+*"can't be downloaded securely"* flag on each one — choose **Keep** both times. Verified on plant
+10240 *Oversikt*: 0 objects, a 47 kB 1400 × 750 PNG background, both downloads reaching Chrome.
+
+If the canvas has no objects *and* no background picture there is genuinely nothing to export, and
+the toast says so.
+
+Round trip: export → give the `.png` to the AI with
+[`iwmac-designer-reference/`](iwmac-designer-reference/) as its knowledge → it returns a panel
+`.json` → **Insert JSON…** → link and save with the designer's own buttons.
+
 ## Background picture only (v1.10.0)
 
 Tick **Background picture only — insert no objects** at the top of the Insert dialog and the
@@ -55,7 +87,8 @@ rejection now names the box as the way through.
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
-| Empty canvas / not-a-panel-file / VV sketch file | Blocked with an itemised error panel, canvas untouched |
+| Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
+| Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
 | Server writes | Never — export reads the DOM, insert only renders; saving stays 100 % in the host's own buttons |
 | Bookkeeping | Host's own `UpdateObjectWorker` runs after insert, exactly like the designer's paste |
 
@@ -95,9 +128,10 @@ The third button exports the **current panel's background image as a file Adobe 
 - **PNG/JPG background** → a confirm offers two deliveries, because **pixels contain no vectors** — any vectors must be *made*:
   - **OK — vector trace** (v1.4.0): the image is auto-traced to an **`.svg` of editable vector shapes** (vendored [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs), public domain — the script stays one self-contained file). Shapes, pills and pipe runs come out clean **in the drawing's own colours** (v1.5.1: the palette is built from the image's exact colours with a guaranteed slot for saturated ones — before that, flat schematics traced to grey because thin coloured lines never won a sampled palette slot); **small text becomes rough outlines** — retype labels in Illustrator (that limitation is inherent to tracing, Illustrator's own Image Trace included). Since v1.4.1 the trace runs **in a Web Worker**, so the browser stays fully responsive even on photo backgrounds that take minutes (measured: main thread answers in ~4 ms while tracing; ~1–2 s total for a 1400×750 schematic, ≈7–16 k paths depending on colours). The worker is built by lifting the tracer's own constructor source — no second copy of the library, and a main-thread fallback (with a warning toast) covers CSP-restricted loads.
   - **Cancel — pixel-exact `.ai`**: modern `.ai` is PDF-based and Illustrator opens any PDF as editable artwork, so the script hand-builds a minimal PDF: artboard = panel size (1 px = 1 pt), the image placed 1:1 and **losslessly** re-encoded (raw RGB via the browser's native `CompressionStream`; JPEG fallback on very old Chrome). Verified with a real PDF engine: 1400×750 artboard, image intact. Ideal when you want the original as an exact tracing/reference layer.
+  - **Save the picture as-is** (v1.11.0): the background **byte-for-byte**, nothing re-encoded — the same file the empty-canvas export path produces, available on any panel rather than only an object-less one. This is what an AI asked to look at the panel and propose link positions actually wants; a trace or a PDF only makes the drawing harder for it to read.
 - **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.
 
-Filename: `iwmac-bg_<plant>_<panel>_<stamp>.ai` (or `.svg`). Note: because the designer runs on plain `http`, Chrome may flag the download ("can't be downloaded securely") — choose **Keep**; the file still lands in Downloads on default settings.
+Filename: `iwmac-bg_<plant>_<panel>_<stamp>.ai` (or `.svg`, `.png`, `.jpg`). Note: because the designer runs on plain `http`, Chrome may flag the download ("can't be downloaded securely") — choose **Keep**; the file still lands in Downloads on default settings.
 
 ## AI-generated panels (Copilot)
 
