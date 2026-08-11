@@ -67,6 +67,29 @@ fil", "send den som fil", "kan du lage filen", "now as JSON", "give me the
 file" after a panel discussion all mean **the panel, as a file** — never "the
 data I just described, serialized".
 
+`GLOBAL` **A bare placement correction inherits the delivered file, not the
+brief.** "The temperature bubble must be in the center of every box", "move the
+alarms off the shelf", "that one sits on the wrong case" after a panel has been
+delivered means *patch the panel that was delivered* — the same objects, the
+same bindings, the same ordering, with only the named geometry changed. It is
+never permission to regenerate, to re-derive the layout from the background
+image, or to tidy anything else on the way past. Declare what the patch is
+allowed to touch and prove it afterwards; for Oversikt that is
+`validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope
+value-position` (rule `O-C16`). And when the correction points at visual
+evidence you were not given — "like this", "as on the drawing" — name the
+missing evidence instead of inferring a coordinate from a label, an SVG trace
+or an embedded image you never measured.
+
+`GLOBAL` **Every panel deliverable passes the visual-correctness gate.** Once
+this file has named the deliverable, and before any JSON is written,
+[VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) applies to
+every panel type and every mode: the supplied panel is visually analyzed first
+(§2, A1–A12), no live object may cover descriptive text unless the supplied
+source proves that exact overlap (§3), and value objects are sized from every
+allowed display value, never the current reading (§5). Routing decides *what*
+is being made; that contract decides what *visually correct* means for it.
+
 This is the exact failure recorded in
 [ROMKONTROLL-GENERATION-CONTRACT.md](ROMKONTROLL-GENERATION-CONTRACT.md) §13.1:
 a correct room analysis emitted as a custom dataset with keys `schema_version,
@@ -161,7 +184,15 @@ not be bound. Do not downgrade the whole file.
 7. **Never replace a real identifier with a placeholder** to make a file
    "safe", "generic" or "shorter".
 8. **Never invent geometry to fill a gap.** A missing signal leaves an empty
-   cell; a missing measurement stops the work.
+   cell; a missing measurement stops the work. An equipment box you have not
+   measured yields no coordinate: on an Oversikt the temperature/value object
+   is centred on the drawn box — `left = x + (bw - w)/2`,
+   `top = y + (bh - h)/2`, scaled to panel coordinates first — and the text
+   label beside it, the cluster's own bounding box and an eyeballed guess are
+   none of them that box. A panel JSON on its own carries no equipment
+   boundaries, so nothing read out of it proves centring either: measure the
+   boxes into a footprint sidecar or report the evidence gap (rules `O-G08`,
+   `O-G09`).
 9. **A successful JSON parse is not proof of usability.** Both rejected
    generations parsed.
 10. **Never call a file corrected, fixed, production-ready or validated unless

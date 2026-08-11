@@ -13,6 +13,17 @@ covers the **room-control table** (`Tabell romkontroll alle plan`) contract,
 conflict ids `RC-C1`–`RC-C5`. Part 8 also adds the first `GLOBAL` document that
 is not about a panel type at all — [AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md),
 which owns *which* deliverable a request is asking for.
+[Part 9](#part-9--2026-08-11-the-oversikt-centering-correction) (2026-08-11)
+reopens the **Oversikt** contract after a placement correction on a delivered
+panel, adds conflict `OV-C4` to that contract's own namespace, and is the first
+part whose subject is a rule that was **present but imprecise** rather than
+missing.
+[Part 10](#part-10--2026-08-11-visual-correctness-as-a-first-class-acceptance-gate)
+(2026-08-11) adds the second `GLOBAL` document —
+[VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md), rule ids
+`VC-T*` / `VC-W*` / `VC-A*` — making visual correctness, object semantics, text
+readability and source-driven sizing acceptance requirements for **every** panel
+type, with their own executable validator alongside the per-type ones.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -52,6 +63,9 @@ Evidence ids:
 | E20 | `iw_gen_driver_parameters (3).sql` (user Downloads) | The plant's parameter dump, 5 002 553 bytes: **10 315 rows, 10 315 distinct `driver_id`**. All 1 551 bindings in E19 resolve in it with `unit_id` and `alias_text` byte-identical — the evidence for the verbatim-copy rule (contract §7.2) — **not committed** (customer data). Five tests skip unless `IWMAC_ROMKONTROLL_SQL` points at it. Added 2026-08-10 (Part 8) |
 | E21 | `Tabell_romkontroll_alle_plan.json` (1.58 MB) and `Romkontroll_alle_plan_IWMAC_Designer.json` (30 KB) | The two rejected generations of the 2026-08-10 incident: a custom dataset that was not a panel, and a 59-object unlinked placeholder overview. **Recorded from the task's own description — the files themselves were not supplied to this pass** and are not committed. Their shapes are reproduced synthetically by [build-romkontroll-negatives.py](build-romkontroll-negatives.py) (`dataset-not-a-panel`, `placeholder-overview`), which is what the rule ids in contract §13 are measured against. Added 2026-08-10 (Part 8) |
 
+| E22 | `iwmac-panel_10240_oversikt_20260811-1308.json` (user Downloads) | Oversikt. Plant 10240, **128 `single_objects`, 32 controller clusters, all four roles on all 32**, 1400×750, value objects 42×22, `zIndex` 110 and 375 — the second production Oversikt export, supplied with the 2026-08-11 centering correction. **Not committed** (live plant id, 128 real driver ids) and **deliberately not masked into a second profile**: two `TEMPLATE-*` profiles is the shape that invites averaging one store's coordinates against another's, which `OV-C1` forbids. What it contributes is a *relationship* confirmed on two stores (`OV-C4`), never a coordinate. Added 2026-08-11 (Part 9) |
+| E23 | `Info fra anlegg.xlsx` (user Downloads) | A production parameter workbook: **15 110 parameter rows across 85 units**, with an `Allowed values` column carrying 270 distinct display-value strings — 107 enum maps (`0 = OFF / 1 = ON`, ` / `-separated) and 163 numeric ranges (`0 to 3`, `-200.0 to 200.0`), several enum labels longer than 40 characters against 42 px value pills. The evidence that value-object width must be derived from the longest allowed display value, not the current reading. **Not committed** (live plant data); its statistics are recorded in [documentation-rules.json](documentation-rules.json) `evidence.E23`. Added 2026-08-11 (Part 10) |
+
 Scope tag added 2026-08-10: `PROFILE-9099-ROTOR-DEMO`, for geometry that is a
 property of one named profile rather than of ventilation panels in general. `VENT`
 remains the only tag that generalizes to every ventilation panel.
@@ -87,6 +101,21 @@ building's signal set, so **34 columns and 50 rooms describe one building and
 nothing else**. What generalizes is the two-layer structure, not a count.
 `ROMKONTROLL` is also deliberately *not* `LIST`: the two table families are built
 differently and the difference is recorded as `RC-C1` rather than reconciled.
+
+**Part 9 (2026-08-11) adds no scope tag, on purpose.** It arrived with a second
+production export (E22) and every temptation to open a `TEMPLATE-10240`
+alongside `TEMPLATE-10113`. The centering rule it adds is a **construction rule**
+— centre the value object on the equipment footprint you measured on *this*
+store's artwork — and a construction rule is `OVERSIKT`-scoped by nature: it
+names no coordinate, so there is nothing about one plant left in it to tag. The
+one thing E22 does establish is recorded as a relationship, in `OV-C4`.
+
+**Part 10 (2026-08-11) also adds no scope tag.** Its subject is `GLOBAL`, and
+`GLOBAL` has existed since Part 1's tag list. What Part 10 adds instead is the
+second `GLOBAL` *document* (the first was Part 8's
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md)) and three new **rule-id
+namespaces** for it: `VC-T*` (text protection), `VC-W*` (width from allowed
+values), `VC-A*` (mandatory visual analysis).
 
 ---
 
@@ -2089,3 +2118,621 @@ demand and are not committed, matching the Oversikt and Maskin convention.
 - **Did not claim to have inspected files it was not given.** E21 is recorded
   from the task's own description of the two rejected generations; the files
   themselves were not supplied to this pass, and the evidence table says so.
+
+---
+
+# Part 9 — 2026-08-11: the Oversikt centering correction
+
+A pass with a different shape from every one before it. Parts 5–8 each documented
+a panel type that had **no owner**. This one reopens a contract that already
+existed, was followed, and still produced a panel that had to be corrected — so
+its subject is not a missing rule but an **imprecise** one, and the work is
+mostly about saying exactly which of seven things a single word was being used
+for. Rule ids continue in the Oversikt namespaces: `O-G08`, `O-G09`, `O-G10`
+(geometry) and `O-C16` (source-versus-candidate). Conflict `OV-C4` continues
+`OV-C1`–`OV-C3`. **Nothing was renumbered.**
+
+Evidence: **E14**, **E15**, **E17** from Part 7, plus **E22** in the table at the
+head of this file — a second production Oversikt export (plant 10240, 128
+objects, 32 clusters), supplied with the correction. E22 is not committed and is
+deliberately **not** masked into a `TEMPLATE-10240` profile; what it contributes
+is one relationship confirmed on two stores, never a coordinate (`OV-C4`).
+
+**Source precedence used**, unchanged and highest first: the panel JSON supplied
+with the task → a production export of the same panel type → the panel-type
+contract → the host behaviour in `CLAUDE.md` → `AI-BRIEFING.txt` →
+`PANEL-TYPE-GUIDE.md` → `DESIGN-OBJECT-CATALOG.md` → generic design advice. The
+correction itself is a **user instruction about a supplied panel**, which is why
+every rule below is a construction rule and not a coordinate.
+
+**The incident.** A store-layout PNG, a plant parameter workbook and later a
+panel JSON. The generated panel was almost right: every controller had its linked
+alarm, temperature, cooling and defrost objects, and every cluster sat near the
+equipment it monitors. The correction was one sentence — *the temperature bubble
+must be in the centre of every box* — and the contract could neither defend the
+original placement nor derive the corrected one. Its rule said the cluster
+belongs *on* the case, and a cluster assembled around a text label a few tens of
+pixels from the case's centre satisfies that sentence completely. Necessary, and
+not sufficient.
+
+**The ambiguity, precisely.** One word — *centre* — was doing four jobs: the
+centre of the drawn equipment, the centre of the cluster, the position of a text
+label, and "roughly there". A document that uses one where it means another
+cannot be followed, and cannot be used to review what was produced from it.
+
+---
+
+## Rules changed
+
+### 120. `OVERSIKT-GENERATION-CONTRACT.md` §7.1 — the placement rule gets a second level
+
+| | |
+|---|---|
+| **Original** | §7.1 read, in full: place each controller cluster on the case, cabinet, cold room or freezer room it monitors; a cluster on empty floor, in a margin or in a grid is a defect even when its bindings are perfect. |
+| **Problem found** | True, necessary, and satisfied by the panel that had to be corrected. "On the case" is a statement about the **cluster**, and the object the user was looking at is the `number_v3_40px_no_conn_no_tag` inside it. |
+| **Revised** | The rule is stated as **two levels**, with the second marked as not implied by the first. **Level 1 — the CLUSTER** keeps the original wording verbatim. **Level 2 — the VALUE OBJECT** is new: the `number_v3_40px_no_conn_no_tag` itself must sit in the visual centre of the equipment footprint — *"the temperature bubble must be in the centre of the box"*. The section also names which validator rule measures which level: `O-C06` measures level 1 against a source, `O-G08` measures level 2 and only against a measured footprint. |
+| **Reason** | The correction is only derivable from a document that separates them. A reviewer who reads level 1 and stops has no way to fault the original panel — which is what happened. |
+| **Source** | The 2026-08-11 correction; E15 and E22 for what the objects are. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §7.1 |
+| **Status** | **Normative** · `OVERSIKT` — a construction rule, no coordinate in it |
+
+### 121. `OVERSIKT-GENERATION-CONTRACT.md` §7.1a — the seven geometry terms
+
+| | |
+|---|---|
+| **Original** | *Footprint* meant the cluster's bounding box in §7.2 and the equipment's rectangle in the placement discussion. *Anchor* meant a label position, a cluster origin and an object's top-left. Nothing said they were different things. |
+| **Revised** | A table of **seven terms, each with what it is and what it is not**: equipment footprint, equipment centre, temperature/value anchor, controller-cluster geometry, text-label anchor, shared/combined equipment footprint, uncertain/unmeasurable background target. The section states that a sentence using one where it means another is a defect in the document, not a stylistic choice. |
+| **The collision was then fixed everywhere it existed** | *Footprint* now means the **equipment's own rectangle** repository-wide; a cluster's extent is called a **cluster extent** and never a footprint. Corrected in contract §7.2 ("cluster bounding boxes — **not** equipment footprints"), in `CLAUDE.md`'s two-scopes blockquote (~62 × 66 and 42 × 86 are now *cluster extents*), and in the QA matrix. |
+| **Reason** | Naming the ambiguity is the deliverable. Every other change in this part is downstream of these seven definitions. |
+| **Source** | The incident; the terms are derived from what the documents were actually using the words for, not invented. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §7.1a, §7.2; `CLAUDE.md`; `OVERSIKT-QA-CHECKLIST.md` |
+| **Status** | **Normative** · `OVERSIKT` |
+
+### 122. `OVERSIKT-GENERATION-CONTRACT.md` §7.1b — how to centre one, arithmetically
+
+| | |
+|---|---|
+| **Original** | No formula anywhere. Placement was described in prose and reproduced by eye. |
+| **Revised** | Identify the visible physical footprint; centre the value object on it unless a higher-precedence supplied production panel proves otherwise. **Never** centre on: the equipment text label, the regulator name, the cluster bounding box, an approximate or OCR-derived coordinate, or empty floor. Then the arithmetic: `value_left = round_half_up(x + (width - w) / 2)`, `value_top = round_half_up(y + (height - h) / 2)`, with four qualifications — **half-up, not Python's banker's `round()`**; **`(w, h)` is the object's own proven size**, 42 × 22 on E15 *and* E22 but never silently forced onto a third panel; **state and apply the scale**, `scale_x = panel_width / image_width`, `scale_y = panel_height / image_height`, because a coordinate quoted without the resolution it was measured at is not evidence; and **do not infer a box from a nearby label**. |
+| **Where the rounding matters** | `round(2.5)` is `2` in Python. Rounded that way the value box lands one pixel left of centre on every other even-width footprint. `validate-oversikt-panel.half_up()` is the reference implementation, mirrored in the generator and the renderer, and the test suite asserts the three are equal. |
+| **Reason** | "Centre it" is not reproducible; the formula is. It is also what makes the rule checkable by a script rather than by opinion. |
+| **Source** | The correction; the object sizes from E15 and E22; the rounding from CPython behaviour, asserted in the tests. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §7.1b |
+| **Status** | **Normative** · `OVERSIKT` |
+
+### 123. `OVERSIKT-GENERATION-CONTRACT.md` §7.1c — the evidence a centering claim needs
+
+| | |
+|---|---|
+| **Original** | Nothing. The validator read the panel and reported on the panel. |
+| **Problem found** | **A panel JSON contains no equipment-box boundaries.** The artwork is an opaque base64 PNG, so no amount of parsing answers "is the bubble on the box?" — and a validator that said nothing about centering while printing `0 errors` was making exactly the claim it could not support. |
+| **Revised** | An `iwmac-oversikt-footprints` sidecar, the same shape of evidence input as `validate-romkontroll-panel.py --source-sql`: header defaults plus one record per controller carrying `unit_id`, `source`, `source_image_size`, `panel_size`, `footprint {left, top, width, height}`, `value_object_size`, optional `expected_value_position` and `evidence_note`. `expected_value_position` is a **cross-check**: if it disagrees with what the footprint implies, `O-G09` rejects the record rather than picking one of the two numbers. `production_proven` downgrades that record's centering verdict to `info`. |
+| **And what it still cannot prove** | That the measured rectangle is the **right** rectangle. Whether the box is around the case *this* controller monitors is a question for the artwork and a pair of eyes — QA stage C. The validator checks arithmetic against a measurement; it does not check the measurement. |
+| **Reason** | The brief's constraint, adopted verbatim as a design rule: the validator must not claim to prove visual centering without sidecar evidence. |
+| **Source** | The romkontroll `--source-sql` precedent for the shape; the record schema from the task brief. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §7.1c |
+| **Status** | **Normative** · `OVERSIKT` |
+
+### 124. `OVERSIKT-GENERATION-CONTRACT.md` §6.2 — preserve and patch, and the diff that proves it
+
+| | |
+|---|---|
+| **Original** | A seven-step preserve-and-patch procedure ending at "apply the change and re-validate". Nothing in it proved that *only* the intended change had been applied. |
+| **Revised** | **Nine steps.** The two new ones are the ones the incident needed: **name the change in the terms of §7.1a before touching a coordinate** (which of the seven things is moving, and what is it moving relative to), and **a source-to-candidate field-level diff afterwards**. The permitted difference for a centering patch is exact: `posLeft`/`posTop` on **temperature/value objects**, and **no field difference at all** on any other object. Anything else fails QA unless separately disclosed and justified. |
+| **Made executable** | `--patch-scope value-position` on the validator's compare mode, rule `O-C16`. The scope is declared, not inferred. |
+| **Reason** | A geometry correction is the request most likely to carry an unrelated "improvement" out with it — a tidy-up nobody asked for, delivered under the heading of the fix that was asked for. |
+| **Source** | The task's own constraint list; the field inventory from E15. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §6.2 |
+| **Status** | **Normative** · `GLOBAL` for the procedure, `OVERSIKT` for the value-object scope |
+
+### 125. `OVERSIKT-GENERATION-CONTRACT.md` §6 — five input classes become eight
+
+| | |
+|---|---|
+| **Original** | Five rows: PDF only; screenshot/PNG only; background image + equipment list; production JSON supplied; production JSON + PDF. |
+| **Problem found** | The 2026-08-11 task matched **none of them cleanly**. It arrived as a PNG plus a workbook, and later as a panel JSON plus a verbal correction — and the routing that mattered ("patch, do not rebuild") had to be inferred. |
+| **Revised** | Eight rows. New: **PNG + parameter workbook, no panel JSON** — build from both, centre each value object on the footprint measured on the PNG, state the scale, emit the sidecar; **two panel JSON files** — compare first, choose one, **never merge geometry**, because a merge is a third layout nobody drew; **panel JSON + a verbal placement correction** — the whole document with only the named change, declared with `--patch-scope`, and if the correction points at visual evidence you were not given, **name the missing evidence**: the SVG trace and the embedded PNG do not prove a coordinate nobody measured. |
+| **Reason** | Input routing is where this incident actually began. Each row names what to produce *and* what it must not do, because the failure is always the plausible alternative. |
+| **Source** | The task's five stated cases, mapped onto the contract's existing table. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §6 |
+| **Status** | **Normative** · `OVERSIKT` |
+
+### 126. `OVERSIKT-GENERATION-CONTRACT.md` §13.5 and `OV-C4` — the second incident on record
+
+| | |
+|---|---|
+| **Original** | §13 recorded the 2026-08-10 incident: a dashboard, then a nine-of-twenty-one reconstruction. |
+| **Revised** | **§13.5, the 2026-08-11 centering correction**, recorded in the same form — what was produced, what the correction was, why the document could not settle it, what now prevents it. Plus **`OV-C4`**, *what the value object is positioned against*, which resolves the one thing E22 proves: the cluster's symbols are positioned **relative to the value object** (alarm at (+4, −35) on 10113, (+5, −35) on 10240), while the value object is positioned **relative to the equipment footprint**. |
+| **Not merged, not averaged** | (+4, −35) and (+5, −35) are two measurements of two stores. Neither is applied to a third, neither is averaged, and E15's anatomy is not "corrected" to match E22's. |
+| **Reason** | The repository's own rule about conflicting coordinates, applied to its own new evidence. |
+| **Source** | E15 and E22, measured; the incident narrative from the task. |
+| **Files** | `OVERSIKT-GENERATION-CONTRACT.md` §12, §13.5, the evidence base, §15 item 1 |
+| **Status** | **Normative** for `OV-C4`'s resolution · the incident record is evidence |
+
+### 127. `validate-oversikt-panel.py` — three flags, four rule ids, and one thing it refuses to claim
+
+| | |
+|---|---|
+| **Original** | Structural and comparison checking: `O-S*`, `O-G00`–`O-G07`, `O-P*`, `O-C00`–`O-C15`, with `--check`, `--profile` and `--compare`. |
+| **Revised** | Three new flags — `--footprints FOOTPRINTS.json`, `--center-tolerance` (default 2 px, the slack of a hand-dragged object), `--patch-scope` — and four new rules inside the existing namespaces. **`O-G08`**, the centering verdict: within tolerance passes, a nudge warns, beyond `CENTER_MOVE_LIMIT` errors, and a value box whose centre falls **outside** the footprint is always an error regardless of tolerance, because that is a different failure — the bubble is on the label, the aisle or the floor. **`O-G09`**, the sidecar itself: format, duplicate records, controllers absent from the panel, zero-size boxes, self-contradicting records, and unmeasured controllers reported as an **evidence gap** rather than skipped. **`O-G10`**, the frame of reference: `source_image_size`, `panel_size` and the scale between them, stated **once per distinct resolution** rather than once per record. **`O-C16`**, patch scope. |
+| **What it refuses to do** | **Without `--footprints` the only `O-G08` finding is an `info` saying the run proves nothing about centering**, and the closing summary repeats it. Silence in a tool that prints `0 errors` reads as a pass. |
+| **And it will not launder instrumentation into evidence** | A sidecar stamped `synthetic: true` / `source: "synthetic-back-derived"` raises an `O-G09` **warning** and changes the closing line to say centering was not proved — because the cheapest sidecar in the repository to produce is precisely the one that passes `O-G08` by construction. |
+| **Reason** | Every new rule is checkable from the file plus the measurement. Nothing was made checkable by assertion. |
+| **Source** | §7.1b/§7.1c; `half_up` mirrored from the contract's formula. |
+| **Files** | `validate-oversikt-panel.py` |
+| **Status** | **Normative** — the rules; the tool is the mechanism |
+
+### 128. `build-oversikt-footprints.py` — new; a template that does not validate until it is filled in
+
+| | |
+|---|---|
+| **Original** | Nothing produced the sidecar, so the format existed only as a schema in prose. |
+| **Revised** | **New, ~270 lines.** It emits one record per controller with the half a panel *can* prove — the controller list, each value object's real size, the canvas, and the background PNG's natural resolution read out of the `IHDR` header — and leaves every `footprint` at `0x0`. **An unfilled template does not validate**, on purpose: `O-G09` rejects a zero-width box because it has no centre, so an unmeasured template fails loudly instead of quietly reporting that nothing is wrong. `--only`, `--margin`, `--production-proven` and `--measured-by` are the flags an author needs; `--synthetic` back-derives boxes from the value objects and is labelled, in the file it writes and in its own docstring, **TEST INSTRUMENTATION, NOT GEOMETRY**. |
+| **Reason** | The measurement is the part a human does. The generator exists to make the part a script can do free, and to make the part it cannot do visibly empty. |
+| **Source** | §7.1c; PNG `IHDR` at bytes 16–24. |
+| **Files** | `build-oversikt-footprints.py` (new) |
+| **Status** | Mechanism · `OVERSIKT` |
+
+### 129. `render-oversikt-panel.py --footprints` — the overlay that checks the measurement
+
+| | |
+|---|---|
+| **Original** | The preview drew the panel over the artwork with per-controller crops — the check a parser cannot make. |
+| **Revised** | `--footprints` draws the sidecar over the same artwork in amber: the **measured box**, its **centre**, and a **dashed box** where the value object would sit if it were centred on it. Toggleable, in the legend, and the crop regions widen to include the footprint so a box larger than its cluster is not cut off. The note under the preview says **check the amber box against the artwork first** — if it is not around the visible case, the sidecar is wrong, not the panel — and a synthetic sidecar is called out in the preview itself. |
+| **Reason** | The measurement is now the load-bearing input, so the measurement needs the visual check more than the panel does. |
+| **Source** | §7.1c; the existing renderer's crop machinery. |
+| **Files** | `render-oversikt-panel.py` |
+| **Status** | Mechanism · `OVERSIKT` |
+
+### 130. `tests/test_oversikt_10113_contract.py` — 56 tests to 89
+
+| | |
+|---|---|
+| **Original** | 56 tests covering structure, coverage, comparison and the seven negatives. |
+| **Revised** | **89.** New: `ValueCenteringTest` (13) — the no-flag disclosure, a centred panel, nudge-versus-shove severities, a box off the equipment, `production_proven`, unmeasured controllers as a gap, the unfilled template, a measurement of another panel, a self-contradicting record, a footprint measured at another resolution being **scaled rather than refused**, half-up versus banker's rounding across all three implementations, and the two synthetic-disclosure tests. `FootprintGeneratorTest` (6), `PatchScopeTest` (7) and six new renderer tests. |
+| **The rounding test is deliberately paranoid** | It asserts `validator.half_up`, `footprints.half_up` and `renderer.half_up` return the same value, because a one-pixel disagreement between them would show a gap in the preview where the validator reports a pass. |
+| **Reason** | The standard of Parts 5–8: a rule that is not executable is a rule that drifts. |
+| **Files** | `tests/test_oversikt_10113_contract.py` |
+| **Status** | Mechanism |
+
+### 131. `documentation-rules.json` — three new blocks, six revised, through the generator
+
+| | |
+|---|---|
+| **Original** | `panel_types.oversikt` as Part 7 left it. |
+| **Revised** | Three new blocks — **`geometry_terms`** (the seven definitions, machine-readable), **`value_centering`** (the formula, the never-centre-on list, the object-size and scale rules) and **`footprint_evidence`** (the sidecar format, the generator command, what it can and cannot prove) — and six revised: `cluster`, `coverage`, `input_routing`, `preserve_and_patch`, `verification`, `conflicts`. |
+| **Regenerated, never hand-edited** | Written by `build-oversikt-rules.py`; `--check` is asserted in the test suite, so the JSON and the prose cannot drift apart. |
+| **Reason** | The machine-readable rules are what a Copilot retrieves. A rule that exists only in Markdown is a rule half the consumers never see. |
+| **Files** | `build-oversikt-rules.py`, `documentation-rules.json` |
+| **Status** | **Normative** — generated from the contract |
+
+### 132. The three Oversikt companions — procedure, gate, short form
+
+| | |
+|---|---|
+| **`OVERSIKT-AUTHORING-GUIDE.md`** | The step list now ends at **11** with the nine-item report. The coverage matrix that gates the job grows from eight columns to **ten**: `background target`, `equipment footprint` and `value centre` join it, and **`UNMEASURED` in the footprint column is a stated gap, not a pass** — leaving the column blank silently converts "not checked" into "fine". A new centring section carries the formula, the sidecar workflow and the render check. |
+| **`OVERSIKT-QA-CHECKLIST.md`** | A centring block inside the geometry stage: the sidecar exists and covers every controller; alarm, cooling and defrost were **not** forced to the centre (they hang off the value object — only the value object owns the box centre); unmeasured controllers are named; an off-centre **production** position was reported, not corrected; and the sidecar is not a synthetic one. |
+| **`OVERSIKT-COPILOT-PREFLIGHT.md`** | The retrieval-friendly form: the two levels, the formula, the never-centre-on list, and the commands including `--footprints` and `--patch-scope value-position`. |
+| **Consistency** | The nine-item report, the eight input classes and the `O-G08`/`O-G09`/`O-G10`/`O-C16` ids appear identically in all three and in the contract. |
+| **Status** | **Normative** · `OVERSIKT` |
+
+### 133. The same rule at five levels of compression
+
+| | |
+|---|---|
+| **`AI-BRIEFING.txt`** | §7b gains **LEVEL 2 — the temperature bubble goes in the centre of the box**, the seven terms in one paragraph, the formula, the never-centre-on list, the combined-A/B union rule, and the statement that the panel alone cannot prove centring. |
+| **`AI-AGENT-INSTRUCTIONS.txt`** | The Oversikt line now carries the rule in one sentence — centre on the box not the label, both formulas, its **own** size, image measures scaled to the panel first, *unmeasured box = no coordinate, say so* — plus the two verification flags. Inside the hard **8 000-character** cap of the M365 Copilot Studio instructions field: **7 952 characters, 7 987 worst-case CRLF**, no `<` or `>`. Paid for by **19 itemized lossless cuts** across the file — duplicated statements and pointers, never a rule. |
+| **`PANEL-TYPE-GUIDE.md`** | "Four rules that override everything below" gains the centring rule; the Oversikt owner table names `--footprints` and `--patch-scope value-position`. |
+| **`CLAUDE.md`** | Two new rows in the Oversikt owner table — how to check centring at all, and how to prove a geometry patch changed nothing else; "three rules from the contract" becomes **four**; and the two-scopes blockquote is corrected: those member offsets are **member-to-member geometry, not a placement rule**, and what they describe is a *cluster extent*, never a footprint. |
+| **`AI-REQUEST-ROUTING.md`** | §1.2 gains a `GLOBAL` paragraph: **a bare placement correction inherits the delivered file, not the brief** — patch that panel, declare the scope, prove it, and if the correction points at visual evidence you were not given, name the missing evidence. §4 rule 8 ("never invent geometry to fill a gap") gains the centring instance: an unmeasured box yields no coordinate, and a panel JSON on its own proves nothing about centring. |
+| **Reason** | Five audiences, five budgets, one rule. The cap-bound file is the one a Copilot without repository access actually reads. |
+| **Status** | **Normative** where the source rule is normative |
+
+### 134. Defects found in this pass's own drafts — corrected before delivery
+
+| Defect | How it was caught | Fix |
+|---|---|---|
+| `O-G10` printed one identical scale line **per record** — 21 lines saying the same thing, burying the per-controller findings | Running the validator with a sidecar measured at another resolution | One line **per distinct resolution** |
+| A test asserted `errors == []` where `O-G03` legitimately fires on a 400 px move | The test failed, for the right reason | Scoped the assertion to `f.rule == "O-G08"`; a cluster torn 400 px apart is a separate, real defect |
+| A stray walrus in the renderer's exception handling (`IndexTypeError := IndexError`) | Import-time syntax check | Corrected |
+| The authoring guide said the report had **nine** items, the contract said eight, the QA checklist cited eight | Cross-reading the three | Nine everywhere |
+| `AI-BRIEFING.txt` referred to the guide's *"five input classes"* after they became eight | Same pass | Corrected in both directions |
+| `CLAUDE.md` and `PANEL-TYPE-GUIDE.md` cited the centring rule as **contract §7.1a** — the terminology table, not the rule | Grepping the new section numbers repository-wide | Re-pointed at **§7.1b**; three references |
+| The validator accepted a **synthetic** sidecar silently and reported centering as checked | Running the documented workflow end to end and reading the closing line as a reviewer would | `O-G09` warning, a qualified closing line, `is_synthetic()`, and two tests (change 127) |
+
+### 135. What was deliberately left alone
+
+- **`reference_data/oversikt-10113-sanitized.json`** — untouched. E15's geometry
+  is evidence of what a production Oversikt looks like, including any value box
+  that is not perfectly centred. "Correcting" the reference would destroy the
+  only committed evidence this contract has.
+- **`reference_data/panel-conventions.json`** — untouched, as in Parts 7 and 8.
+- **The `O-G0*` and `O-C*` rules that already existed** — no id renumbered, no
+  threshold retuned, no severity changed.
+- **`AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt`,
+  `CLAUDE-REVISED.md`** — untouched historical drafts.
+- **A `TEMPLATE-10240` profile** — not created. See the scope-tag note at the
+  head of this file.
+
+---
+
+## Conflicts resolved
+
+Recorded in full in [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) §12.
+`OV-C1`–`OV-C3` keep their wording; this part adds one.
+
+| Id | Conflict | Decision |
+|---|---|---|
+| **OV-C4** | E15 and E22 both show the cluster's symbols positioned **relative to the value object** — alarm (+4, −35) on 10113, (+5, −35) on 10240. §7.1b says the value object is positioned **relative to the equipment footprint**. Before 2026-08-11 the two were conflated into "centre the cluster on the case". | **Not a conflict — two links in one chain**, and the order is the whole point. The equipment footprint fixes the value object; the value object fixes the rest of the cluster. Read the other way round they reproduce the original defect: correct internal anatomy, wrong place. The two offsets stay **scoped, not merged** — two measurements of two stores, neither averaged, neither applied to a third, and E15's anatomy not "corrected" to match E22's. Above all neither may be collapsed back into "centre the cluster", the sentence this conflict exists to prevent |
+
+---
+
+## Verification run for Part 9
+
+All commands run from `iwmac-designer-reference/`.
+
+| Command | Result |
+|---|---|
+| `python -m unittest tests.test_oversikt_10113_contract` | Ran **89** tests in 0.270s — **OK** (56 before this pass) |
+| `python -m unittest tests.test_romkontroll_8653_contract tests.test_maskin_10229_contract tests.test_maskin_compressor_bank tests.test_list_panel_contract tests.test_ventilation_profile_9099 tests.test_build_ventilation_corpus` | Ran 285 tests in 5.814s — **OK (skipped=5)**, no regression in any other panel type |
+| `python build-oversikt-rules.py --check` | `documentation-rules.json is up to date` |
+| `python validate-oversikt-panel.py reference_data/oversikt-10113-sanitized.json` | **0 errors, 2 warnings**, exit 0 — closing line: *"Value centering was NOT checked. A panel JSON carries no equipment-box boundaries; supply measured ones with --footprints FOOTPRINTS.json."* |
+| `… --profile TEMPLATE-10113` | **0 errors, 2 warnings**, exit 0 |
+| `python build-oversikt-footprints.py reference_data/oversikt-10113-sanitized.json -o survey-tmp/fp-template.json` | 21 **template** records, every footprint `0x0`, and the generator says so: *"Every footprint is 0x0 until measured, and O-G09 rejects a 0x0 box."* |
+| `… --footprints survey-tmp/fp-template.json` | **21 errors** — the unfilled template fails loudly, one `O-G09` per controller |
+| `python build-oversikt-footprints.py … --synthetic -o survey-tmp/fp-10113.json` | 21 synthetic records, stamped `"synthetic": true` |
+| `… --footprints survey-tmp/fp-10113.json` | **0 errors, 3 warnings** — `INFO O-G08 21 of 21 measured value object(s) are centred on their equipment footprint within 2px`, **plus** the `O-G09` warning that the sidecar is synthetic and a closing line saying centering is therefore not proved |
+| `… --compare SOURCE CANDIDATE --patch-scope value-position`, 21 value objects moved +3 px | **0 errors, 23 warnings** — 21 × `O-C06` nudge plus the two baseline warnings. In scope |
+| the same patch with one `alias_text` also changed | **exit 1** — `ERROR O-C16 patch scope 'value-position' was exceeded … alias_text x1`, naming the object and both values |
+
+The two warnings on every clean run are the pre-existing `O-G07` overlaps
+(`object_13`/`object_61`, `object_15`/`object_61`) — production adjacency,
+recorded in contract §9.2 and **not** corrected.
+
+**The two `--footprints` rows are worth reading side by side.** A synthetic
+sidecar makes `O-G08` report 21 of 21 centred, and the same run says in two
+places that this proves nothing. That pairing is the design: the arithmetic is
+checkable, the measurement is not, and the tool says which is which.
+
+---
+
+## Files changed in Part 9
+
+| File | Change | Existed before? |
+|---|---|---|
+| `OVERSIKT-GENERATION-CONTRACT.md` | §7.1 two levels; §7.1a seven terms; §7.1b the formula; §7.1c the sidecar; §6 eight input classes; §6.2 nine steps; §11 nine-item report; §12 `OV-C4`; §13.5 the second incident; E22; §15 item 1 (120–126) | Yes |
+| `validate-oversikt-panel.py` | `--footprints`, `--center-tolerance`, `--patch-scope`; `O-G08`, `O-G09`, `O-G10`, `O-C16`; `half_up`; the synthetic disclosure (127) | Yes |
+| `build-oversikt-footprints.py` | **New.** Sidecar template generator; `--synthetic` labelled instrumentation (128) | No |
+| `render-oversikt-panel.py` | `--footprints` overlay, widened crops, legend, synthetic warning (129) | Yes |
+| `tests/test_oversikt_10113_contract.py` | 56 → 89 tests (130) | Yes |
+| `build-oversikt-rules.py` | `geometry_terms`, `value_centering`, `footprint_evidence`; six revised blocks (131) | Yes |
+| `documentation-rules.json` | Regenerated, not hand-edited (131) | Yes |
+| `OVERSIKT-AUTHORING-GUIDE.md` | Eleven steps; the ten-column matrix; the centring procedure (132) | Yes |
+| `OVERSIKT-QA-CHECKLIST.md` | The centring block, including the synthetic-sidecar item (132) | Yes |
+| `OVERSIKT-COPILOT-PREFLIGHT.md` | The short form of the rule and the commands (132) | Yes |
+| `AI-BRIEFING.txt` | §7b level 2, the seven terms, the formula, the sidecar (133) | Yes |
+| `AI-AGENT-INSTRUCTIONS.txt` | The centring sentence inside the cap; 7 952 chars / 7 987 worst case; 19 itemized cuts (133) | Yes |
+| `PANEL-TYPE-GUIDE.md` | The fourth overriding rule; the owner-table commands (133) | Yes |
+| `CLAUDE.md` | Two owner rows; four rules; *cluster extent* ≠ *footprint* (133) | Yes |
+| `AI-REQUEST-ROUTING.md` | §1.2 placement corrections inherit the delivered file; §4 rule 8 gains the centring instance (133) | Yes |
+| `documentation-change-log.md` | This part; E22 and the no-new-scope-tag note at the head | Yes |
+| `reference_data/oversikt-10113-sanitized.json` | **Untouched**, deliberately (135) | Yes |
+| `iwmac-panel_10240_oversikt_20260811-1308.json` (E22) | **Not modified, not committed, not masked into a profile** (135) | n/a |
+
+Sidecars and previews written to `survey-tmp/` during verification are
+regenerated on demand and are not committed, matching Parts 6–8.
+
+---
+
+## What Part 9 deliberately did not do
+
+- **Did not generalize this plant into a rule.** Not one coordinate from 10240
+  entered any document. What the pass adds is a **construction rule** — measure
+  *this* store's boxes, centre on *those* — plus one relationship confirmed on
+  two stores (`OV-C4`). The task said it in a single line, and it is the
+  constraint the whole part is shaped around.
+- **Did not create a second profile.** E22 would have made a tidy
+  `TEMPLATE-10240`. Two `TEMPLATE-*` profiles for one panel type is the shape
+  that invites averaging one store against another, which `OV-C1` forbids.
+- **Did not renumber an id.** `O-G08`, `O-G09`, `O-G10`, `O-C16`, `OV-C4` and
+  `E22` all continue existing namespaces, and every rule-index location that
+  lists ids was updated to name them.
+- **Did not claim the validator can see the artwork.** Without `--footprints` it
+  says it proved nothing; with a synthetic sidecar it says the same; and even
+  with a real one, whether the measured rectangle is the *right* rectangle is a
+  question for a pair of eyes on a controller-level crop.
+- **Did not "correct" a production anomaly.** A supplied production JSON stays
+  rank 1: `production_proven` records report an off-centre position as `info`,
+  and the QA checklist says so in its own words. Geometric tidiness does not
+  outrank a real panel.
+- **Did not rebuild anything from the PNG or the workbook.** The request was a
+  geometry patch on a supplied panel, and the routing table, the nine steps and
+  `--patch-scope` now say that in one voice.
+- **Did not weaken a rule to make a run pass.** The one behaviour change to an
+  existing rule is stricter, not looser: a synthetic sidecar now warns where it
+  used to be accepted in silence.
+- **Did not touch another panel type.** No ventilation, list, Maskin or
+  room-control rule changed, and the other suites' 285 tests were run to prove
+  it.
+
+---
+
+# Part 10 — 2026-08-11: visual correctness as a first-class acceptance gate
+
+The shape of this pass is different from Parts 5–9: it adds no panel type and
+reopens no panel type. Its subject is the gap those parts kept walking around —
+**a JSON file can be structurally valid while still being a visually or
+operationally incorrect IWMAC panel.** Every per-type validator checks its own
+geometry, but nothing owned the three questions that apply before and above any
+panel type: *did you analyze the supplied panel before generating*, *does any
+live object cover text a human needs to read*, and *is every value object wide
+enough for the longest value it can ever display*. Part 10 gives those three
+questions one `GLOBAL` owner — [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md),
+the second `GLOBAL` document after Part 8's routing document — and one
+executable check, `validate-visual-correctness.py`, run **alongside** the
+per-type validator, never instead of it. Three new rule-id namespaces: `VC-T*`
+(text protection), `VC-W*` (width from allowed values), `VC-A*` (mandatory
+analysis). Nothing was renumbered; no existing rule id changed meaning.
+
+**Everything here is generic by construction.** The task that drove this pass
+required it in so many words: no rule for one plant, controller, device type,
+unit, customer or signal set. The contract therefore names roles and
+relationships — descriptive text, live value, engineering unit, icon, artwork —
+never a coordinate, and its one worked sizing example uses a state map quoted
+from the task itself.
+
+**Evidence.** One new id. **E23** is a production parameter workbook (15 110
+parameter rows across 85 units) whose `Allowed values` column is the ground
+truth for width-from-allowed-values: 270 distinct display-value strings — 107
+enum maps in the ` / `-separated `0 = OFF / 1 = ON` form and 163 numeric ranges
+— including enum labels longer than 40 characters that would render into a
+42 px value pill. The workbook is not committed (live plant data); its measured
+statistics live in [documentation-rules.json](documentation-rules.json) under
+`evidence.E23`. The pass also leans on E22 (the 10240 Oversikt export: 32
+exactly coincident cooling∩defrost pairs and 4 paired value pills overlapping
+8 px at 34 px pitch — the production proof that a blanket overlap ban is wrong)
+and E1 (the 9099 ventilation export: six labels whose `posHeight` is 1 while
+their rendered glyphs are ~11 px tall — the production proof that declared
+rectangles under-report text).
+
+**Source precedence used.** User-supplied material → production export → the
+panel type's generation contract → `CLAUDE.md` → shared docs → guides and
+catalogs → generic advice. The one apparent conflict this pass had to resolve —
+the task's "objects must never cover text" against the audit's F11, which
+records a blanket never-overlap rule being *removed* because production overlaps
+on purpose — was resolved by scope, not by averaging: the prohibition is
+**role-scoped to text**, and the deliberate live-over-artwork classes (connector
+into pipe, damper into duct, LED on equipment body, value pill on equipment
+body — F11's own list) plus the two E22 live-over-live classes stay legal, with
+the exception list derived from the supplied source panel itself rather than
+hand-maintained.
+
+**The incident.** The 2026-08-11 task supplied ten authoritative sources and
+asked for visual correctness, object semantics, text readability and
+source-driven sizing to become first-class acceptance requirements, with three
+mandated rule areas: mandatory visual analysis before generation, objects must
+never cover text, and allowed-values-driven width. The task message itself
+arrived **truncated mid-example** — it ends inside the allowed-values example
+at `0=Alarm 1=OK 2=Communication error` — and the third rule area was
+implemented from its clear intent, with the truncation recorded here and in the
+final report rather than silently papered over.
+
+## Rules changed
+
+### 136. VISUAL-CORRECTNESS-CONTRACT.md — the three rule areas get one GLOBAL owner
+
+| | |
+|---|---|
+| **Original** | No document owned cross-type visual correctness. The per-type contracts each carried fragments — Oversikt centring, ventilation overlap hygiene, romkontroll cell discipline — and the audit's F11 explicitly recorded the gap: "Overlap is prohibited without a detection method or an exception list." |
+| **Problem found** | An agent could satisfy every per-type rule and still deliver a panel whose live objects sit on top of the labels, whose value pills truncate half their state names, and whose layout was invented instead of read from the supplied export. Nothing made "look at the panel first" an obligation. |
+| **Revised** | New document [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md), scope `GLOBAL`. §1 defines the five-role geometry model (descriptive text, icon/symbol, live value, engineering unit, navigation/decoration — each with its **own** geometry, never sharing a rectangle). §2 makes visual analysis **mandatory before any generation or modification**: twelve classification points A1–A12 (panel type and visual purpose, background ownership, container anatomy, `table_container` usage, repetition model, live-object overlay model, object vocabulary, role census, measured geometry and content bounds, alignment lines and section hierarchy, spacing and pitch, scroll direction and operator-facing priority) — a supplied production JSON is an **authoritative visual template**, not merely a schema or data source. §3 is the role-scoped text-protection rule (rule 137). §4 is table discipline: every row keeps a dedicated static label cell, a blank icon cell and a blank value cell; never an icon appended to the end of a text string without reserved space; never an assumption of free space to the right of text. §5 is width-from-allowed-values (rule 138). §7 states the acceptance bar: a clean per-type validator run plus a clean `VC` run are **necessary** conditions, and neither is "the panel is correct" — §6 lists what the JSON-level check cannot see. |
+| **Reason** | The three rule areas the task mandates are properties of every panel type at once; putting them in one per-type contract would orphan the other three types, and putting them in four would fork them. |
+| **Source** | The 2026-08-11 task; audit F5, F10, F11; E1, E22, E23. |
+| **Files** | [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) (new) |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 137. Contract §3 + validate-visual-correctness.py — objects never cover text, role-scoped and executable
+
+| | |
+|---|---|
+| **Original** | Part 2 removed the blanket "no unintended overlap" wording after F5/F10 recorded an AI *shortening a duct* to obey it, and F11 closed with: prohibition without a detection method or an exception list is not a rule, it is a mood. Since then, no overlap rule at all applied outside ventilation §8's advisory hygiene list. |
+| **Problem found** | The pendulum had swung to the opposite failure: nothing stopped a generated panel from placing a value pill across its own label. Both 2026-08-10 romkontroll failures and the Maskin negative example demote text to whatever space is left over. |
+| **Revised** | Contract §3: **a live object (value, icon, symbol, alarm bell, LED, navigation button, decoration) never overlaps visible descriptive text — unless the supplied production panel proves that exact overlap intentional.** Proof means the same object pair **with the same role pair** in the same relative arrangement (±2 px) in the supplied source, or an exactly coincident stack of the same live pair (the E22 cooling∩defrost pattern). The role component is load-bearing: without it, blanking a label's `tag_text` in the source demotes it to a non-text role and the source "proves" the very live-over-text overlap the rule exists to catch. Live-over-**artwork** overlap classes stay deliberate and legal (F11's four classes). Resolution rule §3.3: when a collision is found, **move the live object — never shrink, never delete, never restyle the text**. Executable: [validate-visual-correctness.py](validate-visual-correctness.py) runs rectangle intersection over declared geometry with container children resolved to panel-absolute coordinates; `VC-T01` error = live∩non-blank-text unproven; `VC-T02` warning = live∩live partial overlap unproven; `VC-T03` info = source-proven or coincident-stack overlap. The exception list is **derived from the supplied `--source` panel**, not hand-maintained — exactly the shape F11 demanded. |
+| **Reason** | The task's second mandated rule area, reconciled with the documented reason the blanket rule was removed: scope the prohibition to the one role a human must always be able to read. |
+| **Source** | The 2026-08-11 task; F11's exception-list demand; E22 (32 coincident pairs, 4 paired pills — measured, zero unexplained overlaps); the 10113 fixture (15 coincident stacks, 4 partial pairs — all four proven once `--source` is supplied). |
+| **Files** | [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) §3, [validate-visual-correctness.py](validate-visual-correctness.py), [tests/test_visual_correctness.py](tests/test_visual_correctness.py) |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 138. Contract §5 + the `--allowed-values` check — width from the longest allowed display value
+
+| | |
+|---|---|
+| **Original** | Value-object sizes were copied from the reference template (42×22 Oversikt pills, 62×22 ventilation setpoints) with no rule connecting width to content. Nothing parsed `format_extra`, and the briefing's linking kit mentions enum maps only as evidence that driver ids are copied verbatim. |
+| **Problem found** | A value pill sized for the current reading truncates the moment the state changes: E23's workbook carries enum labels over 40 characters (~19+ characters is already ≈139 px at 7 px/char against a 42 px pill). The current value is the *narrowest* thing the object will ever show. |
+| **Revised** | Contract §5: **before selecting a value-object width, parse every allowed display value** from `format_extra` / allowed-values / state definitions / enumerations / translated labels, and size for the **longest**, with the worked example from the task (`0 = Alarm / 1 = OK / 2 = Communication error` → the widest label, not the digit, decides). Numeric ranges size for the widest bound as formatted. Executable: `--allowed-values VALUES.json` maps value strings onto objects (match by `alias_text` or `obj_id`); `VC-W01` error when `ceil(len(longest) × char_px + pad_px)` exceeds `posWidth` — on canvas objects and container children alike (child rectangles resolved to panel-absolute coordinates first, the same resolver text protection uses). Enum maps split on the **spaced** ` / ` separator, `;`, `,` and newlines; a bare `/` inside a label (`Heat/Cool`) is label content. The estimator constants (7.0 px/char, 6.0 px padding) are recorded in [documentation-rules.json](documentation-rules.json) `global_invariants.visual_correctness.width_estimator` and overridable per run — they are an estimator, not a font metric, and the contract says so. |
+| **Reason** | The task's third mandated rule area (implemented from clear intent — the message truncated inside this example). |
+| **Source** | The 2026-08-11 task; E23 (270 distinct allowed-values strings: 107 enum maps, 163 ranges). |
+| **Files** | [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) §5, [validate-visual-correctness.py](validate-visual-correctness.py), [reference_data/visual-correctness-allowed-values.json](reference_data/visual-correctness-allowed-values.json) |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 139. documentation-rules.json — `global_invariants.visual_correctness` and E23
+
+| | |
+|---|---|
+| **Original** | The rules file's `global_invariants` carried structural invariants only; `evidence` ended at E22. |
+| **Problem found** | A machine-readable consumer (Copilot, the validators, the tests) had no structured statement of the three rule areas — the contract would have been prose-only. |
+| **Revised** | New `global_invariants.visual_correctness` block, scope `GLOBAL`: the A1–A12 analysis points, `text_protection` (including `not_a_blanket_overlap_ban: true` and `proof_tolerance_px: 2`), `allowed_values_sizing` (including the worked example and evidence `[E23, E22]`), `width_estimator`, and `cannot_see`. New `evidence.E23` entry with the workbook statistics. The block is hand-authored — it sits outside every build-script marker region, and all three build gates (`build-oversikt-rules.py --check`, `build-maskin-rules.py --check`, `build-romkontroll-rules.py --check`) verify byte-identical round-trip after the edit. |
+| **Reason** | One source of truth for constants the validator and the tests both read; the same pattern every per-type contract already follows. |
+| **Source** | This pass. |
+| **Files** | [documentation-rules.json](documentation-rules.json) |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 140. AI-AGENT-INSTRUCTIONS.txt — both rule areas inside the 8 000-character cap
+
+| | |
+|---|---|
+| **Original** | Line 15 ended "8 px gaps on table panels; schematic panels overlap on purpose." — the one line in the Copilot instructions that could excuse covering text. The SELF-CHECK had no width clause. Part 9's rule 133 measured the file at 7 952 characters, 7 987 worst-case CRLF. |
+| **Problem found** | The instructions field is the only contract text many Copilot runs ever see; without the text-protection qualifier and the width clause there, the two new normative rules were invisible exactly where generation happens. A first draft added them at +44 characters against −21 of trims — 8 009 worst-case, over the cap — and was refused by the edit script's own budget guard. |
+| **Revised** | "…schematics overlap on purpose, **never on TEXT**." and SELF-CHECK gains "values fit LONGEST allowed value;". Paid for by twelve named lossless micro-trims plus nineteen ` - ` → `; ` separator swaps. New measure: **7 949 characters, 7 984 worst-case CRLF** — net −3 against Part 9, 16 characters of worst-case headroom. This row supersedes rule 133's figures. |
+| **Reason** | The cap counts characters, not importance; every addition is paid for by a named, lossless cut, and the measurement command in `CLAUDE.md` §17b is the arbiter. |
+| **Source** | Measured before and after (`python -c "import io;t=io.open('AI-AGENT-INSTRUCTIONS.txt',encoding='utf-8').read();print(len(t),len(t)+t.count(chr(10)))"`). |
+| **Files** | [AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 141. Wiring — CLAUDE.md, AI-BRIEFING.txt, AI-REQUEST-ROUTING.md
+
+| | |
+|---|---|
+| **Original** | `CLAUDE.md` §17b listed the routing document as "read this one first" with no second read; the briefing's §5 layout rules and §9 QA list carried no cross-type visual gate; the routing document routed panel types only. |
+| **Problem found** | A new `GLOBAL` document that nothing points at is dead on arrival — the audit's recurring finding about ownership without wiring. |
+| **Revised** | `CLAUDE.md` §17b: new "**read this one second**" bullet for the visual-correctness contract, summarizing the three rule areas and the validator invocation. `AI-BRIEFING.txt` §5: two bullets (text protection with the live-over-artwork carve-out; width from allowed values). §9: three checklist items (analysis before generation, no live-over-text without source proof, longest-allowed-value sizing). `AI-REQUEST-ROUTING.md` §1.2: a `GLOBAL` paragraph stating the visual contract applies to whichever panel type the request routes to. |
+| **Reason** | Every prior part's lesson: the rule is where its readers already are, or it does not exist. |
+| **Source** | This pass. |
+| **Files** | [CLAUDE.md](CLAUDE.md) §17b, [AI-BRIEFING.txt](AI-BRIEFING.txt) §5 + §9, [AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md) §1.2 |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 142. The four QA checklists and four Copilot preflights — the gate becomes a stage
+
+| | |
+|---|---|
+| **Original** | No checklist stage and no preflight step ran a cross-type visual check; each pipeline ended at its own per-type validator. |
+| **Problem found** | A gate that is not a numbered stage in the checklist an agent actually walks through is skipped under exactly the time pressure it exists for. |
+| **Revised** | [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md), [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) and [VENTILATION-QA-CHECKLIST.md](VENTILATION-QA-CHECKLIST.md) gain the visual-correctness run in **stage 0** (analysis before generation) with the validator command; [ROMKONTROLL-QA-CHECKLIST.md](ROMKONTROLL-QA-CHECKLIST.md) runs it in **stage 6** alongside the profile check, with the table-discipline wording (every row keeps a static label cell, a blank icon cell and a blank value cell). All four `*-COPILOT-PREFLIGHT.md` blocks gain the matching step so an agent primed by preflight and an agent walking the checklist see the same gate. |
+| **Reason** | The checklists are the acceptance procedure of record; a rule outside them is advisory in practice regardless of its Status cell. |
+| **Source** | This pass. |
+| **Files** | the four `*-QA-CHECKLIST.md`, the four `*-COPILOT-PREFLIGHT.md` |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 143. DOCUMENTATION-AUDIT.md — F11 gets its owner named, and its remainder kept open
+
+| | |
+|---|---|
+| **Original** | F11 ended with the demand for "a detection method or an exception list" and no pointer to either, because neither existed. |
+| **Problem found** | With rule 137 in place, the audit read as if the gap were still wholly open — and a first draft of the update *overclaimed*, saying the contract's cannot-see section recorded both residual limitations before it actually did. |
+| **Revised** | An **Update (2026-08-11)** paragraph under F11: the gap now has a `GLOBAL` owner (contract §3 + the validator, exception list derived from the source panel), **and** two parts of F11 stay open, now recorded in the contract's own §6 — overlap is judged on *declared* rectangles, so a `posHeight` 1 label with ~11 px rendered glyphs still evades detection, and text living inside background artwork is invisible to any JSON-level check. The contract's §6 was extended first so the audit's claim is true. |
+| **Reason** | An audit finding is closed by evidence, not by the existence of a document; the honest state is "owned, with a named remainder". |
+| **Source** | F11; E1's six `posHeight` 1 labels. |
+| **Files** | [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md), [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) §6 |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 144. Defects found in this pass's own drafts — corrected before delivery
+
+| Defect | How it was caught | Fix |
+|---|---|---|
+| First AI-AGENT-INSTRUCTIONS.txt draft came to 8 009 worst-case characters — over the 8 000 cap | The edit script's `worst <= 7996` guard refused the write and printed "OVER BUDGET, not written" | Three further micro-trims plus the ` - ` → `; ` sweep (19 occurrences, hand-estimated at ~9 — the script counted); final 7 984 worst-case |
+| The audit's F11 update claimed the contract's cannot-see section recorded the declared-rectangle limitation — it did not yet | Grep of §6 for the claim's key phrases before moving on | Contract §6 extended (declared-geometry gap, E1's `posHeight` 1 labels, render-QA as the answer) before the audit paragraph was kept |
+| Validator classified object roles per pair inside the O(n²) loop — quadratic re-classification | Timing a run against the 1 553-object romkontroll fixture | `roles_by_index` precomputed once before the pair loop |
+| A probe script split allowed-values strings on `/` without surrounding spaces, mis-parsing `0 = OFF / 1 = ON` into fragments | Cross-checking probe label counts against the workbook's 107 enum maps | The shipped validator splits on the ` / ` separator family; `tests/test_visual_correctness.py` asserts the E23 forms parse to whole labels |
+| Demo-fixture loader assumed `panel` at top level; the fixture wraps it as `{_note, envelope}` | `KeyError: 'panel'` on first run | Loader resolves the envelope wrapper the same way the per-type validators do |
+| Test run printed the validator's CLI findings into unittest output | Noise in the first suite run | Tests wrap CLI invocations in `contextlib.redirect_stdout(io.StringIO())` |
+
+A second, independent read-only review of the shipped validator (Codex, no test
+execution in its sandbox — static analysis only) found seven more, all fixed and
+regression-tested before delivery:
+
+| Defect | How it was caught | Fix |
+|---|---|---|
+| Blanking a label's `tag_text` in the `--source` panel demoted it to a non-text role, and the two-object signature then "proved" a candidate live-over-text overlap | Codex read-only review | The proof signature gained a fifth component — the sorted role pair — so a proof matches only a candidate with the same roles; a test blanks the source label and asserts `VC-T01` still fires |
+| `VC-W01` walked `panel.single_objects` only — container children (table value cells, exactly where state values live on tabular panels) were never width-checked | Codex read-only review | `check_widths` consumes the same `collect_elements` resolver as text protection; a container-child value with a too-long allowed value now errors, test included |
+| A container with no readable `left`/`top` silently resolved its children at (0,0), producing false overlaps against whatever sits there | Codex read-only review | Children of an origin-less container are skipped with a `VC-S01` warning naming the container; test asserts no false `VC-T01` and the warning's presence |
+| Label splitting on bare `/` corrupted labels containing a slash (`Heat/Cool` → two fragments) | Codex read-only review | The split requires the spaced ` / ` separator (E23's 107 enum maps all use it); `;`, `,`, newlines unchanged; test asserts `Heat/Cool` survives whole |
+| A catalog entry carrying neither `only_tag_text` nor `can_link`/`states` classified as "other", suppressing the documented name-pattern fallback for navigation and artwork ids | Codex read-only review | `classify()` falls through to the name patterns instead of returning early; test covers a patternless and a pattern-matching catalog id |
+| `--char-px`/`--pad-px` accepted negative, zero and NaN values, silently inverting or disabling the width check | Codex read-only review | `parser.error` rejects non-finite or out-of-range estimator values (exit 2), tests for all three |
+| An unreadable or non-JSON panel/source/sidecar file raised a bare traceback and ignored `--json-report` | Codex read-only review | All four loads wrapped; `structural_failure()` reports `VC-S01` as an error in the JSON report shape (or text), exit 1 — tests pin the JSON shape for both the missing-file and not-a-panel cases |
+
+The review's one remaining observation — the proof signature carries no object
+*names* — is works-as-designed, now stated in `pair_signature`'s docstring: the
+host renumbers `object_N` from the live canvas index on every insert (reference
+§12), so names cannot be part of overlap identity; the obj_id pair, role pair
+and relative offset are what survive a round trip.
+
+### 145. What was deliberately left alone
+
+- **[PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md)** — untouched. It is a style
+  summary that already defers to the contracts; adding a fifth pointer would
+  restate, not own.
+- **The per-type validators** — none extended. The visual gate is a separate
+  executable run alongside them, so a per-type rule change never forks the
+  cross-type rule and vice versa.
+- **The blanket never-overlap rule** — not reinstated. F5/F10's incident (a
+  duct shortened to obey it) stays decisive; the prohibition is role-scoped to
+  text and everything else is source-proven or deliberate.
+- **Rendered-glyph measurement** — not attempted at JSON level. A `posHeight` 1
+  label's real extent is a render-QA question (`render-*-panel.py` plus eyes, or
+  a measured sidecar), and the contract's §6 says so instead of pretending.
+- **E22, E23 and the 8653 SQL dump** — still not committed. Live plant data;
+  their statistics live in the rules file, their files in the user's Downloads.
+- **The evidence table's split row** — the blank line Part 9 left before E22's
+  row (which makes it render as a separate table) was left exactly as Part 9
+  shaped it; E23 was appended in the same block. A formatting repair belongs to
+  its own pass, not hidden inside this one.
+
+## Conflicts resolved
+
+None numbered. The one candidate — the task's "objects must never cover text"
+against F11's documented removal of the blanket overlap ban — dissolved under
+scoping rather than needing a conflict id: the two statements are about
+different roles (text vs artwork), both stay recorded, and nothing was averaged.
+`M-1`, `OV-C1`–`OV-C4` and `RC-C1`–`RC-C5` are untouched.
+
+## Verification run for Part 10
+
+| Command | Result |
+|---|---|
+| `python -m unittest tests.test_visual_correctness tests.test_oversikt_10113_contract tests.test_romkontroll_8653_contract tests.test_maskin_10229_contract tests.test_maskin_compressor_bank tests.test_list_panel_contract tests.test_ventilation_profile_9099 tests.test_build_ventilation_corpus` | Ran **424** tests in 6.406s — **OK** (skipped=5, the `IWMAC_ROMKONTROLL_SQL` gates). Rerun in full after the Codex-review fixes (rule 144's second table); the four validator runs below were also re-executed after those fixes with identical findings |
+| `python validate-visual-correctness.py reference_data/visual-correctness-demo.json --allowed-values reference_data/visual-correctness-allowed-values.json` | 0 finding(s), 0 error(s) — exit 0 |
+| `python validate-visual-correctness.py reference_data/oversikt-10113-sanitized.json` | 19 finding(s), 0 error(s) — exit 0: 15 `VC-T03` info (exactly coincident cooling∩defrost stacks, the documented production pattern) + 4 `VC-T02` warnings (partial live∩live pairs, no source supplied) |
+| `python validate-visual-correctness.py reference_data/oversikt-10113-sanitized.json --source reference_data/oversikt-10113-sanitized.json` | 19 `VC-T03` info, 0 warnings, 0 errors — every overlap proven by the supplied source; the F11 exception-list mechanism demonstrated |
+| Mutation probe: live value pill moved onto the demo fixture's `Room temperature` label | `VC-T01 error … a live object covers descriptive text 'Room temperature'; no supplied source proves this overlap (contract §3)` — 1 error, exit 1 |
+| `python build-oversikt-rules.py --check` · `python build-maskin-rules.py --check` · `python build-romkontroll-rules.py --check` | documentation-rules.json is up to date — all three exit 0 |
+| `python -c "import io;t=io.open('AI-AGENT-INSTRUCTIONS.txt',encoding='utf-8').read();print(len(t),len(t)+t.count(chr(10)))"` | `7949 7984` — inside the 8 000 cap with 16 worst-case characters of headroom |
+
+The 50 tests in `tests.test_visual_correctness` cover: the five-role classifier
+(including the catalog fall-through to name patterns); container-child
+resolution to panel-absolute coordinates and the origin-less-container `VC-S01`
+warning; `VC-T01`/`T02`/`T03` severities; the ±2 px source-proof tolerance, the
+coincident-stack rule and the role-pair proof component (a blanked source label
+proves nothing); enum and range parsing of every E23 form (spaced ` / `
+separators, bare `/` kept inside labels, internal spaces); `VC-W01` width
+arithmetic on canvas objects and container children, and estimator overrides
+with argument validation; `VC-A01` analysis enforcement via
+`--require-analysis`; the `--json-report` shape on structural failures; and
+exit-code discipline.
+
+## Files changed in Part 10
+
+| File | Change | Existed before? |
+|---|---|---|
+| [VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) | Created — the second `GLOBAL` contract | No |
+| [validate-visual-correctness.py](validate-visual-correctness.py) | Created — `VC-T*`/`VC-W*`/`VC-A*`, stdlib-only | No |
+| [tests/test_visual_correctness.py](tests/test_visual_correctness.py) | Created — 50 tests | No |
+| [reference_data/visual-correctness-demo.json](reference_data/visual-correctness-demo.json) | Created — synthetic generic demo fixture, passes clean | No |
+| [reference_data/visual-correctness-allowed-values.json](reference_data/visual-correctness-allowed-values.json) | Created — the values sidecar for the demo | No |
+| [documentation-rules.json](documentation-rules.json) | `global_invariants.visual_correctness` + `evidence.E23` | Yes |
+| [AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) | Text-protection qualifier + SELF-CHECK width clause, net −3 characters | Yes |
+| [AI-BRIEFING.txt](AI-BRIEFING.txt) | §5 two bullets, §9 three checklist items | Yes |
+| [AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md) | §1.2 `GLOBAL` applicability paragraph | Yes |
+| `CLAUDE.md` (iwmac-designer-reference) | §17b "read this one second" bullet | Yes |
+| [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) · [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) · [VENTILATION-QA-CHECKLIST.md](VENTILATION-QA-CHECKLIST.md) | Stage-0 visual-correctness gate | Yes |
+| [ROMKONTROLL-QA-CHECKLIST.md](ROMKONTROLL-QA-CHECKLIST.md) | Stage-6 visual-correctness run with table discipline | Yes |
+| [OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) · [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) · [VENTILATION-COPILOT-PREFLIGHT.md](VENTILATION-COPILOT-PREFLIGHT.md) · [ROMKONTROLL-COPILOT-PREFLIGHT.md](ROMKONTROLL-COPILOT-PREFLIGHT.md) | Matching preflight step | Yes |
+| [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md) | F11 Update (2026-08-11) paragraph | Yes |
+| documentation-change-log.md | This part; index, E23 row and scope-tag note at head | Yes |
+
+## What Part 10 deliberately did not do
+
+- **Did not write a rule for any one plant, controller, device type, unit,
+  customer or signal set.** The task forbade it; every rule names a role or a
+  relationship, and the one worked example quotes the task's own state map.
+- **Did not open a `TEMPLATE-*` profile or a scope tag.** `GLOBAL` already
+  existed; E22 and E23 contribute relationships and statistics, never a
+  coordinate.
+- **Did not claim the validator sees rendering.** Declared rectangles and an
+  estimator, honestly labelled: §6 lists background-artwork text and
+  under-declared glyph extents as invisible to it, and a clean run is a
+  necessary condition only.
+- **Did not modify any per-type rule, coordinate or validator behaviour.** The
+  374 pre-existing tests of the other seven suites ran unmodified inside the 424.
+- **Did not resolve the user-prompt truncation by guessing.** The third rule
+  area's example arrived cut off mid-sentence; the implemented rule follows the
+  stated intent and this log records the cut.

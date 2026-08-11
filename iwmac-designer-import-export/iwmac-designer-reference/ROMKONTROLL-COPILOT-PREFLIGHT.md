@@ -150,7 +150,12 @@ State, in the answer, all of:
 4. Where each driver_id, unit_id and alias_text came from - name the file.
 5. That no identifier was invented.
 6. Which checks you ran, and their result. If you did not run a validator,
-   say that instead of saying "validated".
+   say that instead of saying "validated". The visual-correctness checks
+   count: no live object covers a label or header cell (each row keeps a
+   static label cell, a blank icon cell and a blank value cell), and every
+   state value fits its longest allowed display value from format_extra,
+   never merely the current reading (validate-visual-correctness.py,
+   VISUAL-CORRECTNESS-CONTRACT.md, GLOBAL).
 7. Anything you could not complete, and why.
 Then attach the file.
 ```

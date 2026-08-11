@@ -61,7 +61,7 @@ WHAT IT DOES NOT OWN, and where to look instead:
                                     (the 10-step procedure, the four
                                     request classes, failure catalogue)
   how to author an Oversikt ....... OVERSIKT-AUTHORING-GUIDE.md
-                                    (the 11-step procedure, the five
+                                    (the 11-step procedure, the eight
                                     input classes, failure catalogue)
   is my panel correct ............. VENTILATION-QA-CHECKLIST.md
                                     MASKIN-QA-CHECKLIST.md
@@ -72,6 +72,15 @@ WHAT IT DOES NOT OWN, and where to look instead:
                                     validate-maskin-panel.py,
                                     validate-oversikt-panel.py or
                                     validate-romkontroll-panel.py)
+  is the temperature bubble on
+  the center of its box ........... measure the equipment footprints -
+                                    build-oversikt-footprints.py emits
+                                    the sidecar template, then
+                                    validate-oversikt-panel.py
+                                    --footprints and
+                                    render-oversikt-panel.py
+                                    --footprints. A panel JSON alone
+                                    cannot answer this (7b, O-G08)
   a block for a Copilot prompt .... VENTILATION-COPILOT-PREFLIGHT.md
                                     MASKIN-COPILOT-PREFLIGHT.md
                                     OVERSIKT-COPILOT-PREFLIGHT.md
@@ -489,6 +498,27 @@ grey box.
   4. an equipment body straddling the run it conditions.
   Anything outside that list is a real overlap. See
   VENTILATION-GEOMETRY-CONTRACT.md for the measured exception table.
+- TEXT IS NEVER COVERED. None of the four classes puts a live object on
+  DESCRIPTIVE TEXT: an alarm bell, status symbol, value or navigation
+  element never overlaps a nonblank label, at any z-index, unless the
+  supplied production panel proves that exact overlap. Text, icons and
+  values each get their OWN rectangle - a table or list row reserves a
+  static label cell, a blank icon cell and a blank value cell. Never
+  append an icon at the end of a text string without a reserved cell,
+  and never treat the space right of a label as free because today's
+  text is short. Executable check: validate-visual-correctness.py
+  (VC-T*); the rule's owner is VISUAL-CORRECTNESS-CONTRACT.md (GLOBAL).
+- SIZE VALUES FOR EVERY ALLOWED STATE, NOT THE CURRENT ONE. When the
+  source provides allowed display values - format_extra enum maps, an
+  "Allowed values" workbook column, state definitions, translated
+  labels - parse ALL of them before choosing the value-object width.
+  "0 = Alarm / 1 = OK / 2 = Communication error" needs a box for
+  "Communication error" (19 chars, ~139 px at the 13 px font) even
+  while the current reading is "OK"; a 42 px numeric pill truncates
+  it. Numeric ranges ("-200.0 to 200.0") size for the widest bound
+  with sign and decimals, plus the unit when it shares the object.
+  Executable check: validate-visual-correctness.py --allowed-values
+  (VC-W*); owner VISUAL-CORRECTNESS-CONTRACT.md section 5.
 - Table-style: title number_v3_label_12px_bold at top-left; alarm bell
   top-right (~x 1240). A schematic panel has neither - never add a
   title bar or a corner bell to a Ventilasjon panel.
@@ -1186,7 +1216,51 @@ CLUSTERS ARE ATOMIC AND SPATIAL. Place every member or none, move a cluster
 with ONE vector applied to every member, and center or anchor each cluster
 on the case, cabinet or room it monitors in the background artwork. A
 cluster on empty floor, in a margin or in a grid is a defect even when its
-bindings are perfect.
+bindings are perfect. That is LEVEL 1, and it is necessary, not sufficient.
+
+LEVEL 2 - THE TEMPERATURE BUBBLE GOES IN THE CENTER OF THE BOX (contract
+7.1a/7.1b, rule O-G08). The value object itself - the
+number_v3_40px_no_conn_no_tag - must be centered on the EQUIPMENT FOOTPRINT:
+the rectangle of the physical refrigeration box, cabinet, display case or
+room drawn in the artwork. Seven terms, never interchangeable: equipment
+footprint (that rectangle), equipment center (its center point), value
+anchor (where the bubble's top-left goes), cluster geometry (the member
+offsets above), text-label anchor (the caption - NOT the box), shared
+footprint (a combined A/B case under one regulator, the union, and only
+where evidence shows it), and an unmeasurable target (report the gap).
+
+  value_left = round_half_up(x + (width  - w) / 2)
+  value_top  = round_half_up(y + (height - h) / 2)
+
+(w, h) is THIS panel's value-object size - never silently force 42 x 22.
+Measured on the image and placed on the canvas, state and apply
+scale_x = panel_width / image_width and scale_y = panel_height / image_height
+first. Never center on the equipment's text label, the regulator name, the
+cluster bounding box, an approximate or OCR coordinate, or empty floor, and
+never infer a box from a nearby caption. Alarm, cooling and defrost do NOT
+need the center - they hang off the value object. If the footprint cannot be
+established, report the evidence gap and emit no coordinate for that
+controller. A supplied production export still outranks this rule: report an
+off-center production position, do not "correct" it unless the user asks or
+higher-ranked evidence proves it wrong.
+
+A PANEL JSON CONTAINS NO EQUIPMENT-BOX BOUNDARIES, so no script can prove
+centering from the panel alone. Measure the footprints into a sidecar
+(build-oversikt-footprints.py emits the template; fill it in from the
+artwork) and check with validate-oversikt-panel.py --footprints
+FOOTPRINTS.json; render with --footprints to draw the measured boxes. Without
+that sidecar the honest report is "centering was not verified", not "0
+errors". Record per controller: unit_id, source, source_image_size,
+panel_size, footprint {left, top, width, height}, value_object_size,
+expected_value_position and an evidence_note.
+
+PATCH SCOPE. When the correction is "center the bubbles", the ONLY permitted
+object-level differences are posLeft and posTop on temperature/value objects,
+and NO field difference at all on any other object. Prove it:
+validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope
+value-position. Anything else - a resized bubble, a rewritten alias, a
+re-bound driver id, a nudged alarm, a changed zIndex, a reordered array -
+fails QA unless disclosed and justified separately.
 
 Z-INDEX (Oversikt scope; these are NOT the Maskin or ventilation bands):
 the value box at 110, all three circular symbols at 375, as strings.
@@ -1564,6 +1638,15 @@ EVERY PANEL
    exception for tables: ROMKONTROLL-GENERATION-CONTRACT.md section 8.
    Integer pixels, and no overlap outside the four intentional classes
    in section 5
+[] no live object covers descriptive text; every remaining overlap is
+   production-proven or disclosed as an evidence gap
+   (validate-visual-correctness.py, VC-T*)
+[] every state-carrying value object is sized for its LONGEST allowed
+   display value (format_extra / allowed-values source named), never
+   for the current reading (VC-W*)
+[] when a panel or production export was supplied, you stated the
+   visual analysis (VISUAL-CORRECTNESS-CONTRACT.md section 2,
+   A1..A12) before the JSON and cited it for geometry decisions
 [] tag_text on text objects, alias_text on linkable objects, UTF-8
    text (°C, æøå) - not plain-ASCII substitutes
 [] names are object_0..object_N, sequential, with no duplicates
@@ -1628,11 +1711,13 @@ VENTILASJON (7a) ONLY
 [] you ran VENTILATION-QA-CHECKLIST.md and reported stages A-D
 
 OVERSIKT (7b) ONLY
-[] you named the input class - PDF only, screenshot only, background
-   plus equipment list, production JSON, or production JSON plus a
-   secondary source - and the precedence rank you worked from
+[] you named the input class - PDF only, screenshot or PNG only, PNG
+   plus a parameter workbook, production JSON, production JSON plus a
+   secondary source, two panel JSONs, or panel JSON plus a verbal
+   placement correction - and the precedence rank you worked from
 [] a supplied production JSON was PRESERVED AND PATCHED, never rebuilt;
-   no PDF or screenshot reduced the panel's cluster count
+   no PDF or screenshot reduced the panel's cluster count; two supplied
+   JSONs were compared and ONE was picked, never merged
 [] the controller inventory and the coverage matrix were built BEFORE
    any object was written, from the highest-ranked source
 [] controllers grouped by unit_id, falling back to the driver_id
@@ -1641,14 +1726,28 @@ OVERSIKT (7b) ONLY
    and no cooling or defrost symbol added without a binding to prove it
 [] every cluster sits ON the case, cabinet or room it monitors; no
    cluster in a grid, a margin or empty floor; clusters moved whole
+[] LEVEL 2: every temperature/value object is centered on its EQUIPMENT
+   FOOTPRINT - not the label, not the cluster box, not empty floor -
+   using this panel's own value-object size and the stated scale
+   factors; alarm, cooling and defrost were left where they were
+[] the footprint evidence is reported: what was measured, from which
+   image at which resolution, scale_x/scale_y, which controllers are
+   UNMEASURED, and the before/after position of every value object that
+   moved. With no footprints you wrote "centering was not verified"
+[] on a centering patch the ONLY differences are posLeft/posTop on
+   value objects, proved with --patch-scope value-position
 [] background embedded and preserved (image_data, converted,
    org_image_name, image_name, dimensions); no panel.image_svg_trace
 [] bindings preserved through every layout edit - no blanked driver_id
 [] z-index 110 for the value box, 375 for the circular symbols
-[] production anomalies preserved and reported, not tidied
+[] production anomalies preserved and reported, not tidied - including
+   an off-center production position
 [] validate-oversikt-panel.py reports zero errors, AND you ran
    --compare SOURCE.json CANDIDATE.json whenever a source existed - a
-   clean --check alone cannot see a missing cluster
+   clean --check alone cannot see a missing cluster, and without
+   --footprints it proves nothing about centering
+[] you looked at the controller-level crops of the render, not only
+   the whole panel
 [] you ran OVERSIKT-QA-CHECKLIST.md and reported its stages
 
 EVERY PANEL, LAST

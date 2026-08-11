@@ -22,7 +22,7 @@ Eleven steps, in order. Steps 1–5 read; step 6 decides; steps 7–8 write; ste
 | 8 | Preserve links and background | (part of step 7, verified separately) |
 | 9 | Render a preview | an HTML preview with the real background |
 | 10 | Validate | validator output, exit status 0 |
-| 11 | Write the verification report | the eight-item report |
+| 11 | Write the verification report | the nine-item report |
 
 > **Hard stop, between steps 5 and 7.**
 > **No final panel may be emitted until the cluster inventory is complete.**
@@ -37,10 +37,16 @@ row of the routing table and say which one you picked.
 | Input | Class | Produce |
 |---|---|---|
 | A PDF or byggeplan drawing, nothing else | **PDF-only** | an explicitly unlinked draft |
-| A screenshot of an existing panel, nothing else | **screenshot-only** | an unlinked draft, geometry scaled from the image |
+| A screenshot or PNG of an existing panel, nothing else | **screenshot-only** | an unlinked draft, geometry scaled from the image, `scale_x`/`scale_y` stated |
 | A background image plus an equipment list | **background + list** | one cluster per listed position, anchored on the artwork |
+| A store PNG plus a parameter workbook, no panel JSON | **PNG + workbook** | a built panel: bindings from the workbook, each value object centred on the footprint measured on the PNG, plus the footprint sidecar |
 | A panel JSON export | **production JSON** | the entire supplied document, patched |
-| A panel JSON export **and** a PDF or screenshot | **production JSON + secondary** | the supplied document, patched only where the secondary source proves a difference |
+| A panel JSON export **and** a PDF, screenshot or PNG | **production JSON + secondary** | the supplied document, patched only where the secondary source proves a difference |
+| **Two** panel JSON exports | **two candidates** | a comparison first, then one of them named as the base — never a merge |
+| A panel JSON **and** a verbal placement correction | **JSON + verbal correction** | the whole document with only the named change, declared with `--patch-scope` |
+
+Contract §6 owns this table; the columns there also say what each class must
+**not** produce.
 
 The two questions that decide everything downstream:
 
@@ -135,16 +141,19 @@ Two rules from the contract apply while grouping:
 
 ## 5. Build the coverage matrix
 
-The table that gates the whole job. One row per controller, eight columns:
+The table that gates the whole job. One row per controller, ten columns:
 
-| controller | alarm | value | cooling | defrost | label | source coordinate | background target |
-|---|---|---|---|---|---|---|---|
-| `000:011` | ✓ | ✓ | ✓ | ✓ | — | (917, 113) | freezer island, top right |
-| `C50` | ✓ | ✓ | — | — | — | (722, 124) | wall cabinet, north aisle |
+| controller | alarm | value | cooling | defrost | label | source coordinate | background target | equipment footprint | value centre |
+|---|---|---|---|---|---|---|---|---|---|
+| `000:011` | ✓ | ✓ | ✓ | ✓ | — | (917, 113) | freezer island, top right | (880, 100) 120×90 | ✓ (917, 148) |
+| `C50` | ✓ | ✓ | — | — | — | (722, 124) | wall cabinet, north aisle | UNMEASURED | — |
 
 - **Derived from the source**, at the highest precedence rank available.
 - **Complete before any object is written.**
 - A blank cell is a fact about the controller, not a gap to fill.
+- **`UNMEASURED` in the footprint column is a stated gap, not a pass.** It says
+  the centring of that value object has not been verified. Leaving the column
+  blank, or omitting it, silently converts "not checked" into "fine".
 
 Report per-type counts underneath it — and label them:
 
@@ -224,18 +233,54 @@ the internal offsets survive intact.
 - Bindings only where the task supplied them. Otherwise blank, and the panel is
   a draft.
 
-### 7c. Placement
+### 7c. Placement — two levels, and the second is the one that gets missed
 
-> **Center or anchor each cluster on the case, cabinet or room it monitors in the
-> background artwork.**
+> **Level 1 — the cluster.** Place each cluster on the case, cabinet, cold room
+> or freezer room it monitors in the background artwork.
 >
 > A cluster on empty floor, in a margin, or in a grid of cards is a defect **even
 > if its bindings are perfect** — the position *is* the information.
+
+> **Level 2 — the value object.** Centre the `number_v3_40px_no_conn_no_tag`
+> object on the **equipment footprint**: the rectangle of the physical box,
+> cabinet, case or room drawn in the artwork.
+>
+> **The temperature bubble must be in the centre of the box.**
+
+**Level 1 does not imply level 2.** A cluster built around the equipment's text
+label satisfies level 1 and fails level 2 — that is the 2026-08-11 correction,
+and it is why the two are numbered separately.
+
+To place it:
+
+1. Find the **equipment footprint** on the background: the visible physical box.
+   Not its caption, not the aisle, not the cluster's own bounding box.
+2. Compute the top-left, rounding **half up** (Python's `round()` is banker's
+   rounding and lands a pixel left of centre on even widths):
+   `value_left = round_half_up(x + (width - w) / 2)`,
+   `value_top  = round_half_up(y + (height - h) / 2)`.
+3. `(w, h)` is **this panel's** value-object size — 42 × 22 on the two measured
+   stores, but read it from the panel rather than forcing it.
+4. If you measured on the image and the canvas is a different size, state
+   `scale_x = panel_width / image_width` and `scale_y = panel_height /
+   image_height` and apply them before centring.
+5. Place alarm, cooling and defrost **relative to the value object** (§7.2a of
+   the contract). They do not need to be on the centre.
+6. **No footprint, no coordinate.** If you cannot establish the box — no visible
+   outline, ambiguous which case a controller serves — say so and leave the
+   controller out. A named gap is a deliverable; a guess is not.
+
+A combined A/B case driven by one regulator is **one** footprint, the union of
+the two sections — but only where the evidence shows they share a controller.
+Adjacency is not evidence.
 
 The 90 px grid in `panel-conventions.json` and `AI-BRIEFING.txt` MODE B belongs
 to the **CLUSTER KIT** deliverable — a tray of parts a human then drags into
 place — and only there. **A kit must be labelled a kit, never delivered as a
 finished panel.** Contract §12, conflict OV-C2.
+
+Full rule, the seven terms it depends on, and how it is checked:
+[OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) §7.1–§7.1c.
 
 ## 8. Preserve links and the background
 
@@ -266,6 +311,19 @@ displaced cluster is instantly visible and invisible in a text diff:
 python render-oversikt-panel.py CANDIDATE.json --source SOURCE.json -o panel-preview.html
 ```
 
+With measured equipment footprints, draw them too — the amber box, its centre,
+and a dashed box where the value object would sit if it were centred on it:
+
+```bash
+python render-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json -o panel-preview.html
+```
+
+Where the dashed amber box and the blue value box coincide, the temperature
+bubble is on the centre of the equipment. Where they do not, the gap is the
+error, at the size it actually is. **Check the amber box against the artwork
+under it first** — if it is not around the visible case, the measurement is
+wrong, not the panel.
+
 The preview must embed **the actual background** and **all** objects. A preview
 without the artwork proves nothing: every rule in this file is about where an
 object sits relative to the store, and with no store there is nothing to sit on.
@@ -287,17 +345,48 @@ python validate-oversikt-panel.py PANEL.json --profile TEMPLATE-10113
 python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json
 ```
 
+For a patch, declare what it was allowed to change:
+
+```bash
+python validate-oversikt-panel.py --compare SOURCE.json PATCHED.json --patch-scope value-position
+```
+
+To check value centering at all, supply measured footprints:
+
+```bash
+python build-oversikt-footprints.py PANEL.json -o FOOTPRINTS.json
+```
+
+```bash
+python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
+```
+
+**The generator emits a template, not evidence.** Every `footprint` in it is
+`0×0` until you measure the boxes on the background image, and a `0×0` box has
+no centre — so an unfilled template fails with one `O-G09` per controller. That
+is the intended behaviour: an unmeasured sidecar must fail loudly rather than
+report that nothing is wrong. `--synthetic` back-derives the boxes from the
+panel's own value objects for testing the checker; it passes `O-G08` by
+construction, says so in an `O-G09` warning, and is never evidence of anything.
+
 **Whenever a production export was supplied, run `--compare`.** The bare check
 cannot see a missing cluster: a reduced panel is well-formed, and nothing inside
 a document says how many clusters the store has. Only the comparison — or the
 named profile, for a known template — can catch it.
+
+**Without `--footprints`, nothing about centering was checked.** A panel JSON
+carries no equipment-box boundaries, so the validator says so in one `O-G08`
+line rather than falling silent. Do not report a clean run as evidence that the
+temperature bubbles are on their boxes.
 
 Checked: envelope and counts, all 17 fields, unique and sequential names,
 catalogue-valid `obj_id`s, geometry on canvas, embedded background, no
 `image_svg_trace`, `linked` consistent with `driver_id`, z-bands, controller
 inventory, cluster cohesion, duplicate roles, lattice detection, overlaps — and
 in compare mode: dropped, added, missing, moved, resized, relinked, reordered
-and retyped objects plus background and canvas changes.
+and retyped objects plus background and canvas changes; with `--patch-scope`,
+the field-level patch diff; with `--footprints`, value centering and the
+usability of the measurement itself.
 
 Exit status is non-zero when any `error` finding is present. `O-G05` — a partial
 cluster — is `info` on purpose and never fails a run.
@@ -306,16 +395,20 @@ Stage by stage: [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md).
 
 ## 11. Write the verification report
 
-Eight items. A delivery missing any of them is incomplete.
+Nine items. A delivery missing any of them is incomplete.
 
 1. **The input class** from step 1, named exactly.
 2. **The source precedence rank** the geometry came from.
 3. **The coverage matrix**, source versus candidate.
 4. **Per-type counts, labelled as evidence and not as targets.**
 5. **Every cluster added, removed, moved or relinked, with its reason.**
-6. **The exact validator commands run, and their output.**
-7. **The render inspected, and what was checked in it.**
-8. **Every evidence gap, stated as a gap** — separated from what was verified.
+6. **The footprint evidence** behind any centering claim: where measured, at what
+   resolution, the scale applied, and which controllers are `UNMEASURED`. If none
+   was measured, say **centering was not verified**.
+7. **The exact validator commands run, and their output** — including the
+   declared `--patch-scope` for a patch.
+8. **The render inspected, and what was checked in it.**
+9. **Every evidence gap, stated as a gap** — separated from what was verified.
 
 > **A clean validator run is a necessary condition, never a sufficient one.** The
 > nine-cluster reconstruction that triggered this documentation passes a bare
@@ -341,3 +434,9 @@ asserts the validator catches it.
 | **Cluster torn apart** | Members left behind when the cluster moved. Reads as two positions. | `O-G03` |
 | **Object substituted** | A purpose-built symbol replaced by a generic value pill. | `O-C09` |
 | **Invented binding** | A driver id constructed rather than copied. Looks linked; reads nothing. | `O-P07` (on a known template only — otherwise only a human catches it) |
+| **Bubble off the box centre** | The cluster is on the right case; the temperature object sits a few tens of pixels off its centre because it was built around a label or a cluster anchor. Every binding correct. | `O-G08` — **only with `--footprints`**. Otherwise a render and a reviewer |
+| **Centred on the label** | The value object centred on the equipment's caption in the artwork, which is drawn offset from the equipment. | `O-G08` if the footprint is measured; otherwise nothing |
+| **Forced 42×22** | A supplied panel's value objects silently resized to the size the documentation quotes. | `O-C10`, and `O-C16` under a declared patch scope |
+| **Unscaled measurement** | Coordinates read off a 1868×1000 background and written straight onto a 1400×750 canvas. | `O-G10` if the resolution is recorded; otherwise nothing |
+| **Patch that patched more** | A centering correction that also nudged an alarm, rewrote an alias, or reordered the array. | `O-C16` with `--patch-scope value-position` |
+| **Guessed footprint** | A coordinate emitted for equipment whose box could not be measured — the gap filled in by inference. | Nothing. This is why "no footprint, no coordinate" is a rule and not a preference |

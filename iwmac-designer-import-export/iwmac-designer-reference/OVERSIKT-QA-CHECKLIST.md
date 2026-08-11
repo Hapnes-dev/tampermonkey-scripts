@@ -27,9 +27,31 @@ When the panel is (or claims to be) the plant-10113 store overview:
 python validate-oversikt-panel.py PANEL.json --profile TEMPLATE-10113
 ```
 
+When the change was a centering patch, declare the scope so that anything else
+that moved is reported:
+
+```bash
+python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope value-position
+```
+
+When equipment footprints have been measured — the only way any script can say
+anything about centering:
+
+```bash
+python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
+```
+
 Exit status 0 means no `error` findings. `info` and `warning` findings still
 need reading — `O-G05` (partial clusters) and `O-G02` (non-cluster objects) are
 information about the panel, not complaints about it.
+
+In the same pass, run the GLOBAL visual-correctness validator — text protection
+and allowed-values sizing, `VC-*` rule ids, same exit convention
+([VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md)):
+
+```bash
+python validate-visual-correctness.py PANEL.json --source SOURCE.json
+```
 
 ### What the validator cannot check
 
@@ -38,6 +60,8 @@ It reads structure and geometry. It does not know your store.
 | It cannot tell you | Only this can |
 |---|---|
 | Whether a cluster sits on **its own** case in the artwork | the render, stage C |
+| Whether a value object is centred on its equipment box — **without a sidecar** | measured footprints + `--footprints`, then the crops |
+| Whether the measured rectangle was the **right** rectangle | a human looking at the artwork, stage C |
 | Whether a missing cluster is missing — **without a source** | `--compare`, or `--profile` |
 | Whether a `driver_id` names a parameter the controller actually exposes | the plant's parameter dump |
 | Whether an `alias_text` describes what the object really reads | a human who knows the plant |
@@ -47,7 +71,12 @@ It reads structure and geometry. It does not know your store.
 > **A clean run is necessary, never sufficient.** The nine-cluster
 > reconstruction that triggered this checklist passes a bare `--check` with zero
 > findings above `info`: valid envelope, real background, catalogue-valid object
-> types, clean bindings, no overlaps — and more than half the store missing.
+> types, clean bindings, no overlaps — and more than half the store missing. The
+> same holds for placement: a panel whose every temperature bubble sits *beside*
+> its case rather than on it passes every structural rule in the file. **A panel
+> JSON contains no equipment-box boundaries**, so without the sidecar the
+> validator says so — `O-G09`, *info*, "centering was not checked" — and that
+> line belongs in the delivery rather than being replaced by "0 errors".
 
 ### The rule ids
 
@@ -58,7 +87,11 @@ It reads structure and geometry. It does not know your store.
 | `O-P*` | profile — this panel against a named template |
 | `O-C*` | compare — this candidate against its source |
 
-The full table with severities is contract §0.4.
+The 2026-08-11 centering rules extend the existing namespaces rather than
+opening a new one: `O-G08` (value centred on its footprint), `O-G09` (the
+sidecar itself — format, coverage, unfilled template), `O-G10` (the measurement
+scale, *info*) and `O-C16` (patch scope). No id was renumbered. The full table
+with severities is contract §0.4.
 
 ## Stage A — Structural
 
@@ -137,14 +170,51 @@ This is the stage the 2026-08-10 incident would have failed.
       another store, the fleet median, or the 21/21/15/15 of the committed
       fixture.
 
+### Is the bubble on the box? — the stage-C question
+
+Cluster-near-the-equipment is stage D. This is the finer one, and it is the
+question the 2026-08-11 correction was about: **is the temperature/value object
+itself on the visual centre of the physical box, cabinet, case or room drawn in
+the artwork?**
+
+- [ ] **Each measured footprint is the equipment, not the label.** The blue box,
+      the cabinet outline, the room — never the caption beside it, never the
+      cluster's own bounding box, never bare floor. This is the check no script
+      performs; `--footprints` only compares against whatever rectangle it was
+      handed. §7.1a
+- [ ] **The value object is centred on it** — `left = x + (width - w) / 2`,
+      `top = y + (height - h) / 2`, rounded half-up, using **this panel's**
+      value-object size. `O-G08`
+- [ ] **The measurement was scaled onto the canvas.** Measured at the image's
+      natural size, `scale_x = panel_width / image_width` and
+      `scale_y = panel_height / image_height` are stated and applied. A scale of
+      exactly 1 is still stated. `O-G10`
+- [ ] **A combined A/B case under one regulator is one footprint** — the union —
+      and only where evidence shows the two sections are one position. Adjacency
+      is not evidence.
+- [ ] **Alarm, cooling and defrost were not forced to the centre.** They hang off
+      the value object; only the value object owns the box centre.
+- [ ] **Unmeasured controllers are named as unmeasured**, not silently left out
+      of the report. `O-G09`
+- [ ] **A production position that is off-centre was reported, not corrected** —
+      unless the task asked for the correction or higher-ranked evidence proved
+      it wrong. Mark the record `production_proven` and say so.
+- [ ] **The sidecar is not a synthetic one.** `build-oversikt-footprints.py
+      --synthetic` back-derives boxes from the objects themselves: it is test
+      instrumentation, it proves the plumbing and nothing about the artwork. The
+      validator warns (`O-G09`) and ends the run saying centering was not proved;
+      the renderer shouts about it in the preview. A delivery whose only centering
+      evidence is a synthetic sidecar has no centering evidence.
+
 ### The coverage matrix
 
 Reproduce it in the delivery, source versus candidate:
 
-| controller | alarm | value | cooling | defrost | label | source coordinate | background target |
-|---|---|---|---|---|---|---|---|
+| controller | alarm | value | cooling | defrost | label | source coordinate | equipment footprint | value centre |
+|---|---|---|---|---|---|---|---|---|
 
 A blank cell is a fact about the controller. It is not a gap to fill.
+`UNMEASURED` in the footprint column is a **stated gap, not a pass**.
 
 ## Stage D — Placement and layout shape
 
@@ -155,11 +225,26 @@ Every `O-C*` finding is produced by identity matching for this reason.
 
 - [ ] **Every cluster is anchored on the case, cabinet or room it monitors.** A
       cluster on empty floor or in a margin is a defect even with perfect
-      bindings.
+      bindings. This is **level 1** — necessary, and not sufficient: the value
+      object's own centring is stage C.
 - [ ] **Nothing moved that was not asked to move.** A displacement over 20 px is
       an error; below it, a nudge. `O-C06`
+- [ ] **The patch scope held.** On a centering correction the only permitted
+      object-level differences are `posLeft`/`posTop` on temperature/value
+      objects, and **no field difference at all** on any other object. `O-C16`
+
+```bash
+python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope value-position
+```
+
+- [ ] **Anything outside that scope is disclosed and justified separately** — a
+      resized bubble, a rewritten alias, a re-bound driver id, a nudged alarm, a
+      changed `zIndex`, a reordered array. It does not travel under a geometry
+      correction.
 - [ ] **A cluster that did move, moved whole** — one vector, every member,
-      internal offsets intact.
+      internal offsets intact. A value object moved alone to reach its box centre
+      is the deliberate exception, and it still has to stay inside the cluster
+      span (`O-G03`); if it does not, the whole cluster needed moving.
 - [ ] **The clusters are not on a regular lattice.** A grid of cards is a
       **CLUSTER KIT** hand-off, and a kit must be labelled a kit, never delivered
       as a finished panel. `O-G06`
@@ -208,6 +293,10 @@ python render-oversikt-panel.py PANEL.json -o panel-preview.html
 python render-oversikt-panel.py CANDIDATE.json --source SOURCE.json -o panel-preview.html
 ```
 
+```bash
+python render-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json -o panel-preview.html
+```
+
 - [ ] **The preview embeds the actual background** and draws **all** objects. A
       preview without the store plan proves nothing: every placement rule is
       about where an object sits relative to the store.
@@ -215,6 +304,15 @@ python render-oversikt-panel.py CANDIDATE.json --source SOURCE.json -o panel-pre
       candidate make a displaced cluster obvious and a missing one unmissable.
 - [ ] **Every cluster reads as one thing** on its case — not two, not a floating
       pair.
+- [ ] **With footprints, the amber box was judged against the artwork first.**
+      Solid amber is the measured footprint, the crosshair its centre, dashed
+      amber where the value object should sit. **If the amber box is not around
+      the visible case, the sidecar is wrong, not the panel** — fix the
+      measurement before touching a coordinate.
+- [ ] **The controller-level crops were opened, one by one.** Whether each bubble
+      is on the centre of its box is a visual question and this is where it gets
+      answered; the whole-panel view is too small to see a 3 px drift and too
+      small to see a bubble sitting on the label instead of the case.
 - [ ] **The preview was not committed.** `*-preview.html` and `_preview-*.html`
       are git-ignored on purpose.
 
@@ -242,16 +340,22 @@ python render-oversikt-panel.py CANDIDATE.json --source SOURCE.json -o panel-pre
 
 ## The verification report
 
-Eight items — contract §11. A delivery missing any of them is incomplete.
+Nine items — contract §11. A delivery missing any of them is incomplete.
 
 1. The input class, named exactly.
 2. The source precedence rank the geometry came from.
 3. The coverage matrix, source versus candidate.
 4. Per-type counts, labelled as evidence and not as targets.
 5. Every cluster added, removed, moved or relinked, with its reason.
-6. The exact validator commands run, and their output.
-7. The render inspected, and what was checked in it.
-8. Every evidence gap, stated as a gap and kept separate from what was verified.
+6. The footprint evidence — who measured what, from which image at which
+   resolution, with the scale factors, which controllers are unmeasured, and the
+   before/after position of every value object that moved. **With no footprints,
+   the words "centering was not verified".**
+7. The exact validator commands run, and their output — including the declared
+   `--patch-scope` on a patch.
+8. The render inspected, and what was checked in it — the controller-level crops
+   for a centering job, not only the whole panel.
+9. Every evidence gap, stated as a gap and kept separate from what was verified.
 
 ## Test commands
 
@@ -281,9 +385,18 @@ plan):
 python build-oversikt-negatives.py --out survey-tmp/oversikt-negatives
 ```
 
-## Regression prompt
+Emit a footprint sidecar template to fill in from the artwork — **a template
+that has not been filled in does not validate**, it reports itself as unfilled:
 
-Run this against any agent given the kit:
+```bash
+python build-oversikt-footprints.py PANEL.json -o FOOTPRINTS.json
+```
+
+## Regression prompts
+
+Run these against any agent given the kit.
+
+### 1 — Preserve and patch
 
 > *"Here is our store overview panel export and the store layout PDF. Move the
 > two clusters in the back room onto their correct cases."*
@@ -304,3 +417,32 @@ It passes only if the answer:
 It fails if the answer rebuilds the panel from the PDF, returns fewer clusters
 than it received, pads a two-member cluster to four, blanks a binding while
 "tidying", or delivers a grid.
+
+### 2 — The centering correction
+
+> *"Attached is the panel JSON. The temperature bubble must be in the center of
+> every box."*
+
+It passes only if the answer:
+
+- treats it as a **geometry patch of the supplied document**, not a rebuild, and
+  changes `posLeft`/`posTop` on temperature/value objects and **nothing else** —
+  demonstrated with `--patch-scope value-position`, not asserted;
+- distinguishes the **equipment footprint** from the label, the cluster bounding
+  box and the approximate anchor, and says which it measured;
+- states the source of each footprint, its image resolution and the
+  `scale_x`/`scale_y` it applied — or reports the evidence gap and emits **no
+  coordinate** for the controllers it could not measure;
+- uses the panel's own value-object size in the formula rather than assuming
+  42 × 22;
+- leaves alarm, cooling and defrost where they were;
+- treats a combined A/B case as one footprint only where evidence shows it;
+- does not "correct" a production position purely for being off-centre;
+- verifies by re-parsing, by a source-to-candidate field diff, and by looking at
+  controller-level crops.
+
+It fails if the answer centres on the text label, silently forces 42 × 22,
+measures on the image without scaling, moves the whole cluster when only the
+value object was asked to move, invents a footprint for a controller it could
+not see, or reports "0 errors" as proof of centering when no footprints were
+supplied.

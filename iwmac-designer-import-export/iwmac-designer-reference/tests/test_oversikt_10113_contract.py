@@ -42,6 +42,7 @@ validator = _load("validate_oversikt_panel", "validate-oversikt-panel.py")
 negatives = _load("build_oversikt_negatives", "build-oversikt-negatives.py")
 builder = _load("build_oversikt_rules", "build-oversikt-rules.py")
 renderer = _load("render_oversikt_panel", "render-oversikt-panel.py")
+footprints = _load("build_oversikt_footprints", "build-oversikt-footprints.py")
 
 RULES = validator.load_rules()
 PALETTE = validator.load_palette()
@@ -184,10 +185,12 @@ class RulesGeneratorTest(unittest.TestCase):
             [(e["role"], e["obj_id"]) for e in OVERSIKT["cluster"]["roles"]])
 
     def test_recorded_conflicts_are_scoped_and_not_averaged(self):
-        """OV-C1 and OV-C3 record fleet figures that disagree with this panel.
-        Both survive with a scope; neither is merged into a mean."""
+        """OV-C1 and OV-C3 record fleet figures that disagree with this panel;
+        OV-C4 records two different answers to what the value object is
+        positioned against. All survive with a scope; none is merged into a
+        mean."""
         conflicts = {c["id"]: c for c in OVERSIKT["conflicts"]}
-        self.assertEqual({"OV-C1", "OV-C2", "OV-C3"}, set(conflicts))
+        self.assertEqual({"OV-C1", "OV-C2", "OV-C3", "OV-C4"}, set(conflicts))
         for conflict in conflicts.values():
             self.assertTrue(conflict["claim_a"]["scope"])
             self.assertTrue(conflict["claim_b"]["scope"])
@@ -455,6 +458,328 @@ class NegativeGeneratorTest(unittest.TestCase):
         self.assertEqual(before, FIXTURE.read_bytes())
 
 
+class ValueCenteringTest(unittest.TestCase):
+    """O-G08/O-G09/O-G10: the sidecar contract.
+
+    Two halves, and the second is the one that keeps the validator honest. A
+    panel JSON carries no equipment-box boundaries, so without --footprints the
+    validator must say it proved nothing rather than fall silent - silence in a
+    tool that reports 0 errors reads as a pass, and "the temperature bubbles are
+    centred" is precisely the claim a structural run cannot make.
+
+    The synthetic sidecar these tests run against was derived FROM the fixture's
+    value objects, so it proves the arithmetic and nothing about the store. That
+    is all a unit test can prove here; the real answer is a measurement, and the
+    real check is a pair of eyes on a controller-level crop.
+    """
+
+    def synthetic(self, **kwargs):
+        return footprints.build(source(), synthetic=True, **kwargs)
+
+    def run_with(self, sidecar, document=None, tolerance=None):
+        return validator.validate(
+            document or source(), rules=RULES, palette=PALETTE, footprints=sidecar,
+            **({"tolerance": tolerance} if tolerance is not None else {}))
+
+    def test_without_the_flag_the_validator_says_it_proved_nothing(self):
+        findings = run(source())
+        notes = [f for f in findings if f.rule == "O-G08"]
+        self.assertEqual(1, len(notes))
+        self.assertEqual("info", notes[0].severity)
+        self.assertIn("proves NOTHING", notes[0].message)
+
+    def test_a_centred_panel_raises_no_centering_error(self):
+        findings = self.run_with(self.synthetic())
+        self.assertEqual([], [repr(f) for f in errors(findings)])
+        summary = [f for f in findings if f.rule == "O-G08"]
+        self.assertEqual(1, len(summary))
+        self.assertIn("21 of 21", summary[0].message)
+
+    def test_a_nudge_warns_and_a_shove_errors(self):
+        """The middle verdict is the one that matters. Two pixels is the slack
+        of a hand-dragged object; forty is the bubble on a different part of
+        the equipment, which is the 2026-08-11 correction."""
+        for offset, severity in ((3, "warning"), (40, "error")):
+            with self.subTest(offset=offset):
+                document = source()
+                value = self.first_value(document)
+                value["posLeft"] = validator.as_int(value["posLeft"]) + offset
+                # widen the footprint so the centre stays inside it: this test
+                # is about drift, not about landing off the box entirely
+                sidecar = self.synthetic(margin=200)
+                findings = self.run_with(sidecar, document)
+                hit = [f for f in findings if f.rule == "O-G08" and "off-centre" in f.message]
+                self.assertEqual(1, len(hit))
+                self.assertEqual(severity, hit[0].severity)
+
+    def test_a_value_box_off_the_equipment_is_always_an_error(self):
+        """Not a big drift - a different kind of failure. The bubble is on the
+        label, the aisle or the floor, and no tolerance makes that acceptable."""
+        document = source()
+        value = self.first_value(document)
+        value["posLeft"] = validator.as_int(value["posLeft"]) + 400
+        findings = self.run_with(self.synthetic(), document, tolerance=1000)
+        outside = [f for f in errors(findings) if "OUTSIDE" in f.message]
+        self.assertEqual(1, len(outside))
+        self.assertIn("not on the box", outside[0].message)
+
+    def test_production_proven_records_never_demand_a_correction(self):
+        """A supplied production export is rank 1 and outranks a measurement.
+        A validator that told an author to 'correct' a real panel into
+        geometric tidiness would teach the failure this repository documents."""
+        document = source()
+        value = self.first_value(document)
+        value["posLeft"] = validator.as_int(value["posLeft"]) + 400
+        findings = self.run_with(self.synthetic(production_proven=True), document)
+        # O-G03 still fires - a cluster torn 400px apart is a separate defect,
+        # and production_proven speaks only for the centering verdict.
+        self.assertEqual([], [repr(f) for f in errors(findings) if f.rule == "O-G08"])
+        recorded = [f for f in findings if "RECORDED, not corrected" in f.message]
+        self.assertEqual(1, len(recorded))
+        self.assertEqual("info", recorded[0].severity)
+
+    def test_unmeasured_controllers_are_a_gap_not_a_pass(self):
+        sidecar = footprints.build(source(), synthetic=True, only=["000:011"])
+        findings = self.run_with(sidecar)
+        gaps = [f for f in findings if f.rule == "O-G09" and "evidence gap" in f.message]
+        self.assertEqual(1, len(gaps))
+        self.assertIn("20 controller(s) have no measured footprint", gaps[0].message)
+        self.assertNotIn("O-G08", fired(errors(findings)))
+
+    def test_an_unfilled_template_does_not_validate(self):
+        """The generator emits 0x0 footprints on purpose. An unmeasured
+        template must fail loudly, not report that nothing is wrong."""
+        findings = self.run_with(footprints.build(source()))
+        zero = [f for f in errors(findings) if "has no centre" in f.message]
+        self.assertEqual(21, len(zero))
+
+    def test_a_synthetic_sidecar_says_so_rather_than_passing_quietly(self):
+        """It is back-derived from the panel's own value objects, so O-G08
+        passes by construction. A run that reported that as a clean centering
+        check would launder instrumentation into evidence - and the file the
+        generator writes is the easiest sidecar in the repository to produce."""
+        findings = self.run_with(self.synthetic())
+        warned = [f for f in findings if f.rule == "O-G09" and "SYNTHETIC" in f.message]
+        self.assertEqual(1, len(warned))
+        self.assertEqual("warning", warned[0].severity)
+        self.assertIn("proves nothing about the artwork", warned[0].message)
+        self.assertTrue(validator.is_synthetic(self.synthetic()))
+
+    def test_a_measured_sidecar_is_not_accused_of_being_synthetic(self):
+        sidecar = self.synthetic()
+        sidecar["synthetic"] = False
+        sidecar["source"] = "background-image"
+        for record in sidecar["records"]:
+            record["source"] = "background-image"
+        findings = self.run_with(sidecar)
+        self.assertEqual([], [f.message for f in findings
+                              if f.rule == "O-G09" and "SYNTHETIC" in f.message])
+        self.assertFalse(validator.is_synthetic(sidecar))
+
+    def test_a_measurement_of_another_panel_is_rejected(self):
+        for mutate, rule, phrase in (
+                (lambda d: d["records"][0].__setitem__("unit_id", "999:999"),
+                 "O-G09", "no such controller"),
+                (lambda d: d["records"].append(dict(d["records"][0])),
+                 "O-G09", "measured twice"),
+                (lambda d: d.__setitem__("panel_size", [800, 600]),
+                 "O-G10", "different panel"),
+                (lambda d: d.__setitem__("source_image_size", None),
+                 "O-G10", "not evidence"),
+                (lambda d: d.__setitem__("format", "something-else"),
+                 "O-G09", "expected 'iwmac-oversikt-footprints'"),
+                (lambda d: d.__setitem__("records", []),
+                 "O-G09", "carries no records")):
+            with self.subTest(phrase=phrase):
+                sidecar = self.synthetic()
+                mutate(sidecar)
+                findings = self.run_with(sidecar)
+                hit = [f for f in errors(findings)
+                       if f.rule == rule and phrase in f.message]
+                self.assertTrue(hit, f"nothing reported {phrase!r}")
+
+    def test_a_self_contradicting_record_is_rejected_before_it_is_used(self):
+        """Both numbers are in the file and they disagree. Picking either one
+        would be a confident wrong answer, which is what this namespace exists
+        to prevent."""
+        sidecar = self.synthetic()
+        sidecar["records"][0]["expected_value_position"] = {"left": 1, "top": 1}
+        findings = self.run_with(sidecar)
+        hit = [f for f in errors(findings) if "contradicts itself" in f.message]
+        self.assertEqual(1, len(hit))
+
+    def test_a_footprint_measured_at_another_resolution_is_scaled_not_refused(self):
+        """The background is often measured at its natural size and shown
+        scaled. Doubling the resolution and the footprint together must land on
+        the same canvas coordinate, and the scale must be stated once."""
+        sidecar = self.synthetic()
+        sidecar["source_image_size"] = [2800, 1500]
+        for record in sidecar["records"]:
+            record["footprint"] = {k: v * 2 for k, v in record["footprint"].items()}
+            record.pop("expected_value_position", None)
+        findings = self.run_with(sidecar)
+        self.assertEqual([], [repr(f) for f in errors(findings)])
+        scale = [f for f in findings if f.rule == "O-G10"]
+        self.assertEqual(1, len(scale), "the scale note must be stated once, not per record")
+        self.assertIn("scale_x=0.5", scale[0].message)
+
+    def test_half_up_rounding_not_bankers(self):
+        """round(2.5) is 2 in Python. A centering formula rounded that way
+        lands a pixel left of centre on every other even-width footprint."""
+        self.assertEqual([1, 2, 3, -3], [validator.half_up(v)
+                                         for v in (0.5, 1.5, 2.5, -2.5)])
+        self.assertEqual(validator.half_up(2.5), footprints.half_up(2.5))
+        self.assertEqual(validator.half_up(2.5), renderer.half_up(2.5))
+
+    def test_an_odd_footprint_centres_the_same_way_everywhere(self):
+        """The three implementations must agree to the pixel, or the preview
+        would show a gap where the validator reports a pass."""
+        sidecar = footprints.build(source(), synthetic=True, margin=15, only=["000:011"])
+        record = sidecar["records"][0]
+        record["footprint"]["width"] += 1
+        record["footprint"]["height"] += 1
+        record.pop("expected_value_position")
+        roles = renderer.load_roles()
+        clusters = renderer.clusters_of(renderer.objects_of(source()), roles)
+        drawn = renderer.footprint_geometry(sidecar, clusters, roles, 1400, 750)
+        box = record["footprint"]
+        expected = (validator.half_up(box["left"] + (box["width"] - 42) / 2),
+                    validator.half_up(box["top"] + (box["height"] - 22) / 2))
+        self.assertEqual(expected, drawn["000:011"]["expected"])
+
+    @staticmethod
+    def first_value(document):
+        for obj in objects_of(document):
+            if obj["obj_id"] == "number_v3_40px_no_conn_no_tag":
+                return obj
+        raise AssertionError("the fixture has no value object")
+
+
+class FootprintGeneratorTest(unittest.TestCase):
+    """The sidecar generator emits only what the panel proves, and labels the
+    one thing it makes up."""
+
+    def test_template_records_every_controller_with_a_value_object(self):
+        document = footprints.build(source())
+        self.assertEqual(21, len(document["records"]))
+        self.assertEqual("iwmac-oversikt-footprints", document["format"])
+        self.assertEqual([1400, 750], document["panel_size"])
+        for record in document["records"]:
+            self.assertEqual({"left": 0, "top": 0, "width": 0, "height": 0},
+                             record["footprint"])
+            self.assertEqual([42, 22], record["value_object_size"])
+
+    def test_the_background_resolution_is_read_from_the_png_not_assumed(self):
+        """The one thing about the artwork a panel genuinely proves. Assuming
+        the canvas size instead would silently claim a 1:1 scale that may not
+        hold."""
+        panel = validator.envelope_of(source())["panel"]
+        self.assertEqual([1400, 750], footprints.png_size(panel["image_data"]))
+        self.assertIsNone(footprints.png_size(None))
+        self.assertIsNone(footprints.png_size("data:image/png;base64,notpng"))
+
+    def test_a_panel_with_no_embedded_png_leaves_the_resolution_unstated(self):
+        document = footprints.build(negatives.missing_background())
+        self.assertIsNone(document["source_image_size"])
+        self.assertIn("could NOT be read", document["_note"])
+
+    def test_synthetic_output_is_labelled_as_instrumentation_everywhere(self):
+        document = footprints.build(source(), synthetic=True)
+        self.assertTrue(document["synthetic"])
+        self.assertEqual("synthetic-back-derived", document["source"])
+        self.assertIn("NOT A MEASUREMENT", document["_note"])
+        for record in document["records"]:
+            self.assertIn("SYNTHETIC", record["evidence_note"])
+
+    def test_synthetic_geometry_round_trips_for_any_margin(self):
+        for margin in (0, 1, 7, 24, 133):
+            with self.subTest(margin=margin):
+                document = footprints.build(source(), synthetic=True, margin=margin)
+                findings = validator.validate(source(), rules=RULES, palette=PALETTE,
+                                              footprints=document)
+                self.assertEqual([], [repr(f) for f in errors(findings)])
+
+    def test_an_unknown_controller_is_refused_rather_than_silently_dropped(self):
+        with self.assertRaises(SystemExit):
+            footprints.build(source(), only=["999:999"])
+
+
+class PatchScopeTest(unittest.TestCase):
+    """O-C16: a centering patch may move value objects and change nothing else.
+
+    The rule exists because 'I only fixed the placement' is unfalsifiable by
+    eye across 128 objects. Every other difference - a resized bubble, a
+    rewritten alias, a nudged alarm - has to be disclosed and justified
+    separately, not carried in under a geometry correction.
+    """
+
+    def centering_patch(self, dx=6, dy=-4):
+        candidate = source()
+        for obj in objects_of(candidate):
+            if obj["obj_id"] == "number_v3_40px_no_conn_no_tag":
+                obj["posLeft"] = validator.as_int(obj["posLeft"]) + dx
+                obj["posTop"] = validator.as_int(obj["posTop"]) + dy
+        return candidate
+
+    def run_scope(self, candidate, scope="value-position"):
+        return validator.validate_pair(source(), candidate, rules=RULES,
+                                       palette=PALETTE, patch_scope=scope)
+
+    def test_a_pure_centering_patch_holds_the_scope(self):
+        findings = self.run_scope(self.centering_patch())
+        self.assertEqual([], [f for f in errors(findings) if f.rule == "O-C16"])
+        held = [f for f in findings if f.rule == "O-C16"]
+        self.assertEqual(1, len(held))
+        self.assertIn("held", held[0].message)
+
+    def test_moving_any_other_role_exceeds_the_scope(self):
+        candidate = self.centering_patch()
+        for obj in objects_of(candidate):
+            if obj["obj_id"] == "V3_R_34px_circular_alarm_nrm":
+                obj["posLeft"] = validator.as_int(obj["posLeft"]) + 9
+                break
+        breaches = [f for f in errors(self.run_scope(candidate)) if f.rule == "O-C16"]
+        self.assertTrue(any("alarm).posLeft" in f.message for f in breaches))
+
+    def test_resizing_the_value_object_exceeds_the_scope(self):
+        """The formula uses the object's proven size. Forcing 42x22 onto a
+        panel that uses another size is the silent change the scope catches."""
+        candidate = self.centering_patch()
+        for obj in objects_of(candidate):
+            if obj["obj_id"] == "number_v3_40px_no_conn_no_tag":
+                obj["posWidth"] = 60
+                break
+        breaches = [f for f in errors(self.run_scope(candidate)) if f.rule == "O-C16"]
+        self.assertTrue(any("posWidth" in f.message for f in breaches))
+
+    def test_a_rewritten_binding_is_reported_by_scope_as_well_as_by_coverage(self):
+        candidate = self.centering_patch()
+        objects_of(candidate)[0]["alias_text"] = "RENAMED BY THE PATCH"
+        breaches = [f for f in errors(self.run_scope(candidate)) if f.rule == "O-C16"]
+        self.assertTrue(any("alias_text" in f.message for f in breaches))
+
+    def test_scope_none_forbids_every_difference(self):
+        breaches = [f for f in errors(self.run_scope(self.centering_patch(), "none"))
+                    if f.rule == "O-C16"]
+        self.assertTrue(breaches)
+
+    def test_scope_position_allows_a_whole_cluster_to_move(self):
+        """A cluster on the wrong case is moved as a unit, and that is a
+        different patch from a centering correction. The looser scope exists so
+        it can be declared, not so a centering patch can hide in it."""
+        candidate = negatives.cluster_out_of_room()
+        loose = [f for f in errors(self.run_scope(candidate, "position"))
+                 if f.rule == "O-C16"]
+        strict = [f for f in errors(self.run_scope(candidate, "value-position"))
+                  if f.rule == "O-C16"]
+        self.assertEqual([], loose)
+        self.assertTrue(strict)
+
+    def test_the_scope_check_is_silent_when_no_scope_is_declared(self):
+        findings = run_pair(source(), self.centering_patch())
+        self.assertNotIn("O-C16", fired(findings))
+
+
 class RendererTest(unittest.TestCase):
     """The preview is the only check that can see placement, so it has to
     actually draw the background and every object."""
@@ -474,6 +799,62 @@ class RendererTest(unittest.TestCase):
     def test_preview_says_so_when_the_background_is_missing(self):
         page = renderer.render(negatives.missing_background(), "candidate")
         self.assertIn("NO BACKGROUND", page)
+
+    def test_preview_draws_no_footprint_furniture_without_the_sidecar(self):
+        page = renderer.render(source(), "fixture")
+        for marker in ('class="fp"', 'class="fpe"', 'class="fpx"', 'id="fp"'):
+            self.assertNotIn(marker, page)
+
+    def test_preview_draws_the_measured_box_its_centre_and_the_centred_value(self):
+        sidecar = footprints.build(source(), synthetic=True)
+        page = renderer.render(source(), "fixture", None, sidecar)
+        for marker in ('class="fp"', 'class="fpe"', 'class="fpx"'):
+            self.assertEqual(21 * 22, page.count(marker), marker)
+        self.assertIn("MEASUREMENT SOMEBODY MADE", page)
+
+    def test_preview_shouts_when_the_sidecar_is_synthetic(self):
+        """The overlay is persuasive. A picture built from the placement it
+        appears to verify has to say so on its face."""
+        sidecar = footprints.build(source(), synthetic=True)
+        self.assertIn("this sidecar is SYNTHETIC",
+                      renderer.render(source(), "fixture", None, sidecar))
+
+    def test_preview_names_the_unmeasured_controllers(self):
+        sidecar = footprints.build(source(), synthetic=True, only=["000:011"])
+        page = renderer.render(source(), "fixture", None, sidecar)
+        self.assertIn("1 of 21 controller(s) measured", page)
+        self.assertIn("unmeasured, and therefore unproven, not passed", page)
+
+    def test_preview_crop_widens_to_show_a_footprint_the_value_box_missed(self):
+        """A bubble dropped on the label beside its case is exactly the defect
+        worth seeing, and a crop cut to the cluster alone would show the bubble
+        and not the box."""
+        sidecar = footprints.build(source(), synthetic=True, only=["000:011"])
+        sidecar["records"][0]["footprint"] = {"left": 500, "top": 400,
+                                              "width": 120, "height": 90}
+        roles = renderer.load_roles()
+        clusters = renderer.clusters_of(renderer.objects_of(source()), roles)
+        placed = renderer.footprint_geometry(sidecar, clusters, roles, 1400, 750)
+        region = next(r for r in renderer.crop_regions(clusters, 1400, 750, placed)
+                      if r["name"] == "000:011")
+        self.assertLessEqual(region["left"], 500)
+        self.assertGreaterEqual(region["left"] + region["width"], 620)
+
+    def test_preview_ignores_an_unusable_record_rather_than_drawing_it_roughly(self):
+        """An amber box in the wrong place is worse than no amber box."""
+        sidecar = footprints.build(source(), synthetic=True, only=["000:011"])
+        roles = renderer.load_roles()
+        clusters = renderer.clusters_of(renderer.objects_of(source()), roles)
+        for mutate in (lambda d: d["records"][0].__setitem__("unit_id", "999:999"),
+                       lambda d: d["records"][0].__setitem__(
+                           "footprint", {"left": 0, "top": 0, "width": 0, "height": 0}),
+                       lambda d: d.__setitem__("source_image_size", None),
+                       lambda d: d["records"].__setitem__(0, "not an object")):
+            with self.subTest(mutate=mutate):
+                broken = copy.deepcopy(sidecar)
+                mutate(broken)
+                self.assertEqual({}, renderer.footprint_geometry(
+                    broken, clusters, roles, 1400, 750))
 
 
 if __name__ == "__main__":

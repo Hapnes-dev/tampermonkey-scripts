@@ -3,12 +3,16 @@
 Audit of the documentation set that an AI reads before generating a
 `360.NNN Ventilasjon` panel. Date: 2026-08-09.
 
-> **This file now carries two audits.** Everything down to "Files changed by
+> **This file now carries three audits.** Everything down to "Files changed by
 > this audit" is the ventilation audit of 2026-08-09, findings **F1–F21**,
-> unchanged. The [addendum](#addendum--2026-08-10-the-oversikt-store-overview-incident)
-> at the end audits the same document set against the **Oversikt** (store
-> overview) panel type after a real failure, findings **F22–F28**, using the same
-> severity scale.
+> unchanged. The [2026-08-10 addendum](#addendum--2026-08-10-the-oversikt-store-overview-incident)
+> audits the same document set against the **Oversikt** (store overview) panel
+> type after a real failure, findings **F22–F28**. The
+> [2026-08-11 addendum](#addendum--2026-08-11-the-oversikt-centering-correction)
+> audits the Oversikt set **against itself** after a placement correction on a
+> delivered panel, findings **F29–F35** — the first of the three whose subject is
+> a rule that was present and followed rather than missing. All three use the
+> same severity scale.
 
 **Objective.** Make the set reliable enough that another AI produces a
 production-quality panel without repeated visual corrections.
@@ -330,6 +334,20 @@ intentional overlaps per panel type.
 
 **Action.** [VENTILATION-QA-CHECKLIST.md](VENTILATION-QA-CHECKLIST.md) defines the
 detection method and the exception list.
+
+**Update (2026-08-11).** The gap this finding names now has a `GLOBAL` owner:
+[VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md) §3 states the
+role-scoped rule (a live object never covers descriptive text; live-over-artwork
+classes stay deliberate) and
+[validate-visual-correctness.py](validate-visual-correctness.py) makes it
+executable — rectangle intersection on declared geometry, container children
+resolved to panel-absolute coordinates, with the exception list derived from the
+supplied source panel itself (`VC-T03`: same object pair, same relative
+arrangement, ±2 px) rather than hand-maintained. Two parts of F11 remain open,
+and the contract records both in its cannot-see section: overlap is still judged
+on **declared** rectangles, so a `posHeight` 1 label whose rendered glyphs are
+~11 px tall still evades detection, and text living inside background artwork is
+invisible to any JSON-level check.
 
 ### F12. Sidebar spacing has no measured floor
 
@@ -865,3 +883,340 @@ standalone; §15 wins on any difference.
 
 **A stated gap is a deliverable; a guess is not.** Nothing above was inferred
 from a second source and presented as measured.
+
+---
+
+# Addendum — 2026-08-11: the Oversikt centering correction
+
+**Scope.** Everything above is unchanged: the ventilation audit of 2026-08-09
+(F1–F21) and the Oversikt incident addendum of 2026-08-10 (F22–F28). This
+addendum audits the **Oversikt documentation set against itself** after a real
+placement correction on a delivered panel, using the same severity scale and
+continuing the finding numbering at **F29**. Nothing above was re-measured, no
+earlier finding was reopened, and no ventilation, Maskin, list-panel or
+room-control rule was touched.
+
+**What is different about this one.** The two audits above each found rules that
+were **missing** — no owner, no procedure, no scope tag. This one audits a rule
+that was **present, followed, and still not enough**. `OVERSIKT-GENERATION-CONTRACT.md`
+§7.1 said a controller cluster belongs on the case, cabinet, cold room or
+freezer room it monitors. The panel that had to be corrected satisfied that
+sentence completely. So the defect being audited is not absence — it is a
+**word doing four jobs**, which is a harder failure to see and a much easier one
+to follow off a cliff.
+
+**Evidence.** **E14**, **E15** and **E17** as defined at the head of
+[documentation-change-log.md](documentation-change-log.md), plus **E22**, added
+by this pass: a second production Oversikt export (plant 10240, 128 objects, 32
+controller clusters, canvas 1400 × 750, value objects 42 × 22, z-bands 110/375).
+E22 is **uncommitted** — it carries a live plant id and 128 real driver ids — and
+was deliberately not masked into a second profile (see the gaps section, and
+change 135 in the log).
+
+**Documents and tools audited against E15, E22 and the correction:**
+[OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md),
+[OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md),
+[OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md),
+[OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md),
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md), [AI-BRIEFING.txt](AI-BRIEFING.txt),
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt),
+[PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md), [CLAUDE.md](CLAUDE.md),
+[documentation-rules.json](documentation-rules.json),
+[validate-oversikt-panel.py](validate-oversikt-panel.py),
+[render-oversikt-panel.py](render-oversikt-panel.py) and
+[tests/test_oversikt_10113_contract.py](tests/test_oversikt_10113_contract.py).
+
+## The incident
+
+A store-layout PNG and a plant parameter workbook, and later a panel JSON that
+needed a layout correction.
+
+1. The generated panel was **almost right**. Every controller carried its linked
+   alarm, temperature/value, cooling and defrost objects, and every cluster sat
+   near the equipment it monitors. Nothing about it was malformed.
+2. The correction was one sentence: **the temperature bubble must be in the
+   centre of every box.**
+3. The objects had been built around approximate **label or cluster anchors** —
+   the text beside the case, or the middle of the four-object group. Both are a
+   few tens of pixels from the centre of the drawn box, which is exactly how far
+   wrong the panel looked.
+
+**The documentation could neither defend the original nor derive the correction.**
+Its rule was about the *cluster*; the user was looking at the
+`number_v3_40px_no_conn_no_tag` inside it. A reviewer reading §7.1 and stopping
+had no basis to fault the delivered panel — which is what happened.
+
+**And the failure mode is again not a malformed panel.** The delivered file
+parsed, inserted, validated clean, kept every binding and every controller. It
+was simply in the wrong place by a label's width, on every box in the store.
+
+## Root cause
+
+Seven findings. Each is a property of the documentation set — not of the agent
+that read it, and not of the panel that came out.
+
+### F29 (S3 — misleading). One placement rule was read as two, and only one was written
+
+§7.1 stated where the **cluster** goes. Every downstream file repeated that
+sentence — briefing §7b, the guide, the checklist, `PANEL-TYPE-GUIDE.md`,
+`CLAUDE.md` — and none of them said anything about where the **value object**
+goes inside it. A cluster assembled around a text label satisfies the written
+rule and misses the box.
+
+Read literally the rule is true; read as the whole rule it is a trap, which is
+the definition of S3. It is also necessary: a value object centred on a box in
+the wrong room is a worse defect, so level 1 could not simply be replaced.
+
+**Fixed** by stating the rule as **two levels** that are explicitly not implied
+by one another — level 1, the cluster on the equipment (original wording kept
+verbatim); level 2, the value object in the visual centre of the equipment
+footprint — and by naming which validator rule measures which (`O-C06` for level
+1, `O-G08` for level 2). Contract §7.1, change 120.
+
+### F30 (S2 — undetermined). Seven distinct concepts shared four words
+
+*Footprint*, *anchor*, *centre* and *position* were each used for more than one
+thing across the set, and in two cases within a single section. An agent asked to
+"centre the object" had at least four defensible readings — the drawn box, the
+cluster's own extent, the label's position, or "roughly there" — and picked one.
+
+Worse, the collision was in the vocabulary the fix itself would have to be
+written in: the sentence that corrects the panel cannot be written unambiguously
+in a vocabulary where *footprint* means two rectangles.
+
+**Fixed** by defining **seven terms**, each with what it is *and what it is not*:
+equipment footprint · equipment centre · temperature/value anchor ·
+controller-cluster geometry · text-label anchor · shared/combined equipment
+footprint · uncertain or unmeasurable background target. And by resolving the
+collision repository-wide: **footprint** now means the equipment's own rectangle
+everywhere, and a cluster's own extent is a **cluster extent** — corrected in
+contract §7.2, in `CLAUDE.md`'s two-scopes blockquote (the ~62 × 66 and 42 × 86
+figures are cluster extents) and in the QA matrix. Contract §7.1a, change 121.
+
+### F31 (S2 — undetermined). "Centre it" had no arithmetic anywhere
+
+No formula existed in any document. Placement was described in prose and
+reproduced by eye, which is not reproducible between two agents, or between one
+agent and its own next run — and cannot be checked by anything but an opinion.
+
+Three sub-defects were latent in the prose version, and all three are the kind
+that survive review because the result looks nearly right:
+
+- **Rounding.** `round(2.5)` is `2` in Python — banker's rounding — so the naive
+  implementation lands one pixel left of centre on every other even-width
+  footprint.
+- **The object's size.** 42 × 22 is measured on E15 *and* E22, which makes it
+  tempting to hard-code. Two stores are not the fleet, and a value object of
+  another size silently mis-centres by half the difference.
+- **The frame of reference.** A coordinate measured on a 1868 × 1000 background
+  and written into a 1400 × 750 panel is wrong by 25 % if the scale is not
+  stated and applied.
+
+**Fixed**: contract §7.1b carries `value_left = round_half_up(x + (width - w) / 2)`,
+`value_top = round_half_up(y + (height - h) / 2)`, the explicit never-centre-on
+list (label, regulator name, cluster bounding box, approximate/OCR coordinate,
+empty floor), the own-size rule, and `scale_x = panel_width / image_width`,
+`scale_y = panel_height / image_height` stated and applied. `half_up()` is
+implemented in the validator, the generator and the renderer, and a test asserts
+all three agree. Change 122.
+
+### F32 (S1 — wrong). The validator's silence read as a pass on something it had never checked
+
+Before this pass, `validate-oversikt-panel.py` reported `0 errors, 2 warnings`
+on the reference panel and said nothing about centering — because it cannot see
+centering. **A panel JSON contains no equipment-box boundaries**: the artwork is
+an opaque base64 PNG, so no amount of parsing answers "is the bubble on the box?"
+
+That is S1 rather than S3. A tool that prints `0 errors` after a QA checklist
+told the author to run it is making a claim, and the claim was not true of the
+one property the correction was about.
+
+**Fixed** in three parts. **(a)** An `iwmac-oversikt-footprints` sidecar —
+measured boxes supplied alongside the panel, the same shape of evidence input as
+`validate-romkontroll-panel.py --source-sql` — with `O-G09` checking its format,
+duplicates, unknown controllers, zero-size boxes, self-contradicting records and
+**unmeasured controllers as a stated gap**, and `O-G10` stating the measurement
+scale once per resolution. **(b)** Without `--footprints`, the only `O-G08`
+finding is an `info` saying the run proves nothing about centering, and the
+closing summary repeats it. **(c)** `build-oversikt-footprints.py` emits the
+template, `render-oversikt-panel.py --footprints` draws the measured box, its
+centre and the implied value position in amber so the *measurement* can be
+checked against the artwork.
+
+**And the fix states its own limit.** The sidecar proves the arithmetic; it does
+not prove that the measured rectangle is the **right** rectangle. Whether the box
+is around the case *this* controller monitors remains QA stage C, a human looking
+at a controller-level crop. Changes 123, 127, 128, 129.
+
+### F33 (S2 — undetermined). The input-routing table had no row for how this task arrived
+
+§6 carried five input classes: PDF only · screenshot/PNG only · background image
+plus equipment list · production JSON supplied · production JSON plus PDF. The
+2026-08-11 task matched **none** of them cleanly — it arrived as a PNG plus a
+parameter workbook, and later as a panel JSON plus a **verbal correction** — so
+the one instruction that mattered, *patch, do not rebuild*, had to be inferred
+from a neighbouring row.
+
+This is the same failure category as F22, one step further out: F22 was a mode
+whose trigger matched the wrong input; F33 is an input with no matching trigger
+at all.
+
+**Fixed**: eight input classes, each naming what to produce *and* what it must
+not do. The three new ones are PNG + workbook (build from both, measure the
+boxes, state the scale, emit the sidecar), two panel JSONs (compare, choose one,
+**never merge geometry** — a merge is a third layout nobody drew), and panel JSON
++ verbal correction (the whole document with only the named change, declared with
+`--patch-scope`; and if the correction points at visual evidence you were not
+given, **name the missing evidence** rather than inferring a coordinate from a
+label, an SVG trace or an embedded image nobody measured). Reinforced globally in
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md) §1.2: a bare placement correction
+inherits the delivered file, not the brief. Changes 125, 133.
+
+### F34 (S3 — misleading). Preserve-and-patch had no step that proved anything had been preserved
+
+The seven-step procedure ended at "apply the change and re-validate". Every step
+was sound, and nothing in the sequence distinguished *only the temperature
+objects moved* from *the temperature objects moved and an unrelated tidy-up came
+along with them*. A geometry correction is the request most likely to carry
+unrequested "improvements" out under the heading of the fix that was asked for.
+
+**Fixed**: **nine** steps. The two additions are *name the change in the terms of
+§7.1a before touching a coordinate* (which of the seven things is moving, and
+relative to what) and *a source-to-candidate field-level diff afterwards*, with
+the permitted difference stated exactly — `posLeft`/`posTop` on temperature/value
+objects, and **no field difference at all** on every other object. Made
+executable as `--patch-scope value-position` (`O-C16`), which is **declared, not
+inferred**: the tool cannot guess what the user authorized. Changes 124, 127.
+
+### F35 (S4 — structural). This pass's own instrumentation could launder itself into evidence
+
+Found by running the documented workflow end to end rather than by running the
+tests. `build-oversikt-footprints.py --synthetic` back-derives footprints from
+the panel's own value objects, for exercising the checker. Fed to the validator,
+it produced `INFO O-G08 21 of 21 measured value object(s) are centred …` and a
+closing line stating centering had been checked — **a pass by construction,
+proving nothing about the artwork.**
+
+It is S4 because the shape is structural and recurring: the cheapest input to
+produce is the one that satisfies the check. The tests did not catch it, and
+neither did the documents, because both were written by the same pass that wrote
+the generator.
+
+**Fixed**: a sidecar stamped `synthetic: true` / `source: "synthetic-back-derived"`
+now raises an `O-G09` **warning**, the closing summary says centering was not
+proved, the renderer says so in the preview, and two tests assert both the
+warning and that a *measured* sidecar is not falsely accused. The contract and
+the QA checklist state it in their own words: *a delivery whose only centering
+evidence is a synthetic sidecar has no centering evidence.* Change 127.
+
+This is the one behaviour change in this pass to an existing rule, and it is
+**stricter, not looser**.
+
+## Corrective controls
+
+| Finding | Control | Where it lives |
+|---|---|---|
+| F29 | Two explicit levels; level 2 stated as not implied by level 1 | contract §7.1; `O-C06` / `O-G08` |
+| F30 | Seven defined terms, each with what it is *not*; *footprint* = equipment rectangle repo-wide, cluster extent for the other | contract §7.1a; `CLAUDE.md`; QA matrix; `documentation-rules.json` → `geometry_terms` |
+| F31 | The formula, half-up, own object size, stated and applied scale, never-centre-on list | contract §7.1b; `half_up()` in validator + generator + renderer, asserted equal by test |
+| F32 | Footprint sidecar as evidence input; no-flag disclosure; amber overlay for checking the measurement itself | `O-G08`, `O-G09`, `O-G10`; `build-oversikt-footprints.py`; `render-oversikt-panel.py --footprints` |
+| F33 | Eight input classes, each with its own prohibition; placement corrections inherit the delivered file | contract §6; `AI-REQUEST-ROUTING.md` §1.2, §4 rule 8 |
+| F34 | Nine-step preserve-and-patch with a field-level diff; declared patch scope | contract §6.2; `--patch-scope value-position`, `O-C16` |
+| F35 | Synthetic sidecars announce themselves and disqualify the run's centering claim | `O-G09` warning; qualified summary; renderer notice; two tests |
+| all | The rules as data, regenerated not hand-edited, `--check` asserted by a test | `build-oversikt-rules.py`, `documentation-rules.json` |
+
+**The load-bearing one is the sidecar's absence.** F32 is the finding the whole
+addendum turns on, and its control is unusual: the most important thing
+`--footprints` does is **refuse to conclude** when it is not given. Every other
+control here makes a rule checkable; this one makes an unprovable claim visibly
+unproven, which is what the incident actually needed.
+
+## Files changed by this addendum
+
+| File | Change |
+|---|---|
+| [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) | §7.1 two levels · §7.1a seven terms · §7.1b the formula · §7.1c the sidecar · §6 eight input classes · §6.2 nine steps · §11 nine-item report · §12 `OV-C4` · §13.5 the incident · E22 · §15 item 1 partly settled |
+| [validate-oversikt-panel.py](validate-oversikt-panel.py) | `--footprints`, `--center-tolerance`, `--patch-scope`; `O-G08`, `O-G09`, `O-G10`, `O-C16`; `half_up`; synthetic disclosure |
+| [build-oversikt-footprints.py](build-oversikt-footprints.py) | **New.** Sidecar template generator; `--synthetic` labelled instrumentation |
+| [render-oversikt-panel.py](render-oversikt-panel.py) | `--footprints` amber overlay, widened crops, legend, synthetic notice |
+| [tests/test_oversikt_10113_contract.py](tests/test_oversikt_10113_contract.py) | 56 → **89** tests |
+| [build-oversikt-rules.py](build-oversikt-rules.py) | `geometry_terms`, `value_centering`, `footprint_evidence`; six revised blocks |
+| [documentation-rules.json](documentation-rules.json) | Regenerated, never hand-edited |
+| [OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) | Eleven steps; ten-column matrix with `UNMEASURED` as a stated gap; the centring procedure |
+| [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) | The centring block, including the synthetic-sidecar item |
+| [OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) | The short form of the rule and the two commands |
+| [AI-BRIEFING.txt](AI-BRIEFING.txt) | §7b level 2, the seven terms, the formula, the sidecar |
+| [AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) | The centring sentence inside the 8 000-character cap — 7 952 chars, 7 987 worst-case CRLF, paid for by 19 itemized lossless cuts |
+| [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) | The fourth overriding rule; the owner-table commands |
+| [CLAUDE.md](CLAUDE.md) | Two owner rows; three rules → four; *cluster extent* ≠ *footprint* |
+| [AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md) | §1.2 placement corrections inherit the delivered file; §4 rule 8 gains the centring instance |
+| [documentation-change-log.md](documentation-change-log.md) | Part 9, changes 120–135; evidence E22; conflict `OV-C4` |
+| [reference_data/oversikt-10113-sanitized.json](reference_data/oversikt-10113-sanitized.json) | **Unchanged, deliberately** — see the gaps section |
+| [reference_data/panel-conventions.json](reference_data/panel-conventions.json) | **Unchanged, deliberately** — as in the 2026-08-10 addendum |
+
+`AI-BRIEFING-REVISED.txt`, `AI-AGENT-INSTRUCTIONS-REVISED.txt` and
+`CLAUDE-REVISED.md` were again left untouched, for the reason the previous
+addendum gives: they are change records, and mirroring the contract into them
+recreates the multiple-owner problem F27 records.
+
+## Verification
+
+Run from `iwmac-designer-reference/`.
+
+| Command | Result |
+|---|---|
+| `python -m unittest tests.test_oversikt_10113_contract` | Ran **89** tests — **OK** (56 before this pass) |
+| `python -m unittest tests.test_romkontroll_8653_contract tests.test_maskin_10229_contract tests.test_maskin_compressor_bank tests.test_list_panel_contract tests.test_ventilation_profile_9099 tests.test_build_ventilation_corpus` | Ran **285** tests — **OK (skipped=5)**; no regression in any earlier panel type |
+| `python build-oversikt-rules.py --check` | `documentation-rules.json is up to date` |
+| `python validate-oversikt-panel.py reference_data/oversikt-10113-sanitized.json [--profile TEMPLATE-10113]` | 0 errors, 2 warnings, exit 0 — **and a closing line saying centering was not checked** |
+| `python build-oversikt-footprints.py … -o survey-tmp/fp-template.json` then `--footprints` it | **21 errors** — an unfilled template fails loudly, one `O-G09` per controller |
+| the same with `--synthetic` | 0 errors, **3 warnings** — `O-G08` reports 21 of 21 centred **and** `O-G09` says the sidecar is synthetic and proves nothing |
+| `--compare SOURCE CANDIDATE --patch-scope value-position`, 21 value objects nudged 3 px | 0 errors, 23 warnings (21 × `O-C06` nudge + the two baseline overlaps) — in scope |
+| the same patch with one `alias_text` also changed | **exit 1** — `ERROR O-C16 patch scope 'value-position' was exceeded … alias_text x1` |
+
+The two warnings on every clean run are the pre-existing `O-G07` overlaps,
+recorded in contract §9.2 as genuine production adjacencies and deliberately not
+corrected.
+
+**Read the two `--footprints` rows together.** A synthetic sidecar makes `O-G08`
+report every value object centred, and the same run says twice that this proves
+nothing. That pairing is the design of the whole control: the arithmetic is
+checkable, the measurement is not, and the tool is required to say which is
+which.
+
+## Remaining evidence gaps
+
+The nine items owned by [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md)
+§15 still stand, except that **item 1 is now partly settled and still open** —
+E22 is a second production Oversikt, and it confirms the 42 × 22 value size, the
+110/375 z-bands, four roles on all 32 clusters and the `OV-C4` relationship. It
+contributes **no coordinate**: it is one more store, uncommitted, and averaging
+two stores is exactly what `OV-C1` forbids. What is still wanted is an export
+that may be *committed*.
+
+This pass adds five gaps of its own, all of them created by the fix rather than
+found in the documents:
+
+1. **No measured footprint sidecar exists in the repository.** The format, the
+   generator, four rules, the overlay and thirteen tests all exist; not one real
+   measurement has been committed, because measuring the boxes is a human visual
+   act on artwork only the reference carries. **`O-G08` has therefore never been
+   run against real evidence** — only against synthetic instrumentation that
+   announces itself as proving nothing.
+2. **Whether the reference panel is itself centred is unknown**, and is nowhere
+   claimed. E15 is evidence of what a production Oversikt looks like, including
+   any value box that is not perfectly centred; "correcting" it would destroy the
+   only committed evidence this contract has.
+3. **The 2 px default tolerance is a judgement, not a measurement** — the slack
+   of a hand-dragged object, chosen to keep production panels from failing on
+   noise. No distribution of real deviations has been measured, because of gap 1.
+4. **The combined A/B footprint union rule is unexercised.** No committed panel
+   has a confirmed combined display case, so the rule is stated and tested
+   synthetically but never applied to real evidence.
+5. **E22 is uncommitted**, so its 32-cluster confirmation cannot be reproduced
+   from the repository — the same limitation E14, E18, E20 and E21 carry, and for
+   the same reason: a live plant id and 128 real driver ids.
+
+**A stated gap is a deliverable; a guess is not.** No coordinate from plant 10240
+entered any document, no second profile was created from it, and nothing above
+was inferred from one store and presented as measured.

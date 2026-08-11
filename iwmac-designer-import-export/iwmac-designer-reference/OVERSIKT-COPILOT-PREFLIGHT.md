@@ -22,13 +22,24 @@ cooling, defrost. Work every step before emitting JSON.
 
 3 ROUTE THE INPUT, and name the row you picked.
   PDF only, produce an explicitly UNLINKED DRAFT with the missing evidence
-  disclosed by name. Screenshot only, an unlinked draft with the image-to-canvas
-  scale factor stated as a number. Background image plus equipment list, one
-  cluster per listed position anchored on the artwork feature that matches its
-  name. Production JSON supplied, the ENTIRE supplied document with only the
-  named change applied: PRESERVE AND PATCH, NEVER REBUILD. Production JSON plus
-  a PDF or screenshot, the supplied JSON patched only where the secondary source
-  proves a specific difference, each patch named individually.
+  disclosed by name. Screenshot or PNG only, an unlinked draft with the
+  image-to-canvas scale factor stated as a number; a rendered picture of a panel
+  is not the panel, so no binding, no obj_id and no z-index is proven by it.
+  Background image plus a parameter workbook and no panel JSON, build: one
+  cluster per instrumented position, every binding copied verbatim from the
+  workbook, every value object centered on its measured footprint, and every
+  position whose footprint you could not measure reported as a gap. Production
+  JSON supplied, the ENTIRE supplied document with only the named change
+  applied: PRESERVE AND PATCH, NEVER REBUILD. Production JSON plus a PDF,
+  screenshot or PNG, the supplied JSON patched only where the secondary source
+  proves a specific difference, each patch named individually - the image is
+  evidence for COORDINATES, never a reason to rebuild. Two panel JSON files,
+  compare them first and say which one you worked from and why; NEVER merge
+  geometry from both, because a panel assembled from two sources matches neither
+  store. Panel JSON plus a verbal placement correction, apply ONLY the named
+  change; if "like this" points at visual evidence you were not given, name the
+  missing evidence instead of pretending the SVG trace or the embedded image
+  proves a coordinate you never measured.
 
 4 THE PDF MAY NOT REDUCE THE PANEL. A store-layout drawing routinely omits
   instrumented positions and shows equipment that was never instrumented. If the
@@ -66,6 +77,24 @@ cooling, defrost. Work every step before emitting JSON.
   half-moved reads as two positions. Center or anchor each cluster on the case,
   cabinet or room it monitors in the background artwork. A cluster on empty
   floor, in a margin, or in a grid is a defect even if its bindings are perfect.
+
+8b THE TEMPERATURE BUBBLE GOES IN THE CENTER OF THE BOX. Placing the cluster
+  near the equipment is necessary and NOT sufficient. The value object
+  (number_v3_40px_no_conn_no_tag) itself must be centered on the EQUIPMENT
+  FOOTPRINT - the rectangle of the physical box, cabinet, case or room drawn in
+  the artwork. Never center it on the equipment's text label, the regulator
+  name, the cluster bounding box, an approximate or OCR coordinate, or empty
+  floor. value_left = round_half_up(x + (width - w) / 2), value_top =
+  round_half_up(y + (height - h) / 2), where (w, h) is THIS panel's value-object
+  size - never silently force 42x22. Measured on the image and the canvas is a
+  different size? State scale_x = panel_width / image_width and scale_y =
+  panel_height / image_height and apply them first. A combined A/B case under
+  one regulator is ONE footprint, the union, and only where evidence shows it -
+  adjacency is not evidence. Alarm, cooling and defrost do not need the center;
+  they hang off the value object. If the footprint cannot be established, report
+  the evidence gap and emit no coordinate for that controller. A supplied
+  production export still outranks this rule: do not "correct" a production
+  position merely because it is not geometrically centered.
 
 9 BACKGROUND OWNS THE STATIC STORE. Walls, room outlines, cabinet and case
   boxes, aisles, room-name captions, the store title. DESIGNER OBJECTS OWN THE
@@ -128,18 +157,44 @@ cooling, defrost. Work every step before emitting JSON.
    validate-oversikt-panel.py PANEL.json, and WHENEVER A PRODUCTION EXPORT WAS
    SUPPLIED also run validate-oversikt-panel.py --compare SOURCE.json
    CANDIDATE.json; add --profile TEMPLATE-10113 when the panel is that named
-   store overview. Zero errors is the bar, and warnings are read, not ignored.
+   store overview, and --patch-scope value-position when the change was a
+   centering patch. Zero errors is the bar, and warnings are read, not ignored.
    c Render with render-oversikt-panel.py, using --source to draw the source
-   clusters as dashed ghosts underneath; the preview must embed the REAL
-   background and all objects. Move the pointer away first, because a hover
-   tooltip is not panel content. d Compare BY CONTROLLER AND ROLE, never by
-   array index: two exports of one panel order their objects differently.
+   clusters as dashed ghosts underneath and --footprints to draw measured
+   equipment boxes; the preview must embed the REAL background and all objects.
+   Move the pointer away first, because a hover tooltip is not panel content.
+   d Compare BY CONTROLLER AND ROLE, never by array index: two exports of one
+   panel order their objects differently. e LOOK AT THE CONTROLLER-LEVEL CROPS.
+   Whether each temperature bubble is on the centre of its box is a visual
+   question, and this is where it gets answered.
+
+17b A PANEL JSON CONTAINS NO EQUIPMENT-BOX BOUNDARIES, so no script can prove
+   the bubble is on the box from the panel alone. Measure the footprints
+   (build-oversikt-footprints.py emits the template; fill it in from the
+   artwork) and pass them with --footprints to check centering; without that
+   flag the validator reports that it proved NOTHING about centering, and that
+   line is to be repeated in the delivery rather than replaced by "0 errors".
+   The check is against SOMEBODY'S MEASUREMENT: it never proves the rectangle
+   measured was the right rectangle.
+
+17c DECLARE THE PATCH SCOPE. For a centering correction the only permitted
+   object-level differences are posLeft and posTop on temperature/value
+   objects, and NO field difference at all on any other object. A resized
+   bubble, a rewritten alias, a re-bound driver id, a nudged alarm, a changed
+   zIndex or a reordered array fails QA unless it is disclosed and justified
+   separately. It does not travel under a geometry correction.
 
 18 A CLEAN VALIDATOR RUN IS NECESSARY, NEVER SUFFICIENT. A reduced panel is
    well-formed: nine tidy clusters with correct bindings and a real background
    pass every structural check, because nothing inside a document says how many
    clusters the store has. Only the comparison against the source, or the named
-   profile, can catch it.
+   profile, can catch it. The same holds for placement: a panel whose every
+   temperature bubble sits beside its case instead of on it passes every
+   structural rule there is. Also run validate-visual-correctness.py PANEL.json,
+   with --source when a production export was supplied: no live object may cover
+   descriptive text (only the source can prove an overlap intentional), and a
+   state value must fit its longest allowed display value, never merely the
+   current reading (VISUAL-CORRECTNESS-CONTRACT.md, GLOBAL).
 
 19 INSERT APPENDS. It never clears the canvas, and the host renames every object
    from the live canvas child index. A full panel document belongs on an EMPTY
@@ -151,3 +206,11 @@ cooling, defrost. Work every step before emitting JSON.
    exact validator commands and their output, the render you inspected and what
    you checked in it, and every evidence gap stated as a gap. A stated gap is a
    valid deliverable and a guess is not.
+
+20b REPORT THE FOOTPRINT EVIDENCE TOO. Where each equipment footprint came from
+   and who measured it, at which image resolution and with which scale factors,
+   which controllers are UNMEASURED, and - if you moved any value object - the
+   before and after position of every one. Where no footprints were supplied,
+   write that CENTERING WAS NOT VERIFIED in those words. Do not let "the
+   validator reported 0 errors" stand in for it: the validator checked the rules
+   it can check, and this is not one of them without the sidecar.

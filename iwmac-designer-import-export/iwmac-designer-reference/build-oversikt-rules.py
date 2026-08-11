@@ -7,7 +7,7 @@
 Owns four regions of documentation-rules.json and nothing else:
 
     scope_tags.OVERSIKT, scope_tags.TEMPLATE-10113
-    evidence.E14 .. evidence.E17
+    evidence.E14 .. evidence.E17, evidence.E22
     panel_types.oversikt
     profiles.TEMPLATE-10113
 
@@ -152,9 +152,218 @@ CLUSTER_RULES = {
         "defrost symbol to a two-member cluster invents a binding."
     ),
     "placement": (
-        "Center or anchor each cluster on the case, cabinet or room it monitors "
-        "in the background artwork. A cluster on empty floor, in a margin, or "
-        "in a grid of cards is a defect even if its bindings are perfect."
+        "Two levels, and they are NOT the same rule. CLUSTER level: every "
+        "member of a cluster sits together on the case, cabinet or room that "
+        "controller monitors in the background artwork; a cluster on empty "
+        "floor, in a margin, or in a grid of cards is a defect even if its "
+        "bindings are perfect. VALUE level: within that, the temperature/value "
+        "object is centered on the equipment footprint itself - see "
+        "value_centering. Satisfying the cluster level does not satisfy the "
+        "value level: a cluster can be 'on the case' with its value box on the "
+        "case's edge, on the equipment label, or on the cluster's own "
+        "bounding-box center, and all three are defects."
+    ),
+    "anchor_object": (
+        "The value object is the cluster's ANCHOR. Position it first, on the "
+        "equipment center, then place the other roles at the offsets the "
+        "SOURCE panel uses relative to it. Measured on E15 (21 clusters) and "
+        "independently on E22 (32 clusters): the value box is the cluster's "
+        "left edge and the alarm bell sits 35 px above it - E15 alarm "
+        "(dx+4,dy-35) from the value box, E22 alarm (dx+5,dy-35) on 32 of 32. "
+        "What generalizes is the ANCHOR RELATIONSHIP, not the pixel offsets; "
+        "read those from the panel in hand."
+    ),
+}
+
+# The seven terms. They are separate concepts and the documentation set may
+# never use one where it means another - that interchangeability is the
+# ambiguity that produced the 2026-08-11 correction.
+GEOMETRY_TERMS = {
+    "_note": (
+        "Seven distinct geometric concepts. Use these names verbatim. Two of "
+        "them are about the ARTWORK, three about the OBJECTS, one about "
+        "IDENTITY and one about the absence of evidence, and collapsing any "
+        "two of them is a defect in the document, not a matter of style."
+    ),
+    "equipment_footprint": (
+        "The visible physical outline, in the background artwork, of the case, "
+        "cabinet, cold room, freezer room or other equipment that ONE "
+        "controller monitors: the drawn blue box, room rectangle or cabinet "
+        "outline. It is a property of the ARTWORK. A panel JSON does not "
+        "contain it, and no script can derive it from one."
+    ),
+    "equipment_center": (
+        "The geometric center of the equipment footprint, expressed in "
+        "PANEL-CANVAS coordinates. If the footprint was measured on an image "
+        "of a different resolution, it is the scaled center - see "
+        "value_centering.scale."
+    ),
+    "value_anchor": (
+        "The position of the temperature/value object "
+        "(number_v3_40px_no_conn_no_tag on both measured panels): its top-left "
+        "corner, such that the object's own center coincides with the "
+        "equipment center. This is the coordinate the centering rule computes."
+    ),
+    "controller_cluster_geometry": (
+        "The relative arrangement of one controller's objects - alarm, value, "
+        "cooling, defrost - and the bounding box they span. Cluster cohesion "
+        "still applies (O-G03). The cluster BOUNDING-BOX CENTER IS NOT THE "
+        "EQUIPMENT CENTER and must never be substituted for it: on both "
+        "measured panels the cluster extends ~35 px above and ~50 px below the "
+        "value box, so its bounding-box center sits well below the value box "
+        "the rule is about."
+    ),
+    "label_anchor": (
+        "The position of a text label in the artwork - the equipment name, the "
+        "regulator name, a room caption, an OCR hit. It is IDENTITY EVIDENCE: "
+        "it tells you WHICH controller belongs to which footprint. It is NOT "
+        "PLACEMENT GEOMETRY. Centering a value object on a label is the "
+        "specific defect the 2026-08-11 correction was issued against."
+    ),
+    "combined_footprint": (
+        "The union of two or more visibly connected physical sections served "
+        "by ONE controller - an A/B case, a two-door cabinet on one regulator. "
+        "The value object is centered on the union, NOT on either half. Use it "
+        "only where supplied evidence establishes the controller-to-sections "
+        "relationship; a shared wall in the drawing is not by itself evidence "
+        "that one controller serves both."
+    ),
+    "unmeasurable_target": (
+        "The state in which the footprint, or the controller-to-footprint "
+        "relationship, cannot be established from the supplied evidence. It is "
+        "a REPORTABLE OUTCOME, not a licence to approximate. Name the "
+        "controller, name what is missing, and leave the object where the "
+        "source put it."
+    ),
+}
+
+VALUE_CENTERING = {
+    "rule": (
+        "Identify the visible physical footprint of the case, cabinet, cold "
+        "room, freezer room or other equipment the controller monitors, and "
+        "center the temperature/value object on THAT footprint - unless a "
+        "higher-precedence supplied production panel proves a different "
+        "placement."
+    ),
+    "scope": "OVERSIKT",
+    "evidence": ["E22"],
+    "validator": "O-G08",
+    "never_center_on": [
+        "the equipment label or the regulator name (that is a label_anchor - "
+        "identity evidence, not geometry)",
+        "the controller cluster's bounding box",
+        "an approximate text or OCR coordinate",
+        "empty floor space, an aisle, or a margin",
+        "the nearest artwork feature when the footprint boundary is not "
+        "visually established",
+    ],
+    "formula": {
+        "given": ("value object width w and height h, and the measured "
+                  "footprint (x, y, width, height) in panel-canvas coordinates"),
+        "value_left": "round(x + (width - w) / 2)",
+        "value_top": "round(y + (height - h) / 2)",
+        "rounding": (
+            "HALF UP, on .5 exactly. Python's built-in round() is banker's "
+            "rounding and returns 2 for round(2.5); use floor(value + 0.5). "
+            "The validator's half_up() helper is the reference implementation."
+        ),
+    },
+    "object_size": (
+        "Use the SOURCE-PROVEN object size. number_v3_40px_no_conn_no_tag "
+        "measures 42x22 on both E15 and E22, but that is a measurement of two "
+        "panels, not a constant: never silently force 42x22 onto a "
+        "higher-precedence supplied panel that uses another size. Read w and h "
+        "off the object being moved."
+    ),
+    "scale": {
+        "rule": (
+            "The computed center must be in PANEL-CANVAS coordinates. If the "
+            "footprint was measured on a PNG or screenshot at another "
+            "resolution, state the scale factors and apply them before "
+            "computing the final integer position."
+        ),
+        "scale_x": "panel_width / image_width",
+        "scale_y": "panel_height / image_height",
+        "apply_to": (
+            "the footprint, or its center - either order, as long as it is "
+            "stated. Do not scale the object's own width and height: the "
+            "object is already in canvas pixels."
+        ),
+        "state_it": (
+            "Both resolutions and both factors go in the delivery. A "
+            "coordinate quoted without the resolution it was measured at is "
+            "not evidence."
+        ),
+    },
+    "combined_sections": (
+        "Where one controller visibly serves a combined A/B case or a "
+        "multi-section cabinet, center on the UNION of the controlled "
+        "sections. Only when supplied evidence establishes that relationship - "
+        "otherwise it is an unmeasurable_target."
+    ),
+    "no_footprint_no_coordinate": (
+        "If the footprint or the controller-to-footprint relationship cannot "
+        "be established, report the evidence gap. Do not infer a box from a "
+        "nearby controller label, and do not invent a coordinate. A stated gap "
+        "is a deliverable."
+    ),
+    "precedence": (
+        "A supplied production JSON stays rank 1. Do NOT 'correct' a "
+        "production position merely because it is not geometrically centered. "
+        "Move it only when the user explicitly asks, or when higher-ranked "
+        "evidence proves the current position wrong. Record the anomaly "
+        "instead - that is what section 9 is for."
+    ),
+    "what_no_script_can_prove": (
+        "A panel JSON contains no equipment-box boundaries. validate-oversikt-"
+        "panel.py can only check centering when measured footprints are "
+        "supplied with --footprints; without that flag it says so and proves "
+        "nothing about centering. See footprint_evidence."
+    ),
+}
+
+FOOTPRINT_EVIDENCE = {
+    "_note": (
+        "The optional sidecar that lets a script check value centering. It is "
+        "a MEASUREMENT RECORD made by a human (or by a measuring tool) against "
+        "the artwork, and it is evidence in exactly the sense the source-"
+        "precedence table means: it can be wrong, it must name where it came "
+        "from, and it never outranks a supplied production export."
+    ),
+    "file_format": "iwmac-oversikt-footprints, version 1",
+    "generator": "build-oversikt-footprints.py",
+    "consumed_by": [
+        "validate-oversikt-panel.py --footprints FOOTPRINTS.json (O-G08..O-G10)",
+        "render-oversikt-panel.py --footprints FOOTPRINTS.json (draws the "
+        "measured box and its center under the objects)",
+    ],
+    "record_fields": {
+        "unit_id": "the controller this footprint belongs to; matched exactly",
+        "source": ("where the measurement came from: background-image, "
+                   "screenshot, store-plan-pdf, supplied-panel, or measured-"
+                   "by-hand"),
+        "source_image_size": "[width, height] of the image measured on",
+        "panel_size": "[width, height] of the panel canvas",
+        "footprint": ("{left, top, width, height} of the equipment outline, in "
+                      "SOURCE-IMAGE coordinates"),
+        "value_object_size": "[w, h] of the value object being centered",
+        "expected_value_position": ("optional {left, top}; when present it is "
+                                    "cross-checked against the computed "
+                                    "center, so a typo in the measurement is "
+                                    "caught rather than enforced"),
+        "evidence_note": ("free text: what was measured and how. An empty note "
+                          "on a hand measurement is reported"),
+        "production_proven": ("optional true - this position is proven by a "
+                              "supplied production export. Deviation is then "
+                              "reported as info, never as an error, because "
+                              "rank 1 outranks a measurement"),
+    },
+    "synthetic_records_are_not_geometry": (
+        "build-oversikt-footprints.py --synthetic derives a footprint by "
+        "expanding each value object around its own center. That is TEST "
+        "INSTRUMENTATION: it makes a pass case and a fail case runnable "
+        "without shipping store artwork. It proves nothing about any store and "
+        "must never be presented as a measurement."
     ),
 }
 
@@ -162,14 +371,23 @@ COVERAGE = {
     "rule": (
         "Before editing or emitting an Oversikt, build the coverage matrix: one "
         "row per controller, columns alarm / value / cooling / defrost / label / "
-        "source coordinate / background target. The matrix is derived from the "
-        "highest-ranked source available, and it is completed BEFORE any object "
-        "is written."
+        "source coordinate / background target / equipment footprint / value "
+        "center. The matrix is derived from the highest-ranked source "
+        "available, and it is completed BEFORE any object is written."
     ),
     "matrix_columns": [
         "controller", "alarm", "value", "cooling", "defrost", "label",
-        "source coordinate", "background target",
+        "source coordinate", "background target", "equipment footprint",
+        "value center",
     ],
+    "footprint_column": (
+        "equipment footprint and value center are the two columns the "
+        "2026-08-11 correction added. Fill them with the measured footprint in "
+        "panel-canvas coordinates and the value position it implies, or with "
+        "the word UNMEASURED. A row that says UNMEASURED is a stated gap; a row "
+        "with a plausible-looking coordinate and no measurement behind it is an "
+        "invention."
+    ),
     "counts_are_evidence_not_targets": (
         "Report per-type counts, and never treat them as a quota. 21/21/15/15 "
         "is what plant 10113 has. Another store has whatever its controllers "
@@ -203,10 +421,17 @@ INPUT_ROUTING = {
     "screenshot only": {
         "have": "positions in image pixels, no bindings",
         "produce": (
-            "an unlinked draft whose geometry is read off the screenshot and "
-            "scaled to the panel canvas, with the scale factor stated"
+            "an EXPLICITLY UNLINKED DRAFT whose geometry is read off the "
+            "screenshot and scaled to the panel canvas, with scale_x and "
+            "scale_y stated, plus a list of every unresolved "
+            "controller-to-footprint relationship and every footprint whose "
+            "boundary could not be established"
         ),
-        "must_not": "guess a driver id from a rendered value",
+        "must_not": (
+            "guess a driver id from a rendered value, present the draft as "
+            "linked, or quote a coordinate without the resolution it was "
+            "measured at"
+        ),
     },
     "background image + equipment list": {
         "have": "artwork and an inventory, no measured coordinates",
@@ -216,6 +441,26 @@ INPUT_ROUTING = {
         ),
         "must_not": (
             "fall back to a tidy grid when the artwork identifies the positions"
+        ),
+    },
+    "PNG + parameter workbook, no panel JSON": {
+        "have": (
+            "store artwork with identifiable physical positions, and a plant "
+            "parameter workbook carrying driver_id, unit_id, alias and "
+            "regulator information"
+        ),
+        "produce": (
+            "a LINKED panel - but only when the workbook supplies VERBATIM "
+            "binding evidence and the artwork supplies identifiable physical "
+            "positions. State the image-to-canvas scale. Derive every value "
+            "position from the EQUIPMENT FOOTPRINT (see value_centering), not "
+            "from the label coordinate that identified the controller."
+        ),
+        "must_not": (
+            "transcribe a binding approximately, center a value object on the "
+            "label that named its controller, or emit a cluster for a "
+            "controller whose footprint could not be established - report that "
+            "one as an unmeasurable_target instead"
         ),
     },
     "production JSON supplied": {
@@ -233,14 +478,51 @@ INPUT_ROUTING = {
         "have": "an authoritative panel plus a secondary description of it",
         "produce": (
             "the supplied JSON, patched only where the secondary source proves "
-            "a specific difference, each patch named individually"
+            "a specific difference, each patch named individually. Use the "
+            "image ONLY to prove specific target coordinates - a measured "
+            "footprint for a named controller - and record that measurement so "
+            "it can be re-checked."
         ),
         "must_not": (
-            "let the PDF reduce the panel. A PDF may identify equipment and "
-            "room names; it may NOT silently override or reduce a supplied "
-            "production export. If the PDF shows fewer positions than the JSON "
-            "contains, the PDF is incomplete - report the discrepancy, keep the "
-            "clusters."
+            "reconstruct the panel from the image, or let the PDF reduce it. A "
+            "PDF may identify equipment and room names; it may NOT silently "
+            "override or reduce a supplied production export. If the PDF shows "
+            "fewer positions than the JSON contains, the PDF is incomplete - "
+            "report the discrepancy, keep the clusters."
+        ),
+    },
+    "two panel JSON files": {
+        "have": "two exports that may or may not be the same panel",
+        "produce": (
+            "a COMPARISON FIRST - validate-oversikt-panel.py --compare A.json "
+            "B.json. If they are functionally identical except for export "
+            "metadata (exported_at, generator, saved_by, image_svg_trace), "
+            "choose ONE as the source and say in the delivery which one and "
+            "why."
+        ),
+        "must_not": (
+            "merge geometry from both. A merged panel has no source, so no "
+            "later --compare can check it, and neither original is any longer "
+            "evidence for what it contains."
+        ),
+    },
+    "panel JSON + verbal placement correction": {
+        "have": (
+            "an authoritative panel and a sentence describing what is wrong "
+            "with it - 'the temperature bubble must be in the center of every "
+            "box'"
+        ),
+        "produce": (
+            "ONLY the named change, applied to every object the sentence "
+            "covers, with a source-to-candidate field diff proving nothing "
+            "else moved (see preserve_and_patch.patch_scope)."
+        ),
+        "must_not": (
+            "widen the correction to objects it did not name, or - when the "
+            "correction says 'like this' and points at visual evidence not "
+            "present in the task - pretend that image_svg_trace or the "
+            "embedded image_data proves an unmeasured coordinate. Name the "
+            "missing evidence instead."
         ),
     },
 }
@@ -262,6 +544,55 @@ PRESERVE_AND_PATCH = {
         "known anomalies - an inverted cluster, a tag_text of a single space, "
         "a duplicated alias. Report them; do not tidy them.",
     ],
+    "steps": [
+        "1. Treat the supplied JSON as THE SOURCE DOCUMENT. It is rank 1. "
+        "Nothing else in the task outranks it, including the drawing it was "
+        "made from.",
+        "2. Inventory every object by controller and by role before changing "
+        "anything. If the inventory cannot be completed, stop and deliver the "
+        "inventory plus the named gap (coverage.hard_stop).",
+        "3. Identify the objects the request actually affects - for a "
+        "centering correction, the value objects and only those.",
+        "4. Recalculate ONLY posLeft and posTop on those objects, from the "
+        "measured equipment footprint (value_centering.formula).",
+        "5. Preserve every other field on those objects byte-for-byte as far "
+        "as serialization permits - including posWidth, posHeight, zIndex, "
+        "tag_text and the string form of every numeric field.",
+        "6. Preserve every non-target object completely unchanged.",
+        "7. Preserve driver_id, unit_id, alias_text, obj_id, name, linked, "
+        "link_name, link_tag, sub_group, unit_ref, zIndex, posWidth, "
+        "posHeight, array order, counts, canvas dimensions, background fields "
+        "and image_data.",
+        "8. Do NOT rebuild from the PNG or the workbook. When a panel JSON is "
+        "supplied and the request is a geometry patch, the panel JSON is the "
+        "document being edited.",
+        "9. Remove an export-only field ONLY where the host contract requires "
+        "its removal for insert-ready JSON - image_svg_trace is the one such "
+        "field. Record that removal as a HOST-CONSISTENCY action, listed "
+        "separately from the geometry correction, so the delivery does not "
+        "read as if the correction dropped half a megabyte of the document.",
+    ],
+    "patch_scope": {
+        "rule": (
+            "Diff the candidate against the source field by field, matched by "
+            "controller and role, and prove the patch stayed inside its scope."
+        ),
+        "permitted_for_a_centering_patch": (
+            "posLeft and posTop on temperature/value objects, and nothing "
+            "else. No field difference at all on any other object."
+        ),
+        "everything_else": (
+            "Any other difference FAILS QA unless it is disclosed and "
+            "justified separately in the delivery. 'The exporter wrote it that "
+            "way' is a justification only when the field is named in "
+            "export_only_fields."
+        ),
+        "export_only_fields": ["panel.image_svg_trace", "envelope.exported_at",
+                               "envelope.generator"],
+        "validator": "O-C16",
+        "command": ("python validate-oversikt-panel.py --compare SOURCE.json "
+                    "CANDIDATE.json --patch-scope value-position"),
+    },
     "never_blank_a_binding": (
         "A layout correction never clears driver_id, unit_id or alias_text. "
         "Blanking a real binding turns a working object into one that renders "
@@ -348,15 +679,31 @@ VERIFICATION = {
         "the controller coverage matrix, source versus candidate",
         "per-type counts, labelled as evidence and not as targets",
         "every cluster added, removed, moved or relinked, with its reason",
+        "for a centering correction: the measured footprint of every equipment "
+        "position touched, the image resolution it was measured at, scale_x "
+        "and scale_y, and the value position each footprint implies",
         "the exact validator commands run and their output",
-        "the render inspected, and what was checked in it",
+        "the render inspected, and what was checked in it - at controller-"
+        "level crops when the question is whether a value box is centered",
         "every evidence gap, stated as a gap",
     ],
     "commands": [
         "python validate-oversikt-panel.py PANEL.json --profile TEMPLATE-10113",
         "python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json",
-        "python render-oversikt-panel.py PANEL.json",
+        "python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json "
+        "--patch-scope value-position",
+        "python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json",
+        "python build-oversikt-footprints.py PANEL.json -o FOOTPRINTS.json",
+        "python render-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json",
     ],
+    "what_the_commands_cannot_do": (
+        "Without --footprints nothing here can see the artwork, so nothing "
+        "here can prove a value object is centered on its case. The validator "
+        "says so at runtime rather than staying silent about it. Stage C of "
+        "OVERSIKT-QA-CHECKLIST.md remains the answer, and for a centering "
+        "question it is answered at controller-level crops, not on the whole "
+        "canvas."
+    ),
 }
 
 CONFLICTS = [
@@ -423,6 +770,38 @@ CONFLICTS = [
             "Both are real and neither generalizes. The rule that generalizes is "
             "the one both support: cluster membership is whatever the controller "
             "exposes, and is read from the source rather than assumed."
+        ),
+    },
+    {
+        "id": "OV-C4",
+        "topic": "what the value object is positioned against",
+        "claim_a": {
+            "source": "E15 cluster anatomy, measured",
+            "text": ("the value object sits at (dx0,dy35) from the cluster "
+                     "bounding-box top-left - i.e. its position is stated "
+                     "relative to the CLUSTER"),
+            "scope": PROFILE,
+        },
+        "claim_b": {
+            "source": ("OVERSIKT-GENERATION-CONTRACT.md value-centering rule, "
+                       "from the 2026-08-11 correction (E22)"),
+            "text": ("the value object is positioned on the EQUIPMENT "
+                     "FOOTPRINT's center; the rest of the cluster is then "
+                     "placed relative to IT"),
+            "scope": "OVERSIKT",
+        },
+        "resolution": (
+            "Scoped, not merged, and the direction of derivation is the whole "
+            "point. The E15 anatomy is a MEASUREMENT of how one finished panel "
+            "is arranged internally, and it stays exactly as measured - do not "
+            "'correct' E15, and do not recompute its coordinates from a "
+            "footprint nobody measured. The centering rule is a CONSTRUCTION "
+            "rule for deciding where the value object goes in the first place. "
+            "Read together: compute the value position from the equipment "
+            "center, then lay out the other roles at the offsets the source "
+            "panel uses relative to the value object. The two claims describe "
+            "the same finished geometry from opposite ends and must never be "
+            "averaged into 'center the cluster'."
         ),
     },
 ]
@@ -503,6 +882,48 @@ EVIDENCE = {
             "forced-four-object deliberately contains driver ids naming "
             "parameters those controllers do not expose. Never copy an object "
             "out of it."
+        ),
+    },
+    "E22": {
+        "file": ("iwmac-panel_10240_oversikt_20260811-1308.json (user "
+                 "Downloads, plant 10240, NOT committed)"),
+        "committed": False,
+        "why_not_committed": (
+            "Carries a live plant id and 128 real driver ids; repo policy "
+            "masks reference JSONs before commit. No masked fixture was "
+            "derived from it either - the repository already has one measured "
+            "Oversikt profile, and a second would invite exactly the "
+            "cross-store averaging OV-C1 forbids."
+        ),
+        "sanitized": False,
+        "panel": "Oversikt",
+        "role": (
+            "The 2026-08-11 value-centering correction, and the evidence "
+            "behind panel_types.oversikt.value_centering. A different store "
+            "from E14/E15: 1400x750, 128 objects in 32 controller clusters, "
+            "all four roles on all 32, one AK3_AKC controller family, "
+            "image_data 64 214 chars, image_svg_trace present (806 506 chars) "
+            "because it is an EXPORT - which is why validate-oversikt-panel.py "
+            "reports O-S08 on it and why an insert-ready result derived from "
+            "it must drop that field."
+        ),
+        "what_it_proves": [
+            "The correction was 'the temperature bubble must be in the center "
+            "of every box' - a VALUE-object rule, not a cluster rule. The "
+            "first attempt had correct bindings and complete clusters and was "
+            "still wrong, because the objects were built around approximate "
+            "label or cluster anchors.",
+            "The value object is the cluster anchor: alarm at (dx+5,dy-35) "
+            "from the value box on 32 of 32 clusters, corroborating E15's "
+            "(dx+4,dy-35) across a different store.",
+            "The value object measures 42x22 here as on E15 - two panels, not "
+            "a constant.",
+        ],
+        "what_it_does_NOT_prove": (
+            "No coordinate in it generalizes to another plant. The equipment "
+            "footprints it was centered against are properties of the 10240 "
+            "store plan and were not recorded as a committed measurement; the "
+            "panel alone does not contain them."
         ),
     },
 }
@@ -738,7 +1159,10 @@ def panel_type_block(document):
             ),
         },
         "object_vocabulary": measured_vocabulary(objects),
+        "geometry_terms": GEOMETRY_TERMS,
         "cluster": dict(CLUSTER_RULES, anatomy_E15=measured_anatomy(clusters)),
+        "value_centering": VALUE_CENTERING,
+        "footprint_evidence": FOOTPRINT_EVIDENCE,
         "coverage": COVERAGE,
         "input_routing": INPUT_ROUTING,
         "preserve_and_patch": PRESERVE_AND_PATCH,

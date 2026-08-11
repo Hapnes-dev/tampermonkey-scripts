@@ -72,8 +72,12 @@ IWMAC VENTILASJON PREFLIGHT. Work every step before emitting JSON.
    both filters, cooling coil, water heating coil, electric heater, room endpoint and
    every sidebar section, pointer moved away, because a hover tooltip is not panel
    content. d Reject overlapping or duplicated labels, detached values, stubs pointing
-   into empty space, incomplete clusters. On a visual failure RESTART from the retained
-   source export rather than patching a chain of compensating edits.
+   into empty space, incomplete clusters. e Run validate-visual-correctness.py
+   panel.json: the four deliberate overlap classes are live-over-ARTWORK; no live
+   object may cover descriptive TEXT, and state values fit their longest allowed
+   display value (VISUAL-CORRECTNESS-CONTRACT.md, GLOBAL). On a visual failure
+   RESTART from the retained source export rather than patching a chain of
+   compensating edits.
 
 12 REPORT the case, the precedence rank, the profile, every role you moved and
    why, and everything you could not verify. A stated gap is a valid deliverable

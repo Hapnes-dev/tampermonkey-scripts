@@ -34,6 +34,15 @@ as JSON. Exit code is non-zero when there is at least one error.
 ignored: each is either a real finding or a known production quirk, and your
 report must say which.
 
+In the same pass, run the GLOBAL visual-correctness validator. The four
+deliberate overlap classes are live-over-artwork; live-over-**text** is what it
+rejects, and it checks state-value widths against allowed-values maps
+([VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md)):
+
+```bash
+python validate-visual-correctness.py panel.json
+```
+
 ### The nine relationship checks
 
 These are the defects that structurally valid JSON still carries. Each row is

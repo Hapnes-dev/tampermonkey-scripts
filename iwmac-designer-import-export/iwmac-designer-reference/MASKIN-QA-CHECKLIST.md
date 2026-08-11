@@ -34,6 +34,14 @@ expected (the known anomalies) or a finding.
 `--json` emits the same result machine-readably. `--mode demo|production` forces
 the binding contract when auto-detection would pick the wrong one.
 
+In the same pass, run the GLOBAL visual-correctness validator — no live object
+over descriptive text, state values sized for their longest allowed display
+value ([VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md)):
+
+```bash
+python validate-visual-correctness.py PANEL.json
+```
+
 ### What the validator cannot check
 
 - Whether a value pill landed **on** the pill drawn in the artwork.

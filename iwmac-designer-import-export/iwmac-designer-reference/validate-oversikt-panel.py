@@ -4,6 +4,9 @@
 Usage:
     python validate-oversikt-panel.py --check PANEL.json [--profile TEMPLATE-10113]
     python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json
+    python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
+                                      --patch-scope value-position
+    python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
     python validate-oversikt-panel.py PANEL.json            # same as --check
     python validate-oversikt-panel.py ... --json-report
 
@@ -501,6 +504,373 @@ def check_overlaps(objects, roles, findings):
                                 f"...and {reported - 12} further overlapping pair(s)"))
 
 
+# --------------------------------------------------------------------------
+# O-G08..O-G10: value centering against MEASURED equipment footprints
+#
+# A panel JSON contains no equipment-box boundaries. Nothing in this file can
+# derive one, and a check that pretended otherwise would be worse than no check:
+# it would report "centered" for a value box sitting on a label. So centering is
+# only ever checked against a sidecar measurement supplied with --footprints,
+# exactly as validate-romkontroll-panel.py checks bindings only against
+# --source-sql. Without the flag the validator says what it therefore cannot
+# prove, and proves nothing.
+# --------------------------------------------------------------------------
+
+FOOTPRINT_FORMAT = "iwmac-oversikt-footprints"
+
+# build-oversikt-footprints.py --synthetic stamps both of these. A synthetic
+# sidecar is back-derived from the panel's own value objects, so O-G08 passes by
+# construction and proves nothing at all - it exists to exercise the checker.
+SYNTHETIC_SOURCE = "synthetic-back-derived"
+
+# The slack of a hand-dragged object. Same value and same reasoning as HAIRLINE.
+CENTER_TOLERANCE = 2
+
+# Beyond a nudge the value box is on a different part of the equipment, which is
+# the defect the 2026-08-11 correction was issued against. Same threshold as
+# CLUSTER_NUDGE_LIMIT, for the same reason.
+CENTER_MOVE_LIMIT = CLUSTER_NUDGE_LIMIT
+
+
+def half_up(value):
+    """Round .5 away from zero, which is what the documented formula means.
+
+    Python's round() is banker's rounding: round(2.5) is 2 and round(3.5) is 4.
+    A centering formula rounded that way lands one pixel left of centre on every
+    other even-width footprint, so the contract specifies HALF UP and this is the
+    reference implementation of it.
+    """
+    return int(math.floor(value + 0.5)) if value >= 0 else -int(math.floor(-value + 0.5))
+
+
+def load_footprints(path):
+    return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+
+
+def is_synthetic(document):
+    """True when the sidecar declares itself instrumentation rather than evidence.
+
+    Checked at the header and at every record, because a record may carry its own
+    source. Nothing here is a schema requirement - an unmarked synthetic file is
+    indistinguishable from a measured one, which is exactly why the generator
+    stamps both fields and why this check exists at all.
+    """
+    if not isinstance(document, dict):
+        return False
+    if document.get("synthetic") or document.get("source") == SYNTHETIC_SOURCE:
+        return True
+    records = document.get("records")
+    return (isinstance(records, list) and bool(records)
+            and all(isinstance(r, dict) and r.get("source") == SYNTHETIC_SOURCE
+                    for r in records))
+
+
+def footprint_records(document):
+    """Flatten a footprint document into records with header defaults applied.
+
+    The header carries the values that are the same for every record - the
+    resolution measured at, the canvas measured for, where the measurement came
+    from - and any record may override them. Returns (records, header).
+    """
+    if not isinstance(document, dict):
+        return [], {}
+    header = {key: document.get(key) for key in
+              ("format", "version", "panel", "panel_size", "source",
+               "source_image_size", "measured_by", "synthetic", "_note")}
+    records = document.get("records")
+    if not isinstance(records, list):
+        records = []
+    merged = []
+    for record in records:
+        if not isinstance(record, dict):
+            merged.append({"_malformed": record})
+            continue
+        entry = dict(record)
+        for key in ("source", "source_image_size", "panel_size"):
+            if entry.get(key) in (None, "", []):
+                entry[key] = header.get(key)
+        merged.append(entry)
+    return merged, header
+
+
+def _pair(value):
+    if (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(as_int(v) is not None for v in value)):
+        return as_int(value[0]), as_int(value[1])
+    return None
+
+
+def _box(value):
+    if not isinstance(value, dict):
+        return None
+    parts = [as_int(value.get(key)) for key in ("left", "top", "width", "height")]
+    if any(part is None for part in parts):
+        return None
+    return tuple(parts)
+
+
+def check_footprint_evidence(envelope, clusters, roles, records, header, findings):
+    """O-G09/O-G10: is the measurement itself usable, and does it fit this panel?
+
+    Runs before O-G08 and is deliberately strict. A centering verdict computed
+    from a mistyped resolution or a footprint measured on another store's plan
+    is a confident wrong answer, and a confident wrong answer here is exactly the
+    failure this whole namespace exists to prevent.
+    """
+    panel = envelope.get("panel") or {}
+    canvas = (as_int(panel.get("panel_width")), as_int(panel.get("panel_height")))
+
+    if header.get("format") not in (None, FOOTPRINT_FORMAT):
+        findings.append(Finding("O-G09", "error",
+                                f"footprint file format is {header.get('format')!r}, "
+                                f"expected {FOOTPRINT_FORMAT!r}"))
+    if header.get("synthetic") or header.get("source") == SYNTHETIC_SOURCE:
+        findings.append(Finding("O-G09", "warning",
+                                "this footprint file is SYNTHETIC - back-derived from the "
+                                "panel's own value objects, so O-G08 passes by construction "
+                                "and proves nothing about the artwork. Test instrumentation, "
+                                "never evidence: centering stays unproven until the boxes "
+                                "are measured on the background image"))
+    if not records:
+        findings.append(Finding("O-G09", "error",
+                                "the footprint file carries no records. Nothing about "
+                                "centering can be checked from it"))
+        return {}
+
+    known = {str(key) for key in clusters if key is not None}
+    usable = {}
+    seen = collections.Counter()
+    # One line per distinct resolution, not per record. A scale that applies to
+    # every controller is one fact about the file, and repeating it 30 times
+    # buries the findings that are about one controller.
+    scales = collections.defaultdict(list)
+
+    for index, record in enumerate(records):
+        where = f"record {index}"
+        if "_malformed" in record:
+            findings.append(Finding("O-G09", "error",
+                                    f"{where} is not an object: {record['_malformed']!r}"))
+            continue
+        unit = str(record.get("unit_id") or "").strip()
+        if not unit:
+            findings.append(Finding("O-G09", "error",
+                                    f"{where} has no unit_id. A footprint that names no "
+                                    f"controller cannot be checked against anything"))
+            continue
+        where = f"{unit}"
+        seen[unit] += 1
+        if seen[unit] > 1:
+            findings.append(Finding("O-G09", "error",
+                                    f"{where}: measured twice. One controller has one "
+                                    f"equipment footprint - if it serves a combined case, "
+                                    f"record the UNION as one footprint"))
+            continue
+        if unit not in known:
+            findings.append(Finding("O-G09", "error",
+                                    f"{where}: measured, but no such controller is in the "
+                                    f"panel. The measurement is of another panel, or the "
+                                    f"unit_id is mistyped"))
+            continue
+
+        box = _box(record.get("footprint"))
+        if box is None:
+            findings.append(Finding("O-G09", "error",
+                                    f"{where}: footprint is missing or not "
+                                    f"{{left, top, width, height}} of integers"))
+            continue
+        if box[2] <= 0 or box[3] <= 0:
+            findings.append(Finding("O-G09", "error",
+                                    f"{where}: footprint is {box[2]}x{box[3]}. A "
+                                    f"zero-or-negative box has no centre"))
+            continue
+
+        image_size = _pair(record.get("source_image_size"))
+        panel_size = _pair(record.get("panel_size"))
+        if image_size is None or image_size[0] <= 0 or image_size[1] <= 0:
+            findings.append(Finding("O-G10", "error",
+                                    f"{where}: source_image_size is missing or not a "
+                                    f"positive [width, height]. A coordinate quoted "
+                                    f"without the resolution it was measured at is not "
+                                    f"evidence"))
+            continue
+        if panel_size is None:
+            findings.append(Finding("O-G10", "error",
+                                    f"{where}: panel_size is missing. State the canvas the "
+                                    f"footprint is being scaled onto"))
+            continue
+        if None not in canvas and panel_size != canvas:
+            findings.append(Finding("O-G10", "error",
+                                    f"{where}: panel_size is {panel_size[0]}x{panel_size[1]} "
+                                    f"but this panel's canvas is {canvas[0]}x{canvas[1]}. "
+                                    f"The measurement was made for a different panel"))
+            continue
+
+        if not str(record.get("evidence_note") or "").strip():
+            findings.append(Finding("O-G09", "warning",
+                                    f"{where}: evidence_note is empty. Record what was "
+                                    f"measured and how, or the number cannot be re-checked"))
+
+        scale_x = panel_size[0] / image_size[0]
+        scale_y = panel_size[1] / image_size[1]
+        entry = clusters.get(unit) or clusters.get(_matching_key(clusters, unit))
+        value_obj = next((o for o in (entry or {}).get("members", [])
+                          if roles.get(o.get("obj_id")) == "value"), None)
+        if value_obj is None:
+            findings.append(Finding("O-G09", "warning",
+                                    f"{where}: the cluster carries no value object, so "
+                                    f"there is nothing to centre on this footprint"))
+            continue
+
+        size = (as_int(value_obj.get("posWidth")), as_int(value_obj.get("posHeight")))
+        declared = _pair(record.get("value_object_size"))
+        if declared and declared != size:
+            findings.append(Finding("O-G09", "warning",
+                                    f"{where}: value_object_size says "
+                                    f"{declared[0]}x{declared[1]}, the object is "
+                                    f"{size[0]}x{size[1]}. Using the object's own size - "
+                                    f"never force a size onto a supplied panel"))
+
+        left = box[0] * scale_x
+        top = box[1] * scale_y
+        width = box[2] * scale_x
+        height = box[3] * scale_y
+        expected = (half_up(left + (width - size[0]) / 2),
+                    half_up(top + (height - size[1]) / 2))
+
+        stated = record.get("expected_value_position")
+        if isinstance(stated, dict):
+            pair = (as_int(stated.get("left")), as_int(stated.get("top")))
+            if None in pair:
+                findings.append(Finding("O-G09", "error",
+                                        f"{where}: expected_value_position is not "
+                                        f"{{left, top}} of integers"))
+                continue
+            if pair != expected:
+                findings.append(Finding("O-G09", "error",
+                                        f"{where}: expected_value_position says "
+                                        f"({pair[0]}, {pair[1]}) but the recorded footprint "
+                                        f"implies ({expected[0]}, {expected[1]}). The "
+                                        f"measurement contradicts itself - fix the record "
+                                        f"before trusting either number"))
+                continue
+
+        if (scale_x, scale_y) != (1.0, 1.0):
+            scales[(image_size, panel_size, scale_x, scale_y)].append(unit)
+
+        usable[unit] = {
+            "record": record,
+            "value": value_obj,
+            "expected": expected,
+            "footprint_canvas": (left, top, width, height),
+            "size": size,
+        }
+
+    for (image_size, panel_size, scale_x, scale_y), units in scales.items():
+        findings.append(Finding("O-G10", "info",
+                                f"{len(units)} footprint(s) measured at "
+                                f"{image_size[0]}x{image_size[1]}, scaled onto "
+                                f"{panel_size[0]}x{panel_size[1]} with "
+                                f"scale_x={scale_x:.6g}, scale_y={scale_y:.6g}"))
+
+    unmeasured = sorted(key for key in known if key not in seen)
+    if unmeasured:
+        findings.append(Finding("O-G09", "info",
+                                f"{len(unmeasured)} controller(s) have no measured "
+                                f"footprint: {', '.join(unmeasured)}. Centering is NOT "
+                                f"proven for these - they are an evidence gap, not a pass"))
+    return usable
+
+
+def _matching_key(clusters, unit):
+    for key in clusters:
+        if str(key) == unit:
+            return key
+    return None
+
+
+def check_value_centering(usable, findings, tolerance=CENTER_TOLERANCE):
+    """O-G08: is each value object centred on the footprint measured for it?
+
+    Three verdicts, and the middle one matters most. An exact hit is silent. A
+    few pixels out is a nudge and warns. Anything further, or a value box whose
+    own centre falls outside the equipment box entirely, is the defect: the
+    bubble is on the label, on the edge, or on the floor beside the case.
+
+    A record marked production_proven downgrades every verdict to info. A
+    supplied production export is rank 1 and outranks a measurement, and a
+    validator that told an author to "correct" a real panel into geometric
+    tidiness would be teaching the failure this repository documents.
+    """
+    if not usable:
+        return
+    centered = []
+    for unit in sorted(usable):
+        entry = usable[unit]
+        obj = entry["value"]
+        actual = (as_int(obj.get("posLeft")), as_int(obj.get("posTop")))
+        expected = entry["expected"]
+        proven = bool(entry["record"].get("production_proven"))
+        if None in actual:
+            findings.append(Finding("O-G08", "error",
+                                    f"{unit}: the value object has unparseable geometry"))
+            continue
+        dx, dy = actual[0] - expected[0], actual[1] - expected[1]
+        drift = max(abs(dx), abs(dy))
+
+        left, top, width, height = entry["footprint_canvas"]
+        cx = actual[0] + entry["size"][0] / 2
+        cy = actual[1] + entry["size"][1] / 2
+        outside = not (left <= cx <= left + width and top <= cy <= top + height)
+
+        if drift <= tolerance and not outside:
+            centered.append(unit)
+            continue
+
+        if outside:
+            message = (f"{unit}: the value object's centre ({cx:.0f}, {cy:.0f}) is "
+                       f"OUTSIDE the measured equipment footprint "
+                       f"({half_up(left)}, {half_up(top)}) {half_up(width)}x"
+                       f"{half_up(height)}. The temperature bubble is not on the box - "
+                       f"expected top-left ({expected[0]}, {expected[1]}), found "
+                       f"({actual[0]}, {actual[1]})")
+            severity = "error"
+        else:
+            message = (f"{unit}: the value object is off-centre by ({dx:+d}, {dy:+d}) - "
+                       f"expected ({expected[0]}, {expected[1]}), found "
+                       f"({actual[0]}, {actual[1]}) on a "
+                       f"{half_up(width)}x{half_up(height)} footprint")
+            severity = "error" if drift > CENTER_MOVE_LIMIT else "warning"
+
+        if proven:
+            findings.append(Finding("O-G08", "info",
+                                    message + ". production_proven: a supplied production "
+                                    "export outranks this measurement, so this is RECORDED, "
+                                    "not corrected"))
+            continue
+        findings.append(Finding("O-G08", severity, message))
+
+    if centered:
+        findings.append(Finding("O-G08", "info",
+                                f"{len(centered)} of {len(usable)} measured value object(s) "
+                                f"are centred on their equipment footprint within "
+                                f"{tolerance}px: {', '.join(centered)}"))
+
+
+def note_centering_unproven(findings):
+    """The other half of the sidecar contract: say what was NOT checked.
+
+    Silence would read as a pass. This validator's whole justification is that a
+    well-formed panel can be badly wrong, and "the value boxes are centred" is
+    precisely the claim a structural run has no way to make.
+    """
+    findings.append(Finding("O-G08", "info",
+                            "no --footprints: this run proves NOTHING about whether any "
+                            "value object is centred on the case it monitors. A panel JSON "
+                            "carries no equipment-box boundaries. Measure them "
+                            "(build-oversikt-footprints.py) or answer it visually at "
+                            "controller-level crops - OVERSIKT-QA-CHECKLIST.md stage C"))
+
+
 def coverage_rows(clusters, roles_order):
     rows = []
     for entry in clusters.values():
@@ -683,7 +1053,94 @@ def match_objects(source, candidate):
     return pairs, left, right
 
 
-def compare(source_doc, candidate_doc, rules, findings):
+# Which object-level differences a named patch is allowed to contain. Anything
+# outside its permitted set is a scope escape: real, reported, and not excused
+# by the patch having been otherwise correct.
+PATCH_SCOPES = {
+    "value-position": {
+        "roles": ("value",),
+        "fields": ("posLeft", "posTop"),
+        "description": ("a centering correction: posLeft/posTop on "
+                        "temperature/value objects, and no field difference at "
+                        "all on any other object"),
+    },
+    "position": {
+        "roles": None,
+        "fields": ("posLeft", "posTop"),
+        "description": "a pure move: posLeft/posTop on any object, nothing else",
+    },
+    "none": {
+        "roles": (),
+        "fields": (),
+        "description": ("a no-op: the candidate must be field-identical to the "
+                        "source on every matched object"),
+    },
+}
+
+# Written by export, not by the author, and therefore not evidence that a patch
+# escaped its scope. Named explicitly so the exemption is auditable rather than
+# implicit in a diff that quietly skips fields.
+EXPORT_ONLY_ENVELOPE_FIELDS = ("exported_at", "generator")
+
+
+def check_patch_scope(pairs, roles, scope_name, findings):
+    """O-C16: prove a patch changed only what it was allowed to change.
+
+    The 2026-08-11 correction was one sentence - put the temperature bubble in
+    the centre of every box - and the risk in applying it is not that the value
+    objects move wrongly. It is that everything ELSE moves too: an object
+    renamed by a rebuild, a binding normalized, a size "tidied" to 42x22, an
+    array reordered. Each of those is individually invisible in a diff of 128
+    objects, and together they are a rewrite wearing a patch's clothes.
+
+    So this does the opposite of the other O-C checks: instead of naming the
+    differences that matter, it names the differences that are ALLOWED and
+    reports every other one.
+    """
+    scope = PATCH_SCOPES.get(scope_name)
+    if scope is None:
+        findings.append(Finding("O-C16", "error",
+                                f"unknown --patch-scope {scope_name!r}; "
+                                f"defined: {', '.join(sorted(PATCH_SCOPES))}"))
+        return
+    allowed_roles, allowed_fields = scope["roles"], scope["fields"]
+
+    escapes = collections.Counter()
+    detail = []
+    for src, cand in pairs:
+        role = roles.get(src.get("obj_id"))
+        in_scope = allowed_roles is None or role in allowed_roles
+        for field in OBJECT_FIELDS:
+            before, after = src.get(field), cand.get(field)
+            if before == after:
+                continue
+            if field in allowed_fields and in_scope:
+                continue
+            escapes[field] += 1
+            if len(detail) < 12:
+                detail.append(f"{src.get('name')} ({role or '-'}).{field}: "
+                              f"{before!r} -> {after!r}")
+
+    if not escapes:
+        findings.append(Finding("O-C16", "info",
+                                f"patch scope {scope_name!r} held: every matched object "
+                                f"differs only within {scope['description']}"))
+        return
+
+    findings.append(Finding("O-C16", "error",
+                            f"patch scope {scope_name!r} was exceeded - "
+                            f"{sum(escapes.values())} field difference(s) outside "
+                            f"{scope['description']}: "
+                            f"{', '.join(f'{f} x{n}' for f, n in escapes.most_common())}"))
+    for line in detail:
+        findings.append(Finding("O-C16", "error", f"  {line}"))
+    if sum(escapes.values()) > len(detail):
+        findings.append(Finding("O-C16", "error",
+                                f"  ...and {sum(escapes.values()) - len(detail)} further "
+                                f"out-of-scope difference(s)"))
+
+
+def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
     src_env, cand_env = envelope_of(source_doc), envelope_of(candidate_doc)
     src_panel = src_env.get("panel") or {}
     cand_panel = cand_env.get("panel") or {}
@@ -694,6 +1151,9 @@ def compare(source_doc, candidate_doc, rules, findings):
     cand_clusters = inventory(cand_objects, roles)
 
     pairs, dropped, added = match_objects(src_objects, cand_objects)
+
+    if patch_scope:
+        check_patch_scope(pairs, roles, patch_scope, findings)
 
     if dropped:
         names = [str(o.get("name")) for o in dropped[:10]]
@@ -843,7 +1303,8 @@ def compare(source_doc, candidate_doc, rules, findings):
 # Drivers
 # --------------------------------------------------------------------------
 
-def validate(document, profile_name=None, rules=None, palette=None):
+def validate(document, profile_name=None, rules=None, palette=None,
+             footprints=None, tolerance=CENTER_TOLERANCE):
     rules = load_rules() if rules is None else rules
     palette = load_palette() if palette is None else palette
     findings = []
@@ -884,6 +1345,14 @@ def validate(document, profile_name=None, rules=None, palette=None):
     check_grid(clusters, findings)
     check_overlaps(objects, roles, findings)
 
+    if footprints is None:
+        note_centering_unproven(findings)
+    else:
+        records, header = footprint_records(footprints)
+        usable = check_footprint_evidence(envelope, clusters, roles, records,
+                                          header, findings)
+        check_value_centering(usable, findings, tolerance)
+
     rows = coverage_rows(clusters, roles_order)
     totals = collections.Counter()
     for row in rows:
@@ -909,11 +1378,13 @@ def validate(document, profile_name=None, rules=None, palette=None):
     return findings
 
 
-def validate_pair(source_doc, candidate_doc, profile_name=None, rules=None, palette=None):
+def validate_pair(source_doc, candidate_doc, profile_name=None, rules=None, palette=None,
+                  footprints=None, tolerance=CENTER_TOLERANCE, patch_scope=None):
     rules = load_rules() if rules is None else rules
     palette = load_palette() if palette is None else palette
-    findings = validate(candidate_doc, profile_name, rules=rules, palette=palette)
-    compare(source_doc, candidate_doc, rules, findings)
+    findings = validate(candidate_doc, profile_name, rules=rules, palette=palette,
+                        footprints=footprints, tolerance=tolerance)
+    compare(source_doc, candidate_doc, rules, findings, patch_scope=patch_scope)
     return findings
 
 
@@ -955,6 +1426,19 @@ def main(argv=None):
     parser.add_argument("--profile", default=None,
                         help="apply a named template profile from documentation-rules.json "
                              "(TEMPLATE-10113)")
+    parser.add_argument("--footprints", type=pathlib.Path, default=None,
+                        metavar="FOOTPRINTS.json",
+                        help="measured equipment footprints (build-oversikt-footprints.py). "
+                             "The ONLY way to check that value objects are centred on the "
+                             "cases they monitor; without it that question is reported as "
+                             "unproven")
+    parser.add_argument("--center-tolerance", type=int, default=CENTER_TOLERANCE,
+                        metavar="PX",
+                        help=f"pixels of slack allowed on a centred value object "
+                             f"(default {CENTER_TOLERANCE})")
+    parser.add_argument("--patch-scope", default=None, choices=sorted(PATCH_SCOPES),
+                        help="in --compare, assert that the candidate differs from the "
+                             "source ONLY within this scope (O-C16)")
     parser.add_argument("--json-report", action="store_true", dest="as_json")
     parser.add_argument("--no-matrix", action="store_true",
                         help="suppress the coverage matrix in text output")
@@ -964,18 +1448,25 @@ def main(argv=None):
     if bool(args.compare) == bool(target):
         parser.error("give exactly one of PANEL.json / --check PANEL.json / "
                      "--compare SOURCE.json CANDIDATE.json")
+    if args.patch_scope and not args.compare:
+        parser.error("--patch-scope compares a candidate against a source; it needs "
+                     "--compare SOURCE.json CANDIDATE.json")
 
     rules, palette = load_rules(), load_palette()
+    footprints = load_footprints(args.footprints) if args.footprints else None
     if args.compare:
         source_path, candidate_path = args.compare
         source_doc = json.loads(source_path.read_text(encoding="utf-8"))
         candidate_doc = json.loads(candidate_path.read_text(encoding="utf-8"))
         findings = validate_pair(source_doc, candidate_doc, args.profile,
-                                 rules=rules, palette=palette)
+                                 rules=rules, palette=palette, footprints=footprints,
+                                 tolerance=args.center_tolerance,
+                                 patch_scope=args.patch_scope)
         subject, matrix_doc = candidate_path, candidate_doc
     else:
         matrix_doc = json.loads(target.read_text(encoding="utf-8"))
-        findings = validate(matrix_doc, args.profile, rules=rules, palette=palette)
+        findings = validate(matrix_doc, args.profile, rules=rules, palette=palette,
+                            footprints=footprints, tolerance=args.center_tolerance)
         subject = target
 
     errors = [f for f in findings if f.severity == "error"]
@@ -1005,6 +1496,18 @@ def main(argv=None):
         print("Structural only. It cannot see the artwork, so it cannot tell whether a "
               "cluster sits on its case - render at native size and check stage C of "
               "OVERSIKT-QA-CHECKLIST.md.")
+        if footprints is None:
+            print("Value centering was NOT checked. A panel JSON carries no equipment-box "
+                  "boundaries; supply measured ones with --footprints FOOTPRINTS.json.")
+        elif is_synthetic(footprints):
+            print(f"Value centering checked against {args.footprints}, which is SYNTHETIC "
+                  f"test instrumentation back-derived from this panel - it passes by "
+                  f"construction. Nothing about centering is proved; measure the boxes on "
+                  f"the artwork.")
+        else:
+            print(f"Value centering checked against {args.footprints} at "
+                  f"{args.center_tolerance}px tolerance. The measurement is evidence like "
+                  f"any other - a supplied production export still outranks it.")
     return 1 if errors else 0
 
 

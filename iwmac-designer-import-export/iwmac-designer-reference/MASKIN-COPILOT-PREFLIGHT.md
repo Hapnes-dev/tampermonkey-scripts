@@ -119,9 +119,12 @@ emitting JSON.
    receiver, gas cooler, alarm and IO. Move the pointer away first, because a
    hover tooltip is not panel content. d Compare by role key, obj_id plus
    alias_text plus tag_text, NEVER by array index; two exports of one panel order
-   their objects differently. e On a visual failure RESTART from the retained
-   source export or the sanitized fixture rather than patching a chain of
-   compensating edits.
+   their objects differently. e Run validate-visual-correctness.py PANEL.json
+   (--source when a production export was supplied): no live object may cover
+   descriptive text, and state values fit their longest allowed display value,
+   never the current reading (VISUAL-CORRECTNESS-CONTRACT.md, GLOBAL). f On a
+   visual failure RESTART from the retained source export or the sanitized
+   fixture rather than patching a chain of compensating edits.
 
 17 INSERT APPENDS. It never clears the canvas, and the host renames every object
    from the live canvas child index. A full panel document belongs on an EMPTY

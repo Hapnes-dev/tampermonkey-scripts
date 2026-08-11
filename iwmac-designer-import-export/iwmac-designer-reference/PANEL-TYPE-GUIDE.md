@@ -27,7 +27,7 @@ The floor-plan panel: case clusters placed over the store layout PNG.
 > | A coordinate, a role, a z-band, a cluster rule, an anomaly — each with its evidence id and scope tag | [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) — **authoritative on any Oversikt conflict** |
 > | The procedure for building, copying or repairing one | [OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) |
 > | The acceptance tests, stage by stage | [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) |
-> | The same rules as code | [documentation-rules.json](documentation-rules.json) → `python validate-oversikt-panel.py panel.json --profile TEMPLATE-10113` |
+> | The same rules as code | [documentation-rules.json](documentation-rules.json) → `python validate-oversikt-panel.py panel.json --profile TEMPLATE-10113`, plus `--footprints FOOTPRINTS.json` (built by [build-oversikt-footprints.py](build-oversikt-footprints.py)) when value centring has to be checked, and `--patch-scope value-position` on a centring patch |
 > | A block to paste into a Copilot system prompt or upload as a knowledge file | [OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) |
 > | The file to copy | [reference_data/oversikt-10113-sanitized.json](reference_data/oversikt-10113-sanitized.json) |
 
@@ -43,6 +43,10 @@ Four rules that override everything below when they conflict with it:
 - **One logical cluster per cooling position / controller**, anchored on the case
   or room it monitors — with partial clusters wherever the *source* proves them.
   Cluster membership is whatever the controller exposes, not a fixed four.
+  Anchoring the cluster near the equipment is level 1 and it is not sufficient:
+  the temperature/value object itself belongs in the **visual centre of the
+  equipment footprint** — the drawn box, cabinet, case or room — never on its
+  text label (contract §7.1b, rule `O-G08`).
 - **Visual similarity is not sufficient.** A panel that looks like production and
   omits controllers is a worse failure than one that looks wrong, because nobody
   catches it by looking. Complete controller coverage, verified against the

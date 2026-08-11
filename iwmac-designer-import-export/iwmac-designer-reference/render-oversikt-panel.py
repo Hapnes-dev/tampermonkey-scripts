@@ -3,6 +3,7 @@
 
     python render-oversikt-panel.py reference_data/oversikt-10113-sanitized.json
     python render-oversikt-panel.py CANDIDATE.json --source SOURCE.json
+    python render-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
 
 WHY THIS EXISTS SEPARATELY FROM render-maskin-panel.py.
 
@@ -18,6 +19,16 @@ aisle beside its case is invisible in JSON and obvious here.
 ghost with no cluster inside it is a controller the candidate lost, and every
 ghost with a long leader line to its cluster is a cluster that moved. That is
 the 2026-08-10 failure, made visible in one image.
+
+--footprints draws an iwmac-oversikt-footprints sidecar: the measured equipment
+box in amber, its centre as a crosshair, and a dashed amber box where the value
+object would sit if it were centred on it. Where the dashed box and the blue
+value box coincide, the temperature bubble is in the centre of the equipment;
+where they do not, the gap is the 2026-08-11 correction, at the exact size it
+was made. This overlay draws SOMEBODY'S MEASUREMENT over the artwork - it does
+not measure anything and it cannot confirm the measurement is of the right box.
+Judge the amber box against the artwork under it first; if it is not around the
+visible case, the sidecar is wrong, not the panel.
 
 WHAT IS STILL APPROXIMATE. Object artwork - the alarm bell, the cooling and
 defrost symbols, the value box chrome - is served by the host and is not in this
@@ -58,6 +69,11 @@ ROLE_COLOURS = {
     "defrost": ("#6c3fb5", "rgba(108,63,181,0.18)"),
 }
 UNKNOWN_ROLE = ("#ff00ff", "rgba(255,0,255,0.30)")
+
+# Amber, and used for nothing else. A measured footprint is a different KIND of
+# thing from everything else on this page - the four role colours and the ghost
+# outline all come out of a panel JSON, this one comes out of somebody's ruler.
+FOOTPRINT_COLOUR = "#d98200"
 
 CROP_PAD = 40
 CROP_SCALE = 3
@@ -185,12 +201,120 @@ def cluster_markup(clusters, klass="c", label=True):
     return "\n".join(parts)
 
 
-def crop_regions(clusters, width, height):
+def half_up(value):
+    """Round .5 away from zero. Mirrors validate-oversikt-panel.half_up().
+
+    The preview has to draw the expected position the validator computes, to the
+    pixel. A renderer that rounded differently would show a one-pixel gap where
+    O-G08 reports a clean pass, and a reviewer would trust the picture.
+    """
+    return int(value + 0.5) if value >= 0 else -int(-value + 0.5)
+
+
+def footprint_geometry(footprints, clusters, roles, width, height):
+    """Scale a footprint sidecar onto this canvas. Returns unit -> geometry.
+
+    Header values are the per-record defaults, same as the validator. A record
+    this renderer cannot place - no footprint, no resolution, a controller not
+    in this panel - is skipped rather than drawn approximately, because an amber
+    box in the wrong place is worse than no amber box.
+    """
+    if not isinstance(footprints, dict):
+        return {}
+    header = footprints
+    records = footprints.get("records")
+    if not isinstance(records, list):
+        return {}
+    placed = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        unit = str(record.get("unit_id") or "").strip()
+        entry = clusters.get(unit)
+        if not unit or entry is None:
+            continue
+        box = record.get("footprint")
+        if not isinstance(box, dict):
+            continue
+        try:
+            left, top = float(box["left"]), float(box["top"])
+            box_w, box_h = float(box["width"]), float(box["height"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if box_w <= 0 or box_h <= 0:
+            continue
+        image_size = record.get("source_image_size") or header.get("source_image_size")
+        panel_size = record.get("panel_size") or header.get("panel_size") or [width, height]
+        try:
+            scale_x = float(panel_size[0]) / float(image_size[0])
+            scale_y = float(panel_size[1]) / float(image_size[1])
+        except (TypeError, ValueError, ZeroDivisionError, IndexError):
+            continue
+        left, top = left * scale_x, top * scale_y
+        box_w, box_h = box_w * scale_x, box_h * scale_y
+
+        value = next((o for o in entry["members"]
+                      if roles.get(o.get("obj_id")) == "value"), None)
+        if value is None:
+            continue
+        size = (px(value.get("posWidth")), px(value.get("posHeight")))
+        expected = (half_up(left + (box_w - size[0]) / 2),
+                    half_up(top + (box_h - size[1]) / 2))
+        actual = (px(value.get("posLeft")), px(value.get("posTop")))
+        placed[unit] = {
+            "box": (half_up(left), half_up(top), half_up(box_w), half_up(box_h)),
+            "centre": (left + box_w / 2, top + box_h / 2),
+            "expected": expected,
+            "size": size,
+            "drift": (actual[0] - expected[0], actual[1] - expected[1]),
+            "note": str(record.get("evidence_note") or ""),
+            "production_proven": bool(record.get("production_proven")),
+        }
+    return placed
+
+
+def footprint_markup(placed):
+    parts = []
+    for unit in sorted(placed):
+        entry = placed[unit]
+        left, top, box_w, box_h = entry["box"]
+        dx, dy = entry["drift"]
+        title = ("%s - measured footprint (%d,%d) %dx%d; value expected at (%d,%d), "
+                 "drift (%+d,%+d)%s. %s"
+                 % (unit, left, top, box_w, box_h, entry["expected"][0],
+                    entry["expected"][1], dx, dy,
+                    " [production_proven]" if entry["production_proven"] else "",
+                    entry["note"] or "no evidence note recorded"))
+        parts.append('<div class="fp" style="left:%dpx;top:%dpx;width:%dpx;height:%dpx" '
+                     'title="%s"></div>' % (left, top, box_w, box_h, html.escape(title)))
+        cx, cy = entry["centre"]
+        parts.append('<div class="fpx" style="left:%dpx;top:%dpx" title="%s"></div>'
+                     % (half_up(cx) - 5, half_up(cy) - 5,
+                        html.escape("%s - centre of the measured footprint" % unit)))
+        parts.append('<div class="fpe" style="left:%dpx;top:%dpx;width:%dpx;height:%dpx" '
+                     'title="%s"></div>'
+                     % (entry["expected"][0], entry["expected"][1],
+                        entry["size"][0], entry["size"][1],
+                        html.escape("%s - where the value object sits when centred on "
+                                    "this footprint" % unit)))
+    return "\n".join(parts)
+
+
+def crop_regions(clusters, width, height, placed=None):
     regions = []
+    placed = placed or {}
     for entry in clusters.values():
         if entry["key"] is None:
             continue
         left, top, right, bottom = entry["bbox"]
+        measured = placed.get(str(entry["key"]))
+        if measured:
+            # Widen to the measured box. A value object dropped on the label
+            # beside its case is exactly the defect worth seeing, and a crop cut
+            # to the cluster alone would show the bubble and not the box.
+            fl, ft, fw, fh = measured["box"]
+            left, top = min(left, fl), min(top, ft)
+            right, bottom = max(right, fl + fw), max(bottom, ft + fh)
         left, top = max(0, left - CROP_PAD), max(0, top - CROP_PAD)
         right, bottom = min(width, right + CROP_PAD), min(height, bottom + CROP_PAD)
         w, h = right - left, bottom - top
@@ -227,6 +351,14 @@ PAGE = """<!DOCTYPE html>
         z-index: 4000; }}
   .g {{ position: absolute; box-sizing: border-box; z-index: 3900;
         border: 1px dashed #d13b8a; background: rgba(209,59,138,0.10); }}
+  .fp {{ position: absolute; box-sizing: border-box; z-index: 3800;
+         border: 2px solid {footprint}; background: transparent; }}
+  .fpe {{ position: absolute; box-sizing: border-box; z-index: 3850;
+          border: 2px dashed {footprint}; background: transparent; }}
+  .fpx {{ position: absolute; width: 11px; height: 11px; z-index: 3860;
+          background:
+            linear-gradient({footprint},{footprint}) center/11px 1px no-repeat,
+            linear-gradient({footprint},{footprint}) center/1px 11px no-repeat; }}
   .clbl {{ position: absolute; left: 0; bottom: 100%; font: 9px/1.2 Arial, sans-serif;
            white-space: nowrap; color: #10202e;
            text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff; }}
@@ -234,6 +366,9 @@ PAGE = """<!DOCTYPE html>
   body.hide-clusters .c {{ display: none; }}
   body.hide-clusters .g {{ display: none; }}
   body.hide-labels .clbl {{ display: none; }}
+  body.hide-footprints .fp {{ display: none; }}
+  body.hide-footprints .fpe {{ display: none; }}
+  body.hide-footprints .fpx {{ display: none; }}
   #controls {{ margin: 8px 16px 14px; }}
   #controls label {{ margin-right: 18px; }}
   #legend span {{ display: inline-block; margin: 0 14px 4px 0; }}
@@ -252,11 +387,13 @@ PAGE = """<!DOCTYPE html>
   <label><input type="checkbox" id="ov" checked> object boxes</label>
   <label><input type="checkbox" id="cl" checked> cluster outlines</label>
   <label><input type="checkbox" id="lb" checked> controller labels</label>
+  {footprint_toggle}
   <span id="legend">{legend}</span>
 </div>
 <h2>Full panel &mdash; native size, {width}x{height}, no scaling</h2>
 <div id="panel" class="canvas">
 {ghosts}
+{footprints}
 {clusters}
 {objects}
 </div>
@@ -279,6 +416,7 @@ too wide for {scale}x drops to 1x rather than lose its right-hand edge.</p>
   bind('ov', 'hide-overlay');
   bind('cl', 'hide-clusters');
   bind('lb', 'hide-labels');
+  if (document.getElementById('fp')) {{ bind('fp', 'hide-footprints'); }}
 </script>
 </html>
 """
@@ -288,6 +426,7 @@ CROP = """<div class="crop">
   <div class="win" style="width:{win_w}px;height:{win_h}px">
     <div class="canvas" style="transform:scale({scale}) translate({tx}px,{ty}px)">
 {ghosts}
+{footprints}
 {clusters}
 {objects}
     </div>
@@ -295,7 +434,7 @@ CROP = """<div class="crop">
 </div>"""
 
 
-def render(document, title, source_document=None):
+def render(document, title, source_document=None, footprints=None):
     envelope = envelope_of(document)
     panel = envelope.get("panel") or {}
     width = px(panel.get("panel_width"), 1400)
@@ -319,6 +458,36 @@ def render(document, title, source_document=None):
                       "%d source controller(s) have no cluster in this candidate%s."
                       % (len(lost), (": " + ", ".join(map(str, sorted(lost)))) if lost else ""))
 
+    placed = {}
+    footprint_boxes = ""
+    footprint_toggle = ""
+    footprint_note = ""
+    if footprints is not None:
+        placed = footprint_geometry(footprints, clusters, roles, width, height)
+        footprint_boxes = footprint_markup(placed)
+        footprint_toggle = ('<label><input type="checkbox" id="fp" checked> '
+                            'measured footprints</label>')
+        named_keys = {str(k) for k, v in clusters.items() if k is not None}
+        missing = sorted(named_keys - set(placed))
+        off = sorted(u for u, e in placed.items() if max(map(abs, e["drift"])) > 2)
+        footprint_note = (
+            " Amber is a MEASUREMENT SOMEBODY MADE, not something this panel proves: "
+            "solid is the equipment footprint, the crosshair is its centre, and the "
+            "dashed box is where the value object would sit if it were centred on it. "
+            "Check the amber box against the artwork under it before believing "
+            "anything it implies about the blue box. %d of %d controller(s) measured"
+            % (len(placed), len(named_keys)))
+        if missing:
+            footprint_note += ("; unmeasured, and therefore unproven, not passed: "
+                               + ", ".join(missing))
+        footprint_note += (("; more than 2px off centre: " + ", ".join(off))
+                           if off else "; every measured value box is on its centre.")
+        if footprints.get("synthetic") or footprints.get("source") == "synthetic-back-derived":
+            footprint_note += (" WARNING: this sidecar is SYNTHETIC - the footprints were "
+                               "derived from the value objects they appear to verify. The "
+                               "amber boxes are not on the equipment and mean nothing about "
+                               "this store.")
+
     legend = "".join(
         '<span><i style="border-color:%s;background:%s"></i>%s</span>'
         % (ROLE_COLOURS[role][0], ROLE_COLOURS[role][1], role)
@@ -328,6 +497,12 @@ def render(document, title, source_document=None):
     if source_document is not None:
         legend += ('<span><i style="border-color:#d13b8a;'
                    'background:rgba(209,59,138,0.10)"></i>source cluster</span>')
+    if footprints is not None:
+        legend += ('<span><i style="border-color:%s;background:transparent"></i>'
+                   'measured footprint</span>'
+                   '<span><i style="border-color:%s;background:transparent;'
+                   'border-style:dashed"></i>value centred on it</span>'
+                   % (FOOTPRINT_COLOUR, FOOTPRINT_COLOUR))
 
     named = [c for c in clusters.values() if c["key"] is not None]
     totals = collections.Counter()
@@ -341,7 +516,7 @@ def render(document, title, source_document=None):
             "symbols belong to the Designer. Counts are evidence, not targets."
             % (len(objects), len(named), width, height,
                ", ".join("%s %d" % (r, n) for r, n in sorted(totals.items())),
-               background_note)) + ghost_note
+               background_note)) + ghost_note + footprint_note
 
     crops = "\n".join(
         CROP.format(name=html.escape(region["name"]), count=region["count"],
@@ -351,14 +526,17 @@ def render(document, title, source_document=None):
                     win_w=region["width"] * region["scale"],
                     win_h=region["height"] * region["scale"],
                     scale=region["scale"], tx=-region["left"], ty=-region["top"],
-                    ghosts=ghosts, clusters=outlines, objects=markup)
-        for region in crop_regions(clusters, width, height))
+                    ghosts=ghosts, clusters=outlines, objects=markup,
+                    footprints=footprint_boxes)
+        for region in crop_regions(clusters, width, height, placed))
 
     return PAGE.format(title=html.escape(title), background=background,
                        width=width, height=height, objects=markup,
                        clusters=outlines, ghosts=ghosts, legend=legend,
                        crops=crops, note=html.escape(note),
-                       scale=CROP_SCALE, pad=CROP_PAD)
+                       scale=CROP_SCALE, pad=CROP_PAD,
+                       footprint=FOOTPRINT_COLOUR, footprints=footprint_boxes,
+                       footprint_toggle=footprint_toggle)
 
 
 def main(argv=None):
@@ -366,15 +544,21 @@ def main(argv=None):
     parser.add_argument("panel", type=pathlib.Path)
     parser.add_argument("--source", type=pathlib.Path, default=None,
                         help="draw this panel's clusters as dashed ghosts underneath")
+    parser.add_argument("--footprints", type=pathlib.Path, default=None,
+                        help="draw an iwmac-oversikt-footprints sidecar over the "
+                             "artwork: measured equipment box, its centre, and the "
+                             "centred value position")
     parser.add_argument("-o", "--output", type=pathlib.Path, default=None)
     args = parser.parse_args(argv)
 
     document = json.loads(args.panel.read_text(encoding="utf-8"))
     source = (json.loads(args.source.read_text(encoding="utf-8"))
               if args.source else None)
+    footprints = (json.loads(args.footprints.read_text(encoding="utf-8"))
+                  if args.footprints else None)
     out = args.output or args.panel.with_name(args.panel.stem + "-preview.html")
-    out.write_text(render(document, args.panel.name, source), encoding="utf-8",
-                   newline="\n")
+    out.write_text(render(document, args.panel.name, source, footprints),
+                   encoding="utf-8", newline="\n")
 
     panel = envelope_of(document).get("panel") or {}
     objects = panel.get("single_objects") or []
@@ -384,6 +568,13 @@ def main(argv=None):
              panel.get("panel_height"),
              "embedded" if panel.get("image_data") or panel.get("image_svg") else "MISSING"))
     print("Open at 100% zoom. The full panel is native size on purpose.")
+    if footprints is not None:
+        placed = footprint_geometry(footprints, clusters_of(objects, load_roles()),
+                                    load_roles(), px(panel.get("panel_width"), 1400),
+                                    px(panel.get("panel_height"), 750))
+        print("%d footprint(s) from %s drawn in amber. Check each amber box against the "
+              "artwork first - the overlay draws a measurement, it does not make one."
+              % (len(placed), args.footprints))
     return 0
 
 

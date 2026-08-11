@@ -134,6 +134,16 @@ Only for a panel of the same building. `R-P1`…`R-P7` assert that building's
 attributes and reset cluster. **A failure on another plant means the profile
 does not apply**, not that the panel is wrong.
 
+In the same pass, run the GLOBAL visual-correctness validator — on a table
+every row keeps a static label cell, a blank icon cell and a blank value cell,
+no live object covers a label or header, and state values fit their longest
+`format_extra` display value
+([VISUAL-CORRECTNESS-CONTRACT.md](VISUAL-CORRECTNESS-CONTRACT.md)):
+
+```bash
+python validate-visual-correctness.py out.json
+```
+
 ## Stage 7 — delivery
 
 | # | Check |
