@@ -41,6 +41,10 @@ rather than add one — the light-skin-only policy — and is the first part who
 subject is a rule that was never evidence-backed: background colour now follows
 the supplied export or the user's requirement, and everything else about the
 background is unchanged.
+[Part 13](#part-13--2026-08-11-the-generated-single-file-maskin-knowledge-bundle)
+(2026-08-11) adds a **generated single-file Maskin knowledge bundle** for an
+M365 Copilot Studio agent. It does not create another rule owner: the builder
+renders the existing owners at run time and its freshness test rejects drift.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -3046,3 +3050,57 @@ does imply: line work and text stay readable against whatever background is used
   `CLAUDE.md` negative-example entry keep their references to the light skin.
   They describe what a document said or what a file is, in the past tense, and a
   superseded record stays true of its own date.
+
+# Part 13 — 2026-08-11: The generated single-file Maskin knowledge bundle
+
+Part 13 solves a packaging problem without moving a rule. The M365 Copilot
+Studio agent was being pointed at `CLAUDE.md`, which is a host deep-dive and a
+router, not a Maskin coordinate source. A hand-written replacement would have
+become a second Maskin guide and violated the one-live-owner rule recorded in
+Part 11. The replacement is therefore a build artifact: one Markdown file
+rendered from the existing machine-readable rules, preflight, QA checklist,
+envelope template and link map.
+
+The generated file is deliberately self-contained for the one-file upload
+surface. Its builder has `--check` mode, and the test suite verifies freshness,
+the complete object and role vocabulary, all 20 verbatim preflight rules, the
+current background-colour policy, and the positive and negative Maskin examples.
+
+### 156. The Maskin knowledge upload is generated from the existing owners
+
+| | |
+|---|---|
+| **Original** | `CLAUDE.md` was the only single file being handed to the Copilot Studio agent. It routed Maskin work to sibling documents but carried no complete coordinate inventory, object vocabulary or role-cluster geometry. |
+| **Problem found** | The agent had only the router, so it invented missing coordinates. Copying the sibling rules by hand into another guide would fix retrieval by creating a second live owner that could drift. |
+| **Revised** | `build-maskin-knowledge.py` renders `MASKIN-KNOWLEDGE-BUNDLE.md` from `documentation-rules.json`, `MASKIN-COPILOT-PREFLIGHT.md`, `MASKIN-QA-CHECKLIST.md`, `AI-BRIEFING.txt` and `reference_data/maskin-akpc-link-map.json`. The generated bundle carries the measured profile grouped by role, all 20 preflight rules verbatim, the envelope and object templates, linking map, artwork and compare rules, and exact QA commands. `--check` and `tests/test_maskin_knowledge_bundle.py` make staleness executable. |
+| **Reason** | A generated projection gives the one-file knowledge surface the complete Maskin context it needs while every normative fact remains owned and edited in exactly one upstream file. |
+| **Source** | The 2026-08-11 generated Maskin knowledge-bundle task and the existing owners named above. No coordinate, role, alias, binding, z band or schema changed. |
+
+**Files**
+
+| File | Change | Applied |
+|---|---|---|
+| [build-maskin-knowledge.py](build-maskin-knowledge.py) | New deterministic builder with rewrite and `--check` modes | Yes |
+| [MASKIN-KNOWLEDGE-BUNDLE.md](MASKIN-KNOWLEDGE-BUNDLE.md) | New generated single-file Maskin knowledge upload | Yes |
+| [tests/test_maskin_knowledge_bundle.py](tests/test_maskin_knowledge_bundle.py) | Freshness, coverage, verbatim-preflight, colour-policy and reference tests | Yes |
+| `CLAUDE.md` | §17b AI-kit list names the generated single-file upload | Yes |
+| [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) | Sibling-document table cross-reference | Yes |
+| [MASKIN-QA-CHECKLIST.md](MASKIN-QA-CHECKLIST.md) | Related-document cross-reference | Yes |
+| documentation-change-log.md | This part; index paragraph at head | Yes |
+
+## What Part 13 deliberately did not do
+
+- **Did not create a second Maskin guide or a second rule owner.** The bundle is
+  generated, says not to hand-edit it, and contains no authored copy of a rule in
+  its builder.
+- **Did not edit an upstream rule or measurement.** `documentation-rules.json`,
+  the reference fixture, the AK-PC link map, the preflight and the QA commands
+  remain the owners the builder reads.
+- **Did not change the background-colour policy.** The generated bundle carries
+  Part 12's current source-driven rule; it does not restore the withdrawn
+  light-skin-only or dark-background prohibition.
+- **Did not change a coordinate, role, `obj_id`, alias, binding, z band or JSON
+  schema.** The profile is rendered from the existing generated rules.
+- **Did not touch another panel type, a userscript, `AI-AGENT-INSTRUCTIONS.txt`,
+  a validator, a fixture or a source builder.** No version was bumped, and
+  nothing was committed or pushed.

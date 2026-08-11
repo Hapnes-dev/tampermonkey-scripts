@@ -16,7 +16,9 @@ drawing is what every coordinate in this panel type exists to line up with.
 Related: [MASKIN-GENERATION-CONTRACT.md](MASKIN-GENERATION-CONTRACT.md) owns the
 measurements, [MASKIN-AUTHORING-GUIDE.md](MASKIN-AUTHORING-GUIDE.md) owns the
 procedure, [MASKIN-COPILOT-PREFLIGHT.md](MASKIN-COPILOT-PREFLIGHT.md) is the
-compact version of both for a system prompt.
+compact version of both for a system prompt, and
+[MASKIN-KNOWLEDGE-BUNDLE.md](MASKIN-KNOWLEDGE-BUNDLE.md) is the generated
+single-file knowledge upload.
 
 ## Stage 0 — Run the validator
 
