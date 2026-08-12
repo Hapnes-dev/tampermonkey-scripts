@@ -55,12 +55,12 @@ validators, fixtures, and rules-only work **MUST NOT** bump `@version`.
 
 ## How to make changes
 
-**IMPORTANT:** When the task is finished, commit and push to
-`https://github.com/Hapnes-dev/tampermonkey-scripts` (`origin`). That applies
-to documentation-only work too. Userscript auto-update still requires a
-`.user.js` `@version` bump **and a push to `main`** — Tampermonkey follows
-`@updateURL` / `@downloadURL` on `main`, so a feature-branch-only push does
-not update installed scripts.
+**IMPORTANT:** Every change: commit and push to **both** `origin` (GitHub)
+and `gitlab`. Do not wait to be asked. That applies to documentation-only
+work too.
+Userscript auto-update still requires a `.user.js` `@version` bump **and a
+push to GitHub `main`** — Tampermonkey follows `@updateURL` / `@downloadURL`
+on `main`, so a feature-branch-only push does not update installed scripts.
 
 ### 1. Edit the script
 Make changes to the `.user.js` file in the correct subfolder.
@@ -80,7 +80,8 @@ If workflow steps changed, update the AI reference README in the same folder.
 cd "C:\Users\Thomas\Documents\Claude\repos\tampermonkey-scripts"
 git add <changed-files>
 git commit -m "Description of changes"
-git push
+git push origin HEAD
+git push gitlab HEAD
 ```
 
 The `gh` CLI is installed and authenticated as `Hapnes-dev`.
@@ -122,12 +123,14 @@ quotes its Graphify counts. A push falsifies both. In the same pass:
    ```md
    | [Script Name](<folder>/) | Description | [Install](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/<folder>/<script>.user.js) |
    ```
-5. Commit and push
+5. Commit and push to `origin` and `gitlab`
 
 ## Git config
 
 - Remote: `origin` → `https://github.com/Hapnes-dev/tampermonkey-scripts.git`
-  (always push finished work here; this is the Tampermonkey auto-update source)
+  (Tampermonkey auto-update source; always push finished work here)
+- Remote: `gitlab` → `https://gitlab.com/thomas.kvalvag/tampermonkey-scripts.git`
+  (always push the same commits here too)
 - Branch: `main` (auto-update URLs read this branch)
 - Auth: `gh` CLI authenticated as `hapnes-dev`
 - User: `hapnes-dev` / `hapnes-dev@users.noreply.github.com`
