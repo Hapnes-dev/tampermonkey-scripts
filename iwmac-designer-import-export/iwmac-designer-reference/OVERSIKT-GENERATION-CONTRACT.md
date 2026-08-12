@@ -160,7 +160,7 @@ namespaces, matching the Maskin precedent (`M-S*`/`M-G*`/`M-P*`):
 | `O-G04` | error | A role appears twice on one controller — duplicated cluster | §5 |
 | `O-G05` | **info** | Partial clusters — **legitimate, must not be "fixed"** | §5.3 |
 | `O-G06` | error | Clusters on a regular lattice — dashboard/kit shape | §0.1, §12 |
-| `O-G07` | warning | Overlapping objects, minus the expected pairs | §9 |
+| `O-G07` | warning | Cross-controller or non-cluster overlaps. Same-controller pairs of two different cluster roles (alarm/value/cooling/defrost) are intentional stacking and are **not** reported | §8.6, §9 |
 | `O-G08` | error/warn/**info** | The value object is not centred on the measured equipment footprint. **Info, and the only finding, when `--footprints` is absent: centering was not checked.** | §7.1b |
 | `O-G09` | error/warn/info | The footprint sidecar itself: format, duplicates, unknown controllers, unmeasured controllers, and a sidecar that declares itself synthetic | §7.1c |
 | `O-G10` | error/info | The footprint's frame of reference: `source_image_size`, `panel_size`, the scale between them | §7.1c |
@@ -1092,6 +1092,106 @@ background label and the screenshot relationship together. `object_N` is
 implementation identity only. **MUST NOT match by array position, final array
 object, highest unit, rightmost object or filename wording.**
 
+When `driver_id` or `unit_id` is the field being repaired, it **MUST NOT** be
+the cluster key. Stale AK2 strings and old `001:` addresses identify a previous
+binding, not the equipment on the artwork.
+
+#### Clusters are not JSON containers — `OVERSIKT`
+
+The four live symbols of a cooling cluster are individual
+`panel.single_objects`. **No parent container exists.** There is no
+parent-child JSON relationship. Cluster membership is spatial and semantic:
+proximity, signal role, shared unit after verification, matching equipment
+label, repeated relative offsets and compatible `obj_id`s.
+
+**MUST NOT** search for a JSON parent container, wrap the four objects in one,
+or refuse the task because `containers` is empty.
+
+#### Coordinate system and screenshot scaling — `OVERSIKT`
+
+Objects use absolute top-left canvas coordinates:
+
+- `posLeft` = X from the left edge of the panel canvas
+- `posTop` = Y from the top edge of the panel canvas
+- `posWidth` / `posHeight` = object size
+- `right = posLeft + posWidth`
+- `bottom = posTop + posHeight`
+
+**MUST NOT** assume screenshot pixels equal Designer coordinates. Before using
+a screenshot measurement, compare screenshot dimensions, `panel_width`,
+`panel_height`, embedded image dimensions, and any crop or browser scaling. If
+the screenshot is cropped or scaled:
+
+```
+scaleX = panelWidth / screenshotContentWidth
+scaleY = panelHeight / screenshotContentHeight
+panelX = (screenX - cropOffsetX) * scaleX
+panelY = (screenY - cropOffsetY) * scaleY
+```
+
+**MUST NOT** apply that transform when rank 1 already contains the intended
+coordinates. A newer user-corrected JSON wins over image measurement.
+
+#### Four-role cooling cluster — reusable pattern, not a universal requirement
+
+Observed on many AKC case controllers, including `CASE-RELINK-A-20260812`. A
+controller that does not expose a role stays partial (`O-G05`). **MUST NOT**
+pad a cluster to four.
+
+| Role | Example `obj_id` | Example size | Example alias | Band |
+|---|---|---|---|---|
+| Temperature display | `number_v3_40px_no_conn_no_tag` | 42×22 | `u56 Display air` | 110 |
+| Cooling state | `V3_R_28px_circular_cooling_nrm` | 28×28 | `u58 Comp1/LLSV` | 375 |
+| Alarm state | `V3_R_34px_circular_alarm_nrm` | 34×34 | High temperature alarm | 375 |
+| Defrost state | `V3_R_28px_circular_defrost_nrm` | 28×28 | `u60 Def. relay` | 375 |
+
+Aliases and suffixes in this table are examples. Copy the current equipment's
+workbook row. Alarm suffixes are **not** uniform.
+
+On `CASE-RELINK-A-20260812` the cooling symbol was the left anchor, with value
+at approximately dx 22–24 / dy 3, alarm at dx 27–29 / dy 23, and defrost at
+dx 30–32 / dy 24. Alarm and defrost overlap on purpose; the value pill overlaps
+the cooling symbol horizontally. **That relative arrangement may be reused only
+when a matching production reference supports it.** The absolute coordinates
+from that session are project-specific and **MUST NOT** become Oversikt
+geometry (`OV-C1`).
+
+`O-G07` **MUST NOT** report same-controller pairs of two different cluster
+roles as overlap defects. Cross-controller overlaps remain warnings. The same
+role twice on one controller remains `O-G04`.
+
+Equal `zIndex` (all three symbols at 375) means array order can affect which
+overlapping object is hit-tested. Binding-only work **MUST** preserve `zIndex`
+and array order. **MUST NOT** normalize stacking unless requested and supported
+by evidence.
+
+#### Incorrect versus correct inferences
+
+Incorrect: "`object_183` is the highest-numbered disk object, so it must be the
+final physical disk."
+
+Correct: "`object_183` is only an implementation identifier. Determine physical
+identity from its coordinates, alias, unit, nearby background label and source
+parameter data."
+
+Incorrect: "`K3C` uses controller index 33, so `K3D` is probably index 34."
+
+Correct: "No `K3D` equipment row exists in the supplied parameter source. Leave
+`K3D` unresolved and report the missing mapping."
+
+Incorrect: "This controller uses suffix 20009 for high temperature, so all
+other units should use 20009."
+
+Correct: "Search the exact unit's parameter rows and copy the complete
+high-temperature alarm driver ID. In this session some units used 20009 while
+others used 20011."
+
+Incorrect: "The screenshot suggests the symbols belong around this rectangle,
+so estimate their coordinates."
+
+Correct: "The user supplied a newer JSON with manually corrected coordinates.
+Preserve those coordinates exactly and perform a binding-only update."
+
 #### Binding-only preservation boundary
 
 For every source object, a binding-only result **MUST retain exactly**:
@@ -1222,9 +1322,12 @@ position and the host renders whichever state is active.
 > An overlap check that reports these is reporting noise, and noise is how a real
 > overlap gets ignored. A candidate that *separates* them has changed the panel.
 
-`check_overlaps` skips a same-controller `{cooling, defrost}` pair, and skips any
-overlap thinner than `HAIRLINE = 2` px — symbols stacked vertically in a cluster
-routinely abut by a pixel, because the cluster was laid out by dragging.
+`check_overlaps` skips a same-controller pair of two *different* cluster roles
+(`alarm`, `value`, `cooling`, `defrost`) — coincident cooling/defrost, stacked
+alarm/defrost, and a value pill overlapping cooling are all legal state
+stacking — and skips any overlap thinner than `HAIRLINE = 2` px. Cross-controller
+overlaps remain warnings. The same role twice on one controller is `O-G04`, not
+an overlap to "fix" by moving a symbol.
 
 Positions: (302,174) (355,98) (426,101) (496,98) (565,100) (567,673) (638,100)
 (641,674) (710,100) (782,99) (815,655) (848,99) (895,474) (924,171) (924,279).

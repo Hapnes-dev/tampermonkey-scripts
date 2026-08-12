@@ -51,6 +51,12 @@ adds the second Maskin artwork workflow.
 records the **GLOBAL link-verification correction** after a structurally linked
 Oversikt carried 64 driver ids unresolved by its supplied parameter workbook.
 It adds Oversikt conflict `OV-C5` and validator rules `O-B00`–`O-B08`.
+[Part 16](#part-16--2026-08-12-existing-oversikt-relink-evidence-order)
+applies that invariant to an existing-panel repair.
+[Part 17](#part-17--2026-08-12-existing-panel-relink-follow-through)
+records the remaining session findings: cluster-not-container identity,
+screenshot scaling, the four-role pattern as a reusable observation, and
+`O-G07` no longer treating same-cluster stacking as generic overlap noise.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -3666,6 +3672,71 @@ Run from `iwmac-designer-reference/`:
 
 ```bash
 python build-oversikt-rules.py --check
+python -m unittest tests.test_oversikt_link_binding tests.test_oversikt_10113_contract
+python validate-oversikt-panel.py \
+  --compare tests/fixtures/oversikt-linking/verified-panel.json \
+            tests/fixtures/oversikt-linking/verified-panel.json \
+  --patch-scope binding-repair \
+  --parameters tests/fixtures/oversikt-linking/parameters.json \
+  --task oversikt-existing-panel-relink --json-report --no-matrix
+```
+
+---
+
+# Part 17 — 2026-08-12: existing-panel relink follow-through
+
+Part 16 added the repair route. Part 17 records the remaining session findings
+that were still easy to misread: array order versus geography, screenshot
+scaling, cluster-not-container identity, the four-role pattern as a reusable
+observation rather than a requirement, and `O-G07` treating intentional
+same-cluster stacking as generic overlap noise (audit **F63**).
+
+Controller indices, absolute coordinates and the missing `K3D` row remain
+`CASE-RELINK-A-20260812` examples. They are not Oversikt geometry.
+
+## Rules changed
+
+### 187. Contract §8.6 — cluster structure, coordinates, examples
+
+[OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) §8.6 now
+owns: clusters are `single_objects` not containers; `right`/`bottom` formulas;
+screenshot scaling with an explicit transform that **MUST NOT** run when the
+newest JSON is locked; the four-role table as a reusable pattern; the
+cooling-as-left-anchor relative arrangement scoped to this case; equal-`zIndex`
+array-order preservation; and the four incorrect/correct inference pairs.
+
+### 188. Procedure, QA, Copilot, routing, host facts
+
+[OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) §8c is the 22-step
+repair workflow. Stage E2 and stage D overlap wording follow it.
+[OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) adds R11–R12.
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md) §1.3.1 distinguishes this route
+from generating a new panel. [CLAUDE.md](CLAUDE.md) adds host facts 6–7.
+[AI-BRIEFING.txt](AI-BRIEFING.txt) §8b cross-references without duplicating
+the Oversikt rules. [PANEL-TYPE-GUIDE.md](PANEL-TYPE-GUIDE.md) points at §8.6.
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) stays under 8000
+worst-case CRLF characters and now names array-order, cluster-not-container
+and legal same-cluster stacking.
+
+### 189. O-G07 and the synthetic cooling-anchor fixture
+
+`validate-oversikt-panel.py` skips same-controller pairs of two different
+cluster roles. Cross-controller overlaps still warn. The existing-relink
+fixture now uses the cooling-as-left-anchor relative offsets on synthetic
+origins so stacking is tested without committing live coordinates.
+
+[DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md) adds the 20-point session
+analysis and F63. The userscript is unchanged, so `@version` stays `1.16.1`.
+
+## Verification commands
+
+Run from `iwmac-designer-reference/`:
+
+```bash
+python build-oversikt-rules.py
+python build-oversikt-existing-relink-fixture.py
+python build-oversikt-rules.py --check
+python build-oversikt-existing-relink-fixture.py --check
 python -m unittest tests.test_oversikt_link_binding tests.test_oversikt_10113_contract
 python validate-oversikt-panel.py \
   --compare tests/fixtures/oversikt-linking/verified-panel.json \

@@ -687,6 +687,20 @@ class ValidationModeAndIdentityTest(unittest.TestCase):
             ["panel.image_svg_trace"],
             oversikt["preserve_and_patch"]["patch_scope"]["export_only_fields"],
         )
+        relink = policy
+        self.assertEqual(
+            "panel.single_objects entries only; no parent container",
+            relink["cluster_structure"]["json"],
+        )
+        self.assertEqual(
+            "posLeft + posWidth",
+            relink["coordinate_system"]["right"],
+        )
+        self.assertIn("same-controller pairs", relink["overlap_policy"]["O-G07_skips"])
+        self.assertEqual(
+            "reusable observed pattern, not a universal requirement",
+            relink["four_role_pattern"]["classification"],
+        )
 
 
 class ExistingPanelRelinkCaseTest(unittest.TestCase):
@@ -714,6 +728,11 @@ class ExistingPanelRelinkCaseTest(unittest.TestCase):
         )
         self.assertEqual(20, len(fixture["parameters"]["rows"]))
         self.assertEqual(20, len(fixture["repair_plan"]))
+        self.assertEqual("object_24", fixture["expected"]["highest_object_name"])
+        self.assertEqual(
+            {"value": [22, 3], "alarm": [28, 23], "defrost": [31, 24]},
+            fixture["expected"]["relative_offsets_from_cooling"],
+        )
 
     def test_binding_only_repair_preserves_corrected_visual_document(self):
         fixture, source, candidate = build_existing_relink_case()
@@ -750,6 +769,89 @@ class ExistingPanelRelinkCaseTest(unittest.TestCase):
             if replacement["role"] == "alarm"
         }
         self.assertEqual(fixture["expected"]["alarm_suffixes"], alarm_ids)
+        self.assertEqual(
+            len(objects(candidate)),
+            candidate["counts"]["single_objects"],
+        )
+        names = [obj["name"] for obj in objects(candidate)]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(
+            fixture["expected"]["highest_object_name"],
+            max(names, key=lambda name: int(name.split("_")[1])),
+        )
+        highest = candidate_by_name[fixture["expected"]["highest_object_name"]]
+        self.assertEqual("number_v3_label_12px_bold", highest["obj_id"])
+        self.assertTrue(fixture["expected"]["highest_object_is_not_equipment"])
+        for replacement in fixture["repair_plan"]:
+            old_id = source_by_name[replacement["object_name"]]["driver_id"]
+            new_id = candidate_by_name[replacement["object_name"]]["driver_id"]
+            self.assertIn("_AK2_", old_id)
+            self.assertIn("_AK3_AKC_", new_id)
+            self.assertNotEqual(old_id.replace("_AK2_", "_AK3_AKC_"), new_id)
+            self.assertIn(new_id, parameter_ids)
+        alarm_suffixes = set(alarm_ids.values())
+        self.assertGreater(len(alarm_suffixes), 1)
+        self.assertIn("20009", alarm_suffixes)
+        self.assertIn("20011", alarm_suffixes)
+
+    def test_array_order_is_not_physical_order(self):
+        fixture, source, candidate = build_existing_relink_case()
+        names = [obj["name"] for obj in objects(source)]
+        self.assertEqual("object_0", names[0])
+        first = objects(source)[0]
+        self.assertEqual("V3_R_34px_circular_alarm_nrm", first["obj_id"])
+        last_equipment = objects(source)[-2]
+        self.assertEqual("object_23", last_equipment["name"])
+        self.assertEqual("K3D", last_equipment["unit_id"].split(":")[-1])
+        self.assertNotEqual(
+            first["posLeft"],
+            last_equipment["posLeft"],
+        )
+        cooling = [
+            obj for obj in objects(candidate)
+            if obj["obj_id"] == "V3_R_28px_circular_cooling_nrm"
+            and obj["unit_id"] == "000:090"
+        ][0]
+        self.assertEqual("object_2", cooling["name"])
+        self.assertLess(cooling["posLeft"], first["posLeft"])
+        offsets = fixture["expected"]["relative_offsets_from_cooling"]
+        by_role = {replacement["role"]: replacement["object_name"]
+                   for replacement in fixture["repair_plan"]
+                   if replacement["equipment_label"] == "K51"}
+        candidate_by_name = {obj["name"]: obj for obj in objects(candidate)}
+        for role, (dx, dy) in offsets.items():
+            member = candidate_by_name[by_role[role]]
+            self.assertEqual(cooling["posLeft"] + dx, member["posLeft"], role)
+            self.assertEqual(cooling["posTop"] + dy, member["posTop"], role)
+
+    def test_intentional_cluster_stacking_is_not_reported_as_overlap(self):
+        _fixture, _source, candidate = build_existing_relink_case()
+        with tempfile.TemporaryDirectory() as temp:
+            panel = write_json(temp, "stacked.json", candidate)
+            completed, report = run_cli(panel)
+        overlap = [
+            finding for finding in report["findings"]
+            if finding["rule"] == "O-G07"
+        ]
+        self.assertEqual([], overlap, overlap)
+        self.assertNotIn("O-G07", rule_ids(report, "error"))
+
+    def test_cross_controller_overlap_still_warns(self):
+        _fixture, _source, candidate = build_existing_relink_case()
+        k51_alarm = next(
+            obj for obj in objects(candidate)
+            if obj["name"] == "object_0"
+        )
+        k4a_value = next(
+            obj for obj in objects(candidate)
+            if obj["name"] == "object_5"
+        )
+        k51_alarm["posLeft"] = k4a_value["posLeft"]
+        k51_alarm["posTop"] = k4a_value["posTop"]
+        with tempfile.TemporaryDirectory() as temp:
+            panel = write_json(temp, "cross-overlap.json", candidate)
+            completed, report = run_cli(panel)
+        self.assertIn("O-G07", rule_ids(report, "warning"))
 
     def test_missing_k3d_is_partial_without_blocking_verified_clusters(self):
         fixture, source, candidate = build_existing_relink_case()

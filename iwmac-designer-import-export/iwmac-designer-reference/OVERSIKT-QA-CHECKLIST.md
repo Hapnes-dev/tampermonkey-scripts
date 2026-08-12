@@ -263,9 +263,11 @@ python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-s
 - [ ] **The clusters are not on a regular lattice.** A grid of cards is a
       **CLUSTER KIT** hand-off, and a kit must be labelled a kit, never delivered
       as a finished panel. `O-G06`
-- [ ] **Overlaps are explained.** Coincident cooling/defrost on the *same*
-      controller is deliberate — the host draws whichever state is active.
-      Anything else needs a reason. `O-G07`
+- [ ] **Overlaps are explained.** Same-controller pairs of two different
+      cluster roles (alarm/value/cooling/defrost) are intentional stacking —
+      coincident cooling/defrost, stacked alarm/defrost, value overlapping
+      cooling. `O-G07` does not report those. Cross-controller overlaps still
+      need a reason. `O-G07`
 - [ ] **No object is hidden** behind another, or stacked outside its z-band such
       that it never renders. `O-S12`, `O-C11`
 - [ ] **No duplicate labels** — two captions naming the same case read as two
@@ -350,6 +352,15 @@ owns the behavior.
       `posLeft`, `posTop`, `posWidth`, `posHeight`, `zIndex`, `obj_id`, `name`
       and array position match. Background value, containers, graphics and
       unrelated metadata match. `image_svg_trace` is the export-only exception.
+- [ ] **Counts and names held.** `counts.single_objects` equals array length;
+      object names are unique.
+- [ ] **Screenshot scaling was checked** before any image-derived coordinate,
+      or no image-derived coordinate was used because the newest JSON was
+      locked.
+- [ ] **Same-cluster stacking was not treated as a defect.** Alarm/defrost and
+      value/cooling overlaps inside one controller are legal. `O-G07`
+- [ ] **Clusters were not wrapped in a container.** Membership is spatial and
+      semantic among `single_objects`.
 - [ ] **Every changed driver id is an entire exact workbook cell.** No family,
       controller index, path group or suffix was replaced inside a string.
 - [ ] **Every changed binding agrees with equipment and role.** Exact unit,

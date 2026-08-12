@@ -318,6 +318,11 @@ EXISTING_PANEL_RELINK = {
             "screenshot relationship",
         ],
         "identity": "match equipment role plus position",
+        "stale_bindings": (
+            "When driver_id or unit_id is the repair target, it cannot be the "
+            "cluster key. Use geometry, obj_id, alias, label proximity and the "
+            "screenshot until the exact source row is copied."
+        ),
         "never": [
             "array position",
             "object_N ordering",
@@ -419,7 +424,8 @@ EXISTING_PANEL_RELINK = {
         "no fabricated absent equipment",
         "exact duplicate live objects detected",
         "source-proven missing roles reported",
-        "intentional cooling/defrost/alarm stacking allowed",
+        "intentional cooling/defrost/alarm/value stacking allowed",
+        "same-controller four-role overlaps are not O-G07 errors",
     ],
     "verification_report": {
         "task": "oversikt-existing-panel-relink",
@@ -474,6 +480,105 @@ EXISTING_PANEL_RELINK = {
             "Never mutate fragments; select the exact current workbook row."
         ),
     },
+    "cluster_structure": {
+        "json": "panel.single_objects entries only; no parent container",
+        "relationship": (
+            "spatial and semantic: proximity, role, shared unit, equipment "
+            "label, relative offsets and compatible obj_id"
+        ),
+        "must_not": [
+            "search for a JSON parent container",
+            "treat object_N as equipment order",
+            "treat array order as visual reading order",
+        ],
+    },
+    "coordinate_system": {
+        "posLeft": "X from the left edge of the panel canvas",
+        "posTop": "Y from the top edge of the panel canvas",
+        "posWidth": "object width in panel pixels",
+        "posHeight": "object height in panel pixels",
+        "right": "posLeft + posWidth",
+        "bottom": "posTop + posHeight",
+        "screenshot_rule": (
+            "Do not assume screenshot pixels equal Designer coordinates. "
+            "Compare screenshot size, panel_width, panel_height, embedded "
+            "image size and crop/browser scaling first. If cropped or scaled, "
+            "derive scaleX = panelWidth / screenshotContentWidth and "
+            "scaleY = panelHeight / screenshotContentHeight. Do not apply a "
+            "transform when the newest JSON already contains the intended "
+            "coordinates."
+        ),
+    },
+    "four_role_pattern": {
+        "classification": "reusable observed pattern, not a universal requirement",
+        "roles": [
+            {
+                "role": "temperature display",
+                "obj_id": "number_v3_40px_no_conn_no_tag",
+                "example_size": "42x22",
+                "example_alias": "u56 Display air",
+                "zIndex": "110",
+            },
+            {
+                "role": "cooling state",
+                "obj_id": "V3_R_28px_circular_cooling_nrm",
+                "example_size": "28x28",
+                "example_alias": "u58 Comp1/LLSV",
+                "zIndex": "375",
+            },
+            {
+                "role": "alarm state",
+                "obj_id": "V3_R_34px_circular_alarm_nrm",
+                "example_size": "34x34",
+                "example_alias": "High temperature alarm",
+                "zIndex": "375",
+            },
+            {
+                "role": "defrost state",
+                "obj_id": "V3_R_28px_circular_defrost_nrm",
+                "example_size": "28x28",
+                "example_alias": "u60 Def. relay",
+                "zIndex": "375",
+            },
+        ],
+        "coverage_rule": (
+            "A controller exposing fewer roles stays partial. Never pad to four."
+        ),
+    },
+    "relative_stacking_pattern": {
+        "scope": "CASE-RELINK-A-20260812 reusable relative arrangement",
+        "not": "universal Oversikt geometry or live absolute coordinates",
+        "cooling_is_left_anchor": True,
+        "typical_offsets_from_cooling": {
+            "value": "dx 22 to 24, dy 3",
+            "alarm": "dx 27 to 29, dy 23",
+            "defrost": "dx 30 to 32, dy 24",
+        },
+        "intentional_overlaps": [
+            "alarm and defrost",
+            "value overlapping cooling horizontally",
+        ],
+        "origin": (
+            "The cluster origin follows the equipment footprint. Relative "
+            "offsets may be reused only when a matching production reference "
+            "supports them. Absolute coordinates stay project-specific."
+        ),
+    },
+    "overlap_policy": {
+        "O-G07_skips": (
+            "same-controller pairs of two different roles among alarm, value, "
+            "cooling and defrost"
+        ),
+        "O-G07_still_warns": "cross-controller overlaps and non-cluster objects",
+        "O-G04_still_errors": "the same role twice on one controller",
+    },
+    "incorrect_inferences": [
+        "object_N or the last array object is the final physical disk",
+        "the next controller index after a neighbor is the missing unit",
+        "a familiar alarm suffix such as 20009 applies to every controller",
+        "screenshot estimates override a newer user-corrected JSON",
+        "AK2 can be edited into AK3_AKC by replacing a fragment",
+    ],
 }
 
 CLUSTER_RULES = {
@@ -1380,7 +1485,8 @@ EVIDENCE = {
         "role": (
             "Shows why the newest corrected JSON owns manual placement, why "
             "equipment is matched by role plus position rather than array order, "
-            "and why one absent workbook unit stops only that cluster."
+            "why same-cluster symbol stacking is not an O-G07 defect, and why "
+            "one absent workbook unit stops only that cluster."
         ),
         "fixture": (
             "tests/fixtures/oversikt-existing-relink/case.json; generated by "

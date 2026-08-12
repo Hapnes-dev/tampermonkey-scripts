@@ -62,6 +62,13 @@ R9 VALIDATE exact workbook ids, role/equipment/family/unit agreement, counts,
    names, fields, duplicates, missing roles, unchanged visuals/background.
 R10 RETURN importable panel JSON first; optional report second. Report unmatched
     labels. Partial is valid; partial is NEVER "fully linked".
+R11 CLUSTERS ARE NOT CONTAINERS. Membership is spatial/semantic among
+    single_objects. right = posLeft+posWidth; bottom = posTop+posHeight.
+    Screenshot pixels are NOT Designer coordinates unless dimensions match.
+    Do not transform when the newest JSON already has the intended coordinates.
+R12 SAME-CLUSTER STACKING IS LEGAL. Alarm/defrost overlap and value overlapping
+    cooling are not O-G07 defects. Cross-controller overlaps still warn.
+    Preserve equal zIndex 375 and array order; do not normalize stacking.
 
 Run:
   python validate-oversikt-panel.py --compare NEWEST-CORRECTED.json

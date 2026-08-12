@@ -484,14 +484,18 @@ def check_grid(clusters, findings):
                                 f"kit, never delivered as a finished panel"))
 
 
-def check_overlaps(objects, roles, findings):
-    """Report overlapping objects, minus the two kinds this panel type expects.
+CLUSTER_STACK_ROLES = {"alarm", "value", "cooling", "defrost"}
 
-    Cooling and defrost on the same controller share one coordinate on purpose:
-    the host draws whichever state is active. And symbols stacked vertically in
-    a cluster routinely abut by a pixel, because the cluster was laid out by
-    dragging. Reporting either is reporting noise, and noise is how a real
-    overlap gets ignored.
+
+def check_overlaps(objects, roles, findings):
+    """Report overlapping objects, minus the stacking this panel type expects.
+
+    Same-controller pairs among the four cluster roles are intentional state
+    stacking: coincident cooling/defrost, alarm-over-defrost, and a value pill
+    overlapping the cooling symbol's horizontal extent. Reporting those is
+    noise, and noise is how a real cross-controller overlap gets ignored.
+    Same-role duplicates on one controller stay visible here and as O-G04.
+    Hairline abutments from hand-dragged layout are also skipped.
     """
     boxed = [(o, rect(o)) for o in objects]
     boxed = [(o, b) for o, b in boxed if b]
@@ -504,7 +508,12 @@ def check_overlaps(objects, roles, findings):
                 continue
             same_controller = controller_key(obj_a)[0] == controller_key(obj_b)[0]
             pair = {roles.get(obj_a.get("obj_id")), roles.get(obj_b.get("obj_id"))}
-            if same_controller and pair == {"cooling", "defrost"}:
+            if (
+                same_controller
+                and None not in pair
+                and len(pair) == 2
+                and pair <= CLUSTER_STACK_ROLES
+            ):
                 continue
             if min(min(ar, br) - max(al, bl), min(ab, bb) - max(at, bt)) <= HAIRLINE:
                 continue

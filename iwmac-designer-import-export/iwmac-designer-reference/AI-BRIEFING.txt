@@ -1692,8 +1692,9 @@ these disks", "I placed them where they should be", "use this updated JSON"
 or "match the screenshot to the parameter Excel" route to
 OVERSIKT-GENERATION-CONTRACT.md §8.6. That panel-specific contract owns
 source precedence, role-plus-position matching, binding-only visual
-preservation, per-cluster STOP behavior and task
-oversikt-existing-panel-relink. This GLOBAL section still owns the
+preservation, per-cluster STOP behavior, cluster-not-container identity,
+screenshot-scaling checks and task oversikt-existing-panel-relink. Array
+order is not physical order. This GLOBAL section still owns the
 no-fabrication and exact-source invariant.
 
 RELINKING A WHOLE MACHINE PICTURE (Maskin). A common request: "link out

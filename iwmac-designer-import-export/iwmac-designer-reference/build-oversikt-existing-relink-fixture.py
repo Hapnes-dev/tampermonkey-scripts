@@ -13,11 +13,18 @@ OUTPUT = ROOT / "tests" / "fixtures" / "oversikt-existing-relink" / "case.json"
 VISUAL_FIELDS = (
     "obj_id", "name", "posLeft", "posTop", "posWidth", "posHeight", "zIndex",
 )
+# Cooling is the left anchor. Offsets are the CASE-RELINK-A relative stacking
+# pattern, applied to synthetic origins — never the live panel coordinates.
 ROLE_DEFS = {
-    "alarm": ("V3_R_34px_circular_alarm_nrm", 34, 34, 4, 0, "375"),
-    "value": ("number_v3_40px_no_conn_no_tag", 42, 22, 0, 35, "110"),
-    "cooling": ("V3_R_28px_circular_cooling_nrm", 28, 28, 7, 58, "375"),
-    "defrost": ("V3_R_28px_circular_defrost_nrm", 28, 28, 7, 58, "375"),
+    "cooling": ("V3_R_28px_circular_cooling_nrm", 28, 28, 0, 0, "375"),
+    "value": ("number_v3_40px_no_conn_no_tag", 42, 22, 22, 3, "110"),
+    "alarm": ("V3_R_34px_circular_alarm_nrm", 34, 34, 28, 23, "375"),
+    "defrost": ("V3_R_28px_circular_defrost_nrm", 28, 28, 31, 24, "375"),
+}
+RELATIVE_OFFSETS_FROM_COOLING = {
+    "value": [22, 3],
+    "alarm": [28, 23],
+    "defrost": [31, 24],
 }
 ROLE_ROWS = {
     "value": ("2576", "u56 Display air", "Analog values", "float"),
@@ -178,6 +185,9 @@ def build():
             "verified_equipment": ["K51", "K4A", "K4B", "K3B", "K3C"],
             "unresolved_equipment": ["K3D"],
             "unchanged_object": "object_24",
+            "highest_object_name": "object_24",
+            "highest_object_is_not_equipment": True,
+            "relative_offsets_from_cooling": RELATIVE_OFFSETS_FROM_COOLING,
             "alarm_suffixes": {
                 label: suffix
                 for label, _, _, _, suffix in CLUSTERS

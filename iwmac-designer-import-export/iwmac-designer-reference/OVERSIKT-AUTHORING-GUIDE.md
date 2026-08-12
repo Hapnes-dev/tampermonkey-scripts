@@ -357,41 +357,71 @@ Use this procedure for “link these objects”, “link out these disks”, “
 objects on this picture”, “these need linking”, “I placed them where they should
 be”, “use this updated JSON”, “match the screenshot to the parameter Excel”, or
 “repair missing links on an Oversikt panel”. Contract §8.6 owns the rules.
+Generating a new Oversikt is not this procedure.
 
-1. **Name the class.** Choose binding-only, placement-only,
-   binding+placement, add-missing-clusters, or validation/report-only. A newer
-   user-corrected panel is binding-only unless the user explicitly requests
-   layout changes.
-2. **Choose the visual authority by content and timestamp.** Copy the newest
-   current-task JSON whole. Do not start from an earlier filename merely because
-   it says `linked`, `final` or `corrected`.
-3. **Inspect artwork before objects.** Read `image_data`, then
-   `image_svg_trace` when present. Record the visible equipment labels and which
-   marks are baked into the image. Enumerate `single_objects`; do not add a
-   second live object over artwork or an existing live role.
-4. **Build a role-and-position table.** For each requested label, record nearby
-   object name, `obj_id`, geometry, alias, driver and unit. `object_N` and array
-   order may locate an implementation entry but never establish equipment
-   identity.
-5. **Open the workbook and collect one equipment at a time.** Minimal
-   case/whitespace/display-suffix normalization may locate candidate labels.
-   Review every row for the full equipment before choosing value, cooling,
-   defrost or high-temperature alarm.
-6. **Copy exact cells.** Copy the whole `driver_id`. Copy `unit_id` only where
-   the evidence provides it. Record the selected alarm row and reason. Never
-   splice a family, controller index, register path or suffix.
-7. **Apply the per-cluster STOP.** If an equipment unit is absent, do not infer
-   its next index or clone a neighboring unit. Leave that cluster unchanged or
-   absent, name it unresolved, and continue independent verified clusters.
-8. **Reuse existing objects.** Patch compatible nearby role objects before
-   adding anything. Add only a source-proven missing live role; preserve every
-   manually placed object and every visual field.
-9. **Write only verified binding fields.** In binding-only work, the only
-   permitted object changes are `driver_id`, `unit_id`, `alias_text` and
-   `linked`. Preserve names, types, dimensions, positions, z-index, order,
-   arrays, metadata and background values. Do not emit `image_svg_trace`; it is
-   export-only AI input, not the imported background.
-10. **Run the task gate.**
+1. **Classify the task.** Choose binding-only, placement-only,
+   binding+placement, add-missing-clusters, validation/report-only, or stop and
+   route to generation if no existing panel JSON exists. A newer user-corrected
+   panel is binding-only unless the user explicitly requests layout changes.
+2. **Select the newest panel JSON** by content and timestamp, not by a filename
+   such as `final` or `linked`.
+3. **Determine whether coordinates are locked.** If the user placed the objects,
+   lock `posLeft`, `posTop`, `posWidth`, `posHeight`, `zIndex`, `obj_id`, `name`,
+   array order and background.
+4. **Read panel dimensions.** Record `panel_width`, `panel_height` and every
+   object's `right = posLeft + posWidth`, `bottom = posTop + posHeight`.
+5. **Inspect the embedded background, then the screenshot.** `image_data` first,
+   `image_svg_trace` second. Compare screenshot size to the panel before any
+   image-derived coordinate. Do not transform when rank 1 already has the
+   intended coordinates.
+6. **Enumerate existing live objects** before creating any. Separate baked
+   labels and rectangles from `single_objects`. Clusters are not JSON
+   containers.
+7. **Match visible labels to equipment candidates** by role plus position:
+   geometry, `obj_id`, alias, current binding, background label, screenshot.
+   Array order and `object_N` are not equipment identity.
+8. **Resolve exact units in the parameter source.** Search the full equipment
+   name; collect every row; reject ambiguous candidates.
+9. **Resolve each signal role by exact parameter name and group.** Copy the
+   complete driver ID from that row. Do not splice family, index, path or
+   suffix.
+10. **Reuse existing objects.** Relink complete clusters in place.
+11. **Add only missing roles** after proving the live object is absent. Do not
+    duplicate background artwork.
+12. **Copy complete driver IDs** and evidence-backed `unit_id` / `alias_text`.
+    Set `linked:"true"` only after verification.
+13. **Preserve all locked visual fields.** In binding-only work those fields do
+    not move.
+14. **Leave unmatched units unresolved.** Missing equipment is a per-cluster
+    STOP. Continue independent verified clusters. Do not infer the next index.
+15. **Validate JSON structure** (parse, envelope, required fields).
+16. **Validate object counts** (`counts.single_objects` equals array length;
+    names unique).
+17. **Validate every changed driver ID against the parameter source.**
+18. **Validate coordinate preservation** against the newest JSON.
+19. **Validate background preservation** (`image_data` byte-identical).
+20. **Validate unrelated-object preservation.**
+21. **Return the ready-to-import panel JSON.** Omit `image_svg_trace`. Do not
+    wrap the panel in the report.
+22. **Report linked, unchanged and unresolved units.** Partial is valid;
+    partial is never "fully linked".
+
+Incorrect: "`object_183` is the highest-numbered disk, so it is the last
+physical disk."
+Correct: "`object_183` is an implementation identifier. Identify it from
+coordinates, alias, unit, background label and the parameter source."
+
+Incorrect: "`K3C` is index 33, so `K3D` is index 34."
+Correct: "No `K3D` row exists in the source. Leave it unresolved."
+
+Incorrect: "Suffix 20009 is the high-temperature alarm, so use 20009 everywhere."
+Correct: "Copy the complete alarm driver ID from that unit's own rows."
+
+Incorrect: "Estimate coordinates from the screenshot."
+Correct: "A newer corrected JSON exists. Preserve those coordinates and update
+bindings only."
+
+Run:
 
 ```bash
 python validate-oversikt-panel.py \
@@ -401,12 +431,6 @@ python validate-oversikt-panel.py \
   --task oversikt-existing-panel-relink \
   --json-report
 ```
-
-11. **Review the report, not only the exit code.** Check changed driver ids
-    against exact rows, equipment/role, family and unit evidence; confirm
-    visual preservation; list verified and unresolved labels separately. The
-    panel JSON is the importable primary output. The verification report is an
-    optional companion and never wraps it.
 
 ## 9. Render a preview
 
@@ -570,4 +594,8 @@ asserts the validator catches it.
 | **Forced 42×22** | A supplied panel's value objects silently resized to the size the documentation quotes. | `O-C10`, and `O-C16` under a declared patch scope |
 | **Unscaled measurement** | Coordinates read off a 1868×1000 background and written straight onto a 1400×750 canvas. | `O-G10` if the resolution is recorded; otherwise nothing |
 | **Patch that patched more** | A centering correction that also nudged an alarm, rewrote an alias, or reordered the array. | `O-C16` with `--patch-scope value-position` |
-| **Guessed footprint** | A coordinate emitted for equipment whose box could not be measured — the gap filled in by inference. | Nothing. This is why "no footprint, no coordinate" is a rule and not a preference |
+| **Last-array-object identity** | Highest `object_N` or the final `single_objects` entry treated as the last physical disk. | Role-plus-position matching; `O-C12` if order is the only change |
+| **Estimated coordinates after a corrected JSON** | Screenshot guesses overwrite manual placement. | `--patch-scope binding-repair` / `O-C16` |
+| **Missing-unit sequence inference** | `K3C` is 33, so `K3D` is 34. | Per-cluster STOP; `O-B03` / `O-B08` |
+| **Global alarm suffix** | Copy 20009 onto every high-temperature alarm. | Exact-row copy; distinct suffixes in the relink fixture |
+| **Same-cluster stacking treated as a defect** | Moving alarm off defrost, or value off cooling, to silence `O-G07`. | `O-G07` skips same-controller four-role pairs |

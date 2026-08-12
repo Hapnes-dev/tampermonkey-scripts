@@ -51,6 +51,8 @@ Four rules that override everything below when they conflict with it:
   omits controllers is a worse failure than one that looks wrong, because nobody
   catches it by looking. Complete controller coverage, verified against the
   source, is the acceptance test.
+- **Repairing links on an existing Oversikt is not generating a new one.** Newest
+  JSON owns placement; the parameter workbook owns driver IDs. Contract §8.6.
 
 - **44 panels**, median **132 objects**, ~**95% driver-linked** — the most object-dense and most fully linked panel type.
 - **The median is a fleet statistic, not a target.** The measured reference profile is 72 objects in 21 clusters; neither number is a pass mark. A store has as many clusters as it has cooling positions — build to the *controllers* the source proves and compare controller by controller.

@@ -146,6 +146,10 @@ reason to abandon independent clusters that have exact evidence. Partial
 completion **MUST** name every unresolved label and **MUST NOT** be called fully
 linked.
 
+This route applies **only when an existing panel JSON is supplied**. Generating
+a new Oversikt is §2 row 6 plus this contract from the start — a different
+class. Do not rebuild a supplied panel in order to link it.
+
 ### 1.4 When it really is a data request
 
 Produce a plain data file **only** when the user explicitly asks for one:

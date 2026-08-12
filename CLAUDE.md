@@ -49,19 +49,23 @@ URLs follow the pattern:
 https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/<folder>/<script>.user.js
 ```
 
-**IMPORTANT:** You MUST bump `@version` every time you push changes, otherwise users won't get the update.
-
-**CRITICAL:** ALWAYS bump the `@version` number with EVERY change, no exceptions. This is a BLOCKING requirement before committing.
+**IMPORTANT:** Bump `@version` only when the `.user.js` itself changes.
+Otherwise Tampermonkey will not pick up a script update. Docs, tests,
+validators, fixtures, and rules-only work **MUST NOT** bump `@version`.
 
 ## How to make changes
 
-**IMPORTANT:** After EVERY change, you MUST commit and push to GitHub. Users receive updates via Tampermonkey auto-update, so changes only take effect once pushed.
+**IMPORTANT:** When the task is finished, commit and push to GitHub. That
+applies to documentation-only work too. Userscript auto-update still requires
+a `.user.js` `@version` bump; a docs-only push does not.
 
 ### 1. Edit the script
 Make changes to the `.user.js` file in the correct subfolder.
 
-### 2. Bump the version
-In the `// ==UserScript==` header, increment `@version` (e.g. 5.2 → 5.3).
+### 2. Bump the version (script changes only)
+If the `.user.js` changed, increment `@version` in the `// ==UserScript==`
+header (e.g. 5.2 → 5.3) and any matching in-script version constant. Skip this
+step when the userscript file is unchanged.
 
 > **`rocketlane-chat-bridge` specifically:** the Project Progress Tracker `.html` checks this bridge's live `@version` on every load (`checkBridgeUpdate` → fetches `@version` from the canonical raw URL) and pops an **"Update bridge"** card whenever the user's installed copy is behind. The check is version-agnostic, so **just bumping `@version` here is all the tracker needs to prompt users to the newest bridge** — no `.html` change required. Also sync the PPT-repo snapshot `Project-Progress-Tracker/rocketlane-chat-bridge/rocketlane-chat-bridge.user.js` to match.
 
