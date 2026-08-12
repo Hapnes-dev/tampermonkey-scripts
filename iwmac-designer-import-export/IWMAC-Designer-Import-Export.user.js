@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.0
+// @version      1.13.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.12.0';
+var IWDIE_VERSION = '1.13.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2012,6 +2012,7 @@ var IWDIE_TRACER = (typeof module !== 'undefined' && module.exports && module.ex
 var XLSX_STYLE_DEFAULT = 0;
 var XLSX_STYLE_HEADER = 1;   // bold white on blue
 var XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
+var XLSX_STYLE_UNIT = 3;     // bold white on gray-blue (unit band, all-units export)
 
 var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
 var IWDIE_PARAM_EXPORT_COL_WIDTHS = [22, 46, 16, 10, 12, 16, 14, 8, 38];
@@ -2052,6 +2053,52 @@ function iwdieBuildParamExportRows(records) {
         cells: [groupName, clean(r.alias_text), iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
           clean(r.data_type), clean(r.application), clean(r.tag), clean(r.sgr), clean(r.driver_id)],
         outline: 1
+      });
+    });
+  });
+  return rows;
+}
+
+var IWDIE_ALLUNITS_EXPORT_HEADER = ['Unit', 'Group', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
+var IWDIE_ALLUNITS_COL_WIDTHS = [26, 22, 46, 16, 10, 12, 16, 14, 8, 38];
+
+/* unitBlocks: [{ unitLabel, records }] — the whole plant in one sheet with a
+ * two-level outline: a gray-blue unit band per unit (collapse a whole unit),
+ * light blue group bands inside it (outline 1), parameters at outline 2. The
+ * Unit and Group columns repeat on every data row so AutoFilter sorting and
+ * filtering keep working plant-wide. Units with no parameters are dropped
+ * here; the caller reports how many. */
+function iwdieBuildAllUnitsExportRows(unitBlocks) {
+  function clean(v) {
+    return String(v == null ? '' : v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function pad(cells) {
+    while (cells.length < IWDIE_ALLUNITS_EXPORT_HEADER.length) cells.push('');
+    return cells;
+  }
+  var rows = [{ cells: IWDIE_ALLUNITS_EXPORT_HEADER.slice(), style: XLSX_STYLE_HEADER }];
+  (unitBlocks || []).forEach(function (block) {
+    var records = (block && block.records) || [];
+    if (!records.length) return;
+    var unitLabel = clean(block.unitLabel) || '-';
+    rows.push({ cells: pad([unitLabel + ' (' + records.length + ')']), style: XLSX_STYLE_UNIT });
+    var order = [];
+    var groups = {};
+    records.forEach(function (r) {
+      if (!r) return;
+      var g = clean(r.group) || '-';
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(r);
+    });
+    order.forEach(function (groupName) {
+      var members = groups[groupName];
+      rows.push({ cells: pad(['', groupName + ' (' + members.length + ')']), style: XLSX_STYLE_GROUP, outline: 1 });
+      members.forEach(function (r) {
+        rows.push({
+          cells: [unitLabel, groupName, clean(r.alias_text), iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
+            clean(r.data_type), clean(r.application), clean(r.tag), clean(r.sgr), clean(r.driver_id)],
+          outline: 2
+        });
       });
     });
   });
@@ -2144,8 +2191,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          handler — deliberately NOT a w2ui toolbar item, so the host's
          radio/checked state machine ("PS Select which item adds to Label")
          cannot be disturbed by clicking it. */
-      '#iwdie_param_export_td .w2ui-button{cursor:pointer;margin-left:6px;border:1px solid transparent;border-radius:4px}',
-      '#iwdie_param_export_td .w2ui-button:hover{background:#eef5fc;border-color:#9aa7b3}',
+      '#iwdie_param_export_td .w2ui-button,#iwdie_param_export_all_td .w2ui-button{cursor:pointer;margin-left:6px;border:1px solid transparent;border-radius:4px}',
+      '#iwdie_param_export_td .w2ui-button:hover,#iwdie_param_export_all_td .w2ui-button:hover{background:#eef5fc;border-color:#9aa7b3}',
       ''].join('\n');
     try {
       if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
@@ -2890,7 +2937,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '  <button class="iwdie-btn iwdie-secondary" id="iwdie_confirm_no">' + opts.no.label + '</button>',
         '  <div>' + opts.no.desc + '</div>',
         '</div>',
-        '<div class="iwdie-hint">Esc or a click outside chooses “' + opts.no.label + '”. Either way the import continues, and nothing reaches the server until you press the designer’s own Save.</div>'
+        '<div class="iwdie-hint">' + (opts.hint || ('Esc or a click outside chooses “' + opts.no.label + '”. Either way the import continues, and nothing reaches the server until you press the designer’s own Save.')) + '</div>'
       ].join('\n');
       confirmOverlay.appendChild(panel);
       document.body.appendChild(confirmOverlay);
@@ -3388,7 +3435,108 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var name = iwdieBuildParamExportFilename(plant, unitLabel, new Date());
       var blob = buildXlsxBlob([{ name: 'Parameters', rows: iwdieBuildParamExportRows(records) }]);
       triggerXlsxDownload(blob, name);
+      W.__IWDIE.lastExport = { name: name, units: 1, params: records.length, failed: 0 };
       hostOk('Exported ' + records.length + ' parameters for ' + unitLabel + ' → ' + name);
+    }
+
+    function currentPlantIdForExport() {
+      var plant = '';
+      try { plant = String(W.get_plant_id() || ''); } catch (e) { }
+      if (!plant) {
+        var m = /[?&]plant_id=(\d+)/.exec(location.search);
+        plant = m ? m[1] : 'plant';
+      }
+      return plant;
+    }
+
+    /* Walk every unit through the host's own click-loader (unitsClickHandler
+       sync-fetches iw_load_plant.php and fills paramgrid), snapshot the grid
+       after each load, then put the user's original selection back. Using the
+       host's loader instead of refetching keeps this immune to the response
+       format — whatever fills the grid is what gets exported. One unit per
+       tick: the XHR is synchronous, so the gap is what lets the progress toast
+       repaint and spares the plant server a burst. */
+    function collectAllUnitBlocks(onProgress, done) {
+      var w2 = W.w2ui;
+      var ug = w2.unitgrid;
+      var pg = w2.paramgrid;
+      var sel = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
+      var originalRecid = sel && sel.length ? sel[0] : null;
+      var recids = (ug.records || []).map(function (r) { return r.recid; });
+      var blocks = [];
+      var failed = 0;
+      var i = 0;
+      function restore() {
+        try {
+          if (originalRecid != null) { ug.click(originalRecid); }
+          else { ug.selectNone(); pg.clear(); }
+        } catch (e) { }
+      }
+      function step() {
+        if (i >= recids.length) { restore(); done(blocks, failed); return; }
+        var rec = null;
+        try {
+          rec = ug.get(recids[i]);
+          ug.click(recids[i]);
+          blocks.push({
+            unitLabel: String((rec && (rec.unit_name || rec.unit_id)) || recids[i]),
+            records: (pg.records || []).map(function (r) { return Object.assign({}, r); })
+          });
+        } catch (e) { failed++; }
+        i++;
+        onProgress(i, recids.length, rec);
+        setTimeout(step, 60);
+      }
+      step();
+    }
+
+    function doExportAllParams() {
+      var w2 = W.w2ui;
+      var ug = w2 && w2.unitgrid;
+      var pg = w2 && w2.paramgrid;
+      if (!ug || !pg) { toast('Parameter selector is not ready.', true); return; }
+      var unitCount = (ug.records || []).length;
+      if (!unitCount) { toast('No units loaded in the UNITS list.', true); return; }
+      openConfirmDialog({
+        /* ASCII-only strings here: the legacy page is not served as UTF-8, so
+           anything non-ASCII mojibakes when the script is loaded via a plain
+           script tag (the test-injection path). Tampermonkey decodes the file
+           itself, but ASCII keeps both paths clean. */
+        title: 'Export all units to Excel',
+        intro: 'Load the parameter list of every unit in turn and download the whole plant as one workbook.',
+        facts: [
+          '<b>' + unitCount + '</b> units in the list',
+          'Each unit is loaded into the grid exactly as if clicked, then your current selection is put back',
+          'Roughly a second per unit; the loads run one at a time on purpose'
+        ],
+        yes: { label: 'Export all units', desc: 'Walk the list, then download parameters_&lt;plant&gt;_all-units_&hellip;.xlsx.' },
+        no: { label: 'Cancel', desc: 'Do nothing.' },
+        hint: 'Esc or a click outside cancels. This only reads parameter lists; nothing is written to the plant.'
+      }, function (yes) {
+        if (!yes) return;
+        var progress = document.createElement('div');
+        progress.className = 'iwdie-toast';
+        progress.textContent = 'Exporting units... 0/' + unitCount;
+        document.body.appendChild(progress);
+        collectAllUnitBlocks(function (i, total, rec) {
+          progress.textContent = 'Exporting units... ' + i + '/' + total +
+            (rec && rec.unit_name ? ' - ' + rec.unit_name : '');
+        }, function (blocks, failed) {
+          progress.remove();
+          var nonEmpty = blocks.filter(function (b) { return b.records.length; });
+          var empty = blocks.length - nonEmpty.length;
+          if (!nonEmpty.length) { toast('No parameters found on any unit — nothing to export.', true); return; }
+          var rows = iwdieBuildAllUnitsExportRows(nonEmpty);
+          var total = nonEmpty.reduce(function (sum, b) { return sum + b.records.length; }, 0);
+          var name = iwdieBuildParamExportFilename(currentPlantIdForExport(), 'all-units', new Date());
+          var blob = buildXlsxBlob([{ name: 'All units', rows: rows, colWidths: IWDIE_ALLUNITS_COL_WIDTHS }]);
+          triggerXlsxDownload(blob, name);
+          W.__IWDIE.lastExport = { name: name, units: nonEmpty.length, params: total, failed: failed, empty: empty };
+          hostOk('Exported ' + total + ' parameters across ' + nonEmpty.length + ' units → ' + name +
+            (failed ? ' (' + failed + ' unit(s) failed to load)' : '') +
+            (empty ? ' (' + empty + ' empty unit(s) skipped)' : ''));
+        });
+      });
     }
 
     /* The popup's bottom row (ALIAS TEXT / UNIT ID / UNIT NAME) is the w2ui
@@ -3398,20 +3546,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        never move the host's checked state. w2ui re-renders that toolbar on
        every popup open, wiping the td; the 800 ms installer interval re-adds
        it (idempotent, same pattern as the sidebar fieldset). */
-    function ensureParamExportButton() {
-      if (document.getElementById('iwdie_param_export_td')) return;
-      var anchor = document.getElementById('tb_nolinkable_toolbar_item_add_unit_name');
-      if (!anchor || !anchor.parentNode) return;
+    function makeParamExportTd(id, caption, title, handler) {
       var td = document.createElement('td');
-      td.id = 'iwdie_param_export_td';
+      td.id = id;
       // Same markup shape w2ui renders for its own buttons, so the host CSS
       // styles it identically to ALIAS TEXT / UNIT ID / UNIT NAME.
       td.innerHTML = '<table class="w2ui-button" cellpadding="0" cellspacing="0"' +
-        ' title="Download every parameter of the selected regulator as Excel (.xlsx)"' +
-        ' onclick="window.__IWDIE.doExportParams()"><tbody><tr>' +
-        '<td class="w2ui-tb-caption" style="white-space:nowrap">EXPORT XLSX</td>' +
+        ' title="' + title + '"' +
+        ' onclick="' + handler + '"><tbody><tr>' +
+        '<td class="w2ui-tb-caption" style="white-space:nowrap">' + caption + '</td>' +
         '</tr></tbody></table>';
-      anchor.insertAdjacentElement('afterend', td);
+      return td;
+    }
+
+    function ensureParamExportButton() {
+      var anchor = document.getElementById('tb_nolinkable_toolbar_item_add_unit_name');
+      if (!anchor || !anchor.parentNode) return;
+      if (!document.getElementById('iwdie_param_export_td')) {
+        anchor.insertAdjacentElement('afterend', makeParamExportTd(
+          'iwdie_param_export_td', 'EXPORT XLSX',
+          'Download every parameter of the selected regulator as Excel (.xlsx)',
+          'window.__IWDIE.doExportParams()'));
+      }
+      if (!document.getElementById('iwdie_param_export_all_td')) {
+        document.getElementById('iwdie_param_export_td').insertAdjacentElement('afterend', makeParamExportTd(
+          'iwdie_param_export_all_td', 'EXPORT ALL XLSX',
+          'Download every parameter of every unit on this plant as Excel (.xlsx)',
+          'window.__IWDIE.doExportAllParams()'));
+      }
     }
 
     /* ---------- console surface + install ---------- */
@@ -3422,6 +3584,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       applyImport: applyImport,
       doExportBackgroundAi: doExportBackgroundAi,
       doExportParams: doExportParams,
+      doExportAllParams: doExportAllParams,
       _collect: collectCurrentDoc
     };
 
@@ -3477,7 +3640,9 @@ if (typeof module !== 'undefined' && module.exports) {
     backgroundMime: iwdieBackgroundMime,
     countDocItems: iwdieCountDocItems,
     paramExportHeader: IWDIE_PARAM_EXPORT_HEADER,
+    allUnitsExportHeader: IWDIE_ALLUNITS_EXPORT_HEADER,
     buildParamExportRows: iwdieBuildParamExportRows,
+    buildAllUnitsExportRows: iwdieBuildAllUnitsExportRows,
     paramAccessLabel: iwdieParamAccessLabel,
     buildParamExportFilename: iwdieBuildParamExportFilename,
     buildImagePdf: iwdieBuildImagePdf,

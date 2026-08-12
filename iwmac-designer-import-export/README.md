@@ -56,13 +56,21 @@ Round trip: export → give the `.png` to the AI with
 [`iwmac-designer-reference/`](iwmac-designer-reference/) as its knowledge → it returns a panel
 `.json` → **Insert JSON…** → link and save with the designer's own buttons.
 
-## Parameter list → Excel (v1.12.0)
+## Parameter list → Excel (v1.12.0, v1.13.0)
 
 The **PARAMETER SELECTOR** popup (Actions → *Open Paramselector Popup*, or any object-link
-dialog) gets an **EXPORT XLSX** button to the right of the ALIAS TEXT / UNIT ID / UNIT NAME
-row. Select a regulator in the UNITS list, click it, and every parameter of that regulator —
-all of them, not just the visible page — downloads as
-`parameters_<plant>_<unit>_<date>_<time>.xlsx`.
+dialog) gets two buttons to the right of the ALIAS TEXT / UNIT ID / UNIT NAME row:
+
+- **EXPORT XLSX** — select a regulator in the UNITS list, click it, and every parameter of
+  that regulator — all of them, not just the visible page — downloads as
+  `parameters_<plant>_<unit>_<date>_<time>.xlsx`.
+- **EXPORT ALL XLSX** (v1.13.0) — after an in-page confirmation, walks every unit in the
+  UNITS list through the host's own loader (one at a time, roughly a second per unit, with
+  a progress toast), restores your original selection, and downloads the whole plant as
+  `parameters_<plant>_all-units_<date>_<time>.xlsx`: one sheet, a gray-blue band per unit,
+  group bands inside each unit, parameters collapsible at outline level 2 — the same
+  layout as supermarket-superuser's all-units export. Units that fail to load or hold no
+  parameters are skipped and counted in the result message.
 
 The workbook uses the same style as the supermarket-superuser parameter export: bold
 white-on-blue header row (frozen), one collapsible light-blue band per parameter group with
