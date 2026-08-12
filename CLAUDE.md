@@ -55,9 +55,12 @@ validators, fixtures, and rules-only work **MUST NOT** bump `@version`.
 
 ## How to make changes
 
-**IMPORTANT:** When the task is finished, commit and push to GitHub. That
-applies to documentation-only work too. Userscript auto-update still requires
-a `.user.js` `@version` bump; a docs-only push does not.
+**IMPORTANT:** When the task is finished, commit and push to
+`https://github.com/Hapnes-dev/tampermonkey-scripts` (`origin`). That applies
+to documentation-only work too. Userscript auto-update still requires a
+`.user.js` `@version` bump **and a push to `main`** — Tampermonkey follows
+`@updateURL` / `@downloadURL` on `main`, so a feature-branch-only push does
+not update installed scripts.
 
 ### 1. Edit the script
 Make changes to the `.user.js` file in the correct subfolder.
@@ -123,7 +126,8 @@ quotes its Graphify counts. A push falsifies both. In the same pass:
 
 ## Git config
 
-- Remote: `origin` → `https://github.com/hapnes-dev/tampermonkey-scripts.git`
-- Branch: `main`
+- Remote: `origin` → `https://github.com/Hapnes-dev/tampermonkey-scripts.git`
+  (always push finished work here; this is the Tampermonkey auto-update source)
+- Branch: `main` (auto-update URLs read this branch)
 - Auth: `gh` CLI authenticated as `hapnes-dev`
 - User: `hapnes-dev` / `hapnes-dev@users.noreply.github.com`
