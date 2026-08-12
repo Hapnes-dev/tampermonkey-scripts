@@ -55,9 +55,10 @@ validators, fixtures, and rules-only work **MUST NOT** bump `@version`.
 
 ## How to make changes
 
-**IMPORTANT:** Every change: commit and push to **both** `origin` (GitHub)
-and `gitlab`. Do not wait to be asked. That applies to documentation-only
-work too.
+**IMPORTANT:** Every change **in this repo**: commit and push to **both**
+`origin` (GitHub) and `gitlab`. Do not wait to be asked. Stage only the files
+this task changed — never `git add -A`, never other repos, Cursor rules, or
+unrelated untracked files. That applies to documentation-only work too.
 Userscript auto-update still requires a `.user.js` `@version` bump **and a
 push to GitHub `main`** — Tampermonkey follows `@updateURL` / `@downloadURL`
 on `main`, so a feature-branch-only push does not update installed scripts.
@@ -78,7 +79,7 @@ If workflow steps changed, update the AI reference README in the same folder.
 ### 4. Commit and push (ALWAYS do this)
 ```bash
 cd "C:\Users\Thomas\Documents\Claude\repos\tampermonkey-scripts"
-git add <changed-files>
+git add <only-this-task's-files>
 git commit -m "Description of changes"
 git push origin HEAD
 git push gitlab HEAD
