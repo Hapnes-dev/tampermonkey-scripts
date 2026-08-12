@@ -20,7 +20,7 @@ tampermonkey-scripts/
 ├── README.md                     # Root index — table of all scripts with install links
 ├── CLAUDE.md                     # This file
 ├── ak3-autoscan/                 # Automates the AK3 scanner setup workflow on IWMAC plant servers
-├── iwmac-designer-import-export/ # Panel JSON export/copy/insert on the IWMAC Designer (legacy.iwmac.local) w/ driver-id rebinding + embedded background (+ iwmac-designer-reference/: the designer deep-dive docs, reference_data)
+├── iwmac-designer-import-export/ # Panel JSON export/copy/insert on the IWMAC Designer (legacy.iwmac.local) w/ driver-id rebinding + embedded background + param-selector xlsx export (+ iwmac-designer-reference/: the designer deep-dive docs, reference_data)
 ├── iwmac-topology-copy/          # Copy/export topology + inject live driver columns on sys_tools
 ├── logic-designer-copy-paste/    # Copy/paste (Ctrl+C/V + Ctrl+B ghost), multi-wire (Shift+F), remove-connectors (Shift+D), drag-move undo, type colors, sketch quick-open, formula editor, sketch-info pill, alarm→block highlight on the VV Designer (Henrik Monge)
 ├── logic-designer-import-export/ # Export/Import sketch (JSON) in the VV Designer File menu — move logic between plants w/ driver-id rebinding (+ vv-designer-reference/: the VV Designer deep-dive docs, AI briefing/examples, reference_data)
@@ -56,10 +56,6 @@ https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/<folder>/
 ## How to make changes
 
 **IMPORTANT:** After EVERY change, you MUST commit and push to GitHub. Users receive updates via Tampermonkey auto-update, so changes only take effect once pushed.
-
-**IMPORTANT:** NEVER edit old local copies (e.g. `Ak3.js.txt`). ALWAYS edit files inside their subfolder (e.g. `ak3-autoscan/AK3-Autoscan.user.js`).
-
-**IMPORTANT:** Before editing OR committing a `.user.js`, scan `C:\Users\Thomas\Downloads\` for a Tampermonkey export of that script (filename pattern: `<Script Name>-<version>.txt`). If the export's `@version` is HIGHER than the repo's, sync that file into the repo FIRST — convert LF → CRLF to match the repo's existing line endings — otherwise editing/pushing the repo version will downgrade the user's installed script on Tampermonkey auto-update.
 
 ### 1. Edit the script
 Make changes to the `.user.js` file in the correct subfolder.

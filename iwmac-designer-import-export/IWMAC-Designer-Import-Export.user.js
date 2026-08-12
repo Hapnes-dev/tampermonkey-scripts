@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.11.0
-// @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image
+// @version      1.12.0
+// @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @supportURL   https://github.com/hapnes-dev/tampermonkey-scripts/issues
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.11.0';
+var IWDIE_VERSION = '1.12.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2000,6 +2000,72 @@ if(typeof define === 'function' && define.amd){
 var IWDIE_TRACER = (typeof module !== 'undefined' && module.exports && module.exports.imagedataToSVG) ? module.exports
   : (typeof window !== 'undefined' && window.ImageTracer && window.ImageTracer.imagedataToSVG) ? window.ImageTracer : null;
 
+/* =============== parameter-selector xlsx export (pure part) ===============
+ * Turns the PARAMETER SELECTOR popup's w2ui paramgrid records (the selected
+ * regulator's full parameter list — w2ui keeps every row client-side) into
+ * the row model consumed by the xlsx writer in the browser body. The writer
+ * and this row shape mirror supermarket-superuser's export block; keep the
+ * two visually in sync (same style indexes, band layout, autofilter rules).
+ */
+
+// Cell style indexes into xlsxStylesXml()'s cellXfs (browser body).
+var XLSX_STYLE_DEFAULT = 0;
+var XLSX_STYLE_HEADER = 1;   // bold white on blue
+var XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
+
+var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
+var IWDIE_PARAM_EXPORT_COL_WIDTHS = [22, 46, 16, 10, 12, 16, 14, 8, 38];
+
+function iwdieParamAccessLabel(rw) {
+  var value = String(rw || '').trim().toLowerCase();
+  if (value === 'rw') return 'Read/write';
+  if (value === 'vrw') return 'Read/write (virtual)';
+  if (value === 'vr') return 'Read (virtual)';
+  if (value === 'r') return 'Read';
+  return value;
+}
+
+/* rows: [{cells, style?, outline?}] — header row (style 1), then one light
+ * blue collapsible band per parameter group (style 2) with the group's
+ * parameters at outlineLevel 1, in grid order. The Group column is repeated
+ * on every data row so Excel AutoFilter sorting/filtering keeps working. */
+function iwdieBuildParamExportRows(records) {
+  function clean(v) {
+    return String(v == null ? '' : v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  var rows = [{ cells: IWDIE_PARAM_EXPORT_HEADER.slice(), style: XLSX_STYLE_HEADER }];
+  var order = [];
+  var groups = {};
+  (records || []).forEach(function (r) {
+    if (!r) return;
+    var g = clean(r.group) || '-';
+    if (!groups[g]) { groups[g] = []; order.push(g); }
+    groups[g].push(r);
+  });
+  order.forEach(function (groupName) {
+    var members = groups[groupName];
+    var band = [groupName + ' (' + members.length + ')'];
+    while (band.length < IWDIE_PARAM_EXPORT_HEADER.length) band.push('');
+    rows.push({ cells: band, style: XLSX_STYLE_GROUP });
+    members.forEach(function (r) {
+      rows.push({
+        cells: [groupName, clean(r.alias_text), iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
+          clean(r.data_type), clean(r.application), clean(r.tag), clean(r.sgr), clean(r.driver_id)],
+        outline: 1
+      });
+    });
+  });
+  return rows;
+}
+
+function iwdieBuildParamExportFilename(plantId, unitLabel, now) {
+  function p(n) { return (n < 10 ? '0' : '') + n; }
+  var d = now || new Date();
+  var stamp = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes());
+  var unit = String(unitLabel || 'unit').replace(/[\\/?*\[\]:]/g, '-').replace(/\s+/g, '-');
+  return 'parameters_' + (plantId || 'plant') + '_' + unit + '_' + stamp + '.xlsx';
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
@@ -2073,6 +2139,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          sidebar keeps the host's stock spacing. */
       '#manager_div.iwdie-compact fieldset{margin-top:4px !important;padding-top:4px !important;padding-bottom:6px !important}',
       '#manager_div.iwdie-compact #manager_widget_iwdie button{margin-top:2px !important}',
+      /* Parameter-selector export button: our own td injected after the host's
+         UNIT NAME item (w2ui toolbar "nolinkable_toolbar"). Own element, own
+         handler — deliberately NOT a w2ui toolbar item, so the host's
+         radio/checked state machine ("PS Select which item adds to Label")
+         cannot be disturbed by clicking it. */
+      '#iwdie_param_export_td .w2ui-button{cursor:pointer;margin-left:6px;border:1px solid transparent;border-radius:4px}',
+      '#iwdie_param_export_td .w2ui-button:hover{background:#eef5fc;border-color:#9aa7b3}',
       ''].join('\n');
     try {
       if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
@@ -3120,6 +3193,227 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* ---------- Excel (.xlsx) writer ----------------------------------------
+       Mirrors supermarket-superuser's export block byte-for-byte where
+       possible (store-only ZIP + CRC32 + minimal SpreadsheetML, COM-verified
+       against real Excel there) — keep the two copies in sync when editing.
+       No libraries, no GM APIs: a real .xlsx that opens cleanly on any
+       locale, in proper columns, without CSV separator/encoding pitfalls. */
+    var XLSX_CRC_TABLE = (function () {
+      var table = new Uint32Array(256);
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) {
+          c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[n] = c >>> 0;
+      }
+      return table;
+    })();
+
+    function xlsxCrc32(bytes) {
+      var crc = 0xFFFFFFFF;
+      for (var i = 0; i < bytes.length; i++) {
+        crc = (crc >>> 8) ^ XLSX_CRC_TABLE[(crc ^ bytes[i]) & 0xFF];
+      }
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    function xlsxZip(files) {
+      var encoder = new TextEncoder();
+      var localParts = [];
+      var centralParts = [];
+      var offset = 0;
+      files.forEach(function (file) {
+        var nameBytes = encoder.encode(file.name);
+        var data = file.data;
+        var crc = xlsxCrc32(data);
+        var local = new DataView(new ArrayBuffer(30));
+        local.setUint32(0, 0x04034b50, true);
+        local.setUint16(4, 20, true);
+        local.setUint16(6, 0x0800, true);   // UTF-8 filename flag
+        local.setUint16(8, 0, true);        // store (no compression)
+        local.setUint16(10, 0, true);       // mod time
+        local.setUint16(12, 0x21, true);    // mod date (1980-01-01)
+        local.setUint32(14, crc, true);
+        local.setUint32(18, data.length, true);
+        local.setUint32(22, data.length, true);
+        local.setUint16(26, nameBytes.length, true);
+        local.setUint16(28, 0, true);
+        localParts.push(new Uint8Array(local.buffer), nameBytes, data);
+
+        var central = new DataView(new ArrayBuffer(46));
+        central.setUint32(0, 0x02014b50, true);
+        central.setUint16(4, 20, true);
+        central.setUint16(6, 20, true);
+        central.setUint16(8, 0x0800, true);
+        central.setUint16(10, 0, true);
+        central.setUint16(12, 0, true);
+        central.setUint16(14, 0x21, true);
+        central.setUint32(16, crc, true);
+        central.setUint32(20, data.length, true);
+        central.setUint32(24, data.length, true);
+        central.setUint16(28, nameBytes.length, true);
+        central.setUint32(42, offset, true);
+        centralParts.push(new Uint8Array(central.buffer), nameBytes);
+
+        offset += 30 + nameBytes.length + data.length;
+      });
+
+      var centralSize = centralParts.reduce(function (sum, part) { return sum + part.length; }, 0);
+      var end = new DataView(new ArrayBuffer(22));
+      end.setUint32(0, 0x06054b50, true);
+      end.setUint16(8, files.length, true);
+      end.setUint16(10, files.length, true);
+      end.setUint32(12, centralSize, true);
+      end.setUint32(16, offset, true);
+
+      return new Blob(localParts.concat(centralParts, [new Uint8Array(end.buffer)]), {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+    }
+
+    function xlsxColumnRef(index) {
+      var ref = '';
+      var n = index;
+      do {
+        ref = String.fromCharCode(65 + (n % 26)) + ref;
+        n = Math.floor(n / 26) - 1;
+      } while (n >= 0);
+      return ref;
+    }
+
+    function xlsxEscape(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function xlsxStylesXml() {
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FF0D47A1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1976D2"/><bgColor rgb="FF1976D2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3F2FD"/><bgColor rgb="FFE3F2FD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF455A64"/><bgColor rgb="FF455A64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+    }
+
+    function xlsxCell(ref, value, style) {
+      var text = value == null ? '' : String(value);
+      var styleAttr = style ? ' s="' + style + '"' : '';
+      // Numeric-looking values become real numbers so Excel can sum/sort them;
+      // everything else (OFF, On, alarm texts, ...) stays an inline string.
+      if (text !== '' && /^-?\d+(?:\.\d+)?$/.test(text)) {
+        return '<c r="' + ref + '"' + styleAttr + '><v>' + text + '</v></c>';
+      }
+      return '<c r="' + ref + '"' + styleAttr + ' t="inlineStr"><is><t xml:space="preserve">' + xlsxEscape(text) + '</t></is></c>';
+    }
+
+    /* rows: [{ cells: [...], style?: cellXfs index, outline?: 1 }, ...].
+       Row 1 is frozen, the whole range gets an AutoFilter (sort/filter
+       dropdowns), and outline:1 rows collapse under the row above them
+       (outlinePr summaryBelow=0 puts the +/- button on the group row). */
+    function xlsxSheetXml(modelRows, colWidths) {
+      var widths = colWidths || IWDIE_PARAM_EXPORT_COL_WIDTHS;
+      var colCount = modelRows.reduce(function (max, row) { return Math.max(max, row.cells.length); }, 1);
+      var maxOutline = Math.max(modelRows.reduce(function (max, row) { return Math.max(max, row.outline || 0); }, 0), 1);
+      var lastCell = xlsxColumnRef(colCount - 1) + Math.max(modelRows.length, 1);
+      var body = modelRows.map(function (row, rowIndex) {
+        var cellsXml = row.cells.map(function (value, colIndex) {
+          return xlsxCell(xlsxColumnRef(colIndex) + (rowIndex + 1), value, row.style || XLSX_STYLE_DEFAULT);
+        }).join('');
+        var outline = row.outline ? ' outlineLevel="' + row.outline + '"' : '';
+        return '<row r="' + (rowIndex + 1) + '"' + outline + '>' + cellsXml + '</row>';
+      }).join('');
+      var colsXml = widths.slice(0, colCount).map(function (width, i) {
+        return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + width + '" customWidth="1"/>';
+      }).join('');
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><outlinePr summaryBelow="0"/></sheetPr><dimension ref="A1:' + lastCell + '"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15" outlineLevelRow="' + maxOutline + '"/><cols>' + colsXml + '</cols><sheetData>' + body + '</sheetData><autoFilter ref="A1:' + lastCell + '"/></worksheet>';
+    }
+
+    function buildXlsxBlob(sheets) {
+      var encoder = new TextEncoder();
+      var safeSheets = sheets.map(function (sheet, index) {
+        return {
+          name: (sheet.name || 'Sheet' + (index + 1)).replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || ('Sheet' + (index + 1)),
+          rows: sheet.rows,
+          colWidths: sheet.colWidths
+        };
+      });
+      var contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + safeSheets.map(function (unused, i) { return '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'; }).join('') + '</Types>';
+      var rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+      var workbook = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + safeSheets.map(function (sheet, i) { return '<sheet name="' + xlsxEscape(sheet.name) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>'; }).join('') + '</sheets></workbook>';
+      var workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + safeSheets.map(function (unused, i) { return '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>'; }).join('') + '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
+
+      var files = [
+        { name: '[Content_Types].xml', data: encoder.encode(contentTypes) },
+        { name: '_rels/.rels', data: encoder.encode(rootRels) },
+        { name: 'xl/workbook.xml', data: encoder.encode(workbook) },
+        { name: 'xl/_rels/workbook.xml.rels', data: encoder.encode(workbookRels) },
+        { name: 'xl/styles.xml', data: encoder.encode(xlsxStylesXml()) }
+      ];
+      safeSheets.forEach(function (sheet, i) {
+        files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', data: encoder.encode(xlsxSheetXml(sheet.rows, sheet.colWidths)) });
+      });
+      return xlsxZip(files);
+    }
+
+    function triggerXlsxDownload(blob, filename) {
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    }
+
+    /* ---------- parameter-selector export button ---------- */
+    function doExportParams() {
+      var w2 = W.w2ui;
+      var ug = w2 && w2.unitgrid;
+      var pg = w2 && w2.paramgrid;
+      if (!ug || !pg) { toast('Parameter selector is not ready.', true); return; }
+      var sel = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
+      var unit = (sel && sel.length) ? ug.get(sel[0]) : null;
+      if (!unit) { toast('Select a regulator in the UNITS list first.', true); return; }
+      var records = pg.records || [];
+      if (!records.length) { toast('No parameters loaded for this regulator.', true); return; }
+      var unitLabel = String(unit.unit_name || unit.unit_id || 'unit');
+      var plant = '';
+      try { plant = String(W.get_plant_id() || ''); } catch (e) { }
+      if (!plant) {
+        var m = /[?&]plant_id=(\d+)/.exec(location.search);
+        plant = m ? m[1] : 'plant';
+      }
+      var name = iwdieBuildParamExportFilename(plant, unitLabel, new Date());
+      var blob = buildXlsxBlob([{ name: 'Parameters', rows: iwdieBuildParamExportRows(records) }]);
+      triggerXlsxDownload(blob, name);
+      hostOk('Exported ' + records.length + ' parameters for ' + unitLabel + ' → ' + name);
+    }
+
+    /* The popup's bottom row (ALIAS TEXT / UNIT ID / UNIT NAME) is the w2ui
+       toolbar "nolinkable_toolbar"; its items are radio-like ("PS Select which
+       item adds to Label"), so the export control is a separate td appended
+       after the UNIT NAME item td rather than a w2ui item — clicking it must
+       never move the host's checked state. w2ui re-renders that toolbar on
+       every popup open, wiping the td; the 800 ms installer interval re-adds
+       it (idempotent, same pattern as the sidebar fieldset). */
+    function ensureParamExportButton() {
+      if (document.getElementById('iwdie_param_export_td')) return;
+      var anchor = document.getElementById('tb_nolinkable_toolbar_item_add_unit_name');
+      if (!anchor || !anchor.parentNode) return;
+      var td = document.createElement('td');
+      td.id = 'iwdie_param_export_td';
+      // Same markup shape w2ui renders for its own buttons, so the host CSS
+      // styles it identically to ALIAS TEXT / UNIT ID / UNIT NAME.
+      td.innerHTML = '<table class="w2ui-button" cellpadding="0" cellspacing="0"' +
+        ' title="Download every parameter of the selected regulator as Excel (.xlsx)"' +
+        ' onclick="window.__IWDIE.doExportParams()"><tbody><tr>' +
+        '<td class="w2ui-tb-caption" style="white-space:nowrap">EXPORT XLSX</td>' +
+        '</tr></tbody></table>';
+      anchor.insertAdjacentElement('afterend', td);
+    }
+
     /* ---------- console surface + install ---------- */
     W.__IWDIE = {
       version: IWDIE_VERSION,
@@ -3127,20 +3421,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       openImportPanel: openImportPanel,
       applyImport: applyImport,
       doExportBackgroundAi: doExportBackgroundAi,
+      doExportParams: doExportParams,
       _collect: collectCurrentDoc
     };
 
     var installTimer = setInterval(function () {
+      ensureParamExportButton();
       if (!document.getElementById('manager_widget7')) return;
       ensureFieldset();
       updateCompact();
     }, 800);
     // keep the interval running forever (cheap) so the fieldset survives any
     // host re-render of the sidebar; ensureFieldset() is idempotent and
-    // updateCompact() re-evaluates after zooms/window changes too.
+    // updateCompact() re-evaluates after zooms/window changes too. The param
+    // export button rides the same interval: its toolbar anchor only exists
+    // after the PARAMETER SELECTOR popup has been opened once, and w2ui wipes
+    // the td again on every re-render of that toolbar.
     try { window.addEventListener('resize', updateCompact); } catch (e) {}
     ensureFieldset();
     updateCompact();
+    ensureParamExportButton();
   })();
 }
 
@@ -3176,6 +3476,10 @@ if (typeof module !== 'undefined' && module.exports) {
     backgroundExt: iwdieBackgroundExt,
     backgroundMime: iwdieBackgroundMime,
     countDocItems: iwdieCountDocItems,
+    paramExportHeader: IWDIE_PARAM_EXPORT_HEADER,
+    buildParamExportRows: iwdieBuildParamExportRows,
+    paramAccessLabel: iwdieParamAccessLabel,
+    buildParamExportFilename: iwdieBuildParamExportFilename,
     buildImagePdf: iwdieBuildImagePdf,
     buildBackgroundFilename: iwdieBuildBackgroundFilename,
     buildPalette: iwdieBuildPalette,

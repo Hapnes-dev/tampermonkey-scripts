@@ -56,6 +56,26 @@ Round trip: export → give the `.png` to the AI with
 [`iwmac-designer-reference/`](iwmac-designer-reference/) as its knowledge → it returns a panel
 `.json` → **Insert JSON…** → link and save with the designer's own buttons.
 
+## Parameter list → Excel (v1.12.0)
+
+The **PARAMETER SELECTOR** popup (Actions → *Open Paramselector Popup*, or any object-link
+dialog) gets an **EXPORT XLSX** button to the right of the ALIAS TEXT / UNIT ID / UNIT NAME
+row. Select a regulator in the UNITS list, click it, and every parameter of that regulator —
+all of them, not just the visible page — downloads as
+`parameters_<plant>_<unit>_<date>_<time>.xlsx`.
+
+The workbook uses the same style as the supermarket-superuser parameter export: bold
+white-on-blue header row (frozen), one collapsible light-blue band per parameter group with
+the group's parameters indented under it (Excel outline +/- buttons), AutoFilter dropdowns
+on every column, and numeric-looking values stored as real numbers so they sort and sum.
+Columns: Group, Name, Access (Read / Read/write), Eng unit, Type, Application, Tag, SGR,
+Driver ID — the full record the popup's grid holds, including the columns it hides.
+
+The button is deliberately **not** a w2ui toolbar item: the host's ALIAS TEXT / UNIT ID /
+UNIT NAME row is a radio group ("which item adds to Label"), and clicking the export must
+never change that selection. It is a separate element styled with the host's own w2ui
+button classes, re-added automatically whenever the host re-renders the toolbar.
+
 ## Background picture only (v1.10.0)
 
 Tick **Background picture only — insert no objects** at the top of the Insert dialog and the
