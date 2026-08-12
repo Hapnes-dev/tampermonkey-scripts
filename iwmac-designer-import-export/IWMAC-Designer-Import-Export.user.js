@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.0
+// @version      1.15.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.14.0';
+var IWDIE_VERSION = '1.15.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -3446,8 +3446,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var pg = w2 && w2.paramgrid;
       if (!ug || !pg) { toast('Parameter selector is not ready.', true); return; }
       var sel = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
-      var unit = (sel && sel.length) ? ug.get(sel[0]) : null;
-      if (!unit) { toast('Select a regulator in the UNITS list first.', true); return; }
+      if (!sel || !sel.length) { toast('Select a regulator in the UNITS list first (Ctrl+click selects several).', true); return; }
+      if (sel.length > 1) { exportSelectedUnits(sel.slice()); return; }
+      var unit = ug.get(sel[0]);
+      if (!unit) { toast('Select a regulator in the UNITS list first (Ctrl+click selects several).', true); return; }
       var records = pg.records || [];
       if (!records.length) { toast('No parameters loaded for this regulator.', true); return; }
       var unitLabel = String(unit.unit_name || unit.unit_id || 'unit');
@@ -3462,6 +3464,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       triggerXlsxDownload(blob, name);
       W.__IWDIE.lastExport = { name: name, units: 1, params: records.length, failed: 0 };
       toast('Exported ' + records.length + ' parameters for ' + unitLabel + ' -> ' + name, false, 8000);
+    }
+
+    /* Ctrl+click multi-selection → EXPORT XLSX walks exactly those units, in
+       grid order (stable workbook regardless of click order), and restores
+       the full selection afterwards. No confirm dialog: an explicit
+       multi-selection is the confirmation. */
+    function exportSelectedUnits(selArray) {
+      var ug = W.w2ui.unitgrid;
+      var selSet = {};
+      selArray.forEach(function (r) { selSet[r] = true; });
+      var recids = (ug.records || []).map(function (r) { return r.recid; })
+        .filter(function (r) { return selSet[r]; });
+      var progress = openExportProgress(recids.length,
+        'Exporting ' + recids.length + ' selected units to Excel');
+      collectUnitBlocks({
+        recids: recids,
+        restore: function () { restoreUnitSelection(selArray); },
+        onProgress: progress.update,
+        shouldStop: progress.cancelled,
+        done: function (blocks, failed, wasCancelled) {
+          progress.close();
+          if (wasCancelled) {
+            toast('Export cancelled after ' + blocks.length + ' unit(s) - nothing downloaded, selection restored.');
+            return;
+          }
+          var nonEmpty = blocks.filter(function (b) { return b.records.length; });
+          var empty = blocks.length - nonEmpty.length;
+          if (!nonEmpty.length) { toast('No parameters found on the selected units - nothing to export.', true); return; }
+          var rows = iwdieBuildAllUnitsExportRows(nonEmpty);
+          var total = nonEmpty.reduce(function (sum, b) { return sum + b.records.length; }, 0);
+          var name = iwdieBuildParamExportFilename(currentPlantIdForExport(), nonEmpty.length + '-units', new Date());
+          var blob = buildXlsxBlob([{ name: 'Units', rows: rows, colWidths: IWDIE_ALLUNITS_COL_WIDTHS }]);
+          triggerXlsxDownload(blob, name);
+          W.__IWDIE.lastExport = { name: name, units: nonEmpty.length, params: total, failed: failed, empty: empty };
+          toast('Exported ' + total + ' parameters across ' + nonEmpty.length + ' selected units -> ' + name +
+            (failed ? ' (' + failed + ' unit(s) failed to load)' : '') +
+            (empty ? ' (' + empty + ' empty unit(s) skipped)' : ''), false, 8000);
+        }
+      });
     }
 
     function currentPlantIdForExport() {
@@ -3481,11 +3522,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        format — whatever fills the grid is what gets exported. One unit per
        tick: the XHR is synchronous, so the gap is what lets the progress toast
        repaint and spares the plant server a burst. */
-    function collectAllUnitBlocks(originalRecid, onProgress, shouldStop, done) {
+    /* Put the units grid back the way the user left it. One selected unit is
+       re-CLICKED (reloads its paramgrid, exactly the pre-export view); a
+       multi-selection is re-selected without clicks — w2ui select() does not
+       trigger the host loader, so the paramgrid keeps the last walked unit,
+       which is one of the selected ones. */
+    function restoreUnitSelection(selArray) {
       var w2 = W.w2ui;
       var ug = w2.unitgrid;
       var pg = w2.paramgrid;
-      var recids = (ug.records || []).map(function (r) { return r.recid; });
+      try {
+        if (!selArray || !selArray.length) { ug.selectNone(); pg.clear(); return; }
+        if (selArray.length === 1) { ug.click(selArray[0]); return; }
+        ug.selectNone();
+        ug.select.apply(ug, selArray);
+      } catch (e) { }
+    }
+
+    /* opts: { recids, restore, onProgress, shouldStop, done } — walks exactly
+       the given unit recids through the host's click-loader. */
+    function collectUnitBlocks(opts) {
+      var w2 = W.w2ui;
+      var ug = w2.unitgrid;
+      var pg = w2.paramgrid;
+      var recids = opts.recids;
+      var onProgress = opts.onProgress;
+      var shouldStop = opts.shouldStop;
+      var done = opts.done;
       var blocks = [];
       var failed = 0;
       var i = 0;
@@ -3500,12 +3563,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!r.length) return '0|';
         return r.length + '|' + (r[0].driver_id || r[0].recid) + '|' + (r[r.length - 1].driver_id || r[r.length - 1].recid);
       }
-      function restore() {
-        try {
-          if (originalRecid != null) { ug.click(originalRecid); }
-          else { ug.selectNone(); pg.clear(); }
-        } catch (e) { }
-      }
       function advance(rec) {
         i++;
         onProgress(i, recids.length, rec, blocks);
@@ -3513,7 +3570,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       function step() {
         if (i >= recids.length || shouldStop()) {
-          restore();
+          opts.restore();
           done(blocks, failed, i < recids.length);
           return;
         }
@@ -3546,13 +3603,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* Big, centered, impossible to miss — the walk freezes the page for the
        length of each unit's synchronous load, so a subtle toast reads as
        "nothing is happening". Returns {update, close, cancelled()}. */
-    function openExportProgress(total) {
+    function openExportProgress(total, title) {
       var overlay = document.createElement('div');
       overlay.className = 'iwdie-overlay';
       var panel = document.createElement('div');
       panel.className = 'iwdie-panel iwdie-progress-panel';
       panel.innerHTML = [
-        '<h3>Exporting all units to Excel</h3>',
+        '<h3>' + (title || 'Exporting units to Excel') + '</h3>',
         '<div class="iwdie-progress-line" id="iwdie_prog_line">Starting...</div>',
         '<div class="iwdie-progress-track"><div class="iwdie-progress-fill" id="iwdie_prog_fill"></div></div>',
         '<div class="iwdie-progress-sub" id="iwdie_prog_sub">0 parameters collected</div>',
@@ -3595,8 +3652,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!unitCount) { toast('No units loaded in the UNITS list.', true); return; }
       // Captured before the confirm dialog, not at walk start: the selection
       // the user expects back is the one from the moment they clicked export.
-      var selNow = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
-      var originalRecid = selNow && selNow.length ? selNow[0] : null;
+      var selNow = ((typeof ug.getSelection === 'function') ? ug.getSelection() : []).slice();
       openConfirmDialog({
         /* ASCII-only strings here: the legacy page is not served as UTF-8, so
            anything non-ASCII mojibakes when the script is loaded via a plain
@@ -3614,8 +3670,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         hint: 'Esc or a click outside cancels. This only reads parameter lists; nothing is written to the plant.'
       }, function (yes) {
         if (!yes) return;
-        var progress = openExportProgress(unitCount);
-        collectAllUnitBlocks(originalRecid, progress.update, progress.cancelled, function (blocks, failed, wasCancelled) {
+        var progress = openExportProgress(unitCount, 'Exporting all units to Excel');
+        collectUnitBlocks({
+          recids: (ug.records || []).map(function (r) { return r.recid; }),
+          restore: function () { restoreUnitSelection(selNow); },
+          onProgress: progress.update,
+          shouldStop: progress.cancelled,
+          done: function (blocks, failed, wasCancelled) {
           progress.close();
           if (wasCancelled) {
             toast('Export cancelled after ' + blocks.length + ' unit(s) - nothing downloaded, selection restored.');
@@ -3633,6 +3694,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           toast('Exported ' + total + ' parameters across ' + nonEmpty.length + ' units -> ' + name +
             (failed ? ' (' + failed + ' unit(s) failed to load)' : '') +
             (empty ? ' (' + empty + ' empty unit(s) skipped)' : ''), false, 8000);
+          }
         });
       });
     }
@@ -3658,12 +3720,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function ensureParamExportButton() {
+      // The host leaves the units grid single-select; multi-unit export needs
+      // Ctrl+click to accumulate. Host code reads the clicked record from the
+      // click event, never the selection set, so widening the selection model
+      // does not change any host behavior.
+      try {
+        var ugrid = W.w2ui && W.w2ui.unitgrid;
+        if (ugrid && ugrid.multiSelect !== true) ugrid.multiSelect = true;
+      } catch (e) { }
       var anchor = document.getElementById('tb_nolinkable_toolbar_item_add_unit_name');
       if (!anchor || !anchor.parentNode) return;
       if (!document.getElementById('iwdie_param_export_td')) {
         anchor.insertAdjacentElement('afterend', makeParamExportTd(
           'iwdie_param_export_td', 'EXPORT XLSX',
-          'Download every parameter of the selected regulator as Excel (.xlsx)',
+          'Download every parameter of the selected regulator(s) as Excel (.xlsx) - Ctrl+click selects several',
           'window.__IWDIE.doExportParams()'));
       }
       if (!document.getElementById('iwdie_param_export_all_td')) {
