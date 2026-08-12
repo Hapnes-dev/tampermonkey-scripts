@@ -26,10 +26,14 @@ from xml.sax.saxutils import escape
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 VALIDATOR = ROOT / "validate-oversikt-panel.py"
+RULES = ROOT / "documentation-rules.json"
 FIXTURES = ROOT / "tests" / "fixtures" / "oversikt-linking"
 PANEL = FIXTURES / "verified-panel.json"
 PARAMETERS = FIXTURES / "parameters.json"
 CASES = FIXTURES / "incident-cases.json"
+EXISTING_RELINK_CASE = (
+    ROOT / "tests" / "fixtures" / "oversikt-existing-relink" / "case.json"
+)
 EXISTING_FIXTURE = ROOT / "reference_data" / "oversikt-10113-sanitized.json"
 SQL_SAMPLE = ROOT / "reference_data" / "driver-parameters-sample.sql"
 
@@ -62,13 +66,32 @@ def build_case(case_id):
     return document
 
 
+def build_existing_relink_case():
+    fixture = load(EXISTING_RELINK_CASE)
+    source = fixture["source_panel"]
+    candidate = copy.deepcopy(source)
+    by_name = {obj["name"]: obj for obj in objects(candidate)}
+    for replacement in fixture["repair_plan"]:
+        obj = by_name[replacement["object_name"]]
+        for field in ("driver_id", "unit_id", "alias_text", "linked"):
+            obj[field] = replacement[field]
+    return fixture, source, candidate
+
+
 def write_json(directory, name, value):
     path = pathlib.Path(directory) / name
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
-def run_cli(panel, parameters=None, compare_source=None, patch_scope=None):
+def run_cli(
+    panel,
+    parameters=None,
+    compare_source=None,
+    patch_scope=None,
+    task=None,
+    unresolved_labels=None,
+):
     command = [sys.executable, str(VALIDATOR)]
     if compare_source is None:
         command.append(str(panel))
@@ -78,6 +101,10 @@ def run_cli(panel, parameters=None, compare_source=None, patch_scope=None):
         command.extend(["--parameters", str(parameters)])
     if patch_scope is not None:
         command.extend(["--patch-scope", patch_scope])
+    if task is not None:
+        command.extend(["--task", task])
+    for label in unresolved_labels or ():
+        command.extend(["--unresolved-label", label])
     command.extend(["--json-report", "--no-matrix"])
     completed = subprocess.run(
         command,
@@ -310,6 +337,26 @@ class SourceBackedBindingTest(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr or completed.stdout)
         self.assertEqual(8, report["binding_summary"]["semantically_verified"])
 
+    def test_canonical_relink_csv_headers_preserve_alias_role_and_missing_unit_id(self):
+        path = ROOT / "parameter_source.py"
+        spec = importlib.util.spec_from_file_location("parameter_source_relink", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temp:
+            source = pathlib.Path(temp) / "relink.csv"
+            source.write_text(
+                "role,chosen_name,driver_id,unit,type,access\n"
+                "alarm,High temperature alarm,MASKED_DRIVER,Case A,boolean,Read\n",
+                encoding="utf-8",
+            )
+            parsed = module.load_parameter_source(source)
+        row = parsed["rows"][0]
+        self.assertEqual("alarm", row["object_role"])
+        self.assertEqual("High temperature alarm", row["alias_text"])
+        self.assertEqual("boolean", row["parameter_type"])
+        self.assertEqual("Read", row["att"])
+        self.assertEqual("", row["unit_id"])
+
     def test_repository_sql_parameter_sample_is_readable(self):
         path = ROOT / "parameter_source.py"
         spec = importlib.util.spec_from_file_location("parameter_source_test", path)
@@ -437,6 +484,309 @@ class ValidationModeAndIdentityTest(unittest.TestCase):
         self.assertTrue(scope)
         self.assertTrue(any("link_tag" in finding["message"] for finding in scope))
 
+    def test_binding_repair_scope_rejects_document_metadata_changes(self):
+        mutations = (
+            (("panel", "saved_by"), "different-author", "panel.saved_by"),
+            (("generator",), "different-generator", "generator"),
+            (("exported_at",), "2099-01-01T00:00:00Z", "exported_at"),
+        )
+        for path, value, expected_field in mutations:
+            with self.subTest(field=expected_field):
+                candidate = load(PANEL)
+                target = candidate
+                for part in path[:-1]:
+                    target = target[part]
+                target[path[-1]] = value
+                with tempfile.TemporaryDirectory() as temp:
+                    panel = write_json(temp, "metadata-change.json", candidate)
+                    completed, report = run_cli(
+                        panel,
+                        PARAMETERS,
+                        compare_source=PANEL,
+                        patch_scope="binding-repair",
+                    )
+                self.assertEqual(1, completed.returncode, completed.stderr)
+                scope = [
+                    finding for finding in report["findings"]
+                    if finding["rule"] == "O-C16"
+                    and finding["severity"] == "error"
+                ]
+                self.assertTrue(scope)
+                self.assertTrue(
+                    any(expected_field in finding["message"] for finding in scope)
+                )
+
+    def test_binding_repair_scope_allows_removing_export_only_svg_trace(self):
+        source = load(PANEL)
+        source["panel"]["image_svg_trace"] = (
+            '<svg viewBox="0 0 1400 750"></svg>'
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            source_path = write_json(temp, "source-with-trace.json", source)
+            completed, report = run_cli(
+                PANEL,
+                PARAMETERS,
+                compare_source=source_path,
+                patch_scope="binding-repair",
+            )
+        self.assertEqual(0, completed.returncode, completed.stderr or completed.stdout)
+        scope = [
+            finding for finding in report["findings"]
+            if finding["rule"] == "O-C16"
+        ]
+        self.assertTrue(scope)
+        self.assertTrue(all(finding["severity"] == "info" for finding in scope))
+        self.assertFalse(
+            any(
+                "image_svg_trace" in finding["message"]
+                and finding["severity"] == "error"
+                for finding in report["findings"]
+            )
+        )
+
+    def test_existing_panel_relink_task_emits_machine_report_metadata(self):
+        completed, report = run_cli(
+            PANEL,
+            PARAMETERS,
+            compare_source=PANEL,
+            patch_scope="binding-repair",
+            task="oversikt-existing-panel-relink",
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr or completed.stdout)
+        self.assertEqual("oversikt-existing-panel-relink", report["task"])
+        verification = report["verification_report"]
+        self.assertEqual("complete", verification["completion"])
+        self.assertEqual("binding-only", verification["classification"])
+        self.assertTrue(verification["visual_preservation_held"])
+        self.assertEqual(0, verification["validator_errors"])
+        self.assertTrue(verification["primary_output"].endswith("verified-panel.json"))
+        self.assertEqual([], verification["changed_equipment_roles"])
+        self.assertEqual([], verification["alarm_choices"])
+        self.assertEqual(8, verification["verified_count"])
+        self.assertEqual([], verification["unresolved_labels"])
+        self.assertEqual(1, len(verification["validation_runs"]))
+        self.assertEqual(0, verification["validation_runs"][0]["exit_code"])
+
+    def test_existing_panel_relink_report_records_changed_alarm_evidence(self):
+        source = load(PANEL)
+        objects(source)[0]["driver_id"] = "NNNNN_AK2_STALE_0_11_1_0_7"
+        with tempfile.TemporaryDirectory() as temp:
+            source_path = write_json(temp, "source.json", source)
+            completed, report = run_cli(
+                PANEL,
+                PARAMETERS,
+                compare_source=source_path,
+                patch_scope="binding-repair",
+                task="oversikt-existing-panel-relink",
+            )
+        self.assertEqual(0, completed.returncode, completed.stderr or completed.stdout)
+        verification = report["verification_report"]
+        self.assertEqual(
+            [{
+                "controller_identity": "000:011",
+                "object_identity": "object_0",
+                "role": "alarm",
+                "changed_fields": ["driver_id"],
+            }],
+            verification["changed_equipment_roles"],
+        )
+        self.assertEqual(1, len(verification["alarm_choices"]))
+        alarm = verification["alarm_choices"][0]
+        self.assertEqual("NNNNN_AK3_AKC_0_11_1_0_7", alarm["driver_id"])
+        self.assertEqual("High temperature alarm", alarm["alias_text"])
+        self.assertIn("exact source row", alarm["reason"])
+
+    def test_existing_panel_relink_report_marks_partial_completion(self):
+        candidate = build_case("partial-six-of-eight")
+        with tempfile.TemporaryDirectory() as temp:
+            panel = write_json(temp, "partial.json", candidate)
+            completed, report = run_cli(
+                panel,
+                PARAMETERS,
+                compare_source=PANEL,
+                patch_scope="binding-repair",
+                task="oversikt-existing-panel-relink",
+            )
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        verification = report["verification_report"]
+        self.assertEqual("partial", verification["completion"])
+        self.assertEqual(2, verification["unresolved_bindings"])
+        self.assertGreater(verification["validator_errors"], 0)
+        self.assertFalse(verification["completed_linking_claim_allowed"])
+
+    def test_existing_panel_relink_report_includes_background_only_gap(self):
+        completed, report = run_cli(
+            PANEL,
+            PARAMETERS,
+            compare_source=PANEL,
+            patch_scope="binding-repair",
+            task="oversikt-existing-panel-relink",
+            unresolved_labels=[
+                "CASE-D=No matching unit exists; no foreground object was added"
+            ],
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr or completed.stdout)
+        self.assertEqual("partial", report["verification_report"]["completion"])
+        self.assertFalse(
+            report["verification_report"]["completed_linking_claim_allowed"]
+        )
+        self.assertIn(
+            {
+                "label": "CASE-D",
+                "roles": [],
+                "reasons": [
+                    "No matching unit exists; no foreground object was added"
+                ],
+            },
+            report["verification_report"]["unresolved_labels"],
+        )
+
+    def test_machine_rules_define_existing_panel_relink_policy(self):
+        machine_rules = load(RULES)
+        oversikt = machine_rules["panel_types"]["oversikt"]
+        policy = oversikt.get(
+            "existing_panel_relink"
+        )
+        self.assertIsInstance(policy, dict)
+        self.assertEqual(
+            [
+                "binding-only",
+                "placement-only",
+                "binding+placement",
+                "add-missing-clusters",
+                "validation/report-only",
+            ],
+            policy["classifications"],
+        )
+        self.assertEqual(
+            "oversikt-existing-panel-relink",
+            policy["verification_report"]["task"],
+        )
+        self.assertEqual(
+            [
+                "classification",
+                "source_panel",
+                "parameter_source",
+                "visual_preservation_held",
+                "changed_equipment_roles",
+                "alarm_choices",
+                "verified_count",
+                "unresolved_labels",
+                "validator_errors",
+                "validation_runs",
+            ],
+            policy["verification_report"]["fields"],
+        )
+        self.assertEqual(
+            "per-cluster STOP; continue independent verified clusters",
+            policy["missing_equipment"]["behavior"],
+        )
+        self.assertIn("image_data", policy["inspection_order"][0])
+        self.assertIn("image_svg_trace", policy["inspection_order"][1])
+        self.assertEqual(
+            ["panel.image_svg_trace"],
+            oversikt["preserve_and_patch"]["patch_scope"]["export_only_fields"],
+        )
+
+
+class ExistingPanelRelinkCaseTest(unittest.TestCase):
+    def test_generated_fixture_is_current_and_private(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "build-oversikt-existing-relink-fixture.py"),
+                "--check",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr or completed.stdout)
+        fixture = load(EXISTING_RELINK_CASE)
+        serialized = json.dumps(fixture, ensure_ascii=False)
+        self.assertEqual("SYNTHETIC-CASE-RELINK-A-20260812", fixture["scope"])
+        self.assertNotIn("82" + "22", serialized)
+        self.assertNotIn("thomas", serialized.casefold())
+        self.assertEqual(
+            ["K3D"],
+            fixture["expected"]["unresolved_equipment"],
+        )
+        self.assertEqual(20, len(fixture["parameters"]["rows"]))
+        self.assertEqual(20, len(fixture["repair_plan"]))
+
+    def test_binding_only_repair_preserves_corrected_visual_document(self):
+        fixture, source, candidate = build_existing_relink_case()
+        visual_fields = fixture["visual_fields"]
+        source_by_name = {obj["name"]: obj for obj in objects(source)}
+        candidate_by_name = {obj["name"]: obj for obj in objects(candidate)}
+
+        for name, source_obj in source_by_name.items():
+            for field in visual_fields:
+                self.assertEqual(
+                    source_obj.get(field),
+                    candidate_by_name[name].get(field),
+                    f"{name}.{field}",
+                )
+        self.assertEqual(source["panel"]["image_data"], candidate["panel"]["image_data"])
+        self.assertEqual(
+            source_by_name[fixture["expected"]["unchanged_object"]],
+            candidate_by_name[fixture["expected"]["unchanged_object"]],
+        )
+        for name in ("object_20", "object_21", "object_22", "object_23"):
+            self.assertEqual(source_by_name[name], candidate_by_name[name])
+
+        parameter_ids = {
+            row["driver_id"] for row in fixture["parameters"]["rows"]
+        }
+        changed_ids = {
+            candidate_by_name[replacement["object_name"]]["driver_id"]
+            for replacement in fixture["repair_plan"]
+        }
+        self.assertEqual(changed_ids, parameter_ids)
+        alarm_ids = {
+            replacement["equipment_label"]: replacement["driver_id"].rsplit("_", 1)[-1]
+            for replacement in fixture["repair_plan"]
+            if replacement["role"] == "alarm"
+        }
+        self.assertEqual(fixture["expected"]["alarm_suffixes"], alarm_ids)
+
+    def test_missing_k3d_is_partial_without_blocking_verified_clusters(self):
+        fixture, source, candidate = build_existing_relink_case()
+        with tempfile.TemporaryDirectory() as temp:
+            source_path = write_json(temp, "source.json", source)
+            candidate_path = write_json(temp, "candidate.json", candidate)
+            parameters_path = write_json(
+                temp, "parameters.json", fixture["parameters"]
+            )
+            completed, report = run_cli(
+                candidate_path,
+                parameters_path,
+                compare_source=source_path,
+                patch_scope="binding-repair",
+                task="oversikt-existing-panel-relink",
+            )
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        self.assertEqual("partial", report["verification_report"]["completion"])
+        self.assertEqual(4, report["verification_report"]["unresolved_bindings"])
+        self.assertTrue(
+            report["verification_report"]["visual_preservation_held"]
+        )
+        scope = [
+            finding for finding in report["findings"]
+            if finding["rule"] == "O-C16"
+        ]
+        self.assertTrue(scope)
+        self.assertTrue(all(finding["severity"] == "info" for finding in scope))
+        missing = [
+            row for row in report["binding_verification_matrix"]
+            if row["controller_identity"] == "001:K3D"
+        ]
+        self.assertEqual(4, len(missing))
+        self.assertTrue(all(row["verification_state"] == "unresolved" for row in missing))
+
+
+class LinkingFixtureManifestTest(unittest.TestCase):
     def test_fixture_manifest_covers_all_required_failure_shapes(self):
         case_ids = {case["id"] for case in load(CASES)["cases"]}
         self.assertEqual(

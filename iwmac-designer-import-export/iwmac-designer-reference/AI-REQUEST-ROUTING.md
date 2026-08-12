@@ -21,7 +21,11 @@
 `parameter SQL` · `iw_gen_driver_parameters` · `parameterdump` ·
 `generer en tabell` · `lag et panel` · `trenger .json fil` ·
 `create a panel from this SQL export` · `make an IWMAC Designer JSON panel` ·
-`use this good panel as the example`
+`use this good panel as the example` · `link these objects` ·
+`link out these disks` · `find the objects on this picture` ·
+`these need linking` · `I placed them where they should be` ·
+`use this updated JSON` · `match the screenshot to the parameter Excel` ·
+`repair missing links on an Oversikt panel`
 
 Norwegian and English are interchangeable throughout. A request in Norwegian
 routes exactly like its English equivalent.
@@ -116,6 +120,31 @@ two precise applications:
   verify and patch bindings from the parameter source.
 
 Do not turn the second into "preserve known-unverified links."
+
+#### 1.3.1 Repair, complete, or relink live objects on an existing Oversikt panel
+
+`OVERSIKT` Route every request matching the heading — including any search
+phrase added above — to
+[OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) §8.6.
+Before editing, state exactly one class:
+
+- **binding-only**;
+- **placement-only**;
+- **binding+placement**;
+- **add-missing-clusters**;
+- **validation/report-only**.
+
+When the user supplies a newer panel JSON in which they manually placed or
+corrected objects, the route **MUST be binding-only unless the user explicitly
+requests another layout change**. The newest current-task JSON owns placement;
+the parameter source owns bindings. A screenshot explains which equipment the
+objects sit on but does not replace those coordinates.
+
+This route is per-cluster. An equipment label absent from the parameter source
+is a **STOP for that cluster**, not permission to infer its next index and not a
+reason to abandon independent clusters that have exact evidence. Partial
+completion **MUST** name every unresolved label and **MUST NOT** be called fully
+linked.
 
 ### 1.4 When it really is a data request
 

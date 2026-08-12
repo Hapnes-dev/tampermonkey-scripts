@@ -329,6 +329,56 @@ python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-s
       deletes the cluster structure the reference exists to carry. Re-run
       [build-oversikt-fixture.py](build-oversikt-fixture.py); do not hand-edit.
 
+### Stage E2 — Existing-panel relink acceptance
+
+Use this extra gate for task `oversikt-existing-panel-relink`; contract §8.6
+owns the behavior.
+
+- [ ] **The class is explicit:** binding-only, placement-only,
+      binding+placement, add-missing-clusters, or validation/report-only.
+- [ ] **The newest current-task JSON is the declared base.** Selection used
+      content plus timestamp, not a filename such as `final` or `linked`.
+- [ ] **Visual inspection order is recorded:** `image_data`,
+      `image_svg_trace` when present, all `single_objects`, then spatial matches
+      to screenshot/background labels.
+- [ ] **Baked artwork is not duplicated.** Only genuinely absent live
+      value/status/alarm roles were added.
+- [ ] **Every object match is role plus position.** Geometry, type, alias,
+      current binding, label proximity and screenshot relationship support it;
+      array position, `object_N`, highest unit and rightmost object do not.
+- [ ] **Binding-only visual preservation held.** Every source object's
+      `posLeft`, `posTop`, `posWidth`, `posHeight`, `zIndex`, `obj_id`, `name`
+      and array position match. Background value, containers, graphics and
+      unrelated metadata match. `image_svg_trace` is the export-only exception.
+- [ ] **Every changed driver id is an entire exact workbook cell.** No family,
+      controller index, path group or suffix was replaced inside a string.
+- [ ] **Every changed binding agrees with equipment and role.** Exact unit,
+      alias/description, family, access and datatype evidence are recorded where
+      supplied. Each alarm row has a choice reason.
+- [ ] **Missing equipment stopped only its own cluster.** No next-index,
+      neighboring-unit or similar-label inference occurred; independent
+      verified clusters continued.
+- [ ] **Nearby compatible live objects were reused first.** Added objects are
+      source-proven missing roles with valid types, sizes and relative placement
+      evidence. Manual objects were not replaced.
+- [ ] **Exact duplicate live objects were reviewed.** Deliberate stacked
+      cooling/defrost/alarm symbols remain legal; duplicate equipment-role
+      objects at identical geometry do not.
+- [ ] **Task report truthfully says complete or partial.** Partial lists every
+      unresolved label/reason and forbids a completed-linking claim. The
+      `iwmac-designer-panel` JSON remains the primary output.
+
+Run:
+
+```bash
+python validate-oversikt-panel.py \
+  --compare NEWEST-CORRECTED.json CANDIDATE.json \
+  --patch-scope binding-repair \
+  --parameters PARAMETERS.xlsx \
+  --task oversikt-existing-panel-relink \
+  --json-report
+```
+
 ## Stage F — Render, and the draft rule
 
 - [ ] **A preview was rendered and looked at.**

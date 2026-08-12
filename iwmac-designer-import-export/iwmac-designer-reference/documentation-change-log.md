@@ -3551,7 +3551,8 @@ enough deterministic semantics remains manual. `O-B07` reports that gap and
 - Did not commit live input files or reproduce their identifiers.
 - Did not make parameter-source validation mandatory for geometry-only work.
 - Did not claim all driver families have automated role semantics.
-- Did not change the userscript; no userscript version bump is involved.
+- The later existing-panel relink documentation pass changed this repository
+  and therefore bumps the userscript patch version under repository policy.
 
 ## Verification commands
 
@@ -3566,3 +3567,110 @@ python validate-oversikt-panel.py tests/fixtures/oversikt-linking/verified-panel
 Cross-builder and generated-bundle checks remain required because all builders
 share `documentation-rules.json`. Results belong in the delivery: they are true
 of the run, while this log records what changed and why.
+
+---
+
+# Part 16 — 2026-08-12: existing Oversikt relink evidence order
+
+Part 16 applies the GLOBAL link-verification invariant to an existing-panel
+repair. Evidence **E28** showed two separate failures after the stale-link
+incident: one attempt selected the final JSON array object as the “last disk”;
+another identified controller units but estimated cluster coordinates. A newer
+user-corrected JSON then supplied the authoritative manual placement.
+
+The scoped case showed labels `K51`, `K4A`, `K4B`, `K3B`, `K3C`, `K3D`.
+The workbook covered the first five with case-only controller indices 90, 30,
+29, 32 and 33; it had no `K3D`. Alarm suffixes varied, and old AK2 strings did
+not authorize edits into AK3_AKC strings. These are
+`CASE-RELINK-A-20260812` facts, not template rules.
+
+## Rules changed
+
+### 182. AI-REQUEST-ROUTING.md §1.3.1 — explicit existing-panel route
+
+Added the exact route “Repair, complete, or relink live objects on an existing
+Oversikt panel,” five classifications, searchable user phrases and the default:
+a newer user-corrected JSON makes the task binding-only unless layout work is
+explicitly requested.
+
+### 183. OVERSIKT-GENERATION-CONTRACT.md §8.6 — domain-specific precedence
+
+The newest current-task JSON owns geometry, dimensions, z-index, order, names,
+background, types and manual placement. The screenshot/background identifies
+equipment and visual relationships. The workbook owns exact unit/parameter/id
+evidence. Documents and templates are fallback. The section also owns:
+
+- `image_data` then `image_svg_trace` inspection;
+- foreground/background separation and role-plus-position matching;
+- binding-only field preservation;
+- exact-row role resolution and alarm-choice recording;
+- no driver-id string surgery;
+- per-cluster STOP with independent-cluster continuation;
+- reuse-before-add behavior and exact-duplicate review;
+- optional machine report with the panel JSON still primary.
+
+### 184. Procedure, QA and Copilot application
+
+[OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) §8c adds the
+11-step execution procedure.
+[OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) stage E2 adds the
+acceptance gate.
+[OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) adds the
+searchable “RELINK EXISTING PANEL” compact flow and corrects its precedence
+table so screenshots no longer conflict with panel JSON authority.
+[AI-BRIEFING.txt](AI-BRIEFING.txt) §8b cross-references the panel-specific
+owner without duplicating its GLOBAL no-fabrication invariant.
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) carries all eight exact
+trigger phrases and the compact flow at 7,895 worst-case CRLF characters.
+
+### 185. Machine rules and validator report
+
+`build-oversikt-rules.py` now generates:
+
+- scope `CASE-RELINK-A-20260812`;
+- evidence E28;
+- `panel_types.oversikt.existing_panel_relink`.
+
+`build-oversikt-existing-relink-fixture.py` generates the synthetic 25-object
+case in `tests/fixtures/oversikt-existing-relink/case.json`: six visible labels,
+five complete parameter-backed clusters, one K3D STOP, corrected positions, one
+unrelated object, an old-family source shape and five distinct valid alarm
+suffixes. Tests prove visual/background preservation, changed-id membership,
+unmodified K3D and partial completion. No live id is present.
+
+`validate-oversikt-panel.py` adds
+`--task oversikt-existing-panel-relink`. It requires compare mode, a parameter
+source and `--patch-scope binding-repair`, then emits classification, primary
+output, source, parameter source, visual-preservation, completion and unresolved
+binding fields. `O-C16` now covers document metadata, arrays, counts and
+background values in addition to object fields. `image_svg_trace` remains the
+export-only comparison exception.
+
+Focused tests were written failing first, then passed after implementation:
+metadata escape rejection, complete report metadata, partial report metadata
+and generated-rule policy.
+
+### 186. Historical record
+
+[DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md) adds F58–F62: array-position
+identity, estimated coordinates, foreground/background confusion, missing-unit
+sequence inference and incomplete document-level patch scope.
+
+The userscript logic is unchanged, but repository policy still requires a
+patch-version bump from `1.16.0` to `1.16.1` for this change set. No live
+workbook, panel, background or production identifier was committed.
+
+## Verification commands
+
+Run from `iwmac-designer-reference/`:
+
+```bash
+python build-oversikt-rules.py --check
+python -m unittest tests.test_oversikt_link_binding tests.test_oversikt_10113_contract
+python validate-oversikt-panel.py \
+  --compare tests/fixtures/oversikt-linking/verified-panel.json \
+            tests/fixtures/oversikt-linking/verified-panel.json \
+  --patch-scope binding-repair \
+  --parameters tests/fixtures/oversikt-linking/parameters.json \
+  --task oversikt-existing-panel-relink --json-report --no-matrix
+```

@@ -7,7 +7,7 @@
 Owns four regions of documentation-rules.json and nothing else:
 
     scope_tags.OVERSIKT, scope_tags.TEMPLATE-10113
-    evidence.E14 .. evidence.E17, evidence.E22, evidence.E27
+    evidence.E14 .. evidence.E17, evidence.E22, evidence.E27, evidence.E28
     global_invariants.binding_verification
     panel_types.oversikt
     profiles.TEMPLATE-10113
@@ -76,6 +76,11 @@ SCOPE_TAGS = {
         "embedded store-plan PNG. Reproduce it when repairing or copying THAT "
         "panel. Never treat its counts as a target for another store - a store "
         "has as many clusters as it has cooling positions."
+    ),
+    "CASE-RELINK-A-20260812": (
+        "Plant-specific repair incident. K51, K4A, K4B, K3B, K3C and K3D, "
+        "their controller indices and their workbook coverage are evidence for "
+        "this case only. They are not an Oversikt naming or numbering rule."
     ),
 }
 
@@ -250,6 +255,225 @@ OVERSIKT_BINDING_VERIFICATION = {
         "evidence exists; otherwise O-B07 keeps the row unresolved for human "
         "review. No fuzzy candidate becomes verified automatically."
     ),
+}
+
+EXISTING_PANEL_RELINK = {
+    "task": "oversikt-existing-panel-relink",
+    "scope": "OVERSIKT",
+    "owner_documents": {
+        "routing": "AI-REQUEST-ROUTING.md section 1.3",
+        "behavior": "OVERSIKT-GENERATION-CONTRACT.md section 8.6",
+        "procedure": "OVERSIKT-AUTHORING-GUIDE.md section 8c",
+        "acceptance": "OVERSIKT-QA-CHECKLIST.md stage E2",
+        "compact": "OVERSIKT-COPILOT-PREFLIGHT.md RELINK EXISTING PANEL",
+        "global_no_fabrication": "AI-BRIEFING.txt section 8b",
+    },
+    "triggers": [
+        "link these objects",
+        "link out these disks",
+        "find the objects on this picture",
+        "these need linking",
+        "I placed them where they should be",
+        "use this updated JSON",
+        "match the screenshot to the parameter Excel",
+        "repair missing links on an Oversikt panel",
+    ],
+    "classifications": [
+        "binding-only",
+        "placement-only",
+        "binding+placement",
+        "add-missing-clusters",
+        "validation/report-only",
+    ],
+    "classification_rule": (
+        "The newest user-supplied corrected panel makes the task binding-only "
+        "unless the user explicitly requests a layout change."
+    ),
+    "operational_precedence": [
+        "newest current-task panel JSON owns coordinates, dimensions, zIndex, "
+        "array order, object names, background, obj_id and manual placement",
+        "current screenshot identifies visible labels, cluster membership and "
+        "visual relationships; it does not override corrected JSON coordinates",
+        "current plant parameter workbook owns exact unit, parameter, driver "
+        "identifier, access, datatype and controller-index evidence",
+        "repository documents and templates are fallback only",
+    ],
+    "inspection_order": [
+        "inspect panel.image_data first; it is the actual imported background",
+        "inspect panel.image_svg_trace second when present; it is AI-reading "
+        "input only and must not replace image_data",
+        "enumerate every panel.single_objects entry",
+        "match foreground objects spatially to the background and screenshot",
+        "separate baked labels/rectangles from live JSON objects; never duplicate "
+        "background artwork",
+    ],
+    "object_matching": {
+        "required_evidence": [
+            "geometry",
+            "obj_id",
+            "alias_text",
+            "driver_id",
+            "unit_id",
+            "proximity to background label",
+            "screenshot relationship",
+        ],
+        "identity": "match equipment role plus position",
+        "never": [
+            "array position",
+            "object_N ordering",
+            "highest unit",
+            "rightmost object",
+            "final JSON array object",
+        ],
+        "object_name": "implementation identity only; preserve it",
+    },
+    "binding_algorithm": [
+        "identify the full equipment label from current-task visual evidence",
+        "collect all workbook rows for that exact equipment",
+        "resolve alarm, value, cooling and defrost from parameter name/group",
+        "copy the entire driver_id from the chosen row without editing",
+        "copy unit_id only from documented evidence; otherwise preserve a valid "
+        "current value and report the gap",
+        "set linked true only when the exact source row exists",
+        "record the high-temperature alarm row selected and why it matches",
+    ],
+    "minimal_label_normalization": {
+        "purpose": "candidate discovery only; exact source row still authorizes the binding",
+        "allowed": [
+            "whitespace",
+            "case",
+            "evidence-backed display suffix",
+            "evidence-backed descriptive prefix",
+        ],
+        "prohibited": "semantic guessing or identifier transformation",
+    },
+    "role_examples": {
+        "value": "exact u56 Display air",
+        "cooling": "exact u58 Comp1/LLSV or a workbook-confirmed family equivalent",
+        "defrost": "exact u60 Def. relay / Def Relay spelling variant",
+        "alarm": (
+            "the current equipment's matching high-temperature alarm workbook "
+            "row; never a globally guessed suffix"
+        ),
+    },
+    "missing_equipment": {
+        "behavior": "per-cluster STOP; continue independent verified clusters",
+        "must_not": [
+            "infer the next controller index",
+            "clone a neighboring unit",
+            "use a similar equipment row",
+            "fabricate a driver_id",
+        ],
+        "result": (
+            "leave the absent equipment unchanged or unlinked and report the "
+            "exact reason; partial completion is correct"
+        ),
+    },
+    "driver_id_rule": (
+        "No string surgery. Families, shapes, register paths and alarm suffixes "
+        "differ. Copy one exact workbook row."
+    ),
+    "object_reuse": (
+        "Reuse a nearby compatible role object first and relink complete "
+        "clusters. Add only genuinely absent live roles. Clone only a compatible "
+        "cluster with valid obj_ids, measured sizes and source-backed relative "
+        "offsets. Preserve every manually added or manually placed object."
+    ),
+    "binding_only_preservation": {
+        "must_match_source": [
+            "posLeft",
+            "posTop",
+            "posWidth",
+            "posHeight",
+            "zIndex",
+            "obj_id",
+            "name",
+            "array order",
+            "background",
+        ],
+        "may_change_when_verified": [
+            "driver_id",
+            "unit_id",
+            "alias_text",
+            "linked",
+        ],
+        "output_only_allowed_removal": [
+            "panel.image_svg_trace (export-time AI input; import artifacts MUST omit it)"
+        ],
+        "validator": (
+            "validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json "
+            "--patch-scope binding-repair --parameters PARAMETERS.xlsx "
+            "--task oversikt-existing-panel-relink --json-report"
+        ),
+    },
+    "validation": [
+        "parse and envelope",
+        "counts and unique names",
+        "all required fields",
+        "no unrelated document or object changes",
+        "background byte-identical",
+        "manual visual fields unchanged for binding-only",
+        "every changed driver_id exact in the workbook",
+        "equipment, role, family and unit_id evidence agree",
+        "linked only where verified",
+        "no fabricated absent equipment",
+        "exact duplicate live objects detected",
+        "source-proven missing roles reported",
+        "intentional cooling/defrost/alarm stacking allowed",
+    ],
+    "verification_report": {
+        "task": "oversikt-existing-panel-relink",
+        "optional": True,
+        "panel_json_is_primary_output": True,
+        "must_not_wrap_panel": True,
+        "background_only_gap_argument": (
+            "--unresolved-label LABEL=REASON; repeat once per visually identified "
+            "equipment label that has no foreground object and therefore cannot "
+            "appear in the binding matrix"
+        ),
+        "fields": [
+            "classification",
+            "source_panel",
+            "parameter_source",
+            "visual_preservation_held",
+            "changed_equipment_roles",
+            "alarm_choices",
+            "verified_count",
+            "unresolved_labels",
+            "validator_errors",
+            "validation_runs",
+        ],
+    },
+    "case_study": {
+        "scope": "CASE-RELINK-A-20260812",
+        "visible_labels": ["K51", "K4A", "K4B", "K3B", "K3C", "K3D"],
+        "workbook_equipment": ["K51", "K4A", "K4B", "K3B", "K3C"],
+        "workbook_missing": ["K3D"],
+        "controller_indices": {
+            "K51": 90,
+            "K4A": 30,
+            "K4B": 29,
+            "K3B": 32,
+            "K3C": 33,
+        },
+        "failed_attempts": [
+            "selected the final JSON array object as the last disk and repaired "
+            "one cluster",
+            "identified units but estimated coordinates",
+        ],
+        "resolution": (
+            "newest user-corrected JSON owns coordinates; change bindings only. "
+            "K3D remains unresolved because the workbook has no K3D unit."
+        ),
+        "alarm_note": (
+            "Earlier objects used suffix 20009 while current AKC rows may use "
+            "20011. The current matching workbook row wins; no suffix is global."
+        ),
+        "family_note": (
+            "An old object may use AK2 while the current target is AK3_AKC. "
+            "Never mutate fragments; select the exact current workbook row."
+        ),
+    },
 }
 
 CLUSTER_RULES = {
@@ -734,8 +958,7 @@ PRESERVE_AND_PATCH = {
             "way' is a justification only when the field is named in "
             "export_only_fields."
         ),
-        "export_only_fields": ["panel.image_svg_trace", "envelope.exported_at",
-                               "envelope.generator"],
+        "export_only_fields": ["panel.image_svg_trace"],
         "validator": "O-C16",
         "command": ("python validate-oversikt-panel.py --compare SOURCE.json "
                     "CANDIDATE.json --patch-scope value-position"),
@@ -1142,6 +1365,28 @@ EVIDENCE = {
             ),
         },
     },
+    "E28": {
+        "file": (
+            "2026-08-12 plant-specific corrected Oversikt repair artifacts in user "
+            "Downloads (NOT committed); sanitized policy fixture only"
+        ),
+        "committed": "policy and sanitized fixture only",
+        "why_live_files_not_committed": (
+            "The panel and workbook evidence carry a live plant, production "
+            "driver identifiers and customer-specific equipment."
+        ),
+        "sanitized": True,
+        "scope": "CASE-RELINK-A-20260812",
+        "role": (
+            "Shows why the newest corrected JSON owns manual placement, why "
+            "equipment is matched by role plus position rather than array order, "
+            "and why one absent workbook unit stops only that cluster."
+        ),
+        "fixture": (
+            "tests/fixtures/oversikt-existing-relink/case.json; generated by "
+            "build-oversikt-existing-relink-fixture.py"
+        ),
+    },
 }
 
 
@@ -1378,6 +1623,7 @@ def panel_type_block(document):
         "geometry_terms": GEOMETRY_TERMS,
         "cluster": dict(CLUSTER_RULES, anatomy_E15=measured_anatomy(clusters)),
         "binding_verification": OVERSIKT_BINDING_VERIFICATION,
+        "existing_panel_relink": EXISTING_PANEL_RELINK,
         "value_centering": VALUE_CENTERING,
         "footprint_evidence": FOOTPRINT_EVIDENCE,
         "coverage": COVERAGE,
@@ -1447,7 +1693,16 @@ def profile_block(document):
 
 def apply(rules):
     document = load_fixture()
-    rules.setdefault("scope_tags", {}).update(SCOPE_TAGS)
+    scope_tags = rules.setdefault("scope_tags", {})
+    previous_case_scope = (
+        rules.get("evidence", {}).get("E28", {}).get("scope")
+    )
+    if previous_case_scope and previous_case_scope not in SCOPE_TAGS:
+        scope_tags.pop(previous_case_scope, None)
+    for scope in tuple(scope_tags):
+        if scope.startswith("CASE-") and scope not in SCOPE_TAGS:
+            scope_tags.pop(scope)
+    scope_tags.update(SCOPE_TAGS)
     rules.setdefault("evidence", {}).update(EVIDENCE)
     rules.setdefault("global_invariants", {})[
         "binding_verification"

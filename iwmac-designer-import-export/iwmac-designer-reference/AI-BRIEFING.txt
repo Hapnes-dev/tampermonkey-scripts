@@ -1687,6 +1687,15 @@ Run parameter-aware Oversikt validation when applicable:
 Use --json-report for the complete matrix. O-S09 checks structural field
 consistency only. O-B00..O-B08 own source and semantic binding evidence.
 
+EXISTING OVERSIKT REPAIR. Requests such as "link these objects", "link out
+these disks", "I placed them where they should be", "use this updated JSON"
+or "match the screenshot to the parameter Excel" route to
+OVERSIKT-GENERATION-CONTRACT.md §8.6. That panel-specific contract owns
+source precedence, role-plus-position matching, binding-only visual
+preservation, per-cluster STOP behavior and task
+oversikt-existing-panel-relink. This GLOBAL section still owns the
+no-fabrication and exact-source invariant.
+
 RELINKING A WHOLE MACHINE PICTURE (Maskin). A common request: "link out
 all the parameters on this machine picture with this dump and give me
 the updated json". Machine panels are drawn from a shared template whose

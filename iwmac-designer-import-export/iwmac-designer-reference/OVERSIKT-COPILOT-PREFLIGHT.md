@@ -27,6 +27,48 @@ L9 Preserve geometry, obj_id, object names, array order, zIndex and background
 L10 Compare Oversikt controller clusters and alarm/value/cooling/defrost roles,
     NEVER array indexes or spatial proximity. Preserve object_10000-style names.
 
+RELINK EXISTING PANEL. Trigger on: "link these objects", "link out these disks",
+"find the objects on this picture", "these need linking", "I placed them where
+they should be", "use this updated JSON", "match the screenshot to the parameter
+Excel", "repair missing links on an Oversikt panel".
+
+R1 CLASSIFY: binding-only, placement-only, binding+placement,
+   add-missing-clusters, or validation/report-only. A newer user-corrected JSON
+   means BINDING-ONLY unless the user explicitly asks for a layout change.
+R2 NEWEST PANEL FIRST. It owns positions, dimensions, zIndex, order, names,
+   background and object types. Screenshot/background identifies labels and
+   relationships. Workbook owns exact unit/parameter/driver/type/access/index.
+   NEVER average, re-space or replace corrected placement.
+R3 INSPECT image_data first, image_svg_trace second, then enumerate all
+   single_objects and match them spatially. Separate baked labels/rectangles
+   from live objects. NEVER duplicate background artwork.
+R4 MATCH ROLE + POSITION using geometry, obj_id, alias, driver, unit, label
+   proximity and screenshot. NEVER use array position, last object, object_N,
+   highest unit or rightmost object as equipment identity.
+R5 PRESERVE in binding-only work: posLeft, posTop, posWidth, posHeight, zIndex,
+   obj_id, name, order, arrays, metadata and background. Only exact-proven
+   driver_id/unit_id/alias_text/linked may change. image_svg_trace is export-only
+   input and is not emitted.
+R6 OPEN ONE EQUIPMENT'S FULL WORKBOOK ROW SET. Minimal case/whitespace or
+   evidence-backed display-suffix normalization locates candidates only.
+   Resolve role from parameter name/group. COPY WHOLE DRIVER IDs. Copy unit_id
+   only from evidence. Record every alarm choice and reason.
+R7 MISSING UNIT = PER-CLUSTER STOP. NEVER infer next index, clone the prior unit,
+   adapt a similar name or fabricate an id. Leave it unchanged/unlinked, report
+   the exact label, continue independent verified clusters.
+R8 REUSE nearby compatible live objects first. Add only genuinely absent live
+   roles with valid obj_ids, sizes and evidence-backed relative offsets.
+R9 VALIDATE exact workbook ids, role/equipment/family/unit agreement, counts,
+   names, fields, duplicates, missing roles, unchanged visuals/background.
+R10 RETURN importable panel JSON first; optional report second. Report unmatched
+    labels. Partial is valid; partial is NEVER "fully linked".
+
+Run:
+  python validate-oversikt-panel.py --compare NEWEST-CORRECTED.json
+    CANDIDATE.json --patch-scope binding-repair
+    --parameters PARAMETERS.xlsx --task oversikt-existing-panel-relink
+    --json-report
+
 BAD: linked="true" + non-empty driver_id => valid.
 GOOD: driver_id resolves exactly and uniquely in the supplied source; resolved
 unit_id equals panel unit_id; controller identity and exact parameter meaning
@@ -52,13 +94,15 @@ For a repair, also:
   labelled a kit, never delivered as a finished panel.
 
 2 PRECEDENCE, highest first. Never average two conflicting coordinates.
-  1 panel JSON or screenshot supplied with this task  2 production export of the
-  same panel and system type  3 OVERSIKT-GENERATION-CONTRACT.md  4 panel rules
-  in the reference CLAUDE.md  5 AI-BRIEFING.txt  6 PANEL-TYPE-GUIDE.md
-  7 DESIGN-OBJECT-CATALOG.md  8 generic visual advice. Say which rank you worked
-  from. A PDF, a byggeplan drawing or a screenshot is NOT rank 1 or 2: it
-  describes the store, not the panel. The catalogue proves an obj_id exists; it
-  never decides placement or size.
+  1 newest panel JSON supplied with this task  2 production export of the same
+  panel and system type  3 current screenshot/background, for identifying
+  equipment and visual relationships but NEVER for replacing corrected JSON
+  coordinates  4 current plant workbook, authoritative for bindings only
+  5 OVERSIKT-GENERATION-CONTRACT.md  6 panel rules in the reference CLAUDE.md
+  7 AI-BRIEFING.txt  8 PANEL-TYPE-GUIDE.md  9 DESIGN-OBJECT-CATALOG.md
+  10 generic visual advice. Say which rank and which evidence domain you used.
+  A PDF or byggeplan drawing describes the store, not exact panel geometry.
+  The catalogue proves an obj_id exists; it never decides placement or size.
 
 3 ROUTE THE INPUT, and name the row you picked.
   PDF only, produce an explicitly UNLINKED DRAFT with the missing evidence

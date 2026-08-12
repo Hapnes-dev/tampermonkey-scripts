@@ -10,6 +10,11 @@ Usage:
     python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
                                       --patch-scope binding-repair \
                                       --parameters PARAMETERS.xlsx
+    python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
+                                      --patch-scope binding-repair \
+                                      --parameters PARAMETERS.xlsx \
+                                      --task oversikt-existing-panel-relink \
+                                      --json-report
     python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
     python validate-oversikt-panel.py PANEL.json            # same as --check
     python validate-oversikt-panel.py ... --json-report
@@ -1150,6 +1155,7 @@ def verify_bindings(envelope, objects, roles, source, findings):
             "unit_id_exact_match": unit_exact,
             "panel_alias_text": panel_alias,
             "resolved_alias_or_parameter_description": resolved_alias,
+            "resolved_object_role": str((row or {}).get("object_role") or ""),
             "alias_match_status": alias_status,
             "access": str((row or {}).get("att") or ""),
             "datatype": " / ".join(
@@ -1446,13 +1452,27 @@ PATCH_SCOPES = {
     },
 }
 
-# Written by export, not by the author, and therefore not evidence that a patch
-# escaped its scope. Named explicitly so the exemption is auditable rather than
-# implicit in a diff that quietly skips fields.
-EXPORT_ONLY_ENVELOPE_FIELDS = ("exported_at", "generator")
+# ``image_svg_trace`` is export-time AI input that import deliberately removes.
+# That one deletion is allowed when producing an import artifact. Envelope
+# metadata has no such exception: binding-only work preserves it exactly.
+EXPORT_ONLY_PANEL_FIELDS = ("image_svg_trace",)
+PATCH_SCOPE_IGNORED_ENVELOPE_FIELDS = (
+    "_negative_fixture",  # synthetic regression instrumentation, never panel data
+)
 
 
-def check_patch_scope(pairs, roles, scope_name, findings):
+def _scope_value(value):
+    """Keep O-C16 details useful without printing an embedded background."""
+    if isinstance(value, str) and len(value) > 120:
+        return f"<string:{len(value)} chars>"
+    if isinstance(value, list):
+        return f"<list:{len(value)} items>"
+    if isinstance(value, dict):
+        return f"<object:{len(value)} fields>"
+    return repr(value)
+
+
+def check_patch_scope(source_env, candidate_env, pairs, roles, scope_name, findings):
     """O-C16: prove a patch changed only what it was allowed to change.
 
     The 2026-08-11 correction was one sentence - put the temperature bubble in
@@ -1490,6 +1510,36 @@ def check_patch_scope(pairs, roles, scope_name, findings):
                 detail.append(f"{src.get('name')} ({role or '-'}).{field}: "
                               f"{before!r} -> {after!r}")
 
+    envelope_keys = (
+        set(source_env) | set(candidate_env)
+    ) - set(PATCH_SCOPE_IGNORED_ENVELOPE_FIELDS) - {"panel"}
+    for field in sorted(envelope_keys):
+        before, after = source_env.get(field), candidate_env.get(field)
+        if before == after:
+            continue
+        path = field
+        escapes[path] += 1
+        if len(detail) < 12:
+            detail.append(
+                f"{path}: {_scope_value(before)} -> {_scope_value(after)}"
+            )
+
+    source_panel = source_env.get("panel") or {}
+    candidate_panel = candidate_env.get("panel") or {}
+    panel_keys = (
+        set(source_panel) | set(candidate_panel)
+    ) - set(EXPORT_ONLY_PANEL_FIELDS) - {"single_objects"}
+    for field in sorted(panel_keys):
+        before, after = source_panel.get(field), candidate_panel.get(field)
+        if before == after:
+            continue
+        path = f"panel.{field}"
+        escapes[path] += 1
+        if len(detail) < 12:
+            detail.append(
+                f"{path}: {_scope_value(before)} -> {_scope_value(after)}"
+            )
+
     if not escapes:
         findings.append(Finding("O-C16", "info",
                                 f"patch scope {scope_name!r} held: every matched object "
@@ -1507,6 +1557,81 @@ def check_patch_scope(pairs, roles, scope_name, findings):
         findings.append(Finding("O-C16", "error",
                                 f"  ...and {sum(escapes.values()) - len(detail)} further "
                                 f"out-of-scope difference(s)"))
+
+
+def existing_relink_report_details(source_doc, candidate_doc, rules, matrix):
+    """Build task-specific evidence from the compare pair and binding matrix."""
+    roles = role_map((rules.get("panel_types") or {}).get("oversikt") or {})
+    source_by_name = {
+        obj.get("name"): obj for obj in objects_of(envelope_of(source_doc))
+    }
+    matrix_by_name = {row.get("object_identity"): row for row in matrix}
+    changed = []
+    alarms = []
+    for candidate in objects_of(envelope_of(candidate_doc)):
+        name = candidate.get("name")
+        source = source_by_name.get(name)
+        if source is None:
+            continue
+        changed_fields = [
+            field for field in ("driver_id", "unit_id", "alias_text", "linked")
+            if source.get(field) != candidate.get(field)
+        ]
+        if not changed_fields:
+            continue
+        row = matrix_by_name.get(name) or {}
+        role = roles.get(candidate.get("obj_id"))
+        changed.append({
+            "controller_identity": row.get("controller_identity")
+            or candidate.get("unit_id")
+            or "",
+            "object_identity": name,
+            "role": role,
+            "changed_fields": changed_fields,
+        })
+        if role == "alarm":
+            exact_row = (
+                row.get("driver_id_exact_match")
+                and row.get("alias_match_status") == "exact"
+                and row.get("resolved_object_role") == role
+            )
+            if exact_row:
+                reason = "exact source row matched driver_id, alias and role"
+                if not row.get("unit_id_exact_match"):
+                    reason += "; unit_id was not verified by the parameter source"
+            else:
+                reason = (
+                    "alarm choice remains unresolved: "
+                    + (row.get("reason_if_unresolved") or "source evidence incomplete")
+                )
+            alarms.append({
+                "controller_identity": row.get("controller_identity")
+                or candidate.get("unit_id")
+                or "",
+                "object_identity": name,
+                "driver_id": candidate.get("driver_id"),
+                "alias_text": candidate.get("alias_text"),
+                "reason": reason,
+                "evidence_source": row.get("evidence_source") or "",
+            })
+
+    unresolved_by_controller = collections.OrderedDict()
+    for row in matrix:
+        if row.get("verification_state") == "semantically verified":
+            continue
+        controller = row.get("controller_identity") or "unidentified"
+        record = unresolved_by_controller.setdefault(controller, {
+            "label": controller,
+            "roles": [],
+            "reasons": [],
+        })
+        role = row.get("object_role")
+        reason = row.get("reason_if_unresolved")
+        if role and role not in record["roles"]:
+            record["roles"].append(role)
+        if reason and reason not in record["reasons"]:
+            record["reasons"].append(reason)
+    return changed, alarms, list(unresolved_by_controller.values())
 
 
 def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
@@ -1528,7 +1653,7 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
     pairs, dropped, added = match_objects(src_objects, cand_objects)
 
     if patch_scope:
-        check_patch_scope(pairs, roles, patch_scope, findings)
+        check_patch_scope(src_env, cand_env, pairs, roles, patch_scope, findings)
 
     if dropped:
         names = [str(o.get("name")) for o in dropped[:10]]
@@ -1885,7 +2010,18 @@ def print_binding_matrix(rows, out=sys.stdout):
         )
 
 
+def unresolved_label_argument(value):
+    label, separator, reason = value.partition("=")
+    label, reason = label.strip(), reason.strip()
+    if not separator or not label or not reason:
+        raise argparse.ArgumentTypeError(
+            "expected LABEL=REASON with both values non-empty"
+        )
+    return {"label": label, "roles": [], "reasons": [reason]}
+
+
 def main(argv=None):
+    invocation_args = list(argv if argv is not None else sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("panel", nargs="?", type=pathlib.Path,
                         help="panel to check; same as --check")
@@ -1922,10 +2058,32 @@ def main(argv=None):
     parser.add_argument("--patch-scope", default=None, choices=sorted(PATCH_SCOPES),
                         help="in --compare, assert that the candidate differs from the "
                              "source ONLY within this scope (O-C16)")
+    parser.add_argument(
+        "--task",
+        choices=("oversikt-existing-panel-relink",),
+        default=None,
+        help=(
+            "emit task-specific machine-readable verification metadata. "
+            "oversikt-existing-panel-relink requires --compare, --parameters "
+            "and --patch-scope binding-repair"
+        ),
+    )
+    parser.add_argument(
+        "--unresolved-label",
+        action="append",
+        type=unresolved_label_argument,
+        default=[],
+        metavar="LABEL=REASON",
+        help=(
+            "declare a visually identified background-only equipment gap that "
+            "has no foreground object and therefore cannot appear in the binding "
+            "matrix; repeat for each label"
+        ),
+    )
     parser.add_argument("--json-report", action="store_true", dest="as_json")
     parser.add_argument("--no-matrix", action="store_true",
                         help="suppress the coverage matrix in text output")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(invocation_args)
 
     target = args.check or args.panel
     if bool(args.compare) == bool(target):
@@ -1934,6 +2092,18 @@ def main(argv=None):
     if args.patch_scope and not args.compare:
         parser.error("--patch-scope compares a candidate against a source; it needs "
                      "--compare SOURCE.json CANDIDATE.json")
+    if args.task == "oversikt-existing-panel-relink":
+        if not args.compare:
+            parser.error("oversikt-existing-panel-relink requires --compare")
+        if not args.parameters:
+            parser.error("oversikt-existing-panel-relink requires --parameters")
+        if args.patch_scope != "binding-repair":
+            parser.error(
+                "oversikt-existing-panel-relink requires "
+                "--patch-scope binding-repair"
+            )
+    elif args.unresolved_label:
+        parser.error("--unresolved-label requires --task oversikt-existing-panel-relink")
 
     rules, palette = load_rules(), load_palette()
     footprints = load_footprints(args.footprints) if args.footprints else None
@@ -2005,6 +2175,73 @@ def main(argv=None):
                 "completed_linking_claim_allowed": False,
             })
             report["binding_verification_matrix"] = binding_output.get("matrix", [])
+        if args.task == "oversikt-existing-panel-relink":
+            summary = report.get("binding_summary") or {}
+            matrix = report.get("binding_verification_matrix") or []
+            changed, alarm_choices, unresolved_labels = (
+                existing_relink_report_details(
+                    source_doc, candidate_doc, rules, matrix
+                )
+            )
+            for declared in args.unresolved_label:
+                existing = next(
+                    (
+                        row for row in unresolved_labels
+                        if row["label"] == declared["label"]
+                    ),
+                    None,
+                )
+                if existing is None:
+                    unresolved_labels.append(declared)
+                else:
+                    for reason in declared["reasons"]:
+                        if reason not in existing["reasons"]:
+                            existing["reasons"].append(reason)
+            visual_rules = {
+                "O-C01", "O-C02", "O-C05", "O-C06", "O-C09", "O-C10",
+                "O-C11", "O-C12", "O-C13", "O-C14", "O-C15", "O-C16",
+            }
+            visual_preservation_held = not any(
+                finding.rule in visual_rules
+                and finding.severity in {"error", "warning"}
+                for finding in findings
+            )
+            completed = bool(
+                summary.get("completed_linking_claim_allowed")
+                and visual_preservation_held
+                and not errors
+                and not args.unresolved_label
+            )
+            report["task"] = args.task
+            report["verification_report"] = {
+                "task": args.task,
+                "classification": "binding-only",
+                "primary_output": str(subject),
+                "source_panel": str(args.compare[0]),
+                "parameter_source": str(args.parameters),
+                "panel_json_is_primary_output": True,
+                "report_is_optional_companion": True,
+                "visual_preservation_held": visual_preservation_held,
+                "completion": "complete" if completed else "partial",
+                "unresolved_bindings": summary.get("unresolved"),
+                "validator_errors": len(errors),
+                "changed_equipment_roles": changed,
+                "alarm_choices": alarm_choices,
+                "verified_count": summary.get("semantically_verified", 0),
+                "unresolved_labels": unresolved_labels,
+                "validation_runs": [{
+                    "command": [
+                        sys.executable,
+                        str(pathlib.Path(__file__).resolve()),
+                        *invocation_args,
+                    ],
+                    "exit_code": 1 if errors else 0,
+                    "errors": len(errors),
+                    "warnings": len(warnings),
+                    "result": "complete" if completed else "partial",
+                }],
+                "completed_linking_claim_allowed": completed,
+            }
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for finding in findings:

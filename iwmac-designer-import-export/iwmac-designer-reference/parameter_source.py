@@ -56,7 +56,7 @@ HEADER_ALIASES = {
     },
     "alias_text": {
         "alias_text", "aliastext", "alias", "parameter_alias", "parameteralias",
-        "selector_text", "selectortext",
+        "selector_text", "selectortext", "chosen_name", "chosenname",
     },
     "parameter_description": {
         "parameter_description", "parameterdescription", "description",
@@ -66,7 +66,7 @@ HEADER_ALIASES = {
     "application": {"application", "app", "parameter_application"},
     "parameter_type": {
         "parameter_type", "parametertype", "datatype", "data_type",
-        "value_type", "valuetype",
+        "value_type", "valuetype", "type",
     },
     "hardware_datatype": {
         "hardware_datatype", "hardwaredatatype", "hardware_type",

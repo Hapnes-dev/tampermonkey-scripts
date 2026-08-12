@@ -603,7 +603,9 @@ geometry correction.
 | `position` | `posLeft`/`posTop` on any object — a whole cluster moved to a different case, declared as such |
 | `none` | nothing: the candidate must be object-identical to the source |
 
-Envelope `exported_at` and `generator` are export-only and are exempt.
+`panel.image_svg_trace` is the only export-only field O-C16 may ignore: it is
+input, never output. Envelope `exported_at` and `generator` **MUST remain
+identical** in every binding-only / `binding-repair` comparison.
 
 ### 6.3 What compare mode reports
 
@@ -1036,6 +1038,175 @@ python validate-oversikt-panel.py \
 `O-C16` proves geometry, object identity, names and order did not travel under
 the binding repair. `O-C08` becomes an informational inventory of the declared
 binding changes; `O-B*` decides whether those new values are proved.
+
+### 8.6 Repair, complete, or relink live objects on an existing panel — `OVERSIKT`
+
+This section owns the behavior routed by
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md) §1.3.1. The ordered human
+procedure is in
+[OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) §8c; acceptance is
+[OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md) stage E2.
+
+#### Classify before editing
+
+State one class: **binding-only**, **placement-only**, **binding+placement**,
+**add-missing-clusters**, or **validation/report-only**. A newer user-corrected
+JSON makes the task **binding-only unless the user explicitly asks for a layout
+change**. Its manual positions are not suggestions to improve.
+
+#### Operational precedence
+
+For this workflow, use these sources in order and only for what they prove:
+
+1. The **newest current-task panel JSON** owns `obj_id`, `name`, array order,
+   `posLeft`, `posTop`, `posWidth`, `posHeight`, `zIndex`, canvas dimensions,
+   background, object coverage and every manual placement.
+2. The **current screenshot or embedded background** identifies equipment
+   labels, cluster membership and visual relationships. It does not override
+   coordinates already corrected in rank 1.
+3. The **current plant parameter workbook** owns the exact unit, parameter,
+   driver identifier, access, datatype and controller-index evidence.
+4. This contract and production templates are fallback evidence only.
+
+**MUST NOT:** replace corrected coordinates with an older export, average two
+positions, normalize spacing, or reconstruct placement from the screenshot.
+
+#### Inspect the panel as a visual document
+
+Work in this order:
+
+1. Inspect `panel.image_data` first; it is the image the importer renders.
+2. Inspect `panel.image_svg_trace` second when present. It may help read
+   outlines and text, but it is export-time AI input, never output artwork.
+3. Enumerate all `panel.single_objects` before selecting any object to edit.
+4. Spatially match foreground live objects to equipment labels and footprints
+   on the background and screenshot.
+5. Separate labels, rectangles and symbols baked into the background from
+   foreground JSON objects. **Never duplicate background artwork.**
+6. Add a live value, alarm or state object only after proving that role is
+   genuinely absent from the foreground.
+
+An object match uses **role plus position**. Consider geometry, `obj_id`,
+`alias_text`, current `driver_id`, current `unit_id`, proximity to the
+background label and the screenshot relationship together. `object_N` is
+implementation identity only. **MUST NOT match by array position, final array
+object, highest unit, rightmost object or filename wording.**
+
+#### Binding-only preservation boundary
+
+For every source object, a binding-only result **MUST retain exactly**:
+
+`posLeft`, `posTop`, `posWidth`, `posHeight`, `zIndex`, `obj_id`, `name` and
+array order. The background and every unrelated panel/envelope field **MUST
+remain byte-identical in value**. Only source-verified `driver_id`, `unit_id`,
+`alias_text` and `linked` may change. `image_svg_trace` remains the one
+export-only exception: it is not the imported background and is omitted from a
+generated/import-ready result.
+
+`--patch-scope binding-repair` enforces this object and document boundary.
+Changing `saved_by`, counts, containers, graphics, plant fields, background
+fields or any other document metadata now fails `O-C16` too.
+
+#### Deterministic exact-evidence algorithm
+
+For each equipment cluster:
+
+1. Establish the full equipment label from the current-task image and object
+   geometry.
+2. Find that full equipment in the workbook; minimal normalization may remove
+   case/whitespace or an evidence-backed display suffix/descriptive prefix only
+   to locate candidates.
+3. Collect all rows for that equipment before selecting any role.
+4. Resolve each visual role from parameter name/group and object type.
+5. Select one exact compatible row and copy its **entire `driver_id`**.
+6. Copy `unit_id` only from documented evidence. If the source does not expose
+   it, preserve a currently valid one and report the evidence gap.
+7. Set `linked:"true"` only when the exact row exists and identity/meaning
+   agree.
+8. For every high-temperature alarm, record the chosen row and why it is the
+   alarm for this equipment. A suffix used by another controller is irrelevant.
+
+Common AKC candidates in the 2026-08-12 case were exact `u56 Display air` for
+value, exact `u58 Comp1/LLSV` (or a workbook-confirmed family equivalent) for
+cooling, and exact `u60 Def. relay` / `Def Relay` for defrost. These strings are
+case evidence, not universal suffix rules. Alarm rows vary most and are always
+selected from the current equipment's workbook rows.
+
+**No driver-ID string surgery.** Never replace a family, index, path group or
+suffix inside an existing string. AK2 and AK3_AKC identifiers, controller paths
+and alarm suffixes differ. Copy an exact workbook cell or leave the object
+unresolved.
+
+#### Missing equipment is a per-cluster STOP
+
+If the parameter source has no equipment unit, **STOP that cluster**:
+
+- do not infer the next controller index;
+- do not clone a neighboring unit;
+- do not adapt a similar equipment name;
+- do not fabricate a driver identifier;
+- leave its current objects unchanged, or absent when no live objects exist;
+- report the exact missing label and continue independent verified clusters.
+
+This is partial completion, not whole-task failure. It is also not full
+completion. The panel schema receives no invented verification field.
+
+#### Reuse before adding
+
+Reuse nearby compatible role objects first. Relink complete clusters. Add only
+roles proved absent; preserve manually added/placed objects. If a cluster truly
+must be cloned, its `obj_id`s, sizes and relative offsets require compatible
+source evidence. Intentional alarm/cooling/defrost stacking is allowed; an exact
+duplicate live object with the same equipment, role and geometry is not.
+
+#### Validation and task report
+
+The binding-only gate is:
+
+```bash
+python validate-oversikt-panel.py \
+  --compare NEWEST-CORRECTED.json CANDIDATE.json \
+  --patch-scope binding-repair \
+  --parameters PARAMETERS.xlsx \
+  --task oversikt-existing-panel-relink \
+  --json-report
+```
+
+When visual inspection finds a baked equipment label with no foreground object,
+append `--unresolved-label "LABEL=REASON"` once for that label. This records the
+gap the binding matrix cannot discover and forces report completion to
+`partial`; it does not authorize adding an object.
+
+In addition to parse/envelope/count/name/field checks, review every changed id
+against the exact parameter row, intended equipment and role; verify family and
+`unit_id` evidence; verify the background value and every manual visual field;
+and inspect duplicate/missing roles visually. The report is an optional
+companion. The importable `iwmac-designer-panel` JSON remains the primary
+output and is never wrapped in the report.
+
+An import-ready candidate **MUST omit** `panel.image_svg_trace`: it is
+export-time AI-reading input, not imported panel content. Removing that field
+from the candidate is the one allowed output-only document difference.
+`panel.image_data` and every other unrelated envelope/panel field, including
+`generator` and `exported_at`, **MUST remain byte-for-value identical** during
+binding-only work.
+
+#### Scoped incident — `CASE-RELINK-A-20260812`, not a template
+
+The visible labels were `K51`, `K4A`, `K4B`, `K3B`, `K3C`, `K3D`; typical live
+roles were air temperature, cooling state, high-temperature alarm and defrost
+state. The first failed attempt selected the final JSON array object as the
+"last disk" and repaired one cluster. The second identified units but estimated
+coordinates. The newer user-corrected JSON then became the sole placement
+authority, making the remaining work binding-only.
+
+The case workbook contained `K51`, `K4A`, `K4B`, `K3B`, `K3C`, and no `K3D`.
+Case-only controller indices were `K51=90`, `K4A=30`, `K4B=29`, `K3B=32`,
+`K3C=33`. `K3D` therefore remained unresolved; no next index or `K3C` clone was
+legal. Earlier objects used alarm suffix `20009`; current AKC rows included
+other alarm suffixes. An old AK2 object and a current AK3_AKC target likewise
+required row selection, not string replacement. None of those names, indices,
+families or suffixes generalizes beyond this incident.
 
 ## 9. Anomalies — recorded, not corrected — `TEMPLATE-10113`
 

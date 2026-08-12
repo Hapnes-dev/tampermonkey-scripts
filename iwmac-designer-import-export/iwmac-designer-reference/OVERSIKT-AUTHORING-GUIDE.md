@@ -351,6 +351,63 @@ matrix, source coverage, exact unresolved controllers/roles and missing evidence
 Do not call the panel finished, fully linked, linked-ready, production-ready or
 verified.
 
+### 8c. Existing-panel relink procedure
+
+Use this procedure for “link these objects”, “link out these disks”, “find the
+objects on this picture”, “these need linking”, “I placed them where they should
+be”, “use this updated JSON”, “match the screenshot to the parameter Excel”, or
+“repair missing links on an Oversikt panel”. Contract §8.6 owns the rules.
+
+1. **Name the class.** Choose binding-only, placement-only,
+   binding+placement, add-missing-clusters, or validation/report-only. A newer
+   user-corrected panel is binding-only unless the user explicitly requests
+   layout changes.
+2. **Choose the visual authority by content and timestamp.** Copy the newest
+   current-task JSON whole. Do not start from an earlier filename merely because
+   it says `linked`, `final` or `corrected`.
+3. **Inspect artwork before objects.** Read `image_data`, then
+   `image_svg_trace` when present. Record the visible equipment labels and which
+   marks are baked into the image. Enumerate `single_objects`; do not add a
+   second live object over artwork or an existing live role.
+4. **Build a role-and-position table.** For each requested label, record nearby
+   object name, `obj_id`, geometry, alias, driver and unit. `object_N` and array
+   order may locate an implementation entry but never establish equipment
+   identity.
+5. **Open the workbook and collect one equipment at a time.** Minimal
+   case/whitespace/display-suffix normalization may locate candidate labels.
+   Review every row for the full equipment before choosing value, cooling,
+   defrost or high-temperature alarm.
+6. **Copy exact cells.** Copy the whole `driver_id`. Copy `unit_id` only where
+   the evidence provides it. Record the selected alarm row and reason. Never
+   splice a family, controller index, register path or suffix.
+7. **Apply the per-cluster STOP.** If an equipment unit is absent, do not infer
+   its next index or clone a neighboring unit. Leave that cluster unchanged or
+   absent, name it unresolved, and continue independent verified clusters.
+8. **Reuse existing objects.** Patch compatible nearby role objects before
+   adding anything. Add only a source-proven missing live role; preserve every
+   manually placed object and every visual field.
+9. **Write only verified binding fields.** In binding-only work, the only
+   permitted object changes are `driver_id`, `unit_id`, `alias_text` and
+   `linked`. Preserve names, types, dimensions, positions, z-index, order,
+   arrays, metadata and background values. Do not emit `image_svg_trace`; it is
+   export-only AI input, not the imported background.
+10. **Run the task gate.**
+
+```bash
+python validate-oversikt-panel.py \
+  --compare NEWEST-CORRECTED.json CANDIDATE.json \
+  --patch-scope binding-repair \
+  --parameters PARAMETERS.xlsx \
+  --task oversikt-existing-panel-relink \
+  --json-report
+```
+
+11. **Review the report, not only the exit code.** Check changed driver ids
+    against exact rows, equipment/role, family and unit evidence; confirm
+    visual preservation; list verified and unresolved labels separately. The
+    panel JSON is the importable primary output. The verification report is an
+    optional companion and never wraps it.
+
 ## 9. Render a preview
 
 ```bash
