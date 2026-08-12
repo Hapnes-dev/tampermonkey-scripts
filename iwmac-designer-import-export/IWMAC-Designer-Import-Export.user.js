@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.15.0
+// @version      1.16.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.15.0';
+var IWDIE_VERSION = '1.16.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -3446,10 +3446,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var pg = w2 && w2.paramgrid;
       if (!ug || !pg) { toast('Parameter selector is not ready.', true); return; }
       var sel = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
-      if (!sel || !sel.length) { toast('Select a regulator in the UNITS list first (Ctrl+click selects several).', true); return; }
+      if (!sel || !sel.length) { toast('Select a regulator in the UNITS list first (tick several with the checkboxes).', true); return; }
       if (sel.length > 1) { exportSelectedUnits(sel.slice()); return; }
       var unit = ug.get(sel[0]);
-      if (!unit) { toast('Select a regulator in the UNITS list first (Ctrl+click selects several).', true); return; }
+      if (!unit) { toast('Select a regulator in the UNITS list first (tick several with the checkboxes).', true); return; }
       var records = pg.records || [];
       if (!records.length) { toast('No parameters loaded for this regulator.', true); return; }
       var unitLabel = String(unit.unit_name || unit.unit_id || 'unit');
@@ -3721,19 +3721,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function ensureParamExportButton() {
       // The host leaves the units grid single-select; multi-unit export needs
-      // Ctrl+click to accumulate. Host code reads the clicked record from the
-      // click event, never the selection set, so widening the selection model
-      // does not change any host behavior.
+      // a way to accumulate. Host code reads the clicked record from the click
+      // event, never the selection set, so widening the selection model does
+      // not change any host behavior. Modifier-key selection (Ctrl/Shift) is
+      // unreliable on at least one machine — a third-party content script
+      // swallows ctrlKey clicks at window level — so the grid also gets
+      // w2ui's checkbox column: plain click ticks a unit, no modifiers, and
+      // the header checkbox selects every unit. Clicking the row itself still
+      // single-selects and loads that unit exactly as before.
       try {
         var ugrid = W.w2ui && W.w2ui.unitgrid;
         if (ugrid && ugrid.multiSelect !== true) ugrid.multiSelect = true;
+        if (ugrid && ugrid.show && ugrid.show.selectColumn !== true) {
+          ugrid.show.selectColumn = true;
+          ugrid.refresh();
+        }
       } catch (e) { }
       var anchor = document.getElementById('tb_nolinkable_toolbar_item_add_unit_name');
       if (!anchor || !anchor.parentNode) return;
       if (!document.getElementById('iwdie_param_export_td')) {
         anchor.insertAdjacentElement('afterend', makeParamExportTd(
           'iwdie_param_export_td', 'EXPORT XLSX',
-          'Download every parameter of the selected regulator(s) as Excel (.xlsx) - Ctrl+click selects several',
+          'Download every parameter of the selected regulator(s) as Excel (.xlsx) - tick several units with the checkboxes',
           'window.__IWDIE.doExportParams()'));
       }
       if (!document.getElementById('iwdie_param_export_all_td')) {

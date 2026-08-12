@@ -65,10 +65,13 @@ dialog) gets two buttons to the right of the ALIAS TEXT / UNIT ID / UNIT NAME ro
   that regulator — all of them, not just the visible page — downloads as
   `parameters_<plant>_<unit>_<date>_<time>.xlsx`.
 
-  **Ctrl+click selects several units** (v1.15.0 enables multi-select on the UNITS grid).
-  With more than one selected, EXPORT XLSX walks exactly those units — progress panel,
-  no confirmation, selection restored afterwards — and downloads
+  **Tick several units with the checkbox column** (v1.16.0; Ctrl/Shift+click also work
+  where nothing intercepts them — one machine had another extension swallowing Ctrl+clicks,
+  which is why the checkboxes exist). The header checkbox selects every unit. With more
+  than one selected, EXPORT XLSX walks exactly those units — progress panel, no
+  confirmation, selection restored afterwards — and downloads
   `parameters_<plant>_<n>-units_<date>_<time>.xlsx` in the banded multi-unit layout.
+  Clicking a unit's name row still single-selects and loads it exactly as before.
 - **EXPORT ALL XLSX** (v1.13.0) — after an in-page confirmation, walks every unit in the
   UNITS list through the host's own loader (one at a time, roughly a second per unit),
   restores your original selection, and downloads the whole plant as
