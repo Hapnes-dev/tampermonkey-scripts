@@ -94,7 +94,7 @@
         },
         {
             "name": "Carel_IJsmall_modbus_v2",
-            "display_name": "Carel IJsmall modbus v2",
+            "display_name": "Carel ITJ / IJsmall modbus v2",
             "driver_type": "Carel",
             "file": "Carel_IJsmall_modbus_v2.sql"
         },
