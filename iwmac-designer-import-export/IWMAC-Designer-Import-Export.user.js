@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.16.1
+// @version      1.16.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.16.1';
+var IWDIE_VERSION = '1.16.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -598,6 +598,43 @@ function iwdieBackgroundMime(ext) {
   if (e === 'svg') return 'image/svg+xml';
   if (e === 'jpg') return 'image/jpeg';
   return 'image/' + (e || 'png');
+}
+
+/** CSS color string → [r,g,b]. Unknown / empty → white. */
+function iwdieParseCssColor(s) {
+  s = String(s == null ? '' : s).trim();
+  var m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+  if (m) return [+m[1], +m[2], +m[3]];
+  m = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m) {
+    var h = m[1];
+    return [parseInt(h.charAt(0) + h.charAt(0), 16), parseInt(h.charAt(1) + h.charAt(1), 16), parseInt(h.charAt(2) + h.charAt(2), 16)];
+  }
+  m = /^#([0-9a-f]{6})$/i.exec(s);
+  if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+  return [255, 255, 255];
+}
+
+function iwdieImageHasTransparency(rgba) {
+  if (!rgba || !rgba.length) return false;
+  var i;
+  for (i = 3; i < rgba.length; i += 4) if (rgba[i] < 255) return true;
+  return false;
+}
+
+/** Src-over flatten onto an opaque fill. Output alpha is 255. */
+function iwdieFlattenRgbaOnto(rgba, fillRgb) {
+  var fr = fillRgb[0], fg = fillRgb[1], fb = fillRgb[2];
+  var out = new Uint8ClampedArray(rgba.length);
+  var i, a;
+  for (i = 0; i < rgba.length; i += 4) {
+    a = rgba[i + 3] / 255;
+    out[i]     = Math.round(rgba[i] * a + fr * (1 - a));
+    out[i + 1] = Math.round(rgba[i + 1] * a + fg * (1 - a));
+    out[i + 2] = Math.round(rgba[i + 2] * a + fb * (1 - a));
+    out[i + 3] = 255;
+  }
+  return out;
 }
 
 /** How many placeable items a collected panel document carries. */
@@ -2407,7 +2444,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             canvas.width = w; canvas.height = h;
             ctx = canvas.getContext('2d');
             if (!ctx) throw new Error('2D canvas context unavailable');
-            ctx.fillStyle = '#ffffff';
+            var fillCss = grabBackgroundFillColor();
+            ctx.fillStyle = fillCss;
             ctx.fillRect(0, 0, w, h);
             ctx.drawImage(img, 0, 0);
             imgData = ctx.getImageData(0, 0, w, h);
@@ -2462,7 +2500,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           'Load a panel first (Retrieve → Load).', true, 8000);
         return;
       }
-      return fetchBackgroundBytes(url).then(function (got) {
+      return flattenBackgroundForSave(url, grabBackgroundFillColor()).then(function (got) {
         var ext = iwdieBackgroundExt(got.mime || url);
         var imgName = iwdieBuildBackgroundFilename(plant, panel, ext);
         downloadBytes(got.bytes, imgName, got.mime || iwdieBackgroundMime(ext));
@@ -2511,6 +2549,60 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { bg = W.$('#main_image').css('background-image') || ''; } catch (e) {}
       var m = /url\("?(.*?)"?\)/.exec(bg);
       return m && m[1] ? m[1] : '';
+    }
+
+    /* The colour the designer paints *behind* a transparent PNG. Oversikt
+       panels routinely store the floorplan as holes in the PNG (alpha 0) and
+       let #main_image's CSS background-color show through — rgb(204,204,204)
+       on the live host. Exporting those bytes as-is makes viewers composite
+       the holes onto black. */
+    function grabBackgroundFillColor() {
+      try {
+        var c = W.$('#main_image').css('background-color');
+        if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') return c;
+      } catch (e) {}
+      return 'rgb(204, 204, 204)';
+    }
+
+    /* Opaque PNG/JPG stays the original bytes. A PNG with any alpha is
+       flattened onto the canvas CSS background-color and re-encoded as PNG
+       so the file matches what the designer shows. */
+    function flattenBackgroundForSave(url, fillCss) {
+      return fetchBackgroundBytes(url).then(function (got) {
+        return new Promise(function (resolve, reject) {
+          var img = new Image();
+          img.onload = function () {
+            var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+            if (!w || !h) { resolve(got); return; }
+            var canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            var ctx = canvas.getContext('2d');
+            var rgba;
+            try {
+              ctx.drawImage(img, 0, 0);
+              rgba = ctx.getImageData(0, 0, w, h).data;
+            } catch (e) { resolve(got); return; }
+            if (!iwdieImageHasTransparency(rgba)) { resolve(got); return; }
+            var fill = iwdieParseCssColor(fillCss);
+            var flat = iwdieFlattenRgbaOnto(rgba, fill);
+            try { ctx.putImageData(new ImageData(flat, w, h), 0, 0); }
+            catch (e) { resolve(got); return; }
+            var finish = function (bytes) { resolve({ mime: 'image/png', bytes: bytes }); };
+            if (typeof canvas.toBlob === 'function') {
+              canvas.toBlob(function (blob) {
+                if (!blob) { reject(new Error('could not flatten background')); return; }
+                blob.arrayBuffer().then(function (ab) { finish(new Uint8Array(ab)); }).catch(reject);
+              }, 'image/png');
+            } else {
+              var parsed = iwdieParseDataUrl(canvas.toDataURL('image/png'));
+              if (!parsed) { reject(new Error('could not flatten background')); return; }
+              finish(parsed.bytes);
+            }
+          };
+          img.onerror = function () { reject(new Error('Could not load the background image')); };
+          img.src = url;
+        });
+      });
     }
 
     /* The background's own bytes, whatever they are — a data: URL is decoded
@@ -2591,11 +2683,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          or (v1.11.0) the picture verbatim, which is what an AI asked to place
          link hotspots on the panel actually wants. */
       var saveVerbatim = function () {
-        fetchBackgroundBytes(url).then(function (got) {
+        flattenBackgroundForSave(url, grabBackgroundFillColor()).then(function (got) {
           var ext = iwdieBackgroundExt(got.mime || url);
           var name = iwdieBuildBackgroundFilename(plant, panel, ext);
           downloadBytes(got.bytes, name, got.mime || iwdieBackgroundMime(ext));
-          hostOk('Background saved as-is → ' + name + ' (' + Math.round(got.bytes.length / 1024) + ' kB, not re-encoded).');
+          hostOk('Background saved → ' + name + ' (' + Math.round(got.bytes.length / 1024) + ' kB, canvas colour under transparent pixels).');
         }).catch(function (e) { toast('Could not save the background picture: ' + e, true); });
       };
 
@@ -2607,8 +2699,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var canvas = document.createElement('canvas');
         canvas.width = w; canvas.height = h;
         var ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, w, h); // composite any alpha onto white
+        var fillCss = grabBackgroundFillColor();
+        ctx.fillStyle = fillCss;
+        ctx.fillRect(0, 0, w, h); // composite any alpha onto the canvas CSS colour
         ctx.drawImage(img, 0, 0);
         var rgba, rgb, i, j;
         try { rgba = ctx.getImageData(0, 0, w, h).data; } catch (e) { rgba = null; }
@@ -2695,7 +2788,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '</div>',
         '<div class="iwdie-choice">',
         '  <button class="iwdie-btn iwdie-secondary" id="iwdie_ai_raw">Save the picture as-is — .PNG / .JPG</button>',
-        '  <div>The background <b>byte-for-byte</b>, nothing re-encoded. This is the one to hand an AI (Copilot, Claude) when you want it to look at the panel and propose where the links go — an .ai or a trace only makes that harder to read.</div>',
+        '  <div>The picture as the designer shows it: opaque pixels stay <b>byte-for-byte</b>; transparent holes are filled with the canvas background colour (so they do not come out black). This is the one to hand an AI (Copilot, Claude) when you want it to look at the panel and propose where the links go — an .ai or a trace only makes that harder to read.</div>',
         '</div>',
         '<div class="iwdie-hint">Tip: if the drawing’s Illustrator source (.ai) exists in your archive, editing that beats any trace.</div>'
       ].join('\n');
@@ -3812,6 +3905,9 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeName: iwdieSanitizeName,
     buildExportFilename: iwdieBuildExportFilename,
     parseDataUrl: iwdieParseDataUrl,
+    parseCssColor: iwdieParseCssColor,
+    imageHasTransparency: iwdieImageHasTransparency,
+    flattenRgbaOnto: iwdieFlattenRgbaOnto,
     isSvgBackground: iwdieIsSvgBackground,
     backgroundExt: iwdieBackgroundExt,
     backgroundMime: iwdieBackgroundMime,
