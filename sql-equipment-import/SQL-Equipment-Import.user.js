@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.5
+// @version      7.6
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -478,6 +478,111 @@
         return map;
     }
 
+    // ---------- Unit numbering ----------
+    // A template numbers each unit in up to three places that have to agree: the
+    // trailing number of unit_id, the same number wherever it appears inside
+    // unit_name, and the unit slot of driver_addr. A "pattern" is the template's
+    // own string with that number replaced by a slot, so a row number can be
+    // substituted back while keeping the template's zero padding:
+    // "U50" → "U01", "F50 Plug-In50" → "F01 Plug-In01".
+    // Digit groups that are not the unit number — "350 Kjølemaskin",
+    // "IR33 Universal … - 1" — are left exactly as the template wrote them.
+    const NUM_SLOT = '\u0000';
+    let NUMBERING = null; // { id, name } derived from the template's first unit
+
+    function fillPattern(p, n) {
+        if (!p) return '';
+        return p.tpl.split(NUM_SLOT).join(String(n).padStart(p.width, '0'));
+    }
+    // Trailing number of a string, or null when it has none.
+    function numOf(s) {
+        const m = String(s == null ? '' : s).match(/(\d+)\D*$/);
+        return m ? parseInt(m[1], 10) : null;
+    }
+    // Slot the trailing digit group; append a slot when there is no number.
+    function patternFromLast(s) {
+        const str = String(s == null ? '' : s);
+        const m = str.match(/^([\s\S]*?)(\d+)(\D*)$/);
+        if (!m) return { tpl: str + NUM_SLOT, width: 2 };
+        return { tpl: m[1] + NUM_SLOT + m[3], width: m[2].length };
+    }
+    // Slot every digit group whose value is `num`; null when none of them is.
+    function patternFromValue(s, num) {
+        let width = 0, hit = false;
+        const tpl = String(s == null ? '' : s).replace(/\d+/g, g => {
+            if (parseInt(g, 10) !== num) return g;
+            hit = true;
+            width = Math.max(width, g.length);
+            return NUM_SLOT;
+        });
+        return hit ? { tpl, width } : null;
+    }
+    // Best evidence of all: the template's own consecutive unit rows. A digit
+    // group that advances by one from row to row is the unit counter; one that
+    // repeats is part of the name ("Carel PR100" ×3, "PCO3"). Returns a fixed
+    // pattern (width 0) when the rows carry no counter at all.
+    function patternFromSeries(values) {
+        // Two rows only: templates commonly restart their run further down
+        // (IJsmall goes F50, F51, F52, F50), so testing every sampled row
+        // would read the repeat as "no counter" and freeze the name. Trimmed,
+        // because one template ships a trailing space on its first unit name.
+        const rows = values.map(v => String(v == null ? '' : v).trim())
+            .filter(v => v !== '').slice(0, 2);
+        if (rows.length < 2) return null;
+        const shape = s => s.replace(/\d+/g, NUM_SLOT);
+        if (shape(rows[1]) !== shape(rows[0])) return null;
+        const nums = rows.map(s => (s.match(/\d+/g) || []).map(g => parseInt(g, 10)));
+        if (!nums[0].length) return null;
+        const isCounter = nums[0].map((v, g) => nums[1][g] === v + 1);
+        if (!isCounter.some(Boolean)) return { tpl: rows[0], width: 0 };
+        let g = -1, width = 0;
+        const tpl = rows[0].replace(/\d+/g, m => {
+            g++;
+            if (!isCounter[g]) return m;
+            width = Math.max(width, m.length);
+            return NUM_SLOT;
+        });
+        return { tpl, width };
+    }
+    // `ids` / `names` are the template's first few unit rows, most significant first.
+    function setNumbering(ids, names) {
+        const uid = ids[0] || '';
+        const uname = names[0] || '';
+        // A unit_id must stay unique, so never accept a fixed pattern for it.
+        const idSeries = patternFromSeries(ids);
+        const id = (idSeries && idSeries.width ? idSeries : null)
+            || (uid ? patternFromLast(uid) : { tpl: 'U' + NUM_SLOT, width: 2 });
+        const n = numOf(uid);
+        let name = { tpl: '', width: 0 };
+        if (uname) {
+            name = patternFromSeries(names)
+                || (n === null ? null : patternFromValue(uname, n))
+                // Digits that are not the unit number are a model number
+                // ("PCO3", "350 Kjølemaskin") — appending to them invents a
+                // different model, so leave such a name exactly as written.
+                || (/\d/.test(uname) ? { tpl: uname, width: 0 }
+                    : { tpl: uname + NUM_SLOT, width: id.width });
+        }
+        NUMBERING = { id, name };
+    }
+    // Renumber every unit row, row 1 taking number `from`. `skipEl` is left
+    // untouched so the field being typed into does not lose its caret.
+    function renumberUnits(from, skipEl) {
+        if (!NUMBERING) return;
+        const isTcp = $('seii-set-mb_mode') && $('seii-set-mb_mode').value === '2';
+        [...$('seii-units').children].forEach((div, i) => {
+            const n = from + i;
+            const idEl = div.querySelector('.seii-uid');
+            const nameEl = div.querySelector('.seii-uname');
+            const addrEl = div.querySelector('.seii-uaddr');
+            if (idEl && idEl !== skipEl) idEl.value = fillPattern(NUMBERING.id, n);
+            if (nameEl && nameEl !== skipEl) nameEl.value = fillPattern(NUMBERING.name, n);
+            if (addrEl && addrEl !== skipEl) addrEl.value = isTcp ? `${i + 1}_1` : `0_${n}`;
+            const ipEl = div.querySelector('.seii-uip');
+            if (ipEl && isTcp && ipEl !== skipEl) ipEl.value = `192.168.10.${100 + i}`;
+        });
+    }
+
     function renderForm() {
         // Pre-parse existing mb_tcp_servers from template (if any) for per-unit IP defaults
         let tcpMap = {};
@@ -486,22 +591,21 @@
             if (r) tcpMap = parseTcpServers(unq(r.value));
         }
 
-        // Units — always 3 default rows. Use the template's first row to detect prefix patterns
-        // (e.g. "E099"/"Energi 99" → prefix "E"/"Energi "), then number from 01, 02, 03.
+        // Units — always 3 default rows numbered 1, 2, 3, shaped by the template's
+        // first row: "U50"/"F50 Plug-In50" → "U01"/"F01 Plug-In01", "U02"/"F02 Plug-In02", …
         const u = $('seii-units');
         u.innerHTML = '';
         const templateRows = (CURRENT.units && CURRENT.units.rows) || [];
         const templateRow = templateRows[0] || null;
-        const firstId = templateRow ? unq(templateRow.unit_id || '') : '';
-        const firstName = templateRow ? unq(templateRow.unit_name || '') : '';
-        // Strip trailing digits to get the prefix: "E099" → "E", "Energi 99" → "Energi "
-        const idPrefix = (firstId.match(/^(.*?)\d*$/) || ['', ''])[1] || 'U';
-        const namePrefix = (firstName.match(/^(.*?)\d*$/) || ['', ''])[1] || '';
+        const sample = templateRows.slice(0, 4);
+        setNumbering(
+            sample.map(r => unq(r.unit_id || '')),
+            sample.map(r => unq(r.unit_name || ''))
+        );
         for (let i = 0; i < 3; i++) {
-            const n = String(i + 1).padStart(2, '0');
             addUnitRow({
-                unit_id: idPrefix + n,
-                unit_name: namePrefix ? namePrefix + n : '',
+                unit_id: fillPattern(NUMBERING.id, i + 1),
+                unit_name: fillPattern(NUMBERING.name, i + 1),
                 driver_addr: `0_${i + 1}`,
                 ip: '',
                 _raw: templateRow,
@@ -580,20 +684,42 @@
         e.preventDefault();
         const rows = $('seii-units').children;
         const last = rows[rows.length - 1];
-        if (last) {
-            const isTcp = $('seii-set-mb_mode') && $('seii-set-mb_mode').value === '2';
-            const incAddr = isTcp ? incFirstNum : incLastNum;
-            addUnitRow({
-                unit_id: incLastNum(last.querySelector('.seii-uid').value),
-                unit_name: incLastNum(last.querySelector('.seii-uname').value),
-                driver_addr: incAddr(last.querySelector('.seii-uaddr').value),
-                ip: last.querySelector('.seii-uip') ? incLastNum(last.querySelector('.seii-uip').value || '192.168.10.099') : '',
-                _raw: null,
-            });
-        } else {
+        if (!last) {
             addUnitRow({ unit_id: '', unit_name: '', driver_addr: '', _raw: null });
+            return;
         }
+        const isTcp = $('seii-set-mb_mode') && $('seii-set-mb_mode').value === '2';
+        const lastId = last.querySelector('.seii-uid').value;
+        const n = numOf(lastId);
+        // Follow the template's pattern while the last row still matches it, so
+        // the number lands in the same place the template put it. Once the row
+        // has been hand-edited into something else, fall back to plain increment.
+        const onPattern = NUMBERING && n !== null && fillPattern(NUMBERING.id, n) === lastId;
+        addUnitRow({
+            unit_id: onPattern ? fillPattern(NUMBERING.id, n + 1) : incLastNum(lastId),
+            unit_name: onPattern ? fillPattern(NUMBERING.name, n + 1) : incLastNum(last.querySelector('.seii-uname').value),
+            driver_addr: isTcp
+                ? incFirstNum(last.querySelector('.seii-uaddr').value)
+                : (n === null ? incLastNum(last.querySelector('.seii-uaddr').value) : `0_${n + 1}`),
+            ip: last.querySelector('.seii-uip') ? incLastNum(last.querySelector('.seii-uip').value || '192.168.10.099') : '',
+            _raw: null,
+        });
     };
+
+    // Row 1 defines the block: retyping its unit_id re-derives the ID pattern and
+    // renumbers every row below it, keeping unit_name and driver_addr in step.
+    $('seii-units').addEventListener('input', (e) => {
+        if (!e.target.classList.contains('seii-uid')) return;
+        const div = e.target.closest('.row');
+        if (!div || div !== $('seii-units').firstElementChild) return;
+        const n = numOf(e.target.value);
+        if (n === null) return; // still mid-typing, no number to key off yet
+        NUMBERING = {
+            id: patternFromLast(e.target.value),
+            name: (NUMBERING && NUMBERING.name) || { tpl: '', width: 0 },
+        };
+        renumberUnits(n, e.target);
+    });
 
     function addIpRow(ip) {
         const div = document.createElement('div');
@@ -610,7 +736,10 @@
         const rows = [...$('seii-units').children];
         rows.forEach((div, i) => {
             const addrEl = div.querySelector('.seii-uaddr');
-            if (addrEl) addrEl.value = isTcp ? `${i + 1}_1` : `0_${i + 1}`;
+            // RTU follows the row's own unit number so a hand-edited ID keeps its
+            // address; TCP server prefixes stay contiguous from 1 by index.
+            const n = numOf(div.querySelector('.seii-uid').value);
+            if (addrEl) addrEl.value = isTcp ? `${i + 1}_1` : `0_${n === null ? i + 1 : n}`;
             const ipEl = div.querySelector('.seii-uip');
             if (ipEl && isTcp) ipEl.value = `192.168.10.${100 + i}`;
         });

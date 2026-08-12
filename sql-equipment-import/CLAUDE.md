@@ -1,7 +1,7 @@
 # SQL Equipment Import — technical reference
 
 Deep technical notes for `sql-equipment-import/SQL-Equipment-Import.user.js`, a single IIFE. Current
-`@version`: **7.5**. Grants: `GM_setClipboard`, `GM_xmlhttpRequest`, `GM_addStyle`,
+`@version`: **7.6**. Grants: `GM_setClipboard`, `GM_xmlhttpRequest`, `GM_addStyle`,
 `GM_getResourceText`. Repo-wide rules (version bumping, commit/push, line endings) live in the
 **root `CLAUDE.md`** and are not repeated here. The folder `README.md` is user-facing; the source is
 authoritative where its older workflow description disagrees.
@@ -134,10 +134,27 @@ replacement in the original SQL.
 `CURRENT` holds `{ name, sqlText, passThrough, units, settings }`; `MANIFEST` holds the fetched array.
 Loading any normal template does **not** reproduce all of its unit tuples in the form. Instead:
 
-- exactly **three** rows are created;
-- the first template unit's trailing digits are stripped to derive ID/name prefixes;
-- IDs/names become prefix + `01`, `02`, `03` (`U` is the ID fallback);
-- driver addresses become `0_1`, `0_2`, `0_3`;
+- exactly **three** rows are created, numbered 1, 2, 3;
+- the shape of `unit_id` and `unit_name` is taken from the template rather than
+  guessed. `setNumbering` compares the template's **first two** unit tuples: a
+  digit group that advances by one between them is the unit counter and becomes
+  a slot; one that repeats is part of the name and is left alone. Only two rows
+  are compared because templates restart their run further down (IJsmall goes
+  F50, F51, F52, F50), which would otherwise read as "no counter";
+- with a single template row, groups whose value equals the unit number become
+  slots (`patternFromValue`). Failing that, a name holding *other* digits is a
+  model number and is kept verbatim (`PCO3`, `350 Kjolemaskin`); a name with no
+  digits at all gets the number appended (`Carel HECU01`);
+- slots keep the template's zero padding, so `U50`/`F50 Plug-In50` yields
+  `U01`/`F01 Plug-In01` and `ID1`/`Carel PR100` yields `ID1`/`Carel PR100`;
+- a fixed pattern is never accepted for `unit_id` — it has to stay unique;
+- driver addresses become `0_1`, `0_2`, `0_3`, always carrying the same number
+  as their row's `unit_id`;
+- **row 1 drives the block.** Retyping its `unit_id` re-derives the ID pattern
+  and renumbers every row below it, addresses included: `P46` gives
+  `P46`/`0_46`, `P47`/`0_47`, `P48`/`0_48`. Nothing else cascades;
+- `+` continues the pattern from the last row's number while that row still
+  matches it, and falls back to `incLastNum` once it has been hand-edited;
 - every row retains the same first template tuple as `_raw` for noneditable fields.
 
 Settings controls exist for `EDITABLE_SETTINGS = ['mb_mode', 'comm_port', 'comm_baudrate',
@@ -248,7 +265,9 @@ does not close it.
 `gmFetch` (GitHub raw + encoding fallback) · `extractTuples` / `splitFields` / `findStmtEnd` /
 `parseBlock` / `unq` (SQL parser) · `sqlEsc` / `q` (SQL quoting) · `loadManifest` /
 `renderTemplateOptions` / `renderSuggest` / `pickTemplate` (manifest UI) · `loadSqlText` /
-`applyPassThroughVisibility` (template state/mode) · `renderForm` / `addUnitRow` / `incLastNum` /
+`applyPassThroughVisibility` (template state/mode) · `patternFromSeries` /
+`patternFromValue` / `patternFromLast` / `fillPattern` / `setNumbering` / `numOf` /
+`renumberUnits` (unit numbering) · `renderForm` / `addUnitRow` / `incLastNum` /
 `incFirstNum` / `renumberDriverAddr` / `syncTcpVisible` (editable form) · `parseTcpServers` /
 `addIpRow` (retained legacy TCP-list path) · `buildOutput` (transformer) · `getEditorValue` /
 `setEditorValue` (CodeMirror/plain editor abstraction) · `setCollapsed` (panel state).
