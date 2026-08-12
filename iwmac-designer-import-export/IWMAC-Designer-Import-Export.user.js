@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.13.0
+// @version      1.14.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.13.0';
+var IWDIE_VERSION = '1.14.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2193,6 +2193,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          cannot be disturbed by clicking it. */
       '#iwdie_param_export_td .w2ui-button,#iwdie_param_export_all_td .w2ui-button{cursor:pointer;margin-left:6px;border:1px solid transparent;border-radius:4px}',
       '#iwdie_param_export_td .w2ui-button:hover,#iwdie_param_export_all_td .w2ui-button:hover{background:#eef5fc;border-color:#9aa7b3}',
+      /* Export-all progress panel. The overlay is load-bearing, not cosmetic:
+         it keeps the user from clicking the units grid while the walk drives
+         it, which would corrupt the snapshots. */
+      '.iwdie-progress-panel{width:420px}',
+      '.iwdie-progress-panel h3{margin-bottom:14px}',
+      '.iwdie-progress-track{height:18px;background:#e4e9ee;border-radius:9px;overflow:hidden;margin:10px 0 8px}',
+      '.iwdie-progress-fill{height:100%;width:0;background:#2f6fb2;border-radius:9px;transition:width .2s}',
+      '.iwdie-progress-line{font-size:13px;color:#334;min-height:18px}',
+      '.iwdie-progress-sub{font-size:12px;color:#778;margin-top:2px}',
+      '.iwdie-progress-note{font-size:11.5px;color:#996a00;background:#fdf6e3;border:1px solid #e8d9a0;border-radius:5px;padding:6px 10px;margin-top:10px}',
       ''].join('\n');
     try {
       if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
@@ -2202,12 +2212,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- tiny UI helpers ---------- */
+    /* Where overlays and toasts must live to be SEEN. The PARAMETER SELECTOR's
+       jQuery-UI wrapper carries z-index 2147483646 — one below the int32 max —
+       so anything appended to <body> paints and hit-tests beneath it, however
+       high its own z-index. While that dialog is open, script UI is therefore
+       reparented into the wrapper; its stacking context puts our elements on
+       top and lets real clicks reach them. */
+    function overlayParent() {
+      var pp = document.getElementById('param_popup');
+      if (pp) {
+        var dlg = pp.closest('.ui-dialog');
+        if (dlg && dlg.style.display !== 'none') return dlg;
+      }
+      return document.body;
+    }
+
     function toast(msg, isErr, ms) {
       try {
         var t = document.createElement('div');
         t.className = 'iwdie-toast' + (isErr ? ' iwdie-err' : '');
         t.textContent = msg;
-        document.body.appendChild(t);
+        overlayParent().appendChild(t);
         setTimeout(function () { t.remove(); }, ms || 5000);
       } catch (e) { /* noop */ }
     }
@@ -2940,7 +2965,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '<div class="iwdie-hint">' + (opts.hint || ('Esc or a click outside chooses “' + opts.no.label + '”. Either way the import continues, and nothing reaches the server until you press the designer’s own Save.')) + '</div>'
       ].join('\n');
       confirmOverlay.appendChild(panel);
-      document.body.appendChild(confirmOverlay);
+      overlayParent().appendChild(confirmOverlay);
       document.addEventListener('keydown', onConfirmKeydown, true);
 
       function pick(yes) { closeConfirmDialog(); answer(yes); }
@@ -3436,7 +3461,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var blob = buildXlsxBlob([{ name: 'Parameters', rows: iwdieBuildParamExportRows(records) }]);
       triggerXlsxDownload(blob, name);
       W.__IWDIE.lastExport = { name: name, units: 1, params: records.length, failed: 0 };
-      hostOk('Exported ' + records.length + ' parameters for ' + unitLabel + ' → ' + name);
+      toast('Exported ' + records.length + ' parameters for ' + unitLabel + ' -> ' + name, false, 8000);
     }
 
     function currentPlantIdForExport() {
@@ -3456,38 +3481,109 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        format — whatever fills the grid is what gets exported. One unit per
        tick: the XHR is synchronous, so the gap is what lets the progress toast
        repaint and spares the plant server a burst. */
-    function collectAllUnitBlocks(onProgress, done) {
+    function collectAllUnitBlocks(originalRecid, onProgress, shouldStop, done) {
       var w2 = W.w2ui;
       var ug = w2.unitgrid;
       var pg = w2.paramgrid;
-      var sel = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
-      var originalRecid = sel && sel.length ? sel[0] : null;
       var recids = (ug.records || []).map(function (r) { return r.recid; });
       var blocks = [];
       var failed = 0;
       var i = 0;
+      /* Some units fill paramgrid asynchronously after click(): a fast walk
+         then snapshots the PREVIOUS unit's rows, or an empty grid, and loses
+         parameters silently (measured live: 3 of 25 units, 621 parameters).
+         driver_ids embed the unit address, so length + first/last driver_id
+         change on every real reload — wait for that change, up to 1.5 s, then
+         snapshot. A truly empty unit never changes and pays the full grace. */
+      function fingerprint() {
+        var r = pg.records || [];
+        if (!r.length) return '0|';
+        return r.length + '|' + (r[0].driver_id || r[0].recid) + '|' + (r[r.length - 1].driver_id || r[r.length - 1].recid);
+      }
       function restore() {
         try {
           if (originalRecid != null) { ug.click(originalRecid); }
           else { ug.selectNone(); pg.clear(); }
         } catch (e) { }
       }
+      function advance(rec) {
+        i++;
+        onProgress(i, recids.length, rec, blocks);
+        setTimeout(step, 60);
+      }
       function step() {
-        if (i >= recids.length) { restore(); done(blocks, failed); return; }
+        if (i >= recids.length || shouldStop()) {
+          restore();
+          done(blocks, failed, i < recids.length);
+          return;
+        }
         var rec = null;
+        var before = fingerprint();
+        var started = Date.now();
         try {
           rec = ug.get(recids[i]);
           ug.click(recids[i]);
+        } catch (e) {
+          failed++;
+          advance(rec);
+          return;
+        }
+        (function settle() {
+          if (fingerprint() === before && Date.now() - started < 1500) {
+            setTimeout(settle, 100);
+            return;
+          }
           blocks.push({
             unitLabel: String((rec && (rec.unit_name || rec.unit_id)) || recids[i]),
             records: (pg.records || []).map(function (r) { return Object.assign({}, r); })
           });
-        } catch (e) { failed++; }
-        i++;
-        onProgress(i, recids.length, rec);
-        setTimeout(step, 60);
+          advance(rec);
+        })();
       }
       step();
+    }
+
+    /* Big, centered, impossible to miss — the walk freezes the page for the
+       length of each unit's synchronous load, so a subtle toast reads as
+       "nothing is happening". Returns {update, close, cancelled()}. */
+    function openExportProgress(total) {
+      var overlay = document.createElement('div');
+      overlay.className = 'iwdie-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'iwdie-panel iwdie-progress-panel';
+      panel.innerHTML = [
+        '<h3>Exporting all units to Excel</h3>',
+        '<div class="iwdie-progress-line" id="iwdie_prog_line">Starting...</div>',
+        '<div class="iwdie-progress-track"><div class="iwdie-progress-fill" id="iwdie_prog_fill"></div></div>',
+        '<div class="iwdie-progress-sub" id="iwdie_prog_sub">0 parameters collected</div>',
+        '<div class="iwdie-progress-note">Keep this tab in the foreground - Chrome slows the walk to a crawl in a background tab.</div>',
+        '<button class="iwdie-btn iwdie-secondary" id="iwdie_prog_cancel" style="margin-top:12px">Cancel</button>'
+      ].join('\n');
+      overlay.appendChild(panel);
+      overlayParent().appendChild(overlay);
+      var cancelled = false;
+      var line = panel.querySelector('#iwdie_prog_line');
+      var fill = panel.querySelector('#iwdie_prog_fill');
+      var sub = panel.querySelector('#iwdie_prog_sub');
+      var btn = panel.querySelector('#iwdie_prog_cancel');
+      btn.addEventListener('click', function () {
+        cancelled = true;
+        btn.disabled = true;
+        line.textContent = 'Cancelling after this unit...';
+      });
+      return {
+        update: function (i, totalUnits, rec, blocks) {
+          if (cancelled) return;
+          line.textContent = 'Unit ' + i + ' of ' + totalUnits +
+            (rec && rec.unit_name ? ': ' + rec.unit_name : '');
+          fill.style.width = Math.round(100 * i / Math.max(totalUnits, 1)) + '%';
+          var params = 0;
+          for (var b = 0; b < blocks.length; b++) params += blocks[b].records.length;
+          sub.textContent = params + ' parameters collected';
+        },
+        close: function () { overlay.remove(); },
+        cancelled: function () { return cancelled; }
+      };
     }
 
     function doExportAllParams() {
@@ -3497,6 +3593,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!ug || !pg) { toast('Parameter selector is not ready.', true); return; }
       var unitCount = (ug.records || []).length;
       if (!unitCount) { toast('No units loaded in the UNITS list.', true); return; }
+      // Captured before the confirm dialog, not at walk start: the selection
+      // the user expects back is the one from the moment they clicked export.
+      var selNow = (typeof ug.getSelection === 'function') ? ug.getSelection() : [];
+      var originalRecid = selNow && selNow.length ? selNow[0] : null;
       openConfirmDialog({
         /* ASCII-only strings here: the legacy page is not served as UTF-8, so
            anything non-ASCII mojibakes when the script is loaded via a plain
@@ -3514,15 +3614,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         hint: 'Esc or a click outside cancels. This only reads parameter lists; nothing is written to the plant.'
       }, function (yes) {
         if (!yes) return;
-        var progress = document.createElement('div');
-        progress.className = 'iwdie-toast';
-        progress.textContent = 'Exporting units... 0/' + unitCount;
-        document.body.appendChild(progress);
-        collectAllUnitBlocks(function (i, total, rec) {
-          progress.textContent = 'Exporting units... ' + i + '/' + total +
-            (rec && rec.unit_name ? ' - ' + rec.unit_name : '');
-        }, function (blocks, failed) {
-          progress.remove();
+        var progress = openExportProgress(unitCount);
+        collectAllUnitBlocks(originalRecid, progress.update, progress.cancelled, function (blocks, failed, wasCancelled) {
+          progress.close();
+          if (wasCancelled) {
+            toast('Export cancelled after ' + blocks.length + ' unit(s) - nothing downloaded, selection restored.');
+            return;
+          }
           var nonEmpty = blocks.filter(function (b) { return b.records.length; });
           var empty = blocks.length - nonEmpty.length;
           if (!nonEmpty.length) { toast('No parameters found on any unit — nothing to export.', true); return; }
@@ -3532,9 +3630,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var blob = buildXlsxBlob([{ name: 'All units', rows: rows, colWidths: IWDIE_ALLUNITS_COL_WIDTHS }]);
           triggerXlsxDownload(blob, name);
           W.__IWDIE.lastExport = { name: name, units: nonEmpty.length, params: total, failed: failed, empty: empty };
-          hostOk('Exported ' + total + ' parameters across ' + nonEmpty.length + ' units → ' + name +
+          toast('Exported ' + total + ' parameters across ' + nonEmpty.length + ' units -> ' + name +
             (failed ? ' (' + failed + ' unit(s) failed to load)' : '') +
-            (empty ? ' (' + empty + ' empty unit(s) skipped)' : ''));
+            (empty ? ' (' + empty + ' empty unit(s) skipped)' : ''), false, 8000);
         });
       });
     }

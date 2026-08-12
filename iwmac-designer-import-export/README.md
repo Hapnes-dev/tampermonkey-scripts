@@ -65,12 +65,18 @@ dialog) gets two buttons to the right of the ALIAS TEXT / UNIT ID / UNIT NAME ro
   that regulator — all of them, not just the visible page — downloads as
   `parameters_<plant>_<unit>_<date>_<time>.xlsx`.
 - **EXPORT ALL XLSX** (v1.13.0) — after an in-page confirmation, walks every unit in the
-  UNITS list through the host's own loader (one at a time, roughly a second per unit, with
-  a progress toast), restores your original selection, and downloads the whole plant as
+  UNITS list through the host's own loader (one at a time, roughly a second per unit),
+  restores your original selection, and downloads the whole plant as
   `parameters_<plant>_all-units_<date>_<time>.xlsx`: one sheet, a gray-blue band per unit,
   group bands inside each unit, parameters collapsible at outline level 2 — the same
   layout as supermarket-superuser's all-units export. Units that fail to load or hold no
   parameters are skipped and counted in the result message.
+
+  While it runs (v1.14.0) a centered progress panel shows the current unit, a progress
+  bar, a live parameter count and a **Cancel** button; cancelling finishes the current
+  unit, restores your selection and downloads nothing. The panel's overlay also blocks
+  clicks into the dialog during the walk — clicking units mid-export would corrupt it.
+  Keep the tab in the foreground: Chrome throttles background tabs to a crawl.
 
 The workbook uses the same style as the supermarket-superuser parameter export: bold
 white-on-blue header row (frozen), one collapsible light-blue band per parameter group with
