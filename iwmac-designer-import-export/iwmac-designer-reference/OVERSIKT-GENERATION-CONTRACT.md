@@ -135,7 +135,7 @@ movement as `O-C06`.
 
 ### 0.4 Validator rule ids
 
-`python validate-oversikt-panel.py` emits every finding with an id. Four
+`python validate-oversikt-panel.py` emits every finding with an id. Five
 namespaces, matching the Maskin precedent (`M-S*`/`M-G*`/`M-P*`):
 
 | Id | Severity | What it says | Section |
@@ -149,7 +149,7 @@ namespaces, matching the Maskin precedent (`M-S*`/`M-G*`/`M-P*`):
 | `O-S06` | error/warn | Canvas dimensions | §1 |
 | `O-S07` | error/warn | No embedded background / `converted` not `"true"` | §2 |
 | `O-S08` | error | `panel.image_svg_trace` was emitted | §2 |
-| `O-S09` | error/warn | `linked` disagrees with `driver_id` | §8 |
+| `O-S09` | error/warn | Structural field consistency only: `linked` disagrees with the host's literal-`driver_id` state rule. **Never binding correctness.** | §8 |
 | `O-S10` | error | `obj_id` is not in the design-object catalogue | §4 |
 | `O-S11` | error | Mis-decoded text (mojibake) | §1 |
 | `O-S12` | warning | `zIndex` outside the measured bands | §3 |
@@ -164,6 +164,15 @@ namespaces, matching the Maskin precedent (`M-S*`/`M-G*`/`M-P*`):
 | `O-G08` | error/warn/**info** | The value object is not centred on the measured equipment footprint. **Info, and the only finding, when `--footprints` is absent: centering was not checked.** | §7.1b |
 | `O-G09` | error/warn/info | The footprint sidecar itself: format, duplicates, unknown controllers, unmeasured controllers, and a sidecar that declares itself synthetic | §7.1c |
 | `O-G10` | error/info | The footprint's frame of reference: `source_image_size`, `panel_size`, the scale between them | §7.1c |
+| `O-B00` | info | Binding evidence totals: intended, structurally linked, source-resolved, semantically verified, unresolved | §8.4 |
+| `O-B01` | error/warn | Parameter source missing, unreadable or partly malformed | §8.4 |
+| `O-B02` | error | Duplicate/ambiguous source rows for one `driver_id` | §8.4 |
+| `O-B03` | error | Intended object's `driver_id` has no exact source row | §8.4 |
+| `O-B04` | error | Exact `driver_id` row disagrees on `unit_id` | §8.4 |
+| `O-B05` | error | Alias is not exact; normalized-only and different are reported separately, never authorized | §8.4 |
+| `O-B06` | error | Object role, access or datatype conflicts with the resolved row | §8.4 |
+| `O-B07` | warning | Source-resolved row still needs manual semantic verification because deterministic role evidence is absent | §8.4 |
+| `O-B08` | error/info | Linking hard stop: any unresolved intended link forbids a completed-linking claim; all verified is info | §8.4 |
 | `O-P00` | error | Unknown profile, or a profile of another panel type | §0.2 |
 | `O-P01` | error | Canvas differs from the profile | §0.2 |
 | `O-P02` | error | Object count differs from the profile | §0.2 |
@@ -181,7 +190,7 @@ namespaces, matching the Maskin precedent (`M-S*`/`M-G*`/`M-P*`):
 | `O-C05` | error | A controller's coverage changed | §5.3, §6 |
 | `O-C06` | error/warn | A cluster moved (> 20 px) or nudged | §7 |
 | `O-C07` | error | Objects lost their driver binding | §8 |
-| `O-C08` | error | Binding changes (`driver_id` or `unit_id`) | §8 |
+| `O-C08` | error/info | Binding changes (`driver_id` or `unit_id`); info only under declared `binding-repair`, where `O-B*` verifies the replacement | §8 |
 | `O-C09` | error | An object changed type — a retype, not a drop plus an add | §4 |
 | `O-C10` | warning | Objects resized | §7 |
 | `O-C11` | warning | Objects changed `zIndex` | §3 |
@@ -189,7 +198,7 @@ namespaces, matching the Maskin precedent (`M-S*`/`M-G*`/`M-P*`):
 | `O-C13` | error | The embedded background was dropped or replaced | §2 |
 | `O-C14` | warning | `org_image_name` / `converted` changed | §2 |
 | `O-C15` | error | The canvas changed size | §1 |
-| `O-C16` | error/info | A declared `--patch-scope` was exceeded — a field changed that the stated patch does not permit | §6.2 |
+| `O-C16` | error/info | A declared `--patch-scope` was exceeded — includes `binding-repair`, which permits source-backed link fields but no geometry, object identity, name or order change | §6.2, §8.5 |
 
 Only `error` findings drive the exit status. `O-G05` is deliberately `info`: a
 partial cluster is production-correct, and a validator that scolds an author for
@@ -233,6 +242,7 @@ python render-oversikt-panel.py PANEL.json --source SOURCE.json --footprints FOO
 | **E16** | `Coop_Prix_Breiviken_overview.json` (10 624 bytes, no background, dashboard grouping) and `..._v2.json` (54 227 bytes, 9 of 21 clusters). The two failed attempts. | no |
 | **E17** | [build-oversikt-negatives.py](build-oversikt-negatives.py) — seven synthetic negatives derived from E15, one broken rule each. | generator yes, output no |
 | **E22** | `iwmac-panel_10240_oversikt_20260811-1308.json` — a second production Oversikt export, supplied with the 2026-08-11 centering correction. Plant 10240, 128 objects, 32 clusters, all four roles on all 32, 1400×750, value 42×22, `zIndex` 110/375. | no — live plant id and 128 real driver ids |
+| **E27** | 2026-08-12 link-verification incident: 184-object Oversikt + plant parameter workbook; 120/184 panel `driver_id` values resolved exactly. Manual replacement then changed 52 objects / 13 controllers / four roles, including AK2→AK3_AKC, `001:`→`000:`, parameter tails and aliases. Sanitized miniature: [tests/fixtures/oversikt-linking/](tests/fixtures/oversikt-linking/) (8 objects, 6/8 partial case). | incident narrative only; live files not committed; sanitized fixture yes |
 
 **E22 is deliberately not committed and deliberately not made into a profile.**
 A second masked reference panel would be a second `TEMPLATE-*` profile, and two
@@ -293,7 +303,10 @@ Structure rules inherited from `global_invariants` — `GLOBAL`:
 - Names are `object_0 … object_N-1`, unique and sequential (`O-S04`). The host
   renames from the canvas child index on insert, so non-sequential names are
   harmless — they simply carry no information, which is why the sequence check
-  is a warning and the duplicate check is an error.
+  is a warning and the duplicate check is an error. **On a patch, preserve the
+  source names anyway**, including host-generated `object_10000` forms; do not
+  renumber them merely to clear the warning. Comparison identity is controller
+  + role, not the integer suffix.
 - Geometry is integral and on-canvas (`O-S05`). An Oversikt has no legitimate
   overflow; the list panel is the panel type that scrolls, not this one.
 - Text is UTF-8. Write `°C`, never `gr C` (`O-S11`).
@@ -490,7 +503,7 @@ row you used**.
 | **Screenshot / PNG only** | positions in image pixels, no bindings | an **explicitly unlinked draft** whose geometry is read off the image and scaled to the panel canvas, **with `scale_x`/`scale_y` stated**, and a named list of what the image could not supply | guess a driver id from a rendered value, or present the draft as insert-ready |
 | **Background image + equipment list** | artwork and an inventory, no measured coordinates | one cluster per listed position, anchored on the artwork feature that matches its name; unlinked unless bindings were supplied | fall back to a tidy grid when the artwork identifies the positions |
 | **PNG + parameter workbook, no panel JSON** | artwork with visible equipment, and controller identities with their parameters | a panel built from both: identities and bindings from the workbook, one cluster per identified equipment item, each **value object centred on the equipment footprint measured on the PNG** (§7.1b), with the scale stated and a footprint sidecar emitted alongside | centre on a label or a workbook row order, or emit a coordinate for equipment whose footprint could not be measured |
-| **Production JSON supplied** | everything — geometry, ordering, bindings, background | the **entire** supplied document with only the named change applied. **Preserve and patch. Never rebuild.** | emit only the changed objects, re-derive coordinates, renumber objects, or drop a cluster you were not asked to remove |
+| **Production JSON supplied** | geometry, object coverage, ordering, background and binding-looking fields; existing bindings are evidence to check, not automatically valid | the **entire** supplied document with only the named change applied. **Preserve and patch. Never rebuild.** For link/relink/validation work, preserve geometry while checking every intended binding against the parameter source (§8) | emit only the changed objects, re-derive coordinates, renumber objects, drop a cluster, or treat `linked:"true"` as binding proof |
 | **Production JSON + PDF, screenshot or PNG** | an authoritative panel plus a secondary description of it | the supplied JSON, patched only where the secondary source proves a **specific coordinate**, each patch named individually | let the PDF reduce the panel, or rebuild from the image because the image is easier to read than the JSON |
 | **Two panel JSON files** | two candidate panels for the same store | a **comparison first** — `--compare` both ways — then a stated choice of one as the base, with the reason | merge geometry from both. A panel is one author's coherent layout; a merge is a third layout nobody drew |
 | **Panel JSON + a verbal placement correction** | an authoritative panel and one named change ("the temperature bubble must be in the centre of every box") | the whole document with **only the named change** applied, declared with `--patch-scope` and proven by a field-level diff (§6.2) | apply an unrequested second correction, or treat "like this" as proof of a coordinate. If the correction points at visual evidence you do not have, **name the missing evidence** — the SVG trace and the embedded PNG do not prove a coordinate nobody measured |
@@ -514,6 +527,16 @@ When a production JSON is supplied it is **the geometric and object-coverage
 template**. Start from that document, change the named objects, and emit the
 whole thing.
 
+Task scope decides whether bindings are preserved or repaired:
+
+- **Layout/geometry-only:** binding fields are out of scope and survive
+  byte-for-byte.
+- **Link, relink, validate links or diagnose failed values:** binding fields are
+  in scope. Preserve geometry, object identity, names and order; verify every
+  intended binding against the supplied parameter source and patch only rows
+  that source evidence proves. "Preserve and patch" never means preserve a
+  known-unverified link (`OV-C5`, §8).
+
 Preserved verbatim:
 
 - `panel.image_data`, `panel.converted`, `panel.org_image_name`,
@@ -521,7 +544,8 @@ Preserved verbatim:
 - Every object's `obj_id`, `posLeft`, `posTop`, `posWidth`, `posHeight` and
   `zIndex` — unless that object is the one being moved.
 - `driver_id`, `unit_id`, `link_name`, `link_tag`, `sub_group`, `unit_ref` and
-  `alias_text` on **every** object.
+  `alias_text` on **every** object during a layout/geometry-only task; during a
+  declared binding repair, only source-proven link fields may change (§8.5).
 - Array order, and the `object_N` names that follow it.
 - **Known anomalies** — an inverted cluster, a `tag_text` of a single space, a
   duplicated alias. Report them; do not tidy them (§9).
@@ -574,6 +598,7 @@ geometry correction.
 
 | Scope | Permits |
 |---|---|
+| `binding-repair` | `driver_id`, `unit_id`, `alias_text`, `linked` on alarm/value/cooling/defrost objects only — each changed value source-proven; host metadata, name, `obj_id`, geometry, `zIndex` and order stay unchanged |
 | `value-position` | `posLeft`/`posTop` on value objects only — the centering patch |
 | `position` | `posLeft`/`posTop` on any object — a whole cluster moved to a different case, declared as such |
 | `none` | nothing: the candidate must be object-identical to the source |
@@ -879,15 +904,17 @@ The full per-object list — name, `obj_id`, left, top, width, height, alias —
 |---|---|
 | `driver_id` | plant-prefixed: `<plant>_AK3_AKC_0_11_1_0_7`. **Copied verbatim, never constructed.** |
 | `unit_id` | the controller: `000:011`, `C50`, `U86`. Not plant-prefixed. |
-| `linked` | `"true"` whenever `driver_id` is not the literal placeholder — the host sets it on load |
-| `alias_text` | the parameter's selector text; what a human relinks by |
-| `id`, `link_name` | the host literals `"driver_id"` and `"link_name"` |
+| `linked` | `"true"` whenever `driver_id` is not the literal placeholder — including an empty string. Host state only; never validity |
+| `alias_text` | the parameter's selector text; what a human relinks by. Semantic evidence only when checked against the plant parameter source |
+| `id`, `link_name` | host literals `"driver_id"` and `"link_name"`. Neither proves a parameter or names a destination panel |
+| `link_tag`, `unit_ref` | optional tag/reference transport metadata. Empty is common; populated is not proof that `driver_id` resolves |
 
 `O-S09` reports a `driver_id` with `linked` not `"true"` as an error, and a
 `linked:"true"` with no binding as a warning — the latter is legitimate host
-behaviour on a real export.
+behaviour on a real export. **`O-S09` checks structural field consistency only.**
+It must never be described as binding correctness.
 
-### 8.2 Never blank a binding — `GLOBAL`
+### 8.2 Never blank a binding during a layout correction — `GLOBAL`
 
 > **A layout correction never clears `driver_id`, `unit_id` or `alias_text`.**
 >
@@ -907,6 +934,108 @@ digits differ per driver type. **Copy verbatim; never construct.**
 
 `O-P07` is the early warning on a known template: an `alias_text` that this
 template's objects have never carried is the shape an invented binding takes.
+
+### 8.4 Binding verification — `GLOBAL` rule, Oversikt matrix
+
+[AI-BRIEFING.txt](AI-BRIEFING.txt) §8b owns the terminology and invariant for
+every panel type. Use its four states unchanged:
+
+1. **structurally linked** — binding-looking fields only;
+2. **source-resolved** — exact unique `driver_id` row and exact `unit_id`;
+3. **semantically verified** — source-resolved plus controller, exact alias or
+   parameter meaning, object role, access and datatype agreement where supplied;
+4. **unresolved** — anything short of that proof.
+
+> **LINKED STATE IS NOT BINDING VALIDITY.**
+>
+> `linked:"true"`, a non-empty or plant-prefixed `driver_id`, a familiar
+> register suffix and syntactically valid AK2/AK3 text prove no parameter
+> identity. The Designer accepts all of them without lookup (§8.1).
+
+When a parameter workbook, CSV, JSON or SQL dump is supplied, it is mandatory
+binding evidence for the scope it covers. The supplied panel stays the highest
+source for geometry and document structure; its bindings are not automatically
+correct when the task is to link, relink, validate links or diagnose failed
+values.
+
+Deterministic order, one intended object at a time:
+
+1. exact, unique lookup of the panel `driver_id`;
+2. exact `unit_id` comparison;
+3. controller-identity comparison;
+4. exact `alias_text`/parameter-description comparison and meaning-versus-role
+   review;
+5. access/datatype suitability where present;
+6. verified or unresolved verdict.
+
+No identifier transformation occurs at any stage. Never edit prefixes,
+controller numbers, group digits or suffixes; never convert AK2→AK3,
+`001:`→`000:` or similar patterns by inference; never approve by suffix
+similarity. Alias capitalization, punctuation, whitespace, abbreviation and
+encoding differences are recorded as **normalized-only** or **different**, with
+both strings shown. They are never silently called exact. Fuzzy matching may
+produce candidates only and never authorizes a binding.
+
+The required binding matrix is one row per object and is grouped by **controller
+cluster and role**, never array index or proximity:
+
+| object identity | object role | obj_id | controller identity | panel driver_id | parameter-source driver_id | driver_id exact match | panel unit_id | resolved unit_id | unit_id exact match | panel alias_text | resolved alias or parameter description | alias match status | access | datatype | verification state | reason if unresolved | evidence source |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+
+`object_10000`-style names created by the host remain source object identity.
+They are preserved and reported, not normalized into array order. Role identity
+comes from `obj_id`; controller identity comes from the exact `unit_id`, with the
+documented driver-prefix fallback only when no unit exists.
+
+```bash
+python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
+python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx --json-report
+```
+
+`--parameters` accepts dependency-free `.xlsx`, `.csv`, `.json` and
+`iw_gen_driver_parameters` `.sql`. It enforces exact source resolution, unit
+identity, duplicate-source detection, exact alias classification and
+deterministic role/access/datatype conflicts as `O-B00`–`O-B08`. Where a driver
+family has no reliable machine-readable role mapping, `O-B07` says the semantic
+stage remains manual. It does not pretend the stage passed.
+
+> **Hard stop.** If any intended link remains unresolved, do not call the panel
+> finished, fully linked, linked-ready, production-ready or verified. Deliver
+> the verified subset, matrix, exact source-coverage count, unresolved
+> controllers/roles and the evidence needed to finish.
+
+Partial-file policy: retain unresolved objects' original binding fields
+byte-for-byte and label them **UNVERIFIED in the external report**. The panel
+schema has no verification-state field, so do not add one. Do not silently
+change or blank them. Converting them to a panel-type-specific unlinked state is
+a separate task requiring an explicit user request; it is never the automatic
+fallback of validation.
+
+### 8.5 Source-backed binding repair — `OVERSIKT`
+
+Bindings are changed by **controller and role**, never by array index:
+
+1. Copy the supplied panel whole.
+2. Build the source and candidate binding matrices.
+3. For each unresolved role, identify one unique, semantically compatible
+   parameter row.
+4. Copy `driver_id` and `unit_id` verbatim; copy the source alias exactly when
+   the workflow requires it. Keep `link_name`, `link_tag`, `sub_group` and
+   `unit_ref` unchanged; this validator does not source-verify those fields.
+5. Preserve `name`, `obj_id`, `posLeft`, `posTop`, `posWidth`, `posHeight`,
+   `zIndex`, array order, background and every unrelated field.
+6. Re-run source-backed validation and declare the compare scope:
+
+```bash
+python validate-oversikt-panel.py \
+  --compare SOURCE.json CANDIDATE.json \
+  --patch-scope binding-repair \
+  --parameters PARAMETERS.xlsx
+```
+
+`O-C16` proves geometry, object identity, names and order did not travel under
+the binding repair. `O-C08` becomes an informational inventory of the declared
+binding changes; `O-B*` decides whether those new values are proved.
 
 ## 9. Anomalies — recorded, not corrected — `TEMPLATE-10113`
 
@@ -1004,11 +1133,17 @@ Nine items. A delivery missing any of them is incomplete.
    the controller-level crops, not only the whole panel.
 9. **Every evidence gap, stated as a gap.**
 
+For a link/relink/validation job, item 3 includes the full binding-verification
+matrix from §8.4; item 5 names every relinked controller and role; item 7 includes
+the `--parameters` run and source coverage; item 9 separates source-resolved,
+semantically verified and unresolved counts. No summary word replaces them.
+
 ```bash
 python validate-oversikt-panel.py PANEL.json --profile TEMPLATE-10113
 python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json
 python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-scope value-position
 python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
+python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
 python render-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
 ```
 
@@ -1016,7 +1151,7 @@ Stage by stage: [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md).
 
 ## 12. Conflict decisions on record
 
-Three places where another file in this repository says something different.
+Five places where another file in this repository says something different.
 Recorded and scoped; **not averaged.**
 
 ### OV-C1 — case-cluster member offsets
@@ -1073,6 +1208,19 @@ stores. Do not average them, do not apply either to a third store, and do not
 "correct" E15's anatomy to match E22's. Above all, neither may be collapsed back
 into "centre the cluster" — that sentence is what this conflict exists to
 prevent.
+
+### OV-C5 — preserve bindings versus repair bindings
+
+| | Source | Claim | Scope |
+|---|---|---|---|
+| A | §6.2 and the pre-incident guide | Preserve `driver_id`, `unit_id` and `alias_text` byte-for-byte | layout and geometry corrections |
+| B | [AI-BRIEFING.txt](AI-BRIEFING.txt) §8b + E27 | Existing `linked:"true"` and non-empty ids are not validity; resolve and repair them from the parameter source | link, relink, link-validation and failed-value tasks |
+
+**Resolution.** Task scope, not compromise. Claim A remains mandatory for a
+layout correction. Claim B is mandatory when bindings are the requested work:
+preserve geometry and document structure, verify each intended link, and change
+only source-proven binding fields. "Preserve and patch" is not "preserve
+known-unverified links." No field is averaged, normalized or transformed.
 
 ## 13. The incident — what went wrong on 2026-08-10
 
@@ -1183,6 +1331,52 @@ plant. Nothing measured on 10240 is a construction rule (E22, `OV-C4`).
 | §6.2 nine steps + `O-C16` | an unrelated change travelling under a geometry correction |
 | §6 routing, last three rows | rebuilding from the image, merging two panels, or over-applying a verbal correction |
 
+### 13.6 The third incident — 2026-08-12, structurally linked but unresolved
+
+**What happened (E27).** A user supplied a 184-object Oversikt export and the
+plant parameter workbook, asking to link out the panel. Every object carried
+`linked:"true"`, non-empty `driver_id` and non-empty `unit_id`. Only **120 of
+184** driver ids resolved exactly in the workbook. The first result preserved
+almost every binding, removed `panel.image_svg_trace`, called the file
+"linked-ready", and mentioned the **64 unmatched** ids without treating them as
+a stop.
+
+The user then manually replaced **52 objects across 13 controllers**, four roles
+per controller: display value, cooling output, defrost output and
+high-temperature alarm. The selected source rows materially changed identity:
+AK2-family ids became AK3_AKC; `unit_id` values beginning `001:` became `000:`;
+parameter suffixes/registers changed; aliases and parameter meaning changed.
+These were not formatting variants. They were different controller or parameter
+identities.
+
+**Root cause.** The documentation taught three facts and left their boundary
+implicit:
+
+1. `linked` is host state.
+2. layout corrections preserve bindings.
+3. driver ids are copied, never invented.
+
+The first result combined them into a false rule: "the fields look linked, so
+preserve them." The missing rule was the invariant in §8.4: **linked state is not
+binding validity**, and a link/relink task makes the parameter source mandatory
+evidence.
+
+**What is machine-checkable now.** Exact unique driver lookup, exact `unit_id`,
+duplicate source rows, exact-versus-normalized alias status, deterministic
+role/access/datatype conflicts, source coverage and the completion hard stop
+(`O-B00`–`O-B08`). `--patch-scope binding-repair` proves geometry, object
+identity, names and order stayed fixed.
+
+**What remains manual.** Parameter meaning and role for driver families whose
+source rows do not expose enough deterministic semantics. `O-B07` reports that
+stage as unresolved. It never upgrades a fuzzy candidate.
+
+Sanitized regression evidence lives under
+[tests/fixtures/oversikt-linking/](tests/fixtures/oversikt-linking/): 8 objects,
+2 controllers and a 6/8 partial-match analogue, plus nine named failure
+mutations including AK2/AK3, unit mismatch, wrong controller, wrong role,
+`object_10000` names and reordered exports.
+
 ## 14. Evidence required before delivering
 
 State, in the delivery:
@@ -1200,6 +1394,10 @@ State, in the delivery:
   for it.
 - The **validator commands** and their output — including a clean compare run
   when a source existed.
+- For linking work, the **binding matrix and source coverage** from §8.4:
+  structurally linked, source-resolved, semantically verified and unresolved
+  counts kept separate; every unresolved controller/role and required evidence
+  named.
 - Every **evidence gap**, named. A PDF-only draft is delivered *as a draft*, with
   its missing evidence disclosed.
 

@@ -3,6 +3,46 @@ covers: Oversikt, store overview, case-position panel, byggeplan, disk, display
 case, cabinet, cold room, freeze room, controller cluster, alarm, temperature,
 cooling, defrost. Work every step before emitting JSON.
 
+LINKING — READ BEFORE RULE 1. Terms are defined once in AI-BRIEFING.txt §8b;
+use them unchanged.
+
+L1 linked = "true" is NOT proof of a correct binding.
+L2 A non-empty, plant-prefixed or syntactically plausible driver_id is NOT proof.
+L3 Resolve EVERY intended link exactly and uniquely in the supplied
+   plant-specific parameter source; that source is mandatory for its scope.
+L4 Verify driver_id, unit_id, controller identity, exact alias/parameter
+   meaning, object role, access and datatype where supplied — together.
+L5 NEVER construct, prefix-edit, suffix-match or transform driver IDs. NEVER
+   infer AK2→AK3, 001:→000:, controller indexes or group digits.
+L6 An unmatched, ambiguous or semantically incompatible object is UNRESOLVED,
+   not finished. Fuzzy search may suggest candidates; it never authorizes one.
+L7 Report intended, structurally linked, source-resolved, semantically verified
+   and unresolved counts separately, plus the full binding matrix and evidence.
+L8 NEVER say fully linked, linked-ready, production-ready or verified unless
+   every intended link is semantically verified. Binding proof alone still does
+   not prove production readiness.
+L9 Preserve geometry, obj_id, object names, array order, zIndex and background
+   while repairing bindings. "Preserve and patch" does NOT preserve a
+   known-unverified link.
+L10 Compare Oversikt controller clusters and alarm/value/cooling/defrost roles,
+    NEVER array indexes or spatial proximity. Preserve object_10000-style names.
+
+BAD: linked="true" + non-empty driver_id => valid.
+GOOD: driver_id resolves exactly and uniquely in the supplied source; resolved
+unit_id equals panel unit_id; controller identity and exact parameter meaning
+match the display/alarm/cooling/defrost role; access/datatype are suitable =>
+source-resolved and semantically verified.
+
+HARD STOP: if any intended role is unresolved, deliver the verified subset,
+matrix, exact source coverage, unresolved controllers/roles and missing
+evidence. Retain unresolved original binding fields byte-for-byte and label them
+UNVERIFIED in the external report; the panel schema has no verification field.
+Run:
+  python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
+For a repair, also:
+  python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json
+    --patch-scope binding-repair --parameters PARAMETERS.xlsx
+
 1 AN OVERSIKT IS A MAP, NOT A DASHBOARD. It is a drawing of the store with one
   controller cluster placed ON each display case, cold room or freezer room it
   monitors. The information is WHERE each reading sits. Grouping the same
@@ -103,15 +143,18 @@ cooling, defrost. Work every step before emitting JSON.
   render. Light store-plan artwork only: never introduce a dark background. An
   Oversikt with no embedded background is not an Oversikt.
 
-10 PRESERVE THE BACKGROUND AND THE BINDINGS THROUGH EVERY EDIT. panel.image_data,
+10 PRESERVE THE BACKGROUND THROUGH EVERY EDIT, AND PRESERVE BINDINGS THROUGH
+   EVERY LAYOUT EDIT. panel.image_data,
    panel.converted, panel.org_image_name, panel.image_name and the canvas
    dimensions survive verbatim, as do every object's driver_id, unit_id,
    link_name, link_tag, sub_group, unit_ref, alias_text, zIndex, geometry, the
    array order and the object_N names. A LAYOUT CORRECTION NEVER CLEARS A
    BINDING: a blanked driver id leaves an object that renders and reads nothing,
    and the JSON still looks fine. Strip bindings only when the task explicitly
-   asks for a reusable unlinked reference. NEVER EMIT panel.image_svg_trace; the
-   export writes it as AI input and the host deletes it on insert.
+   asks for a reusable unlinked reference. A LINK/RELINK/VALIDATION task follows
+   L1-L10 above: geometry stays fixed while source-proven binding fields change.
+   NEVER EMIT panel.image_svg_trace; the export writes it as AI input and the
+   host deletes it on insert.
 
 11 NEVER INVENT a coordinate, obj_id, driver id, unit id, parameter alias, plant
    id, tag or navigation target. Driver ids are copied verbatim from the plant's
@@ -158,7 +201,8 @@ cooling, defrost. Work every step before emitting JSON.
    SUPPLIED also run validate-oversikt-panel.py --compare SOURCE.json
    CANDIDATE.json; add --profile TEMPLATE-10113 when the panel is that named
    store overview, and --patch-scope value-position when the change was a
-   centering patch. Zero errors is the bar, and warnings are read, not ignored.
+   centering patch. For linking, run --parameters and declare --patch-scope
+   binding-repair. Zero errors is the bar, and warnings are read, not ignored.
    c Render with render-oversikt-panel.py, using --source to draw the source
    clusters as dashed ghosts underneath and --footprints to draw measured
    equipment boxes; the preview must embed the REAL background and all objects.

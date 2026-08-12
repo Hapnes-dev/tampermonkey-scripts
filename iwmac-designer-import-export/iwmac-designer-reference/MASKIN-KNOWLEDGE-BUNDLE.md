@@ -228,6 +228,62 @@ and a reported gap, never a default - see point 22.
     - **pad_px** — 6.0
     - **note** — Conservative floor detector at the 13 px default font, never a typesetter: findings prove 'cannot fit', never 'fits pixel-perfectly'. A rendered screenshot outranks the estimate.
   - **cannot_see** — Text drawn inside background artwork has no rectangle in the JSON; collisions with background text need a render plus a human eye or a measured sidecar, exactly as equipment footprints need one (O-G08).
+- **binding_verification**
+  - **owner_document** — AI-BRIEFING.txt section 8b
+  - **scope** — GLOBAL
+  - **invariant** — A binding is verified only when its driver_id is copied verbatim from, or resolves exactly and uniquely in, the plant-specific parameter source and the resolved unit/controller identity and parameter meaning agree with the object's intended role. linked=true, a non-empty driver_id, a familiar suffix, a matching plant prefix or a syntactically valid identifier is never sufficient evidence.
+  - **terms**
+    - **structurally_linked** — linked is true and driver_id is non-empty. Proves only that the document carries binding-looking fields.
+    - **source_resolved** — driver_id resolves exactly and uniquely in the supplied parameter source and resolved unit_id equals panel unit_id.
+    - **semantically_verified** — source-resolved plus controller identity, exact alias/parameter meaning, object role, access and datatype where supplied agree.
+    - **unresolved** — any intended link lacking exact and semantic proof
+    - **fully_linked_or_linked_ready** — legal claim only when every intended link is semantically verified
+    - **production_ready** — requires binding verification plus every geometry, visual, import and operational QA gate
+  - **task_scope**
+    - **layout_only** — preserve binding fields byte-for-byte
+    - **link_relink_validate_or_failed_values** — bindings are in scope; preserve geometry/document structure and verify or patch bindings from the supplied parameter source
+    - **preserve_and_patch** — never means preserve a known-unverified link during a binding task
+  - **matching_order**
+    - exact unique driver_id lookup
+    - exact unit_id
+    - controller identity
+    - exact alias/parameter meaning versus object role
+    - access and datatype where supplied
+    - semantically verified or unresolved verdict
+  - **prohibited**
+    - constructing or transforming driver_id
+    - editing plant prefixes, controller numbers, group digits or suffixes
+    - inferring AK2 to AK3 or 001 to 000
+    - authorizing by suffix similarity
+    - normalizing alias_text before using it as exact-match evidence
+    - using fuzzy matching as authorization rather than candidate discovery
+  - **matrix_fields**
+    - object identity
+    - object role
+    - obj_id
+    - controller identity
+    - panel driver_id
+    - parameter-source driver_id
+    - driver_id exact match
+    - panel unit_id
+    - resolved unit_id
+    - unit_id exact match
+    - panel alias_text
+    - resolved alias or parameter description
+    - alias match status
+    - access
+    - datatype
+    - verification state
+    - reason if unresolved
+    - evidence source
+  - **hard_stop** — If any intended link is unresolved, do not call the panel finished, fully linked, linked-ready, production-ready or verified. Deliver the verified subset, matrix, source coverage, exact unresolved objects/controllers/roles and evidence required to complete them.
+  - **partial_file_policy** — For an existing production export, retain unresolved original binding fields byte-for-byte and label them UNVERIFIED in the external report. The panel schema has no verification field; never invent one. Converting to an unlinked state is a separate explicit task.
+  - **host_fields**
+    - **id** — literal driver_id identifies a linkable host object; no semantic proof
+    - **link_name** — host literal/transport field; never populate it with a destination panel unless that object type's host contract says so
+    - **linked** — host state derived from a literal driver_id comparison; no validity proof
+    - **link_tag** — optional tag metadata; no validity proof
+    - **unit_ref** — optional stable reference; no validity proof
 
 ## Evidence records referenced here
 

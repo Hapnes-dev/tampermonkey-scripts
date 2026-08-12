@@ -45,6 +45,12 @@ background is unchanged.
 (2026-08-11) adds a **generated single-file Maskin knowledge bundle** for an
 M365 Copilot Studio agent. It does not create another rule owner: the builder
 renders the existing owners at run time and its freshness test rejects drift.
+[Part 14](#part-14--2026-08-11-removing-static-equipment-and-rerouting-a-circuit)
+adds the second Maskin artwork workflow.
+[Part 15](#part-15--2026-08-12-source-backed-link-verification)
+records the **GLOBAL link-verification correction** after a structurally linked
+Oversikt carried 64 driver ids unresolved by its supplied parameter workbook.
+It adds Oversikt conflict `OV-C5` and validator rules `O-B00`–`O-B08`.
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -87,6 +93,7 @@ Evidence ids:
 | E22 | `iwmac-panel_10240_oversikt_20260811-1308.json` (user Downloads) | Oversikt. Plant 10240, **128 `single_objects`, 32 controller clusters, all four roles on all 32**, 1400×750, value objects 42×22, `zIndex` 110 and 375 — the second production Oversikt export, supplied with the 2026-08-11 centering correction. **Not committed** (live plant id, 128 real driver ids) and **deliberately not masked into a second profile**: two `TEMPLATE-*` profiles is the shape that invites averaging one store's coordinates against another's, which `OV-C1` forbids. What it contributes is a *relationship* confirmed on two stores (`OV-C4`), never a coordinate. Added 2026-08-11 (Part 9) |
 | E23 | `Info fra anlegg.xlsx` (user Downloads) | A production parameter workbook: **15 110 parameter rows across 85 units**, with an `Allowed values` column carrying 270 distinct display-value strings — 107 enum maps (`0 = OFF / 1 = ON`, ` / `-separated) and 163 numeric ranges (`0 to 3`, `-200.0 to 200.0`), several enum labels longer than 40 characters against 42 px value pills. The evidence that value-object width must be derived from the longest allowed display value, not the current reading. **Not committed** (live plant data); its statistics are recorded in [documentation-rules.json](documentation-rules.json) `evidence.E23`. Added 2026-08-11 (Part 10) |
 | E24 | `machine-room-demo-extra-mt-compressor-connected-pipes-matched-size.json` (user Downloads) | Maskin. The delivered end state of the 2026-08-11 extend-a-compressor-bank workflow: an **authored demo, not a measurement** — 69 `single_objects`, unlinked, with the fourth MT compressor's artwork cloned into the embedded raster background. **Not committed.** Cited for what the workflow produced and never for production geometry: its three appended objects share **one** (+81, 0) offset from the C3 MT column, which is `M-A01` holding, and all three carry `alias_text: ""`, which is `M-A08` failing and is what conflict **M-8** resolves. Production compressor geometry comes from E10 (`TEMPLATE-10229`), never from here. Added 2026-08-11 (Part 11) |
+| E27 | 2026-08-12 Oversikt link-verification incident + [tests/fixtures/oversikt-linking/](tests/fixtures/oversikt-linking/) | Live inputs: 184-object panel plus plant parameter workbook, not committed; 120/184 driver ids resolved exactly, and manual replacement changed 52 objects / 13 controllers / four roles including AK2→AK3_AKC, `001:`→`000:`, tails and aliases. Sanitized fixture: 8 objects / 2 controllers, with a 6/8 partial analogue and nine named negative mutations. No live ids or customer/personal data. Added 2026-08-12 (Part 15) |
 
 Scope tag added 2026-08-10: `PROFILE-9099-ROTOR-DEMO`, for geometry that is a
 property of one named profile rather than of ventilation panels in general. `VENT`
@@ -3400,3 +3407,162 @@ Regenerated: [documentation-rules.json](documentation-rules.json),
   literal `"driver_id"`, `linked:"false"` and empty link/unit fields throughout,
   and its background is the string `fixture:raster-*.json` rather than a real
   data URI.
+
+---
+
+# Part 15 — 2026-08-12: source-backed link verification
+
+Part 15 corrects one GLOBAL interpretation after an Oversikt linking task:
+
+> **LINKED STATE IS NOT BINDING VALIDITY.**
+
+E27 supplied both artifacts needed to falsify the old interpretation. All 184
+panel objects looked linked (`linked:"true"`, non-empty `driver_id`, non-empty
+`unit_id`), but only 120 driver ids resolved exactly in the plant workbook.
+Manual replacement later changed 52 objects across 13 controller clusters and
+all four Oversikt roles. Changes crossed driver family, bus prefix, parameter
+tail/register and alias identity. The 64 mismatches were not formatting noise.
+
+The defective result removed `panel.image_svg_trace`, preserved almost every
+binding, called the file "linked-ready", and mentioned the 64 unmatched ids
+without treating them as a stop. Structurally valid JSON therefore carried a
+claim its evidence contradicted.
+
+## Rules changed
+
+### 172. AI-BRIEFING.txt §8b — one GLOBAL owner for binding validity
+
+| | |
+|---|---|
+| **Original** | `linked:"true"` plus copied ids described what a finished link looked like. The workflow said to match confidently and report skipped aliases, but defined no statuses, matrix, source-coverage gate or completed-linking stop. |
+| **Problem found** | Host state, exact source resolution and semantic correctness collapsed into one word: "linked." A syntactically plausible stale id survived because the document carried the fields the host normally writes. |
+| **Revised** | Normative definitions for **structurally linked**, **source-resolved**, **semantically verified** and **unresolved**; the exact-source invariant; deterministic lookup order; no ID transformation or suffix authorization; exact-versus-normalized alias classification; required 18-column matrix; mandatory supplied parameter evidence; completed-linking hard stop; retained-but-UNVERIFIED partial-file policy. |
+| **Source** | E27; host behavior in `CLAUDE.md` §5 and §13b; existing verbatim-copy evidence E12/E20. |
+| **Status** | **Normative** · `GLOBAL` |
+
+### 173. CLAUDE.md §5 — host fields state what they prove and do not prove
+
+| | |
+|---|---|
+| **Original** | Correct host meanings, including `linked="true"` whenever `driver_id !== "driver_id"`, but no explicit proof boundary for `id`, `link_name`, `linked`, `link_tag` and `unit_ref`. |
+| **Revised** | `id:"driver_id"` and `link_name:"link_name"` are host literals; `linked` is document state; `link_tag` and `unit_ref` are optional metadata. None resolves a parameter or proves semantic validity. `link_name` is not a destination-panel field. |
+| **Reason** | A literal or populated transport field was being read as independent corroboration when every field came from one unvalidated document. |
+| **Status** | **Normative host behavior** · `GLOBAL` |
+
+### 174. AI-REQUEST-ROUTING.md — binding task scope is explicit
+
+Geometry-only work preserves bindings byte-for-byte. Link, relink,
+link-validation and failed-value work puts bindings in scope and makes the
+parameter source mandatory evidence. "Preserve and patch" preserves geometry and
+document structure; it does not preserve known-unverified links.
+
+Partial existing panels retain unresolved original fields and report them
+UNVERIFIED externally. The JSON schema receives no invented verification field.
+
+### 175. Oversikt owner set — conflict OV-C5 and the controller-role matrix
+
+[OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) gains §8.4
+and §8.5, E27, incident §13.6 and conflict **OV-C5**:
+
+- claim A: preserve bindings during layout/geometry corrections;
+- claim B: verify and source-patch bindings during link/relink/validation work;
+- decision: scope, not compromise.
+
+The matrix is grouped by controller and alarm/value/cooling/defrost role, never
+array index or proximity. Host-generated `object_10000` names remain source
+identity.
+
+[OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md) owns the ordered
+binding-repair procedure. [OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md)
+owns acceptance and the regression prompt. No second contract was created.
+
+### 176. Copilot derivatives — hard-stop facts move to the front
+
+[OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md) opens with
+linking rules L1–L10, the bad/good example, matrix delivery and exact commands.
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt) carries the same compact
+obligations near the start of its LINKING section; unrelated prose was compressed
+to stay below the M365 8,000-character cap. Normative detail remains in the
+briefing and contract.
+
+[MASKIN-KNOWLEDGE-BUNDLE.md](MASKIN-KNOWLEDGE-BUNDLE.md) was regenerated because
+its deterministic builder reads AI-BRIEFING §8b. No Maskin rule, coordinate or
+profile changed; freshness would otherwise fail.
+
+### 177. Validator and parameter-source reader — O-B00 through O-B08
+
+[validate-oversikt-panel.py](validate-oversikt-panel.py) gains:
+
+- `--parameters PARAMETERS.xlsx` for optional parameter-aware validation;
+- dependency-free `.xlsx`, `.csv`, `.json` and `.sql` input through
+  [parameter_source.py](parameter_source.py);
+- exact unique driver lookup, unit mismatch and duplicate-source detection;
+- exact/normalized-only/different alias status;
+- deterministic role/access/datatype conflicts, with `O-B07` retaining a manual
+  semantic stage where the source cannot support automation;
+- complete JSON binding matrix and source-coverage summary;
+- `--patch-scope binding-repair`, preserving geometry, identity, names and order.
+
+`O-S09` remains stable and is relabelled in prose as **structural consistency
+only**. No existing rule id was renumbered.
+
+### 178. Sanitized incident fixture and regression coverage
+
+Committed under [tests/fixtures/oversikt-linking/](tests/fixtures/oversikt-linking/):
+
+- `verified-panel.json`: 8 objects, 2 controller clusters, four roles each;
+- `parameters.json`: exact synthetic source rows with `NNNNN` ids;
+- `incident-cases.json`: nine named negatives, including a 6/8 partial analogue,
+  wrong family, wrong unit, wrong controller, wrong role, a false linked-ready
+  claim, non-sequential replacement names and reordered exports.
+
+[build-oversikt-linking-negatives.py](build-oversikt-linking-negatives.py)
+materializes them. [tests/test_oversikt_link_binding.py](tests/test_oversikt_link_binding.py)
+starts with 24 source-backed, identity, parser and fixture-builder tests. No live plant
+id, customer name, workbook, personal name or unsanitized driver id is present.
+
+### 179. documentation-rules.json — generated machine derivative
+
+[build-oversikt-rules.py](build-oversikt-rules.py) owns and regenerates:
+
+- `global_invariants.binding_verification`;
+- `panel_types.oversikt.binding_verification`;
+- evidence E27;
+- conflict OV-C5;
+- binding-repair commands and report requirements.
+
+The JSON was regenerated; it was not hand-edited.
+
+### 180. What remains manual
+
+Exact source resolution, `unit_id`, source ambiguity, alias comparison and
+explicit/deterministic role/access/datatype conflicts are machine-checkable.
+Whether a parameter meaning fits an object role when the source does not expose
+enough deterministic semantics remains manual. `O-B07` reports that gap and
+`O-B08` prevents it from becoming a completed-linking claim.
+
+### 181. What Part 15 deliberately did not do
+
+- Did not reapply `AI-BRIEFING-REVISED.txt`; it remains historical.
+- Did not create another GLOBAL linking contract. AI-BRIEFING §8b remains owner;
+  routing, panel-type documents, rules JSON and Copilot files are applications
+  or derivatives.
+- Did not normalize aliases or transform driver ids.
+- Did not commit live input files or reproduce their identifiers.
+- Did not make parameter-source validation mandatory for geometry-only work.
+- Did not claim all driver families have automated role semantics.
+- Did not change the userscript; no userscript version bump is involved.
+
+## Verification commands
+
+Run from `iwmac-designer-reference/`:
+
+```bash
+python -m unittest tests.test_oversikt_link_binding tests.test_oversikt_10113_contract
+python build-oversikt-rules.py --check
+python validate-oversikt-panel.py tests/fixtures/oversikt-linking/verified-panel.json --parameters tests/fixtures/oversikt-linking/parameters.json --json-report --no-matrix
+```
+
+Cross-builder and generated-bundle checks remain required because all builders
+share `documentation-rules.json`. Results belong in the delivery: they are true
+of the run, while this log records what changed and why.

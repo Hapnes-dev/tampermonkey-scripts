@@ -16,7 +16,8 @@
 `Designer Import/Export` · `userscript import` · `IWDIE` · `Insert JSON` ·
 `Export JSON` · `panel JSON` · `panel document` · `single_objects` · `obj_id` ·
 `driver_id` · `unit_id` · `unit_ref` · `alias_text` · `linked panel` ·
-`linked signals` · `unlinked template` · `table_container` ·
+`linked signals` · `link out` · `relink` · `validate links` · `failed values` ·
+`linked-ready` · `unlinked template` · `table_container` ·
 `parameter SQL` · `iw_gen_driver_parameters` · `parameterdump` ·
 `generer en tabell` · `lag et panel` · `trenger .json fil` ·
 `create a panel from this SQL export` · `make an IWMAC Designer JSON panel` ·
@@ -97,7 +98,26 @@ kilde, utvalg, plan_tolkning, antall_romkontrollere, planoversikt,
 romkontrollere`. It was not a panel and the importer rejected it. The analysis
 was right; the routing was wrong.
 
-### 1.3 When it really is a data request
+### 1.3 Linking words change what is in scope
+
+`GLOBAL` A request to **link, relink, validate links, repair failed values or
+diagnose stale values** puts the binding fields in scope. Existing
+`linked:"true"`, non-empty `driver_id` and `unit_id` values are input to check,
+not proof to preserve. Route the binding workflow to
+[AI-BRIEFING.txt](AI-BRIEFING.txt) §8b and require the supplied plant-specific
+parameter source for every row it covers.
+
+A request only to move, resize or visually repair objects does **not** put
+bindings in scope. Preserve them byte-for-byte. Thus "preserve and patch" has
+two precise applications:
+
+- geometry-only task: preserve bindings;
+- link/relink/validation task: preserve geometry and document structure, but
+  verify and patch bindings from the parameter source.
+
+Do not turn the second into "preserve known-unverified links."
+
+### 1.4 When it really is a data request
 
 Produce a plain data file **only** when the user explicitly asks for one:
 "extract the data", "give me the parameters as JSON", "an API payload", "a data
@@ -140,9 +160,9 @@ you chose.
 
 | Mode | Output | Choose when |
 |---|---|---|
-| **A — data-only JSON** | a custom structure describing the source data | the user explicitly asked for extracted data, an API payload, or a data table (§1.3) |
+| **A — data-only JSON** | a custom structure describing the source data | the user explicitly asked for extracted data, an API payload, or a data table (§1.4) |
 | **B — unlinked Designer template** | a valid panel document with `driver_id: "driver_id"`, `linked: "false"`, `unit_id: ""` | the user explicitly asked for a reusable template or unlinked skeleton, **or** no binding data exists for this plant |
-| **C — linked Designer panel** | the same document with every identifier copied from the source | binding data exists — this is the default |
+| **C — source-backed linked Designer panel** | the same document with every intended binding copied verbatim from and verified against the plant-specific parameter source | binding data exists — this is the default |
 
 > `GLOBAL` **Default rule.** A request built on an attached plant parameter
 > export, with enough binding data to resolve the signals, produces the
@@ -157,9 +177,13 @@ Placeholder binding values (`"driver_id"`, `linked: "false"`, empty `unit_id`)
 are legal **only** in mode B, and only because the import contract requires
 them ([AI-BRIEFING.txt](AI-BRIEFING.txt) §3). In mode C they are an error.
 
-If binding data covers only part of the panel: emit mode C for what is bound,
-leave the rest **empty** rather than placeholdered, and name exactly what could
-not be bound. Do not downgrade the whole file.
+If binding evidence covers only part of an existing production panel: keep the
+verified subset and retain unresolved objects' original binding fields
+byte-for-byte, but label them **UNVERIFIED in the external report**. The panel
+schema has no verification field; do not invent one. Report verified and
+unresolved counts separately and never call the result fully linked,
+linked-ready, production-ready or verified. Do not downgrade the whole file,
+and do not silently blank or transform the unresolved fields.
 
 ---
 

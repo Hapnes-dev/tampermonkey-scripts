@@ -1950,3 +1950,186 @@ Created by the incident and by the fix, not found in the documents:
    §17.1 forbids it unless the user names the object, which is a judgement about
    safety rather than a measurement. A production case where the drawn pill is
    gone and the binding should have gone with it would test it.
+
+---
+
+# Addendum — 2026-08-12: linked state mistaken for binding validity
+
+**Scope.** Findings **F52–F57** are primarily `GLOBAL` linking behavior.
+Oversikt is the worked example because that is where the failure occurred.
+Nothing below makes a driver-family rule from one store.
+
+**Evidence.** **E27**, as registered in
+[documentation-change-log.md](documentation-change-log.md): a 184-object
+Oversikt export and its plant parameter workbook. Every object carried
+`linked:"true"`, non-empty `driver_id` and non-empty `unit_id`; only **120/184**
+driver ids resolved exactly. Manual replacement changed **52 objects / 13
+controllers / four roles**, including driver family (AK2 to AK3_AKC), bus prefix
+(`001:` to `000:`), parameter tail/register and alias identity. Live artifacts
+are not committed. The sanitized 8-object / 6-of-8 analogue is committed under
+[tests/fixtures/oversikt-linking/](tests/fixtures/oversikt-linking/).
+
+## The incident
+
+The initial result treated binding-looking fields as proof, preserved almost all
+bindings, removed `panel.image_svg_trace`, called the result "linked-ready", and
+reported 64 unmatched ids as commentary rather than as a blocking failure.
+
+That result was structurally valid. Its claim was not evidence-backed. The
+manual replacements show why: the old strings did not merely differ in
+formatting; they represented different controller or parameter identities.
+
+## Findings
+
+### F52 (S1 — wrong). `linked:"true"` was treated as binding validity
+
+*Repository evidence.* `CLAUDE.md` §5 already records the host assignment:
+`linked="true"` whenever `driver_id !== "driver_id"`, including an empty
+`driver_id`. It also records that the host does no parameter lookup during load.
+
+*Incident evidence.* All 184 objects were structurally linked; 64 driver ids did
+not resolve in the authoritative parameter workbook.
+
+*Consequence.* An agent could follow the field shape exactly and call stale
+bindings valid.
+
+**Corrective.** AI-BRIEFING §8b now owns four distinct states: structurally
+linked, source-resolved, semantically verified and unresolved. The invariant is
+explicit: host state, syntax, prefix and suffix are never sufficient.
+
+**Scope:** `GLOBAL`. **Machine-checkable:** exact source resolution begins at
+`O-B03`; `O-S09` remains structural only.
+
+### F53 (S3 — misleading). "Preserve and patch" preserved the fields the task asked to repair
+
+*Repository evidence.* Oversikt contract §6.2 and the guide required
+`driver_id`, `unit_id` and `alias_text` to survive every patch. Correct for
+geometry work, misleading for a link/relink task.
+
+*Consequence.* The stronger geometry-preservation rule swallowed the binding
+request. Known-unverified links were protected from correction.
+
+**Corrective.** Conflict **OV-C5**, resolved by task scope: geometry-only
+preserves bindings; link/relink/validation preserves geometry and checks or
+patches bindings from the parameter source. `--patch-scope binding-repair`
+enforces the second.
+
+**Scope:** rule is `GLOBAL`; conflict application is `OVERSIKT`.
+
+### F54 (S1 — wrong). An unresolved subset was reported but did not stop completion
+
+*Incident evidence.* The result named 64 unmatched ids and still used
+"linked-ready."
+
+*Consequence.* Reporting became a substitute for resolving. A user received an
+explicit failure count and an incompatible success label in the same delivery.
+
+**Corrective.** `O-B08` is the hard stop. Any unresolved intended link forbids
+finished, fully linked, linked-ready, production-ready and verified. Required
+delivery becomes verified subset + matrix + source coverage + unresolved
+objects/controllers/roles + missing evidence.
+
+**Scope:** `GLOBAL`. **Machine-checkable:** completion status in validator
+output; **manual:** humans must not add a contradictory success label outside
+the tool.
+
+### F55 (S4 — structural). Oversikt validation could not consume the supplied parameter source
+
+*Repository evidence.* `validate-romkontroll-panel.py` already had
+`--source-sql`; `validate-oversikt-panel.py` explicitly said invented bindings
+were invisible and offered no source input.
+
+*Consequence.* The decisive artifact was supplied and the applicable validator
+could not read it.
+
+**Corrective.** `validate-oversikt-panel.py --parameters` consumes `.xlsx`,
+`.csv`, `.json` and `.sql` via dependency-free `parameter_source.py`. Rules
+`O-B00`–`O-B08` cover source totals, parse errors, ambiguity, absence, unit,
+alias, role/type and completion. Geometry-only runs remain unchanged.
+
+**Scope:** `OVERSIKT` executable application of the `GLOBAL` invariant.
+
+### F56 (S2 — undetermined). No binding verification matrix fixed identity across exports
+
+*Repository evidence.* Existing coverage matrices tracked controller roles and
+geometry, not panel-versus-source bindings. Replacement exports can carry
+`object_10000` names and different array order.
+
+*Consequence.* Index-wise comparison could pair an alarm with a value, or a
+replacement object with the wrong source row, while a large diff hid it.
+
+**Corrective.** The 18-column matrix is grouped by controller and role.
+`object_10000` names are preserved. Tests reverse the array and prove no
+drop/relink/retype finding appears; only `O-C12` reports ordering.
+
+**Scope:** matrix schema `GLOBAL`; grouping rule `OVERSIKT`.
+
+### F57 (S3 — misleading). Alias similarity and host literals looked like independent corroboration
+
+*Repository evidence.* `id:"driver_id"` and `link_name:"link_name"` are host
+literals; `link_tag` and `unit_ref` are optional metadata. Existing linking
+prose allowed matching from descriptive aliases without defining exact versus
+normalized-only comparison.
+
+*Consequence.* Several fields from one unvalidated document appeared to support
+each other. Punctuation, whitespace or a familiar parameter suffix could be
+upgraded silently into a match.
+
+**Corrective.** CLAUDE.md §5 states what each field proves and does not prove.
+`O-B05` records exact, normalized-only and different aliases with both strings.
+Fuzzy matching produces candidates only. `link_name` is explicitly not a
+destination-panel field.
+
+**Scope:** `GLOBAL`.
+
+## Corrective controls
+
+| Finding | Control | Owner/enforcer |
+|---|---|---|
+| F52 | Four statuses + exact-source invariant | AI-BRIEFING §8b; rules JSON |
+| F53 | Task-scope split; conflict OV-C5; binding-repair patch scope | Oversikt contract/guide; `O-C16` |
+| F54 | Completion hard stop and partial-file policy | AI-BRIEFING §8b; `O-B08` |
+| F55 | Parameter-aware validator for xlsx/csv/json/sql | `parameter_source.py`; `O-B00`–`O-B08` |
+| F56 | Controller-role binding matrix; non-sequential/reordered fixtures | validator JSON report; tests |
+| F57 | Host-field proof boundary; exact alias classification | CLAUDE.md §5; `O-B05` |
+
+## Machine-checkable versus manual
+
+Machine-checkable now: exact unique driver resolution; source coverage;
+`unit_id`; duplicate source rows; exact versus normalized-only/different alias
+status; explicit and conservative deterministic role/access/datatype conflicts;
+field-level binding-repair scope.
+
+Still manual: semantic role suitability when a driver family does not expose
+enough deterministic metadata; whether the supplied parameter source covers the
+whole requested plant scope; production operational readiness. `O-B07` keeps
+the first visible and unresolved. No validator claims to automate the latter
+two.
+
+## Files changed by this addendum
+
+Normative owners: `CLAUDE.md` host-field clarification; `AI-BRIEFING.txt` §8b;
+`OVERSIKT-GENERATION-CONTRACT.md` §8.4/§8.5, `OV-C5`, E27 and incident §13.6.
+
+Procedure/acceptance/routing:
+[AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md),
+[OVERSIKT-AUTHORING-GUIDE.md](OVERSIKT-AUTHORING-GUIDE.md),
+[OVERSIKT-QA-CHECKLIST.md](OVERSIKT-QA-CHECKLIST.md).
+
+Derived:
+[OVERSIKT-COPILOT-PREFLIGHT.md](OVERSIKT-COPILOT-PREFLIGHT.md),
+[AI-AGENT-INSTRUCTIONS.txt](AI-AGENT-INSTRUCTIONS.txt),
+[documentation-rules.json](documentation-rules.json) via
+[build-oversikt-rules.py](build-oversikt-rules.py).
+[MASKIN-KNOWLEDGE-BUNDLE.md](MASKIN-KNOWLEDGE-BUNDLE.md) was regenerated because
+its builder consumes the revised global briefing; no Maskin rule changed.
+
+Executable/regression:
+[validate-oversikt-panel.py](validate-oversikt-panel.py),
+[parameter_source.py](parameter_source.py),
+[build-oversikt-linking-negatives.py](build-oversikt-linking-negatives.py),
+[tests/test_oversikt_link_binding.py](tests/test_oversikt_link_binding.py), and
+the sanitized fixture directory.
+
+`AI-BRIEFING-REVISED.txt` remains historical and was not reapplied. No competing
+normative source was created.

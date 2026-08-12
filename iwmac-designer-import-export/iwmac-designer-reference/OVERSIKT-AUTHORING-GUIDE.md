@@ -19,7 +19,7 @@ Eleven steps, in order. Steps 1–5 read; step 6 decides; steps 7–8 write; ste
 | 5 | Build the coverage matrix | the table that gates step 7 |
 | 6 | Reconcile against the PDF or screenshot | a named list of proven differences |
 | 7 | Patch, or generate | the panel JSON |
-| 8 | Preserve links and background | (part of step 7, verified separately) |
+| 8 | Preserve links for layout work, or verify them for linking work | binding matrix + source-backed patch, or byte-identical preservation |
 | 9 | Render a preview | an HTML preview with the real background |
 | 10 | Validate | validator output, exit status 0 |
 | 11 | Write the verification report | the nine-item report |
@@ -55,6 +55,10 @@ The two questions that decide everything downstream:
 2. **Is this an Oversikt at all?** The navigation-hub *Oversikt* of a hotel
    panel set is an icon-tile menu that shares only the name. It is not this panel
    type and none of this applies.
+3. **Are bindings in scope?** "Move", "resize" and "centre" mean no: preserve
+   them. "Link", "relink", "validate links" and "failed values" mean yes:
+   existing `linked:"true"` and non-empty ids must be resolved against the
+   supplied parameter source. Contract §8.4 owns the distinction.
 
 ### PDF-only is a draft, and says so
 
@@ -81,6 +85,17 @@ For a supplied JSON, record before touching anything:
 ```bash
 python validate-oversikt-panel.py SOURCE.json
 ```
+
+When bindings are in scope and a parameter source was supplied, run the source
+check on the **source before editing**:
+
+```bash
+python validate-oversikt-panel.py SOURCE.json --parameters PARAMETERS.xlsx --json-report
+```
+
+Record intended, structurally linked, source-resolved, semantically verified
+and unresolved counts separately. Never let the first count stand in for the
+last three.
 
 - Canvas `panel_width` × `panel_height`.
 - `counts` versus the actual array lengths.
@@ -282,9 +297,11 @@ finished panel.** Contract §12, conflict OV-C2.
 Full rule, the seven terms it depends on, and how it is checked:
 [OVERSIKT-GENERATION-CONTRACT.md](OVERSIKT-GENERATION-CONTRACT.md) §7.1–§7.1c.
 
-## 8. Preserve links and the background
+## 8. Preserve or verify links; always preserve the background
 
 Called out separately because it is the failure that leaves no trace.
+
+### 8a. Layout/geometry-only task
 
 > **A layout correction never clears `driver_id`, `unit_id` or `alias_text`.**
 
@@ -297,6 +314,42 @@ reusable, unlinked reference, and then use the sanitization profile in contract
 The background survives every edit: `image_data`, `converted`, `org_image_name`,
 the canvas dimensions and any transparency. An Oversikt without its store plan
 is not the same panel, whatever its objects say.
+
+### 8b. Link, relink, link-validation or failed-value task
+
+`linked:"true"` and a non-empty `driver_id` are only structural state. They do
+not prove the controller or parameter. Work in this order:
+
+1. Load the plant-specific workbook, CSV, JSON or SQL dump. It is mandatory
+   evidence for every row it covers.
+2. Build the contract §8.4 matrix, grouped by controller and role — alarm,
+   value, cooling, defrost — never by array index or proximity.
+3. Resolve the existing `driver_id` exactly and uniquely.
+4. Verify exact `unit_id`, controller identity, exact alias/description,
+   parameter meaning, role and access/datatype where supplied.
+5. Mark anything short of all checks **unresolved**. Record normalized-only
+   alias differences separately; fuzzy candidates never authorize a binding.
+6. For one unique compatible row, copy `driver_id` and `unit_id` verbatim and
+   use the exact source alias required by the panel contract. Never transform
+   AK2→AK3, `001:`→`000:`, prefixes, controller numbers, group digits or
+   suffixes. Keep `link_name`, `link_tag`, `sub_group` and `unit_ref` unchanged;
+   this source check does not verify them.
+7. Retain unresolved objects' original binding fields byte-for-byte and mark
+   them **UNVERIFIED in the report**. Do not add a custom verification field to
+   the panel JSON and do not silently blank them.
+8. Prove the repair changed no geometry, object identity, names or order:
+
+```bash
+python validate-oversikt-panel.py \
+  --compare SOURCE.json CANDIDATE.json \
+  --patch-scope binding-repair \
+  --parameters PARAMETERS.xlsx
+```
+
+Hard stop: if any intended link remains unresolved, deliver the verified subset,
+matrix, source coverage, exact unresolved controllers/roles and missing evidence.
+Do not call the panel finished, fully linked, linked-ready, production-ready or
+verified.
 
 ## 9. Render a preview
 
@@ -361,6 +414,19 @@ python build-oversikt-footprints.py PANEL.json -o FOOTPRINTS.json
 python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
 ```
 
+For linking work:
+
+```bash
+python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
+```
+
+For a source-backed binding repair:
+
+```bash
+python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
+  --patch-scope binding-repair --parameters PARAMETERS.xlsx
+```
+
 **The generator emits a template, not evidence.** Every `footprint` in it is
 `0×0` until you measure the boxes on the background image, and a `0×0` box has
 no centre — so an unfilled template fails with one `O-G09` per controller. That
@@ -386,7 +452,9 @@ inventory, cluster cohesion, duplicate roles, lattice detection, overlaps — an
 in compare mode: dropped, added, missing, moved, resized, relinked, reordered
 and retyped objects plus background and canvas changes; with `--patch-scope`,
 the field-level patch diff; with `--footprints`, value centering and the
-usability of the measurement itself.
+usability of the measurement itself; with `--parameters`, exact source
+resolution, unit identity, alias status, deterministic role/access/datatype
+compatibility, source coverage and the completed-linking hard stop.
 
 Exit status is non-zero when any `error` finding is present. `O-G05` — a partial
 cluster — is `info` on purpose and never fails a run.
@@ -409,6 +477,10 @@ Nine items. A delivery missing any of them is incomplete.
    declared `--patch-scope` for a patch.
 8. **The render inspected, and what was checked in it.**
 9. **Every evidence gap, stated as a gap** — separated from what was verified.
+
+For linking work, include the full binding-verification matrix, parameter-source
+filename, exact source coverage, separate structurally-linked/source-resolved/
+semantically-verified/unresolved counts, and every unresolved controller/role.
 
 > **A clean validator run is a necessary condition, never a sufficient one.** The
 > nine-cluster reconstruction that triggered this documentation passes a bare
@@ -433,7 +505,9 @@ asserts the validator catches it.
 | **Forced four objects** | A 2-member cluster padded with cooling and defrost symbols bound to parameters the controller does not expose. | `O-C05`, `O-P04` |
 | **Cluster torn apart** | Members left behind when the cluster moved. Reads as two positions. | `O-G03` |
 | **Object substituted** | A purpose-built symbol replaced by a generic value pill. | `O-C09` |
-| **Invented binding** | A driver id constructed rather than copied. Looks linked; reads nothing. | `O-P07` (on a known template only — otherwise only a human catches it) |
+| **Structurally linked, source-unresolved** | `linked:"true"` plus non-empty ids, but no exact parameter-source row. Looks complete; validity unproved. | `O-B03`, `O-B08` with `--parameters` |
+| **Invented/transformed binding** | A driver id constructed, prefix-edited, AK2→AK3 converted or suffix-matched rather than copied. Looks linked; reads nothing or the wrong parameter. | `O-B03`; `O-B04` if it resolves under the wrong unit; `O-P07` remains only a profile warning |
+| **Wrong semantic role** | Exact row exists, but an alarm object points at defrost/cooling/value or access/datatype is incompatible. | `O-B05`–`O-B07`, then `O-B08` |
 | **Bubble off the box centre** | The cluster is on the right case; the temperature object sits a few tens of pixels off its centre because it was built around a label or a cluster anchor. Every binding correct. | `O-G08` — **only with `--footprints`**. Otherwise a render and a reviewer |
 | **Centred on the label** | The value object centred on the equipment's caption in the artwork, which is drawn offset from the equipment. | `O-G08` if the footprint is measured; otherwise nothing |
 | **Forced 42×22** | A supplied panel's value objects silently resized to the size the documentation quotes. | `O-C10`, and `O-C16` under a declared patch scope |

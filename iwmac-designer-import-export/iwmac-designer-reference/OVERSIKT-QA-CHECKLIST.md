@@ -41,6 +41,20 @@ anything about centering:
 python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
 ```
 
+When the task is to link, relink, validate links or diagnose failed values, the
+plant-specific parameter source is mandatory:
+
+```bash
+python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
+```
+
+For a repaired source panel:
+
+```bash
+python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
+  --patch-scope binding-repair --parameters PARAMETERS.xlsx
+```
+
 Exit status 0 means no `error` findings. `info` and `warning` findings still
 need reading — `O-G05` (partial clusters) and `O-G02` (non-cluster objects) are
 information about the panel, not complaints about it.
@@ -63,8 +77,8 @@ It reads structure and geometry. It does not know your store.
 | Whether a value object is centred on its equipment box — **without a sidecar** | measured footprints + `--footprints`, then the crops |
 | Whether the measured rectangle was the **right** rectangle | a human looking at the artwork, stage C |
 | Whether a missing cluster is missing — **without a source** | `--compare`, or `--profile` |
-| Whether a `driver_id` names a parameter the controller actually exposes | the plant's parameter dump |
-| Whether an `alias_text` describes what the object really reads | a human who knows the plant |
+| Whether a `driver_id` names a parameter the controller exposes — **without `--parameters`** | the plant parameter source + `--parameters` |
+| Whether parameter meaning matches the visual role when the source has no deterministic role/access/datatype evidence | a human reviewing the matrix; `O-B07` keeps it unresolved |
 | Whether the background artwork is the right store | the render, stage C |
 | Whether a partial cluster is partial *because the controller is* | the controller's own parameter list |
 
@@ -84,6 +98,7 @@ It reads structure and geometry. It does not know your store.
 |---|---|
 | `O-S*` | structure — envelope, fields, geometry, background, catalogue |
 | `O-G*` | relationships — controllers, clusters, coverage, layout shape |
+| `O-B*` | plant-parameter binding evidence — only with `--parameters` |
 | `O-P*` | profile — this panel against a named template |
 | `O-C*` | compare — this candidate against its source |
 
@@ -260,17 +275,50 @@ python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json --patch-s
 
 ## Stage E — Links and sanitization
 
-- [ ] **No binding was blanked.** `driver_id`, `unit_id` and `alias_text` survive
-      a layout correction. `O-C07`
-- [ ] **No binding was changed** unless the task asked for it, and each change is
-      named. `O-C08`
-- [ ] **`linked` agrees with `driver_id`.** A `driver_id` with `linked` not
-      `"true"` is an error; `linked:"true"` with an empty `driver_id` is
-      legitimate host behaviour on a real export. `O-S09`
+- [ ] **Task scope was named.** Layout correction: bindings preserved. Link,
+      relink, validation or failed values: bindings checked and repaired from
+      the parameter source. "Preserve and patch" was not read as "preserve
+      known-unverified links." `OV-C5`
+- [ ] **No binding was blanked during layout work.** `driver_id`, `unit_id` and
+      `alias_text` survive a layout correction. `O-C07`
+- [ ] **No binding was changed outside a declared binding task**, and each
+      change is named by controller and role. `O-C08`
+- [ ] **`linked` agrees with the host's literal-state rule.** A `driver_id` with
+      `linked` not `"true"` is an error; `linked:"true"` with an empty
+      `driver_id` is legitimate host behaviour on a real export. **This is
+      structural consistency only, never validity.** `O-S09`
+- [ ] **Every intended link has one matrix row**, grouped by controller and
+      alarm/value/cooling/defrost role, never array index or proximity. The row
+      records both driver ids, both unit ids, both aliases, exact-match states,
+      access, datatype, verdict, reason and evidence. `O-B00`
+- [ ] **Every panel `driver_id` resolves exactly and uniquely.** A matching plant
+      prefix, familiar suffix or syntactically plausible id does not count.
+      Duplicate source rows are ambiguous. `O-B02`, `O-B03`
+- [ ] **Resolved `unit_id` matches exactly**, including bus prefix. AK2→AK3 and
+      `001:`→`000:` are never inferred transformations. `O-B04`
+- [ ] **Alias comparison is exact.** Capitalization, punctuation, whitespace,
+      abbreviation and encoding differences are recorded as normalized-only or
+      different with both values; fuzzy candidates never authorize a link.
+      `O-B05`
+- [ ] **Controller identity, object role, access and datatype agree** where the
+      source makes them deterministic. If not automatable, the matrix says
+      manual semantic verification remains and the object stays unresolved.
+      `O-B06`, `O-B07`
+- [ ] **No completed-linking claim exists with unresolved intended links.**
+      Deliver verified subset, matrix, source coverage, exact unresolved
+      controllers/roles and required evidence instead. `O-B08`
+- [ ] **Partial-file policy held.** Existing unresolved binding fields remain
+      byte-identical and are labelled UNVERIFIED in the external report; no
+      custom verification field was invented inside the JSON.
+- [ ] **Binding repair preserved document identity and geometry.**
+      `--patch-scope binding-repair` reports `O-C16` held; names (including
+      `object_10000` forms), `obj_id`, coordinates, dimensions, `zIndex` and
+      array order did not change.
 - [ ] **No object was retyped.** A purpose-built symbol replaced by a generic
       value pill is reported with both type names. `O-C09`
 - [ ] **No driver id was constructed.** They are copied verbatim from the plant's
-      parameter dump; the group digits differ per driver type.
+      parameter source; prefixes, controller numbers, group digits and suffixes
+      are never edited.
 - [ ] **On a known template, no unfamiliar aliases.** An alias this template's
       objects have never carried is the shape an invented binding takes. `O-P07`
 - [ ] **Array order is preserved on a patch.** `O-C12`
@@ -357,6 +405,11 @@ Nine items — contract §11. A delivery missing any of them is incomplete.
    for a centering job, not only the whole panel.
 9. Every evidence gap, stated as a gap and kept separate from what was verified.
 
+For linking work, attach the full binding matrix and state the parameter source,
+intended count, structurally-linked count, exact source coverage,
+semantically-verified count and unresolved count separately. Name every
+unresolved controller/role and what evidence would settle it.
+
 ## Test commands
 
 Run from `iwmac-designer-reference/`. The repo convention is per-module —
@@ -365,6 +418,10 @@ is not the fix.
 
 ```bash
 python -m unittest tests.test_oversikt_10113_contract
+```
+
+```bash
+python -m unittest tests.test_oversikt_link_binding
 ```
 
 ```bash
@@ -446,3 +503,28 @@ measures on the image without scaling, moves the whole cluster when only the
 value object was asked to move, invents a footprint for a controller it could
 not see, or reports "0 errors" as proof of centering when no footprints were
 supplied.
+
+### 3 — Link validation after a stale-controller migration
+
+> *"Here is an Oversikt export and this plant's parameter workbook. Link out the
+> panel and give me the corrected JSON."*
+
+The source has binding-looking fields on every object, but only part of its
+`driver_id` set resolves exactly. It passes only if the answer:
+
+- treats `linked:"true"` and non-empty ids as structural state, not validity;
+- preserves geometry, object identity, names, order and background;
+- resolves every intended alarm/value/cooling/defrost role exactly in the
+  supplied parameter source and checks exact `unit_id`;
+- records alias differences without normalizing them into matches;
+- never converts AK2→AK3, `001:`→`000:`, controller indexes or suffixes by
+  inference;
+- reports the matrix and separate source-resolved, semantically-verified and
+  unresolved counts;
+- uses `--parameters` and `--patch-scope binding-repair`;
+- refuses "finished", "fully linked", "linked-ready", "production-ready" and
+  "verified" while one intended role is unresolved.
+
+It fails if most matches are treated as enough, if unmatched ids are only
+mentioned in prose, if array index pairs the two exports, or if stale unresolved
+fields are silently changed or described as verified.

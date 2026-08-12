@@ -1555,12 +1555,50 @@ guides that), and finally uses Compile Panel for Plant + Sync. Nothing you
 generate can write to the server - a bad file at worst fails validation with
 a listed reason.
 
-8b. LINKING (WHEN GIVEN THE DRIVER-PARAMETERS DUMP)
----------------------------------------------------
+8b. LINKING (WHEN GIVEN THE PLANT PARAMETER SOURCE)
+----------------------------------------------------
 Normally the human links objects by hand after insert. But if the user
-attaches an iw_gen_driver_parameters .sql (a phpMyAdmin dump of the
-plant's driver/parameter table - the real ones are several MB, ~7000
-rows) and asks you to link a panel json, you can fill the links in.
+attaches a plant parameter workbook, CSV, JSON or iw_gen_driver_parameters
+.sql dump and asks you to link, relink, validate links or diagnose failed
+values, the parameter source is MANDATORY binding evidence for every row it
+covers. A supplied panel JSON remains rank 1 for geometry, object coverage,
+ordering and background. Its EXISTING BINDINGS ARE NOT rank-1 proof merely
+because they are present or because the task says "link out".
+
+LINKED STATE IS NOT BINDING VALIDITY. These terms are normative and are not
+interchangeable:
+
+- STRUCTURALLY LINKED: linked is "true" and driver_id is non-empty; unit_id
+  may be present. This proves only that the document carries binding-looking
+  fields. The host sets linked from a literal-string test and never resolves
+  the driver against the plant.
+- SOURCE-RESOLVED: driver_id resolves EXACTLY and uniquely in the supplied
+  plant-specific parameter source, and the resolved row's unit_id equals the
+  object's unit_id. The resolved alias/description is recorded beside both
+  original values.
+- SEMANTICALLY VERIFIED: source-resolved, and controller identity, exact
+  alias/parameter meaning, object role, access and datatype where supplied
+  all agree. This is the binding appropriate to what the visual object
+  represents.
+- UNRESOLVED: any intended link that lacks exact and semantic proof. It may
+  still be structurally linked and look plausible.
+- FULLY LINKED and LINKED-READY may be used only when EVERY intended link is
+  semantically verified. PRODUCTION-READY additionally requires every
+  panel-type geometry, visual, import and operational QA gate; binding
+  verification alone never proves it.
+
+THE INVARIANT. A binding is verified only when its driver_id is copied
+verbatim from, or resolves exactly and uniquely in, the plant-specific
+parameter source and the resolved unit/controller identity and parameter
+meaning agree with the object's intended role. linked "true", a non-empty
+driver_id, a familiar suffix, a matching plant prefix or a syntactically
+valid identifier is NEVER sufficient evidence by itself.
+
+TASK SCOPE. A layout-only correction preserves binding fields exactly. A
+link, relink, link-validation or failed-value task puts those fields IN
+SCOPE: check them against the parameter source. "Preserve and patch" means
+preserve geometry and document structure; it never means preserve a binding
+already shown to be unverified.
 
 THE DUMP: one row per parameter. Columns that matter:
 - driver_id: the FULL parameter string (e.g. NNNNN_OJEXHAUST_OJ_1_1_0_4_19).
@@ -1578,29 +1616,76 @@ THE DUMP: one row per parameter. Columns that matter:
 - att: r = read-only, rw = writable (setpoint boxes want rw rows).
 - eng_unit (degC, %, Pa, m3/h) and format_extra (enum value map).
 
-PROCEDURE per linkable object:
-1. Find the unit: unit_name matches the panel's system (360.001 ->
-   "360.001 Ventilasjon") - fixes unit_id and the driver prefix.
-2. Find the row whose alias_text matches the object's signal (use the
-   object's alias_text/tag_text: "RT401 °C" -> "Actual supply
-   temperature", fan JV401 -> "Supply motor ON/OFF", QD401 -> supply
-   filter, alarm bell -> the component's alarm row).
-3. Write into the object: driver_id = the row's driver_id (verbatim),
-   unit_id = the row's unit_id, linked = "true", alias_text = the row's
-   alias_text (production panels show the selector's "Menu,-Description"
-   form, e.g. "Most Used,-Actual supply air temperature" - the plain row
-   text is accepted).
-4. Touch NOTHING else: id stays literally "driver_id", link_name,
-   link_tag, unit_ref, positions and obj_id are unchanged.
-5. Dummies never link: pipes, connectors, arrows, labels, headers,
-   stripes, banner, spjeldliste text cells.
-6. Only link matches you are CONFIDENT about. Leave uncertain objects
-   unlinked and tell the user which ones you skipped - a wrong link
-   is worse than no link. "Unlinked" is panel-type specific: on a
-   normal panel it is driver_id "driver_id", linked "false"; in a
-   LIST PANEL (7c) it is driver_id "" with the row template's own
-   linked "true" left alone - never write the "driver_id"
-   placeholder into a list cell (conflict L-13, section 7c).
+DETERMINISTIC PROCEDURE, per intended link:
+1. Look up the PANEL driver_id exactly in the supplied source. No match is
+   unresolved. More than one source row is ambiguous and unresolved.
+2. Verify the resolved unit_id exactly. Then verify controller identity.
+3. Compare panel alias_text with the resolved alias or parameter
+   description EXACTLY. If only capitalization, punctuation, whitespace,
+   abbreviation or encoding differs, record BOTH strings and classify the
+   difference separately; never call it exact and never normalize the panel
+   value before using it as evidence.
+4. Verify parameter meaning against the object's role. Verify datatype and
+   access where the source supplies them: display values are readings,
+   alarm/cooling/defrost symbols are the matching states, and writable
+   setpoint objects require a suitable writable row.
+5. Record SEMANTICALLY VERIFIED only when steps 1-4 all agree. Fuzzy search
+   may list candidates only; it can never authorize one. A candidate becomes
+   usable only through one unique source row plus compatible identity and
+   role.
+6. For a new or repaired binding, copy that row's driver_id and unit_id
+   VERBATIM and use its exact alias/description as required by the panel
+   contract. Touch no geometry or object identity.
+
+NEVER construct or transform a driver_id. Never edit a plant prefix,
+controller number, group digit or suffix. Never convert AK2 to AK3,
+001 to 000 or any similar pattern by inference. Never approve by suffix
+similarity. A source mismatch stays unresolved unless a higher-ranked
+authoritative parameter source proves the exact row.
+
+BINDING VERIFICATION MATRIX. Before any completed-linking claim, build one
+row per intended object with these columns:
+
+  object identity | object role | obj_id | controller identity |
+  panel driver_id | parameter-source driver_id | driver_id exact match |
+  panel unit_id | resolved unit_id | unit_id exact match |
+  panel alias_text | resolved alias or parameter description |
+  alias match status | access | datatype | verification state |
+  reason if unresolved | evidence source
+
+For Oversikt, group by controller cluster and role (alarm, value, cooling,
+defrost), NEVER by array index or spatial proximity. Object names such as
+object_10000 are preserved as source identity; they are not renumbered to
+make comparison easier.
+
+HARD STOP. If any intended link is not source-resolved and semantically
+verified, do not call the panel finished, fully linked, linked-ready,
+production-ready or verified. Deliver instead: the verified subset; the
+matrix; source coverage (verified and unresolved counts separately); exact
+unresolved objects/controllers/roles; and the evidence required to finish.
+Do not silently change unresolved bindings.
+
+PARTIAL-FILE POLICY. On an existing production export, retain every
+unresolved object's original binding fields byte-for-byte and label them
+UNVERIFIED in the external report. The panel schema has no verification
+field, so never invent one inside the JSON. This retained field is not
+approved and the file is not safe to describe as completed. Converting
+objects to an unlinked template is a separate, explicit user request with a
+panel-type-specific host contract; never do it as an automatic fallback.
+
+Dummies never link: pipes, connectors, arrows, labels, headers, stripes,
+banner and spjeldliste text cells. Host literals are not semantic evidence:
+id stays "driver_id"; link_name stays the host's established value for the
+object; linked, link_tag and unit_ref are transport/state metadata. Never put
+a destination panel into link_name; navigation targets use their own
+object-specific host contract.
+
+Run parameter-aware Oversikt validation when applicable:
+
+  python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
+
+Use --json-report for the complete matrix. O-S09 checks structural field
+consistency only. O-B00..O-B08 own source and semantic binding evidence.
 
 RELINKING A WHOLE MACHINE PICTURE (Maskin). A common request: "link out
 all the parameters on this machine picture with this dump and give me
@@ -1653,9 +1738,11 @@ EVERY PANEL
    spelling preserved exactly (numberV3_filter_with_diff_press,
    V3_58px_fan_left_nrm, number_v3_cooler_2-way are all correct)
 [] every object has ALL 17 template fields; driver_id = "driver_id" and
-   linked = "false" - UNLESS the user supplied the parameters dump for
+   linked = "false" - UNLESS the user supplied the parameter source for
    linking (8b): then linked objects carry the dump's driver_id +
-   unit_id + linked "true", and id STILL says "driver_id"
+   unit_id + linked "true", and id STILL says "driver_id"; a link task
+   also carries the 8b matrix, exact source coverage and zero unresolved
+   intended links before any completed-linking claim
 [] positions inside the canvas - EXCEPT list panels (7c) and
    room-control tables, whose content legitimately runs past
    panel_width / panel_height and is scrolled by the plant view.
@@ -1764,7 +1851,10 @@ OVERSIKT (7b) ONLY
    value objects, proved with --patch-scope value-position
 [] background embedded and preserved (image_data, converted,
    org_image_name, image_name, dimensions); no panel.image_svg_trace
-[] bindings preserved through every layout edit - no blanked driver_id
+[] bindings preserved through every layout edit; for link/relink/validation
+   work, every intended role resolves through the 8b matrix and
+   validate-oversikt-panel.py --parameters, with zero unresolved before
+   "fully linked" or "linked-ready"
 [] z-index 110 for the value box, 375 for the circular symbols
 [] production anomalies preserved and reported, not tidied - including
    an off-center production position

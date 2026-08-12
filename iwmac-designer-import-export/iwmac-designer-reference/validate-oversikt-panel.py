@@ -3,9 +3,13 @@
 
 Usage:
     python validate-oversikt-panel.py --check PANEL.json [--profile TEMPLATE-10113]
+    python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx
     python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json
     python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
                                       --patch-scope value-position
+    python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json \
+                                      --patch-scope binding-repair \
+                                      --parameters PARAMETERS.xlsx
     python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json
     python validate-oversikt-panel.py PANEL.json            # same as --check
     python validate-oversikt-panel.py ... --json-report
@@ -14,10 +18,11 @@ The rules are data, not code: everything panel-type- and template-specific is
 read from ``documentation-rules.json`` (``panel_types.oversikt`` and
 ``profiles.TEMPLATE-10113``, both generated from the committed fixture by
 build-oversikt-rules.py) so the contract, the fixture and this validator cannot
-drift apart. Four namespaces:
+drift apart. Five namespaces:
 
     O-S*   structure. Runs on every panel.
     O-G*   Oversikt relationships - clusters, coverage, placement. Every panel.
+    O-B*   source-backed bindings. Runs only with --parameters.
     O-P*   template geometry. Runs only when --profile is given.
     O-C*   source versus candidate. Runs only in --compare.
 
@@ -35,12 +40,14 @@ it, or on the wall. It can only say a cluster is coherent, inside the canvas
 and not on a suspicious lattice. Placement against artwork is a visual question
 and OVERSIKT-QA-CHECKLIST.md stage C answers it with a native-size render.
 
-It also cannot detect an invented binding from the candidate alone: a driver id
-naming a parameter the controller does not expose is well-formed, and only the
-source or the plant knows better. --compare catches it as an added object and
-as changed cluster coverage; --profile catches it for a known template as an
-unfamiliar parameter tail. A clean run here is a necessary condition, never a
-sufficient one, and must never be reported as "the panel is correct".
+It also cannot detect an invented binding from the candidate alone: ``linked``
+is host state, not binding validity. With ``--parameters`` it resolves every
+intended cluster-role object by exact ``driver_id``, verifies ``unit_id`` and
+records alias, access, datatype and role evidence. Fuzzy matching never
+authorizes a binding. Where the source has no deterministic role evidence, the
+matrix reports that semantic check as unresolved rather than pretending it was
+automated. A clean run here is a necessary condition, never a sufficient one,
+and must never be reported as "the panel is correct".
 
 Exit status is 0 when no finding has severity ``error``, 1 otherwise. This file
 performs no network access and reads nothing outside the reference directory.
@@ -55,6 +62,8 @@ import math
 import pathlib
 import re
 import sys
+
+import parameter_source
 
 ROOT = pathlib.Path(__file__).resolve().parent
 RULES_PATH = ROOT / "documentation-rules.json"
@@ -332,10 +341,12 @@ def check_bindings(objects, findings):
             findings.append(Finding("O-S09", "error",
                                     f"{obj.get('name')} carries a driver_id but linked is "
                                     f"{obj.get('linked')!r}; the host sets linked whenever "
-                                    f"driver_id is not the literal placeholder"))
+                                    f"driver_id is not the literal placeholder. This is "
+                                    f"structural state only, not binding validity"))
         if not bound and linked == "true":
             findings.append(Finding("O-S09", "warning",
-                                    f"{obj.get('name')} is marked linked with no driver_id"))
+                                    f"{obj.get('name')} is marked linked with no driver_id; "
+                                    f"host state only, not binding validity"))
 
 
 def check_palette(objects, palette, findings):
@@ -888,6 +899,355 @@ def coverage_rows(clusters, roles_order):
 
 
 # --------------------------------------------------------------------------
+# O-B: source-backed binding verification
+#
+# ``linked`` and a non-empty driver_id are deliberately absent from the proof
+# chain below. They establish only that the document LOOKS bound. Verification
+# begins with an exact, unique source lookup and never rewrites either side.
+# --------------------------------------------------------------------------
+
+STATUS_ROLES = {"alarm", "cooling", "defrost"}
+
+
+def _comparison_text(value):
+    """Normalization used only to classify a difference, never to authorize it."""
+    return re.sub(r"[\W_]+", " ", str(value or ""), flags=re.UNICODE).casefold().strip()
+
+
+def alias_match_status(panel_alias, source_alias):
+    if panel_alias == source_alias:
+        return "exact"
+    if _comparison_text(panel_alias) == _comparison_text(source_alias):
+        return "normalized-only"
+    return "different"
+
+
+def _role_from_parameter(row):
+    """Return (role, evidence) only where the source makes it deterministic."""
+    explicit = str(row.get("object_role") or "").strip().casefold()
+    aliases = {
+        "temperature": "value",
+        "display": "value",
+        "display value": "value",
+        "high temperature alarm": "alarm",
+        "high-temperature alarm": "alarm",
+        "cool": "cooling",
+        "cooling output": "cooling",
+        "defrost output": "defrost",
+    }
+    if explicit:
+        return aliases.get(explicit, explicit), "parameter source object_role"
+
+    alias = _comparison_text(
+        row.get("alias_text") or row.get("parameter_description")
+    )
+    if not alias:
+        return None, "parameter source carries no role or description"
+    alarm_token = "alarm" in alias
+    defrost_token = "defrost" in alias or bool(re.search(r"\bdef\s+relay\b", alias))
+    cooling_token = "cooling" in alias or "comp1 llsv" in alias
+    if alarm_token and (defrost_token or cooling_token):
+        return None, "parameter description contains multiple role tokens"
+    if alarm_token:
+        return "alarm", "deterministic alarm token in parameter description"
+    if defrost_token:
+        return "defrost", "deterministic defrost token in parameter description"
+    if cooling_token:
+        return "cooling", "deterministic cooling token in parameter description"
+    if any(token in alias for token in (
+            "display air", "actual temperature", "regulation temperature")):
+        return "value", "deterministic value token in parameter description"
+    return None, "parameter meaning requires manual controller/role review"
+
+
+def _type_access_compatibility(row, role):
+    """Return (True/False/None, reason); None means source lacks enough data."""
+    application = str(row.get("application") or "").casefold()
+    parameter_type = str(row.get("parameter_type") or "").casefold()
+    hardware = str(row.get("hardware_datatype") or "").casefold()
+    access = str(row.get("att") or "").casefold()
+    supplied = any((application, parameter_type, hardware, access))
+    if not supplied:
+        return None, "parameter source provides no access/datatype evidence"
+
+    boolean = any(token in " ".join((application, parameter_type, hardware))
+                  for token in ("digital", "boolean", "enum", "bit"))
+    numeric = any(token in " ".join((application, parameter_type, hardware))
+                  for token in ("analog", "float", "double", "integer", "numeric"))
+    if role in STATUS_ROLES and numeric and not boolean:
+        return False, f"{role} object resolves to numeric/analog data"
+    if role == "value" and boolean and not numeric:
+        return False, "value object resolves to boolean/digital data"
+    if role in STATUS_ROLES and access and access not in ("r", "read", "ro", "readonly"):
+        return False, f"{role} object resolves to access {row.get('att')!r}, expected read"
+    return True, "access/datatype compatible where supplied"
+
+
+def verify_bindings(envelope, objects, roles, source, findings):
+    """Build the binding matrix and emit O-B findings.
+
+    Intended links are Oversikt cluster-role objects. Labels, navigation and
+    other non-cluster objects are not silently treated as driver parameters.
+    Rows are grouped by controller and role, never by array index.
+    """
+    parameter_rows = source.get("rows") or []
+    malformed = source.get("malformed") or 0
+    label = source.get("label") or "parameter source"
+    if malformed:
+        findings.append(Finding(
+            "O-B01", "warning",
+            f"{malformed} malformed parameter row(s) were skipped in {label}"
+        ))
+
+    by_driver = collections.defaultdict(list)
+    for row in parameter_rows:
+        driver_id = str(row.get("driver_id") or "")
+        if driver_id:
+            by_driver[driver_id].append(row)
+    ambiguous = {driver: rows for driver, rows in by_driver.items() if len(rows) != 1}
+    if ambiguous:
+        sample = ", ".join(
+            f"{driver} x{len(rows)}" for driver, rows in list(sorted(ambiguous.items()))[:6]
+        )
+        findings.append(Finding(
+            "O-B02", "error",
+            f"{len(ambiguous)} duplicate or ambiguous driver_id value(s) in {label}: "
+            f"{sample}. One exact identifier must resolve to one source row"
+        ))
+
+    role_order = {role: index for index, role in enumerate(
+        ["alarm", "value", "cooling", "defrost"]
+    )}
+    intended = [obj for obj in objects if roles.get(obj.get("obj_id"))]
+    intended.sort(key=lambda obj: (
+        str(controller_key(obj)[0] or ""),
+        role_order.get(roles.get(obj.get("obj_id")), 99),
+        str(obj.get("name") or ""),
+    ))
+
+    matrix = []
+    missing, unit_bad, alias_bad, role_bad, semantic_manual = [], [], [], [], []
+    structurally_linked_count = 0
+    source_resolved_count = 0
+    semantically_verified_count = 0
+
+    for obj in intended:
+        role = roles.get(obj.get("obj_id"))
+        controller = str(controller_key(obj)[0] or "")
+        panel_driver = str(obj.get("driver_id") or "")
+        panel_unit = str(obj.get("unit_id") or "")
+        panel_alias = str(obj.get("alias_text") or "")
+        structurally_linked = (
+            str(obj.get("linked") or "").casefold() == "true"
+            and panel_driver not in ("", "driver_id")
+        )
+        if structurally_linked:
+            structurally_linked_count += 1
+
+        matches = by_driver.get(panel_driver, [])
+        exact_driver = bool(panel_driver and panel_driver != "driver_id"
+                            and len(matches) == 1)
+        row = matches[0] if exact_driver else None
+        resolved_unit = str((row or {}).get("unit_id") or "")
+        resolved_alias = str(
+            (row or {}).get("alias_text")
+            or (row or {}).get("parameter_description")
+            or ""
+        )
+        unit_exact = bool(row is not None and panel_unit == resolved_unit)
+        alias_status = (
+            alias_match_status(panel_alias, resolved_alias)
+            if row is not None else "unresolved"
+        )
+        source_resolved = bool(exact_driver and unit_exact)
+        if source_resolved:
+            source_resolved_count += 1
+
+        reasons = []
+        verification_state = "unresolved"
+        role_evidence = ""
+        role_compatible = None
+        type_compatible = None
+        type_reason = ""
+
+        if panel_driver in ("", "driver_id"):
+            reasons.append("no exact panel driver_id to resolve")
+            missing.append(f"{controller}/{role}/{obj.get('name')}: no driver_id")
+        elif len(matches) == 0:
+            reasons.append("panel driver_id is absent from the parameter source")
+            missing.append(
+                f"{controller}/{role}/{obj.get('name')}: {panel_driver}"
+            )
+        elif len(matches) > 1:
+            reasons.append("driver_id resolves to multiple source rows")
+        elif not unit_exact:
+            reasons.append(
+                f"panel unit_id {panel_unit!r} != source unit_id {resolved_unit!r}"
+            )
+            unit_bad.append(
+                f"{controller}/{role}/{obj.get('name')}: "
+                f"{panel_unit!r} != {resolved_unit!r}"
+            )
+        else:
+            verification_state = "source-resolved"
+            if alias_status != "exact":
+                reasons.append(
+                    f"alias comparison is {alias_status}: "
+                    f"{panel_alias!r} != {resolved_alias!r}"
+                )
+                alias_bad.append(
+                    f"{controller}/{role}/{obj.get('name')}: "
+                    f"{alias_status} {panel_alias!r} != {resolved_alias!r}"
+                )
+
+            resolved_role, role_evidence = _role_from_parameter(row)
+            if resolved_role is None:
+                role_compatible = None
+                reasons.append(role_evidence)
+                semantic_manual.append(
+                    f"{controller}/{role}/{obj.get('name')}: {role_evidence}"
+                )
+            elif resolved_role != role:
+                role_compatible = False
+                reasons.append(
+                    f"object role {role!r} != source role {resolved_role!r}"
+                )
+                role_bad.append(
+                    f"{controller}/{obj.get('name')}: {role} != {resolved_role}"
+                )
+            else:
+                role_compatible = True
+
+            type_compatible, type_reason = _type_access_compatibility(row, role)
+            if type_compatible is False:
+                reasons.append(type_reason)
+                role_bad.append(
+                    f"{controller}/{role}/{obj.get('name')}: {type_reason}"
+                )
+            elif type_compatible is None:
+                reasons.append(type_reason)
+                semantic_manual.append(
+                    f"{controller}/{role}/{obj.get('name')}: {type_reason}"
+                )
+
+            if (alias_status == "exact" and role_compatible is True
+                    and type_compatible is True):
+                verification_state = "semantically verified"
+                reasons = []
+                semantically_verified_count += 1
+
+        matrix.append({
+            "object_identity": obj.get("name"),
+            "controller_role_key": f"{controller}::{role}",
+            "object_role": role,
+            "obj_id": obj.get("obj_id"),
+            "controller_identity": controller,
+            "panel_driver_id": panel_driver,
+            "parameter_source_driver_id": str((row or {}).get("driver_id") or ""),
+            "driver_id_exact_match": exact_driver,
+            "panel_unit_id": panel_unit,
+            "resolved_unit_id": resolved_unit,
+            "unit_id_exact_match": unit_exact,
+            "panel_alias_text": panel_alias,
+            "resolved_alias_or_parameter_description": resolved_alias,
+            "alias_match_status": alias_status,
+            "access": str((row or {}).get("att") or ""),
+            "datatype": " / ".join(
+                value for value in (
+                    str((row or {}).get("parameter_type") or ""),
+                    str((row or {}).get("hardware_datatype") or ""),
+                    str((row or {}).get("application") or ""),
+                ) if value
+            ),
+            "structurally_linked": structurally_linked,
+            "verification_state": verification_state,
+            "reason_if_unresolved": "; ".join(dict.fromkeys(reasons)),
+            "evidence_source": label,
+            "role_evidence": role_evidence,
+            "access_datatype_evidence": type_reason,
+        })
+
+    if missing:
+        findings.append(Finding(
+            "O-B03", "error",
+            f"{len(missing)} intended binding(s) have no exact driver_id row in "
+            f"{label}: {'; '.join(missing[:8])}"
+            f"{' ...' if len(missing) > 8 else ''}. Prefix, family, controller "
+            "index and suffix similarity are not evidence"
+        ))
+    if unit_bad:
+        findings.append(Finding(
+            "O-B04", "error",
+            f"{len(unit_bad)} exact driver_id match(es) disagree on unit_id: "
+            f"{'; '.join(unit_bad[:8])}{' ...' if len(unit_bad) > 8 else ''}"
+        ))
+    if alias_bad:
+        findings.append(Finding(
+            "O-B05", "error",
+            f"{len(alias_bad)} source-resolved binding(s) do not have an exact "
+            f"alias match: {'; '.join(alias_bad[:6])}"
+            f"{' ...' if len(alias_bad) > 6 else ''}. Capitalization, punctuation, "
+            "whitespace, abbreviation and encoding differences are recorded, "
+            "never silently normalized into an exact match"
+        ))
+    if role_bad:
+        findings.append(Finding(
+            "O-B06", "error",
+            f"{len(role_bad)} source-resolved binding(s) conflict with object role, "
+            f"access or datatype: {'; '.join(role_bad[:6])}"
+            f"{' ...' if len(role_bad) > 6 else ''}"
+        ))
+    if semantic_manual:
+        findings.append(Finding(
+            "O-B07", "warning",
+            f"{len(semantic_manual)} source-resolved binding(s) still require manual "
+            f"semantic verification: {'; '.join(semantic_manual[:6])}"
+            f"{' ...' if len(semantic_manual) > 6 else ''}. Fuzzy candidates never "
+            "authorize a binding"
+        ))
+
+    unresolved = len(intended) - semantically_verified_count
+    summary = {
+        "parameter_source": label,
+        "parameter_rows": len(parameter_rows),
+        "intended": len(intended),
+        "structurally_linked": structurally_linked_count,
+        "source_resolved": source_resolved_count,
+        "semantically_verified": semantically_verified_count,
+        "unresolved": unresolved,
+        "source_coverage": f"{source_resolved_count}/{len(intended)}",
+        "status": "semantically verified" if unresolved == 0 else "unresolved",
+        "completed_linking_claim_allowed": unresolved == 0,
+    }
+    findings.append(Finding(
+        "O-B00", "info",
+        f"binding evidence from {label}: intended {len(intended)}, structurally "
+        f"linked {structurally_linked_count}, source-resolved "
+        f"{source_resolved_count}, semantically verified "
+        f"{semantically_verified_count}, unresolved {unresolved}"
+    ))
+    if unresolved:
+        claim = envelope.get("linking_status")
+        suffix = f" The document claims {claim!r}." if claim else ""
+        findings.append(Finding(
+            "O-B08", "error",
+            f"{unresolved} of {len(intended)} intended binding(s) remain unresolved."
+            f"{suffix} This panel must not be called finished, linked-ready, fully "
+            "linked, production-ready or verified. Deliver the verified subset, "
+            "this matrix, source coverage, unresolved controllers/roles and the "
+            "evidence needed to complete them"
+        ))
+    else:
+        findings.append(Finding(
+            "O-B08", "info",
+            f"all {len(intended)} intended bindings are semantically verified "
+            f"against {label}. This proves binding evidence only; geometry, artwork "
+            "and operational readiness retain their own QA gates"
+        ))
+    return matrix, summary
+
+
+# --------------------------------------------------------------------------
 # O-P: template profile
 # --------------------------------------------------------------------------
 
@@ -1057,6 +1417,15 @@ def match_objects(source, candidate):
 # outside its permitted set is a scope escape: real, reported, and not excused
 # by the patch having been otherwise correct.
 PATCH_SCOPES = {
+    "binding-repair": {
+        "roles": ("alarm", "value", "cooling", "defrost"),
+        "fields": ("driver_id", "unit_id", "alias_text", "linked"),
+        "description": (
+            "a source-backed binding repair on cluster-role objects only: "
+            "driver_id/unit_id/alias_text/linked may change; host metadata, "
+            "name, obj_id, geometry, zIndex and array order may not"
+        ),
+    },
     "value-position": {
         "roles": ("value",),
         "fields": ("posLeft", "posTop"),
@@ -1149,6 +1518,12 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
 
     src_clusters = inventory(src_objects, roles)
     cand_clusters = inventory(cand_objects, roles)
+    binding_repair_verified = (
+        patch_scope == "binding-repair"
+        and any(f.rule == "O-B08" and f.severity == "info" for f in findings)
+        and not any(f.rule.startswith("O-B") and f.severity == "error"
+                    for f in findings)
+    )
 
     pairs, dropped, added = match_objects(src_objects, cand_objects)
 
@@ -1176,39 +1551,69 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
     cand_keys = {k for k in cand_clusters if k is not None}
     missing = sorted(src_keys - cand_keys)
     if missing:
-        findings.append(Finding("O-C03", "error",
-                                f"{len(missing)} of {len(src_keys)} source controller "
-                                f"cluster(s) are missing entirely: {', '.join(missing)}"))
+        findings.append(Finding(
+            "O-C03",
+            "info" if binding_repair_verified else "error",
+            f"{len(missing)} of {len(src_keys)} source controller cluster(s) "
+            f"are missing entirely: {', '.join(missing)}"
+            + (" - controller identity replacement is permitted only because "
+               "the candidate is fully source-backed under binding-repair"
+               if binding_repair_verified else "")
+        ))
     appeared = sorted(cand_keys - src_keys)
     if appeared:
-        findings.append(Finding("O-C04", "error",
-                                f"{len(appeared)} controller(s) exist only in the candidate: "
-                                f"{', '.join(appeared)}. Either a binding was invented or an "
-                                f"identity was rewritten"))
+        findings.append(Finding(
+            "O-C04",
+            "info" if binding_repair_verified else "error",
+            f"{len(appeared)} controller(s) exist only in the candidate: "
+            f"{', '.join(appeared)}. "
+            + ("Their candidate bindings are source-backed and the declared "
+               "binding-repair scope preserved object geometry"
+               if binding_repair_verified
+               else "Either a binding was invented or an identity was rewritten")
+        ))
 
     for key in sorted(src_keys & cand_keys):
         src_entry, cand_entry = src_clusters[key], cand_clusters[key]
         want = {r: n for r, n in src_entry["roles"].items() if n}
         have = {r: n for r, n in cand_entry["roles"].items() if n}
         if want != have:
-            findings.append(Finding("O-C05", "error",
-                                    f"controller {key} covered {want} in the source and "
-                                    f"{have} in the candidate. Coverage is derived from the "
-                                    f"source, never assumed - four objects per controller is "
-                                    f"not a rule"))
+            findings.append(Finding(
+                "O-C05",
+                "info" if binding_repair_verified else "error",
+                f"controller {key} covered {want} in the source and {have} in "
+                f"the candidate. "
+                + ("Role reassignment is source-backed under binding-repair; "
+                   "object-level coverage and geometry remain protected by "
+                   "O-C16"
+                   if binding_repair_verified
+                   else "Coverage is derived from the source, never assumed - "
+                        "four objects per controller is not a rule")
+            ))
         if src_entry["bbox"] and cand_entry["bbox"]:
             dx = cand_entry["bbox"][0] - src_entry["bbox"][0]
             dy = cand_entry["bbox"][1] - src_entry["bbox"][1]
             distance = max(abs(dx), abs(dy))
             if distance > CLUSTER_NUDGE_LIMIT:
-                findings.append(Finding("O-C06", "error",
-                                        f"controller {key} moved by ({dx:+d},{dy:+d}) from "
-                                        f"{src_entry['bbox'][:2]} to {cand_entry['bbox'][:2]}. "
-                                        f"It is no longer on the case the source placed it "
-                                        f"on; the source geometry is the template"))
+                findings.append(Finding(
+                    "O-C06",
+                    "info" if binding_repair_verified else "error",
+                    f"controller {key} moved by ({dx:+d},{dy:+d}) from "
+                    f"{src_entry['bbox'][:2]} to {cand_entry['bbox'][:2]}. "
+                    + ("No object coordinate changed under O-C16; this bbox "
+                       "change comes from source-backed controller regrouping"
+                       if binding_repair_verified
+                       else "It is no longer on the case the source placed it "
+                            "on; the source geometry is the template")
+                ))
             elif distance:
-                findings.append(Finding("O-C06", "warning",
-                                        f"controller {key} nudged by ({dx:+d},{dy:+d})"))
+                findings.append(Finding(
+                    "O-C06",
+                    "info" if binding_repair_verified else "warning",
+                    f"controller {key} nudged by ({dx:+d},{dy:+d})"
+                    + (" through source-backed regrouping; no coordinate "
+                       "changed under O-C16" if binding_repair_verified else "")
+                ))
 
     stripped, relinked, retyped, resized, rez = [], [], [], [], []
     for src_obj, cand_obj in pairs:
@@ -1240,10 +1645,15 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
                                 f"never blanks a real binding - the objects still render and "
                                 f"read nothing, and the JSON looks fine"))
     if relinked:
-        findings.append(Finding("O-C08", "error",
-                                f"{len(relinked)} binding change(s): "
-                                f"{'; '.join(relinked[:6])}"
-                                f"{' ...' if len(relinked) > 6 else ''}"))
+        findings.append(Finding(
+            "O-C08",
+            "info" if binding_repair_verified else "error",
+            f"{len(relinked)} binding change(s): "
+            f"{'; '.join(relinked[:6])}"
+            f"{' ...' if len(relinked) > 6 else ''}"
+            + (" - permitted by declared binding-repair scope; exact source "
+               "verification passed" if binding_repair_verified else "")
+        ))
     if retyped:
         findings.append(Finding("O-C09", "error",
                                 f"{len(retyped)} object(s) changed type: "
@@ -1257,9 +1667,15 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
                                 f"{len(rez)} object(s) changed zIndex: "
                                 f"{', '.join(map(str, rez[:10]))}"))
 
-    src_order = [o.get("name") for o in src_objects]
-    cand_order = [c.get("name") for _, c in pairs]
-    if len(pairs) == len(src_objects) and cand_order != src_order:
+    candidate_index = {id(obj): index for index, obj in enumerate(cand_objects)}
+    partner_by_source = {id(src): cand for src, cand in pairs}
+    paired_indices = [
+        candidate_index[id(partner_by_source[id(src)])]
+        for src in src_objects
+        if id(src) in partner_by_source
+    ]
+    if (len(paired_indices) == len(src_objects)
+            and paired_indices != sorted(paired_indices)):
         findings.append(Finding("O-C12", "warning",
                                 "array order changed. The host renames objects from the "
                                 "canvas child index on insert, so order is how a reviewer "
@@ -1304,7 +1720,8 @@ def compare(source_doc, candidate_doc, rules, findings, patch_scope=None):
 # --------------------------------------------------------------------------
 
 def validate(document, profile_name=None, rules=None, palette=None,
-             footprints=None, tolerance=CENTER_TOLERANCE):
+             footprints=None, tolerance=CENTER_TOLERANCE, parameters=None,
+             binding_output=None):
     rules = load_rules() if rules is None else rules
     palette = load_palette() if palette is None else palette
     findings = []
@@ -1345,6 +1762,13 @@ def validate(document, profile_name=None, rules=None, palette=None,
     check_grid(clusters, findings)
     check_overlaps(objects, roles, findings)
 
+    if parameters is not None:
+        matrix, summary = verify_bindings(
+            envelope, objects, roles, parameters, findings
+        )
+        if binding_output is not None:
+            binding_output.update({"matrix": matrix, "summary": summary})
+
     if footprints is None:
         note_centering_unproven(findings)
     else:
@@ -1379,11 +1803,20 @@ def validate(document, profile_name=None, rules=None, palette=None,
 
 
 def validate_pair(source_doc, candidate_doc, profile_name=None, rules=None, palette=None,
-                  footprints=None, tolerance=CENTER_TOLERANCE, patch_scope=None):
+                  footprints=None, tolerance=CENTER_TOLERANCE, patch_scope=None,
+                  parameters=None, binding_output=None):
     rules = load_rules() if rules is None else rules
     palette = load_palette() if palette is None else palette
-    findings = validate(candidate_doc, profile_name, rules=rules, palette=palette,
-                        footprints=footprints, tolerance=tolerance)
+    findings = validate(
+        candidate_doc,
+        profile_name,
+        rules=rules,
+        palette=palette,
+        footprints=footprints,
+        tolerance=tolerance,
+        parameters=parameters,
+        binding_output=binding_output,
+    )
     compare(source_doc, candidate_doc, rules, findings, patch_scope=patch_scope)
     return findings
 
@@ -1414,6 +1847,44 @@ def print_matrix(rows, roles_order, out=sys.stdout):
         out.write(line)
 
 
+def print_binding_matrix(rows, out=sys.stdout):
+    if not rows:
+        return
+    out.write("\nBINDING VERIFICATION MATRIX (grouped by controller and role)\n")
+    out.write(
+        "controller".ljust(18)
+        + "role".ljust(10)
+        + "object".ljust(15)
+        + "driver".ljust(9)
+        + "unit".ljust(9)
+        + "alias".ljust(17)
+        + "state\n"
+    )
+    for row in rows:
+        out.write(
+            str(row["controller_identity"]).ljust(18)
+            + str(row["object_role"]).ljust(10)
+            + str(row["object_identity"]).ljust(15)
+            + ("exact" if row["driver_id_exact_match"] else "NO").ljust(9)
+            + ("exact" if row["unit_id_exact_match"] else "NO").ljust(9)
+            + str(row["alias_match_status"]).ljust(17)
+            + str(row["verification_state"])
+            + "\n"
+        )
+        if row["reason_if_unresolved"]:
+            out.write(f"  reason: {row['reason_if_unresolved']}\n")
+        out.write(
+            f"  panel driver={row['panel_driver_id']!r} "
+            f"source driver={row['parameter_source_driver_id']!r}; "
+            f"panel unit={row['panel_unit_id']!r} "
+            f"source unit={row['resolved_unit_id']!r}; "
+            f"panel alias={row['panel_alias_text']!r} "
+            f"source alias={row['resolved_alias_or_parameter_description']!r}; "
+            f"access={row['access']!r}; datatype={row['datatype']!r}; "
+            f"evidence={row['evidence_source']}\n"
+        )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("panel", nargs="?", type=pathlib.Path,
@@ -1432,6 +1903,18 @@ def main(argv=None):
                              "The ONLY way to check that value objects are centred on the "
                              "cases they monitor; without it that question is reported as "
                              "unproven")
+    parser.add_argument(
+        "--parameters",
+        type=pathlib.Path,
+        default=None,
+        metavar="PARAMETERS.{xlsx,csv,json,sql}",
+        help=(
+            "plant-specific parameter evidence. Resolves every intended Oversikt "
+            "link by exact driver_id and verifies unit, alias, role, access and "
+            "datatype where supplied (O-B*). Optional for geometry-only work; "
+            "mandatory evidence for a linking claim"
+        ),
+    )
     parser.add_argument("--center-tolerance", type=int, default=CENTER_TOLERANCE,
                         metavar="PX",
                         help=f"pixels of slack allowed on a centred value object "
@@ -1454,6 +1937,15 @@ def main(argv=None):
 
     rules, palette = load_rules(), load_palette()
     footprints = load_footprints(args.footprints) if args.footprints else None
+    parameters = None
+    parameter_error = None
+    if args.parameters:
+        try:
+            parameters = parameter_source.load_parameter_source(args.parameters)
+        except (OSError, UnicodeError, json.JSONDecodeError,
+                parameter_source.ParameterSourceError) as exc:
+            parameter_error = str(exc)
+    binding_output = {}
     if args.compare:
         source_path, candidate_path = args.compare
         source_doc = json.loads(source_path.read_text(encoding="utf-8"))
@@ -1461,13 +1953,23 @@ def main(argv=None):
         findings = validate_pair(source_doc, candidate_doc, args.profile,
                                  rules=rules, palette=palette, footprints=footprints,
                                  tolerance=args.center_tolerance,
-                                 patch_scope=args.patch_scope)
+                                 patch_scope=args.patch_scope,
+                                 parameters=parameters,
+                                 binding_output=binding_output)
         subject, matrix_doc = candidate_path, candidate_doc
     else:
         matrix_doc = json.loads(target.read_text(encoding="utf-8"))
         findings = validate(matrix_doc, args.profile, rules=rules, palette=palette,
-                            footprints=footprints, tolerance=args.center_tolerance)
+                            footprints=footprints, tolerance=args.center_tolerance,
+                            parameters=parameters,
+                            binding_output=binding_output)
         subject = target
+    if parameter_error:
+        findings.append(Finding(
+            "O-B01", "error",
+            f"parameter source could not be read: {parameter_error}. No binding "
+            "validity claim can be made"
+        ))
 
     errors = [f for f in findings if f.severity == "error"]
     warnings = [f for f in findings if f.severity == "warning"]
@@ -1475,7 +1977,7 @@ def main(argv=None):
     if args.as_json:
         oversikt = (rules.get("panel_types") or {}).get("oversikt") or {}
         roles_order = [e["role"] for e in (oversikt.get("cluster") or {}).get("roles", [])]
-        print(json.dumps({
+        report = {
             "subject": str(subject),
             "mode": "compare" if args.compare else "check",
             "profile": args.profile,
@@ -1484,7 +1986,26 @@ def main(argv=None):
             "findings": [f.as_dict() for f in findings],
             "coverage_matrix": coverage_matrix(matrix_doc, rules),
             "roles": roles_order,
-        }, ensure_ascii=False, indent=2))
+        }
+        if args.parameters:
+            intended_count = len([
+                obj for obj in objects_of(envelope_of(matrix_doc))
+                if role_map(oversikt).get(obj.get("obj_id"))
+            ])
+            report["parameter_source"] = str(args.parameters)
+            report["binding_summary"] = binding_output.get("summary", {
+                "parameter_source": pathlib.Path(args.parameters).name,
+                "intended": intended_count,
+                "structurally_linked": 0,
+                "source_resolved": 0,
+                "semantically_verified": 0,
+                "unresolved": intended_count,
+                "source_coverage": f"0/{intended_count}",
+                "status": "unresolved",
+                "completed_linking_claim_allowed": False,
+            })
+            report["binding_verification_matrix"] = binding_output.get("matrix", [])
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for finding in findings:
             print(finding)
@@ -1492,10 +2013,23 @@ def main(argv=None):
             oversikt = (rules.get("panel_types") or {}).get("oversikt") or {}
             roles_order = [e["role"] for e in (oversikt.get("cluster") or {}).get("roles", [])]
             print_matrix(coverage_matrix(matrix_doc, rules), roles_order)
+            print_binding_matrix(binding_output.get("matrix", []))
         print(f"\n{len(errors)} error(s), {len(warnings)} warning(s) in {subject}")
-        print("Structural only. It cannot see the artwork, so it cannot tell whether a "
+        print("The validator cannot see the artwork, so it cannot tell whether a "
               "cluster sits on its case - render at native size and check stage C of "
               "OVERSIKT-QA-CHECKLIST.md.")
+        if args.parameters:
+            summary = binding_output.get("summary")
+            if summary:
+                print(
+                    f"Binding evidence: {summary['source_resolved']}/"
+                    f"{summary['intended']} source-resolved; "
+                    f"{summary['semantically_verified']}/"
+                    f"{summary['intended']} semantically verified; "
+                    f"{summary['unresolved']} unresolved."
+                )
+            else:
+                print("Binding evidence unresolved: parameter source could not be read.")
         if footprints is None:
             print("Value centering was NOT checked. A panel JSON carries no equipment-box "
                   "boundaries; supply measured ones with --footprints FOOTPRINTS.json.")

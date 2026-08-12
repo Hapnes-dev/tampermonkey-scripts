@@ -1,0 +1,103 @@
+{
+  "_note": "SANITIZED SYNTHETIC PARAMETER SOURCE. No live plant, customer, controller, or personal data. Driver identifiers use the repository's NNNNN mask and exist only to reproduce the 2026-08-12 link-verification failure shape.",
+  "format": "iwmac-parameter-source",
+  "version": 1,
+  "rows": [
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_11_1_0_7",
+      "unit_id": "000:011",
+      "unit_name": "Fixture case controller 11",
+      "alias_text": "High temperature alarm",
+      "application": "Digital IO",
+      "parameter_type": "boolean",
+      "hardware_datatype": "HW_ENUM",
+      "att": "r",
+      "eng_unit": "",
+      "object_role": "alarm"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_11_1_0_56",
+      "unit_id": "000:011",
+      "unit_name": "Fixture case controller 11",
+      "alias_text": "u56 Display air",
+      "application": "Analog values",
+      "parameter_type": "float",
+      "hardware_datatype": "HW_FLOAT",
+      "att": "r",
+      "eng_unit": "°C",
+      "object_role": "value"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_11_1_0_58",
+      "unit_id": "000:011",
+      "unit_name": "Fixture case controller 11",
+      "alias_text": "u58 Comp1/LLSV",
+      "application": "Digital IO",
+      "parameter_type": "boolean",
+      "hardware_datatype": "HW_ENUM",
+      "att": "r",
+      "eng_unit": "",
+      "object_role": "cooling"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_11_1_0_60",
+      "unit_id": "000:011",
+      "unit_name": "Fixture case controller 11",
+      "alias_text": "u60 Def. relay",
+      "application": "Digital IO",
+      "parameter_type": "boolean",
+      "hardware_datatype": "HW_ENUM",
+      "att": "r",
+      "eng_unit": "",
+      "object_role": "defrost"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_12_1_0_7",
+      "unit_id": "000:012",
+      "unit_name": "Fixture case controller 12",
+      "alias_text": "High temperature alarm",
+      "application": "Digital IO",
+      "parameter_type": "boolean",
+      "hardware_datatype": "HW_ENUM",
+      "att": "r",
+      "eng_unit": "",
+      "object_role": "alarm"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_12_1_0_56",
+      "unit_id": "000:012",
+      "unit_name": "Fixture case controller 12",
+      "alias_text": "u56 Display air",
+      "application": "Analog values",
+      "parameter_type": "float",
+      "hardware_datatype": "HW_FLOAT",
+      "att": "r",
+      "eng_unit": "°C",
+      "object_role": "value"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_12_1_0_58",
+      "unit_id": "000:012",
+      "unit_name": "Fixture case controller 12",
+      "alias_text": "u58 Comp1/LLSV",
+      "application": "Digital IO",
+      "parameter_type": "boolean",
+      "hardware_datatype": "HW_ENUM",
+      "att": "r",
+      "eng_unit": "",
+      "object_role": "cooling"
+    },
+    {
+      "driver_id": "NNNNN_AK3_AKC_0_12_1_0_60",
+      "unit_id": "000:012",
+      "unit_name": "Fixture case controller 12",
+      "alias_text": "u60 Def. relay",
+      "application": "Digital IO",
+      "parameter_type": "boolean",
+      "hardware_datatype": "HW_ENUM",
+      "att": "r",
+      "eng_unit": "",
+      "object_role": "defrost"
+    }
+  ]
+}

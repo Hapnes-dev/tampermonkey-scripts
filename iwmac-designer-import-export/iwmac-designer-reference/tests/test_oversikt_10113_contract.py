@@ -190,11 +190,55 @@ class RulesGeneratorTest(unittest.TestCase):
         positioned against. All survive with a scope; none is merged into a
         mean."""
         conflicts = {c["id"]: c for c in OVERSIKT["conflicts"]}
-        self.assertEqual({"OV-C1", "OV-C2", "OV-C3", "OV-C4"}, set(conflicts))
+        self.assertEqual(
+            {"OV-C1", "OV-C2", "OV-C3", "OV-C4", "OV-C5"},
+            set(conflicts),
+        )
         for conflict in conflicts.values():
             self.assertTrue(conflict["claim_a"]["scope"])
             self.assertTrue(conflict["claim_b"]["scope"])
             self.assertTrue(conflict["resolution"])
+
+    def test_global_binding_states_and_invariant_are_machine_readable(self):
+        binding = RULES["global_invariants"]["binding_verification"]
+        self.assertEqual(
+            {
+                "structurally_linked",
+                "source_resolved",
+                "semantically_verified",
+                "unresolved",
+                "fully_linked_or_linked_ready",
+                "production_ready",
+            },
+            set(binding["terms"]),
+        )
+        self.assertIn("never sufficient evidence", binding["invariant"])
+        self.assertTrue(any("AK2 to AK3" in rule
+                            for rule in binding["prohibited"]))
+        self.assertIn("UNVERIFIED", binding["partial_file_policy"])
+
+    def test_oversikt_binding_matrix_and_rule_ids_are_complete(self):
+        binding = OVERSIKT["binding_verification"]
+        self.assertEqual(
+            [
+                "object identity", "object role", "obj_id",
+                "controller identity", "panel driver_id",
+                "parameter-source driver_id", "driver_id exact match",
+                "panel unit_id", "resolved unit_id", "unit_id exact match",
+                "panel alias_text",
+                "resolved alias or parameter description",
+                "alias match status", "access", "datatype",
+                "verification state", "reason if unresolved",
+                "evidence source",
+            ],
+            RULES["global_invariants"]["binding_verification"]["matrix_fields"],
+        )
+        self.assertEqual(
+            {f"O-B{i:02d}" for i in range(9)},
+            set(binding["rule_ids"]),
+        )
+        self.assertEqual(["alarm", "value", "cooling", "defrost"],
+                         binding["intended_roles"])
 
 
 class StructureRuleTest(unittest.TestCase):

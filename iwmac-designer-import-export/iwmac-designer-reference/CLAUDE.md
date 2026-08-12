@@ -124,14 +124,17 @@ Two registries, different roles:
 Attribute census from a live 54-object panel (`reference_data/page-anatomy-probe.json`): every object carries `class, onmousedown, onmouseover, ondblclick, onclick, style, iw_no_scale, iw_type, picture, type, driver_info, driver_id, unit_id, unit_ref, alias_text, id, name, pheight, pleft, ptop, pwidth, link_tag, link_name, sub_group, linked, settag, object_type, hastag, only_tag_text, data-title, iw_name`; `tag_text` only on labeled objects.
 
 **Binding fields:**
-- `driver_id` — **plant-prefixed**: `10113_AK3_AKC_0_11_1_0_7` = `<plant_id>_<driver>_<address path>`. This is what makes cross-plant panel copying detectable/rebindable by prefix rewrite (same scheme as the VV Designer's sketch driver ids). BACnet exception: `bacnet_ualarm_v1/v2` objects get `.Ualarm` appended on save (`bacCheck`, container_tool.js:2053-2056) and stripped on load (`checkDriver`, V3scripts.js:470-480).
-- `unit_id` — `000:011` bus:address, **not** plant-prefixed. `unit_ref` — optional stable ref.
-- `link_tag` — the IWMAC system tag (`AREA_SYSTEM_UNIT_SIGNAL_COMPONENT_SUBJECT`, §13). Non-value sentinels: `""`, `"link_tag"`, `"undefined"`, `"NA"`.
+- `driver_id` — **plant-prefixed**: `10113_AK3_AKC_0_11_1_0_7` = `<plant_id>_<driver>_<address path>`. This is what makes cross-plant panel copying detectable/rebindable by prefix rewrite (same scheme as the VV Designer's sketch driver ids). BACnet exception: `bacnet_ualarm_v1/v2` objects get `.Ualarm` appended on save (`bacCheck`, container_tool.js:2053-2056) and stripped on load (`checkDriver`, V3scripts.js:470-480). It proves only which string the document carries; the host does not resolve it during load.
+- `unit_id` — `000:011` bus:address, **not** plant-prefixed. It is the controller locator written by the parameter selector, but the document can carry a stale or foreign value. `unit_ref` is an optional stable reference; empty is common.
+- `id` — the literal DOM id `"driver_id"` on linkable objects. It identifies the host object kind. It is **not** a parameter id and proves no binding.
+- `link_tag` — the IWMAC system tag (`AREA_SYSTEM_UNIT_SIGNAL_COMPONENT_SUBJECT`, §13). Non-value sentinels: `""`, `"link_tag"`, `"undefined"`, `"NA"`. It is tag metadata, not evidence that `driver_id` resolves.
 - `sub_group` — parameter instance ("A", "B", …); sentinel `"sub_group"` normalizes to `"A"` in three separate places (container_tool.js:1961, :2459, save_xml.htm:377).
-- `link_name` — `iw_param_name`; created as the literal `"link_name"` (iw_graph_designer_js.php:289).
+- `link_name` — `iw_param_name`; created as the literal `"link_name"` (iw_graph_designer_js.php:289). Production parameter objects routinely retain that literal. It is **not** a destination-panel field; navigation objects store their target by their own object contract (the observed sub-page objects use numeric `driver_id`, §17b).
+- `linked` — document/host state. `linked="true"` is set whenever `driver_id !== "driver_id"` on load (V3scripts.js:514), **including an empty `driver_id`**. It proves neither source resolution nor semantic correctness.
+- `alias_text` — selector text/parameter description. It is human and semantic evidence only when compared with the plant-specific parameter source; the host does not validate it against `driver_id`.
 - `tag_text` — free display label, only serialized when `controls[type].hasTag`.
 
-`linked="true"` is set whenever `driver_id !== "driver_id"` on load (V3scripts.js:514) — the designer does **not** validate driver ids against the plant at load time; a foreign id renders fine and simply never gets live values.
+**Host-state boundary:** the Designer does **not** validate `driver_id`, `unit_id`, `alias_text`, `linked`, `link_tag`, `link_name` or `unit_ref` against the plant when loading a document. A foreign, stale or syntactically plausible id renders fine and simply reads no value — or the wrong value if it happens to resolve elsewhere. `linked="true"` plus a non-empty `driver_id` is therefore only **structurally linked**, never proof of binding validity. Source-backed and semantic verification are workflow rules owned by [AI-BRIEFING.txt](AI-BRIEFING.txt) §8b; this section owns only what the host fields do.
 
 ## 5b. Input layer: drag / move / resize (`iw_library_v3/iw_move_object.js` + `iw_util.js`)
 

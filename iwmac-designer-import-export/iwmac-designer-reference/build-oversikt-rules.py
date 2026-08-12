@@ -7,7 +7,8 @@
 Owns four regions of documentation-rules.json and nothing else:
 
     scope_tags.OVERSIKT, scope_tags.TEMPLATE-10113
-    evidence.E14 .. evidence.E17, evidence.E22
+    evidence.E14 .. evidence.E17, evidence.E22, evidence.E27
+    global_invariants.binding_verification
     panel_types.oversikt
     profiles.TEMPLATE-10113
 
@@ -113,6 +114,141 @@ IDENTITY = {
         "group by proximity when identity fields are present - proximity merges "
         "two adjacent cases into one cluster and splits one case whose symbols "
         "were nudged apart."
+    ),
+}
+
+GLOBAL_BINDING_VERIFICATION = {
+    "owner_document": "AI-BRIEFING.txt section 8b",
+    "scope": "GLOBAL",
+    "invariant": (
+        "A binding is verified only when its driver_id is copied verbatim from, "
+        "or resolves exactly and uniquely in, the plant-specific parameter "
+        "source and the resolved unit/controller identity and parameter meaning "
+        "agree with the object's intended role. linked=true, a non-empty "
+        "driver_id, a familiar suffix, a matching plant prefix or a "
+        "syntactically valid identifier is never sufficient evidence."
+    ),
+    "terms": {
+        "structurally_linked": (
+            "linked is true and driver_id is non-empty. Proves only that the "
+            "document carries binding-looking fields."
+        ),
+        "source_resolved": (
+            "driver_id resolves exactly and uniquely in the supplied parameter "
+            "source and resolved unit_id equals panel unit_id."
+        ),
+        "semantically_verified": (
+            "source-resolved plus controller identity, exact alias/parameter "
+            "meaning, object role, access and datatype where supplied agree."
+        ),
+        "unresolved": "any intended link lacking exact and semantic proof",
+        "fully_linked_or_linked_ready": (
+            "legal claim only when every intended link is semantically verified"
+        ),
+        "production_ready": (
+            "requires binding verification plus every geometry, visual, import "
+            "and operational QA gate"
+        ),
+    },
+    "task_scope": {
+        "layout_only": "preserve binding fields byte-for-byte",
+        "link_relink_validate_or_failed_values": (
+            "bindings are in scope; preserve geometry/document structure and "
+            "verify or patch bindings from the supplied parameter source"
+        ),
+        "preserve_and_patch": (
+            "never means preserve a known-unverified link during a binding task"
+        ),
+    },
+    "matching_order": [
+        "exact unique driver_id lookup",
+        "exact unit_id",
+        "controller identity",
+        "exact alias/parameter meaning versus object role",
+        "access and datatype where supplied",
+        "semantically verified or unresolved verdict",
+    ],
+    "prohibited": [
+        "constructing or transforming driver_id",
+        "editing plant prefixes, controller numbers, group digits or suffixes",
+        "inferring AK2 to AK3 or 001 to 000",
+        "authorizing by suffix similarity",
+        "normalizing alias_text before using it as exact-match evidence",
+        "using fuzzy matching as authorization rather than candidate discovery",
+    ],
+    "matrix_fields": [
+        "object identity", "object role", "obj_id", "controller identity",
+        "panel driver_id", "parameter-source driver_id",
+        "driver_id exact match", "panel unit_id", "resolved unit_id",
+        "unit_id exact match", "panel alias_text",
+        "resolved alias or parameter description", "alias match status",
+        "access", "datatype", "verification state", "reason if unresolved",
+        "evidence source",
+    ],
+    "hard_stop": (
+        "If any intended link is unresolved, do not call the panel finished, "
+        "fully linked, linked-ready, production-ready or verified. Deliver the "
+        "verified subset, matrix, source coverage, exact unresolved objects/"
+        "controllers/roles and evidence required to complete them."
+    ),
+    "partial_file_policy": (
+        "For an existing production export, retain unresolved original binding "
+        "fields byte-for-byte and label them UNVERIFIED in the external report. "
+        "The panel schema has no verification field; never invent one. "
+        "Converting to an unlinked state is a separate explicit task."
+    ),
+    "host_fields": {
+        "id": "literal driver_id identifies a linkable host object; no semantic proof",
+        "link_name": (
+            "host literal/transport field; never populate it with a destination "
+            "panel unless that object type's host contract says so"
+        ),
+        "linked": "host state derived from a literal driver_id comparison; no validity proof",
+        "link_tag": "optional tag metadata; no validity proof",
+        "unit_ref": "optional stable reference; no validity proof",
+    },
+}
+
+OVERSIKT_BINDING_VERIFICATION = {
+    "scope": "OVERSIKT",
+    "evidence": ["E27"],
+    "intended_roles": [role for role, _ in CLUSTER_ROLES],
+    "grouping": (
+        "controller cluster and object role, never array index or spatial "
+        "proximity. Preserve source object names, including object_10000 forms."
+    ),
+    "validator": "validate-oversikt-panel.py --parameters PARAMETERS.xlsx",
+    "repair_command": (
+        "python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json "
+        "--patch-scope binding-repair --parameters PARAMETERS.xlsx"
+    ),
+    "binding_repair_fields": {
+        "may_change_when_source_proven": [
+            "driver_id", "unit_id", "alias_text", "linked",
+        ],
+        "must_not_change": [
+            "link_name", "link_tag", "sub_group", "unit_ref", "name", "obj_id",
+            "posLeft", "posTop", "posWidth", "posHeight", "zIndex",
+            "array order",
+        ],
+    },
+    "parameter_formats": ["xlsx", "csv", "json", "sql"],
+    "rule_ids": {
+        "O-B00": "binding evidence totals",
+        "O-B01": "parameter source unreadable or malformed",
+        "O-B02": "duplicate/ambiguous source driver_id",
+        "O-B03": "panel driver_id absent from source",
+        "O-B04": "resolved unit_id mismatch",
+        "O-B05": "alias not exact",
+        "O-B06": "role/access/datatype conflict",
+        "O-B07": "manual semantic verification still required",
+        "O-B08": "completed-linking hard stop",
+    },
+    "automation_limit": (
+        "Exact resolution and unit identity are deterministic. Role semantics "
+        "are automated only when explicit or conservatively classifiable source "
+        "evidence exists; otherwise O-B07 keeps the row unresolved for human "
+        "review. No fuzzy candidate becomes verified automatically."
     ),
 }
 
@@ -533,13 +669,24 @@ PRESERVE_AND_PATCH = {
         "object-coverage template. Start from that document, change the named "
         "objects, and emit the whole thing."
     ),
+    "task_scope": {
+        "layout_or_geometry": (
+            "binding fields remain byte-identical and out of scope"
+        ),
+        "link_relink_validate_or_failed_values": (
+            "binding fields are in scope. Preserve geometry, object identity, "
+            "names, order and background; patch only source-proven link fields"
+        ),
+        "conflict": "OV-C5",
+    },
     "preserve_verbatim": [
         "panel.image_data, panel.converted, panel.org_image_name, "
         "panel.image_name and the canvas dimensions",
         "every object's obj_id, posLeft, posTop, posWidth, posHeight and zIndex "
         "unless that object is the one being moved",
         "driver_id, unit_id, link_name, link_tag, sub_group, unit_ref and "
-        "alias_text on every object",
+        "alias_text on every object for layout/geometry work; for declared "
+        "binding-repair, only source-proven link fields may change",
         "array order, and the object_N names that follow it",
         "known anomalies - an inverted cluster, a tag_text of a single space, "
         "a duplicated alias. Report them; do not tidy them.",
@@ -592,6 +739,11 @@ PRESERVE_AND_PATCH = {
         "validator": "O-C16",
         "command": ("python validate-oversikt-panel.py --compare SOURCE.json "
                     "CANDIDATE.json --patch-scope value-position"),
+        "binding_repair_command": (
+            "python validate-oversikt-panel.py --compare SOURCE.json "
+            "CANDIDATE.json --patch-scope binding-repair --parameters "
+            "PARAMETERS.xlsx"
+        ),
     },
     "never_blank_a_binding": (
         "A layout correction never clears driver_id, unit_id or alias_text. "
@@ -683,6 +835,9 @@ VERIFICATION = {
         "position touched, the image resolution it was measured at, scale_x "
         "and scale_y, and the value position each footprint implies",
         "the exact validator commands run and their output",
+        "for linking work: the full binding matrix, parameter source, exact "
+        "source coverage and separate structurally-linked, source-resolved, "
+        "semantically-verified and unresolved counts",
         "the render inspected, and what was checked in it - at controller-"
         "level crops when the question is whether a value box is centered",
         "every evidence gap, stated as a gap",
@@ -693,6 +848,9 @@ VERIFICATION = {
         "python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json "
         "--patch-scope value-position",
         "python validate-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json",
+        "python validate-oversikt-panel.py PANEL.json --parameters PARAMETERS.xlsx",
+        "python validate-oversikt-panel.py --compare SOURCE.json CANDIDATE.json "
+        "--patch-scope binding-repair --parameters PARAMETERS.xlsx",
         "python build-oversikt-footprints.py PANEL.json -o FOOTPRINTS.json",
         "python render-oversikt-panel.py PANEL.json --footprints FOOTPRINTS.json",
     ],
@@ -802,6 +960,30 @@ CONFLICTS = [
             "panel uses relative to the value object. The two claims describe "
             "the same finished geometry from opposite ends and must never be "
             "averaged into 'center the cluster'."
+        ),
+    },
+    {
+        "id": "OV-C5",
+        "topic": "preserve bindings versus repair bindings",
+        "claim_a": {
+            "source": "preserve-and-patch geometry procedure",
+            "text": "preserve driver_id, unit_id and alias_text byte-for-byte",
+            "scope": "layout and geometry corrections",
+        },
+        "claim_b": {
+            "source": "AI-BRIEFING.txt section 8b and E27",
+            "text": (
+                "existing linked=true and non-empty ids are not validity; "
+                "resolve and repair them from the parameter source"
+            ),
+            "scope": "link, relink, link-validation and failed-value tasks",
+        },
+        "resolution": (
+            "Task scope, not compromise. Claim A remains mandatory for layout "
+            "work. Claim B is mandatory for binding work: preserve geometry "
+            "and document structure, verify each intended link, and change "
+            "only source-proven binding fields. Preserve-and-patch never means "
+            "preserve known-unverified links."
         ),
     },
 ]
@@ -925,6 +1107,40 @@ EVIDENCE = {
             "store plan and were not recorded as a committed measurement; the "
             "panel alone does not contain them."
         ),
+    },
+    "E27": {
+        "file": (
+            "2026-08-12 Oversikt link-verification incident (live panel and "
+            "parameter workbook NOT committed); sanitized miniature in "
+            "tests/fixtures/oversikt-linking/"
+        ),
+        "committed": "sanitized fixture only",
+        "why_live_files_not_committed": (
+            "They carry a live plant, customer-specific parameters and "
+            "unsanitized driver identifiers."
+        ),
+        "sanitized": True,
+        "scope": "GLOBAL linking behavior; Oversikt worked example",
+        "role": (
+            "184 objects all carried linked=true plus non-empty driver_id and "
+            "unit_id; only 120 driver ids resolved exactly in the supplied "
+            "workbook. Manual replacement changed 52 objects across 13 "
+            "controllers and four roles, including AK2 to AK3_AKC, 001: to "
+            "000:, parameter tails and aliases. Proves linked state is not "
+            "binding validity."
+        ),
+        "fixture": {
+            "base": "tests/fixtures/oversikt-linking/verified-panel.json",
+            "parameters": "tests/fixtures/oversikt-linking/parameters.json",
+            "negative_manifest": (
+                "tests/fixtures/oversikt-linking/incident-cases.json"
+            ),
+            "shape": "8 objects / 2 controllers; partial case resolves 6 of 8",
+            "privacy": (
+                "synthetic NNNNN driver ids, fixture controller names, no "
+                "customer or personal data"
+            ),
+        },
     },
 }
 
@@ -1161,6 +1377,7 @@ def panel_type_block(document):
         "object_vocabulary": measured_vocabulary(objects),
         "geometry_terms": GEOMETRY_TERMS,
         "cluster": dict(CLUSTER_RULES, anatomy_E15=measured_anatomy(clusters)),
+        "binding_verification": OVERSIKT_BINDING_VERIFICATION,
         "value_centering": VALUE_CENTERING,
         "footprint_evidence": FOOTPRINT_EVIDENCE,
         "coverage": COVERAGE,
@@ -1232,6 +1449,9 @@ def apply(rules):
     document = load_fixture()
     rules.setdefault("scope_tags", {}).update(SCOPE_TAGS)
     rules.setdefault("evidence", {}).update(EVIDENCE)
+    rules.setdefault("global_invariants", {})[
+        "binding_verification"
+    ] = GLOBAL_BINDING_VERIFICATION
     rules.setdefault("panel_types", {})["oversikt"] = panel_type_block(document)
     rules.setdefault("profiles", {})[PROFILE] = profile_block(document)
     return rules
