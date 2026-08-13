@@ -29,15 +29,18 @@ These paths stay in the public repository:
 - every `*.js` at any depth, including `*.user.js` and helpers (`validate-vv-sketch.js`, `audit-docs-vs-corpus.js`, `tests/*.js`, `survey-batch.js`, `ventilation-survey-20.js`)
 - `.gitignore` (git hygiene, not documentation)
 
-No other files remain on public `main`. **Not** public: `sql-equipment-import/templates/` (`.sql` + `manifest.json`), every `CLAUDE.md` at any depth, `docs/`, Python validators, schemas, fixtures except their `README.md`, and the rest of `iwmac-designer-reference/` and `vv-designer-reference/`.
+No other files remain on public `main`. **Not** public: `sql-equipment-import/templates/` (`.sql` + `manifest.json`), every `CLAUDE.md` and `CLAUDE-*.md` at any depth (root, each script folder, nested reference folders), `docs/`, Python validators, schemas, fixtures except their `README.md`, and the rest of `iwmac-designer-reference/` and `vv-designer-reference/`.
+
+`CLAUDE.md` is not a `README.md`. It never stays on public `main`. After the split, a public script folder such as `ak3-autoscan/` contains only `AK3-Autoscan.user.js` and `README.md`.
 
 SQL templates stay private. That is an accepted break of the phpMyAdmin template fetch until a later userscript change.
 
-Tracked `CLAUDE.md` files that must all be private (16):
+Tracked Claude instruction files that must all be private (17):
 
 - `CLAUDE.md`
 - `ak3-autoscan/CLAUDE.md`
 - `iwmac-designer-import-export/iwmac-designer-reference/CLAUDE.md`
+- `iwmac-designer-import-export/iwmac-designer-reference/CLAUDE-REVISED.md`
 - `iwmac-topology-copy/CLAUDE.md`
 - `logic-designer-copy-paste/CLAUDE.md`
 - `logic-designer-import-export/CLAUDE.md`
@@ -52,7 +55,7 @@ Tracked `CLAUDE.md` files that must all be private (16):
 - `supermarket-superuser/CLAUDE.md`
 - `younium-order-to-quote/CLAUDE.md`
 
-A later `CLAUDE.md` anywhere in the tree follows the same rule: private documents repo only. Never add one back onto public `main`.
+A later `CLAUDE.md` or `CLAUDE-*.md` anywhere in the tree follows the same rule: private documents repo only. Never add one back onto public `main`. There is no `iwmac-designer-import-export/CLAUDE.md` at the script-folder level today; if one is added later it is private too.
 
 Do not bump any userscript `@version`. This is a docs-and-layout change, not a script change.
 
@@ -113,12 +116,12 @@ Do not add new `CLAUDE.md`, contracts, Python, SQL templates, or non-README Mark
 3. Copy the current docs tree (everything not on the public allowlist) into the new repo and push `main` to both private remotes.
 4. In the public scripts repo, delete the moved files, edit root `README.md` as specified, commit, and push `origin` and `gitlab`.
 5. Confirm Tampermonkey raw URLs still 200 for every `.user.js`. Expect `sql-equipment-import/templates/manifest.json` to 404.
-6. Confirm public `main` lists only `README.md`, `*.js`, and `.gitignore`. `git ls-files '**/CLAUDE.md' 'CLAUDE.md'` on public `main` is empty. `sql-equipment-import/templates/` is absent. Helper `.js` remain.
+6. Confirm public `main` lists only `README.md`, `*.js`, and `.gitignore`. `git ls-files '*CLAUDE*'` on public `main` is empty. `sql-equipment-import/templates/` is absent. Helper `.js` remain.
 
 ## Success criteria
 
 - Colleagues with Tampermonkey still receive updates from the same `@updateURL` / `@downloadURL` values.
-- Public GitHub `main` shows `README.md`, `*.js` (userscripts and helpers), and `.gitignore` only. Zero `CLAUDE.md`. Zero SQL templates.
+- Public GitHub `main` shows `README.md`, `*.js` (userscripts and helpers), and `.gitignore` only. Zero `CLAUDE.md`. Zero `CLAUDE-*.md`. Zero SQL templates.
 - The private clone still has the full documentation and validator kit at the same relative paths.
 - No userscript `@version` change. No force-push. No history rewrite.
 
