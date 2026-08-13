@@ -65,4 +65,4 @@ The header carries `@updateURL` + `@downloadURL` pointing at this file's raw URL
 
 ## Reference: how the VV Designer works
 
-[`../logic-designer-import-export/vv-designer-reference/`](../logic-designer-import-export/vv-designer-reference/) is a deep-dive on the host editor this script drives — its block library, type/connection rules, save format, server API, and the exact in-memory object model (`paper.elements`, pin `connected_to` shapes, `element_pointer`, the mutation API) that this script's host-adapter relies on. [`CLAUDE.md`](../logic-designer-import-export/vv-designer-reference/CLAUDE.md) is the write-up; `reference_data/` holds captured samples (save-format, a real sketch + compiled preview, config/library payloads, formula-grammar probes, dropdown enums). *(The reference lived in this folder until 2026-07-09; it now sits with the Import/Export script, whose validator and AI files build on it.)*
+The host-editor deep-dive lives in the private `tampermonkey-scripts-documents` repository.

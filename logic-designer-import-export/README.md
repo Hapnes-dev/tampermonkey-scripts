@@ -76,7 +76,7 @@ Import also accepts a **bare** `paper.save()` document (`{mode, blocks, connecti
 
 ## Validating AI-generated files
 
-If an AI (ChatGPT, Copilot, Claude, …) generated the sketch JSON, **validate it before importing** — two real AI attempts failed on invented schemas/field names (documented in [`vv-designer-reference/CLAUDE.md`](vv-designer-reference/CLAUDE.md) §20.8/§20.9):
+If an AI (ChatGPT, Copilot, Claude, …) generated the sketch JSON, **validate it before importing** — two real AI attempts failed on invented schemas/field names:
 
 ```
 node validate-vv-sketch.js my-sketch.json
@@ -84,15 +84,11 @@ node validate-vv-sketch.js my-sketch.json
 
 [`validate-vv-sketch.js`](validate-vv-sketch.js) checks the full host contract — envelope shape, `sketch.mode`, integer block ids, the 71-type allowlist (with a correction map: `EQUAL`→`LIKE`, `WRITEOUTUNIT`→`WRITETOUNIT`, …), verbatim `func` values, per-type `data` payloads (`driver_ids[]`, `initial_value`, `pri a|b|c`, …), `source`/`target` + numeric `put` connections, and one-wire-per-input. Exit 0 = importable; exit 1 = numbered errors, each with the exact fix. It also nudges quality: every block should carry `properties.documentation` (`{"alias_text":"","value":"1–2 sentences"}` — shown under right-click → *Edit documentation* in the designer), so AI-generated sketches import self-documenting; wrong shapes (a bare string) are errors, missing ones a single aggregate warning.
 
-[`vv-sketch.schema.json`](vv-sketch.schema.json) is a JSON Schema (draft-07) for editor/CI validation of the same format (the validator is stricter — prefer it).
+[`audit-docs-vs-corpus.js`](audit-docs-vs-corpus.js) is the maintenance counterpart: it encodes invariants the reference documentation claims and checks them against a locally scraped production corpus (`node audit-docs-vs-corpus.js <corpus-dir>`). (Corpora contain customer data and stay out of the repo.)
 
-[`vv-designer-reference/BLOCKS.md`](vv-designer-reference/BLOCKS.md) is the complete host-extracted palette reference: all 71 built-in blocks with the toolbox **?**-help verbatim (description + per-pin documentation), the toolbox-name ↔ `type`-key ↔ `func` ↔ mode table, and exact pin contracts — generated from a live `paper.blocks` dump.
+**Using Claude Code?** The validator is also packaged as an installable **agent skill**, [`vv-designer-sketch`](https://github.com/Hapnes-dev/agent-skills/tree/main/vv-designer-sketch), so it loads automatically when you describe plant logic and validates its own output before answering.
 
-[`audit-docs-vs-corpus.js`](audit-docs-vs-corpus.js) is the maintenance counterpart: it encodes 20 invariants the reference documentation claims and checks them against a locally scraped production corpus (`node audit-docs-vs-corpus.js <corpus-dir>`). As of 2026-07-12 all 20 hold across 3,618 production sketches from ~668 plants — re-run after host updates to catch contract drift. (Corpora contain customer data and stay out of the repo.)
-
-**Using Claude Code?** Everything below — briefing, examples, block reference and the validator — is packaged as an installable **agent skill**, [`vv-designer-sketch`](https://github.com/Hapnes-dev/agent-skills/tree/main/vv-designer-sketch), so it loads automatically when you describe plant logic and validates its own output before answering. The files here stay the source of truth; the skill syncs from them. The manual route below still works and remains the reference for other AIs.
-
-When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`vv-designer-reference/AI-BRIEFING.txt`](vv-designer-reference/AI-BRIEFING.txt) (self-contained: concepts, contract, block allowlist, recipes, a validated example, all documented AI failures as prohibitions, and a self-check) **together with [`AI-EXAMPLES.txt`](vv-designer-reference/AI-EXAMPLES.txt)** — nine complete sketches (seven verbatim production exports, an authored exercise-window template, and a syntax-verified **process-mode** definition) plus notable block shapes, all in the accepted format (the briefing says what's allowed; the examples show what correct output looks like). Alternatively paste §20.0 + §20.4 + §20.6 from the reference doc. **Both modes are covered**: a normal request produces a FUNCTION sketch; asking for a reusable *process* produces a PROCESS-mode definition (§20.11 / EXAMPLE 9) — an AI given these docs can generate either, and you paste it straight into the matching designer mode.
+Internal documentation (briefing, examples, block palette, schema) lives in the private `tampermonkey-scripts-documents` repository.
 
 ## How it integrates
 
@@ -103,4 +99,4 @@ When *prompting* an AI to generate a sketch, hand it the ready-made briefing [`v
 - No server calls, no network grants — saving/deploying stays in the host's hands.
 - Internals exposed as `window.__LDIO` for console debugging; pure helpers are `module.exports`-ed for Node unit tests.
 
-See [`vv-designer-reference/`](vv-designer-reference/) (in this folder) for the full VV Designer internals reference these integrations are built on.
+Internal documentation lives in the private `tampermonkey-scripts-documents` repository.

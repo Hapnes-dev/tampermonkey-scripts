@@ -1,9 +1,0 @@
-{
-  "_note": "SYNTHETIC GLOBAL DEMO - scope GLOBAL. Worked allowed-values map for VISUAL-CORRECTNESS-CONTRACT.md SS5 and validate-visual-correctness.py --allowed-values. The format mirrors the dominant production form measured in E23 (an 'Allowed values' parameter-workbook column: 'value = label' pairs separated by '/'). The map below selects the demo panel's state-text value by alias_text; its longest label, 'Communication error' (19 chars), is why that object is 140 px wide. Match specs may use obj_id, name, alias_text, alias_text_contains or driver_id_contains.",
-  "maps": [
-    {
-      "match": { "alias_text": "Unit status" },
-      "values": "0 = Alarm / 1 = OK / 2 = Communication error"
-    }
-  ]
-}
