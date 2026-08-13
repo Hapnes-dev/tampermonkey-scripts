@@ -2,9 +2,9 @@
 
 ## Goal
 
-Keep Tampermonkey auto-update working for colleagues from the existing public GitHub `main` URLs, while moving internal documentation, agent briefs, validators, tests, and reference kits out of the current `main` tree into a private repository.
+Keep Tampermonkey auto-update working for colleagues from the existing public GitHub `main` URLs, while moving internal documentation, agent briefs, Python validators, tests, SQL templates, and reference kits out of the current `main` tree into a private repository.
 
-GitHub cannot make a single file public inside a private repository. A README-only public surface would break `@updateURL` / `@downloadURL`. The public repo therefore keeps installable `*.user.js` files and `README.md` files colleagues use to find them. Everything else leaves current `main`.
+GitHub cannot make a single file public inside a private repository. A README-only public surface would break `@updateURL` / `@downloadURL`. The public repo therefore keeps every tracked `.js` file (installable userscripts and helper scripts) and every `README.md`. Everything else leaves current `main`.
 
 ## Approach
 
@@ -25,14 +25,13 @@ If GitLab project creation fails because the local credential has git scope only
 
 These paths stay in the public repository:
 
-- root `README.md`
-- each script-folder `README.md` that sits next to a `*.user.js` (install/AI-reference next to the script, not fixture READMEs under `tests/`)
-- every `*.user.js` in its current folder
+- every `README.md` at any depth (root, each script folder, and the two fixture READMEs under `iwmac-designer-import-export/iwmac-designer-reference/tests/fixtures/`)
+- every `*.js` at any depth, including `*.user.js` and helpers (`validate-vv-sketch.js`, `audit-docs-vs-corpus.js`, `tests/*.js`, `survey-batch.js`, `ventilation-survey-20.js`)
 - `.gitignore` (git hygiene, not documentation)
 
-No other files remain on public `main`. **Not** public: helper `.js` (`validate-vv-sketch.js`, `audit-docs-vs-corpus.js`, `tests/*.js`, `survey-batch.js`, `ventilation-survey-20.js`), `sql-equipment-import/templates/` (`.sql` + `manifest.json`), every `CLAUDE.md` at any depth, `docs/`, `iwmac-designer-reference/`, `vv-designer-reference/`, schemas, tests, and fixtures.
+No other files remain on public `main`. **Not** public: `sql-equipment-import/templates/` (`.sql` + `manifest.json`), every `CLAUDE.md` at any depth, `docs/`, Python validators, schemas, fixtures except their `README.md`, and the rest of `iwmac-designer-reference/` and `vv-designer-reference/`.
 
-Fixture `README.md` files under `tests/` move with the private trees.
+SQL templates stay private. That is an accepted break of the phpMyAdmin template fetch until a later userscript change.
 
 Tracked `CLAUDE.md` files that must all be private (16):
 
@@ -63,13 +62,13 @@ Mirror the current relative paths so agents and skills still resolve the same fi
 
 - every `CLAUDE.md` (root, each script folder, nested `iwmac-designer-reference/` and `vv-designer-reference/`)
 - `sql-equipment-import/templates/`
-- helper `.js` listed in the public-allowlist section
-- `iwmac-designer-import-export/iwmac-designer-reference/` (entire tree)
+- `iwmac-designer-import-export/iwmac-designer-reference/` except any `.js` and `README.md` that stay public
 - `logic-designer-import-export/vv-designer-reference/`
-- `logic-designer-import-export/validate-vv-sketch.js`
 - `logic-designer-import-export/vv-sketch.schema.json`
-- `logic-designer-import-export/audit-docs-vs-corpus.js`
+- Python validators, fixtures (except fixture `README.md`), and tests that are not `.js`
 - `docs/superpowers/` (this spec moves with the rest of `docs/`)
+
+Helper `.js` files stay in the public scripts repo only. Do not delete them from public `main`. The private repo does not need a second copy unless a later job wants a self-contained documents clone.
 
 Do not flatten into a single `documents/` folder.
 
@@ -92,11 +91,12 @@ Replace the Related paragraph that treats in-repo VV reference material as publi
 Two sibling clones, not one repo.
 
 - Script work: public `tampermonkey-scripts`. Bump `@version` only when a `.user.js` changes. Push both remotes.
-- Docs / validator / fixture / briefing work: private `tampermonkey-scripts-documents`. No userscript version bump. Push both remotes.
+- Docs / Python validator / fixture / briefing work: private `tampermonkey-scripts-documents`. No userscript version bump. Push both remotes.
+- Helper `.js` edits stay in the public scripts repo (they are on the public allowlist).
 
 After the split, Cursor in a scripts-only worktree will not auto-load the moved `CLAUDE.md` files. Open the private repo (or a multi-root workspace) for designer-kit, VV, or documentation tasks.
 
-Do not add new `CLAUDE.md`, contracts, or tests back onto public `main`.
+Do not add new `CLAUDE.md`, contracts, Python, SQL templates, or non-README Markdown back onto public `main`. `.js` and `README.md` may still be added there.
 
 ## Consequences (accepted, out of this job)
 
@@ -113,12 +113,12 @@ Do not add new `CLAUDE.md`, contracts, or tests back onto public `main`.
 3. Copy the current docs tree (everything not on the public allowlist) into the new repo and push `main` to both private remotes.
 4. In the public scripts repo, delete the moved files, edit root `README.md` as specified, commit, and push `origin` and `gitlab`.
 5. Confirm Tampermonkey raw URLs still 200 for every `.user.js`. Expect `sql-equipment-import/templates/manifest.json` to 404.
-6. Confirm public `main` lists only root + script-folder `README.md`, `*.user.js`, and `.gitignore`. `git ls-files '**/CLAUDE.md' 'CLAUDE.md'` on public `main` is empty. Helper `.js` and `sql-equipment-import/templates/` are absent.
+6. Confirm public `main` lists only `README.md`, `*.js`, and `.gitignore`. `git ls-files '**/CLAUDE.md' 'CLAUDE.md'` on public `main` is empty. `sql-equipment-import/templates/` is absent. Helper `.js` remain.
 
 ## Success criteria
 
 - Colleagues with Tampermonkey still receive updates from the same `@updateURL` / `@downloadURL` values.
-- Public GitHub `main` shows `README.md` (root + each script folder), `*.user.js`, and `.gitignore` only. Zero `CLAUDE.md`. Zero helper `.js`. Zero SQL templates.
+- Public GitHub `main` shows `README.md`, `*.js` (userscripts and helpers), and `.gitignore` only. Zero `CLAUDE.md`. Zero SQL templates.
 - The private clone still has the full documentation and validator kit at the same relative paths.
 - No userscript `@version` change. No force-push. No history rewrite.
 
