@@ -24,6 +24,10 @@ Run it first; it is deterministic, dependency-free, and takes under a second.
 
 ```bash
 python validate-ventilation-panel.py panel.json --profile PROFILE-9099-ROTOR-DEMO
+python validate-ventilation-panel.py panel.json --profile PROFILE-BINARY-FILTER-BACNET \
+  --sibling-sidebar sibling.json
+python validate-ventilation-panel.py --compare SOURCE.json CANDIDATE.json \
+  --patch-scope alarm-and-sidebar --profile PROFILE-BINARY-FILTER-BACNET
 ```
 
 Drop `--profile` when no named profile is the template — the global rules still
@@ -59,6 +63,12 @@ executable — the rule id is the implementation.
 | 0.7 | **Sequential names** | `V-S03`, `V-S04` | Names are not `object_0…object_N`, have gaps or duplicates, or an object is missing one of the 17 fields |
 | 0.8 | **Rendered text collisions** | `V-P08` | Two rendered glyph runs come within the 4 px floor. **Reported as a warning, never an error** — rendered widths here are estimates (stage C7) |
 | 0.9 | **Degree-sign preservation** | `V-S09` | `°C` has been degraded to `gr C`, or the file does not decode as UTF-8 |
+| 0.10 | **Binary vs numeric filter** | `V-P09`, `V-G08` | Diff-press object used where inventory is binary; filter does not intersect a duct; symbol stretched; no adjacent alarm |
+| 0.11 | **BACnet ualarm integrity** | `V-G05`, `V-G09`, `V-P12` | `.Ualarm.Ualarm`; two ualarms on one component; generic+bacnet on the same role; ualarm on a sidebar setpoint/command; wrong base driver |
+| 0.12 | **Unsupported live values** | `V-P10` | RT600/RT601/etc. remain when the case profile forbids them; empty `number_360_room` scaffold must still be kept |
+| 0.13 | **Sibling sidebar geometry** | `V-P11` | Named sidebar roles do not match the sibling panel's `posLeft`/`posTop`/`posWidth`/`posHeight` |
+| 0.14 | **Patch scope** | `V-C01`–`V-C05` | Unauthorized field or object changed; filter resized on a position-only move; filter moved without its alarm |
+| 0.15 | **Idempotence** | helper + `V-G09` | Second BACnet conversion adds objects, doubles `.Ualarm`, or moves already-correct alarms |
 
 Checks 0.2, 0.3 (profile-scoped variants), 0.4's coordinate half, and 0.8 require
 `--profile`. Without it they do not run, and the panel is unverified on those
@@ -410,3 +420,10 @@ procedure that acts on the answers is
     come from the reference. Never the reverse. A gap you cannot close is recorded
     in your report and in contract §12 — it is never filled with a plausible
     number.
+13. **Is this case 3?** If yes: is the patch based on the newest user-supplied
+    JSON, compared by role not index, and inside a named `--patch-scope`?
+14. **Filter: numeric Pa or binary guard?** Diff-press vs `number_v3_filter_only`.
+    Cluster moved as one vector?
+15. **BACnet ualarms: matrix applied, not every linked object?** Sidebar commands
+    excluded? One indication per role? No `.Ualarm.Ualarm`?
+16. **Sibling sidebar requested?** Geometry cloned by role, bindings preserved?

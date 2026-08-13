@@ -150,6 +150,18 @@ This route applies **only when an existing panel JSON is supplied**. Generating
 a new Oversikt is §2 row 6 plus this contract from the start — a different
 class. Do not rebuild a supplied panel in order to link it.
 
+#### 1.3.2 Ventilasjon: newest export, workspace copies, sibling sidebar
+
+`VENT` When the user supplies a Ventilasjon JSON (and especially a later
+export of the same panel), patch **that** file. Generated workspace copies may
+disappear in a later session; that is not evidence the customer's SharePoint
+file was deleted. Search the current workspace first. Prefer the latest export
+over reconstructing from memory.
+
+Binary vs numeric filters, sidebar geometry clone from a sibling 360.00N panel,
+and BACnet `bacnet_ualarm_v1` policy: [VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md)
+§11–§14. Compact Copilot form: [VENTILATION-COPILOT-PREFLIGHT.md](VENTILATION-COPILOT-PREFLIGHT.md).
+
 ### 1.4 When it really is a data request
 
 Produce a plain data file **only** when the user explicitly asks for one:

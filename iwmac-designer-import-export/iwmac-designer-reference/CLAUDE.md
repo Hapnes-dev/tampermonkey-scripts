@@ -124,7 +124,7 @@ Two registries, different roles:
 Attribute census from a live 54-object panel (`reference_data/page-anatomy-probe.json`): every object carries `class, onmousedown, onmouseover, ondblclick, onclick, style, iw_no_scale, iw_type, picture, type, driver_info, driver_id, unit_id, unit_ref, alias_text, id, name, pheight, pleft, ptop, pwidth, link_tag, link_name, sub_group, linked, settag, object_type, hastag, only_tag_text, data-title, iw_name`; `tag_text` only on labeled objects.
 
 **Binding fields:**
-- `driver_id` — **plant-prefixed**: `10113_AK3_AKC_0_11_1_0_7` = `<plant_id>_<driver>_<address path>`. This is what makes cross-plant panel copying detectable/rebindable by prefix rewrite (same scheme as the VV Designer's sketch driver ids). BACnet exception: `bacnet_ualarm_v1/v2` objects get `.Ualarm` appended on save (`bacCheck`, container_tool.js:2053-2056) and stripped on load (`checkDriver`, V3scripts.js:470-480). It proves only which string the document carries; the host does not resolve it during load.
+- `driver_id` — **plant-prefixed**: `10113_AK3_AKC_0_11_1_0_7` = `<plant_id>_<driver>_<address path>`. This is what makes cross-plant panel copying detectable/rebindable by prefix rewrite (same scheme as the VV Designer's sketch driver ids). BACnet exception: see §13c. `bacCheck` (container_tool.js:2053-2056) **always concatenates** `.Ualarm` on save for `bacnet_ualarm_v1/v2` with no idempotence check. `checkDriver` (V3scripts.js:470-480) removes only the **first** `.Ualarm` substring on top-level load. It proves only which string the document carries; the host does not resolve it during load.
 - `unit_id` — `000:011` bus:address, **not** plant-prefixed. It is the controller locator written by the parameter selector, but the document can carry a stale or foreign value. `unit_ref` is an optional stable reference; empty is common.
 - `id` — the literal DOM id `"driver_id"` on linkable objects. It identifies the host object kind. It is **not** a parameter id and proves no binding.
 - `link_tag` — the IWMAC system tag (`AREA_SYSTEM_UNIT_SIGNAL_COMPONENT_SUBJECT`, §13). Non-value sentinels: `""`, `"link_tag"`, `"undefined"`, `"NA"`. It is tag metadata, not evidence that `driver_id` resolves.
@@ -305,7 +305,57 @@ This rename-from-live-index policy is the host's own answer to name collisions �
 - ⚠️ The popup's `.ui-dialog` wrapper carries **z-index 2147483646** (one below the int32 max): any overlay/toast appended to `<body>` paints and hit-tests *beneath* the open dialog regardless of its own z-index. UI that must show above it has to be appended **into the wrapper element** (the userscript's `overlayParent()` does this).
 - `openParamsPopup(xml_doc)` (:504-583) opens a jQuery-UI dialog (510×800, "PARAMETER SELECTOR"), renders the w2ui layout into it, and fills `unitgrid` from the passed XML (**callers pre-fetch synchronously**: `iw_load_units.php?cust_id&driverId` — Actions menu :737-741, `iw_select` type 3/100 main.js:463-469). Clicking a unit (`unitsClickHandler`, :901-963) sync-loads **`iw_load_plant.php?regulator_name=<unit>&cust_id=…&aliastext=&param_*=false&rw_*=false`** and fills `paramgrid`; rows already auto-tagged (via `autotagger.getTag(driver_id)`) render green/bold. ⚠️ The fill is **not always synchronous with `grid.click()`**: driving the grid programmatically at speed, ~3 of 25 units on plant 4728 still showed the previous unit's rows (or none) immediately after `click()` returned — poll for a `records` change (length + first/last `driver_id`) before reading, as the userscript's export walk does.
 - Filters: R/RW cycle + type radios (`all/alarms/boolean/integer/float/string`, classified on `parameter_type` + `application` substrings), `"a ++ b"` multi-term AND alias search (:357-448), alias rebuild tool (strip N chars / append eng_unit — with an off-by-one on the checkbox index, :464-503), param groups via **`iw_param_group_handler.php?cust_id&unit_id&action=get_groups|get_group_params[&group_name]`** (:1102-1134).
-- **`onParamPopup_link(selected)` (:1004-1100) is the canonical linking write-back** (Link button / double-click): for a normal object it sets exactly `driver_id, driver_info, alias_text, unit_id, link_tag, sub_group` attrs + `linked` (:1056-1061), then updates `objectList` (single objects) or `designContainers.updateItemDriverinfo` + container badge (container children); graphics elements route to `linkHandler.linkGraphic` (writes `loadedGraphic.loaded[id].links[]`); label-only objects get the chosen field (`alias_text|unit_id|unit_name`) as their text. BACnet mode appends an extra alarm object next to the linked one (`linkHandler.addAlarmObject`, graphics_build.js:846-872). Legacy `iw_set_driver_id` (main.js:487) has **no callers** — it was the dead `paramselector.htm` popup's callback.
+- **`onParamPopup_link(selected)` (:1004-1100) is the canonical linking write-back** (Link button / double-click): for a normal object it sets exactly `driver_id, driver_info, alias_text, unit_id, link_tag, sub_group` attrs + `linked` (:1056-1061), then updates `objectList` (single objects) or `designContainers.updateItemDriverinfo` + container badge (container children); graphics elements route to `linkHandler.linkGraphic` (writes `loadedGraphic.loaded[id].links[]`); label-only objects get the chosen field (`alias_text|unit_id|unit_name`) as their text. BACnet mode on a **single_object** appends an extra alarm via `linkHandler.addAlarmObject` (graphics_build.js:846-872 — to the right, `offsetWidth + 5`; §13c). The graphics BACnet branch never creates an object. Legacy `iw_set_driver_id` (main.js:487) has **no callers** — it was the dead `paramselector.htm` popup's callback.
+
+### 13c. BACnet ualarm objects — host behaviour only
+
+Policy (which Ventilasjon roles may receive a ualarm) is **not** this file. See [VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md) §14. Geometry for a *conversion* that copies a production panel is [VENTILATION-GEOMETRY-CONTRACT.md](VENTILATION-GEOMETRY-CONTRACT.md) §10.2. This section owns what the Designer actually does.
+
+**Verified 2026-08-13** against live `?t=9` assets on `legacy.iwmac.local` (`iw_popup_paramhandler.js`, `graphics_build.js`, `container_tool.js`, `V3scripts.js`). Host JS is not committed in this repo.
+
+| Step | Where | What |
+|---|---|---|
+| BACnet mode | `Bacnet_Handler` — `iw_popup_paramhandler.js:6-47` | Toolbar `enabled_bacnet` sets `bacnetHandler.enabled = true`. Default `bacobject_to_add` is `"bacnet_ualarm_v1"`; the menu can select v2. Constructor field is misspelt `enebled` and is unused; `enable()` writes `enabled`. |
+| Link write-back | `onParamPopup_link` — `:1004-1100`, BACnet branch `:1087-1098` | After linking the selected object, if `bacnetHandler.enabled` it calls `linkHandler.addAlarmObject`. |
+| Create ualarm | `linkHandler.addAlarmObject` — `graphics_build.js:846-872` | **single_object only.** Graphics branch reads width/left/top and returns without calling `iw_make_ctrl` — **no alarm is created** for graphics. |
+| Save suffix | `bacCheck` — `container_tool.js:2053-2056` | `obj === "bacnet_ualarm_v1" \|\| obj === "bacnet_ualarm_v2" ? driver_id+".Ualarm" : driver_id`. **Not idempotent.** DOM already carrying `.Ualarm` exports as `.Ualarm.Ualarm`. |
+| Load strip | `checkDriver` — `V3scripts.js:470-480` | If `obj_id` is v1/v2 and `driver_id.indexOf(".Ualarm") >= 0`, `replace(".Ualarm", "")` — **first occurrence only**. Called from `load_new_ver_objects` (:500). **Not** called from `load_new_ver_containers` / `custom()` item loop (:654). |
+
+**Host `addAlarmObject` geometry** (`elem_type === "single_object"`):
+
+- `left = selected.offsetLeft + selected.offsetWidth + 5`
+- `top = selected.offsetTop`
+- width/height passed `null` → `iw_make_ctrl` uses control defaults **35×31**, z **375**
+- no collision check, no canvas clamp
+
+That is the **interactive Designer** placement (to the right of the linked object). It is **not** the filter-cluster above-right offset measured on E29. Conversion jobs copy the selected production export's relative offset (contract §10.2).
+
+**Inherited into the new DOM object:** `driver_id` (the **base** selected parameter id — `addAlarmObject` does **not** append `.Ualarm`), `unit_id`, `alias_text`, `link_tag` (`bn_data.tag`), `sub_group` (`bn_data.sgr`), chosen `bacnet_obj`. **Not inherited:** `unit_ref` (empty), `tag_text`, original geometry except the calculated position, original z-index. `bn_data.linked` is unused. Factory writes `link_name="link_name"` and `linked="false"`; `objectList.add` records linked `"true"`. Collector reads the **DOM**, so a first export after Add can carry `linked:"false"` with a real driver id. Reload via `load_new_ver_objects` then sets `linked="true"` because `driver_id !== "driver_id"` (:514).
+
+**v1 vs v2** (live `controls[]`, same as `reference_data/controls-registry.json`): both 35×31, `dig_object`, z 375, identical states 1–3. Only state 0 differs: v1 `transp.gif`, v2 `grey_no_attention.png`. Default selection is v1.
+
+**`.Ualarm` lifecycle (top-level objects):**
+
+```
+stored base.Ualarm
+load_new_ver_objects → checkDriver → DOM base
+save bacCheck → JSON base.Ualarm
+```
+
+Userscript Insert calls `handler.load_new_ver_objects` (`IWMAC-Designer-Import-Export.user.js` applyImportDoc), so that path **does** run `checkDriver`. Insert of `base` or of `base.Ualarm` both round-trip to one suffix on the next compile. Insert of `base.Ualarm.Ualarm` leaves `base.Ualarm` in the DOM; the next save restores the double suffix.
+
+**Double-suffix footguns (verified in source):**
+
+1. DOM already has `base.Ualarm` (container-item load, or any path that skipped `checkDriver`) → collector emits `base.Ualarm.Ualarm`.
+2. JSON already has `base.Ualarm.Ualarm` → `checkDriver` removes only the first occurrence.
+3. Container **items** are written with the JSON `driver_id` verbatim (`V3scripts.js:654-664`). A ualarm inside a container **must** be authored as the base id.
+4. `bacCheck` does not mutate the DOM; repeated exports of an already-clean top-level object do not keep growing the suffix.
+
+**Import guidance:** for top-level `single_objects` prefer the base driver id **or** exactly one `.Ualarm` (both survive Insert + compile). Never author `.Ualarm.Ualarm`. For container items, use the base id only. Direct store writes that skip load/collector must persist exactly one suffix (the compiled-store shape, E29).
+
+Callers should **not** treat "every BACnet-linked parameter gets a ualarm" as host policy. The host adds one ualarm when the param-selector BACnet toolbar is enabled and a normal object is linked. Which roles to convert on a Ventilasjon panel is the authoring matrix.
+
+**Still open:** whether any live plant uses `bacnet_ualarm_v2` on a saved panel (surveyed E29 uses v1). Palette dump lists 31×31; controls and live factory use 35×31 — prefer 35×31.
 
 **Bulk re-linking (the LINK pane / explorer):** `updateRegLinkTags` binds "Link All" → `linkAllTaggedObjects` → `linkSelRegulator(link_obj, unitHash)` (container_tool.js:126) which matches canvas objects to the chosen unit by autotag+sub_group or by rebuilt driver-id parameter key, stamping the same six attributes. Tag assignments persist via `savePlantUnitsData()` → POST `function=save_plant_unit_tags` body `{plant_id, unit_data: JSON.stringify(plant_unitArray)}` (container_tool.js:1209-1237). **Live host bug:** `explorer_tool.js` defines `linkAllTaggedObjects` twice (:60 good, :172 buggy — `var untit_ref` typo leaves `unit_ref` undeclared); hoisting makes the **buggy second definition win**, so the "Link Reg" button throws `ReferenceError: unit_ref is not defined`.
 
@@ -492,7 +542,7 @@ python -m unittest tests.test_romkontroll_8653_contract
 
 A vent panel is a **process schematic drawn with objects** plus a right-hand control sidebar — not a table-style dashboard. The full normative contract is [AI-BRIEFING.txt](AI-BRIEFING.txt) §7a; this is the coordinator's summary.
 
-**Classify first**, and say which case you picked: (1) new unlinked demo — take the layout grammar of a named real export whole, then strip its links; (2) copy of a real production layout — reproduce the geometry object for object and relink from the *target* plant's dump; (3) modification of an attached export — preserve every object and field, change only what was authorized, never renumber or re-space the rest; (4) background-only — a vent panel has no artwork, so say so and stop. Case 1 is where generic dashboards come from: an agent that invents a layout instead of tracing one always produces cards and KPI boxes.
+**Classify first**, and say which case you picked: (1) new unlinked demo — take the layout grammar of a named real export whole, then strip its links; (2) copy of a real production layout — reproduce the geometry object for object and relink from the *target* plant's dump; (3) modification of an attached export — the newest user-supplied JSON is the document; patch it; preserve every object and field; change only what was authorized; never rebuild from memory ([VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md) §11–§14: binary vs numeric filters, sibling-sidebar geometry clone, BACnet ualarm matrix); (4) background-only — a vent panel has no artwork, so say so and stop. Case 1 is where generic dashboards come from: an agent that invents a layout instead of tracing one always produces cards and KPI boxes. Host `.Ualarm` save/load is §13c; do not duplicate the Ventilasjon policy here.
 
 **Measured anchors** (literal `posLeft/posTop/posWidth/posHeight` of [real-vent-panel-example.json](reference_data/real-vent-panel-example.json) — 102 objects / 41 distinct obj_ids / 0 containers / 0 graphics, canvas 1400×750 on `00-blank-sidebar-1400x750`): extract run `number_v3_exhaust_pipe_horisontal` **(24,200) 1025×18**; supply run `number_v3_fresh_pipe_horisontal` **(24,442) 260×18** + `number_v3_supply_pipe_horisontal` **(337,442) 710×18** — the runs are **242 px** apart; cross-over column at **x 411** (`exhaust_connector_up` y211 · `exhaust_pipe_vertical` y254 · `supply_pipe_vertical` y329 · `supply_connector_down` y399); rotor `number_360_vg_rot` **(282,149) 60×343**; extract fan **(152,179) 59×59**, supply fan **(795,421) 59×59**; sidebar = three `number_v3_header_grey75` **250×20 at x 1150, y 0 / 165 / 357**, label column x 1160, two setpoint columns of `number_v3_60px_dark_no_conn` 62×22 at **x 1260 (Tilluft) / x 1330 (Avtrekk)**, rows y 205/230/255/279/308 (25 px pitch). `con_down` value boxes sit **above** a run, `con_top` boxes **below** it — that alone is what makes the drawing read as ductwork.
 
@@ -663,6 +713,7 @@ The userscript also exposes `window.__IWDIE` (`doExport`, `openImportPanel`, `ap
 24. The **`<body>` onclick attribute is mangled** in index.php (`javascript:iw_body_click();'=""`) — `iw_body_click` never fires; most of `iw_site.js` is unreachable IE4-era code full of `eval()`.
 25. **List panels break the canvas-bounds assumptions.** The production spjeldliste places objects to y 4668 / x 1585 on a nominal 1400×750 panel (dividers are 3×4580) — the designer and the plant view both just scroll; nothing clamps to `panel_width`/`panel_height`. Horizontal overflow to x 1585 is structural and present even on a 26-row list; vertical overflow follows the row count. Its static cells also carry `linked:"true"` + `driver_id:"#c1"/"#c2"` — hand-typed markers with **no consumer anywhere in the mirrored sources**; the save/load/compile pipeline round-trips them opaquely. Don't "sanitize" them on export, and don't emit them when generating. The divider height is not a constant: it is `last_row_top + row_height − divider_top − 2`, so adding one row changes all 13 dividers ([LIST-PANEL-GENERATION-CONTRACT.md](LIST-PANEL-GENERATION-CONTRACT.md) §8.8, and §6a here for the host behaviour).
 26. **imagetracerjs's sampled palette washes flat schematics to grey.** Its palette comes from evenly-spaced sample points, and IWMAC backgrounds are ~99 % white/grey — all 16 slots land on greys and the thin coloured pipe runs (orange discharge, cyan suction, yellow liquid, red/green pills) snap to grey (proved on the 9982 Maskin: 4 grey fills, zero saturated). v1.5.1 fixes it with `iwdieBuildPalette` (exact-colour buckets, AA-halo dedupe at <24/channel, up to 8 guaranteed slots for saturated colours, `null` → tracer default for photo-like images >3000 buckets) passed as `options.pal`. If traces ever look grey again, check that `traceOptsFor` is still in both call paths.
+27. **`bacCheck` is not idempotent.** It concatenates `.Ualarm` whenever the object type is `bacnet_ualarm_v1/v2` (container_tool.js:2053-2056). `checkDriver` removes only the first `.Ualarm` substring and only on the top-level object loader (V3scripts.js:470-480, :500). Container items skip it (:654). Author at most one suffix on `single_objects`; author the **base** id on container items. Details: §13c.
 
 ## 20. Constants quick-ref
 
@@ -698,7 +749,8 @@ The userscript also exposes `window.__IWDIE` (`doExport`, `openImportPanel`, `ap
 | Palette accordion builder | `buildLeftItems` — graphics_build.js:458; pane loader `buildLeftPage` :428 |
 | Grid | `load_grid` — graphics_build.js:1090 |
 | Drag/move/resize | `iw_mouse_down`/`iw_move_object`/`iw_mouse_up` — iw_move_object.js:200/:106/:194; modal write-back `changeTagObject` :21 |
-| Param selector popup | `openParamsPopup` — iw_popup_paramhandler.js:504; unit click :901; **link write-back `onParamPopup_link` :1004** |
+| Param selector popup | `openParamsPopup` — iw_popup_paramhandler.js:504; unit click :901; **link write-back `onParamPopup_link` :1004**; BACnet toolbar `bacnetHandler` :6-47 |
 | File/upload popups | `iw_file_selector_show` — iw_popup_filehandler.js:21; w2popup launchers :325-494; `openFileUploader` :447 |
 | Bulk re-link | `linkSelRegulator` — container_tool.js:126; tag persistence `savePlantUnitsData` :1209 |
 | Alignment/Z tools | `alignment` — container_tool.js:2832; `setObject_Z` — main.js:734 |
+| BACnet ualarm create | `linkHandler.addAlarmObject` — graphics_build.js:846; save suffix `bacCheck` — container_tool.js:2053; load strip `checkDriver` — V3scripts.js:470 (§13c) |

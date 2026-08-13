@@ -280,14 +280,32 @@ def main(argv=None):
     ap.add_argument("panel", help="panel JSON (wrapped or flat)")
     ap.add_argument("-o", "--output", default=None,
                     help="output HTML path (default: alongside the input)")
+    ap.add_argument("--crop", default=None,
+                    help="LEFT,TOP,WIDTH,HEIGHT crop of the 1400x750 canvas")
     args = ap.parse_args(argv)
 
     with io.open(args.panel, encoding="utf-8") as fh:
         document = json.load(fh)
 
     out = args.output or os.path.splitext(args.panel)[0] + "-preview.html"
+    html_out = render(document, os.path.basename(args.panel))
+    if args.crop:
+        left, top, width, height = [int(part.strip()) for part in args.crop.split(",")]
+        html_out = html_out.replace(
+            '<div id="canvas">',
+            '<div id="crop" style="width:%dpx;height:%dpx;overflow:hidden;'
+            'position:relative;background:#52606d">'
+            '<div id="canvas" style="margin-left:-%dpx;margin-top:-%dpx">'
+            % (width, height, left, top),
+            1,
+        )
+        html_out = html_out.replace(
+            '</div>\n<div id="legend">',
+            '</div></div>\n<div id="legend">',
+            1,
+        )
     with io.open(out, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(render(document, os.path.basename(args.panel)))
+        fh.write(html_out)
 
     env = envelope_of(document)
     print("wrote %s (%d objects, %sx%s)" % (

@@ -3,6 +3,8 @@
 
 Usage:
     python validate-ventilation-panel.py PANEL.json [--profile PROFILE-9099-ROTOR-DEMO]
+    python validate-ventilation-panel.py --compare SOURCE.json CANDIDATE.json
+                                         [--patch-scope alarm-and-sidebar]
     python validate-ventilation-panel.py PANEL.json --json
 
 The rules are data, not code: everything profile-specific is read from
@@ -16,6 +18,7 @@ performs no network access and reads nothing outside the reference directory.
 """
 
 import argparse
+import collections
 import json
 import pathlib
 import re
@@ -205,8 +208,160 @@ def is_label(obj):
     return obj["obj_id"].startswith(LABEL_PREFIXES)
 
 
+GENERIC_ALARM_PREFIX = "V3_R_34px_circular_alarm"
+BACNET_UALARM_IDS = ("bacnet_ualarm_v1", "bacnet_ualarm_v2")
+FILTER_OBJ_IDS = ("number_v3_filter_only", "numberV3_filter_with_diff_press")
+DUCT_OBJ_IDS = (
+    "number_v3_exhaust_pipe_horisontal",
+    "number_v3_supply_pipe_horisontal",
+    "number_v3_fresh_pipe_horisontal",
+)
+UALARM_SUFFIX = ".Ualarm"
+SIDEBAR_DEFAULT_X = 1150
+
+# Command / setpoint / selector aliases that must not receive a BACnet ualarm
+# unless a named profile sets allow_sidebar_bacnet_alarms. Matched on alias_text
+# and tag_text after lowercasing. Scope: VENT policy, not a host prohibition.
+SIDEBAR_COMMAND_NEEDLES = (
+    "settpunkt", "setpoint", "sp.", "kommando", "command", "systemvender",
+    "driftsmodus", "alarmkvittering", "acknowledge", "kvittering",
+)
+
+PATCH_SCOPES = {
+    "position": {
+        "fields": ("posLeft", "posTop"),
+        "added": "none",
+        "dropped": "none",
+        "region": "all",
+        "description": "posLeft/posTop on existing objects, nothing else",
+    },
+    "filter-cluster-move": {
+        "fields": ("posLeft", "posTop"),
+        "added": "none",
+        "dropped": "none",
+        "region": "filter-cluster",
+        "description": "posLeft/posTop on each filter and its associated alarm; size must not change",
+    },
+    "sidebar-geometry": {
+        "fields": ("posLeft", "posTop", "posWidth", "posHeight"),
+        "added": "none",
+        "dropped": "none",
+        "region": "sidebar",
+        "description": "sidebar geometry cloned by semantic role; process objects unchanged",
+    },
+    "bacnet-alarm-migration": {
+        "fields": (),
+        "added": "bacnet_ualarm",
+        "dropped": "replaced-generic-alarm",
+        "region": "all",
+        "description": "add bacnet_ualarm_v1 objects and drop generic alarms they replace",
+    },
+    "alarm-and-sidebar": {
+        "fields": ("posLeft", "posTop", "posWidth", "posHeight"),
+        "added": "bacnet_ualarm",
+        "dropped": "replaced-generic-alarm",
+        "region": "sidebar-or-new-alarm",
+        "description": "BACnet process alarms plus named sidebar geometry; nothing else",
+    },
+    "source-truth-cleanup": {
+        "fields": (),
+        "added": "none",
+        "dropped": "unsupported-live-value",
+        "region": "all",
+        "description": "drop live values the inventory does not support; retain authorized scaffold",
+    },
+    "none": {
+        "fields": (),
+        "added": "any",
+        "dropped": "any",
+        "region": "all",
+        "description": "report differences; do not assert a patch boundary",
+    },
+}
+
+
+def is_generic_alarm(obj):
+    return (obj.get("obj_id") or "").startswith(GENERIC_ALARM_PREFIX)
+
+
+def is_bacnet_ualarm(obj):
+    return obj.get("obj_id") in BACNET_UALARM_IDS
+
+
 def is_alarm(obj):
-    return obj["obj_id"].startswith("V3_R_34px_circular_alarm")
+    return is_generic_alarm(obj) or is_bacnet_ualarm(obj)
+
+
+def is_filter(obj):
+    return obj.get("obj_id") in FILTER_OBJ_IDS
+
+
+def is_duct(obj):
+    return obj.get("obj_id") in DUCT_OBJ_IDS
+
+
+def ualarm_base(driver_id):
+    """Strip every trailing .Ualarm and count them.
+
+    Host save (`bacCheck`, container_tool.js:2053-2056) always concatenates
+    one suffix — it is not idempotent. Host load (`checkDriver`,
+    V3scripts.js:470-480) replaces only the first `.Ualarm` substring, and
+    only from `load_new_ver_objects`. The validator strips *all* trailing
+    suffixes so `.Ualarm.Ualarm` is visible as stripped >= 2 (`V-G09`).
+    """
+    text = driver_id or ""
+    stripped = 0
+    while text.endswith(UALARM_SUFFIX):
+        text = text[:-len(UALARM_SUFFIX)]
+        stripped += 1
+    return text, stripped
+
+
+def boxes_overlap(a, b):
+    ax0, ay0, ax1, ay1 = box(a)
+    bx0, by0, bx1, by1 = box(b)
+    return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
+
+
+def rect_distance(a, b):
+    ax0, ay0, ax1, ay1 = box(a)
+    bx0, by0, bx1, by1 = box(b)
+    dx = max(bx0 - ax1, ax0 - bx1, 0)
+    dy = max(by0 - ay1, ay0 - by1, 0)
+    return max(dx, dy)
+
+
+def is_sidebar_object(obj, sidebar_x=SIDEBAR_DEFAULT_X):
+    return px(obj, "posLeft") >= sidebar_x
+
+
+def sidebar_role_key(obj):
+    """Match sibling-panel sidebar rows by visible text first, then alias.
+
+    Index is never a key: Insert renames from the live canvas child index.
+    """
+    tag = (obj.get("tag_text") or "").strip()
+    if tag and tag != "new text":
+        return ("tag", tag)
+    alias = (obj.get("alias_text") or "").strip()
+    if alias and alias != "new text":
+        return ("alias", alias)
+    return ("obj", obj.get("obj_id"), px(obj, "posTop"))
+
+
+def vent_role_key(obj):
+    """Pair objects across two documents. Never the array index or name."""
+    oid = obj.get("obj_id")
+    if is_bacnet_ualarm(obj):
+        base, _ = ualarm_base(obj.get("driver_id"))
+        return ("ualarm", base, (obj.get("alias_text") or "").strip())
+    tag = (obj.get("tag_text") or "").strip()
+    alias = (obj.get("alias_text") or "").strip()
+    if tag and tag not in ("", "new text"):
+        return (oid, tag, alias)
+    if alias and alias != "new text":
+        return (oid, alias)
+    return (oid, px(obj, "posLeft"), px(obj, "posTop"))
 
 
 def connector_direction(obj):
@@ -508,7 +663,7 @@ def check_duplicate_captions(objects, mode, out):
             seen[text] = obj.get("name")
 
 
-def check_alarms(objects, mode, out):
+def check_alarms(objects, mode, out, profile=None):
     """One alarm per guarded role, beside the role it guards, clear of captions.
 
     The caption-overlap branch is the one that has to be judged carefully. It
@@ -565,16 +720,28 @@ def check_alarms(objects, mode, out):
     # 'Malf. damper' alarms 243 px apart. Two different dampers are two
     # different roles; only two alarms on the SAME component are the duplicate.
     aliases = {}
+    by_component = {}
     for alarm in alarms:
         alias = (alarm.get("alias_text") or "").strip()
-        if not alias:
-            continue
-        key = (alias, nearest.get(alarm.get("name")))
-        if key in aliases:
+        component = nearest.get(alarm.get("name"))
+        if alias:
+            key = (alias, component)
+            if key in aliases:
+                out.append(Finding("V-G05", "error",
+                                   f"two alarms guard the same role {alias!r} on {key[1]}: "
+                                   f"{aliases[key]} and {alarm.get('name')}"))
+            aliases[key] = alarm.get("name")
+        if component:
+            by_component.setdefault(component, []).append(alarm)
+    allow_both = bool((profile or {}).get("allow_generic_and_bacnet"))
+    for component, group in by_component.items():
+        kinds = {("bacnet" if is_bacnet_ualarm(o) else "generic") for o in group}
+        if "generic" in kinds and "bacnet" in kinds and not allow_both:
+            names = ", ".join(o.get("name") for o in group)
             out.append(Finding("V-G05", "error",
-                               f"two alarms guard the same role {alias!r} on {key[1]}: "
-                               f"{aliases[key]} and {alarm.get('name')}"))
-        aliases[key] = alarm.get("name")
+                               f"generic alarm and bacnet_ualarm both guard {component}: {names}. "
+                               "Keep one intended indication per role unless the profile "
+                               "sets allow_generic_and_bacnet"))
 
 
 def check_damper_values(objects, profile, out):
@@ -921,7 +1088,7 @@ def check_profile_sidebar_centring(objects, profile, out):
                                   else " (width estimated from Arial metrics - measure it to confirm)")))
 
 
-def check_profile(objects, profile, out):
+def check_profile(objects, profile, out, sibling_objects=None, sidebar_x=SIDEBAR_DEFAULT_X):
     check_profile_clusters(objects, profile, out)
     check_profile_dampers(objects, profile, out)
     check_profile_fixed(objects, profile, out)
@@ -929,11 +1096,408 @@ def check_profile(objects, profile, out):
     check_profile_alarms(objects, profile, out)
     check_profile_absences(objects, profile, out)
     check_profile_sidebar_centring(objects, profile, out)
+    check_filter_policy(objects, profile, out)
+    check_unsupported_values(objects, profile, out)
+    check_bacnet_alarm_policy(objects, profile, sidebar_x, out)
+    if sibling_objects:
+        check_sidebar_geometry_clone(objects, sibling_objects, profile, sidebar_x, out)
 
 
-# --------------------------------------------------------------------------
+def associated_alarm(filter_obj, objects):
+    """The alarm that belongs to this filter: nearest alarm within ALARM_MAX_DISTANCE."""
+    best = None
+    for alarm in objects:
+        if not is_alarm(alarm):
+            continue
+        distance = rect_distance(filter_obj, alarm)
+        if distance > ALARM_MAX_DISTANCE:
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, alarm)
+    return None if best is None else best[1]
 
-def validate(document, profile_name=None, rules=None, palette=None, mode=None):
+
+def check_filter_clusters(objects, out):
+    """V-G08: each filter intersects a duct, keeps its own size, and owns one alarm.
+
+    Filter pixel size is source-scoped. This check does not invent a universal
+    width; it only requires that a filter body overlap a horizontal run so the
+    symbol is not floating beside the duct, and that its alarm sits in the
+    adjacency window already used by V-G05.
+    """
+    ducts = [o for o in objects if is_duct(o)]
+    filters = [o for o in objects if is_filter(o)]
+    claimed = {}
+    for filt in filters:
+        if ducts and not any(boxes_overlap(filt, duct) for duct in ducts):
+            out.append(Finding("V-G08", "error",
+                               f'{filt.get("name")} ({filt.get("tag_text")!r}) does not intersect a '
+                               "horizontal duct. Move the symbol; do not stretch width or height "
+                               "to fake a crossing"))
+        alarm = associated_alarm(filt, objects)
+        if alarm is None:
+            out.append(Finding("V-G08", "error",
+                               f'{filt.get("name")} ({filt.get("tag_text")!r}) has no adjacent alarm. '
+                               "A filter cluster is body + QD tag + alarm; move them with one vector"))
+            continue
+        owner = claimed.get(alarm.get("name"))
+        if owner:
+            out.append(Finding("V-G08", "error",
+                               f'{alarm.get("name")} is claimed by both {owner} and {filt.get("name")}'))
+        claimed[alarm.get("name")] = filt.get("name")
+        w, h = px(filt, "posWidth"), px(filt, "posHeight")
+        if w and h and (w / h < 0.7 or w / h > 1.5) and filt["obj_id"] == "numberV3_filter_with_diff_press":
+            out.append(Finding("V-G08", "warning",
+                               f'{filt.get("name")} is {w}x{h}; production differential-pressure '
+                               "filters are near-square. Stretching a symbol to cross a duct is a defect"))
+
+
+def check_bacnet_ualarms(objects, out, profile=None):
+    """V-G09: .Ualarm suffix, one ualarm per (base, component), matching base driver."""
+    mains = {}
+    for obj in objects:
+        if is_bacnet_ualarm(obj):
+            continue
+        driver = obj.get("driver_id") or ""
+        base, _ = ualarm_base(driver)
+        if base and base != "driver_id":
+            mains.setdefault(base, []).append(obj)
+
+    seen_pair = {}
+    for obj in objects:
+        if not is_bacnet_ualarm(obj):
+            continue
+        driver = obj.get("driver_id") or ""
+        base, stripped = ualarm_base(driver)
+        if stripped >= 2:
+            out.append(Finding("V-G09", "error",
+                               f'{obj.get("name")} driver_id has .Ualarm.Ualarm ({driver!r}). '
+                               "Author at most one suffix. Host bacCheck always concatenates "
+                               ".Ualarm; checkDriver removes only the first occurrence"))
+        elif stripped == 0 and driver and driver != "driver_id":
+            out.append(Finding("V-G09", "warning",
+                               f'{obj.get("name")} is bacnet_ualarm without a .Ualarm suffix. '
+                               "A userscript export of a saved panel carries the suffix. "
+                               "Insert via load_new_ver_objects accepts base or one suffix; "
+                               "container items must use the base id"))
+        if not base:
+            out.append(Finding("V-G09", "error",
+                               f'{obj.get("name")} has an empty ualarm driver_id'))
+            continue
+        neighbor = None
+        neighbor_dist = None
+        for other in objects:
+            if other is obj or is_alarm(other) or is_label(other):
+                continue
+            distance = rect_distance(obj, other)
+            if neighbor_dist is None or distance < neighbor_dist:
+                neighbor_dist = distance
+                neighbor = other
+        matching_mains = mains.get(base) or []
+        if matching_mains:
+            nearest_match = min(matching_mains, key=lambda o: rect_distance(obj, o))
+            nearest_name = nearest_match.get("name")
+            if neighbor is not None and neighbor.get("name") != nearest_name:
+                neighbor_base, _ = ualarm_base(neighbor.get("driver_id") or "")
+                if neighbor_base and neighbor_base != base and neighbor_base != "driver_id":
+                    out.append(Finding("V-G09", "error",
+                                       f'{obj.get("name")} ualarm base {base!r} does not match the '
+                                       f'adjacent object {neighbor.get("name")} '
+                                       f'({neighbor_base!r}). Never bind an alarm because a string '
+                                       "was close enough"))
+        else:
+            nearest_name = neighbor.get("name") if neighbor is not None else None
+            if neighbor is None or not is_filter(neighbor):
+                out.append(Finding("V-G09", "error",
+                                   f'{obj.get("name")} ualarm base {base!r} matches no panel object. '
+                                   "A binary-filter ualarm may stand alone next to an unlinked "
+                                   "filter body; any other ualarm needs its main parameter object"))
+        pair = (base, nearest_name)
+        if pair in seen_pair:
+            out.append(Finding("V-G09", "error",
+                               f"two bacnet_ualarm objects share base driver {base!r} on "
+                               f"{nearest_name}: {seen_pair[pair]} and {obj.get('name')}"))
+        seen_pair[pair] = obj.get("name")
+
+
+def check_filter_policy(objects, profile, out):
+    """V-P09: binary vs numeric differential-pressure filter object choice."""
+    policy = (profile or {}).get("filter_policy") or {}
+    kind = policy.get("kind")
+    if not kind:
+        return
+    required = policy.get("required_obj_id")
+    prohibited = policy.get("prohibited_obj_id")
+    for obj in objects:
+        if not is_filter(obj):
+            continue
+        if prohibited and obj["obj_id"] == prohibited:
+            out.append(Finding("V-P09", "error",
+                               f'{obj.get("name")} uses {prohibited!r}; this profile is '
+                               f"{kind} ({policy.get('reason', '')}). Use {required!r}"))
+        if required and obj["obj_id"] != required and obj["obj_id"] in FILTER_OBJ_IDS:
+            out.append(Finding("V-P09", "error",
+                               f'{obj.get("name")} uses {obj["obj_id"]!r}; {kind} filters must be '
+                               f"{required!r}"))
+
+
+def check_unsupported_values(objects, profile, out):
+    """V-P10: live values the inventory does not support must not remain."""
+    forbidden = [(entry or "").strip() for entry in
+                 ((profile or {}).get("unsupported_live_tags") or []) if entry]
+    retain = set((profile or {}).get("retain_scaffold_obj_ids") or [])
+    if not forbidden:
+        return
+    for obj in objects:
+        if obj.get("obj_id") in retain and not (obj.get("driver_id") or "").strip():
+            continue
+        tag = (obj.get("tag_text") or "").strip()
+        alias = (obj.get("alias_text") or "").strip()
+        for code in forbidden:
+            if tag == code or tag.startswith(code + " ") or tag.startswith(code + "/") or alias == code:
+                out.append(Finding("V-P10", "error",
+                                   f'{obj.get("name")} still carries unsupported live value {code!r} '
+                                   f"(tag {tag!r}). Remove it and any orphaned connector; keep "
+                                   f"{sorted(retain)} when they are empty scaffold"))
+                break
+
+
+def looks_like_sidebar_command(obj):
+    blob = " ".join([(obj.get("alias_text") or ""), (obj.get("tag_text") or "")]).lower()
+    return any(needle in blob for needle in SIDEBAR_COMMAND_NEEDLES)
+
+
+def check_bacnet_alarm_policy(objects, profile, sidebar_x, out):
+    """V-P12: which roles may receive bacnet_ualarm_v1. Default deny sidebar commands."""
+    policy = (profile or {}).get("bacnet_alarm_policy") or {}
+    if not policy and not (profile or {}).get("deny_sidebar_bacnet_alarms", True):
+        return
+    if not any(is_bacnet_ualarm(o) for o in objects):
+        return
+    allow_sidebar = bool(policy.get("allow_sidebar_bacnet_alarms"))
+    if (profile or {}).get("deny_sidebar_bacnet_alarms") is False:
+        allow_sidebar = True
+    for obj in objects:
+        if not is_bacnet_ualarm(obj):
+            continue
+        if is_sidebar_object(obj, sidebar_x) and not allow_sidebar:
+            out.append(Finding("V-P12", "error",
+                               f'{obj.get("name")} is a bacnet_ualarm in the right sidebar. '
+                               "Do not put ualarm objects on sidebar controls unless the "
+                               "named profile explicitly allows it"))
+            continue
+        base, _ = ualarm_base(obj.get("driver_id") or "")
+        mains = [o for o in objects
+                 if not is_bacnet_ualarm(o) and ualarm_base(o.get("driver_id") or "")[0] == base]
+        for main in mains:
+            if is_sidebar_object(main, sidebar_x) and looks_like_sidebar_command(main) and not allow_sidebar:
+                out.append(Finding("V-P12", "error",
+                                   f'{obj.get("name")} is bound to sidebar command/setpoint '
+                                   f'{main.get("name")} ({(main.get("alias_text") or "")[:50]!r})'))
+
+
+def check_sidebar_geometry_clone(objects, sibling_objects, profile, sidebar_x, out):
+    """V-P11: copy sidebar geometry by semantic role from a named sibling panel."""
+    roles = (profile or {}).get("sidebar_clone_roles") or []
+    wanted = set(roles) if roles else None
+    src_rows = [o for o in sibling_objects if is_sidebar_object(o, sidebar_x)]
+    dst_rows = [o for o in objects if is_sidebar_object(o, sidebar_x)]
+    src_by = {}
+    for obj in src_rows:
+        src_by.setdefault(sidebar_role_key(obj), []).append(obj)
+    dst_by = {}
+    for obj in dst_rows:
+        dst_by.setdefault(sidebar_role_key(obj), []).append(obj)
+    keys = set(src_by) | set(dst_by)
+    for key in sorted(keys, key=str):
+        if wanted is not None and key[0] == "tag" and key[1] not in wanted:
+            continue
+        if wanted is not None and key[0] != "tag":
+            continue
+        src_hits = src_by.get(key) or []
+        dst_hits = dst_by.get(key) or []
+        if len(src_hits) != 1 or len(dst_hits) != 1:
+            if wanted is not None and key[0] == "tag":
+                out.append(Finding("V-P11", "error",
+                                   f"sidebar role {key!r} expected one object in each panel, "
+                                   f"found {len(src_hits)} sibling / {len(dst_hits)} target"))
+            continue
+        src, dst = src_hits[0], dst_hits[0]
+        for field in ("posLeft", "posTop", "posWidth", "posHeight"):
+            if px(src, field) != px(dst, field):
+                out.append(Finding("V-P11", "error",
+                                   f"sidebar role {key[1] if key[0] == 'tag' else key}: {field} "
+                                   f"is {dst.get(field)!r}, sibling has {src.get(field)!r}. "
+                                   "Clone geometry only; keep the target panel's bindings"))
+
+
+def pair_by_role(source_objects, candidate_objects):
+    src_by = collections.defaultdict(list)
+    cand_by = collections.defaultdict(list)
+    for obj in source_objects:
+        src_by[vent_role_key(obj)].append(obj)
+    for obj in candidate_objects:
+        cand_by[vent_role_key(obj)].append(obj)
+    pairs, dropped, added = [], [], []
+    for key, group in src_by.items():
+        matched = cand_by.get(key) or []
+        for src, cand in zip(group, matched):
+            pairs.append((src, cand))
+        if len(group) > len(matched):
+            dropped.extend(group[len(matched):])
+        if len(matched) > len(group):
+            added.extend(matched[len(group):])
+    for key, group in cand_by.items():
+        if key not in src_by:
+            added.extend(group)
+    return pairs, dropped, added
+
+
+def in_patch_region(obj, region, sidebar_x, source_filters=None):
+    if region in (None, "all"):
+        return True
+    if region == "sidebar":
+        return is_sidebar_object(obj, sidebar_x)
+    if region == "filter-cluster":
+        if is_filter(obj) or is_alarm(obj):
+            return True
+        return False
+    if region == "sidebar-or-new-alarm":
+        return is_sidebar_object(obj, sidebar_x) or is_bacnet_ualarm(obj)
+    return True
+
+
+def check_patch_scope(pairs, dropped, added, scope, scope_name, sidebar_x, findings):
+    """V-C03: only authorized fields and roles changed."""
+    if scope_name in (None, "none"):
+        return
+    allowed = set(scope["fields"])
+    escapes = collections.Counter()
+    detail = []
+    for src, cand in pairs:
+        region_ok = in_patch_region(src, scope.get("region"), sidebar_x)
+        for field in OBJECT_FIELDS:
+            before, after = src.get(field), cand.get(field)
+            if before == after:
+                continue
+            permitted = region_ok and field in allowed
+            if permitted:
+                continue
+            escapes[field] += 1
+            if len(detail) < 12:
+                label = src.get("alias_text") or src.get("tag_text") or src.get("name")
+                detail.append(f"{label}.{field}: {before!r} -> {after!r}")
+        if scope.get("region") == "filter-cluster" and is_filter(src):
+            if px(src, "posWidth") != px(cand, "posWidth") or px(src, "posHeight") != px(cand, "posHeight"):
+                findings.append(Finding("V-C04", "error",
+                                        f'{src.get("name")} filter size changed '
+                                        f'{px(src, "posWidth")}x{px(src, "posHeight")} -> '
+                                        f'{px(cand, "posWidth")}x{px(cand, "posHeight")} during a '
+                                        "position-only cluster move"))
+            src_alarm = associated_alarm(src, [p[0] for p in pairs] + [src])
+            # Use candidate objects: the paired cand plus other candidate alarms.
+    if scope.get("added") == "none" and added:
+        names = ", ".join((o.get("alias_text") or o.get("name") or "") for o in added[:8])
+        findings.append(Finding("V-C02", "error",
+                                f"{len(added)} object(s) added under scope {scope_name!r}: {names}"))
+    elif scope.get("added") == "bacnet_ualarm":
+        foreign = [o for o in added if not is_bacnet_ualarm(o)]
+        if foreign:
+            names = ", ".join(o.get("name") for o in foreign[:8])
+            findings.append(Finding("V-C02", "error",
+                                    f"{len(foreign)} added object(s) are not bacnet_ualarm: {names}"))
+    if scope.get("dropped") == "none" and dropped:
+        names = ", ".join((o.get("alias_text") or o.get("name") or "") for o in dropped[:8])
+        findings.append(Finding("V-C01", "error",
+                                f"{len(dropped)} source object(s) missing under scope {scope_name!r}: {names}"))
+    elif scope.get("dropped") == "replaced-generic-alarm":
+        foreign = [o for o in dropped if not is_generic_alarm(o)]
+        if foreign:
+            names = ", ".join((o.get("tag_text") or o.get("name") or "") for o in foreign[:8])
+            findings.append(Finding("V-C01", "error",
+                                    f"{len(foreign)} dropped object(s) are not replaced generic "
+                                    f"alarms: {names}"))
+    elif scope.get("dropped") == "unsupported-live-value" and not dropped:
+        pass
+    if not escapes:
+        findings.append(Finding("V-C03", "info",
+                                f"patch scope {scope_name!r} held on paired objects: "
+                                f"{scope['description']}"))
+        return
+    summary = ", ".join(f"{field} x{count}" for field, count in escapes.most_common())
+    findings.append(Finding("V-C03", "error",
+                            f"patch scope {scope_name!r} permits {scope['description']}, but "
+                            f"{sum(escapes.values())} field difference(s) escaped it: {summary}. "
+                            + "; ".join(detail)))
+
+
+def check_filter_cluster_move(source_objects, candidate_objects, findings):
+    """V-C05: a moved filter whose alarm did not move is a broken cluster."""
+    src_filters = [o for o in source_objects if is_filter(o)]
+    cand_by = {(o.get("obj_id"), (o.get("tag_text") or "").strip()): o
+               for o in candidate_objects if is_filter(o)}
+    for src in src_filters:
+        key = (src.get("obj_id"), (src.get("tag_text") or "").strip())
+        cand = cand_by.get(key)
+        if cand is None:
+            continue
+        dx = px(cand, "posLeft") - px(src, "posLeft")
+        dy = px(cand, "posTop") - px(src, "posTop")
+        if dx == 0 and dy == 0:
+            continue
+        src_alarm = associated_alarm(src, source_objects)
+        cand_alarm = associated_alarm(cand, candidate_objects)
+        if src_alarm is None:
+            continue
+        if cand_alarm is None:
+            findings.append(Finding("V-C05", "error",
+                                    f'{src.get("tag_text")!r} moved by ({dx},{dy}) but its alarm '
+                                    "is missing in the candidate"))
+            continue
+        adx = px(cand_alarm, "posLeft") - px(src_alarm, "posLeft")
+        ady = px(cand_alarm, "posTop") - px(src_alarm, "posTop")
+        if (adx, ady) != (dx, dy):
+            findings.append(Finding("V-C05", "error",
+                                    f'{src.get("tag_text")!r} moved by ({dx},{dy}) but its alarm '
+                                    f"moved by ({adx},{ady}). Apply one translation vector to "
+                                    "the whole filter cluster"))
+
+
+def compare(source_doc, candidate_doc, rules, findings, patch_scope=None,
+            profile_name=None, sibling_doc=None):
+    scope = None
+    if patch_scope is not None:
+        scope = PATCH_SCOPES.get(patch_scope)
+        if scope is None:
+            findings.append(Finding("V-C03", "error",
+                                    f"unknown --patch-scope {patch_scope!r}; defined: "
+                                    f"{', '.join(sorted(PATCH_SCOPES))}"))
+            return findings
+    source_env = envelope_of(source_doc)
+    cand_env = envelope_of(candidate_doc)
+    source_objects = objects_of(source_env)
+    cand_objects = objects_of(cand_env)
+    sidebar_x = ((rules.get("panel_types") or {}).get("ventilation") or {}).get(
+        "sidebar", {}).get("starts_at_x", SIDEBAR_DEFAULT_X)
+    pairs, dropped, added = pair_by_role(source_objects, cand_objects)
+    if dropped and (scope is None or scope.get("dropped") in (None, "none", "any")):
+        if scope is None:
+            names = ", ".join((o.get("tag_text") or o.get("name") or "") for o in dropped[:8])
+            findings.append(Finding("V-C01", "warning",
+                                    f"{len(dropped)} source object(s) missing from candidate: {names}"))
+    if added and (scope is None or scope.get("added") in (None, "none", "any")):
+        if scope is None:
+            names = ", ".join((o.get("tag_text") or o.get("name") or "") for o in added[:8])
+            findings.append(Finding("V-C02", "info",
+                                    f"{len(added)} object(s) added in candidate: {names}"))
+    if scope:
+        check_patch_scope(pairs, dropped, added, scope, patch_scope, sidebar_x, findings)
+    check_filter_cluster_move(source_objects, cand_objects, findings)
+    return findings
+
+
+def validate(document, profile_name=None, rules=None, palette=None, mode=None,
+             sibling_doc=None, sidebar_x=None):
     rules = rules if rules is not None else load_rules()
     palette = palette if palette is not None else load_palette()
     findings = []
@@ -945,7 +1509,8 @@ def validate(document, profile_name=None, rules=None, palette=None, mode=None):
     canvas_rule = ventilation.get("canvas") or {}
     canvas = (canvas_rule.get("width", 1400), canvas_rule.get("height", 750))
     bands = set((ventilation.get("z_indexes") or {}).get("bands", {}).keys())
-    sidebar_x = (ventilation.get("sidebar") or {}).get("starts_at_x", 1150)
+    if sidebar_x is None:
+        sidebar_x = (ventilation.get("sidebar") or {}).get("starts_at_x", SIDEBAR_DEFAULT_X)
 
     check_envelope(envelope, findings)
     check_counts(envelope, findings)
@@ -956,8 +1521,6 @@ def validate(document, profile_name=None, rules=None, palette=None, mode=None):
     check_geometry(envelope, objects, canvas, findings)
     check_z_bands(objects, bands, findings)
 
-    # A generated demo and a production export obey mirror-image binding
-    # contracts, so the mode has to be settled before either is checked.
     mode = detect_mode(objects) if mode is None else mode
     if mode == "demo":
         check_unlinked_demo(envelope, objects, findings)
@@ -977,19 +1540,40 @@ def validate(document, profile_name=None, rules=None, palette=None, mode=None):
 
     check_connector_attachment(objects, findings)
     check_duplicate_captions(objects, mode, findings)
-    check_alarms(objects, mode, findings)
+    check_alarms(objects, mode, findings, profile=profile)
+    check_filter_clusters(objects, findings)
+    check_bacnet_ualarms(objects, findings, profile=profile)
     check_damper_values(objects, profile, findings)
     check_sidebar(objects, sidebar_x, profile, mode, findings)
 
+    sibling_objects = objects_of(envelope_of(sibling_doc)) if sibling_doc is not None else []
     if profile:
-        check_profile(objects, profile, findings)
+        check_profile(objects, profile, findings, sibling_objects=sibling_objects,
+                      sidebar_x=sidebar_x)
 
+    return findings
+
+
+def validate_pair(source_doc, candidate_doc, profile_name=None, rules=None, palette=None,
+                  mode=None, patch_scope=None, sibling_doc=None):
+    rules = rules if rules is not None else load_rules()
+    palette = palette if palette is not None else load_palette()
+    findings = validate(candidate_doc, profile_name=profile_name, rules=rules,
+                        palette=palette, mode=mode, sibling_doc=sibling_doc)
+    compare(source_doc, candidate_doc, rules, findings, patch_scope=patch_scope,
+            profile_name=profile_name, sibling_doc=sibling_doc)
     return findings
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("panel", type=pathlib.Path)
+    parser.add_argument("panel", nargs="?", type=pathlib.Path)
+    parser.add_argument("--compare", nargs=2, type=pathlib.Path, metavar=("SOURCE", "CANDIDATE"),
+                        help="pair candidate against source by semantic role, never array index")
+    parser.add_argument("--patch-scope", default=None, choices=sorted(PATCH_SCOPES),
+                        help="in --compare, assert that only this class of change occurred (V-C*)")
+    parser.add_argument("--sibling-sidebar", type=pathlib.Path, default=None,
+                        help="named sibling panel whose sidebar geometry is the clone target (V-P11)")
     parser.add_argument("--profile", default=None,
                         help="apply a scoped geometry profile from documentation-rules.json")
     parser.add_argument("--mode", choices=("demo", "production"), default=None,
@@ -999,8 +1583,25 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
-    document = json.loads(args.panel.read_text(encoding="utf-8"))
-    findings = validate(document, args.profile, mode=args.mode)
+    if bool(args.compare) == bool(args.panel):
+        parser.error("give exactly one of PANEL.json / --compare SOURCE.json CANDIDATE.json")
+    if args.patch_scope and not args.compare:
+        parser.error("--patch-scope needs --compare SOURCE.json CANDIDATE.json")
+
+    sibling_doc = None
+    if args.sibling_sidebar:
+        sibling_doc = json.loads(args.sibling_sidebar.read_text(encoding="utf-8"))
+
+    if args.compare:
+        source_path, subject = args.compare
+        source_doc = json.loads(source_path.read_text(encoding="utf-8"))
+        document = json.loads(subject.read_text(encoding="utf-8"))
+        findings = validate_pair(source_doc, document, args.profile, mode=args.mode,
+                                 patch_scope=args.patch_scope, sibling_doc=sibling_doc)
+    else:
+        subject = args.panel
+        document = json.loads(subject.read_text(encoding="utf-8"))
+        findings = validate(document, args.profile, mode=args.mode, sibling_doc=sibling_doc)
 
     errors = [f for f in findings if f.severity == "error"]
     if args.as_json:
@@ -1008,7 +1609,7 @@ def main(argv=None):
     else:
         for finding in findings:
             print(finding)
-        print(f"\n{len(errors)} error(s), {len(findings) - len(errors)} warning(s) in {args.panel}")
+        print(f"\n{len(errors)} error(s), {len(findings) - len(errors)} warning(s) in {subject}")
     return 1 if errors else 0
 
 

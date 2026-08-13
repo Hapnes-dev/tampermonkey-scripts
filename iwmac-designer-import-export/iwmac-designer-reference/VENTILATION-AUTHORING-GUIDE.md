@@ -38,6 +38,10 @@ holds the numbers, and which validator rule proves you did it.
 8. [Validate structurally](#8-validate-structurally) — run the validator; zero errors.
 9. [Render and look at it](#9-render-and-look-at-it) — native 1400 × 750, plus zoomed crops.
 10. [Report what you could not verify](#10-report-what-you-could-not-verify) — gaps are recorded, never filled.
+11. [Patch a supplied export](#11-patch-a-supplied-export-case-3) — newest JSON wins; never rebuild from memory.
+12. [Choose the filter object from the inventory](#12-choose-the-filter-object-from-the-inventory) — binary vs numeric Pa.
+13. [Clone sidebar geometry by role](#13-clone-sidebar-geometry-by-role) — geometry only, keep target bindings.
+14. [Convert alarms to bacnet_ualarm_v1](#14-convert-alarms-to-bacnet_ualarm_v1) — evidence matrix, not every linked object.
 
 Steps 8 and 9 are both mandatory and neither substitutes for the other. **A panel
 that parses is not a panel that renders correctly.** Every defect this
@@ -55,15 +59,17 @@ differently and picking silently is how a modification turns into a rewrite.
 |---|---|---|
 | **1 — New unlinked demo** | "Make a 360.001 Ventilasjon demo" | Take a named template's layout whole, then strip its bindings (§7). |
 | **2 — Copy of a production layout** | "Build this panel for plant X like plant Y's" | Reproduce the geometry object for object; relink from the **target** plant's dump. |
-| **3 — Modification of a supplied export** | "Add an electric heater to this panel" | Preserve every existing object and field. Change only what was authorized. Never renumber or re-space the rest. |
+| **3 — Modification of a supplied export** | "Move the QD50 filter", "align the 360.008 sidebar with 360.002", "add BACnet alarms" | Patch **that exact file**. Newest user-supplied JSON supersedes every earlier generated candidate. Preserve every object and field not explicitly authorized. Never rebuild. |
 | **4 — Background artwork** | "Draw the AHU background" | **Refuse and explain.** Ventilasjon has no artwork: the ducts and equipment are objects on the standard blank-sidebar background. `panel.image_svg` MUST NOT appear (`V-S07`). |
 
 Case 1 is where generic dashboards come from. An agent that invents a layout
 instead of tracing one produces cards and KPI boxes, not ductwork.
 
-Case 3 has a hard rule of its own: **Insert JSON appends.** A full-panel export
-inserted onto a non-empty canvas duplicates everything. Insert onto an empty
-canvas unless duplication is the intent.
+Case 3 is the load-bearing case for Copilot follow-ups. Details: [§11](#11-patch-a-supplied-export-case-3).
+
+**Insert JSON appends.** A full-panel export inserted onto a non-empty canvas
+duplicates everything. Insert onto an empty canvas unless duplication is the
+intent.
 
 ---
 
@@ -79,9 +85,9 @@ precedence order:
 2. **A named production export** — [real-vent-panel-example.json](reference_data/real-vent-panel-example.json)
    (E2) or [real-vent-panel-example-2.json](reference_data/real-vent-panel-example-2.json)
    (E3). Both are real, linked, and masked.
-3. **A named profile** — currently only `PROFILE-9099-ROTOR-DEMO`, whose sanitized
-   fixture is [tests/fixtures/ventilation-9099-rotor-demo.json](tests/fixtures/ventilation-9099-rotor-demo.json)
-   (E4). This is the only template the validator can enforce, via `--profile`.
+3. **A named profile** — `PROFILE-9099-ROTOR-DEMO` (E4) or
+   `PROFILE-BINARY-FILTER-BACNET` (sanitized E29). Name the one you selected.
+   `--profile` is what makes the `V-P*` rules run.
 
 "Production style" is not a template. Neither is a remembered layout.
 
@@ -149,7 +155,9 @@ The eleven clusters of the canonical profile, with their anchors:
 
 Member lists and per-member offsets are in `documentation-rules.json` →
 `profiles.PROFILE-9099-ROTOR-DEMO.clusters[]` and, with their evidence, in
-contract §5. `V-P01` checks completeness; `V-P02` checks the offsets.
+contract §5. `V-P01` checks completeness; `V-P02` checks the offsets. This table
+is the 9099 rotor profile. A binary-filter panel uses `number_v3_filter_only`
+(§12, contract §5.3b) — do not copy the diff-press anchors onto it.
 
 **The bypass duct is not shortened to clear its damper.** The damper overlays a
 continuous vertical run. Cutting the duct to make room is the specific defect
@@ -168,10 +176,12 @@ Three prohibitions, in the order they bite:
 
 1. **MUST NOT invent an `obj_id`.** If the role has no object you can name from
    the catalogue, that is a gap (§10).
-2. **MUST NOT substitute a generic box for a purpose-built object.** A filter is
-   `numberV3_filter_with_diff_press` — one object that renders body, tag and
-   differential pressure together. Adding a second pressure box beside it is a
-   duplicate, not a completion (`V-P07`).
+2. **MUST NOT substitute a generic box for a purpose-built object.** A numeric
+   differential-pressure filter is `numberV3_filter_with_diff_press` — one object
+   that renders body, tag and Pa together. A binary Normal/Alarm filter is
+   `number_v3_filter_only` plus a verified alarm indication. Adding a fabricated
+   Pa box beside a binary filter is a defect (`V-P09`). Adding a second pressure
+   box beside a diff-press filter is a duplicate, not a completion (`V-P07`).
 3. **MUST NOT assume an id is right because it exists.** Passing the id-exists
    check is the check agents remember to run and the one that proves least. All
    eight substitutions in the 53-object lesson were legal palette entries; none
@@ -358,6 +368,192 @@ someone renders the panel and cannot say why it is wrong.
 
 ---
 
+## 11. Patch a supplied export (case 3)
+
+Treat the **newest user-supplied JSON** as the authoritative document. Compare
+changes by semantic role, `obj_id`, alias, driver binding and geometry — never
+only by array index. Use that file directly as the patch base.
+
+Required behaviour:
+
+- Preserve every object and every field not explicitly authorized for change.
+- Do not rebuild the panel from an earlier generated file.
+- Do not renumber, resize, replace or reposition unrelated objects.
+- If the user later supplies a newer export, that file supersedes prior
+  generated candidates.
+- Run `validate-ventilation-panel.py --compare SOURCE.json CANDIDATE.json
+  --patch-scope …` so only named roles or fields changed.
+
+Patch scopes: `position`, `filter-cluster-move`, `sidebar-geometry`,
+`bacnet-alarm-migration`, `alarm-and-sidebar`, `source-truth-cleanup`, `none`.
+
+### 11.1 Session files vs the customer's SharePoint file
+
+Generated workspace artifacts may not remain available in a later execution
+context. Required assistant behaviour:
+
+- Never imply that the customer's SharePoint file was deleted.
+- If a temporary working copy is missing, say exactly that.
+- Search or inspect the current workspace first.
+- If the user supplies a newer export, use it directly.
+- Do not reconstruct a full production panel from memory when an authoritative
+  export is missing.
+- Prefer asking for, or using, the latest export over silently rebuilding.
+
+### 11.2 Unsupported values (source-truth cleanup)
+
+When the user requests source-truth cleanup, remove live values the parameter
+inventory does not support, plus their orphaned connector or caption objects.
+Keep physical scaffold the user explicitly wants (E29: empty `number_360_room`).
+A room box may remain empty when no room-temperature parameters exist.
+
+E29 / `PROFILE-BINARY-FILTER-BACNET` unsupported tags: `RT900`, `RT520`, `RY401`,
+`Arb. SP.`, `RT600`, `RT601`, `RT600/601`. That list is **case-scoped**. The
+9099 rotor profile **does** carry a room-temperature value; do not delete RT600
+there. Never preserve a plausible-looking value only because an earlier template
+had it. Never create or retain a link the inventory does not support. Report
+every removed role. `V-P10`.
+
+Wrong: keep RT600/RT601 because the 9099 demo had a room temperature.
+Correct: retain the empty `number_360_room` and drop the un evidenced values.
+
+---
+
+## 12. Choose the filter object from the inventory
+
+| Inventory | Object | Alarm |
+|---|---|---|
+| Numeric differential pressure (Pa) | `numberV3_filter_with_diff_press` | Production-proven bell or ualarm per the selected reference |
+| Binary Normal/Alarm (or equivalent), no Pa | `number_v3_filter_only` | One verified alarm indication, typically `bacnet_ualarm_v1` when BACnet |
+
+Do not display a fabricated Pa value. Keep the filter icon's **verified production
+size and proportions** from the source JSON. Symbols must not be stretched merely
+to cross a duct. Move by changing position. The body must visually intersect its
+duct (`V-G08`). The QD tag must remain readable. The associated alarm must travel
+with the filter (`V-C05`).
+
+Wrong: stretch `number_v3_filter_only` until it spans the duct.
+Correct: keep 90×83 (when that is the source size) and translate the whole cluster.
+
+Wrong: move the filter and leave the alarm at the old coordinate.
+Correct: one translation vector on body + QD + alarm.
+
+90×83 is `CASE-4743-360008` evidence, not a universal size. Palette default for
+`number_v3_filter_only` is 27×53.
+
+---
+
+## 13. Clone sidebar geometry by role
+
+When a sibling panel is supplied for alignment (360.002 for 360.008):
+
+```bash
+python clone-ventilation-sidebar-geometry.py TARGET.json SIBLING.json -o OUT.json
+python validate-ventilation-panel.py OUT.json --profile PROFILE-BINARY-FILTER-BACNET \
+  --sibling-sidebar SIBLING.json
+```
+
+Copy geometry only. Preserve the target's `driver_id`, `unit_id`, `alias_text`
+and system identity. Match roles by `tag_text` then alias, never index.
+Labels such as Systemvender, Alarm and Alarmkvittering must use the sibling's
+measured geometry so they render with the same apparent centring.
+
+Wrong: copy 360.002 bindings onto 360.008.
+Correct: copy `posLeft`/`posTop`/`posWidth`/`posHeight` by role; keep 360.008
+drivers.
+
+Designer has no CSS text-align field.
+
+---
+
+## 14. Convert alarms to bacnet_ualarm_v1
+
+Host facts: [CLAUDE.md](CLAUDE.md) (`onParamPopup_link`, `addAlarmObject`,
+`bacCheck` / `checkDriver`). Geometry: contract §10.2. This section owns
+**whether** to add a ualarm.
+
+### 14.1 Decision matrix
+
+**Strong candidate** — all of: the same semantic role already carries
+`bacnet_ualarm_v1` in the selected production reference; the parameter is
+BACnet-backed; the alarm is visually meaningful on the target; the user
+requests alarm visibility for that role.
+
+**Conditional candidate** — start/status, pump/fan/damper state, valve output,
+temperature, pressure, airflow, efficiency. Add only when production evidence,
+host semantics, alarm metadata or an explicit user requirement supports it.
+
+**Do not add automatically:** setpoints, commands, alarm acknowledgement,
+system/operating-mode selectors, navigation, static labels, decorative scaffold,
+unlinked room placeholders, values with no verified BACnet parameter, right-sidebar
+controls unless the chosen reference explicitly uses ualarms there (`V-P12`).
+
+**Explicit signal rule.** If the panel already has an independently documented
+fault or alarm parameter, decide from evidence whether the explicit fault object
+remains, is replaced by a ualarm on the main parameter, or both are required.
+Default: exactly one intended indication per guarded role (`V-G05`). E3's two
+`Malf. damper` bells on two dampers are two roles, not a duplicate.
+
+Wrong: add `bacnet_ualarm_v1` to every linked object because a sibling panel
+looks busy.
+Correct: apply the matrix; report skipped roles.
+
+Wrong: add generic `V3_R_34px_circular_alarm_nrm` when the request is BACnet
+ualarm conversion.
+Correct: `bacnet_ualarm_v1` with the verified base driver.
+
+### 14.2 Removing old alarms
+
+Remove only old alarm objects that are demonstrably replaced. Do not delete
+right-sidebar alarm LEDs, equipment status LEDs, or explicit fault indications
+unless replacement semantics are verified. Remove stale unlinked "Alarm Points"
+only when confirmed orphaned. Ensure one intended indication per guarded role
+unless the reference explicitly contains more.
+
+### 14.3 Matching hierarchy
+
+Tolerate known source inconsistencies (`Avtreksvifte` / `Avtrekksvifte`, stale
+JV40/JV50 aliases, `360.02` vs `360.08` prefixes) as **candidate discovery**,
+never as silent authorization:
+
+1. Exact target `driver_id` from the verified parameter inventory.
+2. Exact normalized `alias_text`.
+3. Instrument tag and functional role.
+4. `obj_id` plus local equipment cluster.
+5. Human review if still ambiguous.
+
+Never bind an alarm to the wrong parameter because a string was close enough
+(`V-G09`).
+
+### 14.4 Idempotence
+
+```bash
+python migrate-ventilation-bacnet-alarms.py PANEL.json -o OUT.json [--reference REF.json]
+```
+
+The helper converts **generic circular alarms next to eligible linked process
+objects**. It does **not** sweep every linked value — that over-eager sweep is
+the case-study failure. Running it twice must not add a second `bacnet_ualarm_v1`,
+append `.Ualarm` twice, move already-correct alarms, remove unrelated status
+objects, or change object count after the first successful run.
+
+Serialized compiled-store exports (E29) already carry **one** `.Ualarm` suffix —
+that is the saved-panel shape. `--omit-ualarm-suffix` writes the base id.
+
+Userscript Insert calls `load_new_ver_objects`, which runs `checkDriver`, so
+**base** and **one suffix** both round-trip to one suffix on the next compile.
+`bacCheck` **does** double if the DOM already carries `.Ualarm` (container-item
+load, or any path that skipped `checkDriver`). Never author `.Ualarm.Ualarm`.
+Container items must use the base id. Details: CLAUDE.md §13c.
+
+### 14.5 Filter ualarms
+
+A binary-filter ualarm is **not** a copy of the filter body's driver. E29 filter
+bodies are unlinked; the ualarm carries the Filtervakt parameter. Place by the
+§5.3b offset from the body, not by inventing a body binding.
+
+---
+
 ## Failure catalogue
 
 The defects that actually recur, and what catches each. If you are debugging a
@@ -378,6 +574,13 @@ rejected panel, start here.
 | Background artwork behind a vent panel | Case 4 not refused | `V-S07` |
 | A real driver id in a demo | Sanitization skipped on one object | `V-S08` |
 | `gr C` in a tag | Degree sign degraded instead of fixing the transport | `V-S09` |
+| Binary filter drawn as `numberV3_filter_with_diff_press` | Inventory has Normal/Alarm only | `V-P09` |
+| Filter moved, alarm left behind | Cluster not translated as a unit | `V-C05`, `V-G08` |
+| `.Ualarm.Ualarm` | Second `bacCheck` pass authored into JSON | `V-G09` |
+| ualarm on a sidebar setpoint | Automatic "every linked object" sweep | `V-P12` |
+| Sidebar labels jump when switching 360.00N | Bindings copied, or geometry not cloned by role | `V-P11` |
+| RT600 kept with no inventory row | Template residue | `V-P10` |
+| Panel rebuilt after a later export arrived | Case 3 ignored; workspace copy reconstructed | §11 |
 
 Two production quirks that MUST NOT be "fixed":
 

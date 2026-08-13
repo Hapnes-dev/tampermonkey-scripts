@@ -665,10 +665,16 @@ one you picked in the verification report (7a-10):
     export is attached to be reproduced elsewhere). Reproduce the
     geometry object for object; change only what was asked; relink from
     the TARGET plant's dump (section 8b).
- 3) MODIFICATION OF AN ATTACHED EXPORT. Preserve every existing object
-    and every field value; add, move or edit ONLY what the user
-    explicitly authorized. Do not renumber, reorder, re-space or "tidy"
-    the rest, and never silently drop an object you cannot explain.
+ 3) MODIFICATION OF AN ATTACHED EXPORT. The newest user-supplied JSON
+    is the document. Patch it. Preserve every existing object and every
+    field value; add, move or edit ONLY what the user explicitly
+    authorized. Do not renumber, reorder, re-space or "tidy" the rest,
+    never silently drop an object you cannot explain, and never rebuild
+    from an earlier generated file or from memory. A later export
+    supersedes prior candidates. Compare by role, not array index.
+    Procedure: VENTILATION-AUTHORING-GUIDE.md §11. Binary vs numeric
+    filters, sibling-sidebar geometry clone, and BACnet ualarm policy
+    live there, not here. Host .Ualarm save/load: CLAUDE.md §13c.
  4) BACKGROUND-ONLY REQUEST. A vent panel has no artwork background.
     Say so, change nothing, stop.
 
@@ -769,9 +775,11 @@ missing member is not a smaller panel, it is a wrong one.
   (+5,+57) + V3_R_34px_circular_alarm_nrm at (+45,-19). The supply fan
   in the same file repeats this within 3 px (-2,-40 / +5,+55 / +48,-18)
   - that repetition is the proof it is a template, not a coincidence.
-- FILTER: numberV3_filter_with_diff_press carries its own differential
-  pressure in tag_text ("QD401 Pa") - do NOT add a separate value box -
-  plus an alarm bell above it (+8,-45 supply, +61,-46 extract).
+- FILTER: inventory-driven. Numeric Pa: numberV3_filter_with_diff_press
+  carries its own differential pressure in tag_text ("QD401 Pa") - do
+  NOT add a separate value box. Binary Normal/Alarm: number_v3_filter_only
+  plus one verified alarm; never fabricate Pa. Offsets and sizes are
+  source-scoped (VENTILATION-GEOMETRY-CONTRACT.md §5.3 / §5.3b).
 - HEATING COIL: number_v3_heater_3_way + frost alarm at (-22,-36) [E2;
   the rotor profile measures it at (584,378), offset (+1,-35) - contract
   5.6] + coil temps con_right "RT510 °C" (535,518) and con_left

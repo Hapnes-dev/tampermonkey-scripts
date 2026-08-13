@@ -2322,3 +2322,55 @@ supports it.
 existing-relink fixture’s synthetic cooling-anchor clusters produce zero
 `O-G07` findings; a forced cross-controller overlap still warns.
 
+# Addendum — 2026-08-13: Ventilasjon 360.008 binary-filter / BACnet ualarm
+
+**Scope.** Findings **F64–F68** apply to Ventilasjon case-3 edits. Measured
+sizes and offsets are `CASE-4743-360008`. The BACnet “every linked object”
+sweep is forbidden as a general policy.
+
+**Evidence.** **E29** is the later user-supplied `360.008` export (live, not
+committed). Sanitized fixture:
+`tests/fixtures/ventilation-binary-filter/canonical.json`.
+
+## Findings
+
+### F64 (S1 — wrong). A later export was rebuilt from memory
+
+Case 3 requires patching the newest supplied JSON. A missing workspace copy
+is not a deleted SharePoint file.
+
+**Corrective.** Authoring §11, routing §1.3.2, validator `--compare` /
+`--patch-scope` (`V-C01`–`V-C05`).
+
+### F65 (S1 — wrong). Binary filter drawn as differential-pressure object
+
+Inventory had Normal/Alarm only. Stretching the icon to cross a duct, or
+leaving the alarm at the old coordinate, compounded it.
+
+**Corrective.** `number_v3_filter_only`, `V-P09`, `V-G08`, `V-C04`, `V-C05`.
+90×83 is source-scoped.
+
+### F66 (S1 — wrong). Sidebar bindings copied from a sibling panel
+
+360.002 was a geometry reference. Copying its `driver_id` / `unit_id` /
+`alias_text` retargets 360.008.
+
+**Corrective.** Clone geometry by role (`V-P11`). Helper
+`clone-ventilation-sidebar-geometry.py`.
+
+### F67 (S1 — wrong). BACnet ualarms added to measurements and sidebar setpoints
+
+A sibling production panel is not a licence to ualarm every linked object.
+
+**Corrective.** Authoring §14 matrix. Host `.Ualarm` facts stay in CLAUDE.md
+§13c (re-verified 2026-08-13 against live `?t=9` assets: `bacCheck` is not
+idempotent; Insert uses `load_new_ver_objects`). `V-G09`, `V-P12`. Helper
+`migrate-ventilation-bacnet-alarms.py` converts generic bells only and is
+idempotent.
+
+### F68 (S1 — wrong). Unsupported RT600/RT601 kept because an earlier template had them
+
+**Corrective.** `V-P10` plus retain empty `number_360_room`. The 9099 rotor
+profile’s room temperature is a different scope and is not deleted.
+
+

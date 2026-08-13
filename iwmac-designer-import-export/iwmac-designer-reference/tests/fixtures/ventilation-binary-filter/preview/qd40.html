@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<title>canonical.json</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #52606d; }
+  #canvas {
+    position: relative;
+    width: 1400px;
+    height: 750px;
+    /* The standard blank Ventilasjon sidebar background, approximated: the
+       real PNG is served by the host. Only the split matters for QA. */
+    background: #eef2f5;
+    border-right: 0;
+    overflow: visible;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  #canvas::after {
+    /* the sidebar gutter, at the x where production header bars start */
+    content: "";
+    position: absolute; left: 1150px; top: 0;
+    width: 1px; height: 750px;
+    background: rgba(0,0,0,0.12);
+  }
+  .o {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px solid;
+    overflow: visible;
+    white-space: nowrap;
+  }
+  .t {
+    position: absolute;
+    line-height: 1;
+    color: #10202e;
+  }
+  /* Text whose position this script can only approximate - see
+     text_placement(). Do not read a collision involving one of these as a
+     finding without confirming it against the host. */
+  .approx { color: #8a4b00; }
+  /* A text label carries no box of its own in the real panel, so drawing its
+     border would invent a collision that is not there. Show it faintly. */
+  .band1100 { border-style: dashed; }
+  #legend {
+    position: absolute; top: 750px; left: 0;
+    width: 1400px; padding: 6px 8px; box-sizing: border-box;
+    font: 11px Arial, sans-serif; color: #e7edf2; background: #52606d;
+  }
+  #legend span { display: inline-block; margin-right: 14px; }
+  #legend i { display: inline-block; width: 10px; height: 10px;
+               margin-right: 4px; vertical-align: -1px; border: 1px solid; }
+</style>
+<div id="crop" style="width:160px;height:140px;overflow:hidden;position:relative;background:#52606d"><div id="canvas" style="margin-left:-100px;margin-top:-380px">
+<div class="o" style="left:24px;top:200px;width:1025px;height:18px;z-index:5;border-color:#8fa6b8;background:rgba(143,166,184,0.35)" title="object_0  number_v3_exhaust_pipe_horisontal  (24,200) 1025x18 z=5  new text"></div>
+<div class="o" style="left:24px;top:442px;width:270px;height:18px;z-index:5;border-color:#8fa6b8;background:rgba(143,166,184,0.35)" title="object_1  number_v3_fresh_pipe_horisontal  (24,442) 270x18 z=5  new text"></div>
+<div class="o" style="left:327px;top:442px;width:720px;height:18px;z-index:5;border-color:#8fa6b8;background:rgba(143,166,184,0.35)" title="object_2  number_v3_supply_pipe_horisontal  (327,442) 720x18 z=5  new text"></div>
+<div class="o" style="left:129px;top:413px;width:90px;height:83px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_3  number_v3_filter_only  (129,413) 90x83 z=110  new text"><span class="t" style="left:1px;top:0;font-size:11px">QD40</span></div>
+<div class="o" style="left:466px;top:169px;width:90px;height:83px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_4  number_v3_filter_only  (466,169) 90x83 z=110  new text"><span class="t" style="left:1px;top:0;font-size:11px">QD50</span></div>
+<div class="o" style="left:152px;top:387px;width:35px;height:31px;z-index:375;border-color:#c0392b;background:rgba(192,57,43,0.30)" title="object_5  bacnet_ualarm_v1  (152,387) 35x31 z=375  360.08 -QD40 Filtervakt Tilluft"></div>
+<div class="o" style="left:489px;top:141px;width:35px;height:31px;z-index:375;border-color:#c0392b;background:rgba(192,57,43,0.30)" title="object_6  bacnet_ualarm_v1  (489,141) 35x31 z=375  360.08 -QD50 Filtervakt Avtrekk"></div>
+<div class="o" style="left:795px;top:421px;width:59px;height:59px;z-index:40;border-color:#3f4b57;background:rgba(63,75,87,0.28)" title="object_7  V3_58px_fan_right_nrm  (795,421) 59x59 z=40  360.08 -JV40 Tilluftsvifte Start"><span class="t" style="left:1px;top:0;font-size:11px">JV40</span></div>
+<div class="o" style="left:818px;top:395px;width:35px;height:31px;z-index:375;border-color:#c0392b;background:rgba(192,57,43,0.30)" title="object_8  bacnet_ualarm_v1  (818,395) 35x31 z=375  360.08 -JV40 Tilluftsvifte Start"></div>
+<div class="o" style="left:985px;top:417px;width:46px;height:38px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_9  number_v3_R_45px_con_down  (985,417) 46x38 z=110  360.08 -RT40 Tilluftstemp."><span class="t approx" style="left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-size:11px">RT40 °C</span></div>
+<div class="o" style="left:1044px;top:159px;width:100px;height:339px;z-index:40;border-color:#3f4b57;background:rgba(63,75,87,0.28)" title="object_10  number_360_room  (1044,159) 100x339 z=40  new text"></div>
+<div class="o" style="left:1150px;top:0px;width:250px;height:20px;z-index:5;border-color:#8fa6b8;background:rgba(143,166,184,0.35)" title="object_11  number_v3_header_grey75  (1150,0) 250x20 z=5  new text"><span class="t" style="left:1px;top:0;font-size:11px">Status og vendere</span></div>
+<div class="o band1100" style="left:1243px;top:24px;width:50px;height:1px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_12  number_v3_label_11px_norm  (1243,24) 50x1 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Driftsmodus</span></div>
+<div class="o" style="left:1160px;top:36px;width:230px;height:20px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_13  number_v3_custom_json_obj  (1160,36) 230x20 z=110  360.08 Årsak til aktuell driftsmodus"></div>
+<div class="o band1100" style="left:1175px;top:59px;width:50px;height:1px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_14  number_v3_label_11px_norm  (1175,59) 50x1 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Systemvender</span></div>
+<div class="o" style="left:1160px;top:73px;width:100px;height:20px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_15  number_v3_60px_json_obj  (1160,73) 100x20 z=110  360.08 Systemvender"></div>
+<div class="o band1100" style="left:1305px;top:59px;width:50px;height:1px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_16  number_v3_label_11px_norm  (1305,59) 50x1 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Alarm</span></div>
+<div class="o" style="left:1317px;top:75px;width:16px;height:16px;z-index:375;border-color:#c0392b;background:rgba(192,57,43,0.30)" title="object_17  V3_led_16px_circ_grey_red  (1317,75) 16x16 z=375  360.08 Alarm"></div>
+<div class="o band1100" style="left:1172px;top:95px;width:50px;height:1px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_18  number_v3_label_11px_norm  (1172,95) 50x1 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Alarmkvittering</span></div>
+<div class="o" style="left:1160px;top:108px;width:100px;height:20px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_19  number_v3_60px_json_obj  (1160,108) 100x20 z=110  360.08 Alarmkvittering"></div>
+<div class="o" style="left:1150px;top:165px;width:250px;height:20px;z-index:5;border-color:#8fa6b8;background:rgba(143,166,184,0.35)" title="object_20  number_v3_header_grey75  (1150,165) 250x20 z=5  new text"><span class="t" style="left:1px;top:0;font-size:11px">Vifteregulering</span></div>
+<div class="o band1100" style="left:1260px;top:190px;width:50px;height:20px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_21  number_v3_label_11px_norm  (1260,190) 50x20 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Tilluft</span></div>
+<div class="o band1100" style="left:1330px;top:190px;width:50px;height:20px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_22  number_v3_label_11px_norm  (1330,190) 50x20 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Avtrekk</span></div>
+<div class="o band1100" style="left:1160px;top:210px;width:50px;height:1px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_23  number_v3_label_11px_norm  (1160,210) 50x1 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">Sp. høyfart m³/h:</span></div>
+<div class="o" style="left:1260px;top:205px;width:62px;height:22px;z-index:110;border-color:#1f6f43;background:rgba(255,255,255,0.92)" title="object_24  number_v3_60px_dark_no_conn  (1260,205) 62x22 z=110  360.08 Settpunkt høyfart tilluft"></div>
+<div class="o" style="left:1150px;top:357px;width:250px;height:20px;z-index:5;border-color:#8fa6b8;background:rgba(143,166,184,0.35)" title="object_25  number_v3_header_grey75  (1150,357) 250x20 z=5  new text"><span class="t" style="left:1px;top:0;font-size:11px">Temperaturregulering</span></div>
+<div class="o band1100" style="left:1160px;top:385px;width:50px;height:1px;z-index:1100;border-color:#6c3fb5;background:rgba(108,63,181,0.12)" title="object_26  number_v3_label_11px_norm  (1160,385) 50x1 z=1100  new text"><span class="t" style="left:1px;top:0;font-size:11px">kjøling avtrekk</span></div>
+</div></div>
+<div id="legend"><span><i style="border-color:#8fa6b8;background:rgba(143,166,184,0.35)"></i>z 5 &mdash; duct / pipe / connector</span><span><i style="border-color:#3f4b57;background:rgba(63,75,87,0.28)"></i>z 40 &mdash; equipment body</span><span><i style="border-color:#1f6f43;background:rgba(255,255,255,0.92)"></i>z 110 &mdash; value / setpoint / json</span><span><i style="border-color:#c0392b;background:rgba(192,57,43,0.30)"></i>z 375 &mdash; alarm / LED / pump / valve</span><span><i style="border-color:#6c3fb5;background:rgba(108,63,181,0.12)"></i>z 1100 &mdash; text label</span><br>APPROXIMATE. Boxes and text are drawn from the JSON coordinates; object artwork is served by the host and is not shown. 27 objects, canvas 1400x750. 1 tags are drawn in brown because their exact position inside the box is not recorded anywhere: the connector families inset their text past a stub of unknown width. Confirm any collision involving one of those against the host before reporting it.</div>
+</html>

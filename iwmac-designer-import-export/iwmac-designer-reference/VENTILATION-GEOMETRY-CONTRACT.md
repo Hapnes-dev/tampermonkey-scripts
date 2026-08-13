@@ -48,6 +48,8 @@ Unresolved questions go in §12, not into a plausible number.
 | `REF-9099` | Measured in the 9099 export family only. A different AHU may legitimately differ |
 | `PROFILE-9099-ROTOR-DEMO` | Geometry of one named, corrected profile (§0). Applies **only** when that profile is the selected template |
 | `SCREENSHOT` | Derived from a visual correction stated in the task. **Not present in any export inspected here.** Outranks production under precedence rank 1, and is recorded as unverified |
+| `CASE-4743-360008` | Measured on the plant-4743 `360.008` modification (E29). Binary-filter size, ualarm offsets and screenshot `posTop` 169 are **this panel**, not every AHU |
+| `PROFILE-BINARY-FILTER-BACNET` | Sanitized fixture profile derived from that case. Inventory is binary Normal/Alarm, not numeric Pa |
 | `ADVISORY` | Judgement or convention, not a measurement |
 
 `VENT` is the only tag that generalizes. A `REF-9099` or `PROFILE-*` coordinate
@@ -129,6 +131,13 @@ when a profile is selected.**
 | `V-P06` | Profile alarm coordinates | §10 |
 | `V-P07` | Roles the profile deliberately does not carry | §7 |
 | `V-P08` | Sidebar caption centring | §7.2 |
+| `V-G08` | Filter intersects a duct, owns one adjacent alarm, is not stretched to fake a crossing | §5.3b |
+| `V-G09` | `bacnet_ualarm` suffix, matching base driver, one ualarm per (base, component) | §10.2 |
+| `V-P09` | Binary vs numeric differential-pressure filter `obj_id` | §5.3b |
+| `V-P10` | Unsupported live tags when source-truth cleanup is in force | authoring guide |
+| `V-P11` | Sidebar geometry cloned by semantic role from a sibling panel | §8.6 |
+| `V-P12` | No `bacnet_ualarm` on sidebar setpoints/commands unless the profile allows it | §10.2 |
+| `V-C01`–`V-C05` | Source/candidate compare and patch-scope (`--compare`, `--patch-scope`) | authoring guide |
 
 **There is no `V-G01`.** The id was never issued; the global relationship rules
 start at `V-G02`. Do not renumber to close the gap — the ids are referenced by
@@ -144,6 +153,7 @@ renumber would silently repoint every one of them.
 | **E2** | [reference_data/real-vent-panel-example.json](reference_data/real-vent-panel-example.json) | 102 | 41 | 1400×750 | same |
 | **E3** | [reference_data/real-vent-panel-example-2.json](reference_data/real-vent-panel-example-2.json) | 92 | 39 | 1400×750 | same |
 | **E4** | [tests/fixtures/ventilation-9099-rotor-demo.json](tests/fixtures/ventilation-9099-rotor-demo.json) — the sanitized `PROFILE-9099-ROTOR-DEMO` fixture | 97 | 43 | 1400×750 | same |
+| **E29** | Live `iwmac-panel_4743_360-008-reserve-2_…json` (Downloads, **not committed**). Sanitized twin: [tests/fixtures/ventilation-binary-filter/canonical.json](tests/fixtures/ventilation-binary-filter/canonical.json) | 86 live / fixture is reduced | — | 1400×750 | blank sidebar |
 
 **E1, E2 and E4 are three revisions of one AHU; E3 is a different plant.** E4 is
 the corrected revision and the only committed *demo*: 97 objects all carrying the
@@ -298,7 +308,7 @@ incomplete regardless of how the objects look:
 | Component | Required roles | Optional roles |
 |---|---|---|
 | Fan | body, airflow value, motor output, alarm | — |
-| Filter | `numberV3_filter_with_diff_press` body (renders its own `QD…` pressure), one alarm | — |
+| Filter | Inventory-driven body (`numberV3_filter_with_diff_press` **or** `number_v3_filter_only`) + QD tag if the object renders one + one alarm | never a fabricated Pa value |
 | Rotor | body, alarm, output `LX001 %`, efficiency | profile-supported temperatures |
 | Cooling coil | body, cooling output, alarm | profile-supported temperatures |
 | Water-heating coil | body, output, alarm, **circulation pump**, **3-way valve** | temperatures |
@@ -368,6 +378,39 @@ The body is identical in E1, E2 and E4. The alarm is not.
 |---|---|---|
 | (527, 108) | (+61, −46) | `REF-9099` — E1, E2 |
 | **(498, 106)** | **(+32, −48)** | `PROFILE-9099-ROTOR-DEMO` — E4, and the value the task brief states |
+
+### 5.3b Binary-filter cluster — `CASE-4743-360008` / `PROFILE-BINARY-FILTER-BACNET`
+
+**Not a replacement for §5.3.** Use this only when the parameter inventory exposes
+a binary filter guard (Normal/Alarm or equivalent) and **no** numeric differential
+pressure.
+
+| Role | `obj_id` / tag | x | y | w | h | z | Offset from body |
+|---|---|---|---|---|---|---|---|
+| Supply filter body | `number_v3_filter_only`, `QD40` | 129 | 413 | 90 | 83 | 110 | (0, 0) |
+| Supply filter ualarm | `bacnet_ualarm_v1` | 152 | 387 | 35 | 31 | 375 | (+23, −26) |
+| Extract filter body | `number_v3_filter_only`, `QD50` | 466 | 169 | 90 | 83 | 110 | (0, 0) |
+| Extract filter ualarm | `bacnet_ualarm_v1` | 489 | 141 | 35 | 31 | 375 | (+23, −28) |
+
+Evidence: E29 (user-supplied later export) plus the user's screenshot and explicit
+`posTop` 169 for QD50. **90×83 is source-scoped.** Palette default for
+`number_v3_filter_only` is 27×53; catalogue size is a toolbox default, not a
+placement rule. Preserve the source size during a position-only patch (`V-C04`).
+
+Screenshot-scoped placement: the alarm sits **above and slightly right** of the
+filter graphic, close enough to read as belonging to it, and must not cover the
+filter body or the QD text. A cropped or scaled screenshot needs an explicit
+canvas scale before deriving absolute coordinates. A user-stated coordinate such
+as `posTop` 169 is used directly.
+
+`V-G08` requires the filter rectangle to intersect a horizontal duct. Move the
+symbol by changing `posLeft`/`posTop`. Do not stretch width or height to fake a
+crossing.
+
+The filter **body** in E29 is unlinked (`driver_id` empty). The ualarm carries the
+Filtervakt parameter. Do not copy the body's empty driver onto the alarm.
+
+When the cluster moves, apply **one translation vector** to body + alarm (`V-C05`).
 
 ### 5.4 Supply filter
 
@@ -845,6 +888,27 @@ wherever the row label already explains the signal.**
 Minimum acceptable rendered-glyph separation for a new row: **4 px**. `ADVISORY` —
 production's own margin is ≈ 6 px and nothing in the exports establishes a floor.
 
+### 8.6 Sibling-panel sidebar geometry clone — `VENT` procedure, geometry from the named sibling
+
+When the user names a sibling Ventilasjon panel (for example 360.002 as the
+reference for 360.008) and asks for **minimal visual movement** when switching
+panels, copy **geometry only** by semantic role:
+
+- Copy: `posLeft`, `posTop`, `posWidth`, `posHeight` (and `zIndex` only if the
+  reference requires it).
+- Preserve on the target: `driver_id`, `unit_id`, `alias_text`, `tag_text` when
+  the target wording is intentionally different, and system identity.
+
+Match by visible `tag_text`, then `alias_text`. **Never by array index.** Designer
+has no CSS `text-align` field; apparent label centring is object geometry plus
+the object's own left-aligned rendering.
+
+`V-P11` enforces equality against `--sibling-sidebar`. Helper:
+`clone-ventilation-sidebar-geometry.py`.
+
+Do not put `bacnet_ualarm` objects in the right sidebar unless the chosen
+reference and the request both support it (`V-P12`).
+
 ## 9. LED placement
 
 ### 9.1 Equipment-body LED (LV402) — `PROFILE-9099-ROTOR-DEMO`
@@ -910,7 +974,41 @@ different design and the pill's geometry is unknown.
 > roles. Only two bells on the *same* component are the duplicate `V-G05`
 > reports.
 
-### 10.2 Profile alarm coordinates — `PROFILE-9099-ROTOR-DEMO`
+### 10.2 Generic alarm vs BACnet ualarm — geometry only
+
+Host behaviour (when `.Ualarm` is appended or stripped, `addAlarmObject`) is
+owned by [CLAUDE.md](CLAUDE.md) §13c. Which roles may receive a ualarm is owned by
+[VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md). This section
+owns **where** a ualarm sits.
+
+Two placements, two scopes — do not average them:
+
+| Placement | Scope | Geometry |
+|---|---|---|
+| Interactive Designer Add (param selector, BACnet toolbar on) | host | `left = selected.offsetLeft + selected.offsetWidth + 5`, `top = selected.offsetTop` — **to the right**. Width/height `null` → control default **35×31**, z 375. No collision check. |
+| Conversion that copies a production panel | the selected export | relative offset from that export's main object (steps below). E29 filter ualarms sit above-right at about **(+23, −26)/(+23, −28)** (`CASE-4743-360008`, §5.3b) — **not** the host default. |
+
+When a selected production export already has `bacnet_ualarm_v1` on the same
+semantic role:
+
+1. Find the main object in the reference.
+2. Find its associated ualarm by base-driver relationship (`driver_id` with one
+   `.Ualarm` suffix) or verified semantic mapping.
+3. `dx = alarm.posLeft - main.posLeft`, `dy = alarm.posTop - main.posTop`.
+4. Find the equivalent target main object by semantic role, never array index.
+5. Place at `target.posLeft + dx`, `target.posTop + dy`.
+6. Preserve verified alarm size and `zIndex`. E29 ualarms are **35×31** at z
+   `"375"` (controls-registry width/height, not the palette's 31×31 listing).
+7. Visual overlap and adjacency check. Filter alarms use §5.3b.
+
+Do not reuse one coordinate for both an upper and a lower damper. Two ualarms
+may share one base driver when they guard two distinct components (E29 dampers);
+two ualarms on the **same** component fail `V-G09` / `V-G05`.
+
+v1 vs v2: same 35×31. v1 state 0 is `transp.gif`; v2 state 0 is
+`grey_no_attention.png`. E29 uses v1. Do not substitute v2 without evidence.
+
+### 10.3 Profile alarm coordinates — `PROFILE-9099-ROTOR-DEMO`
 
 Absolute positions from E4, each 34×34 at z `"375"`. These are **profile
 geometry** — do not universalize them to a different AHU.
@@ -1018,6 +1116,8 @@ exists to prevent.
    error. Mirrored in `documentation-rules.json` → `open_evidence[0]`.
 7. **No minimum-gap value is established by production** (§8.5). The 4 px floor is
    advisory.
+8. **Whether QD glyphs sit in the 3–5 px ualarm/filter overlap at native Designer render** is still screenshot-vs-export, not averaged. E29 JSON rectangles overlap; the screenshot said the alarm must not cover QD. `VC-T03` infos when `--source` is the canonical export.
+9. *(closed — was: host JS 502 / `bacCheck` idempotence.)* Re-fetched `?t=9` on 2026-08-13. See §12.3.
 
 ### 12.2 Closed by E4
 
@@ -1029,6 +1129,13 @@ Recorded so a later revision does not reopen them from the old text.
 | Whether the inlet dampers are recirculation dummies or production flow dampers | Both, in different revisions of the same AHU — E1/E2 dummies, E3 and E4 flow dampers | §5.9a / §5.9b, `V-P03` |
 | Whether the outdoor-temperature block belongs on the fresh-air duct | Profile-scoped: (20, 301) in E1/E2, (16, 17) corner block in E4 — and E4 *also* carries a duct-mounted `RT901 °C` | §5.9b, `V-P04` |
 | Five alarm coordinates that disagreed between the contract text and the fixture | E4 read directly | §10.2, `V-P06` |
+
+### 12.3 Closed by live host JS (`?t=9`, 2026-08-13)
+
+| Was open | Closed by | Now in |
+|---|---|---|
+| `addAlarmObject` offset, inherited fields, BACnet-mode trigger | Live `graphics_build.js:846-872` + `iw_popup_paramhandler.js:1087-1098`. Host default is to the **right** (`offsetWidth + 5`). Graphics path never creates an object. Trigger is `bacnetHandler.enabled`. | CLAUDE.md §13c; this file §10.2 |
+| Whether `bacCheck` is idempotent | It is **not**. Always concatenates `.Ualarm`. `checkDriver` replaces the **first** `.Ualarm` only, and only in `load_new_ver_objects`. Container items skip it. | CLAUDE.md §13c, gotcha #27; `V-G09` |
 
 ## 13. Panel-type scope summary
 

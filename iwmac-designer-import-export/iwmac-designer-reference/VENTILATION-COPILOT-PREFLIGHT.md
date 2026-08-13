@@ -9,8 +9,36 @@ IWMAC VENTILASJON PREFLIGHT. Work every step before emitting JSON.
 
 2 NAME THE CASE, and the profile, before placing anything: new demo, copy of a
   production panel, edit of a supplied export, or background-only (Ventilasjon
-  has no artwork, so say so and stop). The only profile with complete measured
-  geometry is PROFILE-9099-ROTOR-DEMO. If none fits, say so.
+  has no artwork, so say so and stop). Profiles with measured geometry:
+  PROFILE-9099-ROTOR-DEMO, PROFILE-BINARY-FILTER-BACNET. If none fits, say so.
+
+2b DECISION FLOW. Answer in order.
+  1 User-supplied JSON present? Yes: patch that exact file (newest wins). No:
+    select a named production template or profile. Never rebuild from memory.
+    A missing workspace copy is not a deleted SharePoint file.
+  2 Filter numeric Pa or binary Normal/Alarm? Numeric:
+    numberV3_filter_with_diff_press. Binary: number_v3_filter_only plus one
+    verified alarm. Do not fabricate Pa. Do not stretch the icon.
+  3 BACnet ualarm requested or proven by the selected reference? Yes: read
+    CLAUDE.md host facts, then add bacnet_ualarm_v1 per the authoring-guide
+    matrix. No: keep the documented explicit alarm/fault strategy.
+  4 Sibling panel for sidebar alignment? Yes: clone geometry by semantic role
+    only. No: keep this panel's own sidebar geometry.
+  5 Requested role absent from the parameter inventory? Leave unlinked or
+    remove when source-truth cleanup is requested. Never invent the link.
+  6 A component moved? Move the complete functional cluster (one vector).
+  7 Before delivery: compare with source, validate, render, inspect crops,
+    report exact changes and unresolved gaps.
+
+2c WRONG vs CORRECT.
+  Stretch filter to cross a duct / preserve size and move it.
+  Move filter, leave alarm / move body + QD + alarm together.
+  Keep RT600/RT601 with no inventory / keep empty number_360_room only.
+  Copy 360.002 bindings / copy sidebar geometry only.
+  Generic alarm circles when BACnet was requested / bacnet_ualarm_v1.
+  ualarm on every linked object / evidence matrix (no sidebar setpoints).
+  Match by array index / match by semantic role.
+  Rebuild from memory / patch the newest supplied export.
 
 3 NEVER INVENT a coordinate, obj_id, driver id, unit id, parameter alias, file
   path or navigation target. Missing evidence is reported, not filled in.
@@ -33,7 +61,9 @@ IWMAC VENTILASJON PREFLIGHT. Work every step before emitting JSON.
 
 6 CLUSTERS ARE ATOMIC. Place every member or none, and relocate with ONE vector.
   Fan: body, airflow, motor output, alarm.
-  Filter: the differential-pressure filter object plus ONE alarm, no extra box.
+  Filter: inventory-driven — numberV3_filter_with_diff_press (numeric Pa) or
+    number_v3_filter_only (binary guard) plus ONE alarm. Never fabricate Pa.
+    Alarm travels with the body. Size is source-scoped; do not stretch.
   Rotor: rotor, alarm, output, efficiency, profile-supported temperatures only,
     and no decorative Rotor or VGV text.
   Cooling: body, supported temperatures, cooling output, alarm.
@@ -65,19 +95,25 @@ IWMAC VENTILASJON PREFLIGHT. Work every step before emitting JSON.
    source_plant_id and plant_id are empty. Keep alias_text: it is what a human
    links by afterwards. Object count is not a quality target; role coverage is.
 
-11 VERIFY IN ORDER. a Re-parse the JSON. b Run validate-ventilation-panel.py panel.json
-   --profile PROFILE-9099-ROTOR-DEMO, dropping --profile only when no profile applies
-   and saying so; zero errors is the bar. c Render at native 1400 x 750 and inspect the
-   whole panel plus zoomed crops of the inlet dampers, both fans, rotor and bypass,
-   both filters, cooling coil, water heating coil, electric heater, room endpoint and
-   every sidebar section, pointer moved away, because a hover tooltip is not panel
-   content. d Reject overlapping or duplicated labels, detached values, stubs pointing
-   into empty space, incomplete clusters. e Run validate-visual-correctness.py
-   panel.json: the four deliberate overlap classes are live-over-ARTWORK; no live
-   object may cover descriptive TEXT, and state values fit their longest allowed
-   display value (VISUAL-CORRECTNESS-CONTRACT.md, GLOBAL). On a visual failure
-   RESTART from the retained source export rather than patching a chain of
-   compensating edits.
+11 VERIFY IN ORDER. a Re-parse the JSON. b Run validate-ventilation-panel.py
+   panel.json --profile PROFILE-9099-ROTOR-DEMO or PROFILE-BINARY-FILTER-BACNET,
+   plus --compare SOURCE CANDIDATE --patch-scope when this is a modification,
+   plus --sibling-sidebar when a sibling panel was named; dropping --profile
+   only when no profile applies and saying so; zero errors is the bar. c Render
+   at native 1400 x 750 and inspect the whole panel plus zoomed crops of the
+   inlet dampers, both fans, rotor and bypass, both filters and their alarms,
+   cooling coil, water heating coil, electric heater, room endpoint and every
+   sidebar section, pointer moved away, because a hover tooltip is not panel
+   content. d Reject overlapping or duplicated labels, detached values, stubs
+   pointing into empty space, incomplete clusters, stretched symbols, orphaned
+   filter alarms, duplicate ualarms, sidebar movement when geometry clone was
+   requested. e Run validate-visual-correctness.py panel.json: the four
+   deliberate overlap classes are live-over-ARTWORK; no live object may cover
+   descriptive TEXT, and state values fit their longest allowed display value
+   (VISUAL-CORRECTNESS-CONTRACT.md, GLOBAL). On a visual failure RESTART from
+   the retained source export rather than patching a chain of compensating
+   edits. Owners: geometry contract, authoring guide §11–§14, CLAUDE.md §13c
+   for host .Ualarm behaviour. AI-BRIEFING.txt is a pointer, not a second owner.
 
 12 REPORT the case, the precedence rank, the profile, every role you moved and
    why, and everything you could not verify. A stated gap is a valid deliverable

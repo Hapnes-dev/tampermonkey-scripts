@@ -57,6 +57,11 @@ applies that invariant to an existing-panel repair.
 records the remaining session findings: cluster-not-container identity,
 screenshot scaling, the four-role pattern as a reusable observation, and
 `O-G07` no longer treating same-cluster stacking as generic overlap noise.
+[Part 18](#part-18--2026-08-13-ventilasjon-binary-filter-bacnet-ualarm-and-case-3-patches)
+records the plant-4743 `360.008` Ventilasjon lessons: newest-export case 3,
+binary vs numeric filters, sibling-sidebar geometry clone, an evidence-based
+BACnet ualarm matrix that must not ualarm every linked object, and the
+2026-08-13 live `?t=9` host re-fetch (`bacCheck` not idempotent).
 
 Date: 2026-08-09. Driven by [DOCUMENTATION-AUDIT.md](DOCUMENTATION-AUDIT.md); finding
 ids (F1–F21) refer to that document.
@@ -3744,4 +3749,84 @@ python validate-oversikt-panel.py \
   --patch-scope binding-repair \
   --parameters tests/fixtures/oversikt-linking/parameters.json \
   --task oversikt-existing-panel-relink --json-report --no-matrix
+```
+
+# Part 18 — 2026-08-13: Ventilasjon binary-filter, BACnet ualarm, case-3 patches
+
+A Copilot-style Ventilasjon edit on plant 4743 system 360.008 failed by
+rebuilding from memory, stretching filters, leaving alarms behind, copying
+sidebar *bindings* from 360.002, keeping unsupported RT600/RT601 values, and
+adding `bacnet_ualarm_v1` to many measurement objects because a sibling panel
+looked busy.
+
+Evidence **E29** is the later user-supplied export (live, not committed). The
+sanitized fixture is
+`tests/fixtures/ventilation-binary-filter/canonical.json`. Scope tags
+`CASE-4743-360008` and `PROFILE-BINARY-FILTER-BACNET`. Coordinates from E29 are
+not a design target for another AHU.
+
+## Rules changed
+
+### 190. Case 3 — newest export is the document
+
+[VENTILATION-AUTHORING-GUIDE.md](VENTILATION-AUTHORING-GUIDE.md) §11 owns
+patch-the-exact-file, role-not-index compare, `--patch-scope`, and the
+workspace-copy vs SharePoint wording. [AI-REQUEST-ROUTING.md](AI-REQUEST-ROUTING.md)
+§1.3.2 routes it. [AI-BRIEFING.txt](AI-BRIEFING.txt) §7a-0 is a pointer, not a
+second owner.
+
+### 191. Binary vs numeric filter
+
+Supersedes the authoring-guide sentence that a filter **must** be
+`numberV3_filter_with_diff_press`. Inventory with only Normal/Alarm uses
+`number_v3_filter_only`. `V-P09`, `V-G08`, `V-C04`, `V-C05`. Geometry:
+[VENTILATION-GEOMETRY-CONTRACT.md](VENTILATION-GEOMETRY-CONTRACT.md) §5.3b
+(`CASE-4743-360008`, 90×83 source-scoped).
+
+### 192. Sibling sidebar geometry clone
+
+Copy `posLeft`/`posTop`/`posWidth`/`posHeight` by semantic role. Keep the
+target's bindings. No CSS text-align. `V-P11`. Helper
+`clone-ventilation-sidebar-geometry.py`.
+
+### 193. BACnet ualarm policy vs host behaviour
+
+Host save/load (`.Ualarm`, `addAlarmObject`) stays in [CLAUDE.md](CLAUDE.md)
+§13c. Which Ventilasjon roles may receive a ualarm is authoring §14 — **not**
+every linked object. `V-G09`, `V-P12`, `V-G05`. Helper
+`migrate-ventilation-bacnet-alarms.py` converts generic circular alarms next
+to eligible process objects and is idempotent.
+
+`DESIGN-OBJECT-CATALOG.md` already listed `bacnet_ualarm_v1`/`v2` and both
+filter ids from the generated catalogue; it was not hand-edited. Palette
+27×53 vs production 90×83 remains a toolbox-default vs source-size distinction.
+
+### 194. Host BACnet JS re-fetched (`?t=9`)
+
+Live `iw_popup_paramhandler.js`, `graphics_build.js`, `container_tool.js`,
+and `V3scripts.js` from `legacy.iwmac.local`. Facts now in CLAUDE.md §13c
+and gotcha #27:
+
+- `addAlarmObject` places to the **right** (`offsetWidth + 5`); conversion
+  jobs still copy the selected export's relative offset (contract §10.2).
+- `bacCheck` **always concatenates** `.Ualarm` — not idempotent.
+- `checkDriver` removes the **first** `.Ualarm` only; userscript Insert uses
+  `load_new_ver_objects` so top-level `base` and `base.Ualarm` both round-trip.
+- Container items skip `checkDriver`. Graphics BACnet path never creates an
+  object.
+
+## Verification commands
+
+Run from `iwmac-designer-reference/`:
+
+```bash
+python tests/test_ventilation_bacnet_case.py --write-fixtures
+python -m unittest tests.test_ventilation_profile_9099 tests.test_ventilation_bacnet_case
+python validate-ventilation-panel.py tests/fixtures/ventilation-binary-filter/canonical.json \
+  --profile PROFILE-BINARY-FILTER-BACNET \
+  --sibling-sidebar tests/fixtures/ventilation-binary-filter/sibling-sidebar.json
+python validate-ventilation-panel.py --compare \
+  tests/fixtures/ventilation-binary-filter/canonical.json \
+  tests/fixtures/ventilation-binary-filter/canonical.json \
+  --patch-scope none --profile PROFILE-BINARY-FILTER-BACNET
 ```
