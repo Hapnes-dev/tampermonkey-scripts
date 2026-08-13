@@ -30,7 +30,28 @@ These paths stay in the public repository:
 - every `*.user.js` in its current folder
 - `sql-equipment-import/templates/` including `manifest.json` (runtime fetch from `raw.githubusercontent.com`; Tampermonkey has no GitHub login)
 
-No other files remain on public `main`. In particular, all `CLAUDE.md`, all per-script `README.md`, `docs/`, `iwmac-designer-reference/`, `vv-designer-reference/`, validators, schemas, tests, and fixtures leave public `main`.
+No other files remain on public `main`. In particular, **every `CLAUDE.md` at any depth** leaves public `main` (root, each script folder, and nested reference folders). Also leave: all per-script `README.md`, `docs/`, `iwmac-designer-reference/`, `vv-designer-reference/`, validators, schemas, tests, and fixtures.
+
+Tracked `CLAUDE.md` files that must all be private (16):
+
+- `CLAUDE.md`
+- `ak3-autoscan/CLAUDE.md`
+- `iwmac-designer-import-export/iwmac-designer-reference/CLAUDE.md`
+- `iwmac-topology-copy/CLAUDE.md`
+- `logic-designer-copy-paste/CLAUDE.md`
+- `logic-designer-import-export/CLAUDE.md`
+- `logic-designer-import-export/vv-designer-reference/CLAUDE.md`
+- `oneflow-copy-products/CLAUDE.md`
+- `rocketlane-chat-bridge/CLAUDE.md`
+- `rocketlane-day-recap/CLAUDE.md`
+- `rocketlane-enhancer/CLAUDE.md`
+- `rocketlane-project-notes/CLAUDE.md`
+- `rocketlane-younium-status/CLAUDE.md`
+- `sql-equipment-import/CLAUDE.md`
+- `supermarket-superuser/CLAUDE.md`
+- `younium-order-to-quote/CLAUDE.md`
+
+A later `CLAUDE.md` anywhere in the tree follows the same rule: private documents repo only. Never add one back onto public `main`.
 
 Do not bump any userscript `@version`. This is a docs-and-layout change, not a script change.
 
@@ -38,8 +59,8 @@ Do not bump any userscript `@version`. This is a docs-and-layout change, not a s
 
 Mirror the current relative paths so agents and skills still resolve the same files. Examples that must keep their path:
 
-- `CLAUDE.md` (repo-wide)
-- `<script-folder>/CLAUDE.md` and `<script-folder>/README.md`
+- every `CLAUDE.md` (root, each script folder, nested `iwmac-designer-reference/` and `vv-designer-reference/`)
+- `<script-folder>/README.md`
 - `iwmac-designer-import-export/iwmac-designer-reference/` (entire tree)
 - `logic-designer-import-export/vv-designer-reference/`
 - `logic-designer-import-export/validate-vv-sketch.js`
@@ -88,12 +109,12 @@ Do not add new `CLAUDE.md`, contracts, or tests back onto public `main`.
 3. Copy the current docs tree (everything not on the public allowlist) into the new repo and push `main` to both private remotes.
 4. In the public scripts repo, delete the moved files, edit root `README.md` as specified, commit, and push `origin` and `gitlab`.
 5. Confirm Tampermonkey raw URLs still 200 for every `.user.js` and for `sql-equipment-import/templates/manifest.json`.
-6. Confirm public `main` file browser no longer lists `CLAUDE.md`, per-script READMEs, or reference trees.
+6. Confirm public `main` file browser no longer lists any `CLAUDE.md` (root or nested), per-script READMEs, or reference trees. `git ls-files '**/CLAUDE.md' 'CLAUDE.md'` on public `main` is empty.
 
 ## Success criteria
 
 - Colleagues with Tampermonkey still receive updates from the same `@updateURL` / `@downloadURL` values.
-- Public GitHub `main` shows root `README.md`, the `.user.js` files, SQL templates, and `.gitignore` only.
+- Public GitHub `main` shows root `README.md`, the `.user.js` files, SQL templates, and `.gitignore` only. Zero `CLAUDE.md` files remain.
 - The private clone still has the full documentation and validator kit at the same relative paths.
 - No userscript `@version` change. No force-push. No history rewrite.
 
