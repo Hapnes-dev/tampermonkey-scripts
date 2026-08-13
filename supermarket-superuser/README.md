@@ -80,4 +80,4 @@ Both workbooks are styled and interactive (v4.7–4.13):
 - **Overlay portals:** filters, ghost rows, the unit combo and the all-params view live in fixed-position portal `<div>`s that `stopPropagation()` on all pointer/keyboard events, so the IWMAC SPA never reacts to clicks inside script UI.
 - **Writes** go through the toolbox API `http://toolbox.iwmac.local/oets/api/index2.php` (`action=batch_sql`, ≤ 500 statements per transaction) against `iw_plant_server3.iw_gen_driver_parameters` **and** `…_override` (`INSERT … ON DUPLICATE KEY UPDATE`, so values survive an Escape parameter regeneration). Reads use the same API's raw `sql_command` plus the page-origin `settings.php` JSON-RPC.
 
-Full technical reference (architecture, API payloads, exact SQL, gotchas, function index): [CLAUDE.md](CLAUDE.md).
+Full technical reference lives in the private `tampermonkey-scripts-documents` repository.

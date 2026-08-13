@@ -25,4 +25,4 @@ A collection of Tampermonkey userscripts. Click an install link below to add a s
 
 ## Related
 
-The VV Designer reference material in [`logic-designer-import-export/`](logic-designer-import-export/) is also packaged as a Claude agent skill — **[`vv-designer-sketch`](https://github.com/Hapnes-dev/agent-skills/tree/main/vv-designer-sketch)** in [Hapnes-dev/agent-skills](https://github.com/Hapnes-dev/agent-skills) — so Claude loads it automatically when you describe plant logic, and validates its own output before answering. This repo stays the source of truth for the docs it bundles.
+Internal documentation lives in the private `tampermonkey-scripts-documents` repository.
