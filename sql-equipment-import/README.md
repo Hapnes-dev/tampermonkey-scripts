@@ -2,7 +2,7 @@
 
 A floating panel that overlays the phpMyAdmin frameset on IWMAC plant servers. Pick a driver template from a GitHub-hosted manifest (or load a `.sql` from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP) in the form, and emit the full SQL ready to paste into the plant DB. The rest of the template (CREATE TABLE, parameter rows, set rows, processes, order_no, …) is emitted verbatim.
 
-No database, no API. Driver templates live in the private `tampermonkey-scripts-documents` repository; this panel can still load a `.sql` from disk.
+No database, no API. Templates are static files in this repo.
 
 ## Install
 
@@ -11,7 +11,7 @@ No database, no API. Driver templates live in the private `tampermonkey-scripts-
 ## Usage
 
 1. Open phpMyAdmin on a plant (`*.plants.iwmac.local:*/secure/phpMyAdmin/...`) and select the plant DB. The panel appears top-right (drag header to move; `×` hides; click "SQL Import" to reopen).
-2. Pick a **Driver template** from the dropdown, or use **load a .sql from disk**. Templates are no longer published in this public repository.
+2. Pick a **Driver template** from the dropdown — it lists everything published in [`templates/manifest.json`](templates/manifest.json). The script downloads the picked `.sql` directly from GitHub raw. (If the manifest fails to load, the **load a .sql from disk** input below still works.)
 3. The form populates from the file:
    - **Unit rows** — pre-filled from the `iw_sys_plant_units` block; rename / add (`+`) / remove (`−`).
    - **mb_mode** (RTU/TCP/…), **comm_baudrate**, **comm_parity** — pre-filled from `iw_sys_plant_settings`; edit as needed.
@@ -20,7 +20,19 @@ No database, no API. Driver templates live in the private `tampermonkey-scripts-
 
 ## Adding a new driver template
 
-Driver templates live in the private `tampermonkey-scripts-documents` repository. Until a later userscript update, load a `.sql` from disk in the panel.
+1. Drop the `.sql` file into [`templates/`](templates/).
+2. Add an entry to [`templates/manifest.json`](templates/manifest.json):
+   ```json
+   {
+     "name": "MY_DRIVER-v1",
+     "display_name": "My Driver v1",
+     "driver_type": "MYDRV",
+     "file": "MY_DRIVER-v1.sql"
+   }
+   ```
+3. Commit + push. Click the `↻` button next to the dropdown in the panel (or reload the page) to pick up the new template.
+
+The userscript fetches `manifest.json` and template files from `https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/templates/…` with a cache-buster, so changes are visible immediately after push.
 
 ## Notes (AI reference)
 

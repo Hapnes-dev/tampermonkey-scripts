@@ -1,0 +1,216 @@
+REPLACE INTO `iw_sys_plant_units` (`row_date`, `active`, `blockout`, `unit_id`, `unit_name`, `grp_name`, `driver_type`, `driver_addr`, `regulator_type`, `order_no`, `driver_adr_extra`) VALUES
+(NOW(), '1', '0', 'E01', 'Måler 1', 'mkd', 'MKD', '0_1', 'MKD', 'MKD', ''),
+(NOW(), '1', '0', 'E02', 'Måler 2', 'mkd', 'MKD', '0_2', 'MKD', 'MKD', ''),
+(NOW(), '1', '0', 'E03', 'Måler 3', 'mkd', 'MKD', '0_3', 'MKD', 'MKD', '');
+
+REPLACE INTO `iw_sys_plant_settings` (`row_date`, `setting`, `owner`, `value`, `eng_unit`, `help_text`, `help_link`) VALUES
+(NOW(), 'comm_port', 'MKD', '6', '', '', ''),
+(NOW(), 'comm_baudrate', 'MKD', '9600', '', '', ''),
+(NOW(), 'comm_stop_bits', 'MKD', '1', '', '', ''),
+(NOW(), 'comm_data_bits', 'MKD', '8', '', '', ''),
+(NOW(), 'comm_parity', 'MKD', '0', '', '0=N|1=O|2=E|3=M|4=S', ''),
+(NOW(), 'mb_mode', 'MKD', '0', '', '0=RTU|1=ASCII|2=TCP', ''),
+(NOW(), 'idle_event_rate', 'MKD', '250', 'msec.', '', ''),
+(NOW(), 'sql_queue_poll_time', 'MKD', '2000', 'msec.', '', ''),
+(NOW(), 'value_quality_check_limit', 'MKD', '0', '', '0 = disabled', ''),
+(NOW(), 'packet_timeout', 'MKD', '0', 'sec.', '', ''),
+(NOW(), 'max_outstanding_packets', 'MKD', '-1', '', '', ''),
+(NOW(), 'max_error_count', 'MKD', '2', '', '', ''),
+(NOW(), 'max_group_count', 'MKD', '1', '', '', ''),
+(NOW(), 'max_param_block_time', 'MKD', '2', 'hours', '', ''),
+(NOW(), 'speed_index_norm', 'MKD', '1', '', '', ''),
+(NOW(), 'speed_index_slow', 'MKD', '1', '', '', ''),
+(NOW(), 'speed_index_offline', 'MKD', '10', '', '', ''),
+(NOW(), 'speed_index_block', 'MKD', '10', '', '', ''),
+(NOW(), 'show_queue_info', 'MKD', '0', '', '', ''),
+(NOW(), 'com_error_alarm_delay', 'MKD', '10', 'min.', '', ''),
+(NOW(), 'mb_request_retries', 'MKD', '0', '', '', ''),
+(NOW(), 'mb_request_timeout', 'MKD', '500', 'ms', '', ''),
+(NOW(), 'mux_settle_time', 'MKD', '1500', 'ms', 'Time for the muxed input to settle. The value shuld be a multiple off 100.', ''),
+(NOW(), 'startup_delay', 'MKD', '15', 'Sec.', '', ''),
+(NOW(), 'check_rate', 'MKD', '1', 'ms', '', ''),
+(NOW(), 'handshake', 'MKD', '0', '', '0|1|2', ''),
+(NOW(), 'force_word_not_byte', 'MKD', '0', '', '0|1', ''),
+(NOW(), 'alarm_handler', 'MKD', '', '', '', '');
+
+REPLACE INTO `iw_sys_order_no` (`row_date`, `order_no`, `db_link`, `group_link`) VALUES
+(NOW(), 'MKD', 'mkd_param', 'mkd_groups');
+
+REPLACE INTO `iw_sys_processes` (`row_date`, `man_start`, `path`, `process_name`, `process_id`, `process_status`) VALUES
+(NOW(), '0', 'iw_mb.exe', 'MKD', '', '');
+
+CREATE TABLE IF NOT EXISTS `iw_par_mkd_groups` (
+  `row_date` datetime NOT NULL DEFAULT '2004-01-10 00:00:00',
+  `type` varchar(50) NOT NULL DEFAULT '',
+  `view_order` mediumint(6) NOT NULL DEFAULT '0',
+  `ref` varchar(100) NOT NULL DEFAULT '',
+  `value` varchar(200) NOT NULL DEFAULT '',
+  UNIQUE KEY `type` (`type`,`view_order`,`ref`,`value`)
+) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='2.0.0';
+
+REPLACE INTO `iw_par_mkd_groups` (`row_date`, `type`, `view_order`, `ref`, `value`) VALUES
+('2011-04-06 12:00:00', 'default_link', 1, '', ''),
+('2011-04-06 12:00:00', 'group_alias', 1, 'gen', 'Målinger'),
+('2011-04-06 12:00:00', 'group_alias', 2, 't1', 'Tariff 1'),
+('2011-04-06 12:00:00', 'group_alias', 3, 't2', 'Tariff 2'),
+('2011-04-06 12:00:00', 'group_alias', 4, 't3', 'Tariff 3'),
+('2011-04-06 12:00:00', 'group_alias', 5, 'par', 'Partiell'),
+('2011-04-06 12:00:00', 'group', 1, 'gen', 'gen_0_4_0'),
+('2011-04-06 12:00:00', 'group', 2, 'gen', 'gen_0_4_2'),
+('2011-04-06 12:00:00', 'group', 3, 'gen', 'gen_0_4_4'),
+('2011-04-06 12:00:00', 'group', 4, 'gen', 'gen_0_4_6'),
+('2011-04-06 12:00:00', 'group', 5, 'gen', 'gen_0_4_8'),
+('2011-04-06 12:00:00', 'group', 6, 'gen', 'gen_0_4_10'),
+('2011-04-06 12:00:00', 'group', 7, 'gen', 'gen_0_4_60'),
+('2011-04-06 12:00:00', 'group', 8, 'gen', 'gen_0_4_62'),
+('2011-04-06 12:00:00', 'group', 1, 't1', 't1_0_4_12'),
+('2011-04-06 12:00:00', 'group', 2, 't1', 't1_0_4_14'),
+('2011-04-06 12:00:00', 'group', 3, 't1', 't1_0_4_16'),
+('2011-04-06 12:00:00', 'group', 4, 't1', 't1_0_4_18'),
+('2011-04-06 12:00:00', 'group', 5, 't1', 't1_0_4_20'),
+('2011-04-06 12:00:00', 'group', 6, 't1', 't1_0_4_22'),
+('2011-04-06 12:00:00', 'group', 1, 't2', 't2_0_4_24'),
+('2011-04-06 12:00:00', 'group', 2, 't2', 't2_0_4_26'),
+('2011-04-06 12:00:00', 'group', 3, 't2', 't2_0_4_28'),
+('2011-04-06 12:00:00', 'group', 4, 't2', 't2_0_4_30'),
+('2011-04-06 12:00:00', 'group', 5, 't2', 't2_0_4_32'),
+('2011-04-06 12:00:00', 'group', 6, 't2', 't2_0_4_34'),
+('2011-04-06 12:00:00', 'group', 1, 't3', 't3_0_4_36'),
+('2011-04-06 12:00:00', 'group', 2, 't3', 't3_0_4_38'),
+('2011-04-06 12:00:00', 'group', 3, 't3', 't3_0_4_40'),
+('2011-04-06 12:00:00', 'group', 4, 't3', 't3_0_4_42'),
+('2011-04-06 12:00:00', 'group', 5, 't3', 't3_0_4_44'),
+('2011-04-06 12:00:00', 'group', 6, 't3', 't3_0_4_46'),
+('2011-04-06 12:00:00', 'group', 1, 'par', 'par_0_4_48'),
+('2011-04-06 12:00:00', 'group', 2, 'par', 'par_0_4_50'),
+('2011-04-06 12:00:00', 'group', 3, 'par', 'par_0_4_52'),
+('2011-04-06 12:00:00', 'group', 4, 'par', 'par_0_4_54'),
+('2011-04-06 12:00:00', 'group', 5, 'par', 'par_0_4_56'),
+('2011-04-06 12:00:00', 'group', 6, 'par', 'par_0_4_58');
+
+CREATE TABLE IF NOT EXISTS `iw_par_mkd_param` (
+  `row_date` datetime NOT NULL DEFAULT '2004-01-01 00:00:00',
+  `element_id` varchar(100) NOT NULL DEFAULT '',
+  `driver_id` varchar(100) NOT NULL DEFAULT '',
+  `alias_text` text NOT NULL,
+  `menu` varchar(10) NOT NULL DEFAULT '',
+  `application` text NOT NULL,
+  `parameter_type` text NOT NULL,
+  `factory_setting` text NOT NULL,
+  `grp` text NOT NULL,
+  `att` text NOT NULL,
+  `eng_unit` varchar(50) NOT NULL DEFAULT '',
+  `format` varchar(20) NOT NULL DEFAULT '',
+  `range_min` text NOT NULL,
+  `range_max` text NOT NULL,
+  `scale` varchar(15) NOT NULL DEFAULT '',
+  `raw_min` varchar(15) NOT NULL DEFAULT '',
+  `raw_max` varchar(15) NOT NULL DEFAULT '',
+  `eng_min` varchar(15) NOT NULL DEFAULT '',
+  `eng_max` varchar(15) NOT NULL DEFAULT '',
+  `driver_id_extra` varchar(255) NOT NULL DEFAULT '',
+  `format_extra` text NOT NULL,
+  UNIQUE KEY `element_id` (`element_id`)
+) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='3.2.3';
+
+REPLACE INTO `iw_par_mkd_param` (`row_date`, `element_id`, `driver_id`, `alias_text`, `menu`, `application`, `parameter_type`, `factory_setting`, `grp`, `att`, `eng_unit`, `format`, `range_min`, `range_max`, `scale`, `raw_min`, `raw_max`, `eng_min`, `eng_max`, `driver_id_extra`, `format_extra`) VALUES
+('2011-04-06 12:00:00', 'gen_0_4_0', '0_4_0', 'Aktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_0_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_2', '0_4_2', 'Aktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_2_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_4', '0_4_4', 'Induktiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_4_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_6', '0_4_6', 'Kapasitiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_6_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_8', '0_4_8', 'Induktiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_8_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_10', '0_4_10', 'Kapasitiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_10_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_100', '0_4_100', 'Tariff 1 ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_100_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_12', '0_4_12', 'Aktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_12_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_14', '0_4_14', 'Aktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_14_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_16', '0_4_16', 'Induktiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_16_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_18', '0_4_18', 'Kapasitiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_18_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_20', '0_4_20', 'Induktiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_20_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't1_0_4_22', '0_4_22', 'Kapasitiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_22_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_200', '0_4_200', 'Tariff 2 ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_200_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_24', '0_4_24', 'Aktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_24_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_26', '0_4_26', 'Aktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_26_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_28', '0_4_28', 'Induktiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_28_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_30', '0_4_30', 'Kapasitiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_30_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_32', '0_4_32', 'Induktiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_32_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't2_0_4_34', '0_4_34', 'Kapasitiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_34_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_300', '0_4_300', 'Tariff 3 ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_300_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_36', '0_4_36', 'Aktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_36_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_38', '0_4_38', 'Aktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_38_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_40', '0_4_40', 'Induktiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_40_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_42', '0_4_42', 'Kapasitiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_42_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_44', '0_4_44', 'Induktiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_44_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 't3_0_4_46', '0_4_46', 'Kapasitiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_46_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_400', '0_4_400', 'Partiell ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_400_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_48', '0_4_48', 'Partiell aktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_48_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_50', '0_4_50', 'Partiell aktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_50_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_52', '0_4_52', 'Partiell induktiv reaktiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_52_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_54', '0_4_54', 'Partiell induktiv kapasitiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_54_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_56', '0_4_56', 'Partiell induktiv reaktiv energi - ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_56_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'par_0_4_58', '0_4_58', 'Partiell induktiv kapasitiv energi + ', '', 'Analog values', 'float', '', '-1', 'r', 'kWh', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_58_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_500', '0_4_500', 'Innganger ', '', 'Analog values', 'float', '', '-1', 'r', '', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_500_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_60', '0_4_60', 'Måler IN1 ', '', 'Analog values', 'float', '', '-1', 'r', '', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_60_U32_W_-_-_-_-', ''),
+('2011-04-06 12:00:00', 'gen_0_4_62', '0_4_62', 'Måler IN2 ', '', 'Analog values', 'float', '', '-1', 'r', '', '%.1f', '', '', '1', '0', '1000', '0', '10', '4_62_U32_W_-_-_-_-', '');
+
+CREATE TABLE IF NOT EXISTS `iw_set_mkd` (
+  `row_date` datetime NOT NULL DEFAULT '2004-01-10 00:00:00',
+  `element_id` varchar(100) NOT NULL DEFAULT '',
+  `active` enum('0','1') NOT NULL DEFAULT '0',
+  `onl_ind` enum('0','1') NOT NULL DEFAULT '1',
+  `update_freq` set('','fast','norm','slow','once','never') NOT NULL DEFAULT 'norm',
+  `save_data` enum('0','1','2') NOT NULL DEFAULT '0',
+  `save_freq` set('','fast','norm','slow') NOT NULL DEFAULT 'norm',
+  `plant_pri` char(1) NOT NULL DEFAULT '',
+  `sys_pri` char(1) NOT NULL DEFAULT '',
+  `alarm_type` tinyint(3) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`element_id`)
+) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='2.0.4';
+
+REPLACE INTO `iw_set_mkd` (`row_date`, `element_id`, `active`, `onl_ind`, `update_freq`, `save_data`, `save_freq`, `plant_pri`, `sys_pri`, `alarm_type`) VALUES
+('2011-04-06 12:00:00', 'gen_0_4_0', '1', '1', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_2', '1', '1', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_4', '1', '1', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_6', '1', '1', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_8', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_10', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_100', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_12', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_14', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_16', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_18', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_20', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't1_0_4_22', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_200', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_24', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_26', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_28', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_30', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_32', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't2_0_4_34', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_300', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_36', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_38', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_40', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_42', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_44', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 't3_0_4_46', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_400', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_48', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_50', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_52', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_54', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_56', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'par_0_4_58', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_500', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_60', '1', '0', 'norm', '', '', '', '', 0),
+('2011-04-06 12:00:00', 'gen_0_4_62', '1', '0', 'norm', '', '', '', '', 0);
+
+
+
+
+
+-- Changelog
+--
+-- v1 Orginal
+--
+--
