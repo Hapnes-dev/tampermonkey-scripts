@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.109
-// @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Uses pang's get_history + changes/commits APIs.
+// @version      4.110
+// @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js
@@ -16,13 +16,172 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
 // @connect      tools.iwmac.local
+// @connect      internal.iwmac.local
 // @connect      iwmac.local
 // @connect      *
 // @run-at       document-idle
 // ==/UserScript==
 
+// ===== IWMAC "All logs" helpers ======================================================
+// Pure, side-effect-free helpers for the All logs feed (http://internal.iwmac.local/tools/all_logs/).
+// They live OUTSIDE the userscript IIFE so `node --test all-logs-helpers.test.js` can require this
+// file directly: the IIFE returns immediately when GM_xmlhttpRequest is absent, so requiring the file
+// under Node never touches location/GM storage. Everything below is deliberately dependency-free.
+var RL_RECAP_ALL_LOGS = (function () {
+    'use strict';
+
+    // Never print a secret VALUE anywhere a note can end up (chip tooltip, timesheet note, console).
+    // Shared with bookTexts inside the IIFE — one definition, one behaviour. Live handover notes have
+    // been seen carrying plant passwords verbatim.
+    const ALL_LOGS_SECRET_RE = /pass|pwd|secret|token|key/i;
+    const ALL_LOGS_NOTE_CAP = 8;      // notes shown per plant — a busy day should not bury the row
+    const ALL_LOGS_NOTE_CHARS = 180;  // one note line; longer comments are ellipsised
+
+    // Same normalisation the IIFE's normalizeUser does (lowercase, strip @domain). Duplicated on
+    // purpose so the helpers stay require-able without the browser half of the script.
+    function rlRecapNormalizeUser(u) {
+        return String(u || '').toLowerCase().split('@')[0].trim();
+    }
+
+    // The pang click log is mirrored into All logs as system PANG1 (older rows: PANG). Those rows carry
+    // the same action codes the recap already knows — their `comment` is only "Launch <tool>", never
+    // extra detail, so PANG1 comments must never become activity notes.
+    function isPang1LogSystem(sys) {
+        return /^PANG1?$/i.test(String(sys || ''));
+    }
+
+    // The action-chip code for one All logs row. PANG1 keeps its pang action code (so existing
+    // ACTION_META labels apply); NOTES becomes the synthetic `pang_note`; anything else uses its own
+    // action, falling back to the lowercased system name when the row has no action.
+    function allLogsChipCode(rec) {
+        const sys = rec && rec.system;
+        if (isPang1LogSystem(sys)) return (rec && rec.action) || '';
+        if (/^NOTES$/i.test(String(sys || ''))) return 'pang_note';
+        return (rec && rec.action) || String(sys || '').toLowerCase();
+    }
+
+    // service.php takes a wall-clock window, so one calendar day is 00:00:00 … 23:59:59 local (Oslo),
+    // matching every other date in the script.
+    function allLogsDateWindow(iso) {
+        return { date_from: iso + ' 00:00:00', date_to: iso + ' 23:59:59' };
+    }
+
+    // Make one log comment safe to display. A comment that looks like it carries a credential is
+    // reduced to "[redacted]" plus any URLs it contained (the Zendesk/ticket link is the useful part
+    // and is never itself the secret).
+    function maskAllLogsComment(s) {
+        s = String(s == null ? '' : s).trim();
+        if (!s) return '';
+        const urls = s.match(/https?:\/\/[^\s]+/gi) || [];
+        if (ALL_LOGS_SECRET_RE.test(s)) s = '[redacted]' + (urls.length ? ' ' + urls.join(' ') : '');
+        s = s.replace(/\s+/g, ' ').trim();
+        if (s.length > ALL_LOGS_NOTE_CHARS) s = s.slice(0, ALL_LOGS_NOTE_CHARS - 1) + '…';
+        return s;
+    }
+
+    // Keep only this user's rows that name a plant. The request already filters by exact user, but a
+    // substring match on the server (or a shared session) must never leak another Thomas into the day.
+    function filterAllLogsRecords(records, username) {
+        const me = rlRecapNormalizeUser(username);
+        if (!me) return [];
+        return (records || []).filter(r => r && String(r.plant_id || '').trim() && rlRecapNormalizeUser(r.user) === me);
+    }
+
+    // Build recap visits straight from All logs rows. Shape matches loadVisitsForDate's output minus
+    // the time fields — the caller stamps those, so both sources go through the identical estimator.
+    // `tsFn` converts "YYYY-MM-DD HH:MM:SS" to ms (the IIFE passes tsFromPangDate).
+    function visitsFromAllLogsRecords(records, username, names, tsFn) {
+        const toTs = tsFn || (s => new Date(String(s || '').replace(' ', 'T')).getTime());
+        const rows = filterAllLogsRecords(records, username);
+        const byPlant = new Map();
+        for (const r of rows) {
+            const pid = String(r.plant_id).trim();
+            let g = byPlant.get(pid);
+            if (!g) { g = { pang1: [], extra: [] }; byPlant.set(pid, g); }
+            (isPang1LogSystem(r.system) ? g.pang1 : g.extra).push(r);
+        }
+        const visits = [];
+        for (const [pid, g] of byPlant) {
+            const hasClicks = g.pang1.length > 0;
+            const events = [];
+            for (const r of g.pang1) {
+                const ts = toTs(r.date);
+                if (isFinite(ts)) events.push({ ts, action: allLogsChipCode(r), click: true });
+            }
+            for (const r of g.extra) {
+                const ts = toTs(r.date);
+                // A non-click row (a note, an operations-log entry) is evidence the plant was worked on,
+                // but it is not a pang click — counting it as one would push a real session past
+                // SPARSE_CLICK_MAX and disable the commit fusion. Only when the plant has NO pang clicks
+                // at all do these rows stand in as the visit's clicks.
+                if (isFinite(ts)) events.push({ ts, action: allLogsChipCode(r), click: !hasClicks });
+            }
+            if (!events.length) continue;
+            events.sort((a, b) => a.ts - b.ts);
+            const actions = [...new Set(events.map(e => e.action).filter(Boolean))];
+            const action_counts = {};
+            for (const e of events) if (e.action) action_counts[e.action] = (action_counts[e.action] || 0) + 1;
+            const notes = [];
+            for (const r of g.extra.slice().sort((a, b) => toTs(a.date) - toTs(b.date))) {
+                const m = maskAllLogsComment(r.comment);
+                if (m && notes.indexOf(m) === -1 && notes.length < ALL_LOGS_NOTE_CAP) notes.push(m);
+            }
+            visits.push({
+                plant_id: pid,
+                name: (names && names[pid]) || null,
+                first_ts: events[0].ts,
+                last_ts: events[events.length - 1].ts,
+                actions,
+                action_counts,
+                count: events.filter(e => e.click !== false).length || events.length,
+                all_logs_notes: notes,
+                _events: events,
+            });
+        }
+        return visits.sort((a, b) => a.first_ts - b.first_ts);
+    }
+
+    // Notes lines for one timesheet entry.
+    function formatAllLogsNotes(notes) {
+        if (!notes || !notes.length) return '';
+        return notes.slice(0, ALL_LOGS_NOTE_CAP).join('\n');
+    }
+
+    // Union two event lists for the SAME plant (All logs rows + pang history). Events carry no
+    // plant_id, so the caller must only merge lists belonging to one plant.
+    function mergeVisitEventLists(a, b) {
+        const out = [];
+        const seen = new Set();
+        for (const e of [...(a || []), ...(b || [])]) {
+            if (!e || !isFinite(e.ts)) continue;
+            const k = e.ts + '|' + (e.action || '');
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(e);
+        }
+        return out.sort((x, y) => x.ts - y.ts);
+    }
+
+    return {
+        ALL_LOGS_SECRET_RE, ALL_LOGS_NOTE_CAP,
+        rlRecapNormalizeUser, isPang1LogSystem, allLogsChipCode, allLogsDateWindow,
+        maskAllLogsComment, filterAllLogsRecords, visitsFromAllLogsRecords,
+        formatAllLogsNotes, mergeVisitEventLists,
+    };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_ALL_LOGS;
+
 (function () {
     'use strict';
+
+    // Under Node (the helper unit tests require this file) there is no userscript host: bail out
+    // before touching location/GM storage. The helpers above are already exported.
+    if (typeof GM_xmlhttpRequest !== 'function') return;
+
+    const {
+        ALL_LOGS_SECRET_RE, ALL_LOGS_NOTE_CAP, allLogsDateWindow, maskAllLogsComment,
+        visitsFromAllLogsRecords, formatAllLogsNotes, mergeVisitEventLists,
+    } = RL_RECAP_ALL_LOGS;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -39,7 +198,7 @@
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.109';
+    const SCRIPT_VERSION   = '4.110';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1168,7 +1327,32 @@
     const fullScanRanToday = () => GM_getValue(KEY_LAST_FULL_SCAN, '') === todayISO();
     const shouldNudgeFullScan = () => !fullScanRanToday() && GM_getValue(KEY_FULLSCAN_NUDGE, '') !== todayISO();
 
-    async function loadVisitsForDate(isoDate, plantIds, onProgress) {
+    // Cross-plant time attribution for a set of visits that still carry their `_events`. Flattens every
+    // click into one timeline, credits each gap to the plant that was open across it, and stamps the
+    // time fields, then drops `_events`. Extracted from loadVisitsForDate (v4.110) so the All logs path
+    // gets the identical estimator instead of a second implementation.
+    //
+    // Only feed it visits from ONE gathering pass: the timeline is cross-plant, so mixing already-stamped
+    // visits with fresh ones would re-credit gaps that were already accounted for.
+    function stampVisitTime(visits) {
+        const pending = (visits || []).filter(v => Array.isArray(v._events) && v._events.length);
+        if (!pending.length) return visits || [];
+        const allEvents = [];
+        for (const v of pending) for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action });
+        const { minutes: minsByPlant, cappedGaps } = attributeTime(allEvents);
+        const draw = designerGapByPlant(allEvents);
+        for (const v of pending) {
+            v.estimated_minutes = minsByPlant[v.plant_id] || 0;
+            v.base_minutes = v.estimated_minutes; // immutable click-only floor; commit fusion adds on top in ensureChangesEnriched
+            v.designer_minutes = draw.minutes[v.plant_id] || 0;      // gap-after-Designer = real Drawing time (v4.54)
+            v.designer_last = draw.lastSession[v.plant_id] || null;  // last designer session {s,e} — commit-extendable (v4.60)
+            v.capped_gaps = cappedGaps[v.plant_id] || [];            // long silences, re-judged against commits (v4.56)
+            delete v._events;
+        }
+        return visits;
+    }
+
+    async function loadVisitsForDate(isoDate, plantIds, onProgress, opts) {
         const username = effectiveUsername();
         const names = GM_getValue(KEY_PLANT_NAMES, {});
 
@@ -1208,7 +1392,9 @@
                     actions,
                     action_counts: matches.reduce((o, m) => (o[m.action] = (o[m.action] || 0) + 1, o), {}),
                     count: matches.length,
-                    _events: matches.map(m => ({ ts: tsFromPangDate(m.date), action: m.action })),
+                    // click:true — every pang history row IS a click. All logs adds non-click evidence
+                    // rows (notes, operations log), so the flag has to be explicit once both merge.
+                    _events: matches.map(m => ({ ts: tsFromPangDate(m.date), action: m.action, click: true })),
                 });
             }
             donePlants += batch.length;
@@ -1219,22 +1405,10 @@
 
         const visits = perBatch.flat().sort((a, b) => a.first_ts - b.first_ts);
 
-        // Cross-plant time attribution: flatten every action timestamp into one timeline,
-        // then credit each gap (capped at ACTIVE_CAP_MS) to the plant that was open across it.
-        const allEvents = [];
-        for (const v of visits) {
-            for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action });
-        }
-        const { minutes: minsByPlant, cappedGaps } = attributeTime(allEvents);
-        const draw = designerGapByPlant(allEvents);
-        for (const v of visits) {
-            v.estimated_minutes = minsByPlant[v.plant_id] || 0;
-            v.base_minutes = v.estimated_minutes; // immutable click-only floor; commit fusion adds on top in ensureChangesEnriched
-            v.designer_minutes = draw.minutes[v.plant_id] || 0;      // gap-after-Designer = real Drawing time (v4.54)
-            v.designer_last = draw.lastSession[v.plant_id] || null;  // last designer session {s,e} — commit-extendable (v4.60)
-            v.capped_gaps = cappedGaps[v.plant_id] || [];            // long silences, re-judged against commits (v4.56)
-            delete v._events;
-        }
+        // Cross-plant time attribution: flatten every action timestamp into one timeline, then credit
+        // each gap (capped at ACTIVE_CAP_MS) to the plant that was open across it. `opts.keepEvents`
+        // defers this so a caller can first union these visits with All logs rows and stamp once.
+        if (!(opts && opts.keepEvents)) stampVisitTime(visits);
 
         return { visits, username, scanned: plantIds.length, usersOnDate: [...usersOnDate.values()], failed: failedPlants };
     }
@@ -1287,6 +1461,131 @@
             dates[iso] = visits;
         }
         return { dates, usersOnSelected: [...usersOnSelected.values()], username, scanned: plantIds.length, failed: failedPlants };
+    }
+
+    // ===== IWMAC "All logs" (internal.iwmac.local) ==================================================
+    // The All logs tool answers exactly the question this panel asks — "what did user X do on date Y" —
+    // in ONE request, across the whole fleet, and it includes activity pang never sees: handover notes,
+    // operations-log entries (alarm settings, duty lists), service logons, alarm calls. pang's
+    // get_history has no server-side user/date filter, so the old path had to read up to ~7,600 plants'
+    // full history to answer the same thing.
+    //
+    // Two things it is NOT: (1) a replacement for the full scan — that still feeds the multi-date cache
+    // and the plant footprint; (2) reachable without a session. Unlike pang (network-authed), this host
+    // wants the browser's login cookie, so the request runs with `anonymous: false` and simply fails
+    // when the user has not logged into internal.iwmac.local. Every caller therefore keeps its pang path.
+    const ALL_LOGS_URL = 'http://internal.iwmac.local/tools/all_logs/service.php';
+    const ALL_LOGS_TIMEOUT_MS = 15000;            // a whole fleet-day measured 169 ms; 15 s is already generous
+    const ALL_LOGS_TTL_TODAY_MS = 2 * 60 * 1000;  // today keeps growing — re-ask often
+    const ALL_LOGS_TTL_PAST_MS = 30 * 60 * 1000;  // a past day is settled
+    const ALL_LOGS_DOWN_TTL_MS = 5 * 60 * 1000;   // off the office network every call would burn the full timeout
+    const _allLogsCache = new Map(); // 'user|iso' -> { at, res }
+    let _allLogsDownUntil = 0;       // set after a failure so a whole week of dates fails fast, not 5×15 s
+
+    // One day of All logs for one user. Returns { ok, records, limit_reached } — never throws.
+    // `user` is sent EXACT: the server matches it as a substring, and "thomas" would also return every
+    // other Thomas. Client-side filtering (normalizeUser) still runs, because the log stores some users
+    // as bare names and others as e-mail addresses.
+    async function gmFetchAllLogs(isoDate, username) {
+        if (!username) return { ok: false };
+        const key = username + '|' + isoDate;
+        const ttl = isoDate === todayISO() ? ALL_LOGS_TTL_TODAY_MS : ALL_LOGS_TTL_PAST_MS;
+        const hit = _allLogsCache.get(key);
+        if (hit && Date.now() - hit.at < ttl) return hit.res;
+        if (Date.now() < _allLogsDownUntil) return { ok: false };
+        const win = allLogsDateWindow(isoDate);
+        const body = JSON.stringify({ cmd: 'load', user: username, date_from: win.date_from, date_to: win.date_to });
+        const res = await new Promise(resolve => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: ALL_LOGS_URL,
+                headers: { 'Content-Type': 'application/json' },
+                data: body,
+                anonymous: false, // the tool is session-authed — the login cookie must ride along
+                timeout: ALL_LOGS_TIMEOUT_MS,
+                onload: r => {
+                    try {
+                        const parsed = JSON.parse(r.responseText);
+                        if (parsed && parsed.status === 'ok' && Array.isArray(parsed.records)) {
+                            resolve({ ok: true, records: parsed.records, limit_reached: !!parsed.limit_reached });
+                        } else {
+                            resolve({ ok: false });
+                        }
+                    } catch { resolve({ ok: false }); }
+                },
+                onerror: () => resolve({ ok: false }),
+                ontimeout: () => resolve({ ok: false }),
+            });
+        });
+        if (res.ok) { _allLogsDownUntil = 0; _allLogsCache.set(key, { at: Date.now(), res }); }
+        else { _allLogsDownUntil = Date.now() + ALL_LOGS_DOWN_TTL_MS; } // don't cache a failure as a day's answer
+        return res;
+    }
+
+    // Build a full day's visits from All logs. Returns null when the tool is unreachable / the session
+    // is missing, so callers fall back to pang. `opts.keepEvents` defers time stamping (for merging).
+    async function tryLoadVisitsFromAllLogs(isoDate, opts) {
+        const username = effectiveUsername();
+        if (!username) return null;
+        const fetched = await gmFetchAllLogs(isoDate, username);
+        if (!fetched.ok) return null;
+        const names = GM_getValue(KEY_PLANT_NAMES, {});
+        const visits = visitsFromAllLogsRecords(fetched.records, username, null, tsFromPangDate);
+        for (const v of visits) if (!v.name) v.name = cachedPlantName(names, v.plant_id);
+        if (!(opts && opts.keepEvents)) stampVisitTime(visits);
+        return {
+            visits,
+            username,
+            // The panel reads scanned === 0 as "no plants known yet" and shows the pang onboarding hint.
+            // All logs queries the whole fleet in one call, so there is no per-plant count to report.
+            scanned: Math.max(visits.length, 1),
+            usersOnDate: [],
+            limit_reached: !!fetched.limit_reached,
+        };
+    }
+
+    // Union two UNSTAMPED visit sets for the same date (both still carrying `_events`). Used when
+    // All logs was truncated (limit_reached) and pang has to fill the gap.
+    function overlayAllLogsVisits(pangVisits, logVisits) {
+        const byId = new Map();
+        for (const v of (pangVisits || [])) byId.set(String(v.plant_id), v);
+        for (const lv of (logVisits || [])) {
+            const id = String(lv.plant_id);
+            const base = byId.get(id);
+            if (!base) { byId.set(id, lv); continue; }
+            base._events = mergeVisitEventLists(base._events, lv._events);
+            base.first_ts = base._events[0].ts;
+            base.last_ts = base._events[base._events.length - 1].ts;
+            base.actions = [...new Set([...(base.actions || []), ...(lv.actions || [])])];
+            base.action_counts = base.action_counts || {};
+            for (const [a, n] of Object.entries(lv.action_counts || {})) base.action_counts[a] = Math.max(base.action_counts[a] || 0, n);
+            base.all_logs_notes = [...new Set([...(base.all_logs_notes || []), ...(lv.all_logs_notes || [])])].slice(0, ALL_LOGS_NOTE_CAP);
+            base.count = base._events.filter(e => e.click !== false).length || base._events.length;
+        }
+        return [...byId.values()].sort((a, b) => a.first_ts - b.first_ts);
+    }
+
+    // Overlay All logs onto visits whose minutes are ALREADY stamped (a cached full scan). Existing
+    // plants only gain chips, notes and a widened window — their minutes are deliberately left alone,
+    // because re-running the cross-plant estimator over a mixed timeline would double-credit gaps.
+    // Plants All logs found that the cache never saw are added and stamped on their own.
+    function overlayAllLogsOntoStampedVisits(stamped, logVisits) {
+        const byId = new Map();
+        for (const v of (stamped || [])) byId.set(String(v.plant_id), v);
+        const extras = [];
+        for (const lv of (logVisits || [])) {
+            const id = String(lv.plant_id);
+            const base = byId.get(id);
+            if (!base) { extras.push(lv); continue; }
+            base.actions = [...new Set([...(base.actions || []), ...(lv.actions || [])])];
+            base.action_counts = base.action_counts || {};
+            for (const [a, n] of Object.entries(lv.action_counts || {})) base.action_counts[a] = Math.max(base.action_counts[a] || 0, n);
+            base.all_logs_notes = [...new Set([...(base.all_logs_notes || []), ...(lv.all_logs_notes || [])])].slice(0, ALL_LOGS_NOTE_CAP);
+            if (lv.first_ts && (!base.first_ts || lv.first_ts < base.first_ts)) base.first_ts = lv.first_ts;
+            if (lv.last_ts && (!base.last_ts || lv.last_ts > base.last_ts)) base.last_ts = lv.last_ts;
+        }
+        if (extras.length) stampVisitTime(extras); // isolated: never mixed with the already-credited timeline
+        return [...byId.values(), ...extras].sort((a, b) => a.first_ts - b.first_ts);
     }
 
     const NO_TZ = 'Europe/Oslo';
@@ -1546,6 +1845,8 @@
         #${PANEL_ID} .catsum-foot { margin-top: 6px; font-size: 11px; color: #8d8d8d; }
         #${PANEL_ID} .catrow:empty { display: none; }
         #${PANEL_ID} .catrow { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 3px 10px; }
+        #${PANEL_ID} .lognote:empty { display: none; }
+        #${PANEL_ID} .lognote { margin-top: 4px; font-size: 11px; color: #6f6f6f; font-style: italic; }
         #${PANEL_ID} .catchip { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: #6f6f6f; white-space: nowrap; }
         #${PANEL_ID} .catchip-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
         #${PANEL_ID} .catchip b { color: #21272a; font-weight: 600; }
@@ -1718,6 +2019,7 @@
             // Source label so a sparse quick-scan result isn't mistaken for "visited nothing".
             let source = ' · recent + your plants';
             if (lastFromCache) source = ` · cached full scan ${tsToLocalTime(lastCacheTs)}`;
+            else if (lastMode === 'all_logs') source = ' · IWMAC All logs';
             else if (lastMode === 'full') source = ' · full scan';
             else if (lastMode === 'refresh') source = ' · refreshed';
             totalEl.innerHTML =
@@ -1803,6 +2105,36 @@
             list.querySelector('[data-action=run-full]').addEventListener('click', () => doScan('full'));
         };
 
+        // Shared tail of every gathering path (All logs, quick/refresh pang, full scan): resolve missing
+        // plant names, then publish the result to the panel. `mode` is the SOURCE label the footer shows.
+        const finishScan = async (seq, iso, visits, username, scanned, mode, onProg) => {
+            const missingIds = visits.filter(v => !v.name).map(v => v.plant_id);
+            if (missingIds.length > 0) {
+                list.innerHTML = `<div class="empty">Looking up ${missingIds.length} plant name${missingIds.length === 1 ? '' : 's'}…</div>`;
+                progress.style.width = '0%';
+                await fetchMissingPlantNames(missingIds, onProg);
+                refillNames(visits);
+            }
+            if (seq !== scanSeq) return; // a newer scan / date-change won — don't overwrite its result
+
+            lastVisits    = visits;
+            lastIso       = iso;
+            lastUsername  = username;
+            lastScanned   = scanned;
+            lastMode      = mode;
+            lastFromCache = false;
+            if (visits.length === 0 && mode === 'quick') {
+                // Quick pang scope is partial (recent plants only) → nudge toward a Full scan, since the
+                // visit may be on a brand-new plant you never opened in pang. An empty *All logs* day is
+                // authoritative for the whole fleet, so it renders the plain "No data" message instead.
+                renderQuickEmpty();
+            } else {
+                // Full/refresh/All logs already covered everything (or there are visits) → render normally;
+                // an empty result shows the "No data for <date>" message in renderVisits.
+                applyAndRender();
+            }
+        };
+
         // Core scan. mode 'quick' = your ~50 recent plants (fast); 'full' = all ~7,600 (slow, cached).
         const doScan = async (mode) => {
             const seq = ++scanSeq; // if a newer scan / date-change starts, this run stops touching the UI
@@ -1814,6 +2146,28 @@
                 // Make sure we have your login + recent list, harvested cross-protocol.
                 await ensureUserAndRecent();
                 if (seq !== scanSeq) return; // superseded (e.g. you changed the date) — abandon this run
+                const iso = dateInput.value;
+
+                // All logs answers "what did I do on this date" in ONE request and includes work pang
+                // never records (handover notes, operations-log entries, service logons). Try it BEFORE
+                // resolving a plant list: the pang scope checks below reject a user whose footprint is
+                // still empty, even when All logs already knows the whole day.
+                let allLogs = null;
+                if (mode !== 'full') {
+                    list.innerHTML = `<div class="empty">Querying IWMAC All logs…</div>`;
+                    allLogs = await tryLoadVisitsFromAllLogs(iso, { keepEvents: true });
+                    if (seq !== scanSeq) return;
+                }
+                const allLogsComplete = !!(allLogs && !allLogs.limit_reached);
+                if (allLogsComplete) {
+                    stampVisitTime(allLogs.visits);
+                    progress.style.width = '100%';
+                    lastFailed = 0;
+                    rememberUserPlants(allLogs.username, allLogs.visits); // grows the pang fallback's scope too
+                    await finishScan(seq, iso, allLogs.visits, allLogs.username, allLogs.scanned, 'all_logs', null);
+                    return;
+                }
+
                 let plantIds;
                 if (mode === 'full') {
                     plantIds = await ensureAllPlants();
@@ -1849,7 +2203,6 @@
                 }
                 list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}<div class="scan-live"></div></div>`;
                 const liveEl = list.querySelector('.scan-live');
-                const iso = dateInput.value;
                 const onProg = (done, total, foundSel) => { // a superseded scan must stop moving the bar
                     if (seq !== scanSeq) return;
                     progress.style.width = Math.round(done / total * 100) + '%';
@@ -1876,41 +2229,29 @@
                         for (const d in all.dates) for (const v of all.dates[d]) fp.add(v.plant_id);
                         rememberUserPlants(username, [...fp].map(id => ({ plant_id: id })));
                     }
-                } else {
-                    const r = await loadVisitsForDate(iso, plantIds, onProg);
+                    // Display-only overlay: a full scan owns the multi-date cache, but the selected date
+                    // can still gain the notes and operations-log activity pang cannot see. Runs AFTER
+                    // the cache write on purpose — All logs data never enters full_scan_cache.
+                    const al = await tryLoadVisitsFromAllLogs(iso);
                     if (seq !== scanSeq) return;
-                    visits = r.visits; username = r.username; scanned = r.scanned;
+                    if (al && al.visits.length) visits = overlayAllLogsOntoStampedVisits(visits, al.visits);
+                } else {
+                    // When All logs was truncated (limit_reached) its rows are still real work — union
+                    // them with the pang scan rather than dropping either source. Both sides therefore
+                    // stay unstamped until the merge, so the estimator sees one timeline.
+                    const merging = !!allLogs;
+                    const r = await loadVisitsForDate(iso, plantIds, onProg, { keepEvents: merging });
+                    if (seq !== scanSeq) return;
+                    visits = merging ? stampVisitTime(overlayAllLogsVisits(r.visits, allLogs.visits)) : r.visits;
+                    username = r.username || (allLogs && allLogs.username); scanned = r.scanned;
                     lastFailed = r.failed || 0;
                     rememberUserPlants(username, visits);
-                    if (mode === 'refresh' && username && !lastFailed) writeCacheDates(username, { [iso]: visits }, scanned); // Refresh updates only this date
+                    // A merged result is not a pure pang scan — caching it would make the cache claim
+                    // coverage it does not have (and All logs is re-queried on every open anyway).
+                    if (mode === 'refresh' && username && !lastFailed && !merging) writeCacheDates(username, { [iso]: visits }, scanned); // Refresh updates only this date
                 }
                 progress.style.width = '100%';
-
-                // Resolve any missing plant names via direct admin-page fetch (only the matched plants).
-                const missingIds = visits.filter(v => !v.name).map(v => v.plant_id);
-                if (missingIds.length > 0) {
-                    list.innerHTML = `<div class="empty">Looking up ${missingIds.length} plant name${missingIds.length === 1 ? '' : 's'}…</div>`;
-                    progress.style.width = '0%';
-                    await fetchMissingPlantNames(missingIds, onProg);
-                    refillNames(visits);
-                }
-                if (seq !== scanSeq) return; // a newer scan / date-change won — don't overwrite its result
-
-                lastVisits    = visits;
-                lastIso       = iso;
-                lastUsername  = username;
-                lastScanned   = scanned;
-                lastMode      = mode;
-                lastFromCache = false;
-                if (visits.length === 0 && mode === 'quick') {
-                    // Quick scope is partial (recent plants only) → nudge toward a Full scan, since your
-                    // visit may be on a brand-new plant you didn't open in pang.
-                    renderQuickEmpty();
-                } else {
-                    // Full/refresh already covered everything (or there are visits) → render normally;
-                    // an empty result shows the "No data for <date>" message in renderVisits.
-                    applyAndRender();
-                }
+                await finishScan(seq, iso, visits, username, scanned, mode, onProg);
             } catch (e) {
                 if (seq === scanSeq) list.innerHTML = `<div class="empty">Scan error — please try again.<br><small>${escapeHtml(String((e && e.message) || e))}</small></div>`;
             } finally {
@@ -1933,9 +2274,23 @@
             const iso = dateInput.value;
             const username = effectiveUsername();
             const cached = username ? readCache(username, iso) : null;
+            // All logs is preferred over the cache, not just over a scan: it is one fast request, it is
+            // never stale, and it carries activity (notes, operations log) the cached pang scan cannot
+            // contain. A truncated reply (limit_reached) is not treated as complete.
+            const al = await tryLoadVisitsFromAllLogs(iso);
+            if (seq !== scanSeq) return;
+            if (al && !al.limit_reached) {
+                rememberUserPlants(al.username, al.visits);
+                await finishScan(seq, iso, al.visits, al.username, al.scanned, 'all_logs', null);
+                return;
+            }
             if (cached) {
                 if (seq !== scanSeq) return;
-                lastVisits    = cached.visits.map(v => ({ ...v }));
+                let visits = cached.visits.map(v => ({ ...v }));
+                // All logs was unreachable or truncated — still overlay whatever it did return, so the
+                // chips and notes appear even when the cache supplies the minutes.
+                if (al && al.visits.length) visits = overlayAllLogsOntoStampedVisits(visits, al.visits);
+                lastVisits    = visits;
                 lastIso       = iso;
                 lastUsername  = username;
                 lastScanned   = cached.scanned;
@@ -2059,6 +2414,13 @@
         sys_tools:             { label: 'System tools',     cat: 'diag' },
         get_status:            { label: 'Get status',       cat: 'diag' },
         screen_dump:           { label: 'Screen dump',      cat: 'diag' },
+        // From IWMAC All logs (v4.110) — activity pang's click log never records. Labels are the
+        // tool's own action names, not invented ones.
+        pang_note:             { label: 'Note',             cat: 'other' },
+        changed_alarm_settings:{ label: 'Alarm settings',   cat: 'edit' },
+        change_duty_list:      { label: 'Duty list',        cat: 'other' },
+        service:               { label: 'Service logon',    cat: 'access' },
+        call_plant_link:       { label: 'Alarm call',       cat: 'other' },
     };
     // Chip order: most work-significant category first, so the row reads "what they did" at a glance.
     const ACTION_CAT_ORDER = ['edit', 'server', 'vnc', 'access', 'diag', 'other'];
@@ -2081,6 +2443,18 @@
         return chips.map(c =>
             `<span class="act act-${c.cat}" title="${escapeHtml(c.code)}"><span class="dot"></span>${escapeHtml(c.label)}</span>`
         ).join('');
+    }
+
+    // What the operations log / a handover note said about this plant that day — the one thing pang's
+    // click log can never tell you. Already masked upstream (a comment that looks like it carries a
+    // credential arrives as "[redacted]"), and escaped here because it is user-written text.
+    function logNoteLine(v) {
+        const notes = (v && v.all_logs_notes) || [];
+        if (!notes.length) return '';
+        const shown = notes.slice(0, 2).join(' · ');
+        const title = notes.join('\n');
+        const more = notes.length > 2 ? ` +${notes.length - 2} more` : '';
+        return `<span title="${escapeHtml(title)}">📝 ${escapeHtml(shown)}${more}</span>`;
     }
 
     // ===== Day-by-category summary ("timesheet roll-up") ===============================
@@ -2236,6 +2610,7 @@
         designer_minutes: v.designer_minutes || 0, // v4.56: was dropped by the cache — cached dates silently lost gap-based Drawing (v4.54)
         designer_last: v.designer_last || null,    // v4.60: last designer session {s,e} for the commit-anchored extension
         capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
+        all_logs_notes: v.all_logs_notes || [],    // v4.110: masked All logs comments, so a cached day keeps them when the tool is down
     });
     const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
     // Write one or many dates to the cache. A full scan passes every date it found (browsing any
@@ -2493,7 +2868,11 @@
         const out = { integration: '', drawing: '', racHit: false, drawingNames: [], drawingLines: [], hints: '' };
         // Always-available fallbacks (no commits needed): what TOOLS the session used, and when the
         // Designer session ran — far more informative than a generic "device/DB config".
-        const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload', direct_plant: 'direct login', designer4: 'Designer', designer3: 'Designer', get_status: 'status check' };
+        const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload', direct_plant: 'direct login', designer4: 'Designer', designer3: 'Designer', get_status: 'status check',
+            // All logs activity (v4.110)
+            changed_alarm_settings: 'alarm settings', change_duty_list: 'duty list', service: 'service logon', pang_note: 'note', call_plant_link: 'alarm call' };
+        // What the operations log / handover notes said about this plant that day, already masked.
+        out.notesLogs = formatAllLogsNotes(v.all_logs_notes);
         const ac = v.action_counts || {};
         const actEntries = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]);
         out.actionsWork = actEntries.filter(([a]) => !/^(direct_plant|designer|get_status)/.test(a)).slice(0, 3).map(([a]) => ACT_WORDS[a]).join(' + ');
@@ -2541,7 +2920,7 @@
         const settNames = [], settDetails = [];               // names for the title; "name: old → new" for the notes
         const tuneMap = new Map();                            // device pretty-name -> [changed param labels]
         const bookClipVal = s => { s = String(s == null ? '' : s); return s.length > 18 ? s.slice(0, 16) + '…' : s; };
-        const SECRET_RE = /pass|pwd|secret|token|key/i;       // never print secret VALUES in a timesheet note
+        const SECRET_RE = ALL_LOGS_SECRET_RE;                 // never print secret VALUES in a timesheet note
         const jobs = unitJobs.concat(settJobs, tuneJobs);
         if (jobs.length) {
             try {
@@ -3040,9 +3419,12 @@
                     && (String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0
                         || String((e.task && (e.task.taskName || e.task.name)) || e.taskName || '').indexOf(String(v.plant_id) + ' ') === 0));
                 // Detailed multi-line notes → the entry's Notes field (category-matched).
-                const notes = category === CAT_DRAWING ? (texts.notesDraw || texts.notesActions || '')
+                let notes = category === CAT_DRAWING ? (texts.notesDraw || texts.notesActions || '')
                     : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || texts.notesActions || ''].filter(Boolean).join('\n')
                     : (texts.notesInteg || texts.notesActions || ''); // no commits ⇒ describe the session by its tools
+                // Whatever you wrote in the operations log / a handover note that day says more about the
+                // work than any diff can — append it (already masked; secret values never travel).
+                if (texts.notesLogs) notes = [notes, texts.notesLogs].filter(Boolean).join('\n');
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
@@ -3249,6 +3631,21 @@
             if (!c || (iso === today && Date.now() - (c.scanned_at || 0) > WEEK_TODAY_MAX_AGE_MS)) need.push(iso);
         }
         if (!need.length) return { ok: true, ran: false };
+        // A complete All logs reply covers the whole fleet for that day, which is exactly the guarantee
+        // this gate exists to provide — so a day it answers needs no full scan. loadDayForBooking queries
+        // All logs again per day (session-cached), so nothing is stored here.
+        statusCb && statusCb(`Checking IWMAC All logs for ${need.length} day${need.length === 1 ? '' : 's'}…`);
+        const stillNeed = [];
+        for (const iso of need) {
+            const al = await gmFetchAllLogs(iso, username);
+            if (!(al.ok && !al.limit_reached)) stillNeed.push(iso);
+        }
+        if (!stillNeed.length) {
+            markFullScanRan(); // every weekday was covered fleet-wide — the daily recommendation is satisfied
+            return { ok: true, ran: false, from_all_logs: true };
+        }
+        need.length = 0;
+        need.push(...stillNeed);
         let plantIds = (await weekEnsureAllPlants(statusCb)).map(String);
         if (!plantIds.length) return { ok: false, reason: 'plant inventory unavailable' };
         // Footprint-first ordering (same as the panel's Full scan): pure reordering, identical result.
@@ -3275,14 +3672,27 @@
         const username = effectiveUsername();
         let visits;
         const cached = username ? readCache(username, iso) : null;
-        if (overrideDates) visits = (overrideDates[iso] || []).map(v => ({ ...v })); // fresh full scan that couldn't be cached (partial)
-        else if (cached) visits = cached.visits.map(v => ({ ...v }));
-        else {
+        // One All logs request beats every other source for a single day: whole fleet, no staleness,
+        // and it carries the notes / operations-log entries the timesheet notes want. Truncated or
+        // unreachable → fall back, but still overlay whatever it returned.
+        statusCb && statusCb('querying IWMAC All logs…');
+        const al = await tryLoadVisitsFromAllLogs(iso);
+        if (al && !al.limit_reached) {
+            visits = al.visits;
+        } else if (overrideDates) {
+            visits = (overrideDates[iso] || []).map(v => ({ ...v })); // fresh full scan that couldn't be cached (partial)
+            if (al && al.visits.length) visits = overlayAllLogsOntoStampedVisits(visits, al.visits);
+        } else if (cached) {
+            visits = cached.visits.map(v => ({ ...v }));
+            if (al && al.visits.length) visits = overlayAllLogsOntoStampedVisits(visits, al.visits);
+        } else {
             const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
             const mine = ((GM_getValue(KEY_USER_PLANTS, {})[username]) || []).map(String);
             const plantIds = [...new Set([...recent, ...mine])];
-            if (!plantIds.length) return [];
-            visits = (await loadVisitsForDate(iso, plantIds, onProg)).visits || [];
+            if (!plantIds.length) return al ? al.visits : [];
+            const merging = !!al;
+            const r = await loadVisitsForDate(iso, plantIds, onProg, { keepEvents: merging });
+            visits = merging ? stampVisitTime(overlayAllLogsVisits(r.visits, al.visits)) : (r.visits || []);
         }
         if (!visits.length) return visits;
         const missing = visits.filter(v => !v.name).map(v => v.plant_id);
@@ -3520,6 +3930,7 @@
                     ${escapeHtml(v.name || '(name not yet captured)')}
                     <div class="actions">${actionChips(v.actions)}${chgBadge}</div>
                     <div class="catrow">${categoryChips(v)}</div>
+                    <div class="lognote">${logNoteLine(v)}</div>
                 </div>
                 <div class="time">
                     ${timeRange}
