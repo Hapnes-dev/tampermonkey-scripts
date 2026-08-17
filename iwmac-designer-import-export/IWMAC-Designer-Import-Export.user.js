@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.2
+// @version      1.17.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.17.2';
+var IWDIE_VERSION = '1.17.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -233,6 +233,27 @@ function iwdieBuildEnvelope(doc, meta) {
  * written before 1.17.0 keep image_data and image_svg_trace in the panel and
  * are returned untouched, which is what makes every older file still import.
  */
+/**
+ * Add the trace to the guide's skip list once it exists.
+ *
+ * The guide is built by iwdieBuildEnvelope(), and the vector trace is attached
+ * afterwards by iwdiePrepareExportTrace() — so at build time there is never a
+ * trace to declare, and the guide shipped naming only image_data. That got the
+ * priority exactly backwards: on a real Maskin export the trace is 2060 kB of a
+ * 2328 kB file, 88.5% of it, against 116 kB for the background. The one field
+ * an agent most needs told to skip was the one field the guide left out.
+ */
+function iwdieNoteTraceInAiGuide(env) {
+  if (!env || typeof env !== 'object') return env;
+  var guide = env.ai_guide;
+  if (!guide || typeof guide !== 'object') return env;
+  if (!Array.isArray(guide.skip_fields)) guide.skip_fields = [];
+  if (guide.skip_fields.indexOf('image_svg_trace') === -1) {
+    guide.skip_fields.push('image_svg_trace');
+  }
+  return env;
+}
+
 function iwdieEnvelopeDoc(env) {
   var panel = env && env.panel;
   if (panel == null || typeof panel !== 'object') return panel;
@@ -1006,6 +1027,7 @@ function iwdiePrepareExportTrace(env, deps) {
       svg = iwdieNormalizeTraceSvg(svg);
       if (!svg) throw new Error('Embedded SVG background did not contain valid SVG.');
       env.image_svg_trace = svg;
+      iwdieNoteTraceInAiGuide(env);
       return { env: env, traceNote: ' + vector structure' };
     });
   }
@@ -1017,6 +1039,7 @@ function iwdiePrepareExportTrace(env, deps) {
     svg = iwdieNormalizeTraceSvg(svg);
     if (!svg) throw new Error('Vector trace did not produce valid SVG.');
     env.image_svg_trace = svg;
+    iwdieNoteTraceInAiGuide(env);
     return {
       env: env,
       traceNote: ' + vector structure (' + ((svg.match(/<path\b/g) || []).length) + ' paths)'
@@ -4197,6 +4220,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildEnvelope: iwdieBuildEnvelope,
     envelopeDoc: iwdieEnvelopeDoc,
     buildAiGuide: iwdieBuildAiGuide,
+    noteTraceInAiGuide: iwdieNoteTraceInAiGuide,
     backgroundInfo: iwdieBackgroundInfo,
     imageHeaderSize: iwdieImageHeaderSize,
     base64ByteLength: iwdieBase64ByteLength,
