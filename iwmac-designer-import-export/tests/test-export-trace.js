@@ -7,8 +7,15 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'IWMAC-Designer-Import-Export.user.js');
 const README = path.join(ROOT, 'README.md');
-const REFERENCE = path.join(ROOT, 'iwmac-designer-reference', 'CLAUDE.md');
 const api = require(SCRIPT);
+
+/* This test used to assert the same claims against
+ * iwmac-designer-reference/CLAUDE.md as well. That file is internal
+ * documentation and lives in the private tampermonkey-scripts-documents
+ * repository, so the assertion had been failing with ENOENT since the
+ * documentation was moved out. A test in the public repository must not depend
+ * on a file only the private one has; README.md is the public contract and the
+ * assertions below already cover every claim the reference block checked. */
 
 const SVG = '<svg viewBox="0 0 2 2" xmlns="http://www.w3.org/2000/svg"><path d="M0 0L2 2Z" /></svg>';
 const SVG_URL = 'data:image/svg+xml;base64,' + Buffer.from(SVG, 'utf8').toString('base64');
@@ -184,14 +191,6 @@ async function run() {
   assert.match(readme, /Exporting a panel that has no objects yet \(v1\.11\.0\)/);
   assert.match(readme, /byte-for-byte/);
   assert.match(readme, /No vector trace runs on this path/i);
-
-  const reference = fs.readFileSync(REFERENCE, 'utf8');
-  assert.equal(reference.includes('doCopyJson'), false);
-  assert.match(reference, /Export JSON \/ Insert JSON \/ Background/);
-  assert.match(reference, /automatically includes[^\n]*image_svg_trace/i);
-  assert.match(reference, /does not download/i);
-  assert.match(reference, /Object-less panel on export \(v1\.11\.0\)/);
-  assert.match(reference, /No vector trace on this path/i);
 
   console.log('IWMAC export trace tests passed');
 }
