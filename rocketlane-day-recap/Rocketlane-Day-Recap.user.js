@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.111
+// @version      4.112
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -263,7 +263,220 @@ var RL_RECAP_NOTE_TEXT = (function () {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
     };
 })();
-if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT);
+// ===== Rocketlane task matcher =======================================================
+// Which EXISTING project task a day's work should be booked onto. Pure and outside the IIFE for the
+// same reason as the blocks above: this is the most heuristic code in the script, so it has to be
+// measurable. `task-match.test.js` pins it against real project task lists.
+var RL_RECAP_MATCH = (function () {
+    'use strict';
+
+    // Discipline detector: [name, suffix-regex, evidence-keywords]. Calibrated on 37 real plant-day cases
+    // across 16 projects (v4.82 deep-dive: match rate 11→15, zero losses): device ORDER-NO prefixes carry
+    // discipline (Danfoss 080Z/084B/EKC/AK-CC ⇒ refrigeration, Exhausto/OJ ⇒ ventilation, CGE/EM2 ⇒ energy).
+    const TASK_DISCIPLINES = [
+        ['refrig', /refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'pls', 'ak-cc', '084b', '080z', 'ekc', 'ak2', 'kulde']],
+        ['vent', /vent|vgv|ahu/, ['vent', 'corrigo', 'vgv', 'ahu', 'aggregat', 'exhausto', 'oj ', 'swegon', 'systemair', 'flexit']],
+        ['energy', /energ/, ['energ', 'em2', 'cge', 'meter', 'måler']],
+        ['wireless', /wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ibs0', 'ing ', 'ing_', 'trådløs']], // IBS/ING/Ruuvi = wireless MQTT sensors
+        ['heat', /heat|varme/, ['varme', 'heat', 'fjernvarme']],
+        ['machine', /machine|maskin/, ['maskin', 'machine']],
+    ];
+    function bookNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9æøå]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+    function bookDiscOf(text) { const t = bookNorm(text); const out = new Set(); for (const d of TASK_DISCIPLINES) if (d[1].test(t)) out.add(d[0]); return out; }
+    // Weighted discipline evidence: count DISTINCT keyword hits per discipline (+1 for a regex hit), so
+    // "EM270 + CGE" (energy ×2) outweighs a lone "084B…" (refrig ×1) on a mixed day.
+    //
+    // `prose` (v4.112) requires each keyword to start a WORD. The keyword lists were written for
+    // machine-generated token strings, where a bare substring test is fine; free Norwegian text is a
+    // different matter. The wireless list carries `'ing '` (the ING sensor prefix), which as a plain
+    // substring also matches montering, bestilling, endring, innstilling, løsning — i.e. most sentences
+    // Thomas writes in the operations log, every one of which would have scored as wireless work.
+    //
+    // Leading boundary only, deliberately: Norwegian compounds concatenate, so a discipline word shows up
+    // at the START of a word and runs into the rest of it — kjøledisk, kjølemaskin, energimåler,
+    // ventilasjonsanlegg, maskinrom. Requiring a trailing boundary too would miss every one of those.
+    // It also drops two substring accidents for free: "parameter" no longer scores energy via 'meter'.
+    // Token strings keep the original substring test, so the 4.82 calibration is untouched.
+    const _bdwRe = {};
+    function bookDiscWeights(str, prose) {
+        const w = {}; const t = String(str || '').toLowerCase();
+        for (const d of TASK_DISCIPLINES) {
+            let n = 0;
+            for (const k of d[2]) {
+                if (prose) {
+                    let re = _bdwRe[k];
+                    if (!re) re = _bdwRe[k] = new RegExp('(^|[^a-z0-9æøå])' + k.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+                    if (re.test(t)) n++;
+                } else if (t.includes(k)) n++;
+            }
+            if (d[1].test(bookNorm(t))) n++;
+            if (n) w[d[0]] = n;
+        }
+        return w;
+    }
+    function bookPickWeighted(cands, weights, stripRe, guess) {
+        if (!cands.length) return null;
+        // Tiebreaks, in order (lexicographic — top candidate must beat #2 somewhere or it's ambiguous):
+        //  1. evidence score
+        //  2. specificity (v4.89, from the canonical template): "Heating/ VGV" spans TWO disciplines
+        //     (heat + vent via "VGV") and used to tie plain "Ventilation" — FEWER named disciplines wins.
+        //  3. name over phase (v4.90): a task whose NAME carries the discipline beats one that only
+        //     inherits it from its phase/category ("Design: Refrigeration" > "Nytt oversiktsbilde").
+        // With `guess` (v4.92, rescue mode): a full tie no longer gives up — the alphabetically first of
+        // the tied-top tasks is returned as the best guess (existing task beats a new activity).
+        const scored = cands.map(t => {
+            let td = bookDiscOf(t.taskName.replace(stripRe, '')), ph = 0;
+            if (!td.size && t.phase) { td = bookDiscOf(t.phase); ph = 1; } // "Nytt oversiktsbilde" under phase "Refrigeration and freezing systems"
+            let ov = 0; for (const x of td) ov += (weights[x] || 0);
+            return { t, ov, nd: td.size, ph };
+        }).filter(x => x.ov > 0);
+        if (scored.length === 1) return scored[0].t;
+        if (scored.length > 1) {
+            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph) || a.t.taskName.localeCompare(b.t.taskName));
+            const [a, b] = scored;
+            if (guess || a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t; // fully tied ⇒ ambiguous (unless guessing)
+        }
+        return null; // ambiguous ⇒ let the fallback decide
+    }
+    // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs",
+    // "IWMAC Image: System image - Machinery — x3") are price rows, not work packages — they contain
+    // discipline words and would pollute the scoring. Covers the "N pcs", "xN"/"N stk" and IWMAC
+    // Image/Aftermarket sales-line notations (seen live on 2701, v4.95).
+    const BOOK_QTY_TASK_RE = /\b\d+\s*(pcs|stk)\b|price per unit|aftermarket|^iwmac\s+(image|aftermarket)\b|[—–-]\s*x\s?\d+\s*$/i;
+    // Checklist/admin rows are never time-booking targets, not even in rescue mode ("Customers approval",
+    // "Alarm test", "Close sales order", "Documentation approved", "Project Satisfaction Survey", …).
+    const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
+    // `kind` is 'drawing' | 'integration' | 'setup' — the module deliberately does NOT know
+    // Rocketlane's category NAMES, so renaming a category upstream cannot silently break matching.
+    function pickTask(tasks, kind, texts, used) {
+        // The `used` guard was applied only inside rescue() until v4.112, so a category whose evidence
+        // pointed straight at a task another category had already taken that day booked onto it anyway —
+        // despite "no two categories land on the same task" being the documented promise. Filtering here
+        // makes it hold on every path, including the drawing-name exact match and the single-candidate
+        // shortcuts, which returned before rescue was ever reached.
+        tasks = (tasks || []).filter(t => !BOOK_QTY_TASK_RE.test(t.taskName) && !(used && used.has(t.taskId)));
+        if (!tasks.length) return null;
+        // TIERED evidence, strongest first — a later tier is consulted ONLY when every earlier one is
+        // silent, so adding a tier can never overrule evidence that already decided:
+        //   w1  device tokens + changed graphic names — system-level truth about what the day changed.
+        //   wLog what YOU wrote in the operations log / a handover note that day (v4.112). Human, specific,
+        //        and often the only evidence there is: a day spent on the phone or in the Designer leaves
+        //        no config commit at all, and used to fall straight through to an alphabetical guess.
+        //        Ranked under w1 (a note can mention work not done) but over unit names, which the 4.82
+        //        deep-dive showed to be actively misleading.
+        //   w2  unit NAMES — on MQTT projects the wireless sensors get renamed "Kjøttdisk"/"Fryserom",
+        //        which would otherwise drag every day into refrigeration.
+        const gStr = (texts.drawingNames || []).join(' ');
+        const w1 = bookDiscWeights((texts.tokStr || '') + ' ' + gStr);
+        const wLog = bookDiscWeights(texts.logStr || '', true); // human prose ⇒ word-boundary matching
+        const w2 = bookDiscWeights(texts.uStr || '');
+        const tiers = [w1, wLog, w2];
+        const tiered = (cands, stripRe) => {
+            for (const w of tiers) {
+                const hit = bookPickWeighted(cands, w, stripRe);
+                if (hit) return hit;
+                if (Object.keys(w).length) return null; // this tier spoke and was ambiguous — do not fall through
+            }
+            return null;
+        };
+        // Checklist-state helpers (v4.87): completed tasks are usually not what today's work was.
+        // resolve() = evidence over ALL candidates → evidence over OPEN-ONLY (drops ✓-done tasks, often
+        // breaking an evidence tie) → exactly one open candidate left ⇒ that's the active work package.
+        const singleOpen = (cands) => { const open = cands.filter(t => !t.done); return open.length === 1 ? open[0] : null; };
+        const resolve = (cands, stripRe) => tiered(cands, stripRe) || tiered(cands.filter(t => !t.done), stripRe) || singleOpen(cands);
+        // v4.91/4.92: creating an activity is the LAST RESORT — a guessed existing task beats a new
+        // activity (Thomas's rule). Rank every remaining task by the same discipline evidence (name or
+        // phase); checklist/admin rows and tasks already picked for another category are always
+        // excluded. `fences` (v4.95) keep other categories' signature tasks out in STAGES — the last
+        // fence is relaxed first, so e.g. Setup lands on an Integration task before it would ever touch
+        // a Design task. At each fence stage OPEN tasks are tried first, then COMPLETED ones (v4.96 —
+        // on finished "Ombygging" projects every task is ✓-done and rescue used to give up: a done
+        // "Design: Refrigeration" still beats a new activity, and a done same-category task beats an
+        // open other-category one). Order of guesses per pool: evidence winner (ties → alphabetical) →
+        // this category's strict-pool tasks → any survivor, the last two ranked by Thomas's discipline
+        // order (refrigeration first — his plants are refrigeration-dominant, so a no-evidence Designer
+        // day guesses "Design: Refrigeration", not the alphabetical "Design: Energi") then name.
+        const rescue = (sigCands, fences) => {
+            const ok = t => !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
+            // Rescue is the last stop before an alphabetical guess, so here every tier counts at once.
+            const wSum = {};
+            for (const w of tiers) for (const k in w) wSum[k] = (wSum[k] || 0) + w[k];
+            const discPri = t => { // index into TASK_DISCIPLINES (name first, else phase); unknown ⇒ last
+                let td = bookDiscOf(t.taskName.replace(/^[a-zæøå ]+\s*[:\-]/i, ''));
+                if (!td.size) td = bookDiscOf(t.phase || '');
+                for (let i = 0; i < TASK_DISCIPLINES.length; i++) if (td.has(TASK_DISCIPLINES[i][0])) return i;
+                return TASK_DISCIPLINES.length;
+            };
+            for (let k = (fences || []).length; k >= 0; k--) {
+                const act = (fences || []).slice(0, k);
+                for (const wantOpen of [true, false]) {
+                    const pool = tasks.filter(t => (wantOpen ? !t.done : t.done) && ok(t) && !act.some(re => re.test(t.taskName)));
+                    if (!pool.length) continue;
+                    const best = list => list.filter(t => pool.includes(t))
+                        .sort((a, b) => (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
+                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || best(sigCands || []) || best(pool);
+                    if (hit) return Object.assign({ rescued: true }, hit);
+                }
+            }
+            return null;
+        };
+        if (kind === 'drawing') {
+            // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…",
+            // "Nytt oversiktsbilde", "Grafikk", "Skjermbilder", "System Image …").
+            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning|oversikt|grafikk|graphic|skjerm|visualis|image/i.test(t.taskName));
+            const suf = t => bookNorm(t.taskName.replace(/^design\s*[:\-]/i, ''));
+            // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
+            // Rank exact > task-suffix-contains-name > name-contains-suffix with the LONGEST suffix winning —
+            // otherwise a generic "Design: Overview" steals "Wireless Overview" from "Design: Wireless overview".
+            for (const name of (texts.drawingNames || [])) {
+                const n = bookNorm(name);
+                if (!n) continue;
+                let hit = design.find(t => suf(t) === n);
+                if (!hit) hit = design.find(t => suf(t) && suf(t).includes(n));
+                if (!hit) hit = design.filter(t => suf(t) && n.includes(suf(t))).sort((a, b) => suf(b).length - suf(a).length)[0];
+                if (hit) return hit;
+                // Discipline bridge across languages: graphic "360.001 Ventilasjon" → task "Design: Ventilation".
+                const gd = bookDiscOf(name);
+                if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
+            }
+            if (design.length === 1) return design[0];
+            // Fences: setup names stay out longest; integration names are relaxed first.
+            return resolve(design, /^design\s*[:\-]/i) || rescue(design, [/ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i, /integra(?:tion|sjon)/i]);
+        }
+        if (kind === 'integration') {
+            let cands = tasks.filter(t => /^integra(?:tion|sjon)\s*[:\-]/i.test(t.taskName));
+            if (!cands.length) // no Integration:-prefixed tasks — bare-discipline or generic commissioning work packages
+                cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName)
+                    || /konfig|igangkj|i?driftsett|commission|innregul|integrasjon|oppkobling|programmering|oppstart/i.test(t.taskName));
+            if (cands.length === 1) return cands[0];
+            // Fences: design names stay out longest; setup names are relaxed first.
+            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(cands, [/design|bilde|tegning/i, /ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i]);
+        }
+        if (kind === 'setup') {
+            // NPort/Moxa = serial gateway; "Server configured" / "Port forwarding" / "Connection to the
+            // plant" (Hardware & Network phases) are gateway-setup work too.
+            const c = tasks.filter(t => /(ak3|scan|gateway|rac|nport|server|moxa|router|nettverk|network)\b|port\s*forward|forbindelse|tilkobling|connection/i.test(t.taskName));
+            if (c.length === 1) return c[0];
+            const hit = resolve(c, /^[a-zæøå ]+[:\-]/i);
+            if (hit) return hit;
+            // No evidence distinguishes gateway tasks — walk a fixed priority over the OPEN ones instead
+            // of giving up (gateway-est name first).
+            for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
+                { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return t; }
+            // Fences: design names stay out longest — gateway setup is integration-side work, so an
+            // Integration task is the natural second choice ("Setup 18m → Design: Energi" was wrong).
+            return rescue(c, [/design|bilde|tegning/i, /integra(?:tion|sjon)/i]);
+        }
+        return null;
+    }
+
+    return {
+        TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
+        bookNorm, bookDiscOf, bookDiscWeights, bookPickWeighted, pickTask,
+    };
+})();
+
+if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT, RL_RECAP_MATCH);
 
 (function () {
     'use strict';
@@ -281,6 +494,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
     } = RL_RECAP_NOTE_TEXT;
 
+    const { pickTask } = RL_RECAP_MATCH;
+
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
     const KEY_USERNAME     = 'pang_username';
@@ -296,7 +511,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.111';
+    const SCRIPT_VERSION   = '4.112';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2971,6 +3186,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             changed_alarm_settings: 'alarm settings', change_duty_list: 'duty list', service: 'service logon', pang_note: 'note', call_plant_link: 'alarm call' };
         // What the operations log / handover notes said about this plant that day, already masked.
         out.notesLogs = formatAllLogsNotes(v.all_logs_notes);
+        // …and the same text as matcher evidence (v4.112). This is the one source that describes the work
+        // in Thomas's own words ("Byttet føler i kjøledisk 3" ⇒ refrigeration) rather than by its
+        // side-effects in the database, and it is the ONLY evidence on a day that left no config commit.
+        // Set before the no-commit early return below, so those days keep it.
+        out.logStr = (v.all_logs_notes || []).join(' ').toLowerCase();
         const ac = v.action_counts || {};
         const actEntries = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]);
         out.actionsWork = actEntries.filter(([a]) => !/^(direct_plant|designer|get_status)/.test(a)).slice(0, 3).map(([a]) => ACT_WORDS[a]).join(' + ');
@@ -3180,7 +3400,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         }
         out.tokStr = [...tokset].concat(devAdd, [...devMod]).join(' ').toLowerCase();
         out.uStr = uAddNames.concat(uRenNames).join(' ').toLowerCase();
-        out.hints = [out.tokStr, out.uStr, settNames.join(' '), out.drawingNames.join(' ')].join(' ').toLowerCase(); // for the LOG
+        out.hints = [out.tokStr, out.logStr, out.uStr, settNames.join(' '), out.drawingNames.join(' ')].join(' ').toLowerCase(); // for the LOG
         return out;
     }
 
@@ -3334,157 +3554,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (added) LOG('book: describe backfill added', added, 'section(s) for', iso);
         return added;
     }
-    // Discipline detector: [name, suffix-regex, evidence-keywords]. Calibrated on 37 real plant-day cases
-    // across 16 projects (v4.82 deep-dive: match rate 11→15, zero losses): device ORDER-NO prefixes carry
-    // discipline (Danfoss 080Z/084B/EKC/AK-CC ⇒ refrigeration, Exhausto/OJ ⇒ ventilation, CGE/EM2 ⇒ energy).
-    const TASK_DISCIPLINES = [
-        ['refrig', /refrig|kj.l|frys|freez|kulde/, ['refrig', 'kjøl', 'frys', 'ak3', 'da3', 'carel', 'danfoss', 'pls', 'ak-cc', '084b', '080z', 'ekc', 'ak2', 'kulde']],
-        ['vent', /vent|vgv|ahu/, ['vent', 'corrigo', 'vgv', 'ahu', 'aggregat', 'exhausto', 'oj ', 'swegon', 'systemair', 'flexit']],
-        ['energy', /energ/, ['energ', 'em2', 'cge', 'meter', 'måler']],
-        ['wireless', /wireless|tr.dl.s|mqtt/, ['wireless', 'mqtt', 'ruuvi', 'ibs0', 'ing ', 'ing_', 'trådløs']], // IBS/ING/Ruuvi = wireless MQTT sensors
-        ['heat', /heat|varme/, ['varme', 'heat', 'fjernvarme']],
-        ['machine', /machine|maskin/, ['maskin', 'machine']],
-    ];
-    function bookNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9æøå]+/g, ' ').replace(/\s+/g, ' ').trim(); }
-    function bookDiscOf(text) { const t = bookNorm(text); const out = new Set(); for (const d of TASK_DISCIPLINES) if (d[1].test(t)) out.add(d[0]); return out; }
-    // Weighted discipline evidence: count DISTINCT keyword hits per discipline (+1 for a regex hit), so
-    // "EM270 + CGE" (energy ×2) outweighs a lone "084B…" (refrig ×1) on a mixed day.
-    function bookDiscWeights(str) {
-        const w = {}; const t = String(str || '').toLowerCase();
-        for (const d of TASK_DISCIPLINES) { let n = 0; for (const k of d[2]) if (t.includes(k)) n++; if (d[1].test(bookNorm(t))) n++; if (n) w[d[0]] = n; }
-        return w;
-    }
-    function bookPickWeighted(cands, weights, stripRe, guess) {
-        if (!cands.length) return null;
-        // Tiebreaks, in order (lexicographic — top candidate must beat #2 somewhere or it's ambiguous):
-        //  1. evidence score
-        //  2. specificity (v4.89, from the canonical template): "Heating/ VGV" spans TWO disciplines
-        //     (heat + vent via "VGV") and used to tie plain "Ventilation" — FEWER named disciplines wins.
-        //  3. name over phase (v4.90): a task whose NAME carries the discipline beats one that only
-        //     inherits it from its phase/category ("Design: Refrigeration" > "Nytt oversiktsbilde").
-        // With `guess` (v4.92, rescue mode): a full tie no longer gives up — the alphabetically first of
-        // the tied-top tasks is returned as the best guess (existing task beats a new activity).
-        const scored = cands.map(t => {
-            let td = bookDiscOf(t.taskName.replace(stripRe, '')), ph = 0;
-            if (!td.size && t.phase) { td = bookDiscOf(t.phase); ph = 1; } // "Nytt oversiktsbilde" under phase "Refrigeration and freezing systems"
-            let ov = 0; for (const x of td) ov += (weights[x] || 0);
-            return { t, ov, nd: td.size, ph };
-        }).filter(x => x.ov > 0);
-        if (scored.length === 1) return scored[0].t;
-        if (scored.length > 1) {
-            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph) || a.t.taskName.localeCompare(b.t.taskName));
-            const [a, b] = scored;
-            if (guess || a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t; // fully tied ⇒ ambiguous (unless guessing)
-        }
-        return null; // ambiguous ⇒ let the fallback decide
-    }
-    // Sales-order quantity lines ("Per energy meter — 3 pcs", "IWMAC Aftermarket: … price per unit — 26 pcs",
-    // "IWMAC Image: System image - Machinery — x3") are price rows, not work packages — they contain
-    // discipline words and would pollute the scoring. Covers the "N pcs", "xN"/"N stk" and IWMAC
-    // Image/Aftermarket sales-line notations (seen live on 2701, v4.95).
-    const BOOK_QTY_TASK_RE = /\b\d+\s*(pcs|stk)\b|price per unit|aftermarket|^iwmac\s+(image|aftermarket)\b|[—–-]\s*x\s?\d+\s*$/i;
-    // Checklist/admin rows are never time-booking targets, not even in rescue mode ("Customers approval",
-    // "Alarm test", "Close sales order", "Documentation approved", "Project Satisfaction Survey", …).
-    const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
-    function pickTask(tasks, category, texts, used) {
-        tasks = (tasks || []).filter(t => !BOOK_QTY_TASK_RE.test(t.taskName));
-        if (!tasks.length) return null;
-        // TIERED evidence: device tokens + graphic names are system-level truth; unit NAMES are only a
-        // fallback — on MQTT projects the wireless sensors get renamed to "Kjøttdisk"/"Fryserom", which
-        // would otherwise drag every day into refrigeration.
-        const gStr = (texts.drawingNames || []).join(' ');
-        const w1 = bookDiscWeights((texts.tokStr || '') + ' ' + gStr);
-        const w2 = bookDiscWeights(texts.uStr || '');
-        const tiered = (cands, stripRe) => bookPickWeighted(cands, w1, stripRe) || (Object.keys(w1).length ? null : bookPickWeighted(cands, w2, stripRe));
-        // Checklist-state helpers (v4.87): completed tasks are usually not what today's work was.
-        // resolve() = evidence over ALL candidates → evidence over OPEN-ONLY (drops ✓-done tasks, often
-        // breaking an evidence tie) → exactly one open candidate left ⇒ that's the active work package.
-        const singleOpen = (cands) => { const open = cands.filter(t => !t.done); return open.length === 1 ? open[0] : null; };
-        const resolve = (cands, stripRe) => tiered(cands, stripRe) || tiered(cands.filter(t => !t.done), stripRe) || singleOpen(cands);
-        // v4.91/4.92: creating an activity is the LAST RESORT — a guessed existing task beats a new
-        // activity (Thomas's rule). Rank every remaining task by the same discipline evidence (name or
-        // phase); checklist/admin rows and tasks already picked for another category are always
-        // excluded. `fences` (v4.95) keep other categories' signature tasks out in STAGES — the last
-        // fence is relaxed first, so e.g. Setup lands on an Integration task before it would ever touch
-        // a Design task. At each fence stage OPEN tasks are tried first, then COMPLETED ones (v4.96 —
-        // on finished "Ombygging" projects every task is ✓-done and rescue used to give up: a done
-        // "Design: Refrigeration" still beats a new activity, and a done same-category task beats an
-        // open other-category one). Order of guesses per pool: evidence winner (ties → alphabetical) →
-        // this category's strict-pool tasks → any survivor, the last two ranked by Thomas's discipline
-        // order (refrigeration first — his plants are refrigeration-dominant, so a no-evidence Designer
-        // day guesses "Design: Refrigeration", not the alphabetical "Design: Energi") then name.
-        const rescue = (sigCands, fences) => {
-            const ok = t => !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
-            const wSum = Object.assign({}, w2);
-            for (const k in w1) wSum[k] = (wSum[k] || 0) + w1[k];
-            const discPri = t => { // index into TASK_DISCIPLINES (name first, else phase); unknown ⇒ last
-                let td = bookDiscOf(t.taskName.replace(/^[a-zæøå ]+\s*[:\-]/i, ''));
-                if (!td.size) td = bookDiscOf(t.phase || '');
-                for (let i = 0; i < TASK_DISCIPLINES.length; i++) if (td.has(TASK_DISCIPLINES[i][0])) return i;
-                return TASK_DISCIPLINES.length;
-            };
-            for (let k = (fences || []).length; k >= 0; k--) {
-                const act = (fences || []).slice(0, k);
-                for (const wantOpen of [true, false]) {
-                    const pool = tasks.filter(t => (wantOpen ? !t.done : t.done) && ok(t) && !act.some(re => re.test(t.taskName)));
-                    if (!pool.length) continue;
-                    const best = list => list.filter(t => pool.includes(t))
-                        .sort((a, b) => (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
-                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || best(sigCands || []) || best(pool);
-                    if (hit) return Object.assign({ rescued: true }, hit);
-                }
-            }
-            return null;
-        };
-        if (category === CAT_DRAWING) {
-            // "Design: X" tasks plus bare Norwegian drawing tasks ("Maskinbilde", "VGV bilde", "Ny maskintegning…",
-            // "Nytt oversiktsbilde", "Grafikk", "Skjermbilder", "System Image …").
-            const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning|oversikt|grafikk|graphic|skjerm|visualis|image/i.test(t.taskName));
-            const suf = t => bookNorm(t.taskName.replace(/^design\s*[:\-]/i, ''));
-            // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
-            // Rank exact > task-suffix-contains-name > name-contains-suffix with the LONGEST suffix winning —
-            // otherwise a generic "Design: Overview" steals "Wireless Overview" from "Design: Wireless overview".
-            for (const name of (texts.drawingNames || [])) {
-                const n = bookNorm(name);
-                if (!n) continue;
-                let hit = design.find(t => suf(t) === n);
-                if (!hit) hit = design.find(t => suf(t) && suf(t).includes(n));
-                if (!hit) hit = design.filter(t => suf(t) && n.includes(suf(t))).sort((a, b) => suf(b).length - suf(a).length)[0];
-                if (hit) return hit;
-                // Discipline bridge across languages: graphic "360.001 Ventilasjon" → task "Design: Ventilation".
-                const gd = bookDiscOf(name);
-                if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
-            }
-            if (design.length === 1) return design[0];
-            // Fences: setup names stay out longest; integration names are relaxed first.
-            return resolve(design, /^design\s*[:\-]/i) || rescue(design, [/ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i, /integra(?:tion|sjon)/i]);
-        }
-        if (category === CAT_INTEGRATION) {
-            let cands = tasks.filter(t => /^integra(?:tion|sjon)\s*[:\-]/i.test(t.taskName));
-            if (!cands.length) // no Integration:-prefixed tasks — bare-discipline or generic commissioning work packages
-                cands = tasks.filter(t => /^(refrigeration|ventilation|heating|heat|energy|energi|machine room|wireless)\b/i.test(t.taskName)
-                    || /konfig|igangkj|i?driftsett|commission|innregul|integrasjon|oppkobling|programmering|oppstart/i.test(t.taskName));
-            if (cands.length === 1) return cands[0];
-            // Fences: design names stay out longest; setup names are relaxed first.
-            return resolve(cands, /^integra(?:tion|sjon)\s*[:\-]/i) || rescue(cands, [/design|bilde|tegning/i, /ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i]);
-        }
-        if (category === CAT_SETUP_PC) {
-            // NPort/Moxa = serial gateway; "Server configured" / "Port forwarding" / "Connection to the
-            // plant" (Hardware & Network phases) are gateway-setup work too.
-            const c = tasks.filter(t => /(ak3|scan|gateway|rac|nport|server|moxa|router|nettverk|network)\b|port\s*forward|forbindelse|tilkobling|connection/i.test(t.taskName));
-            if (c.length === 1) return c[0];
-            const hit = resolve(c, /^[a-zæøå ]+[:\-]/i);
-            if (hit) return hit;
-            // No evidence distinguishes gateway tasks — walk a fixed priority over the OPEN ones instead
-            // of giving up (gateway-est name first).
-            for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
-                { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return t; }
-            // Fences: design names stay out longest — gateway setup is integration-side work, so an
-            // Integration task is the natural second choice ("Setup 18m → Design: Energi" was wrong).
-            return rescue(c, [/design|bilde|tegning/i, /integra(?:tion|sjon)/i]);
-        }
-        return null;
-    }
+    // The task matcher lives in RL_RECAP_MATCH, above the IIFE — pure, and unit-tested by
+    // task-match.test.js. It is the most heuristic code in the script; keep it measurable.
 
     // Build the day's booking plan: one entry per plant×category (quick checks excluded), with the
     // project resolved by plant-id prefix and the activity text derived from what actually changed.
@@ -3518,7 +3589,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     act = 'Setup: RAC' + (texts.integration ? ' — ' + texts.integration : ' setup');
                 }
                 // Prefer an existing project task; the rich text then rides along as the entry's note.
-                const task = pickTask(tasks, category, texts, usedTasks);
+                // The matcher takes a category KIND, not Rocketlane's category name — see RL_RECAP_MATCH.
+                const kind = category === CAT_DRAWING ? 'drawing' : category === CAT_SETUP_PC ? 'setup'
+                    : category === CAT_INTEGRATION ? 'integration' : null;
+                const task = kind ? pickTask(tasks, kind, texts, usedTasks) : null;
                 if (task) usedTasks.add(task.taskId);
                 LOG('book: pick', v.plant_id, category, '→', task ? task.taskName + (task.rescued ? ' (rescue)' : '') : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
