@@ -1,0 +1,233 @@
+REPLACE INTO `iw_sys_plant_units` (`row_date`, `active`, `blockout`, `unit_id`, `unit_name`, `grp_name`, `driver_type`, `driver_addr`, `regulator_type`, `order_no`, `driver_adr_extra`) VALUES 
+(NOW(), '1', '0', 'V01', '360.01 Ventilasjon', 'jcdx1', 'DX9100', '0_1', 'DX', 'DX1', '');
+
+REPLACE INTO `iw_sys_plant_settings` (`row_date`, `setting`, `owner`, `value`, `eng_unit`, `help_text`, `help_link`) VALUES 
+(NOW(), 'com_port', 'DX9100', '7', '', '', ''),
+(NOW(), 'idle_event_rate', 'DX9100', '250', 'msec.', '', ''),
+(NOW(), 'sql_queue_poll_time', 'DX9100', '2000', 'msec.', '', ''),
+(NOW(), 'packet_timeout', 'DX9100', '1', 'sec.', '', ''),
+(NOW(), 'max_outstanding_packets', 'DX9100', '-1', '', '', ''),
+(NOW(), 'max_error_count', 'DX9100', '2', '', '', ''),
+(NOW(), 'max_group_count', 'DX9100', '1', '', '', ''),
+(NOW(), 'max_param_block_time', 'DX9100', '2', 'hours', '', ''),
+(NOW(), 'speed_index_norm', 'DX9100', '1', '', '', ''),
+(NOW(), 'speed_index_slow', 'DX9100', '1', '', '', ''),
+(NOW(), 'speed_index_offline', 'DX9100', '10', '', '', ''),
+(NOW(), 'speed_index_block', 'DX9100', '10', '', '', ''),
+(NOW(), 'show_queue_info', 'DX9100', '0', '', '', ''),
+(NOW(), 'com_error_alarm_delay', 'DX9100', '10', 'min.', '', ''),
+(NOW(), 'baud_rate', 'DX9100', '9600', '', '', ''),
+(NOW(), 'parity', 'DX9100', '0', '', '0=N,1=O,2=E,3=M,4=S', ''),
+(NOW(), 'data_bits', 'DX9100', '8', '', '5..8', ''),
+(NOW(), 'stop_bits', 'DX9100', '1', '', '1,2', ''),
+(NOW(), 'check_rate', 'DX9100', '2', 'ms', '', ''),
+(NOW(), 'timeout', 'DX9100', '1000', 'ms', '', ''),
+(NOW(), 'dx_password', 'DX9100', '0000', '', '2 byte unsigned integer', ''),
+(NOW(), 'module_timeout', 'DX9100', '500', 'ms', '', '');
+
+REPLACE INTO `iw_sys_processes` (`row_date`, `man_start`, `path`, `process_name`, `process_id`, `process_status`) VALUES 
+(NOW(), '0', 'iw_JC.exe', 'DX9100', '', '');
+
+REPLACE INTO `iw_sys_order_no` (`row_date`, `order_no`, `db_link`, `group_link`) VALUES 
+(NOW(), 'DX1', 'jcdx1_param', 'jcdx1_groups');
+
+DROP TABLE IF EXISTS `iw_par_jcdx1_groups`;
+CREATE TABLE `iw_par_jcdx1_groups` (
+  `date` datetime NOT NULL default '2002-01-10 00:00:00',
+  `type` varchar(50) NOT NULL default '',
+  `view_order` mediumint(6) NOT NULL default '0',
+  `ref` varchar(100) NOT NULL default '',
+  `value` varchar(200) NOT NULL default '',
+  UNIQUE KEY `type` (`type`,`view_order`,`ref`,`value`)
+) TYPE=MyISAM COMMENT='1.0.1';
+
+REPLACE INTO `iw_par_jcdx1_groups` (`date`, `type`, `view_order`, `ref`, `value`) VALUES 
+(NOW(), 'default_link', 1, '', ''),
+(NOW(), 'group_alias', 1, 'ai', 'Analoge inn'),
+(NOW(), 'group_alias', 7, 'internal', 'Internal'),
+(NOW(), 'group', 1, 'ai', 'AI1'),
+(NOW(), 'group', 2, 'ai', 'AI2'),
+(NOW(), 'group', 3, 'ai', 'AI3'),
+(NOW(), 'group', 4, 'ai', 'AI4'),
+(NOW(), 'group', 5, 'ai', 'AI5'),
+(NOW(), 'group', 6, 'ai', 'AI6'),
+(NOW(), 'group', 7, 'ai', 'AI7'),
+(NOW(), 'group', 8, 'ai', 'AI8'),
+(NOW(), 'group', 1, 'internal', 'PM1TYP'),
+(NOW(), 'group', 2, 'internal', 'PM2TYP'),
+(NOW(), 'group', 3, 'internal', 'PM3TYP'),
+(NOW(), 'group', 4, 'internal', 'PM4TYP'),
+(NOW(), 'group', 5, 'internal', 'PM5TYP'),
+(NOW(), 'group', 6, 'internal', 'PM6TYP'),
+(NOW(), 'group', 7, 'internal', 'PM7TYP'),
+(NOW(), 'group', 8, 'internal', 'PM8TYP'),
+(NOW(), 'group', 9, 'internal', 'PM9TYP'),
+(NOW(), 'group', 10, 'internal', 'PM10TYP'),
+(NOW(), 'group', 11, 'internal', 'PM11TYP'),
+(NOW(), 'group', 12, 'internal', 'PM12TYP'),
+(NOW(), 'group', 1470, 'internal', 'XT1IOMAP'),
+(NOW(), 'group', 1480, 'internal', 'XT2IOMAP'),
+(NOW(), 'group', 1490, 'internal', 'XT3IOMAP'),
+(NOW(), 'group', 1500, 'internal', 'XT4IOMAP'),
+(NOW(), 'group', 1510, 'internal', 'XT5IOMAP'),
+(NOW(), 'group', 1520, 'internal', 'XT6IOMAP'),
+(NOW(), 'group', 1530, 'internal', 'XT7IOMAP'),
+(NOW(), 'group', 1540, 'internal', 'XT8IOMAP'),
+(NOW(), 'group', 1550, 'internal', 'XT1IOTYP'),
+(NOW(), 'group', 1560, 'internal', 'XT2IOTYP'),
+(NOW(), 'group', 1570, 'internal', 'XT3IOTYP'),
+(NOW(), 'group', 1580, 'internal', 'XT4IOTYP'),
+(NOW(), 'group', 1590, 'internal', 'XT5IOTYP'),
+(NOW(), 'group', 1600, 'internal', 'XT6IOTYP'),
+(NOW(), 'group', 1610, 'internal', 'XT7IOTYP'),
+(NOW(), 'group', 1620, 'internal', 'XT8IOTYP'),
+(NOW(), 'group', 1630, 'internal', 'XT1IOMOD'),
+(NOW(), 'group', 1640, 'internal', 'XT2IOMOD'),
+(NOW(), 'group', 1650, 'internal', 'XT3IOMOD'),
+(NOW(), 'group', 1660, 'internal', 'XT4IOMOD'),
+(NOW(), 'group', 1670, 'internal', 'XT5IOMOD'),
+(NOW(), 'group', 1680, 'internal', 'XT6IOMOD'),
+(NOW(), 'group', 1690, 'internal', 'XT7IOMOD'),
+(NOW(), 'group', 1700, 'internal', 'XT8IOMOD');
+
+DROP TABLE IF EXISTS `iw_par_jcdx1_param`;
+CREATE TABLE `iw_par_jcdx1_param` (
+  `row_date` datetime NOT NULL default '2002-01-10 00:00:00',
+  `element_id` varchar(100) NOT NULL default '',
+  `driver_id` varchar(100) NOT NULL default '',
+  `alias_text` text NOT NULL,
+  `menu` varchar(10) NOT NULL default '',
+  `application` text NOT NULL,
+  `parameter_type` text NOT NULL,
+  `factory_setting` text NOT NULL,
+  `grp` text NOT NULL,
+  `att` text NOT NULL,
+  `eng_unit` varchar(20) NOT NULL default '',
+  `format` varchar(20) NOT NULL default '',
+  `range_min` text NOT NULL,
+  `range_max` text NOT NULL,
+  `scale` varchar(15) NOT NULL default '',
+  `raw_min` varchar(15) NOT NULL default '',
+  `raw_max` varchar(15) NOT NULL default '',
+  `eng_min` varchar(15) NOT NULL default '',
+  `eng_max` varchar(15) NOT NULL default '',
+  `driver_id_extra` varchar(255) NOT NULL default '',
+  UNIQUE KEY `element_id` (`element_id`)
+) TYPE=MyISAM COMMENT='2.0.0';
+
+REPLACE INTO `iw_par_jcdx1_param` (`row_date`, `element_id`, `driver_id`, `alias_text`, `menu`, `application`, `parameter_type`, `factory_setting`, `grp`, `att`, `eng_unit`, `format`, `range_min`, `range_max`, `scale`, `raw_min`, `raw_max`, `eng_min`, `eng_max`, `driver_id_extra`) VALUES 
+(NOW(), 'AI1', '04C0_N_07', 'AI1', 'X1', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI2', '04D0_N_07', 'AI2', 'X2', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI3', '04E0_N_07', 'AI3', 'X3', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI4', '04F0_N_07', 'AI4', 'X4', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI5', '0500_N_07', 'AI5', 'X5', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI6', '0510_N_07', 'AI6', 'X6', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI7', '0520_N_07', 'AI7', 'X7', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'AI8', '0530_N_07', 'AI8', 'X8', 'Analog values', 'float', '', '', 'r', '&deg;C', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM1TYP', '0040_B_00', 'PM1 Type', 'PM1TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM2TYP', '00A0_B_00', 'PM2 Type', 'PM2TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM3TYP', '0100_B_00', 'PM3 Type', 'PM3TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM4TYP', '0160_B_00', 'PM4 Type', 'PM4TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM5TYP', '01C0_B_00', 'PM5 Type', 'PM5TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM6TYP', '0220_B_00', 'PM6 Type', 'PM6TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM7TYP', '0280_B_00', 'PM7 Type', 'PM7TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM8TYP', '02E0_B_00', 'PM8 Type', 'PM8TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM9TYP', '0340_B_00', 'PM9 Type', 'PM9TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM10TYP', '03A0_B_00', 'PM10 Type', 'PM10TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM11TYP', '0400_B_00', 'PM11 Type', 'PM11TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'PM12TYP', '0460_B_00', 'PM12 Type', 'PM12TYP', 'Integral values', 'integer', '', '-1', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT1IOMAP', '05C0_C_00', 'XT1IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT2IOMAP', '0610_C_00', 'XT2IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT3IOMAP', '0660_C_00', 'XT3IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT4IOMAP', '06B0_C_00', 'XT4IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT5IOMAP', '0700_C_00', 'XT5IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT6IOMAP', '0750_C_00', 'XT6IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT7IOMAP', '07A0_C_00', 'XT7IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT8IOMAP', '07F0_C_00', 'XT8IOMAP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT1IOTYP', '05C0_C_01', 'XT1IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT2IOTYP', '0610_C_01', 'XT2IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT3IOTYP', '0660_C_01', 'XT3IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT4IOTYP', '06B0_C_01', 'XT4IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT5IOTYP', '0700_C_01', 'XT5IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT6IOTYP', '0750_C_01', 'XT6IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT7IOTYP', '07A0_C_01', 'XT7IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT8IOTYP', '07F0_C_01', 'XT8IOTYP', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT1IOMOD', '05C0_C_02', 'XT1IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT2IOMOD', '0610_C_02', 'XT2IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT3IOMOD', '0660_C_02', 'XT3IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT4IOMOD', '06B0_C_02', 'XT4IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT5IOMOD', '0700_C_02', 'XT5IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT6IOMOD', '0750_C_02', 'XT6IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT7IOMOD', '07A0_C_02', 'XT7IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', ''),
+(NOW(), 'XT8IOMOD', '07F0_C_02', 'XT8IOMOD', '', 'Integral values', 'integer', '', '', 'r', '', '', '', '', '', '', '', '', '', '');
+
+
+DROP TABLE IF EXISTS `iw_set_jcdx1`;
+CREATE TABLE `iw_set_jcdx1` (
+  `row_date` datetime NOT NULL default '2004-01-10 00:00:00',
+  `element_id` varchar(100) NOT NULL default '',
+  `active` enum('0','1') NOT NULL default '0',
+  `onl_ind` enum('0','1') NOT NULL default '1',
+  `update_freq` set('','fast','norm','slow','once') NOT NULL default 'norm',
+  `save_data` enum('0','1','2') NOT NULL default '0',
+  `save_freq` enum('','fast','norm','slow') NOT NULL default 'norm',
+  `plant_pri` char(1) NOT NULL default '',
+  `sys_pri` char(1) NOT NULL default '',
+  `alarm_type` tinyint(3) NOT NULL default '0',
+  PRIMARY KEY  (`element_id`)
+) TYPE=MyISAM COMMENT='2.0.3';
+
+REPLACE INTO `iw_set_jcdx1` (`row_date`, `element_id`, `active`, `onl_ind`, `update_freq`, `save_data`, `save_freq`, `plant_pri`, `sys_pri`, `alarm_type`) VALUES 
+(NOW(), 'AI1', '1', '1', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI2', '1', '0', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI3', '1', '0', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI4', '1', '0', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI5', '1', '0', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI6', '1', '0', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI7', '1', '0', 'norm', '1', 'norm', '', '', 0),
+(NOW(), 'AI8', '1', '0', 'slow', '1', 'norm', '', '', 0),
+(NOW(), 'PM1TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM2TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM3TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM4TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM5TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM6TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM7TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM8TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM9TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM10TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM11TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'PM12TYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT1IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT2IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT3IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT4IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT5IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT6IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT7IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT8IOMAP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT1IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT2IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT3IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT4IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT5IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT6IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT7IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT8IOTYP', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT1IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT2IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT3IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT4IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT5IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT6IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT7IOMOD', '1', '0', 'slow', 'change', '', '', '', 0),
+(NOW(), 'XT8IOMOD', '1', '0', 'slow', 'change', '', '', '', 0);
+
+
+
+
+-- Changelog
+--
+-- v1 Orginal
+-- v2 Lagt inn Internal gruppen med masse test-parameter.
+--
