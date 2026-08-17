@@ -140,27 +140,73 @@ rejection now names the box as the way through.
   "format": "iwmac-designer-panel",
   "version": 1,
   "exported_at": "2026-08-06T09:12:00.000Z",
-  "generator": "IWDIE v1.0.0",
+  "generator": "IWDIE v1.17.0",
+  "ai_guide": {
+    // v1.17.0 — reading instructions: what to read, in what order, what to skip,
+    // what the coordinates mean, and what not to change. See below.
+  },
   "source_plant_id": "10113",
   "panel_name": "Oversikt",
   "panel_width": "1400px",
   "panel_height": "750px",
   "counts": { "single_objects": 54, "containers": 0, "graphics": 0 },
   "background_embedded": true,
+  "background": {
+    // v1.17.0 — what the image_data blob is, without opening it
+    "field": "image_data", "mime": "image/png",
+    "width": 1400, "height": 750, "bytes": 118784,
+    "source_name": "oversikt.png"
+  },
   "panel": {
     // the EXACT document the designer itself saves/loads (getPanelDataFromDOM):
     // plant_id, panel_name, panel_width, panel_height, org_image_name, image_name,
     // saved_by, single_objects[], containers[], graphics[]
-    // + converted:"true" / image_data:"data:image/png;base64,…" when a background is embedded
-  }
+    // + converted:"true" when a background is embedded
+  },
+  "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
+  "image_svg_trace": "<svg …>"               // v1.17.0: last in the file
 }
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
-**The drawing's structure lives inside background-bearing exports too:** since v1.6.1, **Export JSON** automatically includes `panel.image_svg_trace` whenever it embeds a raster or SVG background, without confirmation. It exists so an **AI can read how the drawing is structured** (where pipe runs, vessels and frames sit — geometry a PNG can't convey) and generate matching artwork via its own `image_svg`. Raster backgrounds use the existing worker tracer, its color-aware derived palette, and a fresh-pixel main-thread fallback if the worker fails; SVG backgrounds are strictly UTF-8 decoded and validated. Insert strips the field and never renders it; the embedded background always stays the real one. A valid panel with no embedded background omits the trace and exports normally. If required SVG decoding/validation or raster tracing fails, Export shows an error and does not download JSON.
+### Written to be read (v1.17.0)
 
-**The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `panel.image_data: "data:image/png;base64,…"` — the designer's own embedded-image format), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
+An export is mostly blob. Measured on real files, `image_data` is 80% of one, and
+`image_svg_trace` plus `image_data` are 86% of another. Each is a single line tens
+of thousands of characters long, so a reader working through the file — a person
+scrolling it, or an AI agent given the path — spends most of it on base64 that
+carries no structure.
+
+Position was never the problem: both fields were already the last keys of `panel`,
+and `panel` was already the last key of the envelope, so they already sat at the
+end of the file. Lifting them to the top level puts them beside `panel` rather than
+inside it, which is tidier to describe and to skip, but it does not move them
+meaningfully earlier or later.
+
+What actually helps a reader are the two fields added ahead of the panel:
+
+- **`ai_guide`** — the read order, the coordinate system, the 17 object fields, and
+  the rules that get a file rejected. It names the blob fields in `skip_fields`, so
+  an agent is told what to ignore instead of having to work it out.
+- **`background`** — mime type, pixel size and byte count, read from the image
+  header rather than by decoding it. These are the facts a reader would otherwise
+  open the blob to get.
+
+Nothing is removed and nothing inside `panel` changes, so the file is still one
+self-contained document that imports on its own. If you want the blobs out of the
+file altogether, that is a different export shape — sidecar `.png`/`.svg` files
+next to a lean `.json` — and this version does not do it.
+
+**Older files import unchanged.** The format version stays at 1 because nothing was
+taken away: Insert reads the blobs from wherever they are, so every file exported
+before v1.17.0 — with `image_data` and `image_svg_trace` still inside `panel` — loads
+exactly as it always did, with no warning and no conversion step. A file that
+carries a blob in both places keeps the one inside `panel`.
+
+**The drawing's structure lives inside background-bearing exports too:** since v1.6.1, **Export JSON** automatically includes `image_svg_trace` whenever it embeds a raster or SVG background, without confirmation (at the top level since v1.17.0; `panel.image_svg_trace` in older files, and still read from there). It exists so an **AI can read how the drawing is structured** (where pipe runs, vessels and frames sit — geometry a PNG can't convey) and generate matching artwork via its own `image_svg`. Raster backgrounds use the existing worker tracer, its color-aware derived palette, and a fresh-pixel main-thread fallback if the worker fails; SVG backgrounds are strictly UTF-8 decoded and validated. Insert strips the field and never renders it; the embedded background always stays the real one. A valid panel with no embedded background omits the trace and exports normally. If required SVG decoding/validation or raster tracing fails, Export shows an error and does not download JSON.
+
+**The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `image_data: "data:image/png;base64,…"` — the designer's own embedded-image format, at the top level since v1.17.0 and inside `panel` before that), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 
 ## Background → Illustrator (v1.3.0)
 
