@@ -255,14 +255,16 @@ agent to ignore it, which is the point: at 141 kB it is worth reading. Export
 also got faster, because the embedded trace no longer supersamples — about
 1.2 s instead of 4.5 s.
 
-### Trace quality: the labels (v1.17.2)
+### Trace quality: the labels (v1.17.2, download only since v1.19.0)
 
 Panel text is drawn at about 8 px, so at 1:1 a glyph stroke is one pixel and its
 antialiasing dominates the edge the tracer is trying to fit. The labels came out
 as mush — legible as shapes, not as words.
 
-The trace is now taken from a copy of the background drawn at **2× with image
-smoothing off**, then scaled back into panel coordinates. Every source pixel
+The **downloaded `.svg`** is taken from a copy of the background drawn at **2×
+with image smoothing off**, then scaled back into panel coordinates. (Since
+v1.19.0 this applies to that file only — the embedded `image_svg_trace` is traced
+at 1× for structure, as above.) Every source pixel
 becomes a clean 2×2 block, so the fitted outlines land on the real edges.
 Measured on a 1400×750 Maskin panel, as the share of pixels in a label row
 differing from the source by more than 30/255:
@@ -283,9 +285,9 @@ It is **gated on source size**, at 2 Mpx: cost scales with pixel count at
 roughly a second per megapixel, and a photo background can already take minutes,
 so quadrupling that is not worth six percentage points on text a photo does not
 have. Anything larger traces at 1× exactly as before, and the toast says which
-happened. The `.svg` and the embedded `image_svg_trace` both come back in panel
-coordinates either way, so the trace geometry and the objects' `posLeft`/`posTop`
-stay in one coordinate system.
+happened. Whatever scale is used, the result comes back in panel coordinates, so
+the trace geometry and the objects' `posLeft`/`posTop` stay in one coordinate
+system.
 
 ## Background → Illustrator (v1.3.0)
 
