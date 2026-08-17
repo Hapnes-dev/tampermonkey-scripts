@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18.0
+// @version      1.19.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.18.0';
+var IWDIE_VERSION = '1.19.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -38,6 +38,9 @@ var IWDIE_BLOB_KEYS = ['image_data', 'image_svg_trace'];
 
 /** How many colours iwdieBuildPalette() derives for a vector trace. */
 var IWDIE_TRACE_PALETTE_COLORS = 24;
+
+/** Paths shorter than this are dropped from the embedded structural trace. */
+var IWDIE_TRACE_STRUCTURE_PATHOMIT = 32;
 
 /* Tracing a supersampled copy of the background is what makes the small labels
    survive. Panel text is drawn at about 8 px, so at 1:1 a glyph stroke is a
@@ -166,14 +169,13 @@ function iwdieBackgroundInfo(dataUrl, orgImageName) {
 function iwdieBuildAiGuide(hasBackground, hasTrace, constantFields) {
   var skip = [];
   if (hasBackground) skip.push('image_data');
-  if (hasTrace) skip.push('image_svg_trace');
   return {
     purpose: 'IWMAC Designer panel export. The panel is a set of objects positioned absolutely over one background picture.',
     read_order: ['counts', 'background', 'panel.single_objects', 'panel.containers'],
     skip_fields: skip,
     skip_reason: skip.length
-      ? 'Base64 / SVG blobs, one very long line each. They are placed last so everything above stays readable; "background" already states the mime, pixel size and byte count.'
-      : 'This export carries no image blobs.',
+      ? 'One very long line of base64. It is placed last so everything above stays readable, and "background" already states its mime, pixel size and byte count.'
+      : 'This export carries no embedded picture.',
     coordinates: 'posLeft and posTop are pixels from the top-left of the background picture; posWidth and posHeight are the object box. There is no nesting or transform — the numbers are absolute.',
     object_fields: IWDIE_OBJECT_FIELDS,
     constant_fields: constantFields || null,
@@ -228,7 +230,7 @@ function iwdieBuildEnvelope(doc, meta) {
   };
   env.panel = panel;
   if (bg) env.image_data = bg;        // big payloads last, for human readers
-  if (trace) env.image_svg_trace = trace;
+  if (trace) { env.image_svg_trace = trace; iwdieNoteTraceInAiGuide(env); }
   return env;
 }
 
@@ -320,23 +322,31 @@ function iwdieConstantObjectFields(objects) {
 }
 
 /**
- * Add the trace to the guide's skip list once it exists.
+ * Describe the trace in the guide once it exists.
  *
- * The guide is built by iwdieBuildEnvelope(), and the vector trace is attached
- * afterwards by iwdiePrepareExportTrace() — so at build time there is never a
- * trace to declare, and the guide shipped naming only image_data. That got the
- * priority exactly backwards: on a real Maskin export the trace is 2060 kB of a
- * 2328 kB file, 88.5% of it, against 116 kB for the background. The one field
- * an agent most needs told to skip was the one field the guide left out.
+ * The guide is built by iwdieBuildEnvelope() and the trace is attached
+ * afterwards by iwdiePrepareExportTrace(), so at build time there is never a
+ * trace to declare.
+ *
+ * It is described rather than skipped. Until 1.19.0 the embedded trace was the
+ * full-fidelity one — 12 337 paths and 2060 kB, 88% of the file — which no
+ * agent could read, so the only sane advice was to ignore it. Now it is traced
+ * for structure instead (451 paths, 141 kB on the same panel), which is small
+ * enough to read and is the whole reason the field exists.
  */
 function iwdieNoteTraceInAiGuide(env) {
   if (!env || typeof env !== 'object') return env;
   var guide = env.ai_guide;
   if (!guide || typeof guide !== 'object') return env;
-  if (!Array.isArray(guide.skip_fields)) guide.skip_fields = [];
-  if (guide.skip_fields.indexOf('image_svg_trace') === -1) {
-    guide.skip_fields.push('image_svg_trace');
-  }
+  var trace = String(env.image_svg_trace || '');
+  if (!trace) return env;
+  guide.structure = {
+    field: 'image_svg_trace',
+    paths: (trace.match(/<path/g) || []).length,
+    what: 'A coarse vector trace of the background picture: equipment outlines, pipe runs and frames, in panel coordinates. Small paths are dropped, so there is no text in it.',
+    use: 'Read it to find where things are — then use panel.single_objects[] for what they are. tag_text and alias_text carry the labels, spelled properly.',
+    not: 'It is reading material only. Insert deletes it, and it is never the artwork; image_data is.'
+  };
   return env;
 }
 
@@ -2811,6 +2821,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        1.05 Mpx buffer belongs. Deriving it out here first was what forced the
        old "MUST run before traceInWorker" ordering — the transfer detaches the
        buffer, so nothing could read it afterwards. */
+    /* The embedded trace exists so an AI can read where things are, and a
+       12 337-path 2 MB drawing cannot do that — it is bigger than the context
+       it has to fit in. Dropping paths shorter than IWDIE_TRACE_STRUCTURE_PATHOMIT
+       points removes the text speckle and keeps the equipment: measured on a
+       Maskin panel, 451 paths and 141 kB instead of 12 337 and 2060 kB, with
+       every pipe run, the vessel, the gascooler and its fans, the compressors
+       and the field pills still in place. Text is lost, which costs nothing —
+       the labels are in single_objects[].tag_text, spelled properly. */
+    function traceOptsStructure() {
+      var o = traceOpts();
+      o.pathomit = IWDIE_TRACE_STRUCTURE_PATHOMIT;
+      return o;
+    }
+
+    function traceOptsStructureFor(imgData) {
+      var o = traceOptsStructure();
+      var pal = iwdieBuildPalette(imgData, IWDIE_TRACE_PALETTE_COLORS);
+      if (pal) o.pal = pal;
+      return o;
+    }
+
     function traceOptsFor(imgData) {
       var o = traceOpts();
       var pal = iwdieBuildPalette(imgData, IWDIE_TRACE_PALETTE_COLORS);
@@ -2822,8 +2853,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        canvas colour, enlarged by iwdieTraceScaleFor() when the source is small
        enough to be worth it. Returns {data, scale} or null. Built fresh each
        time because the worker transfer detaches the buffer. */
-    function buildTraceSource(img, w, h, fillCss) {
-      var scale = iwdieTraceScaleFor(w, h);
+    function buildTraceSource(img, w, h, fillCss, forceScale) {
+      var scale = forceScale || iwdieTraceScaleFor(w, h);
       var cw = w * scale, ch = h * scale;
       try {
         var canvas = document.createElement('canvas');
@@ -2847,17 +2878,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
           if (!w || !h) { reject(new Error('Background image has no size.')); return; }
           var fillCss = grabBackgroundFillColor();
-          var got = buildTraceSource(img, w, h, fillCss);
+          // structure, not fidelity: this trace is read, not printed, so it is
+          // taken at 1x with small paths dropped. Supersampling it would cost 4x
+          // the time to add detail that is then thrown away.
+          var got = buildTraceSource(img, w, h, fillCss, 1);
           if (!got) { reject(new Error('Could not read background image pixels for tracing.')); return; }
           var finish = function (svg) { resolve(iwdieRescaleTraceSvg(svg, got.scale, w, h)); };
-          traceInWorker(got.data, traceOpts(), IWDIE_TRACE_PALETTE_COLORS).then(finish).catch(function (workerError) {
+          traceInWorker(got.data, traceOptsStructure(), IWDIE_TRACE_PALETTE_COLORS).then(finish).catch(function (workerError) {
             try {
               // the first buffer was transferred into the worker, so both the
               // pixels and the palette have to be taken again here
-              var again = buildTraceSource(img, w, h, fillCss);
+              var again = buildTraceSource(img, w, h, fillCss, 1);
               if (!again) throw new Error('could not rebuild the pixels');
               resolve(iwdieRescaleTraceSvg(
-                IWDIE_TRACER.imagedataToSVG(again.data, traceOptsFor(again.data)), again.scale, w, h));
+                IWDIE_TRACER.imagedataToSVG(again.data, traceOptsStructureFor(again.data)), again.scale, w, h));
             } catch (fallbackError) {
               reject(new Error('Vector trace failed in worker and main-thread fallback: ' + workerError + '; ' + fallbackError));
             }

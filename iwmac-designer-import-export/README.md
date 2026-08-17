@@ -227,6 +227,33 @@ guide just tells a reader which ones carry no information about this panel.
 
 **The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `image_data: "data:image/png;base64,…"` — the designer's own embedded-image format, at the top level since v1.17.0 and inside `panel` before that), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 
+### The embedded trace is coarse on purpose (v1.19.0)
+
+The two traces exist for different readers, so they are no longer the same trace.
+
+| | embedded `image_svg_trace` | downloaded `.svg` |
+|---|---|---|
+| read by | an AI, from inside the JSON | Illustrator, by a person |
+| wants | structure | fidelity |
+| source | 1× | 2× nearest |
+| `pathomit` | 32 | 4 |
+| measured | **451 paths, 141 kB** | 12 337 paths, 2060 kB |
+
+The embedded trace used to be the full-fidelity one — 2060 kB, 88.5% of the
+export, roughly half a million tokens. It could not do the job it exists for: no
+agent can read it. Dropping paths shorter than 32 points removes the text
+speckle and keeps the equipment. Measured on a Maskin panel, every pipe run, the
+vessel, the gascooler and its four fans, the compressors, the oil separator and
+the field pills survive; the fills still carry the pipe colours (7 warm, 3 blue,
+2 green). Text is lost, and costs nothing — the labels are in
+`panel.single_objects[].tag_text` and `alias_text`, spelled properly rather than
+traced into outlines.
+
+`ai_guide.structure` now describes the field instead of `skip_fields` telling an
+agent to ignore it, which is the point: at 141 kB it is worth reading. Export
+also got faster, because the embedded trace no longer supersamples — about
+1.2 s instead of 4.5 s.
+
 ### Trace quality: the labels (v1.17.2)
 
 Panel text is drawn at about 8 px, so at 1:1 a glyph stroke is one pixel and its
