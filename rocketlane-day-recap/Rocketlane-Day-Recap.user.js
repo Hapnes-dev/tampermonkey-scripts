@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.110
+// @version      4.111
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -169,7 +169,101 @@ var RL_RECAP_ALL_LOGS = (function () {
         formatAllLogsNotes, mergeVisitEventLists,
     };
 })();
-if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_ALL_LOGS;
+// ===== Timesheet note prose ==========================================================
+// The Notes field of a booked entry is what answers "what did I actually do on this task that day?"
+// months later — and Rocketlane's drawer shows only its FIRST line, the rest behind a click. Before
+// v4.111 the note led with a field dump ("Drawing changed: Oversikt_Øst: rev 4 → 5 · layout edited"),
+// so the visible part was a label rather than an answer. These helpers turn the same facts into a
+// summary sentence; the precise diff still follows underneath as evidence.
+// Pure and dependency-free, outside the IIFE, so the unit tests can require them.
+var RL_RECAP_NOTE_TEXT = (function () {
+    'use strict';
+
+    // "a" · "a and b" · "a, b and c" · "a, b, c and 4 more" — the readable form of a list.
+    function bookAndList(items, max) {
+        const arr = (items || []).filter(Boolean).map(String);
+        if (!arr.length) return '';
+        if (arr.length > max) return arr.slice(0, max).join(', ') + ` and ${arr.length - max} more`;
+        if (arr.length === 1) return arr[0];
+        return arr.slice(0, -1).join(', ') + ' and ' + arr[arr.length - 1];
+    }
+
+    // Join verb clauses into one capitalised, full-stopped sentence.
+    function bookSentence(clauses) {
+        const c = (clauses || []).filter(Boolean).map(String);
+        if (!c.length) return '';
+        const joined = c.length === 1 ? c[0] : c.slice(0, -1).join(', ') + ' and ' + c[c.length - 1];
+        const s = joined.charAt(0).toUpperCase() + joined.slice(1);
+        return /[.!?]$/.test(s) ? s : s + '.';
+    }
+
+    const bookPlural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+    // Unit labels carry their bus address ("AK-CC55-017x 6 (000:006)"). That belongs in the detail
+    // lines, not in a summary sentence that would then nest parentheses inside parentheses.
+    const bookBareLabel = s => String(s || '').replace(/\s*\([^()]*\)\s*$/, '').trim();
+
+    // The day's config work as one sentence, from what bookTexts measured out of the commit diffs.
+    function summarizeIntegration(f) {
+        f = f || {};
+        const devAdd = f.devAdd || [], settNames = f.settNames || [];
+        const clauses = [];
+        if (f.uAdd) clauses.push(`added ${bookPlural(f.uAdd, 'unit')}` + ((f.uAddNames || []).length ? ` (${bookAndList(f.uAddNames.map(bookBareLabel), 3)})` : ''));
+        else if (devAdd.length) clauses.push('added ' + bookAndList([...new Set(devAdd)], 3));
+        if (f.uRen) clauses.push(`renamed ${bookPlural(f.uRen, 'unit')}` + ((f.renPairs || []).length ? ` (${bookAndList(f.renPairs.slice(0, 2), 2)})` : ''));
+        if (f.uDel) clauses.push(`removed ${bookPlural(f.uDel, 'unit')}`);
+        const tuned = (f.devMod || []).filter(x => devAdd.indexOf(x) < 0);
+        if (tuned.length) clauses.push('tuned parameters on ' + bookAndList(tuned, 3));
+        if (f.virtVals) clauses.push('updated the virtual values');
+        if (settNames.length) clauses.push(`changed ${bookPlural(settNames.length, 'plant setting')} (${bookAndList(settNames.slice(0, 2), 2)})`);
+        return bookSentence(clauses);
+    }
+
+    // Drawing work as one sentence. A single panel is named with what changed inside it; several are
+    // listed by name, because "which drawings did I touch" is the thing worth recalling.
+    function summarizeDrawing(panelInfo, drawingNames, designerSession) {
+        const p = panelInfo || [], names = drawingNames || [];
+        if (p.length === 1) {
+            const one = p[0];
+            const detail = [(one.what || []).length ? one.what.join(' and ') + ' edited' : '',
+                one.from != null ? `rev ${one.from} → ${one.to}` : ''].filter(Boolean).join(', ');
+            return bookSentence([`${one.added ? 'created' : 'updated'} the "${one.panel}" drawing in the Designer`
+                + (detail ? ` (${detail})` : '')]);
+        }
+        if (p.length) {
+            const nNew = p.filter(x => x.added).length;
+            return bookSentence([`worked on ${bookPlural(p.length, 'drawing')} in the Designer — `
+                + bookAndList(p.map(x => `"${x.panel}"`), 4) + (nNew ? ` (${bookPlural(nNew, 'new one')})` : '')]);
+        }
+        if (names.length) {
+            return bookSentence([`changed ${bookPlural(names.length, 'drawing')} in the Designer — `
+                + bookAndList(names.map(n => `"${n}"`), 4)]);
+        }
+        return designerSession ? 'Worked in the Designer on the plant\'s drawings.' : '';
+    }
+
+    // Fallback when the day left no config commit: describe the session by the tools it used.
+    // `tools` is [{label, count}], already ordered by the caller.
+    function summarizeActions(tools) {
+        const t = (tools || []).filter(x => x && x.label);
+        if (!t.length) return '';
+        return bookSentence(['worked on the plant via '
+            + bookAndList(t.slice(0, 4).map(x => x.label + (x.count > 1 ? ` (×${x.count})` : '')), 4)]);
+    }
+
+    // The finished Notes field: summary, then what the operations log said, then the diff. Blank-line
+    // separated so the summary stands alone as the one line Rocketlane shows collapsed.
+    function composeEntryNote(summary, logNotes, details) {
+        const logLines = (logNotes || []).filter(Boolean).map(l => 'Log: ' + l).join('\n');
+        return [summary, logLines, details].filter(Boolean).join('\n\n');
+    }
+
+    return {
+        bookAndList, bookSentence, bookPlural, bookBareLabel,
+        summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
+    };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT);
 
 (function () {
     'use strict';
@@ -182,6 +276,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
         ALL_LOGS_SECRET_RE, ALL_LOGS_NOTE_CAP, allLogsDateWindow, maskAllLogsComment,
         visitsFromAllLogsRecords, formatAllLogsNotes, mergeVisitEventLists,
     } = RL_RECAP_ALL_LOGS;
+
+    const {
+        summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
+    } = RL_RECAP_NOTE_TEXT;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -198,7 +296,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.110';
+    const SCRIPT_VERSION   = '4.111';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2881,6 +2979,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
         out.notesActions = actEntries.length
             ? 'Worked via ' + actEntries.slice(0, 5).map(([a, n]) => ACT_WORDS[a] + (n > 1 ? ` ×${n}` : '')).join(' · ')
             : '';
+        // Same facts as a sentence — the lead line when the day left no config commit to describe.
+        out.sumActions = summarizeActions(actEntries.map(([a, n]) => ({ label: ACT_WORDS[a], count: n })));
         if (v.designer_last && v.designer_last.s) out.designerSession = 'Designer session'; // no timestamps — the entry carries its own date/duration
         // Texts read the visit-window commits PLUS the rest of the day's triggered commits — the save
         // that describes your work often lands after the visit window (e.g. during the next plant).
@@ -2888,7 +2988,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
         for (const c of [...(v.window_commits || []), ...(v.day_commits || [])]) { const id = String(c.id); if (!seen.has(id)) { seen.add(id); commits.push(c); } }
         commits.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
         const newest = commits.slice(-BOOK_MAX_COMMITS);
-        if (!newest.length) { out.notesDraw = out.designerSession || ''; return out; }
+        if (!newest.length) {
+            out.notesDraw = out.designerSession || '';
+            if (out.designerSession) out.sumDraw = 'Worked in the Designer on the plant\'s drawings.';
+            return out;
+        }
         const cids = newest.map(c => String(c.id));
         let patches = {};
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
@@ -3011,6 +3115,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
                 if (panels.size) {
                     out.drawingNames = [...panels.keys()];
                     out.drawing = out.drawingNames.slice(0, 3).join(', ');
+                    // Structured form, so the summary sentence can phrase what happened instead of
+                    // re-parsing the rendered line.
+                    out.panelInfo = [...panels.entries()].map(([panel, p]) => ({ panel, added: !!p.added, from: p.from, to: p.to, what: [...p.what] }));
                     out.drawingLines = [...panels.entries()].map(([panel, p]) => {
                         let txt = panel;
                         if (p.added) txt += ' (new)';
@@ -3047,6 +3154,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
         if (settDetails.length) nInteg.push('Plant settings: ' + settDetails.slice(0, 3).join('; ') + (settDetails.length > 3 ? ` (+${settDetails.length - 3} more)` : ''));
         else if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
         out.notesInteg = nInteg.join('\n');
+        // The same facts as one sentence, for the top of the note.
+        out.sumInteg = summarizeIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames });
         const nDraw = [];
         if (out.drawingLines && out.drawingLines.length) {
             const lines = out.drawingLines.slice(0, 4);
@@ -3059,6 +3168,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
             nDraw.push(out.designerSession); // fallback only — real drawing detail replaces it
         }
         out.notesDraw = nDraw.join('\n');
+        // …and the drawing work as a sentence.
+        out.sumDraw = summarizeDrawing(out.panelInfo, out.drawingNames, !!out.designerSession);
         // Curated evidence for the task matcher, TIERED (v4.82): tokStr = device-table tokens (framework
         // tables iw_sys_*/iw_gen_*/iw_lnk_* excluded — their names word-match nonsense) — system-level
         // truth; uStr = unit add/rename NAMES — fallback tier only, since MQTT sensors get renamed to
@@ -3401,6 +3512,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
                 else if (cat === CAT_SETUP_PC) act = 'Setup: AK3 scanner setup';
                 else act = CAT_SHORT[cat] + ': plant work';
                 // RAC ⇒ the "integration" is really gateway setup: move it to Setup - PC / Gateway.
+                const racRedirect = (texts.racHit || racProject) && cat === CAT_INTEGRATION; // Setup reached via RAC, not via AK3
                 if ((texts.racHit || racProject) && cat === CAT_INTEGRATION) {
                     category = CAT_SETUP_PC;
                     act = 'Setup: RAC' + (texts.integration ? ' — ' + texts.integration : ' setup');
@@ -3418,13 +3530,28 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RL_RECAP_A
                 const bucketDupe = !proj && !!catId && existing.some(e => e.category && e.category.categoryId === catId
                     && (String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0
                         || String((e.task && (e.task.taskName || e.task.name)) || e.taskName || '').indexOf(String(v.plant_id) + ' ') === 0));
-                // Detailed multi-line notes → the entry's Notes field (category-matched).
-                let notes = category === CAT_DRAWING ? (texts.notesDraw || texts.notesActions || '')
-                    : category === CAT_SETUP_PC ? ['AK3 scanner setup', texts.racHit ? 'RAC' : '', texts.notesInteg || texts.notesActions || ''].filter(Boolean).join('\n')
-                    : (texts.notesInteg || texts.notesActions || ''); // no commits ⇒ describe the session by its tools
+                // The entry's Notes field, in three parts (v4.111): a plain-English summary sentence,
+                // then anything you wrote in the operations log that day, then the precise diff. Only
+                // the first line survives Rocketlane's collapsed drawer, so it has to be the answer to
+                // "what did I do here", not a field label.
+                let summary, details;
+                if (category === CAT_DRAWING) {
+                    summary = texts.sumDraw || texts.sumActions || '';
+                    details = texts.notesDraw || '';
+                } else if (category === CAT_SETUP_PC) {
+                    // Setup is reached two ways: an AK3 scanner day, or an integration day on a RAC
+                    // plant that belongs under gateway setup. Say which — the old note always claimed AK3.
+                    summary = [racRedirect ? 'Set up the plant gateway (RAC).' : 'Set up the AK3 scanner.',
+                        texts.sumInteg || texts.sumActions || ''].filter(Boolean).join(' ');
+                    details = texts.notesInteg || '';
+                } else {
+                    summary = texts.sumInteg || texts.sumActions || ''; // no commits ⇒ describe the session by its tools
+                    details = texts.notesInteg || '';
+                }
                 // Whatever you wrote in the operations log / a handover note that day says more about the
-                // work than any diff can — append it (already masked; secret values never travel).
-                if (texts.notesLogs) notes = [notes, texts.notesLogs].filter(Boolean).join('\n');
+                // work than any diff can (already masked; secret values never travel). `details` is the
+                // commit-derived diff only — the tools fallback already IS the summary, so it never repeats.
+                const notes = composeEntryNote(summary, String(texts.notesLogs || '').split('\n'), details);
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
