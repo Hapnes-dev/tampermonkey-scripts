@@ -121,3 +121,55 @@ test('a log note with no discipline words falls through to the next tier', () =>
     const got = pick('integration', { uStr: 'corrigo', logStr: 'ringte kunden og avtalte nytt besøk' });
     assert.strictEqual(got.taskName, 'Integration: Ventilation', 'the note said nothing, so unit names still decide');
 });
+
+// ---- v4.113: the booking-history prior ------------------------------------------------------------
+// Measured over 16 weeks of Thomas's real timesheet: the most-frequent task for a project+category is
+// what he books 76% of the time. It is a TIEBREAK ONLY — see rlTaskPrior for why that boundary matters.
+
+// Two tasks that score refrigeration identically: same weight, same discipline count, both from the
+// NAME. Evidence alone cannot separate them, which before v4.113 meant falling through to a guess.
+const TIED = [
+    T(20, 'Integration: Refrigeration'),
+    T(21, 'Integration: Kjøl'),
+];
+
+test('the prior breaks a tie the evidence cannot', () => {
+    assert.strictEqual(H.pickTask(TIED, 'integration', texts({ tokStr: 'ak-cc' }), null, ['21']).taskId, 21);
+    assert.strictEqual(H.pickTask(TIED, 'integration', texts({ tokStr: 'ak-cc' }), null, ['20']).taskId, 20,
+        'the same tie resolves the other way when history says so');
+});
+
+test('the prior never overrides evidence', () => {
+    // History says Ventilation, but today's devices are unambiguously refrigeration.
+    const got = H.pickTask(TEMPLATE, 'integration', texts({ tokStr: 'ak-cc 084b danfoss' }), null, ['5']);
+    assert.strictEqual(got.taskName, 'Integration: Refrigeration',
+        'a task the evidence chose must win over one the history merely prefers');
+});
+
+test('the prior respects its own order, best first', () => {
+    const three = TIED.concat([T(22, 'Integration: Frys')]);
+    assert.strictEqual(H.pickTask(three, 'integration', texts({ tokStr: 'ak-cc' }), null, ['22', '21', '20']).taskId, 22);
+    assert.strictEqual(H.pickTask(three, 'integration', texts({ tokStr: 'ak-cc' }), null, ['21', '22']).taskId, 21);
+});
+
+test('a prior naming tasks that no longer exist is ignored, not obeyed', () => {
+    // Tasks get deleted and renamed; a stale id must not knock out a live candidate.
+    const got = H.pickTask(TEMPLATE, 'integration', texts({ tokStr: 'ak-cc 084b danfoss' }), null, ['99999']);
+    assert.strictEqual(got.taskName, 'Integration: Refrigeration');
+});
+
+test('no prior leaves every earlier version\'s behaviour exactly as it was', () => {
+    for (const t of [{ tokStr: 'ak-cc 084b danfoss' }, { tokStr: 'corrigo exhausto' }, { drawingNames: ['Wireless overview'] }, { logStr: 'byttet føler i kjøledisk' }]) {
+        const a = H.pickTask(TEMPLATE, 'integration', texts(t), null, null);
+        const b = H.pickTask(TEMPLATE, 'integration', texts(t), null, []);
+        const c = H.pickTask(TEMPLATE, 'integration', texts(t), null, undefined);
+        assert.deepStrictEqual([a && a.taskId, b && b.taskId], [c && c.taskId, c && c.taskId]);
+    }
+});
+
+test('the prior never resurrects a checklist row or a task already used', () => {
+    // History is not an escape hatch from the hard exclusions.
+    assert.strictEqual(H.pickTask(TEMPLATE, 'integration', texts({ tokStr: 'ak-cc' }), new Set([4]), ['4']).taskId !== 4, true);
+    const onlyChecklist = [T(9, 'Customers approval'), T(10, 'Alarm test')];
+    assert.strictEqual(H.pickTask(onlyChecklist, 'integration', texts({ tokStr: 'ak-cc' }), null, ['9', '10']), null);
+});

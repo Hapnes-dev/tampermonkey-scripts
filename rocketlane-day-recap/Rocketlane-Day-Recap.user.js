@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.112
+// @version      4.113
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -314,7 +314,15 @@ var RL_RECAP_MATCH = (function () {
         }
         return w;
     }
-    function bookPickWeighted(cands, weights, stripRe, guess) {
+    // `prior` is the task-id order this project+category is usually booked onto, best first (v4.113).
+    // It only ever breaks a tie the evidence could not — see rlTaskPrior for the measurement.
+    const PRIOR_UNRANKED = 1e9; // finite on purpose: Infinity - Infinity is NaN, which poisons a comparator
+    function bookPriorRank(prior, t) {
+        if (!prior || !prior.length) return PRIOR_UNRANKED;
+        const i = prior.indexOf(String(t.taskId));
+        return i < 0 ? PRIOR_UNRANKED : i;
+    }
+    function bookPickWeighted(cands, weights, stripRe, guess, prior) {
         if (!cands.length) return null;
         // Tiebreaks, in order (lexicographic — top candidate must beat #2 somewhere or it's ambiguous):
         //  1. evidence score
@@ -322,6 +330,10 @@ var RL_RECAP_MATCH = (function () {
         //     (heat + vent via "VGV") and used to tie plain "Ventilation" — FEWER named disciplines wins.
         //  3. name over phase (v4.90): a task whose NAME carries the discipline beats one that only
         //     inherits it from its phase/category ("Design: Refrigeration" > "Nytt oversiktsbilde").
+        //  4. the booking-history prior (v4.113) — LAST among the tiebreaks, so it can only order
+        //     candidates the evidence scored identically. An evidence tie used to mean "ambiguous, fall
+        //     through", which ended at an alphabetical guess; now the task this project+category is
+        //     actually booked onto wins it (measured 76% correct — see rlTaskPrior).
         // With `guess` (v4.92, rescue mode): a full tie no longer gives up — the alphabetically first of
         // the tied-top tasks is returned as the best guess (existing task beats a new activity).
         const scored = cands.map(t => {
@@ -332,9 +344,14 @@ var RL_RECAP_MATCH = (function () {
         }).filter(x => x.ov > 0);
         if (scored.length === 1) return scored[0].t;
         if (scored.length > 1) {
-            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph) || a.t.taskName.localeCompare(b.t.taskName));
+            const pr = t => bookPriorRank(prior, t);
+            scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph)
+                || (pr(a.t) - pr(b.t)) || a.t.taskName.localeCompare(b.t.taskName));
             const [a, b] = scored;
-            if (guess || a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t; // fully tied ⇒ ambiguous (unless guessing)
+            if (guess || a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t;
+            // Evidence is fully tied. Before v4.113 that meant "ambiguous" and the caller fell through to
+            // a rescue guess; if the history separates them, take the one actually booked in the past.
+            if (pr(a.t) !== pr(b.t)) return a.t;
         }
         return null; // ambiguous ⇒ let the fallback decide
     }
@@ -348,7 +365,7 @@ var RL_RECAP_MATCH = (function () {
     const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
     // `kind` is 'drawing' | 'integration' | 'setup' — the module deliberately does NOT know
     // Rocketlane's category NAMES, so renaming a category upstream cannot silently break matching.
-    function pickTask(tasks, kind, texts, used) {
+    function pickTask(tasks, kind, texts, used, prior) {
         // The `used` guard was applied only inside rescue() until v4.112, so a category whose evidence
         // pointed straight at a task another category had already taken that day booked onto it anyway —
         // despite "no two categories land on the same task" being the documented promise. Filtering here
@@ -373,7 +390,7 @@ var RL_RECAP_MATCH = (function () {
         const tiers = [w1, wLog, w2];
         const tiered = (cands, stripRe) => {
             for (const w of tiers) {
-                const hit = bookPickWeighted(cands, w, stripRe);
+                const hit = bookPickWeighted(cands, w, stripRe, false, prior);
                 if (hit) return hit;
                 if (Object.keys(w).length) return null; // this tier spoke and was ambiguous — do not fall through
             }
@@ -412,9 +429,12 @@ var RL_RECAP_MATCH = (function () {
                 for (const wantOpen of [true, false]) {
                     const pool = tasks.filter(t => (wantOpen ? !t.done : t.done) && ok(t) && !act.some(re => re.test(t.taskName)));
                     if (!pool.length) continue;
+                    // v4.113: the booking-history prior outranks the fixed discipline order here —
+                    // "refrigeration first" was always a stand-in for exactly this, guessed rather than measured.
                     const best = list => list.filter(t => pool.includes(t))
-                        .sort((a, b) => (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
-                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true) || best(sigCands || []) || best(pool);
+                        .sort((a, b) => (bookPriorRank(prior, a) - bookPriorRank(prior, b))
+                            || (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
+                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true, prior) || best(sigCands || []) || best(pool);
                     if (hit) return Object.assign({ rescued: true }, hit);
                 }
             }
@@ -511,7 +531,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.112';
+    const SCRIPT_VERSION   = '4.113';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3170,6 +3190,70 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return onDate;
     }
 
+    // ---- Booking-history prior (v4.113) ----------------------------------------------------------
+    // Which task does THIS project + category usually get booked onto? Measured over Thomas's real
+    // timesheet, 16 weeks / 168 entries on the categories the matcher serves (Team buckets excluded —
+    // there the "task" is the plant's subtask, picked by plant id, not by the matcher):
+    //
+    //   most-frequent task for the pair ....... 76% (95/125)
+    //   same task as the previous entry ....... 60% (53/89)
+    //   pairs that only ever use ONE task ..... 58/79
+    //
+    // So the modal task is used, not the last one. This is a TIEBREAK ONLY — it ranks candidates the
+    // evidence could not separate, and never overrides evidence. That boundary is the whole safety
+    // argument: where it applies, the alternative was an alphabetical pick, so a self-reinforcing
+    // choice is no worse than arbitrary while being right ~3 times in 4. Letting it outrank evidence
+    // would instead cement any mistake it ever made, since the script reads back its own bookings.
+    const PRIOR_WEEKS = 8;
+    let _priorPromise = null;
+    function rlTaskPrior() { // -> Promise<Map<`${projectId}|${categoryId}`, taskId[]>> (best first)
+        if (_priorPromise) return _priorPromise;
+        _priorPromise = (async () => {
+            const out = new Map();
+            const creds = rlCreds(); if (!creds) return out;
+            const counts = new Map(); // key -> Map<taskId, {n, last}>
+            const monday = new Date(); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+            for (let w = 0; w < PRIOR_WEEKS; w++) {
+                const m = new Date(monday); m.setDate(monday.getDate() - 7 * w);
+                const mIso = `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}-${String(m.getDate()).padStart(2, '0')}`;
+                try {
+                    const hit = _rlWeekCache.get(mIso);
+                    let p = (hit && Date.now() - hit.t < 60000) ? hit.p : null;
+                    if (!p) { p = rlFetch('GET', `/users/${creds.userId}/timesheets/${mIso}?useNewLogic=true&sourcePage=MY_TIME_SHEET`); _rlWeekCache.set(mIso, { t: Date.now(), p }); }
+                    const r = await p;
+                    if (r.status !== 200) continue;
+                    const entries = [];
+                    (function walk(node, depth) {
+                        if (!node || depth > 5) return;
+                        if (Array.isArray(node)) { for (const x of node) walk(x, depth + 1); return; }
+                        if (typeof node !== 'object') return;
+                        if (node.date && node.timeEntryId) { entries.push(node); return; }
+                        for (const val of Object.values(node)) if (val && typeof val === 'object') walk(val, depth + 1);
+                    })(r.json, 0);
+                    for (const e of entries) {
+                        const pid = e.project && (e.project.id || e.project.projectId);
+                        const cid = e.category && e.category.categoryId;
+                        const tid = e.task && (e.task.taskId || e.task.id);
+                        if (!pid || !cid || !tid) continue;
+                        const key = pid + '|' + cid;
+                        let byTask = counts.get(key); if (!byTask) counts.set(key, byTask = new Map());
+                        const rec = byTask.get(String(tid)) || { n: 0, last: '' };
+                        rec.n++; if (String(e.date) > rec.last) rec.last = String(e.date);
+                        byTask.set(String(tid), rec);
+                    }
+                } catch (err) { /* a missing week only weakens the prior — never block booking */ }
+            }
+            for (const [key, byTask] of counts) {
+                out.set(key, [...byTask.entries()]
+                    .sort((a, b) => (b[1].n - a[1].n) || b[1].last.localeCompare(a[1].last)) // modal, then most recent
+                    .map(x => x[0]));
+            }
+            LOG('book: task prior built over', PRIOR_WEEKS, 'weeks —', out.size, 'project+category pairs');
+            return out;
+        })();
+        return _priorPromise;
+    }
+
     // What to WRITE per category — read the visit's newest triggered commits: added devices for the
     // Integration text, the changed graphic panel NAMES for the Drawing text ("Drawing: Wireless
     // Overview"), and a RAC sniff on every changed table name.
@@ -3563,6 +3647,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // busy pang, and a silent 5-minute "Loading…" reads as a hang (v4.103, seen live post-full-scan).
     async function buildBookingPlan(visits, iso, onStep) {
         const [projects, cats, existing] = [await rlProjects(false), await rlCategories(), await rlEntriesOn(iso)];
+        // Built once per session and only used to break evidence ties (v4.113). A failure here must never
+        // block a booking, so it resolves to an empty Map rather than throwing.
+        const taskPrior = await rlTaskPrior().catch(() => new Map());
         const plan = [];
         for (let vi = 0; vi < visits.length; vi++) {
             const v = visits[vi];
@@ -3592,7 +3679,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // The matcher takes a category KIND, not Rocketlane's category name — see RL_RECAP_MATCH.
                 const kind = category === CAT_DRAWING ? 'drawing' : category === CAT_SETUP_PC ? 'setup'
                     : category === CAT_INTEGRATION ? 'integration' : null;
-                const task = kind ? pickTask(tasks, kind, texts, usedTasks) : null;
+                const catIdEarly = cats[category];
+                const priorList = (proj && catIdEarly && taskPrior.get(proj.id + '|' + catIdEarly)) || null;
+                const task = kind ? pickTask(tasks, kind, texts, usedTasks, priorList) : null;
                 if (task) usedTasks.add(task.taskId);
                 LOG('book: pick', v.plant_id, category, '→', task ? task.taskName + (task.rescued ? ' (rescue)' : '') : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
