@@ -208,6 +208,38 @@ carries a blob in both places keeps the one inside `panel`.
 
 **The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `image_data: "data:image/png;base64,…"` — the designer's own embedded-image format, at the top level since v1.17.0 and inside `panel` before that), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 
+### Trace quality: the labels (v1.17.2)
+
+Panel text is drawn at about 8 px, so at 1:1 a glyph stroke is one pixel and its
+antialiasing dominates the edge the tracer is trying to fit. The labels came out
+as mush — legible as shapes, not as words.
+
+The trace is now taken from a copy of the background drawn at **2× with image
+smoothing off**, then scaled back into panel coordinates. Every source pixel
+becomes a clean 2×2 block, so the fitted outlines land on the real edges.
+Measured on a 1400×750 Maskin panel, as the share of pixels in a label row
+differing from the source by more than 30/255:
+
+| trace | label row | whole image | time | size |
+|---|---|---|---|---|
+| 1× (before) | 7.9% | 2.7% | 1.3 s | 1738 kB |
+| **2× nearest** | **1.7%** | **0.7%** | 4.1 s | 2060 kB |
+| 3× / 4× nearest | 1.6% | 0.7% | 9.4 / 16.3 s | ~2200 kB |
+| 2× *smoothed* | 9.7% | 3.9% | 4.5 s | 3639 kB |
+
+Two results decided the shape of this. Smoothing must be **off**: bilinear
+interpolation invents colours that the quantizer then scatters, scoring worse
+than not supersampling at all. And 2× is the whole win — 3× and 4× score the
+same for 2.3× and 4× the time.
+
+It is **gated on source size**, at 2 Mpx: cost scales with pixel count at
+roughly a second per megapixel, and a photo background can already take minutes,
+so quadrupling that is not worth six percentage points on text a photo does not
+have. Anything larger traces at 1× exactly as before, and the toast says which
+happened. The `.svg` and the embedded `image_svg_trace` both come back in panel
+coordinates either way, so the trace geometry and the objects' `posLeft`/`posTop`
+stay in one coordinate system.
+
 ## Background → Illustrator (v1.3.0)
 
 The third button exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; the script relaxes `#manager_div` to fit its content so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size. v1.3.3 capped that growth to the viewport, which turned out to clip the fieldset's bottom edge on shorter windows — since v1.5.2 there is no cap and `overflow` is forced visible. Since v1.5.4 a measured **compact mode** kicks in only when the column wouldn't fit the window — fieldset gaps 8→4px and slimmer paddings reclaim ~68px with the buttons untouched at 28px; tall windows keep the host's stock spacing, with hysteresis so the mode never flaps. And v1.5.5 found the *actual* constant clipper: the host also hard-codes the sidebar's parent `#master_wrapper` to 900px with `overflow:hidden`, which cut the last ~18px of the fieldset at **any** window size — it now grows with content exactly like `#manager_div`.)

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.1
+// @version      1.17.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.17.1';
+var IWDIE_VERSION = '1.17.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -38,6 +38,60 @@ var IWDIE_BLOB_KEYS = ['image_data', 'image_svg_trace'];
 
 /** How many colours iwdieBuildPalette() derives for a vector trace. */
 var IWDIE_TRACE_PALETTE_COLORS = 24;
+
+/* Tracing a supersampled copy of the background is what makes the small labels
+   survive. Panel text is drawn at about 8 px, so at 1:1 a glyph stroke is a
+   single pixel and its antialiasing dominates the edge the tracer fits; drawing
+   the source twice as large with smoothing OFF first turns every source pixel
+   into a clean 2x2 block, and the fitted outlines land on the real edges.
+   Measured on a 1400x750 panel: the share of pixels in a label row that differ
+   from the source by more than 30/255 falls from 7.9% to 1.7%.
+
+   It must be nearest-neighbour. The same test with smoothing ON scored 9.7%,
+   worse than not supersampling at all, because interpolated pixels invent
+   colours that the quantizer then scatters across the palette.
+
+   2x is the whole win: 3x and 4x both scored 1.6% for 2.3x and 4x the time.
+   The cost is roughly the pixel count, near a second per megapixel, so it is
+   gated on size — a photo background can already take minutes and quadrupling
+   that is not worth 6 percentage points on text that a photo does not have. */
+var IWDIE_TRACE_SUPERSAMPLE = 2;
+var IWDIE_TRACE_SUPERSAMPLE_MAX_PX = 2000000;  // 2 Mpx in, 8 Mpx traced
+var IWDIE_TRACE_MAX_EDGE = 8192;               // stay well inside canvas limits
+
+/** 2 when the source is small enough to be worth tracing enlarged, else 1. */
+function iwdieTraceScaleFor(width, height, maxPx, maxEdge) {
+  var w = Number(width), h = Number(height);
+  var limit = maxPx || IWDIE_TRACE_SUPERSAMPLE_MAX_PX;
+  var edge = maxEdge || IWDIE_TRACE_MAX_EDGE;
+  if (!(w > 0) || !(h > 0)) return 1;
+  if (w * h > limit) return 1;
+  if (w * IWDIE_TRACE_SUPERSAMPLE > edge || h * IWDIE_TRACE_SUPERSAMPLE > edge) return 1;
+  return IWDIE_TRACE_SUPERSAMPLE;
+}
+
+/**
+ * A trace taken from a supersampled copy carries coordinates in the enlarged
+ * pixel space. The export embeds that SVG beside objects whose posLeft/posTop
+ * are in panel pixels, and the standalone .svg is opened as an artboard the
+ * size of the panel, so both need the source coordinate system back: the outer
+ * viewBox returns to the source size and the traced geometry is scaled into it.
+ * Pure so Node can test it.
+ */
+function iwdieRescaleTraceSvg(svg, scale, width, height) {
+  var s = String(svg == null ? '' : svg);
+  if (!scale || scale === 1 || s.indexOf('<svg') !== 0) return s;
+  var open = s.indexOf('>');
+  var close = s.lastIndexOf('</svg>');
+  if (open === -1 || close === -1 || close < open) return s;
+  var head = s.slice(0, open + 1);
+  var body = s.slice(open + 1, close);
+  var box = 'viewBox="0 0 ' + width + ' ' + height + '"';
+  head = /viewBox="[^"]*"/.test(head)
+    ? head.replace(/viewBox="[^"]*"/, box)
+    : head.slice(0, head.length - 1) + ' ' + box + '>';
+  return head + '<g transform="scale(' + (1 / scale) + ')">' + body + '</g></svg>';
+}
 
 /**
  * Decoded byte length of a base64 payload, computed from the string length
@@ -2655,6 +2709,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return o;
     }
 
+    /* The pixels the tracer should see: the background composited onto the
+       canvas colour, enlarged by iwdieTraceScaleFor() when the source is small
+       enough to be worth it. Returns {data, scale} or null. Built fresh each
+       time because the worker transfer detaches the buffer. */
+    function buildTraceSource(img, w, h, fillCss) {
+      var scale = iwdieTraceScaleFor(w, h);
+      var cw = w * scale, ch = h * scale;
+      try {
+        var canvas = document.createElement('canvas');
+        canvas.width = cw; canvas.height = ch;
+        var ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.imageSmoothingEnabled = false; // nearest, or the trace gets worse
+        ctx.fillStyle = fillCss;
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(img, 0, 0, cw, ch);
+        return { data: ctx.getImageData(0, 0, cw, ch), scale: scale };
+      } catch (e) { return null; }
+    }
+
     function traceRasterBackground(bg) {
       if (!IWDIE_TRACER) return Promise.reject(new Error('Background tracer is unavailable.'));
       toast('Tracing the background structure… the export downloads when done.', false, 6000);
@@ -2663,27 +2737,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         img.onload = function () {
           var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
           if (!w || !h) { reject(new Error('Background image has no size.')); return; }
-          var ctx, imgData;
-          try {
-            var canvas = document.createElement('canvas');
-            canvas.width = w; canvas.height = h;
-            ctx = canvas.getContext('2d');
-            if (!ctx) throw new Error('2D canvas context unavailable');
-            var fillCss = grabBackgroundFillColor();
-            ctx.fillStyle = fillCss;
-            ctx.fillRect(0, 0, w, h);
-            ctx.drawImage(img, 0, 0);
-            imgData = ctx.getImageData(0, 0, w, h);
-          } catch (error) {
-            reject(new Error('Could not read background image pixels for tracing: ' + error));
-            return;
-          }
-          traceInWorker(imgData, traceOpts(), IWDIE_TRACE_PALETTE_COLORS).then(resolve).catch(function (workerError) {
+          var fillCss = grabBackgroundFillColor();
+          var got = buildTraceSource(img, w, h, fillCss);
+          if (!got) { reject(new Error('Could not read background image pixels for tracing.')); return; }
+          var finish = function (svg) { resolve(iwdieRescaleTraceSvg(svg, got.scale, w, h)); };
+          traceInWorker(got.data, traceOpts(), IWDIE_TRACE_PALETTE_COLORS).then(finish).catch(function (workerError) {
             try {
               // the first buffer was transferred into the worker, so both the
               // pixels and the palette have to be taken again here
-              var fallbackData = ctx.getImageData(0, 0, w, h);
-              resolve(IWDIE_TRACER.imagedataToSVG(fallbackData, traceOptsFor(fallbackData)));
+              var again = buildTraceSource(img, w, h, fillCss);
+              if (!again) throw new Error('could not rebuild the pixels');
+              resolve(iwdieRescaleTraceSvg(
+                IWDIE_TRACER.imagedataToSVG(again.data, traceOptsFor(again.data)), again.scale, w, h));
             } catch (fallbackError) {
               reject(new Error('Vector trace failed in worker and main-thread fallback: ' + workerError + '; ' + fallbackError));
             }
@@ -2940,35 +3005,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ctx.fillStyle = fillCss;
         ctx.fillRect(0, 0, w, h); // composite any alpha onto the canvas CSS colour
         ctx.drawImage(img, 0, 0);
-        // One read of the pixels, used by whichever branch runs. This used to
-        // take the buffer twice on the trace path — 4 MB and ~19 ms of it only
-        // to decide whether the read had worked at all.
-        var imgd = null, rgba = null, rgb, i, j;
-        try { imgd = ctx.getImageData(0, 0, w, h); rgba = imgd.data; } catch (e) { imgd = null; rgba = null; }
         if (wantTrace) {
-          if (!imgd) { toast('Could not read the image pixels for tracing.', true); return; }
+          // the trace gets its own buffer, enlarged when the source is small
+          // enough — the artboard branch below must stay at native resolution
+          var got = buildTraceSource(img, w, h, fillCss);
+          if (!got) { toast('Could not read the image pixels for tracing.', true); return; }
           var svgName = iwdieBuildBackgroundFilename(plant, panel + ' traced', 'svg');
           var t0 = Date.now();
-          var deliverTrace = function (traced) {
+          var deliverTrace = function (traced, scale) {
+            traced = iwdieRescaleTraceSvg(traced, scale, w, h);
             downloadBytes(traced, svgName, 'image/svg+xml');
             hostOk('Background traced to vectors in ' + Math.round((Date.now() - t0) / 100) / 10 + ' s → ' + svgName + ' (' +
-              ((traced.match(/<path/g) || []).length) + ' paths). Open in Illustrator (File → Open); retype small labels there.');
+              ((traced.match(/<path/g) || []).length) + ' paths' +
+              (scale > 1 ? ', traced at ' + scale + '× so the small labels survive' : '') +
+              '). Open in Illustrator (File → Open); retype small labels there.');
           };
           toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
-          traceInWorker(imgd, traceOpts(), IWDIE_TRACE_PALETTE_COLORS).then(deliverTrace).catch(function () {
-            // no worker available (old browser / strict CSP): trace on the
-            // main thread after letting the toast paint first
-            toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
-            setTimeout(function () {
-              try {
-                var imgd2 = ctx.getImageData(0, 0, w, h); // first buffer was transferred away
-                deliverTrace(IWDIE_TRACER.imagedataToSVG(imgd2, traceOptsFor(imgd2)));
-              }
-              catch (e) { toast('Vector trace failed: ' + e, true); }
-            }, 80);
-          });
+          traceInWorker(got.data, traceOpts(), IWDIE_TRACE_PALETTE_COLORS)
+            .then(function (svg) { deliverTrace(svg, got.scale); })
+            .catch(function () {
+              // no worker available (old browser / strict CSP): trace on the
+              // main thread after letting the toast paint first
+              toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
+              setTimeout(function () {
+                try {
+                  var again = buildTraceSource(img, w, h, fillCss); // first buffer was transferred away
+                  if (!again) throw new Error('could not rebuild the pixels');
+                  deliverTrace(IWDIE_TRACER.imagedataToSVG(again.data, traceOptsFor(again.data)), again.scale);
+                }
+                catch (e) { toast('Vector trace failed: ' + e, true); }
+              }, 80);
+            });
           return;
         }
+        // artboard path: native resolution, the pixels go into the PDF as-is
+        var rgba = null, rgb, i, j;
+        try { rgba = ctx.getImageData(0, 0, w, h).data; } catch (e) { rgba = null; }
         var name = iwdieBuildBackgroundFilename(plant, panel, 'ai');
         var finish = function (pdf, note) {
           downloadBytes(pdf, name, 'application/pdf');
@@ -4165,6 +4237,10 @@ if (typeof module !== 'undefined' && module.exports) {
     buildImagePdf: iwdieBuildImagePdf,
     buildBackgroundFilename: iwdieBuildBackgroundFilename,
     buildPalette: iwdieBuildPalette,
+    TRACE_SUPERSAMPLE: IWDIE_TRACE_SUPERSAMPLE,
+    TRACE_SUPERSAMPLE_MAX_PX: IWDIE_TRACE_SUPERSAMPLE_MAX_PX,
+    traceScaleFor: iwdieTraceScaleFor,
+    rescaleTraceSvg: iwdieRescaleTraceSvg,
     TRACE_WORKER_INPUTS: IWDIE_TRACE_WORKER_INPUTS,
     buildTraceWorkerCode: iwdieBuildTraceWorkerCode,
     buildTraceWorkerPayload: iwdieBuildTraceWorkerPayload,
