@@ -1,5 +1,0 @@
-# Search/index noise only. Explicit Read still works.
-.playwright-cli/
-.playwright-mcp/
-graphify-out/
-.cursor-backup/
