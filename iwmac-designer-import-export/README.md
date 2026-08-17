@@ -187,8 +187,9 @@ meaningfully earlier or later.
 What actually helps a reader are the two fields added ahead of the panel:
 
 - **`ai_guide`** — the read order, the coordinate system, the 17 object fields, and
-  the rules that get a file rejected. It names the blob fields in `skip_fields`, so
-  an agent is told what to ignore instead of having to work it out.
+  the rules that get a file rejected. `skip_fields` names the one field worth
+  ignoring — the base64 picture — and, when the export carries a trace,
+  `ai_guide.structure` describes that instead of hiding it (see below).
 - **`background`** — mime type, pixel size and byte count, read from the image
   header rather than by decoding it. These are the facts a reader would otherwise
   open the blob to get.

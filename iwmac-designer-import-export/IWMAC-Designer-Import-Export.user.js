@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.0
+// @version      1.19.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.19.0';
+var IWDIE_VERSION = '1.19.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -166,7 +166,7 @@ function iwdieBackgroundInfo(dataUrl, orgImageName) {
  * opening either blob. Sits near the top because that is where an agent that
  * only reads the first part of a large file will look.
  */
-function iwdieBuildAiGuide(hasBackground, hasTrace, constantFields) {
+function iwdieBuildAiGuide(hasBackground, constantFields) {
   var skip = [];
   if (hasBackground) skip.push('image_data');
   return {
@@ -215,7 +215,7 @@ function iwdieBuildEnvelope(doc, meta) {
     version: IWDIE_FORMAT_VERSION,
     exported_at: meta.exported_at || new Date().toISOString(),
     generator: 'IWDIE v' + IWDIE_VERSION,
-    ai_guide: iwdieBuildAiGuide(!!bg, !!trace, iwdieConstantObjectFields(doc.single_objects)),
+    ai_guide: iwdieBuildAiGuide(!!bg, iwdieConstantObjectFields(doc.single_objects)),
     source_plant_id: doc.plant_id != null ? String(doc.plant_id) : null,
     panel_name: doc.panel_name || null,
     panel_width: doc.panel_width || null,
@@ -339,7 +339,9 @@ function iwdieNoteTraceInAiGuide(env) {
   var guide = env.ai_guide;
   if (!guide || typeof guide !== 'object') return env;
   var trace = String(env.image_svg_trace || '');
-  if (!trace) return env;
+  // both directions: a file that lost its trace must lose the description too,
+  // or the guide sends a reader looking for a field that is not there
+  if (!trace) { delete guide.structure; return env; }
   guide.structure = {
     field: 'image_svg_trace',
     paths: (trace.match(/<path/g) || []).length,
@@ -1109,6 +1111,7 @@ function iwdiePrepareExportTrace(env, deps) {
   var bg = String((env.image_data != null ? env.image_data : panel.image_data) || '');
   delete env.image_svg_trace;
   delete panel.image_svg_trace;
+  iwdieNoteTraceInAiGuide(env);   // the guide follows the file, not the intent
   if (!/^data:image\//i.test(bg)) return Promise.resolve({ env: env, traceNote: '' });
 
   if (iwdieIsSvgBackground(bg)) {
