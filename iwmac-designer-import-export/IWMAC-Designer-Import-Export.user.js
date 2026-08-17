@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.3
+// @version      1.18.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.17.3';
+var IWDIE_VERSION = '1.18.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -163,7 +163,7 @@ function iwdieBackgroundInfo(dataUrl, orgImageName) {
  * opening either blob. Sits near the top because that is where an agent that
  * only reads the first part of a large file will look.
  */
-function iwdieBuildAiGuide(hasBackground, hasTrace) {
+function iwdieBuildAiGuide(hasBackground, hasTrace, constantFields) {
   var skip = [];
   if (hasBackground) skip.push('image_data');
   if (hasTrace) skip.push('image_svg_trace');
@@ -176,6 +176,10 @@ function iwdieBuildAiGuide(hasBackground, hasTrace) {
       : 'This export carries no image blobs.',
     coordinates: 'posLeft and posTop are pixels from the top-left of the background picture; posWidth and posHeight are the object box. There is no nesting or transform — the numbers are absolute.',
     object_fields: IWDIE_OBJECT_FIELDS,
+    constant_fields: constantFields || null,
+    constant_fields_note: constantFields
+      ? 'These hold the same value on every object in this export. The host requires them, but they say nothing about this panel — read the fields that differ.'
+      : 'Every object field varies across this export.',
     editing: 'Edit values inside panel.single_objects[] and leave every other key exactly as it is. Feed the result back with the "Insert JSON…" button in the userscript.',
     do_not: [
       'Do not change "format" or invent a new one — it is checked before anything else is read.',
@@ -209,7 +213,7 @@ function iwdieBuildEnvelope(doc, meta) {
     version: IWDIE_FORMAT_VERSION,
     exported_at: meta.exported_at || new Date().toISOString(),
     generator: 'IWDIE v' + IWDIE_VERSION,
-    ai_guide: iwdieBuildAiGuide(!!bg, !!trace),
+    ai_guide: iwdieBuildAiGuide(!!bg, !!trace, iwdieConstantObjectFields(doc.single_objects)),
     source_plant_id: doc.plant_id != null ? String(doc.plant_id) : null,
     panel_name: doc.panel_name || null,
     panel_width: doc.panel_width || null,
@@ -233,6 +237,88 @@ function iwdieBuildEnvelope(doc, meta) {
  * written before 1.17.0 keep image_data and image_svg_trace in the panel and
  * are returned untouched, which is what makes every older file still import.
  */
+/** An object with no nested object or array — one that fits on a line. */
+function iwdieIsFlatObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  for (var key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    var inner = value[key];
+    if (inner !== null && typeof inner === 'object') return false;
+  }
+  return true;
+}
+
+/**
+ * JSON.stringify(env, null, 2), except that an array whose every element is a
+ * flat object is written one element per line.
+ *
+ * Indenting every field of every object turns 58 objects into 1104 lines — 19
+ * lines each, of which six fields are the same on all 58 — so a reader scrolls
+ * a thousand lines to see what is really a 58-row table, and cannot compare two
+ * objects without holding both in their head. One object per line makes it 60
+ * lines, 24% fewer characters, and each object directly comparable with the one
+ * above it. It stays valid JSON and parses back identically; only the
+ * whitespace differs, so every importer and validator is unaffected.
+ *
+ * Pure, so Node can check the round trip.
+ */
+function iwdieStringifyEnvelope(value, indent) {
+  indent = indent == null ? 2 : indent;
+  function pad(width) { var s = ''; while (s.length < width) s += ' '; return s; }
+  function ser(node, depth) {
+    var here = pad(depth * indent), inner = pad((depth + 1) * indent), i, parts;
+    if (node === null || typeof node !== 'object') return JSON.stringify(node);
+    if (Array.isArray(node)) {
+      if (!node.length) return '[]';
+      var oneLine = true;
+      for (i = 0; i < node.length; i++) {
+        if (!iwdieIsFlatObject(node[i])) { oneLine = false; break; }
+      }
+      parts = [];
+      for (i = 0; i < node.length; i++) {
+        parts.push(inner + (oneLine ? JSON.stringify(node[i]) : ser(node[i], depth + 1)));
+      }
+      return '[\n' + parts.join(',\n') + '\n' + here + ']';
+    }
+    var keys = Object.keys(node);
+    if (!keys.length) return '{}';
+    parts = [];
+    for (i = 0; i < keys.length; i++) {
+      parts.push(inner + JSON.stringify(keys[i]) + ': ' + ser(node[keys[i]], depth + 1));
+    }
+    return '{\n' + parts.join(',\n') + '\n' + here + '}';
+  }
+  return ser(value, 0);
+}
+
+/**
+ * Fields carrying one value on every object in this export.
+ *
+ * The host reads all 17 fields off every object, so they must all be written —
+ * but on a measured Maskin export six of them (`id`, `link_name`, `link_tag`,
+ * `linked`, `sub_group`, `unit_ref`) hold the same value 58 times over. That is
+ * a third of every line, repeated, telling a reader nothing about this panel.
+ * Naming them once lets a reader ignore them instead of re-reading them.
+ */
+function iwdieConstantObjectFields(objects) {
+  var list = Array.isArray(objects) ? objects.filter(function (o) {
+    return o && typeof o === 'object' && !Array.isArray(o);
+  }) : [];
+  if (list.length < 2) return null;
+  var out = null, key, first = list[0];
+  for (key in first) {
+    if (!Object.prototype.hasOwnProperty.call(first, key)) continue;
+    var value = first[key];
+    if (value !== null && typeof value === 'object') continue;
+    var same = true;
+    for (var i = 1; i < list.length; i++) {
+      if (list[i][key] !== value) { same = false; break; }
+    }
+    if (same) { if (!out) out = {}; out[key] = value; }
+  }
+  return out;
+}
+
 /**
  * Add the trace to the guide's skip list once it exists.
  *
@@ -2786,7 +2872,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        hostOk() calls would just overwrite each other. Returns the filename. */
     function downloadEnvelope(env, traceNote, quiet) {
       var name = iwdieBuildExportFilename(env.source_plant_id, env.panel_name);
-      var blob = new Blob([JSON.stringify(env, null, 2)], { type: 'application/json' });
+      var blob = new Blob([iwdieStringifyEnvelope(env)], { type: 'application/json' });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url; a.download = name;
@@ -4220,6 +4306,9 @@ if (typeof module !== 'undefined' && module.exports) {
     buildEnvelope: iwdieBuildEnvelope,
     envelopeDoc: iwdieEnvelopeDoc,
     buildAiGuide: iwdieBuildAiGuide,
+    stringifyEnvelope: iwdieStringifyEnvelope,
+    isFlatObject: iwdieIsFlatObject,
+    constantObjectFields: iwdieConstantObjectFields,
     noteTraceInAiGuide: iwdieNoteTraceInAiGuide,
     backgroundInfo: iwdieBackgroundInfo,
     imageHeaderSize: iwdieImageHeaderSize,

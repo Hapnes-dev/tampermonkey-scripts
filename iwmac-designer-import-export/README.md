@@ -204,6 +204,25 @@ before v1.17.0 — with `image_data` and `image_svg_trace` still inside `panel` 
 exactly as it always did, with no warning and no conversion step. A file that
 carries a blob in both places keeps the one inside `panel`.
 
+### One object per line (v1.18.0)
+
+Indenting every field of every object turned 58 objects into 1104 lines. That is
+a 58-row table written as a thousand lines, and it cannot be scanned: comparing
+two objects means holding both in your head. Arrays whose elements are flat
+objects are now written one element per line — the whole file goes from 1189
+lines to 145, 88% fewer, and each object sits on one ~330-character line
+directly under the one before it. A container, which nests an `items` array,
+still expands normally.
+
+Only whitespace changes. The file parses back identically, so importers and
+validators are unaffected.
+
+`ai_guide.constant_fields` names the fields holding one value on every object —
+on a real Maskin export that is six of the seventeen (`id`, `linked`,
+`link_name`, `link_tag`, `sub_group`, `unit_ref`), a third of every line saying
+the same thing 58 times. The host requires them, so they are still written; the
+guide just tells a reader which ones carry no information about this panel.
+
 **The drawing's structure lives inside background-bearing exports too:** since v1.6.1, **Export JSON** automatically includes `image_svg_trace` whenever it embeds a raster or SVG background, without confirmation (at the top level since v1.17.0; `panel.image_svg_trace` in older files, and still read from there). It exists so an **AI can read how the drawing is structured** (where pipe runs, vessels and frames sit — geometry a PNG can't convey) and generate matching artwork via its own `image_svg`. Raster backgrounds use the existing worker tracer, its color-aware derived palette, and a fresh-pixel main-thread fallback if the worker fails; SVG backgrounds are strictly UTF-8 decoded and validated. Insert strips the field and never renders it; the embedded background always stays the real one. A valid panel with no embedded background omits the trace and exports normally. If required SVG decoding/validation or raster tracing fails, Export shows an error and does not download JSON.
 
 **The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `image_data: "data:image/png;base64,…"` — the designer's own embedded-image format, at the top level since v1.17.0 and inside `panel` before that), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
