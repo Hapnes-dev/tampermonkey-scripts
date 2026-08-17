@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.0
+// @version      1.17.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.17.0';
+var IWDIE_VERSION = '1.17.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -885,6 +885,42 @@ function iwdieBuildPalette(imgData, maxColors) {
     if (isSat(best[keys[j]]) && !near(pal, best[keys[j]])) { pal.push(toRGB(best[keys[j]])); extra++; }
   }
   return pal;
+}
+
+/**
+ * The trace worker's source, and the message it expects. These are one unit and
+ * are built by one pair of functions on purpose: the worker reads its inputs off
+ * e.data by name, so a key the payload does not send is not an error anywhere —
+ * the worker just silently skips that step. That is how v1.17.0 shipped a worker
+ * asking for paletteColors while the payload never carried it, which dropped the
+ * derived palette and let the tracer fall back to its own 16 sampled colours,
+ * turning every flat schematic grey. iwdieTraceWorkerInputs() names the contract
+ * so a test can hold the two sides together.
+ */
+var IWDIE_TRACE_WORKER_INPUTS = ['img', 'opts', 'paletteColors'];
+
+function iwdieBuildTraceWorkerCode(tracerSrc, paletteSrc) {
+  return 'var IT=new (' + tracerSrc + ')();' +
+    'var BP=' + paletteSrc + ';' +
+    'onmessage=function(e){try{' +
+    'var o=e.data.opts;' +
+    'if(e.data.paletteColors){var p=BP(e.data.img,e.data.paletteColors); if(p)o.pal=p;}' +
+    'postMessage({svg:IT.imagedataToSVG(e.data.img,o)})}catch(err){postMessage({err:String(err)})}};';
+}
+
+function iwdieBuildTraceWorkerPayload(imgData, opts, paletteColors) {
+  return {
+    img: { width: imgData.width, height: imgData.height, data: imgData.data },
+    opts: opts,
+    paletteColors: paletteColors || 0
+  };
+}
+
+/** Every e.data.<key> the worker source reads — the payload must supply each. */
+function iwdieTraceWorkerInputs(code) {
+  var found = {}, re = /e\.data\.([A-Za-z_$][\w$]*)/g, m;
+  while ((m = re.exec(String(code || ''))) !== null) found[m[1]] = true;
+  return Object.keys(found).sort();
 }
 
 function iwdieNormalizeTraceSvg(svg) {
@@ -2838,19 +2874,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // The palette scan is lifted in the same way as the tracer itself, by
         // source: it is a pure function of the ImageData, and running it here
         // keeps a 26-72 ms pass over a 4 MB buffer off the UI thread.
-        var code = 'var IT=new (' + src + ')();' +
-          'var BP=' + paletteSrc + ';' +
-          'onmessage=function(e){try{' +
-          'var o=e.data.opts;' +
-          'if(e.data.paletteColors){var p=BP(e.data.img,e.data.paletteColors); if(p)o.pal=p;}' +
-          'postMessage({svg:IT.imagedataToSVG(e.data.img,o)})}catch(err){postMessage({err:String(err)})}};';
+        var code = iwdieBuildTraceWorkerCode(src, paletteSrc);
         var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
         var w;
         try { w = new Worker(url); } catch (e) { URL.revokeObjectURL(url); reject(e); return; } // e.g. CSP without blob: worker-src
         var done = function () { URL.revokeObjectURL(url); try { w.terminate(); } catch (e) {} };
         w.onmessage = function (ev) { done(); if (ev.data && ev.data.svg) resolve(ev.data.svg); else reject(new Error(ev.data && ev.data.err || 'trace failed')); };
         w.onerror = function (ev) { done(); reject(new Error('worker: ' + (ev.message || 'error'))); };
-        w.postMessage({ img: { width: imgData.width, height: imgData.height, data: imgData.data }, opts: opts }, [imgData.data.buffer]);
+        w.postMessage(iwdieBuildTraceWorkerPayload(imgData, opts, paletteColors), [imgData.data.buffer]);
       });
     }
 
@@ -4134,6 +4165,10 @@ if (typeof module !== 'undefined' && module.exports) {
     buildImagePdf: iwdieBuildImagePdf,
     buildBackgroundFilename: iwdieBuildBackgroundFilename,
     buildPalette: iwdieBuildPalette,
+    TRACE_WORKER_INPUTS: IWDIE_TRACE_WORKER_INPUTS,
+    buildTraceWorkerCode: iwdieBuildTraceWorkerCode,
+    buildTraceWorkerPayload: iwdieBuildTraceWorkerPayload,
+    traceWorkerInputs: iwdieTraceWorkerInputs,
     prepareExportTrace: iwdiePrepareExportTrace,
     completeExport: iwdieCompleteExport,
     tracer: IWDIE_TRACER
