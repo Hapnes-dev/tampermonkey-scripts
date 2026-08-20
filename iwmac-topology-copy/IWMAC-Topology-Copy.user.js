@@ -2,7 +2,7 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.22
+// @version      1.23
 // @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology (auto-collapses when done, with an already-shown safety guard) — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
@@ -21,13 +21,26 @@
     const DETAIL_BTN_ID = 'iwmac-topo-detail-btn';
 
     // Identifies this script to the Toolbox API, the same way AK3-Autoscan does.
-    // X-Caller is constant; X-Run-Id is regenerated for every single request so
-    // each call is traceable on its own (the Show Details BACnet retry included).
+    // X-Caller is constant. X-Run-Id groups every request for one plant under a
+    // single run, so the Excel export, the Show Details fetch and the BACnet-less
+    // retry read as one operation in the Toolbox log rather than three unrelated
+    // ones. A new ID is minted only when the plant changes.
     const X_CALLER = 'IWMAC Topology Copy';
     function makeUuid() {
         return (typeof crypto !== 'undefined' && crypto.randomUUID)
             ? crypto.randomUUID()
             : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+    }
+    let _runId = makeUuid();
+    let _runIdPlant = null;
+    function ensureRunIdForPlant(plantId) {
+        const pid = String(plantId || '');
+        if (pid && _runIdPlant !== pid) {
+            _runId = makeUuid();
+            _runIdPlant = pid;
+            console.debug('[IWMAC Topology] New X-Run-Id for plant ' + pid + ': ' + _runId);
+        }
+        return _runId;
     }
 
     // Extra columns injected into the live grid by "Show Details" (field must match the
@@ -506,22 +519,21 @@ ${colsXml}
     function gmPostJson(url, payload) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') return reject(new Error('GM_xmlhttpRequest not granted'));
-            const runId = makeUuid();
             GM_xmlhttpRequest({
                 method: 'POST', url, timeout: 30000,
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
                     'X-Caller': X_CALLER,
-                    'X-Run-Id': runId,
+                    'X-Run-Id': _runId,
                 },
                 data: JSON.stringify(payload),
                 onload: r => {
                     try { resolve({ status: r.status, body: JSON.parse(r.responseText) }); }
                     catch (e) { reject(new Error('Bad JSON from API: ' + r.responseText.substring(0, 200))); }
                 },
-                onerror: e => reject(new Error('API network error (X-Run-Id ' + runId + ')')),
-                ontimeout: () => reject(new Error('API timeout (X-Run-Id ' + runId + ')')),
+                onerror: e => reject(new Error('API network error (X-Run-Id ' + _runId + ')')),
+                ontimeout: () => reject(new Error('API timeout (X-Run-Id ' + _runId + ')')),
             });
         });
     }
@@ -576,6 +588,7 @@ ${colsXml}
 
     async function fetchUnitsApi(plantId) {
         const url = 'http://toolbox.iwmac.local:8505/plant-sql/';
+        ensureRunIdForPlant(plantId);
         async function call(includeBacnet) {
             return gmPostJson(url, { plant_id: plantId, sql_command: buildPlantUnitsSql(includeBacnet) });
         }

@@ -1,6 +1,6 @@
 # IWMAC Topology Copy
 
-**Version: 1.22**
+**Version: 1.23**
 
 Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
@@ -10,7 +10,7 @@ Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
 ## Install
 
-[Click here to install (latest, currently v1.22)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
+[Click here to install (latest, currently v1.23)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
 
 After installing, Tampermonkey auto-updates whenever a new version is pushed.
 
@@ -52,9 +52,11 @@ Every call to the Toolbox SQL API carries two identifying headers, matching the 
 | Header | Value |
 |---|---|
 | `X-Caller` | `IWMAC Topology Copy` — constant, identifies the script |
-| `X-Run-Id` | a fresh UUID, **generated per request** |
+| `X-Run-Id` | one UUID **per plant**, shared by every call for that plant |
 
-The run ID is not reused: the Excel export, each Show Details fetch, and the BACnet-less retry each get their own. `crypto.randomUUID()` where available, with a timestamp + random fallback. Network and timeout errors quote the run ID so a failed call can be matched against the server-side log.
+The run ID groups a plant's traffic into a single run: the Excel export, each Show Details fetch and the BACnet-less retry all send the same ID, so the Toolbox log reads as one operation instead of several unrelated ones. A new ID is minted only when the plant changes — each tab is bound to one plant by its URL, so in practice that is once per tab. `crypto.randomUUID()` where available, with a timestamp + random fallback; the new ID is logged to the console as `New X-Run-Id for plant <id>`. Network and timeout errors quote the run ID so a failed call can be matched against the server-side log.
+
+Same header names as AK3-Autoscan, and the same per-plant grouping.
 
 ## How it works
 
