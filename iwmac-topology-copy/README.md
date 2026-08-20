@@ -1,6 +1,6 @@
 # IWMAC Topology Copy
 
-**Version: 1.23**
+**Version: 1.24**
 
 Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
@@ -10,7 +10,7 @@ Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
 ## Install
 
-[Click here to install (latest, currently v1.23)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
+[Click here to install (latest, currently v1.24)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
 
 After installing, Tampermonkey auto-updates whenever a new version is pushed.
 
@@ -57,6 +57,26 @@ Every call to the Toolbox SQL API carries two identifying headers, matching the 
 The run ID groups a plant's traffic into a single run: the Excel export, each Show Details fetch and the BACnet-less retry all send the same ID, so the Toolbox log reads as one operation instead of several unrelated ones. A new ID is minted only when the plant changes — each tab is bound to one plant by its URL, so in practice that is once per tab. `crypto.randomUUID()` where available, with a timestamp + random fallback; the new ID is logged to the console as `New X-Run-Id for plant <id>`. Network and timeout errors quote the run ID so a failed call can be matched against the server-side log.
 
 Same header names as AK3-Autoscan, and the same per-plant grouping.
+
+## BACnet scanner probe (why plants without it stay quiet)
+
+Only some plants run the BACnet scanner, so `iw_bacnet2_scanner.iw_bacnet_devices` usually does not exist. MySQL fails a statement that references a missing table, so the old "try the join, retry without it on failure" approach logged a real error on every plant that lacked it:
+
+```
+SQL execution failed at position 1: Table 'iw_bacnet2_scanner.iw_bacnet_devices' doesn't exist
+```
+
+Before running the units query the script now asks `information_schema.TABLES` whether the table exists. `information_schema` is always present and reports a missing schema as a count of `0` rather than an error, so the probe cannot itself produce the error it prevents. The answer is cached per plant — table existence does not change while a tab is open — so it costs one small extra query per plant, not per call, and it shares the plant's `X-Run-Id`.
+
+The error-triggered retry is kept purely as a safety net, for the case where the table probes present but the join fails anyway (dropped since, or not readable). It cannot fire on a plant that probed absent.
+
+Verified against the live Toolbox API:
+
+| Plant | Probe | Join used | Result |
+|---|---|---|---|
+| 10113 | `n=0` | no | success, 30 rows |
+| 6176 | `n=0` | no | success, 57 rows |
+| 4743 | `n=1` | yes | success, 16 rows |
 
 ## How it works
 

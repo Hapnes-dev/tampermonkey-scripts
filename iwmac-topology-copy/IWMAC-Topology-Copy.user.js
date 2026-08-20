@@ -2,7 +2,7 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.23
+// @version      1.24
 // @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology (auto-collapses when done, with an already-shown safety guard) — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
@@ -538,6 +538,12 @@ ${colsXml}
         });
     }
 
+    // Only a minority of plants run the BACnet scanner, so its table is usually absent.
+    // Referencing a missing table makes MySQL fail the whole statement, which the Toolbox
+    // records as a genuine error — noise that hides the errors worth looking at.
+    const BACNET_SCHEMA = 'iw_bacnet2_scanner';
+    const BACNET_TABLE  = 'iw_bacnet_devices';
+
     // SQL adapted from the topology-export query. Literal ';' replaced with CHAR(59) so the
     // toolbox API's safety validator doesn't split it as multiple statements.
     function buildPlantUnitsSql(includeBacnet) {
@@ -545,7 +551,7 @@ ${colsXml}
             ? `COALESCE(NULLIF(bd.ip_address, ''), NULLIF(u.driver_adr_extra, ''))`
             : `NULLIF(u.driver_adr_extra, '')`;
         const bacnetJoin = includeBacnet
-            ? `LEFT JOIN iw_bacnet2_scanner.iw_bacnet_devices AS bd ON bd.object_instance=SUBSTRING_INDEX(u.driver_addr,'_',-1) AND u.driver_type LIKE 'BACNET%'`
+            ? `LEFT JOIN ${BACNET_SCHEMA}.${BACNET_TABLE} AS bd ON bd.object_instance=SUBSTRING_INDEX(u.driver_addr,'_',-1) AND u.driver_type LIKE 'BACNET%'`
             : '';
         return `SELECT plant_id.value AS plant_id, plant_name.value AS plant_name, u.unit_id, u.unit_name, u.driver_type, u.driver_addr,
             CASE WHEN u.driver_type LIKE 'BACNET%' THEN 'Bacnet'
@@ -586,18 +592,51 @@ ${colsXml}
             ORDER BY u.driver_type, u.unit_id`;
     }
 
+    // plantId → does the BACnet scanner table exist. Asked once per plant; table
+    // existence does not change while a tab is open.
+    const _bacnetTable = new Map();
+
+    // Ask information_schema instead of finding out the hard way. information_schema
+    // is always present, and it reports a missing schema as a count of 0 rather than
+    // an error, so this probe cannot itself produce the error it exists to prevent.
+    async function hasBacnetTable(url, plantId) {
+        const key = String(plantId);
+        if (_bacnetTable.has(key)) return _bacnetTable.get(key);
+        const sql = `SELECT COUNT(*) AS n FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA='${BACNET_SCHEMA}' AND TABLE_NAME='${BACNET_TABLE}'`;
+        let present = false;
+        try {
+            const res = await gmPostJson(url, { plant_id: plantId, sql_command: sql });
+            const row = res.body && res.body.success && res.body.results
+                && res.body.results[0] && res.body.results[0].data && res.body.results[0].data[0];
+            // The API returns counts as strings ("0" / "1"), so compare numerically.
+            present = !!row && Number(row.n) > 0;
+        } catch (e) {
+            // If the probe itself fails, assume absent: the BACnet address fallback is
+            // worth less than the error we are trying not to generate.
+            console.debug('[IWMAC Topology] BACnet probe failed, assuming absent:', e);
+        }
+        _bacnetTable.set(key, present);
+        console.debug('[IWMAC Topology] BACnet scanner table on plant ' + key + ': ' +
+            (present ? 'present' : 'absent'));
+        return present;
+    }
+
     async function fetchUnitsApi(plantId) {
         const url = 'http://toolbox.iwmac.local:8505/plant-sql/';
         ensureRunIdForPlant(plantId);
         async function call(includeBacnet) {
             return gmPostJson(url, { plant_id: plantId, sql_command: buildPlantUnitsSql(includeBacnet) });
         }
-        let res = await call(true);
+        const includeBacnet = await hasBacnetTable(url, plantId);
+        let res = await call(includeBacnet);
         const ok = res.body && res.body.success;
         if (!ok) {
             const err = (res.body && (res.body.error || res.body.message)) || '';
-            // Plant has no BACnet scanner DB → retry without that join
-            if (/iw_bacnet|doesn.?t exist/i.test(err)) {
+            // Safety net only: the probe said the table was there but the join failed anyway
+            // (dropped since, or not readable). Cannot fire on a plant that probed absent.
+            if (includeBacnet && /iw_bacnet|doesn.?t exist/i.test(err)) {
+                _bacnetTable.set(String(plantId), false);
                 res = await call(false);
             } else {
                 throw new Error(err || ('HTTP ' + res.status));
