@@ -2,7 +2,7 @@
 // @name         IWMAC Topology Copy
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21
+// @version      1.22
 // @description  Copy the IWMAC sys_tools topology to clipboard, export to a real .xlsx, or auto-add live connection-detail columns (type/address/port/baud/parity/driver addr) into the page grid whenever you open Topology (auto-collapses when done, with an already-shown safety guard) — all merging page tree + Toolbox SQL API.
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setClipboard
@@ -19,6 +19,16 @@
     const COPY_BTN_ID   = 'iwmac-topo-copy-btn';
     const EXPORT_BTN_ID = 'iwmac-topo-export-btn';
     const DETAIL_BTN_ID = 'iwmac-topo-detail-btn';
+
+    // Identifies this script to the Toolbox API, the same way AK3-Autoscan does.
+    // X-Caller is constant; X-Run-Id is regenerated for every single request so
+    // each call is traceable on its own (the Show Details BACnet retry included).
+    const X_CALLER = 'IWMAC Topology Copy';
+    function makeUuid() {
+        return (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+    }
 
     // Extra columns injected into the live grid by "Show Details" (field must match the
     // record property we set in onShowDetails).
@@ -496,16 +506,22 @@ ${colsXml}
     function gmPostJson(url, payload) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') return reject(new Error('GM_xmlhttpRequest not granted'));
+            const runId = makeUuid();
             GM_xmlhttpRequest({
                 method: 'POST', url, timeout: 30000,
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Caller': X_CALLER,
+                    'X-Run-Id': runId,
+                },
                 data: JSON.stringify(payload),
                 onload: r => {
                     try { resolve({ status: r.status, body: JSON.parse(r.responseText) }); }
                     catch (e) { reject(new Error('Bad JSON from API: ' + r.responseText.substring(0, 200))); }
                 },
-                onerror: e => reject(new Error('API network error')),
-                ontimeout: () => reject(new Error('API timeout')),
+                onerror: e => reject(new Error('API network error (X-Run-Id ' + runId + ')')),
+                ontimeout: () => reject(new Error('API timeout (X-Run-Id ' + runId + ')')),
             });
         });
     }

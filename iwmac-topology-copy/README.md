@@ -1,6 +1,6 @@
 # IWMAC Topology Copy
 
-**Version: 1.21**
+**Version: 1.22**
 
 Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
@@ -10,7 +10,7 @@ Adds three buttons to the IWMAC `sys_tools` topology toolbar:
 
 ## Install
 
-[Click here to install (latest, currently v1.21)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
+[Click here to install (latest, currently v1.22)](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-topology-copy/IWMAC-Topology-Copy.user.js)
 
 After installing, Tampermonkey auto-updates whenever a new version is pushed.
 
@@ -44,6 +44,17 @@ Address / Comm port are derived tree-position-aware (a unit under a `COMx - IP` 
 ### Auto-run & the "already shown" safety
 
 The auto-run fires once per freshly-loaded grid (guarded so it never re-fetches every poll tick or storms on an API error). Once the columns are populated the button caption switches to **`✓ Details shown`** and further clicks are no-ops (they just flash "Already shown") — so you can't accidentally trigger a redundant SQL fetch. Re-opening Topology clears the guard, so each fresh visit re-runs against current data.
+
+## API request headers
+
+Every call to the Toolbox SQL API carries two identifying headers, matching the convention AK3-Autoscan uses:
+
+| Header | Value |
+|---|---|
+| `X-Caller` | `IWMAC Topology Copy` — constant, identifies the script |
+| `X-Run-Id` | a fresh UUID, **generated per request** |
+
+The run ID is not reused: the Excel export, each Show Details fetch, and the BACnet-less retry each get their own. `crypto.randomUUID()` where available, with a timestamp + random fallback. Network and timeout errors quote the run ID so a failed call can be matched against the server-side log.
 
 ## How it works
 
