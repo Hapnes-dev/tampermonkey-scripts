@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.0
+// @version      9.1
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -39,6 +39,24 @@
     // Statements joined with ';' run as one batch and come back as results[i].
     const PLANT_SQL_URL = 'http://toolbox.iwmac.local:8505/plant-sql/';
     const PLANT_SCHEMA = 'iw_plant_server3';
+    // Toolbox local MariaDB (same API family) — holds the fleet equipment index
+    // that powers searching WITHOUT a plant id. Each successful per-plant load
+    // refreshes that plant's slice, so the index grows with use.
+    const TOOLBOX_SQL_URL = 'http://toolbox.iwmac.local:8505/toolbox-sql/';
+    const IDX_TABLE = 'sql_equipment_import.equipment_index';
+    // The toolbox-sql API refuses CREATE, so the table is made once by hand
+    // (same story as the old v2.0 db-setup.sql). Kept here for the copy button.
+    const IDX_SETUP_SQL = 'CREATE TABLE IF NOT EXISTS sql_equipment_import.equipment_index (\n' +
+        '  plant_id    int          NOT NULL,\n' +
+        '  driver_type varchar(64)  NOT NULL,\n' +
+        '  order_no    varchar(120) NOT NULL,\n' +
+        "  n_units     int          NOT NULL DEFAULT 0,\n" +
+        "  regs        varchar(300) NOT NULL DEFAULT '',\n" +
+        "  unames      varchar(500) NOT NULL DEFAULT '',\n" +
+        "  grps        varchar(300) NOT NULL DEFAULT '',\n" +
+        '  updated_at  timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,\n' +
+        '  PRIMARY KEY (plant_id, driver_type, order_no)\n' +
+        ') ENGINE=MyISAM DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;';
     const SEARCH_ALL_PLANTS_URL = 'http://toolbox.iwmac.local:8501/search_all_plants';
     // The API rejects SELECTs above its max-rows setting, so page big tables.
     const FETCH_PAGE_ROWS = 5000;
@@ -204,11 +222,11 @@
         </span>
       </div>
       <div class="body">
-        <label>Search equipment on a plant</label>
+        <label>Search equipment</label>
         <div class="row" id="seii-plantrow">
-          <input id="seii-plant" placeholder="plant id" style="flex:0 0 90px">
+          <input id="seii-plant" placeholder="plant id (blank = fleet)" style="flex:0 0 130px" title="Leave blank to search every indexed plant; enter a plant id to browse just that plant">
           <button id="seii-plantload" style="padding:2px 8px;cursor:pointer;white-space:nowrap;width:auto">Load equipment</button>
-          <a id="seii-sap" href="${SEARCH_ALL_PLANTS_URL}" target="_blank" title="Search regulators across all plants (toolbox) to find a donor plant id">🔎 all plants</a>
+          <a id="seii-sap" href="${SEARCH_ALL_PLANTS_URL}" target="_blank" title="The toolbox all-plants search (db_main) — covers plants the fleet index does not">🔎 all plants</a>
         </div>
         <div class="row" style="margin-top:3px">
           <input id="seii-search" placeholder="search unit_name, grp_name, driver_type, regulator_type, order_no…" autocomplete="off">
@@ -217,7 +235,7 @@
 
         <label class="small" style="margin-top:8px">…or load a .sql from disk</label>
         <input type="file" id="seii-file" accept=".sql,text/plain">
-        <div id="seii-fileinfo" class="small">Enter a plant id (pre-filled on plant servers), press Load equipment, then search — or load a .sql from disk.</div>
+        <div id="seii-fileinfo" class="small">Type in the search bar to search the whole indexed fleet — or enter a plant id to browse one plant, or load a .sql from disk.</div>
 
         <div id="seii-form" style="display:none">
           <label>Unit rows <span class="small">(rename / add / remove)</span></label>
@@ -426,7 +444,28 @@
         return out;
     }
 
+    // Same batching contract as plantSql, but against the toolbox local MariaDB.
+    async function toolboxSql(statements) {
+        const stmts = Array.isArray(statements) ? statements : [statements];
+        const out = [];
+        for (let i = 0; i < stmts.length; i += 8) {
+            const chunk = stmts.slice(i, i + 8);
+            const res = await gmPostJson(TOOLBOX_SQL_URL, { sql_command: chunk.join(';\n') });
+            const body = res.body;
+            if (!body || !body.success) {
+                throw new Error((body && (body.error || body.message)) || ('HTTP ' + res.status));
+            }
+            const results = body.results || [];
+            if (results.length !== chunk.length) throw new Error('Toolbox API returned ' + results.length + ' results for ' + chunk.length + ' statements');
+            out.push(...results);
+        }
+        return out;
+    }
+
     const isSafeIdent = (s) => /^[A-Za-z0-9_]+$/.test(String(s));
+    // '%<escaped>%' literal for LIKE: wildcards/backslashes in the user's query
+    // are escaped so they match literally, then quoted with the normal escaper.
+    const likeQ = (s) => q('%' + String(s).replace(/[\\%_]/g, c => '\\' + c) + '%');
 
     function getPlantIdFromHost() {
         // phpMyAdmin lives on the plant server itself: "6176.plants.iwmac.local"
@@ -528,12 +567,49 @@
             _driversLoadedFor = pid;
             renderDrivers();
             setPlantInfo(`<span class="ok">${PLANT_DRIVERS.length} drivers / ${rows.length} equipment on plant ${escapeHtml(pid)}.</span> <span class="small">Search above, then click an ↳ equipment row to fetch just that one; the driver row fetches everything on it.</span>`);
+            // Refresh this plant's slice of the fleet index in the background.
+            upsertIndex(pid, rows).catch(e => console.debug('[SQL Equipment Import] index refresh skipped:', e.message || e));
         } catch (err) {
             _driversLoadedFor = null;
             setPlantInfo('Equipment list failed: ' + escapeHtml(err.message || String(err)), 'err');
         } finally {
             _loadBusy = false;
         }
+    }
+
+    // ---- fleet index: search every indexed plant without knowing a plant id ----
+    async function upsertIndex(pid, rows) {
+        const stmts = [`DELETE FROM ${IDX_TABLE} WHERE plant_id=${Number(pid)}`];
+        for (let i = 0; i < rows.length; i += 40) {
+            const vals = rows.slice(i, i + 40).map(r =>
+                `(${Number(pid)}, ${q(String(r.driver_type))}, ${q(String(r.order_no == null ? '' : r.order_no))}, ` +
+                `${Number(r.n) || 0}, ${q(String(r.regs || ''))}, ${q(String(r.unames || ''))}, ${q(String(r.grps || ''))})`);
+            stmts.push(`INSERT INTO ${IDX_TABLE} (plant_id, driver_type, order_no, n_units, regs, unames, grps) VALUES\n${vals.join(',\n')}`);
+        }
+        await toolboxSql(stmts);
+    }
+
+    async function searchFleetIndex(qraw) {
+        const pat = likeQ(qraw);
+        const sql = `SELECT plant_id, driver_type, order_no, n_units, regs, unames, grps FROM ${IDX_TABLE}` +
+            ` WHERE driver_type LIKE ${pat} OR order_no LIKE ${pat} OR regs LIKE ${pat} OR unames LIKE ${pat} OR grps LIKE ${pat}` +
+            ` ORDER BY plant_id DESC, driver_type, order_no LIMIT 60`;
+        const rs = await toolboxSql(sql);
+        return (rs[0] && rs[0].data) || [];
+    }
+
+    function renderFleetResults(rows) {
+        const box = $('seii-drivers');
+        box.innerHTML = rows.map(r => {
+            const pid = String(r.plant_id);
+            if (!/^\d+$/.test(pid)) return '';
+            const n = Number(r.n_units) || 0;
+            return `<div class="drv" data-plant="${pid}" data-drv="${escapeHtml(String(r.driver_type))}" data-order="${escapeHtml(String(r.order_no == null ? '' : r.order_no))}">` +
+                `<b>${escapeHtml(String(r.driver_type))}</b>${r.order_no ? ' ↳ ' + escapeHtml(String(r.order_no)) : ''}` +
+                ` <span class="meta">— plant ${pid} — ${n} unit${n === 1 ? '' : 's'}` +
+                `${r.regs ? ' — ' + escapeHtml(clip(r.regs, 40)) : ''}${r.unames ? ' — ' + escapeHtml(clip(r.unames, 60)) : ''}</span></div>`;
+        }).join('') || '<div class="drv"><span class="meta">no indexed equipment matches — the index covers plants this tool has loaded</span></div>';
+        box.classList.add('show');
     }
 
     // orderNo === null → the whole driver (every equipment on it); an order_no
@@ -756,18 +832,55 @@
     $('seii-plant').value = getPlantIdFromHost();
     $('seii-plantload').onclick = (e) => { e.preventDefault(); loadPlantDrivers(); };
     $('seii-plant').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadPlantDrivers(); } });
-    // Typing in the search bar loads the plant's equipment on first use, then
-    // filters the loaded list live — matching unit_name, grp_name, driver_type,
-    // regulator_type and order_no.
+    // Typing in the search bar: with a plant id it loads that plant on first use
+    // and then filters the loaded list live; with the plant field BLANK it
+    // searches the fleet index on the toolbox instead — no plant id needed.
+    // Both match unit_name, grp_name, driver_type, regulator_type and order_no.
+    let _fleetTimer = null;
+    let _fleetSeq = 0;
     $('seii-search').addEventListener('input', () => {
         const pid = $('seii-plant').value.trim();
-        if (_driversLoadedFor !== pid && /^\d+$/.test(pid)) { if (!_loadBusy) loadPlantDrivers(); return; }
-        renderDrivers();
+        const qv = $('seii-search').value.trim();
+        if (/^\d+$/.test(pid)) {
+            if (_driversLoadedFor !== pid) { if (!_loadBusy) loadPlantDrivers(); return; }
+            renderDrivers();
+            return;
+        }
+        clearTimeout(_fleetTimer);
+        if (qv.length < 2) {
+            $('seii-drivers').classList.remove('show');
+            if (!qv) setPlantInfo('Type to search the whole indexed fleet, or enter a plant id to browse one plant.');
+            return;
+        }
+        _fleetTimer = setTimeout(async () => {
+            const seq = ++_fleetSeq;
+            setPlantInfo('Searching indexed fleet for “' + escapeHtml(qv) + '”…');
+            try {
+                const rows = await searchFleetIndex(qv);
+                if (seq !== _fleetSeq) return; // a newer search superseded this one
+                renderFleetResults(rows);
+                setPlantInfo(`<span class="ok">${rows.length}${rows.length === 60 ? '+' : ''} indexed equipment match.</span> <span class="small">Click one to fetch it live from its plant. The index covers plants this tool has loaded.</span>`);
+            } catch (err) {
+                if (seq !== _fleetSeq) return;
+                if (/equipment_index|exist|1146/i.test(err.message || '')) {
+                    setPlantInfo('Fleet search needs a one-time setup on the Toolbox MariaDB. ' +
+                        '<button id="seii-idxcopy" style="padding:1px 8px;cursor:pointer">Copy CREATE TABLE</button> ' +
+                        '<span class="small">run it in HeidiSQL/phpMyAdmin on the toolbox, then search again.</span>', 'err');
+                    const b = $('seii-idxcopy');
+                    if (b) b.onclick = () => { GM_setClipboard(IDX_SETUP_SQL); b.textContent = 'Copied!'; };
+                } else {
+                    setPlantInfo('Fleet search failed: ' + escapeHtml(err.message || String(err)), 'err');
+                }
+            }
+        }, 350);
     });
     let _fetchBusy = false;
     $('seii-drivers').addEventListener('click', async (e) => {
         const it = e.target.closest('.drv');
         if (!it || !it.dataset.drv || _fetchBusy) return;
+        // A fleet-search hit carries its own plant id — adopt it into the field
+        // so the fetch and any follow-up browsing target that plant.
+        if (it.dataset.plant && /^\d+$/.test(it.dataset.plant)) $('seii-plant').value = it.dataset.plant;
         // Re-validate: the field may have been edited after Load drivers.
         const pid = $('seii-plant').value.trim();
         if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first.', 'err'); return; }
