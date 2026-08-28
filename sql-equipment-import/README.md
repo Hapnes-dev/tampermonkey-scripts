@@ -17,8 +17,8 @@ Static templates come from this repo; the live fetch talks to `toolbox.iwmac.loc
 Between the template dropdown and the disk loader sits **"…or fetch a live driver from a plant"**:
 
 1. The plant id is pre-filled from the phpMyAdmin hostname (`6176.plants.iwmac.local` → `6176`); type any other plant id to use a donor plant. The **🔎 all plants** link opens the toolbox [Search All Plants](http://toolbox.iwmac.local:8501/search_all_plants) tool — filter `regulator_type` / `unit_name` there to find which plant runs the regulator you need, then bring its plant id back here.
-2. **Load drivers** lists every driver on that plant, live from its `iw_sys_plant_units`: `driver_type — unit count — regulator type(s)`. The filter box narrows by regulator or driver name.
-3. Click a driver and the script rebuilds a full template from the source plant: the driver's unit rows, its `iw_sys_plant_settings` (owner = driver_type), `iw_sys_order_no`, `iw_sys_processes`, and every linked `iw_par_<link>_groups` / `iw_par_<link>_param` / `iw_set_<base>` table — `CREATE TABLE IF NOT EXISTS` plus all rows.
+2. **Load drivers** lists every driver on that plant, live from its `iw_sys_plant_units`: `driver_type — unit count — regulator type(s)`. A driver that hosts several equipment types (several `order_no` param lists — a mixed Modbus bus, an AKA gateway, a BACnet driver) gets one indented `↳ order_no — units — regulator` sub-row per equipment (v8.3). The filter box narrows by driver, regulator or order_no.
+3. Click an **↳ equipment row** to fetch just that one: its unit rows, its single `iw_sys_order_no` row and its own `iw_par_<link>_groups` / `iw_par_<link>_param` / `iw_set_<base>` tables (`CREATE TABLE IF NOT EXISTS` plus all rows), together with the hosting driver's `iw_sys_plant_settings` (owner = driver_type) and `iw_sys_processes` row. Clicking the **driver row** instead fetches the whole driver — every equipment on it.
 4. The form takes over exactly as with a file template: rename/renumber units, set RTU/TCP, **Generate SQL**, copy, paste into the target plant's phpMyAdmin.
 
 ### Common form flow

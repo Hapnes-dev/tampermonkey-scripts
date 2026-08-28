@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      8.2
+// @version      8.3
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest, load a .sql file from disk, or fetch a live driver straight from any plant via the Toolbox plant-SQL API (units, settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template). Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -228,6 +228,7 @@
     #seii-drivers .drv:hover{background:#2b6cb0;color:#fff}
     #seii-drivers .drv .meta{opacity:.65;font-size:11px}
     #seii-drivers .drv:hover .meta{opacity:.9}
+    #seii-drivers .drv.sub{padding-left:24px}
     #seii-plantrow a{font:11px -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#2b6cb0;text-decoration:none;white-space:nowrap}
     #seii-plantrow a:hover{text-decoration:underline}
     `;
@@ -569,17 +570,34 @@
         $('seii-fileinfo').innerHTML = cls ? `<span class="${cls}">${html}</span>` : html;
     }
 
-    let PLANT_DRIVERS = []; // [{driver_type, n, regs}] for the currently-loaded plant
+    // One entry per driver process, each with its equipment (one per order_no —
+    // an order_no is one param list, i.e. one regulator/device model).
+    let PLANT_DRIVERS = []; // [{driver_type, n, regs, orders: [{order_no, n, regs}]}]
 
     function renderDrivers() {
         const f = ($('seii-drvfilter').value || '').trim().toLowerCase();
         const box = $('seii-drivers');
-        const items = PLANT_DRIVERS.filter(d =>
-            !f || String(d.driver_type).toLowerCase().includes(f) || String(d.regs || '').toLowerCase().includes(f));
-        box.innerHTML = items.map(d =>
-            `<div class="drv" data-drv="${escapeHtml(d.driver_type)}"><b>${escapeHtml(d.driver_type)}</b>` +
-            ` <span class="meta">— ${escapeHtml(String(d.n))} unit${String(d.n) === '1' ? '' : 's'}${d.regs ? ' — ' + escapeHtml(d.regs) : ''}</span></div>`
-        ).join('') || '<div class="drv"><span class="meta">no drivers match the filter</span></div>';
+        const html = [];
+        for (const d of PLANT_DRIVERS) {
+            const drvMatch = !f || d.driver_type.toLowerCase().includes(f) || (d.regs || '').toLowerCase().includes(f);
+            const subs = drvMatch ? d.orders : d.orders.filter(o =>
+                o.order_no.toLowerCase().includes(f) || (o.regs || '').toLowerCase().includes(f));
+            if (!drvMatch && !subs.length) continue;
+            const multi = d.orders.length > 1;
+            html.push(`<div class="drv" data-drv="${escapeHtml(d.driver_type)}"><b>${escapeHtml(d.driver_type)}</b>` +
+                ` <span class="meta">— ${d.n} unit${d.n === 1 ? '' : 's'}` +
+                (multi ? ` — ${d.orders.length} equipment — fetches ALL of them`
+                       : (d.regs ? ' — ' + escapeHtml(d.regs) : '')) +
+                '</span></div>');
+            if (multi) {
+                for (const o of subs) {
+                    html.push(`<div class="drv sub" data-drv="${escapeHtml(d.driver_type)}" data-order="${escapeHtml(o.order_no)}">` +
+                        `↳ ${escapeHtml(o.order_no || '(no order_no)')}` +
+                        ` <span class="meta">— ${o.n} unit${o.n === 1 ? '' : 's'}${o.regs ? ' — ' + escapeHtml(o.regs) : ''}</span></div>`);
+                }
+            }
+        }
+        box.innerHTML = html.join('') || '<div class="drv"><span class="meta">no drivers match the filter</span></div>';
         box.classList.add('show');
     }
 
@@ -591,10 +609,10 @@
         if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first (use 🔎 all plants to find a donor plant).', 'err'); return; }
         setPlantInfo('Fetching driver list from plant ' + escapeHtml(pid) + '…');
         const listSql = (withRegs) =>
-            `SELECT driver_type, COUNT(*) AS n` +
+            `SELECT driver_type, order_no, COUNT(*) AS n` +
             (withRegs ? `, LEFT(GROUP_CONCAT(DISTINCT regulator_type ORDER BY regulator_type SEPARATOR ', '), 300) AS regs` : '') +
             ` FROM ${PLANT_SCHEMA}.iw_sys_plant_units WHERE driver_type <> '' AND unit_id <> 'SERVER'` +
-            ` GROUP BY driver_type ORDER BY driver_type`;
+            ` GROUP BY driver_type, order_no ORDER BY driver_type, order_no`;
         try {
             let rs;
             try { rs = await plantSql(pid, listSql(true)); }
@@ -603,23 +621,46 @@
                 if (/regulator_type/i.test(e.message || '')) rs = await plantSql(pid, listSql(false));
                 else throw e;
             }
-            PLANT_DRIVERS = (rs[0] && rs[0].data) || [];
+            const rows = (rs[0] && rs[0].data) || [];
+            const byDrv = new Map();
+            for (const r of rows) {
+                const key = String(r.driver_type);
+                if (!byDrv.has(key)) byDrv.set(key, { driver_type: key, n: 0, regsList: [], orders: [] });
+                const d = byDrv.get(key);
+                const n = Number(r.n) || 0;
+                d.n += n;
+                d.orders.push({ order_no: String(r.order_no == null ? '' : r.order_no), n, regs: String(r.regs || '') });
+                if (r.regs) d.regsList.push(String(r.regs));
+            }
+            PLANT_DRIVERS = [...byDrv.values()].map(d => ({
+                driver_type: d.driver_type, n: d.n, orders: d.orders,
+                regs: [...new Set(d.regsList.join(', ').split(', ').filter(Boolean))].slice(0, 8).join(', '),
+            }));
             if (!PLANT_DRIVERS.length) { setPlantInfo('Plant ' + escapeHtml(pid) + ' has no drivers in iw_sys_plant_units.', 'err'); return; }
             $('seii-drvfilter').style.display = '';
             renderDrivers();
-            setPlantInfo(`<span class="ok">${PLANT_DRIVERS.length} drivers on plant ${escapeHtml(pid)}.</span> <span class="small">Click one to fetch it as a template.</span>`);
+            const nEquip = rows.length;
+            setPlantInfo(`<span class="ok">${PLANT_DRIVERS.length} drivers / ${nEquip} equipment on plant ${escapeHtml(pid)}.</span> <span class="small">Click an ↳ equipment row to fetch just that one; the driver row fetches everything on it.</span>`);
         } catch (err) {
             setPlantInfo('Driver list failed: ' + escapeHtml(err.message || String(err)), 'err');
         }
     }
 
-    async function fetchDriverTemplate(plantId, driverType) {
-        const p = (msg) => setPlantInfo('Fetching <b>' + escapeHtml(driverType) + '</b> from plant ' + escapeHtml(plantId) + ' — ' + msg);
+    // orderNo === null → the whole driver (every equipment on it); an order_no
+    // string (may be '') → only that equipment: its units, its iw_sys_order_no
+    // row and its own par/groups/set tables. Settings + the process row belong
+    // to the hosting driver process and are included either way.
+    async function fetchDriverTemplate(plantId, driverType, orderNo) {
+        const what = escapeHtml(driverType) + (orderNo !== null ? ' · ' + escapeHtml(orderNo || '(no order_no)') : '');
+        const p = (msg) => setPlantInfo('Fetching <b>' + what + '</b> from plant ' + escapeHtml(plantId) + ' — ' + msg);
         const S = PLANT_SCHEMA;
         const dq = q(driverType);
+        const unitWhere = ` WHERE driver_type=${dq}` + (orderNo !== null ? ` AND order_no=${q(orderNo)}` : '');
         // Only ever placed inside "--" SQL comments: collapse whitespace so a
-        // hostile driver_type with a newline cannot smuggle a live SQL line in.
+        // hostile driver_type/order_no with a newline cannot smuggle a live SQL line in.
         const drvLabel = String(driverType).replace(/\s+/g, ' ').trim();
+        const equipLabel = drvLabel
+            + (orderNo !== null ? ' · ' + (String(orderNo).replace(/\s+/g, ' ').trim() || '(no order_no)') : '');
 
         p('system tables…');
         // Column lists first — sys table layouts differ between plant generations
@@ -648,17 +689,21 @@
         const selCast = (tbl, where) => `SELECT ${castList(sysCols[tbl])} FROM ${S}.\`${tbl}\`${where}`;
 
         const sysSel = [
-            selCast('iw_sys_plant_units', ` WHERE driver_type=${dq} ORDER BY unit_id`),
+            selCast('iw_sys_plant_units', unitWhere + ' ORDER BY unit_id'),
             selCast('iw_sys_plant_settings', ` WHERE owner=${dq} ORDER BY setting`),
         ];
-        if (sysCols.iw_sys_order_no) sysSel.push(selCast('iw_sys_order_no', ` WHERE order_no IN (SELECT DISTINCT order_no FROM ${S}.iw_sys_plant_units WHERE driver_type=${dq})`));
+        if (sysCols.iw_sys_order_no) {
+            sysSel.push(selCast('iw_sys_order_no', orderNo !== null
+                ? ` WHERE order_no=${q(orderNo)}`
+                : ` WHERE order_no IN (SELECT DISTINCT order_no FROM ${S}.iw_sys_plant_units WHERE driver_type=${dq})`));
+        }
         if (sysCols.iw_sys_processes) sysSel.push(selCast('iw_sys_processes', ` WHERE process_name=${dq}`));
         const sysRes = await plantSql(plantId, sysSel);
         const units = (sysRes[0] && sysRes[0].data) || [];
         const settings = (sysRes[1] && sysRes[1].data) || [];
         const orders = (sysCols.iw_sys_order_no && sysRes[2] && sysRes[2].data) || [];
         const procs = (sysCols.iw_sys_processes && sysRes[3] && sysRes[3].data) || [];
-        if (!units.length) throw new Error('No units with driver_type ' + driverType + ' on plant ' + plantId);
+        if (!units.length) throw new Error('No units for ' + driverType + (orderNo !== null ? ' / order_no ' + (orderNo || "''") : '') + ' on plant ' + plantId);
 
         // Order rows → the driver's parameter tables:
         // group_link 'x_groups' → iw_par_x_groups, db_link 'x_param' → iw_par_x_param,
@@ -777,7 +822,7 @@
         }
 
         const parts = [];
-        parts.push('-- Fetched live from plant ' + plantId + ', driver ' + drvLabel + ', by ' + X_CALLER);
+        parts.push('-- Fetched live from plant ' + plantId + ', driver ' + equipLabel + ', by ' + X_CALLER);
         if (missing.length) parts.push('-- WARNING: linked tables missing on the source plant, not included: ' + missing.join(', '));
         if (!orders.length) parts.push('-- WARNING: no iw_sys_order_no rows found for this driver, so no iw_par_/iw_set_ tables are included.');
         parts.push('');
@@ -806,10 +851,13 @@
         const pid = $('seii-plant').value.trim();
         if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first.', 'err'); return; }
         const drv = it.dataset.drv;
+        // data-order distinguishes one equipment ('' is a real order_no value)
+        // from the whole-driver row, which has no data-order attribute at all.
+        const orderNo = it.hasAttribute('data-order') ? it.getAttribute('data-order') : null;
         _fetchBusy = true;
         try {
-            const sql = await fetchDriverTemplate(pid, drv);
-            loadSqlText('plant ' + pid + ' · ' + drv, sql);
+            const sql = await fetchDriverTemplate(pid, drv, orderNo);
+            loadSqlText('plant ' + pid + ' · ' + drv + (orderNo !== null ? ' · ' + (orderNo || '(no order_no)') : ''), sql);
             $('seii-drivers').classList.remove('show');
             $('seii-tpl').value = '';
             $('seii-search').value = '';
