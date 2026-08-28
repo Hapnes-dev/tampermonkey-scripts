@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.3
+// @version      9.4
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -225,7 +225,7 @@
       <div class="body">
         <label>Search equipment</label>
         <div class="row" id="seii-plantrow">
-          <input id="seii-plant" placeholder="plant id (blank = fleet)" style="flex:0 0 130px" title="Leave blank to search every indexed plant; enter a plant id to browse just that plant">
+          <input id="seii-plant" placeholder="plant id (blank = fleet)" style="flex:0 0 120px" title="Blank = search every indexed plant; enter a plant id to browse just that plant">
           <button id="seii-plantload" style="padding:2px 8px;cursor:pointer;white-space:nowrap;width:auto">Load equipment</button>
           <a id="seii-sap" href="${SEARCH_ALL_PLANTS_URL}" target="_blank" title="The toolbox all-plants search (db_main) — covers plants the fleet index does not">🔎 all plants</a>
         </div>
@@ -865,7 +865,26 @@
         return parts.join('\n') + '\n';
     }
 
-    $('seii-plant').value = getPlantIdFromHost();
+    // The plant field starts BLANK so searching defaults to the whole fleet.
+    // On a plant server the local plant id is offered as a hint rather than
+    // filled in, so browsing one plant stays one click away.
+    (function () {
+        const local = getPlantIdFromHost();
+        const el = $('seii-plant');
+        if (!local) return;
+        el.title = 'Blank = search the whole indexed fleet. This plant is ' + local + '.';
+        const hint = document.createElement('a');
+        hint.id = 'seii-thisplant';
+        hint.href = '#';
+        hint.textContent = 'this plant (' + local + ')';
+        hint.title = 'Browse only this plant';
+        hint.onclick = (e) => {
+            e.preventDefault();
+            el.value = local;
+            loadPlantDrivers();
+        };
+        $('seii-plantrow').appendChild(hint);
+    })();
     $('seii-plantload').onclick = (e) => { e.preventDefault(); loadPlantDrivers(); };
     $('seii-plant').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadPlantDrivers(); } });
     // Typing in the search bar: with a plant id it loads that plant on first use
