@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.4
+// @version      9.5
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -494,8 +494,13 @@
 
     function renderDrivers() {
         const f = ($('seii-search').value || '').trim().toLowerCase();
+        const terms = searchTerms(f);
         const box = $('seii-drivers');
-        const hit = (...vals) => vals.some(v => String(v || '').toLowerCase().includes(f));
+        // Same AND-of-terms rule as the fleet search, applied client-side.
+        const hit = (...vals) => {
+            const hay = vals.map(v => String(v || '').toLowerCase()).join('   ');
+            return terms.every(t => hay.includes(t));
+        };
         const html = [];
         for (const d of PLANT_DRIVERS) {
             // A driver-name match shows the whole group; an equipment-level match
@@ -614,13 +619,23 @@
         catch (e) { _idxDown = e.message || String(e); throw e; }
     }
 
+    // "ekc 202" should find EKC / 202D equipment even though no single field
+    // contains that exact string: every whitespace-separated term must match
+    // somewhere in the row (AND of substrings), which is how people type.
+    const searchTerms = (s) => String(s).trim().split(/\s+/).filter(Boolean).slice(0, 6);
+
     async function searchFleetIndex(qraw) {
-        const pat = likeQ(qraw);
+        const terms = searchTerms(qraw);
+        if (!terms.length) return [];
+        const where = terms.map(t => {
+            const pat = likeQ(t);
+            return `(driver_type LIKE ${pat} OR sql_text LIKE ${pat})`;
+        }).join(' AND ');
         // Only the first 3 haystack lines come back (order_no, regulators,
         // unit count) — the unit/grp names are searched server-side but never
         // transferred or displayed.
         const sql = `SELECT display_name AS plant_id, driver_type, SUBSTRING_INDEX(sql_text, '\\n', 3) AS head FROM ${IDX_TABLE}` +
-            ` WHERE name LIKE ${likePrefixQ(IDX_PREFIX)} AND (driver_type LIKE ${pat} OR sql_text LIKE ${pat})` +
+            ` WHERE name LIKE ${likePrefixQ(IDX_PREFIX)} AND ${where}` +
             ` ORDER BY CAST(display_name AS UNSIGNED) DESC, driver_type LIMIT 60`;
         const rs = await toolboxSql(sql);
         return ((rs[0] && rs[0].data) || []).map(r => {
