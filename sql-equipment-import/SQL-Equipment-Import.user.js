@@ -2,8 +2,8 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      7.6
-// @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest (or load a .sql file from disk), edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB. No backend, no DB.
+// @version      8.0
+// @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest, load a .sql file from disk, or fetch a live driver straight from any plant via the Toolbox plant-SQL API (units, settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template). Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
 // @run-at       document-end
@@ -16,6 +16,7 @@
 // @resource     CM_CSS https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css
 // @resource     CM_THEME https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/eclipse.min.css
 // @connect      raw.githubusercontent.com
+// @connect      toolbox.iwmac.local
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/SQL-Equipment-Import.user.js
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/SQL-Equipment-Import.user.js
 // ==/UserScript==
@@ -36,6 +37,15 @@
     // ---------------- Config ----------------
     const REPO_BASE = 'https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/templates';
     const MANIFEST_URL = REPO_BASE + '/manifest.json';
+    // Toolbox plant-SQL API (same proxy the topology/AK3 scripts use): POST
+    // {plant_id, sql_command} and it runs the SQL on that plant's own MariaDB.
+    // Statements joined with ';' run as one batch and come back as results[i].
+    const PLANT_SQL_URL = 'http://toolbox.iwmac.local:8505/plant-sql/';
+    const PLANT_SCHEMA = 'iw_plant_server3';
+    const SEARCH_ALL_PLANTS_URL = 'http://toolbox.iwmac.local:8501/search_all_plants';
+    // The API rejects SELECTs above its max-rows setting, so page big tables.
+    const FETCH_PAGE_ROWS = 5000;
+    const X_CALLER = 'SQL Equipment Import';
     const EDITABLE_SETTINGS = ['mb_mode', 'comm_port', 'comm_baudrate', 'comm_parity'];
     const PARITY_OPTS = [
         ['0', 'N (None)'], ['1', 'O (Odd)'], ['2', 'E (Even)'],
@@ -211,6 +221,14 @@
     #seii-suggest.show{display:block}
     #seii-suggest .item{padding:4px 8px;cursor:pointer;font:12px monospace;border-bottom:1px solid #eee}
     #seii-suggest .item:hover,#seii-suggest .item.active{background:#2b6cb0;color:#fff}
+    #seii-drivers{border:1px solid #bbb;border-radius:3px;max-height:180px;overflow-y:auto;margin-top:3px;display:none;background:#fff}
+    #seii-drivers.show{display:block}
+    #seii-drivers .drv{padding:4px 8px;cursor:pointer;border-bottom:1px solid #eee;font:12px monospace}
+    #seii-drivers .drv:hover{background:#2b6cb0;color:#fff}
+    #seii-drivers .drv .meta{opacity:.65;font-size:11px}
+    #seii-drivers .drv:hover .meta{opacity:.9}
+    #seii-plantrow a{font:11px -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#2b6cb0;text-decoration:none;white-space:nowrap}
+    #seii-plantrow a:hover{text-decoration:underline}
     `;
     document.documentElement.appendChild(Object.assign(document.createElement('style'), { textContent: css }));
 
@@ -232,6 +250,15 @@
           <div id="seii-suggest"></div>
         </div>
         <select id="seii-tpl" style="margin-top:3px;width:100%"><option value="">— loading… —</option></select>
+
+        <label style="margin-top:8px">…or fetch a live driver from a plant</label>
+        <div class="row" id="seii-plantrow">
+          <input id="seii-plant" placeholder="plant id" style="flex:0 0 90px">
+          <button id="seii-plantload" style="padding:2px 8px;cursor:pointer;white-space:nowrap;width:auto">Load drivers</button>
+          <input id="seii-drvfilter" placeholder="filter regulator / driver…" style="display:none">
+          <a id="seii-sap" href="${SEARCH_ALL_PLANTS_URL}" target="_blank" title="Search regulators across all plants (toolbox) to find a donor plant id">🔎 all plants</a>
+        </div>
+        <div id="seii-drivers"></div>
 
         <label class="small" style="margin-top:8px">…or load a .sql from disk</label>
         <input type="file" id="seii-file" accept=".sql,text/plain">
@@ -439,6 +466,314 @@
     };
 
     loadManifest();
+
+    // ---------------- Fetch a live driver from a plant (Toolbox plant-SQL API) ----------------
+    // Third template source: point the panel at any plant id, list that plant's
+    // drivers straight out of its iw_sys_plant_units (driver_type + regulator
+    // types + unit count), pick one, and the script rebuilds a full template —
+    // units, settings (owner = driver_type), iw_sys_order_no, iw_sys_processes,
+    // and every linked iw_par_<link>_groups/_param + iw_set_<base> table. The
+    // CREATE TABLE statements are reassembled from information_schema because
+    // the API only accepts SELECT/INSERT/UPDATE/DELETE (no SHOW CREATE TABLE).
+    // The result feeds loadSqlText(), so the normal form flow takes over.
+    // The 🔎 all-plants link opens the toolbox Streamlit search to find a donor
+    // plant id — its all-plants dataset (db_main) has no HTTP API to query from
+    // here, so cross-plant regulator search stays in that tool.
+
+    function makeUuid() {
+        return (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+    }
+    // X-Caller + a per-plant X-Run-Id, same convention as AK3-Autoscan and
+    // Topology Copy, so one fetch reads as one operation in the Toolbox log.
+    let _runId = makeUuid();
+    let _runIdPlant = null;
+    function ensureRunIdForPlant(plantId) {
+        const pid = String(plantId || '');
+        if (pid && _runIdPlant !== pid) { _runId = makeUuid(); _runIdPlant = pid; }
+        return _runId;
+    }
+
+    function gmPostJson(url, payload) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest !== 'function') return reject(new Error('GM_xmlhttpRequest not granted'));
+            GM_xmlhttpRequest({
+                method: 'POST', url, timeout: 90000,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Caller': X_CALLER,
+                    'X-Run-Id': _runId,
+                },
+                data: JSON.stringify(payload),
+                onload: r => {
+                    try { resolve({ status: r.status, body: JSON.parse(r.responseText) }); }
+                    catch (e) {
+                        // Proxy errors (504 etc.) come back as HTML — flatten to text.
+                        const plain = String(r.responseText).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+                        reject(new Error('Toolbox API: ' + (plain.substring(0, 160) || ('HTTP ' + r.status))));
+                    }
+                },
+                onerror: () => reject(new Error('Toolbox API network error — are you on the IWMAC network?')),
+                ontimeout: () => reject(new Error('Toolbox API timeout')),
+            });
+        });
+    }
+
+    // Run one or more SELECTs on a plant's own MariaDB. `statements` may be a
+    // string or an array; arrays run as one semicolon-batch but are chunked so
+    // a driver with many linked tables cannot blow the API's SQL-length cap.
+    // Returns one result entry ({data: [...]}) per statement, in order.
+    async function plantSql(plantId, statements) {
+        ensureRunIdForPlant(plantId);
+        const stmts = Array.isArray(statements) ? statements : [statements];
+        const out = [];
+        for (let i = 0; i < stmts.length; i += 8) {
+            const chunk = stmts.slice(i, i + 8);
+            const res = await gmPostJson(PLANT_SQL_URL, { plant_id: String(plantId), sql_command: chunk.join(';\n') });
+            const body = res.body;
+            if (!body || !body.success) {
+                throw new Error((body && (body.error || body.message)) || ('HTTP ' + res.status));
+            }
+            const results = body.results || [];
+            if (results.length !== chunk.length) throw new Error('Toolbox API returned ' + results.length + ' results for ' + chunk.length + ' statements');
+            out.push(...results);
+        }
+        return out;
+    }
+
+    const isSafeIdent = (s) => /^[A-Za-z0-9_]+$/.test(String(s));
+
+    function getPlantIdFromHost() {
+        // phpMyAdmin lives on the plant server itself: "6176.plants.iwmac.local"
+        const m = (location.hostname || '').match(/^(\d+)\./);
+        return m ? m[1] : '';
+    }
+
+    function setPlantInfo(html, cls) {
+        $('seii-fileinfo').innerHTML = cls ? `<span class="${cls}">${html}</span>` : html;
+    }
+
+    let PLANT_DRIVERS = []; // [{driver_type, n, regs}] for the currently-loaded plant
+
+    function renderDrivers() {
+        const f = ($('seii-drvfilter').value || '').trim().toLowerCase();
+        const box = $('seii-drivers');
+        const items = PLANT_DRIVERS.filter(d =>
+            !f || String(d.driver_type).toLowerCase().includes(f) || String(d.regs || '').toLowerCase().includes(f));
+        box.innerHTML = items.map(d =>
+            `<div class="drv" data-drv="${escapeHtml(d.driver_type)}"><b>${escapeHtml(d.driver_type)}</b>` +
+            ` <span class="meta">— ${escapeHtml(String(d.n))} unit${String(d.n) === '1' ? '' : 's'}${d.regs ? ' — ' + escapeHtml(d.regs) : ''}</span></div>`
+        ).join('') || '<div class="drv"><span class="meta">no drivers match the filter</span></div>';
+        box.classList.add('show');
+    }
+
+    async function loadPlantDrivers() {
+        const pid = $('seii-plant').value.trim();
+        const box = $('seii-drivers');
+        box.innerHTML = ''; box.classList.remove('show');
+        $('seii-drvfilter').style.display = 'none';
+        if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first (use 🔎 all plants to find a donor plant).', 'err'); return; }
+        setPlantInfo('Fetching driver list from plant ' + escapeHtml(pid) + '…');
+        const listSql = (withRegs) =>
+            `SELECT driver_type, COUNT(*) AS n` +
+            (withRegs ? `, LEFT(GROUP_CONCAT(DISTINCT regulator_type ORDER BY regulator_type SEPARATOR ', '), 300) AS regs` : '') +
+            ` FROM ${PLANT_SCHEMA}.iw_sys_plant_units WHERE driver_type <> '' AND unit_id <> 'SERVER'` +
+            ` GROUP BY driver_type ORDER BY driver_type`;
+        try {
+            let rs;
+            try { rs = await plantSql(pid, listSql(true)); }
+            catch (e) {
+                // Very old plants predate the regulator_type column.
+                if (/regulator_type/i.test(e.message || '')) rs = await plantSql(pid, listSql(false));
+                else throw e;
+            }
+            PLANT_DRIVERS = (rs[0] && rs[0].data) || [];
+            if (!PLANT_DRIVERS.length) { setPlantInfo('Plant ' + escapeHtml(pid) + ' has no drivers in iw_sys_plant_units.', 'err'); return; }
+            $('seii-drvfilter').style.display = '';
+            renderDrivers();
+            setPlantInfo(`<span class="ok">${PLANT_DRIVERS.length} drivers on plant ${escapeHtml(pid)}.</span> <span class="small">Click one to fetch it as a template.</span>`);
+        } catch (err) {
+            setPlantInfo('Driver list failed: ' + escapeHtml(err.message || String(err)), 'err');
+        }
+    }
+
+    async function fetchDriverTemplate(plantId, driverType) {
+        const p = (msg) => setPlantInfo('Fetching <b>' + escapeHtml(driverType) + '</b> from plant ' + escapeHtml(plantId) + ' — ' + msg);
+        const S = PLANT_SCHEMA;
+        const dq = q(driverType);
+
+        p('system tables…');
+        // Column lists first — sys table layouts differ between plant generations
+        // (driver_adr vs driver_addr, optional unit_extra), so never hardcode them.
+        const SYS_TABLES = ['iw_sys_plant_units', 'iw_sys_plant_settings', 'iw_sys_order_no', 'iw_sys_processes'];
+        const colsRes = await plantSql(plantId,
+            `SELECT table_name, column_name FROM information_schema.columns ` +
+            `WHERE table_schema=${q(S)} AND table_name IN (${SYS_TABLES.map(q).join(',')}) ORDER BY table_name, ordinal_position`);
+        const sysCols = {};
+        for (const r of (colsRes[0].data || [])) {
+            (sysCols[r.table_name] = sysCols[r.table_name] || []).push(r.column_name);
+        }
+        for (const t of ['iw_sys_plant_units', 'iw_sys_plant_settings']) {
+            if (!sysCols[t]) throw new Error('Source plant has no ' + t + ' table');
+        }
+        // CAST everything AS CHAR: datetimes arrive as '2016-04-21 07:21:45'
+        // instead of the API's JSON date form, and numbers quote back safely.
+        const castList = (cols) => cols.map(c => `CAST(\`${c}\` AS CHAR) AS \`${c}\``).join(', ');
+        const selCast = (tbl, where) => `SELECT ${castList(sysCols[tbl])} FROM ${S}.\`${tbl}\`${where}`;
+
+        const sysSel = [
+            selCast('iw_sys_plant_units', ` WHERE driver_type=${dq} ORDER BY unit_id`),
+            selCast('iw_sys_plant_settings', ` WHERE owner=${dq} ORDER BY setting`),
+        ];
+        if (sysCols.iw_sys_order_no) sysSel.push(selCast('iw_sys_order_no', ` WHERE order_no IN (SELECT DISTINCT order_no FROM ${S}.iw_sys_plant_units WHERE driver_type=${dq})`));
+        if (sysCols.iw_sys_processes) sysSel.push(selCast('iw_sys_processes', ` WHERE process_name=${dq}`));
+        const sysRes = await plantSql(plantId, sysSel);
+        const units = (sysRes[0] && sysRes[0].data) || [];
+        const settings = (sysRes[1] && sysRes[1].data) || [];
+        const orders = (sysCols.iw_sys_order_no && sysRes[2] && sysRes[2].data) || [];
+        const procs = (sysCols.iw_sys_processes && sysRes[3] && sysRes[3].data) || [];
+        if (!units.length) throw new Error('No units with driver_type ' + driverType + ' on plant ' + plantId);
+
+        // Order rows → the driver's parameter tables:
+        // group_link 'x_groups' → iw_par_x_groups, db_link 'x_param' → iw_par_x_param,
+        // and db_link minus its _param suffix → iw_set_x.
+        const wanted = [];
+        for (const o of orders) {
+            const dbl = String(o.db_link || ''), grl = String(o.group_link || '');
+            if (grl) wanted.push('iw_par_' + grl);
+            if (dbl) {
+                wanted.push('iw_par_' + dbl);
+                wanted.push('iw_set_' + dbl.replace(/_param$/, ''));
+            }
+        }
+        const tables = [...new Set(wanted)].filter(isSafeIdent);
+
+        p('table definitions…');
+        const tblMeta = {}, tblCols = {}, tblIdx = {};
+        if (tables.length) {
+            const inList = tables.map(q).join(',');
+            const [metaR, colR, idxR] = await plantSql(plantId, [
+                `SELECT table_name, engine, table_collation, table_comment FROM information_schema.tables WHERE table_schema=${q(S)} AND table_name IN (${inList})`,
+                `SELECT table_name, column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=${q(S)} AND table_name IN (${inList}) ORDER BY table_name, ordinal_position`,
+                `SELECT table_name, index_name, non_unique, seq_in_index, column_name, sub_part FROM information_schema.statistics WHERE table_schema=${q(S)} AND table_name IN (${inList}) ORDER BY table_name, index_name, seq_in_index`,
+            ]);
+            for (const r of (metaR.data || [])) tblMeta[r.table_name] = r;
+            for (const r of (colR.data || [])) (tblCols[r.table_name] = tblCols[r.table_name] || []).push(r);
+            for (const r of (idxR.data || [])) (tblIdx[r.table_name] = tblIdx[r.table_name] || []).push(r);
+        }
+        const existing = tables.filter(t => tblMeta[t] && tblCols[t]);
+        const missing = tables.filter(t => !tblMeta[t] || !tblCols[t]);
+
+        p('table data…');
+        const dataSel = (t, offset) =>
+            `SELECT ${tblCols[t].map(c => `CAST(\`${c.column_name}\` AS CHAR) AS \`${c.column_name}\``).join(', ')}` +
+            ` FROM ${S}.\`${t}\` LIMIT ${FETCH_PAGE_ROWS}` + (offset ? ` OFFSET ${offset}` : '');
+        const tblData = {};
+        if (existing.length) {
+            const firstRes = await plantSql(plantId, existing.map(t => dataSel(t, 0)));
+            existing.forEach((t, i) => { tblData[t] = (firstRes[i] && firstRes[i].data) || []; });
+            for (const t of existing) {
+                // A table that filled a whole page may have more rows — keep paging.
+                while (tblData[t].length > 0 && tblData[t].length % FETCH_PAGE_ROWS === 0) {
+                    p('table data… (' + escapeHtml(t) + ': ' + tblData[t].length + '+ rows)');
+                    const more = await plantSql(plantId, dataSel(t, tblData[t].length));
+                    const rows = (more[0] && more[0].data) || [];
+                    if (!rows.length) break;
+                    tblData[t].push(...rows);
+                }
+            }
+        }
+
+        // ---- assemble the template text ----
+        function colDefSql(c) {
+            let s = '`' + c.column_name + '` ' + c.column_type;
+            const nullable = String(c.is_nullable).toUpperCase() === 'YES';
+            if (!nullable) s += ' NOT NULL';
+            const d = c.column_default;
+            if (d === null || d === undefined) {
+                if (nullable) s += ' DEFAULT NULL';
+            } else if (/^current_timestamp(\(\))?$/i.test(d)) {
+                s += ' DEFAULT CURRENT_TIMESTAMP';
+            } else if (/^'[\s\S]*'$/.test(d)) {
+                s += ' DEFAULT ' + d; // newer MariaDB already returns the default SQL-quoted
+            } else {
+                s += ' DEFAULT ' + q(d);
+            }
+            if (c.extra && /auto_increment/i.test(c.extra)) s += ' AUTO_INCREMENT';
+            return s;
+        }
+        function createTableSql(t) {
+            const lines = tblCols[t].map(colDefSql);
+            const byIdx = {};
+            for (const r of (tblIdx[t] || [])) (byIdx[r.index_name] = byIdx[r.index_name] || []).push(r);
+            for (const name of Object.keys(byIdx)) {
+                const parts = byIdx[name]
+                    .sort((a, b) => Number(a.seq_in_index) - Number(b.seq_in_index))
+                    .map(r => '`' + r.column_name + '`' + (r.sub_part != null && r.sub_part !== '' ? '(' + r.sub_part + ')' : ''));
+                if (name === 'PRIMARY') lines.push('PRIMARY KEY (' + parts.join(',') + ')');
+                else if (String(byIdx[name][0].non_unique) === '0') lines.push('UNIQUE KEY `' + name + '` (' + parts.join(',') + ')');
+                else lines.push('KEY `' + name + '` (' + parts.join(',') + ')');
+            }
+            const meta = tblMeta[t];
+            const charset = String(meta.table_collation || 'latin1_swedish_ci').split('_')[0];
+            let tail = ') ENGINE=' + (meta.engine || 'MyISAM') + ' DEFAULT CHARSET=' + charset;
+            if (meta.table_comment) tail += ' COMMENT=' + q(meta.table_comment);
+            return 'CREATE TABLE IF NOT EXISTS `' + t + '` (\n  ' + lines.join(',\n  ') + '\n' + tail + ';';
+        }
+        function insertBlock(tbl, cols, rows, nowDate) {
+            if (!rows.length) return '';
+            const colsSql = cols.map(c => '`' + c + '`').join(', ');
+            const tuples = rows.map(r => '(' + cols.map(c => {
+                if (nowDate && c === 'row_date') return 'NOW()';
+                const v = r[c];
+                return v === null || v === undefined ? "''" : q(v);
+            }).join(', ') + ')');
+            return 'REPLACE INTO `' + tbl + '` (' + colsSql + ') VALUES\n' + tuples.join(',\n') + ';';
+        }
+
+        const parts = [];
+        parts.push('-- Fetched live from plant ' + plantId + ', driver ' + driverType + ', by ' + X_CALLER);
+        if (missing.length) parts.push('-- WARNING: linked tables missing on the source plant, not included: ' + missing.join(', '));
+        if (!orders.length) parts.push('-- WARNING: no iw_sys_order_no rows found for this driver, so no iw_par_/iw_set_ tables are included.');
+        parts.push('');
+        parts.push(insertBlock('iw_sys_plant_units', sysCols.iw_sys_plant_units, units, true));
+        if (settings.length) parts.push('\n' + insertBlock('iw_sys_plant_settings', sysCols.iw_sys_plant_settings, settings, true));
+        else parts.push('\n-- (no iw_sys_plant_settings rows with owner ' + driverType + ' on the source plant)');
+        if (orders.length) parts.push('\n' + insertBlock('iw_sys_order_no', sysCols.iw_sys_order_no, orders, true));
+        if (procs.length) parts.push('\n' + insertBlock('iw_sys_processes', sysCols.iw_sys_processes, procs, true));
+        for (const t of existing) {
+            parts.push('\n' + createTableSql(t));
+            const block = insertBlock(t, tblCols[t].map(c => c.column_name), tblData[t], false);
+            if (block) parts.push('\n' + block);
+        }
+        return parts.join('\n') + '\n';
+    }
+
+    $('seii-plant').value = getPlantIdFromHost();
+    $('seii-plantload').onclick = (e) => { e.preventDefault(); loadPlantDrivers(); };
+    $('seii-plant').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadPlantDrivers(); } });
+    $('seii-drvfilter').addEventListener('input', renderDrivers);
+    let _fetchBusy = false;
+    $('seii-drivers').addEventListener('click', async (e) => {
+        const it = e.target.closest('.drv');
+        if (!it || !it.dataset.drv || _fetchBusy) return;
+        const pid = $('seii-plant').value.trim();
+        const drv = it.dataset.drv;
+        _fetchBusy = true;
+        try {
+            const sql = await fetchDriverTemplate(pid, drv);
+            loadSqlText('plant ' + pid + ' · ' + drv, sql);
+            $('seii-drivers').classList.remove('show');
+            $('seii-tpl').value = '';
+            $('seii-search').value = '';
+        } catch (err) {
+            setPlantInfo('Fetch failed: ' + escapeHtml(err.message || String(err)), 'err');
+        } finally {
+            _fetchBusy = false;
+        }
+    });
 
     $('seii-file').addEventListener('change', e => {
         const f = e.target.files[0]; if (!f) return;
