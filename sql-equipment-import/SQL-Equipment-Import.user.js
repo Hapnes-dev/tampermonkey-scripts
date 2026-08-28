@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      8.1
+// @version      8.2
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest, load a .sql file from disk, or fetch a live driver straight from any plant via the Toolbox plant-SQL API (units, settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template). Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -481,18 +481,28 @@
     // plant id — its all-plants dataset (db_main) has no HTTP API to query from
     // here, so cross-plant regulator search stays in that tool.
 
-    function makeUuid() {
-        return (typeof crypto !== 'undefined' && crypto.randomUUID)
-            ? crypto.randomUUID()
-            : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+    function makeRunId() {
+        // Random part FIRST: the API dashboard truncates the id to its first
+        // characters, and plant pages are plain http where crypto.randomUUID
+        // does not exist — a timestamp-led fallback made every session display
+        // as "mt…". crypto.getRandomValues works fine on http.
+        let rnd;
+        try {
+            const b = new Uint8Array(5);
+            crypto.getRandomValues(b);
+            rnd = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+        } catch (e) {
+            rnd = Math.random().toString(36).slice(2, 12);
+        }
+        return rnd + '-' + Date.now().toString(36);
     }
     // X-Caller + a per-plant X-Run-Id, same convention as AK3-Autoscan and
     // Topology Copy, so one fetch reads as one operation in the Toolbox log.
-    let _runId = makeUuid();
+    let _runId = makeRunId();
     let _runIdPlant = null;
     function ensureRunIdForPlant(plantId) {
         const pid = String(plantId || '');
-        if (pid && _runIdPlant !== pid) { _runId = makeUuid(); _runIdPlant = pid; }
+        if (pid && _runIdPlant !== pid) { _runId = makeRunId(); _runIdPlant = pid; }
         return _runId;
     }
 
