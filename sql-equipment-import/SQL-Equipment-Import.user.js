@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.6
+// @version      9.7
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -503,11 +503,14 @@
         };
         const html = [];
         for (const d of PLANT_DRIVERS) {
-            // A driver-name match shows the whole group; an equipment-level match
-            // (unit_name / grp_name / regulator_type / order_no) narrows the
-            // sub-rows to just the equipment that actually matched.
+            // A query matching the driver name alone shows the whole group;
+            // otherwise the sub-rows narrow to the equipment that matched. The
+            // driver_type is part of each sub-row's haystack too, so a mixed
+            // query like "aka24x 084b8008" — one term naming the driver, one
+            // naming the equipment — still finds it.
             const drvMatch = !f || hit(d.driver_type);
-            const subs = drvMatch ? d.orders : d.orders.filter(o => hit(o.order_no, o.regs, o.unames, o.grps));
+            const subs = drvMatch ? d.orders
+                : d.orders.filter(o => hit(d.driver_type, o.order_no, o.regs, o.unames, o.grps));
             if (!drvMatch && !subs.length) continue;
             const multi = d.orders.length > 1;
             // Unit NAMES are searchable but deliberately not displayed —
