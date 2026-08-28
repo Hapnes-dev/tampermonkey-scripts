@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      8.0
+// @version      8.1
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest, load a .sql file from disk, or fetch a live driver straight from any plant via the Toolbox plant-SQL API (units, settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template). Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -64,6 +64,7 @@
             const u = url + (url.includes('?') ? '&' : '?') + '_=' + Date.now();
             GM_xmlhttpRequest({
                 method: 'GET', url: u, timeout: 30000,
+                anonymous: true, // never send cookies to GitHub raw
                 responseType: 'arraybuffer',
                 overrideMimeType: 'text/plain; charset=utf-8',
                 onload: r => {
@@ -500,6 +501,9 @@
             if (typeof GM_xmlhttpRequest !== 'function') return reject(new Error('GM_xmlhttpRequest not granted'));
             GM_xmlhttpRequest({
                 method: 'POST', url, timeout: 90000,
+                // The plant-SQL API is header-identified only — never let browser
+                // cookies (e.g. the Streamlit session on the same host) ride along.
+                anonymous: true,
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
@@ -603,6 +607,9 @@
         const p = (msg) => setPlantInfo('Fetching <b>' + escapeHtml(driverType) + '</b> from plant ' + escapeHtml(plantId) + ' — ' + msg);
         const S = PLANT_SCHEMA;
         const dq = q(driverType);
+        // Only ever placed inside "--" SQL comments: collapse whitespace so a
+        // hostile driver_type with a newline cannot smuggle a live SQL line in.
+        const drvLabel = String(driverType).replace(/\s+/g, ' ').trim();
 
         p('system tables…');
         // Column lists first — sys table layouts differ between plant generations
@@ -617,6 +624,13 @@
         }
         for (const t of ['iw_sys_plant_units', 'iw_sys_plant_settings']) {
             if (!sysCols[t]) throw new Error('Source plant has no ' + t + ' table');
+        }
+        // Column names get backtick-wrapped into SQL — a name that is not a plain
+        // identifier means the API/DB is feeding us something hostile. Stop.
+        for (const t of Object.keys(sysCols)) {
+            for (const c of sysCols[t]) {
+                if (!isSafeIdent(c)) throw new Error('Unexpected column name from API: ' + t + '.' + c);
+            }
         }
         // CAST everything AS CHAR: datetimes arrive as '2016-04-21 07:21:45'
         // instead of the API's JSON date form, and numbers quote back safely.
@@ -662,6 +676,11 @@
             for (const r of (metaR.data || [])) tblMeta[r.table_name] = r;
             for (const r of (colR.data || [])) (tblCols[r.table_name] = tblCols[r.table_name] || []).push(r);
             for (const r of (idxR.data || [])) (tblIdx[r.table_name] = tblIdx[r.table_name] || []).push(r);
+            for (const t of Object.keys(tblCols)) {
+                for (const c of tblCols[t]) {
+                    if (!isSafeIdent(c.column_name)) throw new Error('Unexpected column name from API: ' + t + '.' + c.column_name);
+                }
+            }
         }
         const existing = tables.filter(t => tblMeta[t] && tblCols[t]);
         const missing = tables.filter(t => !tblMeta[t] || !tblCols[t]);
@@ -687,7 +706,12 @@
         }
 
         // ---- assemble the template text ----
+        // Every fragment of the DDL is either matched against a strict shape or
+        // re-escaped before it lands in the output — information_schema text is
+        // still API input, and the generated SQL gets pasted into phpMyAdmin.
+        const COLTYPE_RE = /^[a-z0-9_]+(\([0-9]+(,[0-9]+)?\))?( unsigned)?( zerofill)?$|^(enum|set)\('(?:[^'\\]|''|\\.)*'(?:,'(?:[^'\\]|''|\\.)*')*\)$/i;
         function colDefSql(c) {
+            if (!COLTYPE_RE.test(String(c.column_type))) throw new Error('Unexpected column type from API: ' + c.column_name + ' ' + c.column_type);
             let s = '`' + c.column_name + '` ' + c.column_type;
             const nullable = String(c.is_nullable).toUpperCase() === 'YES';
             if (!nullable) s += ' NOT NULL';
@@ -697,7 +721,9 @@
             } else if (/^current_timestamp(\(\))?$/i.test(d)) {
                 s += ' DEFAULT CURRENT_TIMESTAMP';
             } else if (/^'[\s\S]*'$/.test(d)) {
-                s += ' DEFAULT ' + d; // newer MariaDB already returns the default SQL-quoted
+                // Newer MariaDB returns defaults SQL-quoted — unquote and
+                // re-escape rather than trusting the raw text into the DDL.
+                s += ' DEFAULT ' + q(d.slice(1, -1).replace(/''/g, "'"));
             } else {
                 s += ' DEFAULT ' + q(d);
             }
@@ -709,16 +735,23 @@
             const byIdx = {};
             for (const r of (tblIdx[t] || [])) (byIdx[r.index_name] = byIdx[r.index_name] || []).push(r);
             for (const name of Object.keys(byIdx)) {
+                if (!isSafeIdent(name)) throw new Error('Unexpected index name from API: ' + t + '.' + name);
                 const parts = byIdx[name]
                     .sort((a, b) => Number(a.seq_in_index) - Number(b.seq_in_index))
-                    .map(r => '`' + r.column_name + '`' + (r.sub_part != null && r.sub_part !== '' ? '(' + r.sub_part + ')' : ''));
+                    .map(r => {
+                        if (!isSafeIdent(r.column_name)) throw new Error('Unexpected index column from API: ' + t + '.' + r.column_name);
+                        const sp = parseInt(r.sub_part, 10);
+                        return '`' + r.column_name + '`' + (Number.isFinite(sp) && sp > 0 ? '(' + sp + ')' : '');
+                    });
                 if (name === 'PRIMARY') lines.push('PRIMARY KEY (' + parts.join(',') + ')');
                 else if (String(byIdx[name][0].non_unique) === '0') lines.push('UNIQUE KEY `' + name + '` (' + parts.join(',') + ')');
                 else lines.push('KEY `' + name + '` (' + parts.join(',') + ')');
             }
             const meta = tblMeta[t];
+            const engine = String(meta.engine || 'MyISAM');
             const charset = String(meta.table_collation || 'latin1_swedish_ci').split('_')[0];
-            let tail = ') ENGINE=' + (meta.engine || 'MyISAM') + ' DEFAULT CHARSET=' + charset;
+            if (!isSafeIdent(engine) || !isSafeIdent(charset)) throw new Error('Unexpected engine/charset from API for ' + t);
+            let tail = ') ENGINE=' + engine + ' DEFAULT CHARSET=' + charset;
             if (meta.table_comment) tail += ' COMMENT=' + q(meta.table_comment);
             return 'CREATE TABLE IF NOT EXISTS `' + t + '` (\n  ' + lines.join(',\n  ') + '\n' + tail + ';';
         }
@@ -734,13 +767,13 @@
         }
 
         const parts = [];
-        parts.push('-- Fetched live from plant ' + plantId + ', driver ' + driverType + ', by ' + X_CALLER);
+        parts.push('-- Fetched live from plant ' + plantId + ', driver ' + drvLabel + ', by ' + X_CALLER);
         if (missing.length) parts.push('-- WARNING: linked tables missing on the source plant, not included: ' + missing.join(', '));
         if (!orders.length) parts.push('-- WARNING: no iw_sys_order_no rows found for this driver, so no iw_par_/iw_set_ tables are included.');
         parts.push('');
         parts.push(insertBlock('iw_sys_plant_units', sysCols.iw_sys_plant_units, units, true));
         if (settings.length) parts.push('\n' + insertBlock('iw_sys_plant_settings', sysCols.iw_sys_plant_settings, settings, true));
-        else parts.push('\n-- (no iw_sys_plant_settings rows with owner ' + driverType + ' on the source plant)');
+        else parts.push('\n-- (no iw_sys_plant_settings rows with owner ' + drvLabel + ' on the source plant)');
         if (orders.length) parts.push('\n' + insertBlock('iw_sys_order_no', sysCols.iw_sys_order_no, orders, true));
         if (procs.length) parts.push('\n' + insertBlock('iw_sys_processes', sysCols.iw_sys_processes, procs, true));
         for (const t of existing) {
@@ -759,7 +792,9 @@
     $('seii-drivers').addEventListener('click', async (e) => {
         const it = e.target.closest('.drv');
         if (!it || !it.dataset.drv || _fetchBusy) return;
+        // Re-validate: the field may have been edited after Load drivers.
         const pid = $('seii-plant').value.trim();
+        if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first.', 'err'); return; }
         const drv = it.dataset.drv;
         _fetchBusy = true;
         try {
@@ -1195,7 +1230,7 @@
             $('seii-out').value = sql;
             $('seii-status').innerHTML = '<span class="ok">SQL generated.</span>';
         } catch (e) {
-            $('seii-status').innerHTML = `<span class="err">${e.message}</span>`;
+            $('seii-status').innerHTML = `<span class="err">${escapeHtml(e.message)}</span>`;
         }
     };
     let cmEditor = null;
@@ -1225,7 +1260,7 @@
                 $('seii-medit').focus();
             }
         } catch (e) {
-            $('seii-status').innerHTML = `<span class="err">${e.message}</span>`;
+            $('seii-status').innerHTML = `<span class="err">${escapeHtml(e.message)}</span>`;
         }
     };
     $('seii-mclose').onclick = () => {
@@ -1255,7 +1290,7 @@
             GM_setClipboard(s);
             $('seii-status').innerHTML = '<span class="ok">Copied to clipboard.</span>';
         } catch (e) {
-            $('seii-status').innerHTML = `<span class="err">${e.message}</span>`;
+            $('seii-status').innerHTML = `<span class="err">${escapeHtml(e.message)}</span>`;
         }
     };
 })();
