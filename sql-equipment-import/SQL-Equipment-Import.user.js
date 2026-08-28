@@ -2,8 +2,8 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      8.4
-// @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest, load a .sql file from disk, or fetch a live driver straight from any plant via the Toolbox plant-SQL API (units, settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template). Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
+// @version      9.0
+// @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
 // @run-at       document-end
@@ -15,7 +15,6 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js
 // @resource     CM_CSS https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css
 // @resource     CM_THEME https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/eclipse.min.css
-// @connect      raw.githubusercontent.com
 // @connect      toolbox.iwmac.local
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/SQL-Equipment-Import.user.js
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/SQL-Equipment-Import.user.js
@@ -35,8 +34,6 @@
     } catch (e) { /* CodeMirror optional — falls back to plain textarea */ }
 
     // ---------------- Config ----------------
-    const REPO_BASE = 'https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/sql-equipment-import/templates';
-    const MANIFEST_URL = REPO_BASE + '/manifest.json';
     // Toolbox plant-SQL API (same proxy the topology/AK3 scripts use): POST
     // {plant_id, sql_command} and it runs the SQL on that plant's own MariaDB.
     // Statements joined with ';' run as one batch and come back as results[i].
@@ -56,40 +53,6 @@
     // ---------------- SQL helpers ----------------
     const sqlEsc = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "''");
     const q = (v) => "'" + sqlEsc(v) + "'";
-
-    // ---------------- HTTP (GitHub raw) ----------------
-    function gmFetch(url) {
-        return new Promise((resolve, reject) => {
-            // cache-buster so freshly-pushed files are visible immediately
-            const u = url + (url.includes('?') ? '&' : '?') + '_=' + Date.now();
-            GM_xmlhttpRequest({
-                method: 'GET', url: u, timeout: 30000,
-                anonymous: true, // never send cookies to GitHub raw
-                responseType: 'arraybuffer',
-                overrideMimeType: 'text/plain; charset=utf-8',
-                onload: r => {
-                    if (r.status >= 200 && r.status < 300) {
-                        try {
-                            const buf = r.response || r.responseText;
-                            if (!(buf instanceof ArrayBuffer)) { resolve(String(buf)); return; }
-                            const u8 = new Uint8Array(buf);
-                            // Try strict UTF-8 first. If the file is latin1 (older
-                            // phpMyAdmin exports of Norwegian text like "Grønt"),
-                            // strict decode throws on the bare 0xF8 byte; fall back
-                            // to windows-1252 (latin1 superset) so æøå render right.
-                            try {
-                                resolve(new TextDecoder('utf-8', { fatal: true }).decode(u8));
-                            } catch (_) {
-                                resolve(new TextDecoder('windows-1252').decode(u8));
-                            }
-                        } catch (e) { reject(e); }
-                    } else reject(new Error(`HTTP ${r.status} fetching ${url}`));
-                },
-                onerror: () => reject(new Error('Network error fetching ' + url)),
-                ontimeout: () => reject(new Error('Timeout fetching ' + url)),
-            });
-        });
-    }
 
     function extractTuples(s) {
         const out = []; let i = 0, depth = 0, start = -1, inStr = false;
@@ -218,11 +181,7 @@
     #seii-modal .mhdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#2b6cb0;color:#fff;font:13px -apple-system,Segoe UI,Roboto,Arial,sans-serif}
     #seii-modal .mhdr button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.6);border-radius:3px;padding:2px 10px;cursor:pointer;margin-left:6px;font:12px -apple-system,Segoe UI,Roboto,Arial,sans-serif}
     #seii-modal textarea{flex:1;border:0;padding:10px;font:12px Consolas,monospace;white-space:pre;resize:none;outline:none}
-    #seii-suggest{position:absolute;top:100%;left:0;right:36px;background:#fff;border:1px solid #888;border-top:0;max-height:220px;overflow-y:auto;z-index:10;display:none}
-    #seii-suggest.show{display:block}
-    #seii-suggest .item{padding:4px 8px;cursor:pointer;font:12px monospace;border-bottom:1px solid #eee}
-    #seii-suggest .item:hover,#seii-suggest .item.active{background:#2b6cb0;color:#fff}
-    #seii-drivers{border:1px solid #bbb;border-radius:3px;max-height:180px;overflow-y:auto;margin-top:3px;display:none;background:#fff}
+    #seii-drivers{border:1px solid #bbb;border-radius:3px;max-height:220px;overflow-y:auto;margin-top:3px;display:none;background:#fff}
     #seii-drivers.show{display:block}
     #seii-drivers .drv{padding:4px 8px;cursor:pointer;border-bottom:1px solid #eee;font:12px monospace}
     #seii-drivers .drv:hover{background:#2b6cb0;color:#fff}
@@ -245,26 +204,20 @@
         </span>
       </div>
       <div class="body">
-        <label>Driver template</label>
-        <div class="row" style="position:relative">
-          <input id="seii-search" placeholder="Search templates…" autocomplete="off" style="flex:1">
-          <button id="seii-reload" title="Reload manifest" style="padding:2px 8px;cursor:pointer">↻</button>
-          <div id="seii-suggest"></div>
-        </div>
-        <select id="seii-tpl" style="margin-top:3px;width:100%"><option value="">— loading… —</option></select>
-
-        <label style="margin-top:8px">…or fetch a live driver from a plant</label>
+        <label>Search equipment on a plant</label>
         <div class="row" id="seii-plantrow">
           <input id="seii-plant" placeholder="plant id" style="flex:0 0 90px">
-          <button id="seii-plantload" style="padding:2px 8px;cursor:pointer;white-space:nowrap;width:auto">Load drivers</button>
-          <input id="seii-drvfilter" placeholder="filter regulator / driver…" style="display:none">
+          <button id="seii-plantload" style="padding:2px 8px;cursor:pointer;white-space:nowrap;width:auto">Load equipment</button>
           <a id="seii-sap" href="${SEARCH_ALL_PLANTS_URL}" target="_blank" title="Search regulators across all plants (toolbox) to find a donor plant id">🔎 all plants</a>
+        </div>
+        <div class="row" style="margin-top:3px">
+          <input id="seii-search" placeholder="search unit_name, grp_name, driver_type, regulator_type, order_no…" autocomplete="off">
         </div>
         <div id="seii-drivers"></div>
 
         <label class="small" style="margin-top:8px">…or load a .sql from disk</label>
         <input type="file" id="seii-file" accept=".sql,text/plain">
-        <div id="seii-fileinfo" class="small">Pick a template above, or load a file from disk.</div>
+        <div id="seii-fileinfo" class="small">Enter a plant id (pre-filled on plant servers), press Load equipment, then search — or load a .sql from disk.</div>
 
         <div id="seii-form" style="display:none">
           <label>Unit rows <span class="small">(rename / add / remove)</span></label>
@@ -351,7 +304,6 @@
 
     // ---------- Template state ----------
     let CURRENT = null; // { name, sqlText, units, settings }
-    let MANIFEST = []; // [{name, display_name, driver_type, file}]
 
     function loadSqlText(name, sqlText, opts) {
         CURRENT = { name, sqlText, passThrough: !!(opts && opts.passThrough) };
@@ -384,90 +336,6 @@
         });
         const cmd = $('seii-cmd'); if (cmd) cmd.style.display = pt ? 'none' : '';
     }
-
-    function renderTemplateOptions(filter) {
-        const sel = $('seii-tpl');
-        const f = (filter || '').trim().toLowerCase();
-        const items = MANIFEST.map((t, i) => ({ t, i }))
-            .filter(({ t }) => !f || t.display_name.toLowerCase().includes(f) || (t.driver_type || '').toLowerCase().includes(f) || (t.file || '').toLowerCase().includes(f));
-        sel.innerHTML = `<option value="">${items.length ? '— pick template —' : '— no matches —'}</option>` +
-            items.map(({ t, i }) => `<option value="${i}">${escapeHtml(t.display_name)} (${escapeHtml(t.driver_type)})</option>`).join('');
-    }
-
-    async function loadManifest() {
-        const sel = $('seii-tpl');
-        sel.innerHTML = '<option value="">— loading… —</option>';
-        try {
-            const txt = await gmFetch(MANIFEST_URL);
-            const json = JSON.parse(txt);
-            MANIFEST = (json && json.templates) || [];
-            renderTemplateOptions($('seii-search').value);
-            $('seii-fileinfo').innerHTML = `<span class="ok">${MANIFEST.length} templates available.</span> Pick one above, or load from disk.`;
-        } catch (e) {
-            sel.innerHTML = '<option value="">— manifest load failed —</option>';
-            $('seii-fileinfo').innerHTML = `<span class="err">Manifest load failed: ${escapeHtml(e.message)}.</span> You can still load a .sql from disk below.`;
-        }
-    }
-
-    function renderSuggest(filter) {
-        const box = $('seii-suggest');
-        const f = (filter || '').trim().toLowerCase();
-        if (!f) { box.classList.remove('show'); box.innerHTML = ''; return; }
-        const items = MANIFEST.map((t, i) => ({ t, i }))
-            .filter(({ t }) => t.display_name.toLowerCase().includes(f) || (t.driver_type || '').toLowerCase().includes(f) || (t.file || '').toLowerCase().includes(f))
-            .slice(0, 12);
-        if (!items.length) { box.classList.remove('show'); box.innerHTML = ''; return; }
-        box.innerHTML = items.map(({ t, i }) => `<div class="item" data-idx="${i}">${escapeHtml(t.display_name)} <span style="opacity:.6">(${escapeHtml(t.driver_type)})</span></div>`).join('');
-        box.classList.add('show');
-    }
-    async function pickTemplate(idx) {
-        const t = MANIFEST[+idx]; if (!t) return;
-        $('seii-tpl').value = String(idx);
-        $('seii-suggest').classList.remove('show');
-        $('seii-fileinfo').textContent = 'Fetching ' + t.file + '…';
-        try {
-            const txt = await gmFetch(REPO_BASE + '/' + encodeURIComponent(t.file));
-            loadSqlText(t.file, txt, { passThrough: !!t.pass_through });
-            $('seii-search').value = t.display_name;
-        } catch (e) {
-            $('seii-fileinfo').innerHTML = `<span class="err">Fetch failed: ${escapeHtml(e.message)}</span>`;
-        }
-    }
-    $('seii-search').addEventListener('input', () => {
-        renderTemplateOptions($('seii-search').value);
-        renderSuggest($('seii-search').value);
-    });
-    $('seii-search').addEventListener('focus', () => renderSuggest($('seii-search').value));
-    $('seii-search').addEventListener('blur', () => setTimeout(() => $('seii-suggest').classList.remove('show'), 150));
-    $('seii-search').addEventListener('keydown', e => {
-        const box = $('seii-suggest'); const items = [...box.querySelectorAll('.item')]; if (!items.length) return;
-        const cur = items.findIndex(it => it.classList.contains('active'));
-        if (e.key === 'ArrowDown') { e.preventDefault(); const n = (cur + 1) % items.length; items.forEach(i => i.classList.remove('active')); items[n].classList.add('active'); items[n].scrollIntoView({ block: 'nearest' }); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); const n = (cur - 1 + items.length) % items.length; items.forEach(i => i.classList.remove('active')); items[n].classList.add('active'); items[n].scrollIntoView({ block: 'nearest' }); }
-        else if (e.key === 'Enter') { e.preventDefault(); const pick = cur >= 0 ? items[cur] : items[0]; pickTemplate(pick.dataset.idx); }
-        else if (e.key === 'Escape') { box.classList.remove('show'); }
-    });
-    $('seii-suggest').addEventListener('mousedown', e => {
-        const it = e.target.closest('.item'); if (!it) return;
-        e.preventDefault(); pickTemplate(it.dataset.idx);
-    });
-
-    $('seii-reload').onclick = (e) => { e.preventDefault(); loadManifest(); };
-
-    $('seii-tpl').onchange = async () => {
-        const idx = $('seii-tpl').value;
-        if (idx === '' || idx === '__local__') return;
-        const t = MANIFEST[+idx]; if (!t) return;
-        $('seii-fileinfo').textContent = 'Fetching ' + t.file + '…';
-        try {
-            const txt = await gmFetch(REPO_BASE + '/' + encodeURIComponent(t.file));
-            loadSqlText(t.file, txt, { passThrough: !!t.pass_through });
-        } catch (e) {
-            $('seii-fileinfo').innerHTML = `<span class="err">Fetch failed: ${escapeHtml(e.message)}</span>`;
-        }
-    };
-
-    loadManifest();
 
     // ---------------- Fetch a live driver from a plant (Toolbox plant-SQL API) ----------------
     // Third template source: point the panel at any plant id, list that plant's
@@ -571,48 +439,61 @@
     }
 
     // One entry per driver process, each with its equipment (one per order_no —
-    // an order_no is one param list, i.e. one regulator/device model).
-    let PLANT_DRIVERS = []; // [{driver_type, n, regs, orders: [{order_no, n, regs}]}]
+    // an order_no is one param list, i.e. one regulator/device model). The
+    // aggregated unames/grps/regs strings exist so the search bar can match
+    // unit_name, grp_name, driver_type, regulator_type and order_no.
+    let PLANT_DRIVERS = []; // [{driver_type, n, regs, unames, grps, orders: [{order_no, n, regs, unames, grps}]}]
+    let _loadBusy = false;
+    let _driversLoadedFor = null; // plant id the current PLANT_DRIVERS belongs to
+
+    const clip = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
     function renderDrivers() {
-        const f = ($('seii-drvfilter').value || '').trim().toLowerCase();
+        const f = ($('seii-search').value || '').trim().toLowerCase();
         const box = $('seii-drivers');
+        const hit = (...vals) => vals.some(v => String(v || '').toLowerCase().includes(f));
         const html = [];
         for (const d of PLANT_DRIVERS) {
-            const drvMatch = !f || d.driver_type.toLowerCase().includes(f) || (d.regs || '').toLowerCase().includes(f);
-            const subs = drvMatch ? d.orders : d.orders.filter(o =>
-                o.order_no.toLowerCase().includes(f) || (o.regs || '').toLowerCase().includes(f));
+            // A driver-name match shows the whole group; an equipment-level match
+            // (unit_name / grp_name / regulator_type / order_no) narrows the
+            // sub-rows to just the equipment that actually matched.
+            const drvMatch = !f || hit(d.driver_type);
+            const subs = drvMatch ? d.orders : d.orders.filter(o => hit(o.order_no, o.regs, o.unames, o.grps));
             if (!drvMatch && !subs.length) continue;
             const multi = d.orders.length > 1;
+            const single = d.orders[0] || {};
             html.push(`<div class="drv" data-drv="${escapeHtml(d.driver_type)}"><b>${escapeHtml(d.driver_type)}</b>` +
                 ` <span class="meta">— ${d.n} unit${d.n === 1 ? '' : 's'}` +
                 (multi ? ` — ${d.orders.length} equipment — fetches ALL of them`
-                       : (d.regs ? ' — ' + escapeHtml(d.regs) : '')) +
+                       : `${d.regs ? ' — ' + escapeHtml(d.regs) : ''}${single.unames ? ' — ' + escapeHtml(clip(single.unames, 60)) : ''}`) +
                 '</span></div>');
             if (multi) {
                 for (const o of subs) {
                     html.push(`<div class="drv sub" data-drv="${escapeHtml(d.driver_type)}" data-order="${escapeHtml(o.order_no)}">` +
                         `↳ ${escapeHtml(o.order_no || '(no order_no)')}` +
-                        ` <span class="meta">— ${o.n} unit${o.n === 1 ? '' : 's'}${o.regs ? ' — ' + escapeHtml(o.regs) : ''}</span></div>`);
+                        ` <span class="meta">— ${o.n} unit${o.n === 1 ? '' : 's'}${o.regs ? ' — ' + escapeHtml(o.regs) : ''}${o.unames ? ' — ' + escapeHtml(clip(o.unames, 60)) : ''}</span></div>`);
                 }
             }
         }
-        box.innerHTML = html.join('') || '<div class="drv"><span class="meta">no drivers match the filter</span></div>';
+        box.innerHTML = html.join('') || '<div class="drv"><span class="meta">no equipment matches the search</span></div>';
         box.classList.add('show');
     }
 
     async function loadPlantDrivers() {
         const pid = $('seii-plant').value.trim();
         const box = $('seii-drivers');
+        if (_loadBusy) return;
         box.innerHTML = ''; box.classList.remove('show');
-        $('seii-drvfilter').style.display = 'none';
         if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first (use 🔎 all plants to find a donor plant).', 'err'); return; }
-        setPlantInfo('Fetching driver list from plant ' + escapeHtml(pid) + '…');
+        setPlantInfo('Fetching equipment list from plant ' + escapeHtml(pid) + '…');
         const listSql = (withRegs) =>
             `SELECT driver_type, order_no, COUNT(*) AS n` +
             (withRegs ? `, LEFT(GROUP_CONCAT(DISTINCT regulator_type ORDER BY regulator_type SEPARATOR ', '), 300) AS regs` : '') +
+            `, LEFT(GROUP_CONCAT(DISTINCT unit_name ORDER BY unit_name SEPARATOR ', '), 500) AS unames` +
+            `, LEFT(GROUP_CONCAT(DISTINCT grp_name ORDER BY grp_name SEPARATOR ', '), 300) AS grps` +
             ` FROM ${PLANT_SCHEMA}.iw_sys_plant_units WHERE driver_type <> '' AND unit_id <> 'SERVER'` +
             ` GROUP BY driver_type, order_no ORDER BY driver_type, order_no`;
+        _loadBusy = true;
         try {
             let rs;
             try { rs = await plantSql(pid, listSql(true)); }
@@ -625,24 +506,33 @@
             const byDrv = new Map();
             for (const r of rows) {
                 const key = String(r.driver_type);
-                if (!byDrv.has(key)) byDrv.set(key, { driver_type: key, n: 0, regsList: [], orders: [] });
+                if (!byDrv.has(key)) byDrv.set(key, { driver_type: key, n: 0, regsList: [], unamesList: [], grpsList: [], orders: [] });
                 const d = byDrv.get(key);
                 const n = Number(r.n) || 0;
                 d.n += n;
-                d.orders.push({ order_no: String(r.order_no == null ? '' : r.order_no), n, regs: String(r.regs || '') });
+                d.orders.push({
+                    order_no: String(r.order_no == null ? '' : r.order_no), n,
+                    regs: String(r.regs || ''), unames: String(r.unames || ''), grps: String(r.grps || ''),
+                });
                 if (r.regs) d.regsList.push(String(r.regs));
+                if (r.unames) d.unamesList.push(String(r.unames));
+                if (r.grps) d.grpsList.push(String(r.grps));
             }
             PLANT_DRIVERS = [...byDrv.values()].map(d => ({
                 driver_type: d.driver_type, n: d.n, orders: d.orders,
                 regs: [...new Set(d.regsList.join(', ').split(', ').filter(Boolean))].slice(0, 8).join(', '),
+                unames: d.unamesList.join(', '),
+                grps: d.grpsList.join(', '),
             }));
-            if (!PLANT_DRIVERS.length) { setPlantInfo('Plant ' + escapeHtml(pid) + ' has no drivers in iw_sys_plant_units.', 'err'); return; }
-            $('seii-drvfilter').style.display = '';
+            if (!PLANT_DRIVERS.length) { _driversLoadedFor = null; setPlantInfo('Plant ' + escapeHtml(pid) + ' has no equipment in iw_sys_plant_units.', 'err'); return; }
+            _driversLoadedFor = pid;
             renderDrivers();
-            const nEquip = rows.length;
-            setPlantInfo(`<span class="ok">${PLANT_DRIVERS.length} drivers / ${nEquip} equipment on plant ${escapeHtml(pid)}.</span> <span class="small">Click an ↳ equipment row to fetch just that one; the driver row fetches everything on it.</span>`);
+            setPlantInfo(`<span class="ok">${PLANT_DRIVERS.length} drivers / ${rows.length} equipment on plant ${escapeHtml(pid)}.</span> <span class="small">Search above, then click an ↳ equipment row to fetch just that one; the driver row fetches everything on it.</span>`);
         } catch (err) {
-            setPlantInfo('Driver list failed: ' + escapeHtml(err.message || String(err)), 'err');
+            _driversLoadedFor = null;
+            setPlantInfo('Equipment list failed: ' + escapeHtml(err.message || String(err)), 'err');
+        } finally {
+            _loadBusy = false;
         }
     }
 
@@ -866,7 +756,14 @@
     $('seii-plant').value = getPlantIdFromHost();
     $('seii-plantload').onclick = (e) => { e.preventDefault(); loadPlantDrivers(); };
     $('seii-plant').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadPlantDrivers(); } });
-    $('seii-drvfilter').addEventListener('input', renderDrivers);
+    // Typing in the search bar loads the plant's equipment on first use, then
+    // filters the loaded list live — matching unit_name, grp_name, driver_type,
+    // regulator_type and order_no.
+    $('seii-search').addEventListener('input', () => {
+        const pid = $('seii-plant').value.trim();
+        if (_driversLoadedFor !== pid && /^\d+$/.test(pid)) { if (!_loadBusy) loadPlantDrivers(); return; }
+        renderDrivers();
+    });
     let _fetchBusy = false;
     $('seii-drivers').addEventListener('click', async (e) => {
         const it = e.target.closest('.drv');
@@ -883,8 +780,6 @@
             const sql = await fetchDriverTemplate(pid, drv, orderNo);
             loadSqlText('plant ' + pid + ' · ' + drv + (orderNo !== null ? ' · ' + (orderNo || '(no order_no)') : ''), sql);
             $('seii-drivers').classList.remove('show');
-            $('seii-tpl').value = '';
-            $('seii-search').value = '';
         } catch (err) {
             setPlantInfo('Fetch failed: ' + escapeHtml(err.message || String(err)), 'err');
         } finally {
@@ -903,13 +798,6 @@
             let txt;
             try { txt = new TextDecoder('utf-8', { fatal: true }).decode(u8); }
             catch (_) { txt = new TextDecoder('windows-1252').decode(u8); }
-            const sel = $('seii-tpl');
-            sel.querySelectorAll('option[data-local="1"]').forEach(o => o.remove());
-            const opt = document.createElement('option');
-            opt.value = '__local__'; opt.dataset.local = '1';
-            opt.textContent = f.name + ' (local file)';
-            sel.insertBefore(opt, sel.firstChild);
-            sel.value = '__local__';
             loadSqlText(f.name, txt);
         };
         fr.readAsArrayBuffer(f);
