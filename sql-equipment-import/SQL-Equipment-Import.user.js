@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.1
+// @version      9.2
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -500,17 +500,18 @@
             const subs = drvMatch ? d.orders : d.orders.filter(o => hit(o.order_no, o.regs, o.unames, o.grps));
             if (!drvMatch && !subs.length) continue;
             const multi = d.orders.length > 1;
-            const single = d.orders[0] || {};
+            // Unit NAMES are searchable but deliberately not displayed —
+            // the rows show only counts and regulator types.
             html.push(`<div class="drv" data-drv="${escapeHtml(d.driver_type)}"><b>${escapeHtml(d.driver_type)}</b>` +
                 ` <span class="meta">— ${d.n} unit${d.n === 1 ? '' : 's'}` +
                 (multi ? ` — ${d.orders.length} equipment — fetches ALL of them`
-                       : `${d.regs ? ' — ' + escapeHtml(d.regs) : ''}${single.unames ? ' — ' + escapeHtml(clip(single.unames, 60)) : ''}`) +
+                       : (d.regs ? ' — ' + escapeHtml(d.regs) : '')) +
                 '</span></div>');
             if (multi) {
                 for (const o of subs) {
                     html.push(`<div class="drv sub" data-drv="${escapeHtml(d.driver_type)}" data-order="${escapeHtml(o.order_no)}">` +
                         `↳ ${escapeHtml(o.order_no || '(no order_no)')}` +
-                        ` <span class="meta">— ${o.n} unit${o.n === 1 ? '' : 's'}${o.regs ? ' — ' + escapeHtml(o.regs) : ''}${o.unames ? ' — ' + escapeHtml(clip(o.unames, 60)) : ''}</span></div>`);
+                        ` <span class="meta">— ${o.n} unit${o.n === 1 ? '' : 's'}${o.regs ? ' — ' + escapeHtml(o.regs) : ''}</span></div>`);
                 }
             }
         }
@@ -578,7 +579,15 @@
     }
 
     // ---- fleet index: search every indexed plant without knowing a plant id ----
+    // Latched the first time the API reports the index table missing (1146):
+    // from then on no index call is made at all — repeated failing calls have
+    // tripped the API's error protection and turned into misleading
+    // connection-level "network error"s. The setup message's retry clears it.
+    let _idxMissing = false;
+    const isIdxMissingErr = (e) => /equipment_index|1146/i.test((e && e.message) || String(e || ''));
+
     async function upsertIndex(pid, rows) {
+        if (_idxMissing) return;
         const stmts = [`DELETE FROM ${IDX_TABLE} WHERE plant_id=${Number(pid)}`];
         for (let i = 0; i < rows.length; i += 40) {
             const vals = rows.slice(i, i + 40).map(r =>
@@ -586,7 +595,19 @@
                 `${Number(r.n) || 0}, ${q(String(r.regs || ''))}, ${q(String(r.unames || ''))}, ${q(String(r.grps || ''))})`);
             stmts.push(`INSERT INTO ${IDX_TABLE} (plant_id, driver_type, order_no, n_units, regs, unames, grps) VALUES\n${vals.join(',\n')}`);
         }
-        await toolboxSql(stmts);
+        try { await toolboxSql(stmts); }
+        catch (e) { if (isIdxMissingErr(e)) _idxMissing = true; throw e; }
+    }
+
+    function showIdxSetup() {
+        setPlantInfo('Fleet search needs a one-time setup on the Toolbox MariaDB. ' +
+            '<button id="seii-idxcopy" style="padding:1px 8px;cursor:pointer">Copy CREATE TABLE</button> ' +
+            '<button id="seii-idxretry" style="padding:1px 8px;cursor:pointer">I ran it — retry</button> ' +
+            '<span class="small">run the CREATE in HeidiSQL/phpMyAdmin on the toolbox first (also in the repo as db-setup-index.sql).</span>', 'err');
+        const cb = $('seii-idxcopy');
+        if (cb) cb.onclick = () => { GM_setClipboard(IDX_SETUP_SQL); cb.textContent = 'Copied!'; };
+        const rb = $('seii-idxretry');
+        if (rb) rb.onclick = () => { _idxMissing = false; $('seii-search').dispatchEvent(new Event('input', { bubbles: true })); };
     }
 
     async function searchFleetIndex(qraw) {
@@ -607,7 +628,7 @@
             return `<div class="drv" data-plant="${pid}" data-drv="${escapeHtml(String(r.driver_type))}" data-order="${escapeHtml(String(r.order_no == null ? '' : r.order_no))}">` +
                 `<b>${escapeHtml(String(r.driver_type))}</b>${r.order_no ? ' ↳ ' + escapeHtml(String(r.order_no)) : ''}` +
                 ` <span class="meta">— plant ${pid} — ${n} unit${n === 1 ? '' : 's'}` +
-                `${r.regs ? ' — ' + escapeHtml(clip(r.regs, 40)) : ''}${r.unames ? ' — ' + escapeHtml(clip(r.unames, 60)) : ''}</span></div>`;
+                `${r.regs ? ' — ' + escapeHtml(clip(r.regs, 60)) : ''}</span></div>`;
         }).join('') || '<div class="drv"><span class="meta">no indexed equipment matches — the index covers plants this tool has loaded</span></div>';
         box.classList.add('show');
     }
@@ -853,6 +874,7 @@
             return;
         }
         _fleetTimer = setTimeout(async () => {
+            if (_idxMissing) { showIdxSetup(); return; }
             const seq = ++_fleetSeq;
             setPlantInfo('Searching indexed fleet for “' + escapeHtml(qv) + '”…');
             try {
@@ -862,15 +884,8 @@
                 setPlantInfo(`<span class="ok">${rows.length}${rows.length === 60 ? '+' : ''} indexed equipment match.</span> <span class="small">Click one to fetch it live from its plant. The index covers plants this tool has loaded.</span>`);
             } catch (err) {
                 if (seq !== _fleetSeq) return;
-                if (/equipment_index|exist|1146/i.test(err.message || '')) {
-                    setPlantInfo('Fleet search needs a one-time setup on the Toolbox MariaDB. ' +
-                        '<button id="seii-idxcopy" style="padding:1px 8px;cursor:pointer">Copy CREATE TABLE</button> ' +
-                        '<span class="small">run it in HeidiSQL/phpMyAdmin on the toolbox, then search again.</span>', 'err');
-                    const b = $('seii-idxcopy');
-                    if (b) b.onclick = () => { GM_setClipboard(IDX_SETUP_SQL); b.textContent = 'Copied!'; };
-                } else {
-                    setPlantInfo('Fleet search failed: ' + escapeHtml(err.message || String(err)), 'err');
-                }
+                if (isIdxMissingErr(err)) { _idxMissing = true; showIdxSetup(); }
+                else setPlantInfo('Fleet search failed: ' + escapeHtml(err.message || String(err)), 'err');
             }
         }, 350);
     });
