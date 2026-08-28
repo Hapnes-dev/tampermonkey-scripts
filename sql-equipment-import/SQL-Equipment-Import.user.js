@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      8.3
+// @version      8.4
 // @description  Floating panel on phpMyAdmin: pick a driver-template from a GitHub-hosted manifest, load a .sql file from disk, or fetch a live driver straight from any plant via the Toolbox plant-SQL API (units, settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template). Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -657,10 +657,13 @@
         const dq = q(driverType);
         const unitWhere = ` WHERE driver_type=${dq}` + (orderNo !== null ? ` AND order_no=${q(orderNo)}` : '');
         // Only ever placed inside "--" SQL comments: collapse whitespace so a
-        // hostile driver_type/order_no with a newline cannot smuggle a live SQL line in.
-        const drvLabel = String(driverType).replace(/\s+/g, ' ').trim();
+        // hostile driver_type/order_no with a newline cannot smuggle a live SQL
+        // line in, and drop quotes — parseBlock is quote-aware but not
+        // comment-aware, so a stray apostrophe in a comment corrupts parsing.
+        const commentSafe = (s) => String(s).replace(/\s+/g, ' ').replace(/['"`]/g, '').trim();
+        const drvLabel = commentSafe(driverType);
         const equipLabel = drvLabel
-            + (orderNo !== null ? ' · ' + (String(orderNo).replace(/\s+/g, ' ').trim() || '(no order_no)') : '');
+            + (orderNo !== null ? ' · ' + (commentSafe(orderNo) || '(no order_no)') : '');
 
         p('system tables…');
         // Column lists first — sys table layouts differ between plant generations
@@ -704,6 +707,26 @@
         const orders = (sysCols.iw_sys_order_no && sysRes[2] && sysRes[2].data) || [];
         const procs = (sysCols.iw_sys_processes && sysRes[3] && sysRes[3].data) || [];
         if (!units.length) throw new Error('No units for ' + driverType + (orderNo !== null ? ' / order_no ' + (orderNo || "''") : '') + ' on plant ' + plantId);
+
+        // The donor's real unit rows never enter the template — like the curated
+        // templates, it ships three generic example units (P01 / Pos 01 / 0_1 …)
+        // that the form renumbers. Every other column (grp_name, driver_type,
+        // regulator_type, order_no, view_order, …) is carried from the donor's
+        // first unit of the selection, so the driver linkage stays intact.
+        const uCols = sysCols.iw_sys_plant_units;
+        const firstUnit = units[0];
+        const exampleUnits = [1, 2, 3].map(i => {
+            const r = {};
+            for (const c of uCols) r[c] = firstUnit[c];
+            const nn = String(i).padStart(2, '0');
+            if ('unit_id' in r) r.unit_id = 'P' + nn;
+            if ('unit_name' in r) r.unit_name = 'Pos ' + nn;
+            if ('driver_addr' in r) r.driver_addr = '0_' + i;
+            if ('driver_adr' in r) r.driver_adr = '0_' + i;
+            if ('active' in r) r.active = '1';
+            if ('blockout' in r) r.blockout = '0';
+            return r;
+        });
 
         // Order rows → the driver's parameter tables:
         // group_link 'x_groups' → iw_par_x_groups, db_link 'x_param' → iw_par_x_param,
@@ -823,10 +846,11 @@
 
         const parts = [];
         parts.push('-- Fetched live from plant ' + plantId + ', driver ' + equipLabel + ', by ' + X_CALLER);
+        parts.push('-- Donor unit rows are not copied (' + units.length + ' on the donor) - 3 example units are generated instead.');
         if (missing.length) parts.push('-- WARNING: linked tables missing on the source plant, not included: ' + missing.join(', '));
         if (!orders.length) parts.push('-- WARNING: no iw_sys_order_no rows found for this driver, so no iw_par_/iw_set_ tables are included.');
         parts.push('');
-        parts.push(insertBlock('iw_sys_plant_units', sysCols.iw_sys_plant_units, units, true));
+        parts.push(insertBlock('iw_sys_plant_units', uCols, exampleUnits, true));
         if (settings.length) parts.push('\n' + insertBlock('iw_sys_plant_settings', sysCols.iw_sys_plant_settings, settings, true));
         else parts.push('\n-- (no iw_sys_plant_settings rows with owner ' + drvLabel + ' on the source plant)');
         if (orders.length) parts.push('\n' + insertBlock('iw_sys_order_no', sysCols.iw_sys_order_no, orders, true));
