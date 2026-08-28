@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.5
+// @version      9.6
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -498,7 +498,7 @@
         const box = $('seii-drivers');
         // Same AND-of-terms rule as the fleet search, applied client-side.
         const hit = (...vals) => {
-            const hay = vals.map(v => String(v || '').toLowerCase()).join('   ');
+            const hay = vals.map(v => String(v || '').toLowerCase()).join('\n');
             return terms.every(t => hay.includes(t));
         };
         const html = [];
