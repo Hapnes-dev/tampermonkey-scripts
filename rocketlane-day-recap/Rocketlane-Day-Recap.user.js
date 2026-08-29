@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.114
+// @version      4.115
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,8 +32,9 @@ var RL_RECAP_ALL_LOGS = (function () {
 
     // Never print a secret VALUE anywhere a note can end up (chip tooltip, timesheet note, console).
     // Shared with bookTexts inside the IIFE — one definition, one behaviour. Live handover notes have
-    // been seen carrying plant passwords verbatim.
-    const ALL_LOGS_SECRET_RE = /pass|pwd|secret|token|key/i;
+    // been seen carrying plant passwords verbatim — including as "PW: …" (found on a real 2026-08-27
+    // note, v4.115), which the original list missed. \bpw\b is word-bounded so "pwm" stays clean.
+    const ALL_LOGS_SECRET_RE = /pass|pwd|secret|token|key|\bpw\b/i;
     const ALL_LOGS_NOTE_CAP = 8;      // notes shown per plant — a busy day should not bury the row
     const ALL_LOGS_NOTE_CHARS = 180;  // one note line; longer comments are ellipsised
 
@@ -673,7 +674,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.114';
+    const SCRIPT_VERSION   = '4.115';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2934,7 +2935,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // click log can never tell you. Already masked upstream (a comment that looks like it carries a
     // credential arrives as "[redacted]"), and escaped here because it is user-written text.
     function logNoteLine(v) {
-        const notes = (v && v.all_logs_notes) || [];
+        // Re-mask at display time: a day cached before a secret-pattern widening (e.g. the v4.115
+        // "PW:" fix) still carries the RAW comment in full_scan_cache — the stored text must never
+        // reach the chip. maskAllLogsComment is a no-op on an already-clean note.
+        const notes = [...new Set(((v && v.all_logs_notes) || []).map(maskAllLogsComment).filter(Boolean))];
         if (!notes.length) return '';
         const shown = notes.slice(0, 2).join(' · ');
         const title = notes.join('\n');
@@ -3441,13 +3445,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload', direct_plant: 'direct login', designer4: 'Designer', designer3: 'Designer', get_status: 'status check',
             // All logs activity (v4.110)
             changed_alarm_settings: 'alarm settings', change_duty_list: 'duty list', service: 'service logon', pang_note: 'note', call_plant_link: 'alarm call' };
-        // What the operations log / handover notes said about this plant that day, already masked.
-        out.notesLogs = formatAllLogsNotes(v.all_logs_notes);
+        // What the operations log / handover notes said about this plant that day. Masked on capture —
+        // and RE-masked here (v4.115), because a day cached before a secret-pattern widening still
+        // carries the raw comment in full_scan_cache and must never reach a timesheet note.
+        const maskedNotes = [...new Set((v.all_logs_notes || []).map(maskAllLogsComment).filter(Boolean))];
+        out.notesLogs = formatAllLogsNotes(maskedNotes);
         // …and the same text as matcher evidence (v4.112). This is the one source that describes the work
         // in Thomas's own words ("Byttet føler i kjøledisk 3" ⇒ refrigeration) rather than by its
         // side-effects in the database, and it is the ONLY evidence on a day that left no config commit.
         // Set before the no-commit early return below, so those days keep it.
-        out.logStr = (v.all_logs_notes || []).join(' ').toLowerCase();
+        out.logStr = maskedNotes.join(' ').toLowerCase();
         const ac = v.action_counts || {};
         const actEntries = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]);
         out.actionsWork = actEntries.filter(([a]) => !/^(direct_plant|designer|get_status)/.test(a)).slice(0, 3).map(([a]) => ACT_WORDS[a]).join(' + ');
