@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.115
+// @version      4.116
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -674,7 +674,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.115';
+    const SCRIPT_VERSION   = '4.116';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2319,6 +2319,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         #${WEEK_ID} .rl-week-day { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; font-size: 12px; color: #0043ce; margin-top: 8px; padding: 6px 0 2px; border-top: 2px solid #dfe6f2; }
         #${WEEK_ID} .rl-week-day small { color: #6f6f6f; font-weight: 500; text-align: right; }
         #${WEEK_ID} .rl-week-status { font-size: 12px; color: #525252; padding: 8px 0; }
+        #${WEEK_ID} .rl-week-info { font-size: 12px; color: #0e6027; padding: 2px 0 6px; }
         #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; }
         #${WEEK_ID} .rl-week-nav button { font-size: 13px; line-height: 1.4; padding: 0 8px; border: 1px solid #c6c6c6; background: #fff; border-radius: 5px; cursor: pointer; }
         #${WEEK_BTN_ID} { white-space: nowrap; }
@@ -4112,7 +4113,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         await autoSyncFromPang(45000, [], true); // foreground harvest: reliable, unlike a throttled background tab
         return GM_getValue(KEY_ALL_PLANTS, []) || [];
     }
-    async function weekEnsureFullScan(mondayIso, statusCb) {
+    async function weekEnsureFullScan(mondayIso, statusCb, force) {
         const username = effectiveUsername();
         if (!username) return { ok: false, reason: 'pang user unknown — open pang once' };
         const today = todayISO();
@@ -4121,7 +4122,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const iso = addDaysISO(mondayIso, i);
             if (iso > today) continue; // future — nothing to scan
             const c = readCache(username, iso);
-            if (!c || (iso === today && Date.now() - (c.scanned_at || 0) > WEEK_TODAY_MAX_AGE_MS)) need.push(iso);
+            // `force` (v4.116, the pre-build check-up): the user asked for a fresh sweep, so every
+            // weekday is re-verified regardless of cache — a day cached by a quick Refresh passes the
+            // cache test here yet can hide plant-admin/designer visits. All logs still answers first.
+            if (force || !c || (iso === today && Date.now() - (c.scanned_at || 0) > WEEK_TODAY_MAX_AGE_MS)) need.push(iso);
         }
         if (!need.length) return { ok: true, ran: false };
         // A complete All logs reply covers the whole fleet for that day, which is exactly the guarantee
@@ -4220,6 +4224,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Start on the week of the panel's selected date when the panel is open, else the current week.
         const panelDate = document.querySelector(`#${PANEL_ID} input[type=date]`);
         let monday = mondayOfISO((panelDate && panelDate.value) || todayISO());
+        // Full-scan check-up state (v4.116): asked once per modal; a forced sweep applies to the
+        // next build only (it caches every date it finds, so week navigation needs no repeat).
+        let scanChoice = null, forceScanOnce = false;
 
         const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
             <span class="rl-week-nav"><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
@@ -4229,7 +4236,26 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             box.querySelectorAll('[data-b=cancel]').forEach(b => b.addEventListener('click', () => wrap.remove()));
         };
 
+        // Full-scan check-up (v4.116, Thomas's ask): before anything builds, say whether a full scan
+        // has run today and let him choose. The v4.101 cache gate below trusts any cached weekday —
+        // including one written by a quick Refresh, which can hide plant-admin/designer visits — so
+        // when no scan has run today the trust has to be his call, not silent.
+        function renderScanCheckup() {
+            box.innerHTML = headHtml() +
+                `<div class="rl-week-status">🔍 Check-up: <b>no full scan has run today.</b><br>` +
+                `<small>Cached weekdays may date from before today's work or come from a quick Refresh, which can miss ` +
+                `plant-admin/designer visits. A fresh sweep (~1 min) re-verifies every weekday at once — and when IWMAC ` +
+                `All logs can answer for a day, it is used instead of scanning.</small></div>` +
+                `<div class="bookplan-foot"><button type="button" data-b="scanfirst">🔍 Full scan first</button>` +
+                `<button type="button" data-b="cached">Use cached data</button></div>`;
+            wireNav();
+            box.querySelector('[data-b=scanfirst]').addEventListener('click', () => { scanChoice = 'scan'; forceScanOnce = true; build(); });
+            box.querySelector('[data-b=cached]').addEventListener('click', () => { scanChoice = 'cached'; build(); });
+        }
+
         async function build() {
+            if (!fullScanRanToday() && scanChoice === null) { renderScanCheckup(); return; }
+            const force = forceScanOnce; forceScanOnce = false;
             const mySeq = ++seq;
             box.innerHTML = headHtml() + '<div class="rl-week-status">Building plans…</div>';
             wireNav();
@@ -4237,12 +4263,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // Full-scan gate (v4.101): the week's plans must come from FULL-scan data — run one scan
             // covering every uncached weekday before building. Quick data is only ever the fallback
             // when the scan itself is impossible, and then it's flagged loudly.
-            let weekWarn = '', override = null;
+            let weekWarn = '', weekInfo = '', override = null;
             try {
-                const fs = await weekEnsureFullScan(monday, msg => { const s = statusEl(); if (s && seq === mySeq) s.textContent = msg; });
+                const fs = await weekEnsureFullScan(monday, msg => { const s = statusEl(); if (s && seq === mySeq) s.textContent = msg; }, force);
                 if (seq !== mySeq) return;
                 if (!fs.ok) weekWarn = `⚠ Full scan unavailable (${esc(fs.reason)}) — built from quick data, plans may MISS plants.`;
                 else if (fs.ran && fs.failed) { weekWarn = `⚠ ${fs.failed} plant${fs.failed === 1 ? '' : 's'} unreachable during the full scan — using the partial result (not cached).`; override = fs.dates; }
+                else if (fs.from_all_logs) weekInfo = `✓ Check-up: IWMAC All logs answered for every weekday${force ? ' — no pang sweep needed' : ''}.`;
+                else if (fs.ran) weekInfo = '✓ Check-up: full scan completed for this build.';
+                else if (fullScanRanToday()) weekInfo = '✓ Check-up: a full scan has already run today.';
             } catch (err) {
                 if (seq !== mySeq) return;
                 weekWarn = `⚠ Full scan failed (${esc(String((err && err.message) || err))}) — built from quick data, plans may MISS plants.`;
@@ -4268,10 +4297,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 }
             }
             if (seq !== mySeq) return;
-            render(days, weekWarn);
+            render(days, weekWarn, weekInfo);
         }
 
-        function render(days, weekWarn) {
+        function render(days, weekWarn, weekInfo) {
             const rows = []; // flat index across all days: { e, day }
             // Team-bucket picker for no-project plants — same flow as ⤴ Book day (v4.97): choose a
             // "Team … Oppgaver" project, the row arms, and it books there as "<plant id> <plant> - <activity>".
@@ -4304,7 +4333,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 }
             }
             const readyRows = rows.filter(r => r.e.status === 'ready');
-            box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '') + html +
+            box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
+                + (weekInfo ? `<div class="rl-week-info">${weekInfo}</div>` : '') + html +
                 `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
             wireNav();
             const updateGo = () => {
