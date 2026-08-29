@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.113
+// @version      4.114
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -258,10 +258,104 @@ var RL_RECAP_NOTE_TEXT = (function () {
         return [summary, logLines, details].filter(Boolean).join('\n\n');
     }
 
+    // ---- Leader-facing opening line (v4.114) ----------------------------------------------------
+    // The first line of a booked note is the only one Rocketlane shows collapsed, and the person
+    // reading it is usually the project leader, not the engineer. These helpers phrase the day in
+    // plain service terms — what happened to the plant — while the technical sentence and the diff
+    // still follow underneath as evidence. `discs` = the day's detected disciplines, best first.
+    const LEAD_NOUN = {
+        refrig: 'refrigeration controller', vent: 'ventilation controller', energy: 'energy meter',
+        wireless: 'wireless sensor', heat: 'heating controller', machine: 'machine-room controller',
+    };
+
+    function summarizeLeadIntegration(f, discs) {
+        f = f || {};
+        const noun = LEAD_NOUN[(discs || [])[0]] || 'device';
+        const clauses = [];
+        const nAdd = f.uAdd || (f.devAdd || []).length;
+        if (nAdd) clauses.push(`connected ${bookPlural(nAdd, 'new ' + noun)} to the monitoring platform`);
+        const nTuned = (f.devMod || []).filter(x => (f.devAdd || []).indexOf(x) < 0).length;
+        if (nTuned) clauses.push(`adjusted control and alarm settings on ${bookPlural(nTuned, 'device')}`);
+        if (f.uRen) clauses.push(`renamed ${bookPlural(f.uRen, 'device')} for a clearer overview`);
+        if (f.uDel) clauses.push(`removed ${bookPlural(f.uDel, 'device')} from monitoring`);
+        if ((f.settNames || []).length) clauses.push('adjusted plant-level settings');
+        if (f.virtVals) clauses.push('updated the plant\'s calculated values');
+        return bookSentence(clauses);
+    }
+
+    function summarizeLeadDrawing(panelInfo, drawingNames) {
+        const p = panelInfo || [];
+        const n = p.length || (drawingNames || []).length;
+        if (!n) return '';
+        const created = p.filter(x => x.added).length;
+        const verb = (created && created === n) ? 'built' : 'updated';
+        const names = (p.length ? p.map(x => x.panel) : drawingNames).filter(Boolean);
+        return bookSentence([`${verb} ${bookPlural(n, 'overview screen')} for the plant's operator display`
+            + (names.length ? ` (${bookAndList(names.map(bookBareLabel).map(x => `"${x}"`), 3)})` : '')]);
+    }
+
+    function summarizeLeadSetup(rac) {
+        return rac
+            ? 'Configured the plant\'s communication gateway (RAC) so the plant reports to the monitoring platform.'
+            : 'Set up the plant\'s AK3 gateway/scanner so its devices report to the monitoring platform.';
+    }
+
+    function summarizeLeadSupport() {
+        return 'Remote follow-up on the plant — checked status and logs.';
+    }
+
     return {
         bookAndList, bookSentence, bookPlural, bookBareLabel,
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
+        summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
     };
+})();
+// ===== Transition-based time evidence ================================================
+// The estimator's cross-plant timeline already credits each plant from your first action on it until
+// the moment you move to the next one — but a raw click gap is capped at 30 min, and a silent
+// sub-tool session (Designer, phpMyAdmin, VNC) leaves only one trace of when you actually left: the
+// plant's own change-triggered config commit. These helpers re-judge each capped silence — and the
+// day's final wrap-up — against those commits, so the plant-to-plant transitions come from evidence
+// instead of a flat cap. Pure and dependency-free, outside the IIFE, so time-model.test.js can
+// require them directly.
+var RL_RECAP_TIME = (function () {
+    'use strict';
+
+    // Credit for ONE capped gap on one plant. `gapMs` is the real silence following the click at the
+    // gap's start; `commitOffsetsMs` are the plant's change-triggered commits as offsets from that
+    // start. Only offsets inside (0, min(gapMs, evidenceMs)] count — the same 60-min trust horizon
+    // the v4.56 damping used, because a commit is authorless and the further it sits from your last
+    // click the weaker the claim that it was your save. Returns minutes:
+    //  - a commit inside the horizon proves presence up to it → credit the span (last such commit
+    //    plus a short wrap-up), never below the old 30-min cap (lift-only, so every previously
+    //    approved day keeps at least its old value) and never beyond the real gap;
+    //  - no commit and the silence is long (> longGapMs) → the damped credit (a long unevidenced
+    //    silence is far more likely a break or a meeting);
+    //  - no commit, ordinary capped gap → the cap, exactly as before.
+    function cappedGapCredit(gapMs, commitOffsetsMs, C) {
+        const horizon = Math.min(gapMs, C.evidenceMs);
+        const inside = (commitOffsetsMs || []).filter(o => o > 0 && o <= horizon);
+        if (inside.length) {
+            const span = Math.round(Math.max.apply(null, inside) / 60000) + C.wrapMin;
+            return Math.max(C.capMin, Math.min(span, Math.round(gapMs / 60000)));
+        }
+        if (gapMs > C.longGapMs) return C.dampMin;
+        return C.capMin;
+    }
+
+    // The day's very LAST action gets a flat tail wrap-up (10 min) — but when the plant's own
+    // change-triggered commit lands shortly after it, the save timestamps the real end of the day.
+    // Returns the EXTRA minutes to add on top of the tail already credited (0 when no commit within
+    // `maxAfterMs`, or when the flat tail already covers the span). Lift-only, bounded by the same
+    // 20-min window the commit-fusion rules use.
+    function dayEndExtension(lastTs, commitTimes, C) {
+        const after = (commitTimes || []).filter(t => t > lastTs && t <= lastTs + C.maxAfterMs);
+        if (!after.length) return 0;
+        const extra = Math.round((Math.max.apply(null, after) - lastTs) / 60000) + C.wrapMin - C.tailMin;
+        return Math.max(0, extra);
+    }
+
+    return { cappedGapCredit, dayEndExtension };
 })();
 // ===== Rocketlane task matcher =======================================================
 // Which EXISTING project task a day's work should be booked onto. Pure and outside the IIFE for the
@@ -314,6 +408,31 @@ var RL_RECAP_MATCH = (function () {
         }
         return w;
     }
+    // Words that name a work package's KIND rather than the work itself — they appear in half the
+    // task list, so a hit on one says nothing about WHICH task today's text describes.
+    const BOOK_NAME_GENERIC = new Set([
+        'design', 'integration', 'integrasjon', 'setup', 'oppsett', 'project', 'prosjekt',
+        'plant', 'anlegg', 'system', 'task', 'oppgave', 'arbeid', 'work', 'image', 'new',
+        'nye', 'nytt', 'den', 'det', 'har', 'ble', 'ikke', 'til', 'med', 'for', 'the', 'and', 'og',
+    ]);
+    const _bnhRe = {};
+    // How many DISTINCTIVE words of a task's name appear in the day's evidence text (v4.114). Word-
+    // START match, same rationale as prose-mode bookDiscWeights: Norwegian compounds concatenate, so
+    // "kjøl" must still find "kjøledisken". Used as a TIEBREAK between candidates the discipline
+    // evidence scored identically — a day whose note says "byttet føler i kjøl rack 2" should land on
+    // "Integration: Kjøl", not on whichever tied task the history habit prefers.
+    function bookNameHits(taskName, blob) {
+        if (!blob) return 0;
+        const words = bookNorm(String(taskName || '').replace(/^[a-zæøå ]+\s*[:\-]/i, '')).split(' ')
+            .filter(w => w.length >= 3 && !BOOK_NAME_GENERIC.has(w));
+        let n = 0;
+        for (const w of [...new Set(words)]) {
+            let re = _bnhRe[w];
+            if (!re) re = _bnhRe[w] = new RegExp('(^|[^a-z0-9æøå])' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+            if (re.test(blob)) n++;
+        }
+        return n;
+    }
     // `prior` is the task-id order this project+category is usually booked onto, best first (v4.113).
     // It only ever breaks a tie the evidence could not — see rlTaskPrior for the measurement.
     const PRIOR_UNRANKED = 1e9; // finite on purpose: Infinity - Infinity is NaN, which poisons a comparator
@@ -322,7 +441,7 @@ var RL_RECAP_MATCH = (function () {
         const i = prior.indexOf(String(t.taskId));
         return i < 0 ? PRIOR_UNRANKED : i;
     }
-    function bookPickWeighted(cands, weights, stripRe, guess, prior) {
+    function bookPickWeighted(cands, weights, stripRe, guess, prior, nameBlob) {
         if (!cands.length) return null;
         // Tiebreaks, in order (lexicographic — top candidate must beat #2 somewhere or it's ambiguous):
         //  1. evidence score
@@ -330,7 +449,9 @@ var RL_RECAP_MATCH = (function () {
         //     (heat + vent via "VGV") and used to tie plain "Ventilation" — FEWER named disciplines wins.
         //  3. name over phase (v4.90): a task whose NAME carries the discipline beats one that only
         //     inherits it from its phase/category ("Design: Refrigeration" > "Nytt oversiktsbilde").
-        //  4. the booking-history prior (v4.113) — LAST among the tiebreaks, so it can only order
+        //  4. name-in-text (v4.114): the day's own text mentions one tied task's distinctive name
+        //     words — today's evidence, so it outranks the habit prior below.
+        //  5. the booking-history prior (v4.113) — LAST among the tiebreaks, so it can only order
         //     candidates the evidence scored identically. An evidence tie used to mean "ambiguous, fall
         //     through", which ended at an alphabetical guess; now the task this project+category is
         //     actually booked onto wins it (measured 76% correct — see rlTaskPrior).
@@ -340,17 +461,18 @@ var RL_RECAP_MATCH = (function () {
             let td = bookDiscOf(t.taskName.replace(stripRe, '')), ph = 0;
             if (!td.size && t.phase) { td = bookDiscOf(t.phase); ph = 1; } // "Nytt oversiktsbilde" under phase "Refrigeration and freezing systems"
             let ov = 0; for (const x of td) ov += (weights[x] || 0);
-            return { t, ov, nd: td.size, ph };
+            return { t, ov, nd: td.size, ph, nm: bookNameHits(t.taskName, nameBlob) };
         }).filter(x => x.ov > 0);
         if (scored.length === 1) return scored[0].t;
         if (scored.length > 1) {
             const pr = t => bookPriorRank(prior, t);
             scored.sort((a, b) => (b.ov - a.ov) || (a.nd - b.nd) || (a.ph - b.ph)
-                || (pr(a.t) - pr(b.t)) || a.t.taskName.localeCompare(b.t.taskName));
+                || (b.nm - a.nm) || (pr(a.t) - pr(b.t)) || a.t.taskName.localeCompare(b.t.taskName));
             const [a, b] = scored;
             if (guess || a.ov !== b.ov || a.nd !== b.nd || a.ph !== b.ph) return a.t;
-            // Evidence is fully tied. Before v4.113 that meant "ambiguous" and the caller fell through to
-            // a rescue guess; if the history separates them, take the one actually booked in the past.
+            // Evidence is fully tied. The day's own text naming one of the tied tasks decides first
+            // (v4.114); after that the history prior; only a full tie falls through to a rescue guess.
+            if (a.nm !== b.nm) return a.t;
             if (pr(a.t) !== pr(b.t)) return a.t;
         }
         return null; // ambiguous ⇒ let the fallback decide
@@ -388,9 +510,14 @@ var RL_RECAP_MATCH = (function () {
         const wLog = bookDiscWeights(texts.logStr || '', true); // human prose ⇒ word-boundary matching
         const w2 = bookDiscWeights(texts.uStr || '');
         const tiers = [w1, wLog, w2];
+        // Everything the day wrote or changed, lowercased — the corpus bookNameHits ties are broken
+        // against (v4.114). Built once; a tie between same-discipline tasks is then decided by which
+        // task's NAME the day's own text actually mentions.
+        const nameBlob = [texts.tokStr, texts.logStr, texts.uStr, gStr]
+            .filter(Boolean).join(' ').toLowerCase();
         const tiered = (cands, stripRe) => {
             for (const w of tiers) {
-                const hit = bookPickWeighted(cands, w, stripRe, false, prior);
+                const hit = bookPickWeighted(cands, w, stripRe, false, prior, nameBlob);
                 if (hit) return hit;
                 if (Object.keys(w).length) return null; // this tier spoke and was ambiguous — do not fall through
             }
@@ -429,12 +556,14 @@ var RL_RECAP_MATCH = (function () {
                 for (const wantOpen of [true, false]) {
                     const pool = tasks.filter(t => (wantOpen ? !t.done : t.done) && ok(t) && !act.some(re => re.test(t.taskName)));
                     if (!pool.length) continue;
-                    // v4.113: the booking-history prior outranks the fixed discipline order here —
+                    // v4.114: a task whose name the day's own text mentions outranks everything else in
+                    // a guess; v4.113: the booking-history prior outranks the fixed discipline order —
                     // "refrigeration first" was always a stand-in for exactly this, guessed rather than measured.
                     const best = list => list.filter(t => pool.includes(t))
-                        .sort((a, b) => (bookPriorRank(prior, a) - bookPriorRank(prior, b))
+                        .sort((a, b) => (bookNameHits(b.taskName, nameBlob) - bookNameHits(a.taskName, nameBlob))
+                            || (bookPriorRank(prior, a) - bookPriorRank(prior, b))
                             || (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
-                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true, prior) || best(sigCands || []) || best(pool);
+                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true, prior, nameBlob) || best(sigCands || []) || best(pool);
                     if (hit) return Object.assign({ rescued: true }, hit);
                 }
             }
@@ -487,16 +616,26 @@ var RL_RECAP_MATCH = (function () {
             // Integration task is the natural second choice ("Setup 18m → Design: Energi" was wrong).
             return rescue(c, [/design|bilde|tegning/i, /integra(?:tion|sjon)/i]);
         }
+        if (kind === 'support') {
+            // Follow-up / troubleshooting work packages (v4.114). Deliberately NARROW: only a task whose
+            // name says support-like work qualifies, and there is NO rescue pass — most projects carry
+            // no such task, and a "Support" entry reads better as its own activity than force-fitted
+            // onto "Integration: …". ("Service order"-style rows are already checklist-excluded.)
+            const c = tasks.filter(t => /support|service|oppf.lg|feils.k|troubleshoot/i.test(t.taskName) && !BOOK_CHECKLIST_RE.test(t.taskName));
+            if (!c.length) return null;
+            if (c.length === 1) return c[0];
+            return resolve(c, /^[a-zæøå ]+[:\-]/i);
+        }
         return null;
     }
 
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
-        bookNorm, bookDiscOf, bookDiscWeights, bookPickWeighted, pickTask,
+        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask,
     };
 })();
 
-if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT, RL_RECAP_MATCH);
+if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT, RL_RECAP_TIME, RL_RECAP_MATCH);
 
 (function () {
     'use strict';
@@ -512,9 +651,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
+        summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
     } = RL_RECAP_NOTE_TEXT;
 
-    const { pickTask } = RL_RECAP_MATCH;
+    const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
+
+    const { pickTask, bookDiscWeights } = RL_RECAP_MATCH;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -531,7 +673,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.113';
+    const SCRIPT_VERSION   = '4.114';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -586,6 +728,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const SPARSE_CLICK_MAX      = 2;              // a sub-tool config session logs ≤2 pang clicks
     const COMMIT_SESSION_MIN_MS = 5 * 60 * 1000;  // min credit for such a session (even a near-instant save)
     const COMMIT_SESSION_MAX_MS = 20 * 60 * 1000; // max credit, and how far past your last click to look for the session-ending commit
+    // Transition evidence (v4.114): a capped silence and the day's final wrap-up are re-judged
+    // against the plant's own change-triggered commits — the constants bundle RL_RECAP_TIME's pure
+    // credit functions read. wrapMin = the short wrap-up credited past the last proving commit.
+    const GAP_COMMIT_WRAP_MIN = 5;
+    const GAP_CREDIT_C = {
+        capMin: Math.round(ACTIVE_CAP_MS / 60000), longGapMs: LONGGAP_MS,
+        evidenceMs: LONGGAP_EVIDENCE_MS, dampMin: LONGGAP_CREDIT_MIN,
+        wrapMin: GAP_COMMIT_WRAP_MIN, tailMin: Math.round(TAIL_MS / 60000),
+        maxAfterMs: COMMIT_SESSION_MAX_MS,
+    };
     const LOG = (...args) => console.log('[Day Recap v' + SCRIPT_VERSION + ']', ...args);
     const KEY_NAMES_PURGED = 'plant_names_purged_v44'; // bump to re-run cleanup; v44 evicts "Ukjent anlegg" titles
     const PANEL_ID = 'rl-day-recap-panel';
@@ -2973,6 +3125,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // server-serialized batch) and serves repeat date-views from its session cache.
         const commits = await gmFetchCommitsBatch(ids);
         let any = false;
+        // The day's very last action across ALL plants: its flat tail wrap-up can be extended by that
+        // plant's own save commit (dayEndExtension, v4.114).
+        const dayLastTs = Math.max(0, ...visits.map(v => v.last_ts || 0));
         for (const v of visits) {
             // A sparse-click visit that opened a CONFIG SURFACE (edit/access/vnc action) is a sub-tool
             // config session: the work happens in a tool that logs almost no pang clicks and the save
@@ -2995,27 +3150,32 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             v.changes_in_window = triggered.length;
             v.change_times = triggered.map(c => tsToLocalTime(tsFromPangDate(c.date)));
             v.scheduled_in_window = inWin.length - triggered.length;   // counted, not shown as a change
-            // Long-silence damping (v4.56): each capped 30-min gap credit is provisional — for a silence
-            // longer than LONGGAP_MS, keep the full 30 only when a change-triggered commit for THIS plant
-            // lands inside the silence's first LONGGAP_EVIDENCE_MS (proof you were still working on it);
-            // otherwise re-credit it at LONGGAP_CREDIT_MIN (a long unevidenced silence is far more likely
-            // a break/meeting than half an hour of work on that plant). Skipped when the commits fetch
-            // failed (commits[..] undefined) or the visit came from a pre-4.56 cache (no capped_gaps).
+            // Transition evidence (v4.114 — a superset of the v4.56 long-silence damping). Every capped
+            // 30-min gap credit is provisional; the plant's own change-triggered commits inside the
+            // silence re-judge it via cappedGapCredit: a commit inside the 60-min trust horizon proves
+            // presence up to it (credit the span, LIFT-ONLY above the old cap), an unevidenced silence
+            // longer than LONGGAP_MS damps to LONGGAP_CREDIT_MIN as before, and an ordinary capped gap
+            // keeps its 30. This is what makes the estimate follow the real plant-to-plant transitions:
+            // "when did I leave" now comes from the last save on the plant, not from a flat cap.
+            // Skipped when the commits fetch failed (commits[..] undefined) or the visit came from a
+            // pre-4.56 cache (no capped_gaps).
             const commitList = commits[v.plant_id];
             const trigAll = Array.isArray(commitList)
                 ? commitList.filter(c => !isScheduledCommit(c)).map(c => tsFromPangDate(c.date))
                 : null;
             if (trigAll && Array.isArray(v.capped_gaps) && v.capped_gaps.length) {
-                let cut = 0;
+                let cut = 0, ext = 0;
+                const capMin = GAP_CREDIT_C.capMin;
                 for (const g of v.capped_gaps) {
-                    if (!g || !(g.gap > LONGGAP_MS)) continue;
-                    const evidenced = trigAll.some(t => t > g.ts && t <= g.ts + Math.min(g.gap, LONGGAP_EVIDENCE_MS));
-                    if (!evidenced) cut += Math.round(ACTIVE_CAP_MS / 60000) - LONGGAP_CREDIT_MIN;
+                    if (!g || !(g.gap > ACTIVE_CAP_MS)) continue;
+                    const credit = cappedGapCredit(g.gap, trigAll.map(t => t - g.ts), GAP_CREDIT_C);
+                    if (credit < capMin) cut += capMin - credit; else ext += credit - capMin;
                 }
-                if (cut > 0) {
+                if (cut || ext) {
                     const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                    v.base_minutes = Math.max(1, b0 - cut);
-                    v.longgap_cut_minutes = b0 - v.base_minutes; // for the verification dump
+                    v.base_minutes = Math.max(1, b0 - cut + ext);
+                    if (cut) v.longgap_cut_minutes = cut;    // for the verification dump
+                    if (ext) v.gap_commit_ext_minutes = ext; // commit-proven presence past the 30-min cap
                 }
             }
             // Commit-anchored designer extension (v4.60): a designer session's click-based end is
@@ -3033,6 +3193,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         const add = Math.round((Math.min(Math.max(...cands), capEnd) - v.designer_last.e) / 60000);
                         if (add > 0) { v.designer_minutes = (v.designer_minutes || 0) + add; v.designer_ext_minutes = add; }
                     }
+                }
+            }
+            // End-of-day transition (v4.114): the day's LAST action anywhere gets a flat 10-min tail —
+            // but when this plant closed the day AND its own change-triggered commit lands within
+            // 20 min after that last click, the save timestamps the real end of the day; credit up to
+            // it (lift-only). Sparse config sessions are excluded — the commit fusion below already
+            // prices those from the same commit, and adding here would double-count it.
+            if (trigAll && !sparseConfig && v.last_ts && v.last_ts === dayLastTs) {
+                const extra = dayEndExtension(v.last_ts, trigAll, GAP_CREDIT_C);
+                if (extra > 0) {
+                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+                    v.base_minutes = b0 + extra;
+                    v.tail_ext_minutes = extra;
                 }
             }
             // A single click that opened an ACCESS / VNC / diagnostics surface (phpMyAdmin, System tools,
@@ -3485,6 +3658,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         out.tokStr = [...tokset].concat(devAdd, [...devMod]).join(' ').toLowerCase();
         out.uStr = uAddNames.concat(uRenNames).join(' ').toLowerCase();
         out.hints = [out.tokStr, out.logStr, out.uStr, settNames.join(' '), out.drawingNames.join(' ')].join(' ').toLowerCase(); // for the LOG
+        // The day's dominant disciplines, best first — device-table evidence plus the day's own note —
+        // so the leader-facing summary can say "refrigeration controller" instead of "unit" (v4.114).
+        const discSum = {};
+        for (const w of [bookDiscWeights(out.tokStr || ''), bookDiscWeights(out.logStr || '', true)]) {
+            for (const k in w) discSum[k] = (discSum[k] || 0) + w[k];
+        }
+        out.discs = Object.keys(discSum).sort((a, b) => discSum[b] - discSum[a]);
+        // Leader-facing opening lines (v4.114): the plain-language first line of the entry's note.
+        // The technical sentence (sumInteg / sumDraw) moves down into the detail block as evidence.
+        out.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames }, out.discs);
+        out.leadDraw = summarizeLeadDrawing(out.panelInfo, out.drawingNames);
         return out;
     }
 
@@ -3668,7 +3852,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (cat === CAT_INTEGRATION) act = 'Integration: ' + (texts.integration || (texts.actionsWork ? texts.actionsWork + ' work' : 'device/DB config'));
                 else if (cat === CAT_DRAWING) act = 'Drawing: ' + (texts.drawing || texts.designerSession || 'graphics update in Designer');
                 else if (cat === CAT_SETUP_PC) act = 'Setup: AK3 scanner setup';
-                else act = CAT_SHORT[cat] + ': plant work';
+                else act = CAT_SHORT[cat] + ': ' + (texts.actionsWork ? texts.actionsWork + ' follow-up' : 'follow-up and status check');
                 // RAC ⇒ the "integration" is really gateway setup: move it to Setup - PC / Gateway.
                 const racRedirect = (texts.racHit || racProject) && cat === CAT_INTEGRATION; // Setup reached via RAC, not via AK3
                 if ((texts.racHit || racProject) && cat === CAT_INTEGRATION) {
@@ -3678,7 +3862,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // Prefer an existing project task; the rich text then rides along as the entry's note.
                 // The matcher takes a category KIND, not Rocketlane's category name — see RL_RECAP_MATCH.
                 const kind = category === CAT_DRAWING ? 'drawing' : category === CAT_SETUP_PC ? 'setup'
-                    : category === CAT_INTEGRATION ? 'integration' : null;
+                    : category === CAT_INTEGRATION ? 'integration'
+                    : category === CAT_SUPPORT ? 'support' : null;
                 const catIdEarly = cats[category];
                 const priorList = (proj && catIdEarly && taskPrior.get(proj.id + '|' + catIdEarly)) || null;
                 const task = kind ? pickTask(tasks, kind, texts, usedTasks, priorList) : null;
@@ -3693,24 +3878,35 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const bucketDupe = !proj && !!catId && existing.some(e => e.category && e.category.categoryId === catId
                     && (String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0
                         || String((e.task && (e.task.taskName || e.task.name)) || e.taskName || '').indexOf(String(v.plant_id) + ' ') === 0));
-                // The entry's Notes field, in three parts (v4.111): a plain-English summary sentence,
-                // then anything you wrote in the operations log that day, then the precise diff. Only
-                // the first line survives Rocketlane's collapsed drawer, so it has to be the answer to
-                // "what did I do here", not a field label.
+                // The entry's Notes field, in three parts (v4.111, restructured v4.114): the FIRST
+                // line is the only one Rocketlane shows collapsed and its reader is usually the
+                // project LEADER — so it is the plain-language summary of what happened to the plant.
+                // The technical sentence moves to the top of the detail block as evidence, then the
+                // log lines, then the precise diff.
                 let summary, details;
+                const tech = [];
                 if (category === CAT_DRAWING) {
-                    summary = texts.sumDraw || texts.sumActions || '';
+                    summary = texts.leadDraw || texts.sumDraw || texts.sumActions || '';
+                    if (texts.leadDraw && texts.sumDraw && texts.leadDraw !== texts.sumDraw) tech.push(texts.sumDraw);
                     details = texts.notesDraw || '';
                 } else if (category === CAT_SETUP_PC) {
                     // Setup is reached two ways: an AK3 scanner day, or an integration day on a RAC
                     // plant that belongs under gateway setup. Say which — the old note always claimed AK3.
-                    summary = [racRedirect ? 'Set up the plant gateway (RAC).' : 'Set up the AK3 scanner.',
-                        texts.sumInteg || texts.sumActions || ''].filter(Boolean).join(' ');
+                    summary = summarizeLeadSetup(racRedirect);
+                    if (texts.sumInteg || texts.sumActions) tech.push(texts.sumInteg || texts.sumActions);
+                    details = texts.notesInteg || '';
+                } else if (category === CAT_INTEGRATION) {
+                    summary = texts.leadInteg || texts.sumInteg || texts.sumActions || '';
+                    if (texts.leadInteg && (texts.sumInteg || texts.sumActions)) tech.push(texts.sumInteg || texts.sumActions);
                     details = texts.notesInteg || '';
                 } else {
-                    summary = texts.sumInteg || texts.sumActions || ''; // no commits ⇒ describe the session by its tools
+                    // Support - External: a follow-up session that left no config evidence — say so in
+                    // service terms; the tools sentence stays as the technical detail.
+                    summary = summarizeLeadSupport();
+                    if (texts.sumActions) tech.push(texts.sumActions);
                     details = texts.notesInteg || '';
                 }
+                details = [tech.join(' '), details].filter(Boolean).join('\n');
                 // Whatever you wrote in the operations log / a handover note that day says more about the
                 // work than any diff can (already masked; secret values never travel). `details` is the
                 // commit-derived diff only — the tools fallback already IS the summary, so it never repeats.
