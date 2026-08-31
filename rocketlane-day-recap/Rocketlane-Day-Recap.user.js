@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.117
+// @version      4.118
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -674,7 +674,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.117';
+    const SCRIPT_VERSION   = '4.118';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4131,18 +4131,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // A complete All logs reply covers the whole fleet for that day, which is exactly the guarantee
         // this gate exists to provide — so a day it answers needs no full scan. loadDayForBooking queries
         // All logs again per day (session-cached), so nothing is stored here.
-        statusCb && statusCb(`Checking IWMAC All logs for ${need.length} day${need.length === 1 ? '' : 's'}…`);
-        const stillNeed = [];
-        for (const iso of need) {
-            const al = await gmFetchAllLogs(iso, username);
-            if (!(al.ok && !al.limit_reached)) stillNeed.push(iso);
+        // NOT on a forced sweep (v4.118): ↻ Refresh and 🔍 Full scan first mean "re-scan pang", and this
+        // shortcut would silently skip that. Only the pang path rewrites the day cache (the All logs path
+        // stores nothing), so skipping it left cached weekdays stale. Automatic builds keep the shortcut.
+        if (!force) {
+            statusCb && statusCb(`Checking IWMAC All logs for ${need.length} day${need.length === 1 ? '' : 's'}…`);
+            const stillNeed = [];
+            for (const iso of need) {
+                const al = await gmFetchAllLogs(iso, username);
+                if (!(al.ok && !al.limit_reached)) stillNeed.push(iso);
+            }
+            if (!stillNeed.length) {
+                markFullScanRan(); // every weekday was covered fleet-wide — the daily recommendation is satisfied
+                return { ok: true, ran: false, from_all_logs: true };
+            }
+            need.length = 0;
+            need.push(...stillNeed);
         }
-        if (!stillNeed.length) {
-            markFullScanRan(); // every weekday was covered fleet-wide — the daily recommendation is satisfied
-            return { ok: true, ran: false, from_all_logs: true };
-        }
-        need.length = 0;
-        need.push(...stillNeed);
         let plantIds = (await weekEnsureAllPlants(statusCb)).map(String);
         if (!plantIds.length) return { ok: false, reason: 'plant inventory unavailable' };
         // Footprint-first ordering (same as the panel's Full scan): pure reordering, identical result.
@@ -4244,7 +4249,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         let scanChoice = null, forceScanOnce = false;
 
         const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
-            <span class="rl-week-nav"><button type="button" data-b="refresh" title="Refresh — re-read this week with a fresh scan (ignores today's cached data)">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
+            <span class="rl-week-nav"><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
         const wireNav = () => {
             // ↻ rebuilds this week from scratch: forget the session answers, then force the same sweep
             // the pre-build check-up offers — available in every state (check-up, building, results),
@@ -4267,8 +4272,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             box.innerHTML = headHtml() +
                 `<div class="rl-week-status">🔍 Check-up: <b>no full scan has run today.</b><br>` +
                 `<small>Cached weekdays may date from before today's work or come from a quick Refresh, which can miss ` +
-                `plant-admin/designer visits. A fresh sweep (~1 min) re-verifies every weekday at once — and when IWMAC ` +
-                `All logs can answer for a day, it is used instead of scanning.</small></div>` +
+                `plant-admin/designer visits. A fresh sweep (~1 min) re-scans every plant and rewrites the cache for ` +
+                `every weekday at once.</small></div>` +
                 `<div class="bookplan-foot"><button type="button" data-b="scanfirst">🔍 Full scan first</button>` +
                 `<button type="button" data-b="cached">Use cached data</button></div>`;
             wireNav();
