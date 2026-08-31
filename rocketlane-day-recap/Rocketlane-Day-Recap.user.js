@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.118
+// @version      4.119
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -11,6 +11,9 @@
 // @match        https://*.plants.iwmac.local:8080/*
 // @match        http://tools.iwmac.local/pang.qxs*
 // @match        https://tools.iwmac.local/pang.qxs*
+// @match        https://outlook.office.com/*
+// @match        https://outlook.office365.com/*
+// @match        https://outlook.cloud.microsoft/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
@@ -358,6 +361,157 @@ var RL_RECAP_TIME = (function () {
 
     return { cappedGapCredit, dayEndExtension };
 })();
+// ===== Outlook calendar → meeting / admin time =======================================
+// pang only sees plant work, so meetings, planning and training never reached the timesheet — and
+// because the day is distributed to a 7,5 h total, that time was silently absorbed into the plant
+// estimates. These helpers turn one day of Outlook calendar events into bookable entries. Pure and
+// dependency-free (the fetching half lives in the IIFE), so calendar.test.js can require them.
+//
+// PRIVACY: an event's subject is the user's own text and can name customers or staff. It is used as
+// the entry's activity title (that is the point) but is never logged, never sent anywhere except
+// Rocketlane, and `calMaskSubject` strips anything that looks like a credential — the same rule the
+// IWMAC handover notes follow.
+var RL_RECAP_CAL = (function () {
+    'use strict';
+
+    const CAL_SECRET_RE = /pass|pwd|secret|token|key|\bpw\b/i;
+    const CAL_TITLE_MAX = 90;
+
+    function calMaskSubject(s) {
+        s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+        if (!s) return '';
+        if (CAL_SECRET_RE.test(s)) return '[redacted]';
+        return s.length > CAL_TITLE_MAX ? s.slice(0, CAL_TITLE_MAX - 1) + '…' : s;
+    }
+
+    // Category routing. Norwegian and English keywords, word-start matched (compounds: "kundemøte",
+    // "planleggingsmøte"). First rule that hits wins, so the list is ordered most-specific first.
+    // The module deliberately does NOT know Rocketlane's category IDs — it returns a KIND, and the
+    // IIFE maps kind → the tenant's category name, exactly like the task matcher does.
+    const CAL_RULES = [
+        ['training', /kurs|opplær|training|workshop|sertifiser|certification|webinar/i],
+        ['planning', /planlegg|planning|prioriter|sprint|backlog|ukeplan|månedsplan|status(?:møte)?|oppfølging/i],
+        ['external', /kunde|customer|client|befaring|leverandør|supplier|partner|ekstern|external|entrepren|byggemøte|site meeting/i],
+        ['internal', /./], // default: an internal meeting
+    ];
+    function calKindOf(subject) {
+        const s = String(subject || '');
+        for (const [kind, re] of CAL_RULES) if (re.test(s)) return kind;
+        return 'internal';
+    }
+
+    // One Outlook REST event → the shape the panel books from. `Start`/`End` arrive as
+    // {DateTime, TimeZone}; with the Prefer: outlook.timezone header they are already local wall
+    // clock, which is what the timesheet wants — so parse them as local, never as UTC.
+    function calParseLocal(dt) {
+        const s = String((dt && dt.DateTime) || dt || '');
+        const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+        if (!m) return NaN;
+        return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+    }
+    function calNormalizeEvent(rec) {
+        if (!rec) return null;
+        const startTs = calParseLocal(rec.Start), endTs = calParseLocal(rec.End);
+        if (!isFinite(startTs) || !isFinite(endTs)) return null;
+        return {
+            id: String(rec.Id || rec.iCalUId || (startTs + '|' + (rec.Subject || ''))),
+            subject: calMaskSubject(rec.Subject),
+            startTs, endTs,
+            allDay: !!rec.IsAllDay,
+            cancelled: !!rec.IsCancelled,
+            free: String(rec.ShowAs || '') === 'Free',
+            declined: String((rec.ResponseStatus && rec.ResponseStatus.Response) || '') === 'Declined',
+            organizer: !!rec.IsOrganizer,
+            recurring: String(rec.Type || '') === 'Occurrence',
+            kind: calKindOf(rec.Subject),
+        };
+    }
+
+    // What never becomes a timesheet entry, whatever the user's filter settings: a cancelled event
+    // (it did not happen), one he declined (he was not there), and one marked Free (a placeholder or
+    // a reminder, not time worked). Tentative / not-responded events ARE kept — Thomas's call: he
+    // attends plenty of meetings without clicking Accept.
+    function calIsBookable(ev) {
+        return !!ev && !ev.cancelled && !ev.declined && !ev.free && ev.endTs > ev.startTs;
+    }
+
+    // Overlapping meetings must not double-charge the day: two events 10:00–11:00 and 10:30–11:30 are
+    // 90 minutes of calendar, not 120. Merge the timeline, then split the merged span back across the
+    // events proportionally so each row still books a sensible share. All-day events are excluded
+    // from the merge (they carry the whole day and are priced separately).
+    function calMergedMinutes(events) {
+        const spans = (events || []).filter(e => e && !e.allDay).map(e => [e.startTs, e.endTs])
+            .sort((a, b) => a[0] - b[0]);
+        let total = 0, curS = null, curE = null;
+        for (const [s, e] of spans) {
+            if (curS === null) { curS = s; curE = e; continue; }
+            if (s <= curE) { if (e > curE) curE = e; continue; }
+            total += curE - curS; curS = s; curE = e;
+        }
+        if (curS !== null) total += curE - curS;
+        return Math.round(total / 60000);
+    }
+
+    // Minutes per event, rounded to `roundTo` and scaled so the day's rows sum to the merged total
+    // (never more). An all-day event is priced at the whole workday — a full-day course IS the day,
+    // and with "meetings first" that correctly leaves nothing for plant work.
+    function calAllocate(events, workdayMin, roundTo) {
+        const ok = (events || []).filter(calIsBookable);
+        const allDay = ok.filter(e => e.allDay), timed = ok.filter(e => !e.allDay);
+        const out = [];
+        for (const e of allDay) out.push({ ev: e, minutes: workdayMin });
+        if (allDay.length) return out; // the day is already fully accounted for
+        const merged = calMergedMinutes(timed);
+        const raw = timed.map(e => Math.round((e.endTs - e.startTs) / 60000));
+        const rawSum = raw.reduce((s, n) => s + n, 0);
+        const step = roundTo || 1;
+        let used = 0;
+        timed.forEach((e, i) => {
+            const share = rawSum > 0 ? (raw[i] / rawSum) * merged : 0;
+            const m = Math.max(step, step * Math.round(share / step));
+            used += m;
+            out.push({ ev: e, minutes: m });
+        });
+        // Rounding can push the sum past the merged total; take the excess off the largest row.
+        const drift = used - merged;
+        if (drift > 0 && out.length) {
+            let maxI = 0;
+            for (let i = 1; i < out.length; i++) if (out[i].minutes > out[maxI].minutes) maxI = i;
+            out[maxI].minutes = Math.max(step, out[maxI].minutes - step * Math.round(drift / step));
+        }
+        return out;
+    }
+
+    // How much of the workday is left for plant work once the meetings are booked (v4.117: Thomas's
+    // rule — meetings first, plant work fills the rest). Never negative, never more than the workday.
+    function calRemainingWorkday(allocations, workdayMin) {
+        const used = (allocations || []).reduce((s, a) => s + (a && a.minutes || 0), 0);
+        return Math.max(0, Math.min(workdayMin, workdayMin - used));
+    }
+
+    // The entry's Notes field: same contract as a plant entry — a plain first line a project leader
+    // can read, then the facts underneath.
+    function calEntryNote(ev, mins) {
+        if (!ev) return '';
+        const when = ev.allDay ? 'All day' : `${calClock(ev.startTs)}–${calClock(ev.endTs)}`;
+        const lead = ev.allDay
+            ? `Full-day calendar commitment: ${ev.subject}.`
+            : `Attended "${ev.subject}" (${when}).`;
+        const facts = [`Calendar: ${when}`, ev.recurring ? 'Recurring event' : '', ev.organizer ? 'Organiser' : '']
+            .filter(Boolean).join(' · ');
+        return [lead, facts].filter(Boolean).join('\n\n');
+    }
+    function calClock(ts) {
+        const d = new Date(ts);
+        return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    return {
+        CAL_SECRET_RE, CAL_RULES,
+        calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
+        calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock,
+    };
+})();
 // ===== Rocketlane task matcher =======================================================
 // Which EXISTING project task a day's work should be booked onto. Pure and outside the IIFE for the
 // same reason as the blocks above: this is the most heuristic code in the script, so it has to be
@@ -636,7 +790,7 @@ var RL_RECAP_MATCH = (function () {
     };
 })();
 
-if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT, RL_RECAP_TIME, RL_RECAP_MATCH);
+if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT, RL_RECAP_TIME, RL_RECAP_CAL, RL_RECAP_MATCH);
 
 (function () {
     'use strict';
@@ -657,6 +811,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
 
+    const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock } = RL_RECAP_CAL;
+
     const { pickTask, bookDiscWeights } = RL_RECAP_MATCH;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
@@ -674,7 +830,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.118';
+    const SCRIPT_VERSION   = '4.119';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1104,6 +1260,154 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             }, 250);
         });
     }
+
+    // ===== Outlook calendar harvest (v4.117) ========================================================
+    // Meetings and admin time never touch pang, so the panel could only ever see plant work — and
+    // since the day is distributed to a 7,5 h total, meeting time was silently absorbed into the
+    // plant estimates. The calendar closes that hole.
+    //
+    // ⚠ THE ACCESS TOKEN NEVER LEAVES OUTLOOK'S ORIGIN. Outlook's SPA keeps an MSAL cache in its own
+    // localStorage; the token is read there, used there, and only the resulting EVENTS (subject,
+    // start, end, flags) are written to GM storage. Storing the token would put a live M365
+    // credential on disk for an hour at a time — deliberately not done. Consequences: the harvest
+    // needs an Outlook tab (opened in the background, like the pang harvest), and it re-reads the
+    // token every run because it expires in ~1 h.
+    //
+    // Two API notes, both measured live (2026-08-31): the legacy REST endpoint returns 401 for
+    // cookie auth (`credentials: 'include'` is not enough — it wants the bearer), and without the
+    // `Prefer: outlook.timezone` header every time comes back UTC, which would book an 08:30 meeting
+    // as 06:30. This tenant has no X-OWA-CANARY cookie, so the OWA service route does not apply.
+    const CAL_HOSTS = new Set(['outlook.office.com', 'outlook.office365.com', 'outlook.cloud.microsoft']);
+    const CAL_REST = 'https://outlook.office.com/api/v2.0/me/calendarview';
+    const CAL_TZ = 'W. Europe Standard Time';
+    const KEY_CAL_REQUEST = 'cal_request';   // { at, dates:[iso] } — written by Rocketlane, read in the Outlook tab
+    const KEY_CAL_RESULT  = 'cal_result';    // { at, byDate:{iso:[event]}, error } — written back by the Outlook tab
+    const KEY_CAL_DONE    = 'cal_done_ts';   // harvest completion signal, same pattern as KEY_HARVEST_DONE
+    const KEY_CAL_ENABLED = 'cal_enabled';   // user toggle on the panel
+    // Rocketlane REQUIRES a project on every time entry (verified live: 160 historical entries, zero
+    // project-less; the activities dialog keeps its submit disabled until a project is chosen), and
+    // this tenant has no meetings/admin project. So calendar rows book against a project the user
+    // picks once in the review UI — remembered here, exactly like the team-bucket fallback.
+    const KEY_CAL_PROJECT      = 'cal_project';
+    const KEY_CAL_PROJECT_NAME = 'cal_project_name';
+
+    // Find a live Outlook access token in the SPA's MSAL cache. Entries are JSON blobs keyed by
+    // account/scope; the one we want is credentialType AccessToken, targets a Calendars scope, and
+    // has not expired. Returns the token string or ''. Never logged, never stored.
+    function calFindToken() {
+        let best = null;
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k || !/accesstoken/i.test(k)) continue;
+            let v = null;
+            try { v = JSON.parse(localStorage.getItem(k)); } catch { continue; }
+            if (!v || String(v.credentialType || '') !== 'AccessToken' || !v.secret) continue;
+            const target = String(v.target || '');
+            if (!/calendars\.read/i.test(target) && !/outlook\.office\.com/i.test(target)) continue;
+            const exp = (+v.expiresOn || 0) * 1000; // MSAL stores seconds
+            if (exp && exp < Date.now() + 60000) continue; // expiring within a minute — useless
+            if (!best || exp > best.exp) best = { secret: v.secret, exp };
+        }
+        return best ? best.secret : '';
+    }
+
+    // Runs in the Outlook tab. Reads the dates Rocketlane asked for, fetches each day, writes back
+    // normalized events only, then closes itself when it was opened as a harvest tab.
+    async function syncFromOutlook() {
+        const isSyncTab = location.hash.includes('rl-cal') || window.name === 'rl_cal_sync';
+        const req = GM_getValue(KEY_CAL_REQUEST, null);
+        const dates = (req && Array.isArray(req.dates)) ? req.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)) : [];
+        if (!isSyncTab && !dates.length) return; // an ordinary Outlook tab the user opened themselves
+        const finish = (payload) => {
+            try { GM_setValue(KEY_CAL_RESULT, Object.assign({ at: Date.now() }, payload)); } catch {}
+            try { GM_setValue(KEY_CAL_DONE, Date.now()); } catch {}
+            if (isSyncTab) setTimeout(() => { try { window.close(); } catch {} }, 250);
+        };
+        // The SPA writes its MSAL cache during boot; a freshly opened tab may not have it yet.
+        let token = '';
+        for (let tries = 0; tries < 40 && !token; tries++) {
+            token = calFindToken();
+            if (!token) await new Promise(r => setTimeout(r, 500));
+        }
+        if (!token) { finish({ byDate: {}, error: 'no Outlook session token — open Outlook and sign in' }); return; }
+        const byDate = {};
+        try {
+            for (const iso of dates) {
+                const url = `${CAL_REST}?startDateTime=${iso}T00:00:00&endDateTime=${iso}T23:59:59`
+                    + '&$orderby=Start/DateTime&$top=100';
+                const r = await fetch(url, {
+                    headers: {
+                        Authorization: 'Bearer ' + token,
+                        Accept: 'application/json',
+                        Prefer: `outlook.timezone="${CAL_TZ}"`, // else every time comes back UTC
+                    },
+                });
+                if (!r.ok) { byDate[iso] = []; continue; }
+                const j = await r.json();
+                byDate[iso] = (Array.isArray(j && j.value) ? j.value : [])
+                    .map(calNormalizeEvent).filter(Boolean);
+            }
+            finish({ byDate });
+        } catch (e) {
+            finish({ byDate, error: 'calendar read failed' });
+        }
+    }
+
+    // Called from Rocketlane: ask the Outlook tab for these dates. Mirrors autoSyncFromPang — open a
+    // background tab, poll the done key, close it. Returns { byDate, error }.
+    function calFetchDays(isoDates, timeoutMs = 30000) {
+        return new Promise(resolve => {
+            const dates = [...new Set((isoDates || []).filter(Boolean))];
+            if (!dates.length) { resolve({ byDate: {} }); return; }
+            const startedAt = Date.now();
+            try { GM_setValue(KEY_CAL_REQUEST, { at: startedAt, dates }); } catch {}
+            let tab = null;
+            try {
+                if (typeof GM_openInTab === 'function') {
+                    tab = GM_openInTab('https://outlook.office.com/calendar/view/day#rl-cal', { active: false, insert: true, setParent: true });
+                }
+            } catch {}
+            if (!tab) { resolve({ byDate: {}, error: 'could not open Outlook' }); return; }
+            const tick = setInterval(() => {
+                const done = GM_getValue(KEY_CAL_DONE, 0) > startedAt;
+                const timedOut = Date.now() - startedAt > timeoutMs;
+                if (!done && !timedOut) return;
+                clearInterval(tick);
+                setTimeout(() => {
+                    try { tab.close(); } catch {}
+                    const res = GM_getValue(KEY_CAL_RESULT, null);
+                    if (done && res && res.at >= startedAt) resolve({ byDate: res.byDate || {}, error: res.error });
+                    else resolve({ byDate: {}, error: 'Outlook did not answer in time' });
+                }, 300);
+            }, 250);
+        });
+    }
+
+    // One day of calendar, ready to book: [{ ev, minutes, categoryKind }]. Cached per date for the
+    // session so re-opening a day never re-opens Outlook.
+    const _calCache = new Map(); // iso -> { at, rows, error }
+    const CAL_TTL_MS = 10 * 60 * 1000;
+    async function calRowsForDate(iso, workdayMin) {
+        if (!GM_getValue(KEY_CAL_ENABLED, false)) return { rows: [] };
+        const hit = _calCache.get(iso);
+        if (hit && Date.now() - hit.at < CAL_TTL_MS) return { rows: calPrice(hit.events, workdayMin), error: hit.error };
+        const res = await calFetchDays([iso]);
+        const events = (res.byDate && res.byDate[iso]) || [];
+        _calCache.set(iso, { at: Date.now(), events, error: res.error });
+        return { rows: calPrice(events, workdayMin), error: res.error };
+    }
+    function calPrice(events, workdayMin) {
+        return calAllocate(events || [], workdayMin, ROUND_TO_MIN)
+            .filter(a => a.minutes > 0)
+            .map(a => ({ ev: a.ev, minutes: a.minutes, category: CAL_CATEGORY[a.ev.kind] || CAL_CATEGORY.internal }));
+    }
+    // kind → the tenant's category NAME (verified live 2026-08-31: all four exist).
+    const CAL_CATEGORY = {
+        internal: 'Meeting - Internal',
+        external: 'Meeting - External',
+        planning: 'Admin - Planning',
+        training: 'Training - Internal',
+    };
 
     // ---------- Rocketlane: panel ----------
     function extractPlantNameFromHtml(plant_id, html) {
@@ -2394,6 +2698,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     Distribute to total
                 </label>
             </div>
+            <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252; flex: 1;" title="Reads your Outlook calendar for the selected date and offers meetings, planning and training as timesheet entries. Meetings are booked at their real length FIRST; the plant distribution then splits whatever the workday has left. Opens Outlook in a background tab to read it — the access token stays in Outlook and is never stored.">
+                    <input type="checkbox" data-field="calendar" ${GM_getValue(KEY_CAL_ENABLED, false) ? 'checked' : ''}>
+                    🗓 Include calendar (meetings &amp; admin)
+                </label>
+            </div>
             <div class="fsnudge" hidden></div>
             <div class="progress"><div style="width:0%"></div></div>
             <div class="catsum"></div>
@@ -2407,6 +2717,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const fullscanBtn   = panel.querySelector('[data-action=fullscan]');
         const workdayInput  = panel.querySelector('[data-field=workday]');
         const normalizeChk  = panel.querySelector('[data-field=normalize]');
+        const calendarChk   = panel.querySelector('[data-field=calendar]');
         const list          = panel.querySelector('.results');
         const nudgeEl       = panel.querySelector('.fsnudge');
         const catsumEl      = panel.querySelector('.catsum');
@@ -2539,6 +2850,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         normalizeChk.addEventListener('change', () => {
             GM_setValue('workday_normalize', !!normalizeChk.checked);
             applyAndRender();
+        });
+        // The calendar toggle only changes what a BOOKING reads (loadDayForBooking / Book day), so
+        // nothing needs re-scanning here — flipping it off also drops the session cache, so turning
+        // it back on re-asks Outlook rather than serving a stale day.
+        calendarChk?.addEventListener('change', () => {
+            GM_setValue(KEY_CAL_ENABLED, !!calendarChk.checked);
+            if (!calendarChk.checked) _calCache.clear();
         });
 
         // Ensure we know who you are + have your recent list. Both live in pang's per-origin
@@ -3837,6 +4155,32 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // project resolved by plant-id prefix and the activity text derived from what actually changed.
     // onStep (optional) reports per-plant progress — the what-changed fetches are the slow part on a
     // busy pang, and a silent 5-minute "Loading…" reads as a hang (v4.103, seen live post-full-scan).
+    // Calendar rows → plan entries (v4.117). They carry no project: the tenant has no meetings
+    // project, so these book against the project the user picks once (KEY_CAL_PROJECT, offered in
+    // the review UI like the team-bucket picker). Dedupe is by category + activity name on the date,
+    // so re-running a day can never double-book a meeting.
+    function calPlanEntries(calRows, cats, existing) {
+        const out = [];
+        const projectId = GM_getValue(KEY_CAL_PROJECT, 0) || null;
+        const projectName = GM_getValue(KEY_CAL_PROJECT_NAME, '') || null;
+        for (const r of (calRows || [])) {
+            const act = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + ' '}${r.ev.subject}`.trim();
+            const catId = cats[r.category] || null;
+            const dupe = !!catId && (existing || []).some(e => e.category && e.category.categoryId === catId
+                && String(e.activityName || '').trim() === act);
+            out.push({
+                calendar: true,
+                plant_id: null, plant: r.ev.allDay ? 'All day' : `${calClock(r.ev.startTs)}–${calClock(r.ev.endTs)}`,
+                projectId, projectName,
+                taskId: null, taskName: null, taskGuess: false,
+                category: r.category, categoryId: catId, minutes: r.minutes,
+                activityName: act, notes: calEntryNote(r.ev, r.minutes),
+                status: dupe ? 'already-booked' : !catId ? 'no-category' : !projectId ? 'no-project' : 'ready',
+            });
+        }
+        return out;
+    }
+
     async function buildBookingPlan(visits, iso, onStep) {
         const [projects, cats, existing] = [await rlProjects(false), await rlCategories(), await rlEntriesOn(iso)];
         // Built once per session and only used to break evidence ties (v4.113). A failure here must never
@@ -3928,6 +4272,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 });
             }
         }
+        // Calendar entries (v4.117) lead the plan — they are booked at their real duration and the
+        // plant rows were already distributed over what the workday had left.
+        const calRows = calPlanEntries((visits && visits._calendar) || [], cats, existing);
+        if (calRows.length) plan.unshift(...calRows);
         plan._dedupeOk = existing._checkOk !== false; // surfaced as a warning banner when the check failed
         plan._existing = existing;                    // for fallback-booking dupe checks at book time
         // Team bucket projects ("Team Kulde Oppgaver", …) — offered as a fallback home for plants that
@@ -3940,8 +4288,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const creds = rlCreds();
         let ok = 0, fail = 0;
         for (const e of plan) {
+            // A calendar row the user armed by picking a project: remember the choice and book it as
+            // a plain activity (no task — Rocketlane allows a task-less entry as long as it has a
+            // project and a category, verified live).
+            if (e.calendar && e.status === 'no-project' && e.selected === true && e.fallbackProjectId) {
+                e.projectId = e.fallbackProjectId;
+                e.projectName = e.fallbackProjectName || e.projectName;
+                GM_setValue(KEY_CAL_PROJECT, e.projectId);
+                GM_setValue(KEY_CAL_PROJECT_NAME, e.projectName || '');
+                e.status = 'ready';
+            }
             // Fallback rows: a no-project plant the user chose to book into a team bucket project.
-            const isFallback = e.status === 'no-project' && e.selected === true && e.fallbackProjectId;
+            const isFallback = !e.calendar && e.status === 'no-project' && e.selected === true && e.fallbackProjectId;
             if (!isFallback && (e.status !== 'ready' || e.selected === false)) continue; // unticked rows stay untouched
             let projectId = e.projectId, taskId = e.taskId, act = e.activityName;
             if (isFallback) {
@@ -4014,17 +4372,20 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const ready = plan.filter(e => e.status === 'ready');
             const teamProjects = plan._teamProjects || [];
             const rememberedFallback = GM_getValue('book_fallback_project', 0);
-            const teamOpts = teamProjects.map(p => `<option value="${p.id}"${p.id === rememberedFallback ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+            const rememberedCal = GM_getValue(KEY_CAL_PROJECT, 0);
+            const optsFor = (sel) => teamProjects.map(p => `<option value="${p.id}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+            const teamOpts = optsFor(rememberedFallback);
             // Bookable rows get a real CHECKBOX (ticked by default) — untick what you don't want synced.
             // No-project rows get an UNTICKED checkbox + a team-bucket picker: choose a project to book
-            // the plant there as "<plant id> <plant name> - <activity>".
+            // the plant there as "<plant id> <plant name> - <activity>". Calendar rows (v4.117) use the
+            // same mechanism with their own remembered project, since meetings have no project at all.
             const lines = plan.map((e, i) =>
                 `<div class="bookplan-row" data-i="${i}">
                     <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">'
-                        : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${rememberedFallback ? '' : ' disabled'} title="Tick to book into the selected team project">`
+                        : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>no own project — book into: <select class="bookplan-proj"><option value="">choose team project…</option>${teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '';
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
@@ -4208,8 +4569,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         await enrichVisitsWithCommits(visits, iso);
         for (const v of visits) v.normalized_minutes = null;
         const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
+        const workdayMin = Math.round(hours * 60);
+        // Meetings first, plant work fills the rest (v4.117, Thomas's rule): calendar time is booked
+        // at its real duration and the plant distribution gets only what is left of the workday.
+        // Before this, meeting time was silently absorbed into the plant estimates.
+        let calRows = [];
+        if (GM_getValue(KEY_CAL_ENABLED, false)) {
+            statusCb && statusCb('reading your Outlook calendar…');
+            try { calRows = (await calRowsForDate(iso, workdayMin)).rows || []; } catch (e) { calRows = []; }
+        }
+        visits._calendar = calRows;
         const bookable = visits.filter(v => categorizeVisit(v)[CAT_CHECK] == null);
-        if (bookable.length) normalizeMinutes(bookable, Math.round(hours * 60), ROUND_TO_MIN);
+        if (bookable.length) normalizeMinutes(bookable, calRemainingWorkday(calRows, workdayMin), ROUND_TO_MIN);
         return visits;
     }
     // ↻ Refresh (v4.117): make the NEXT build a genuine re-read instead of a replay. Three session
@@ -4592,6 +4963,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         recordPlantName();
     } else if (host === 'tools.iwmac.local') {
         syncFromPang();
+    } else if (CAL_HOSTS.has(host)) {
+        syncFromOutlook();
     } else if (host === 'kiona.rocketlane.com') {
         initRocketlane();
     }
