@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.7
+// @version      9.8
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -909,6 +909,8 @@
     // and then filters the loaded list live; with the plant field BLANK it
     // searches the fleet index on the toolbox instead — no plant id needed.
     // Both match unit_name, grp_name, driver_type, regulator_type and order_no.
+    // Searching never writes to the plant field, so a fleet search stays a fleet
+    // search until the plant id is typed in (or the "this plant" hint clicked).
     let _fleetTimer = null;
     let _fleetSeq = 0;
     $('seii-search').addEventListener('input', () => {
@@ -949,11 +951,13 @@
     $('seii-drivers').addEventListener('click', async (e) => {
         const it = e.target.closest('.drv');
         if (!it || !it.dataset.drv || _fetchBusy) return;
-        // A fleet-search hit carries its own plant id — adopt it into the field
-        // so the fetch and any follow-up browsing target that plant.
-        if (it.dataset.plant && /^\d+$/.test(it.dataset.plant)) $('seii-plant').value = it.dataset.plant;
+        // A fleet-search hit carries its own plant id — fetch from THAT plant
+        // without writing it into the field. The field is the user's own input:
+        // it only ever fills when a plant id is typed (or the "this plant" hint
+        // is clicked), so the next search still spans the whole fleet.
+        const hitPlant = /^\d+$/.test(it.dataset.plant || '') ? it.dataset.plant : '';
         // Re-validate: the field may have been edited after Load drivers.
-        const pid = $('seii-plant').value.trim();
+        const pid = hitPlant || $('seii-plant').value.trim();
         if (!/^\d+$/.test(pid)) { setPlantInfo('Enter a numeric plant id first.', 'err'); return; }
         const drv = it.dataset.drv;
         // data-order distinguishes one equipment ('' is a real order_no value)
