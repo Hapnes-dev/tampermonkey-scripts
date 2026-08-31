@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.116
+// @version      4.117
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -674,7 +674,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.116';
+    const SCRIPT_VERSION   = '4.117';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4207,6 +4207,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (bookable.length) normalizeMinutes(bookable, Math.round(hours * 60), ROUND_TO_MIN);
         return visits;
     }
+    // ↻ Refresh (v4.117): make the NEXT build a genuine re-read instead of a replay. Three session
+    // caches would otherwise survive even a forced full scan and hand back the same answers: All logs
+    // per (user|date), commits per plant (10 min), and the Rocketlane weekly entries that decide
+    // ready vs ⏭ already-booked (60 s). Drop them for this week, and clear the All-logs outage latch
+    // so a refresh after a blip actually retries instead of failing fast.
+    function weekForgetCached(mondayIso) {
+        const week = new Set();
+        for (let i = 0; i < 5; i++) week.add(addDaysISO(mondayIso, i));
+        for (const k of [..._allLogsCache.keys()]) {
+            if (week.has(k.slice(k.indexOf('|') + 1))) _allLogsCache.delete(k);
+        }
+        _allLogsDownUntil = 0;
+        _commitsCache.clear();
+        _rlWeekCache.clear();
+    }
     function toggleWeekBooking() {
         const ex = document.getElementById(WEEK_ID);
         if (ex) { ex.remove(); return; }
@@ -4229,8 +4244,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         let scanChoice = null, forceScanOnce = false;
 
         const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
-            <span class="rl-week-nav"><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
+            <span class="rl-week-nav"><button type="button" data-b="refresh" title="Refresh — re-read this week with a fresh scan (ignores today's cached data)">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
         const wireNav = () => {
+            // ↻ rebuilds this week from scratch: forget the session answers, then force the same sweep
+            // the pre-build check-up offers — available in every state (check-up, building, results),
+            // and reachable even once a full scan has already run today (when no check-up appears).
+            box.querySelector('[data-b=refresh]')?.addEventListener('click', () => {
+                weekForgetCached(monday);
+                scanChoice = 'scan'; forceScanOnce = true;
+                build();
+            });
             box.querySelector('[data-b=prev]')?.addEventListener('click', () => { monday = addDaysISO(monday, -7); build(); });
             box.querySelector('[data-b=next]')?.addEventListener('click', () => { monday = addDaysISO(monday, 7); build(); });
             box.querySelectorAll('[data-b=cancel]').forEach(b => b.addEventListener('click', () => wrap.remove()));
