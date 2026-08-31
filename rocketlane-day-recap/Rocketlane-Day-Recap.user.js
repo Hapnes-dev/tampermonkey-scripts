@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.120
+// @version      4.121
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -830,7 +830,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.120';
+    const SCRIPT_VERSION   = '4.121';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4367,8 +4367,37 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         container.innerHTML = '<div class="bookplan"><div class="bookplan-head">⤴ Book to timesheet — building plan…</div></div>';
         const box = container.querySelector('.bookplan');
         const esc = escapeHtml;
-        buildBookingPlan(visits, iso).then(plan => {
-            if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
+        // The calendar (v4.121). Book WEEK gets its rows from loadDayForBooking, but Book DAY books the
+        // panel's own visits array, which that function never touches — so until now the 🗓 toggle did
+        // nothing here and meetings simply never appeared. Fetch them for this date, then re-distribute
+        // the plant minutes over what the workday has LEFT, mirroring applyAndRender's normalize rule.
+        let calError = '';
+        const withCalendar = (async () => {
+            if (!GM_getValue(KEY_CAL_ENABLED, false)) { visits._calendar = []; return; }
+            const head = box.querySelector('.bookplan-head');
+            if (head) head.textContent = '⤴ Book to timesheet — reading your Outlook calendar…';
+            const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
+            const workdayMin = Math.round(hours * 60);
+            let rows = [];
+            try {
+                const res = await calRowsForDate(iso, workdayMin);
+                rows = res.rows || [];
+                // A silent empty calendar is indistinguishable from "no meetings that day", which is
+                // exactly how this feature failed the first time. Say which it was.
+                if (res.error) calError = String(res.error);
+                else if (!rows.length) calError = 'no calendar events found for this date';
+            } catch (e) { rows = []; calError = 'calendar read failed'; }
+            visits._calendar = rows;
+            if (!rows.length) return;
+            // Only re-scale when the panel is actually distributing to a total; with normalize off the
+            // plant rows show their raw estimates and meetings simply book alongside them.
+            const bookable = visits.filter(v => categorizeVisit(v)[CAT_CHECK] == null);
+            if (bookable.length && bookable.some(v => v.normalized_minutes != null)) {
+                normalizeMinutes(bookable, calRemainingWorkday(rows, workdayMin), ROUND_TO_MIN);
+            }
+        })();
+        withCalendar.then(() => buildBookingPlan(visits, iso)).then(plan => {
+            if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div>' + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '') + '<div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
             const ready = plan.filter(e => e.status === 'ready');
             const teamProjects = plan._teamProjects || [];
             const rememberedFallback = GM_getValue('book_fallback_project', 0);
@@ -4387,7 +4416,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
                     <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
-            const warn = plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '';
+            const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
+                + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '');
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
