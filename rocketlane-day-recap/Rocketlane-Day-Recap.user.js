@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.119
+// @version      4.120
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -830,7 +830,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.119';
+    const SCRIPT_VERSION   = '4.120';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4405,7 +4405,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const cb = row && row.querySelector('.bookplan-cb');
                     const val = +ev.target.value || 0;
                     if (cb) { cb.disabled = !val; cb.checked = !!val; }
-                    if (val) GM_setValue('book_fallback_project', val); // remembered as next time's default
+                    // Remember per KIND — see the Book week handler: a meeting's team project and the
+                    // no-project-plant fallback are separate choices over the same list.
+                    const isCal = !!(row && plan[+row.dataset.i] && plan[+row.dataset.i].calendar);
+                    if (val) {
+                        GM_setValue(isCal ? KEY_CAL_PROJECT : 'book_fallback_project', val);
+                        if (isCal) GM_setValue(KEY_CAL_PROJECT_NAME, ev.target.options[ev.target.selectedIndex].text);
+                    }
                     updateGo();
                 }));
                 box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
@@ -4705,7 +4711,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // "Team … Oppgaver" project, the row arms, and it books there as "<plant id> <plant> - <activity>".
             const teamProjects = (days.find(d => d.plan && d.plan._teamProjects && d.plan._teamProjects.length) || { plan: {} }).plan._teamProjects || [];
             const rememberedFallback = GM_getValue('book_fallback_project', 0);
-            const teamOpts = teamProjects.map(p => `<option value="${p.id}"${p.id === rememberedFallback ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+            const rememberedCal = GM_getValue(KEY_CAL_PROJECT, 0);
+            const optsFor = (sel) => teamProjects.map(p => `<option value="${p.id}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+            const teamOpts = optsFor(rememberedFallback);
             let html = '';
             for (const day of days) {
                 const unsafe = day.plan._dedupeOk === false; // can't see what's already booked ⇒ never book this day
@@ -4724,10 +4732,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     rows.push({ e, day });
                     html += `<div class="bookplan-row" data-i="${i}">
                         <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">'
-                            : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${rememberedFallback ? '' : ' disabled'} title="Tick to book into the selected team project">`
+                            : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.status === 'already-booked' ? ' — already booked' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>no own project — book into: <select class="bookplan-proj"><option value="">choose team project…</option>${teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b><br>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.status === 'already-booked' ? ' — already booked' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
@@ -4748,7 +4756,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const cb = row && row.querySelector('.bookplan-cb');
                 const val = +ev.target.value || 0;
                 if (cb) { cb.disabled = !val; cb.checked = !!val; }
-                if (val) GM_setValue('book_fallback_project', val); // remembered as next time's default
+                // Remember per KIND: a calendar row's team project must not overwrite the plant
+                // fallback default (they are separate choices that happen to share one list).
+                const isCal = !!(row && rows[+row.dataset.i] && rows[+row.dataset.i].e.calendar);
+                if (val) {
+                    GM_setValue(isCal ? KEY_CAL_PROJECT : 'book_fallback_project', val);
+                    if (isCal) GM_setValue(KEY_CAL_PROJECT_NAME, ev.target.options[ev.target.selectedIndex].text);
+                }
                 updateGo();
             }));
             box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
