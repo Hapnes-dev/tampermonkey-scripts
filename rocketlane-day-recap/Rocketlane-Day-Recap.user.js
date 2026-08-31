@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.121
+// @version      4.122
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,6 +18,8 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @connect      tools.iwmac.local
 // @connect      internal.iwmac.local
 // @connect      iwmac.local
@@ -830,7 +832,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.121';
+    const SCRIPT_VERSION   = '4.122';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1311,21 +1313,47 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return best ? best.secret : '';
     }
 
-    // Runs in the Outlook tab. Reads the dates Rocketlane asked for, fetches each day, writes back
-    // normalized events only, then closes itself when it was opened as a harvest tab.
-    async function syncFromOutlook() {
+    // Runs in ANY Outlook tab. Two roles (v4.122):
+    //  - a tab the SCRIPT opened (#rl-cal) serves the pending request once and closes itself;
+    //  - a tab THE USER already had open stays put and answers requests as they arrive, via
+    //    GM_addValueChangeListener. That is the discreet path: when Outlook is already open,
+    //    reading the calendar opens nothing at all and the user sees no tab appear.
+    function syncFromOutlook() {
         const isSyncTab = location.hash.includes('rl-cal') || window.name === 'rl_cal_sync';
-        const req = GM_getValue(KEY_CAL_REQUEST, null);
+        if (isSyncTab) { calServeRequest(GM_getValue(KEY_CAL_REQUEST, null), true); return; }
+        // An ordinary Outlook tab: answer the request that is pending right now (if any), then keep
+        // listening for later ones for as long as the user leaves this tab open.
+        calServeRequest(GM_getValue(KEY_CAL_REQUEST, null), false);
+        try {
+            if (typeof GM_addValueChangeListener === 'function') {
+                GM_addValueChangeListener(KEY_CAL_REQUEST, (name, oldV, newV, remote) => {
+                    if (remote) calServeRequest(newV, false); // `remote` = written by the Rocketlane tab
+                });
+            }
+        } catch {}
+    }
+
+    let _calServing = false;
+    async function calServeRequest(req, isSyncTab) {
         const dates = (req && Array.isArray(req.dates)) ? req.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)) : [];
-        if (!isSyncTab && !dates.length) return; // an ordinary Outlook tab the user opened themselves
+        // Only answer a LIVE request: a stale one left in storage would otherwise be re-served by
+        // every Outlook tab on every page load, and the answer would look fresh to a later caller.
+        const fresh = req && (Date.now() - (+req.at || 0) < 60000);
+        if (!dates.length || (!isSyncTab && !fresh) || _calServing) {
+            if (isSyncTab) setTimeout(() => { try { window.close(); } catch {} }, 250);
+            return;
+        }
+        _calServing = true;
         const finish = (payload) => {
+            _calServing = false;
             try { GM_setValue(KEY_CAL_RESULT, Object.assign({ at: Date.now() }, payload)); } catch {}
             try { GM_setValue(KEY_CAL_DONE, Date.now()); } catch {}
             if (isSyncTab) setTimeout(() => { try { window.close(); } catch {} }, 250);
         };
-        // The SPA writes its MSAL cache during boot; a freshly opened tab may not have it yet.
+        // The SPA writes its MSAL cache during boot; a freshly opened tab may not have it yet. An
+        // already-loaded tab has it immediately, which is why the discreet path is also the fast one.
         let token = '';
-        for (let tries = 0; tries < 40 && !token; tries++) {
+        for (let tries = 0; tries < (isSyncTab ? 40 : 4) && !token; tries++) {
             token = calFindToken();
             if (!token) await new Promise(r => setTimeout(r, 500));
         }
@@ -1353,32 +1381,46 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         }
     }
 
-    // Called from Rocketlane: ask the Outlook tab for these dates. Mirrors autoSyncFromPang — open a
-    // background tab, poll the done key, close it. Returns { byDate, error }.
+    // Called from Rocketlane: ask Outlook for these dates. Discretion order (v4.122):
+    //  1. an Outlook tab the user ALREADY has open answers over GM_addValueChangeListener — nothing
+    //     is opened, nothing appears in the tab strip, and it is the fastest path too (the MSAL cache
+    //     is already warm). Waited on for CAL_QUIET_WAIT_MS before giving up on it.
+    //  2. otherwise a background tab is opened at the END of the tab strip (`insert: false`, so it
+    //     does not push itself in beside what the user is looking at) and closed the moment it
+    //     answers — typically a few seconds.
+    // Either way `active: false` means focus never leaves Rocketlane.
+    const CAL_QUIET_WAIT_MS = 2500;
     function calFetchDays(isoDates, timeoutMs = 30000) {
         return new Promise(resolve => {
             const dates = [...new Set((isoDates || []).filter(Boolean))];
             if (!dates.length) { resolve({ byDate: {} }); return; }
             const startedAt = Date.now();
-            try { GM_setValue(KEY_CAL_REQUEST, { at: startedAt, dates }); } catch {}
-            let tab = null;
-            try {
-                if (typeof GM_openInTab === 'function') {
-                    tab = GM_openInTab('https://outlook.office.com/calendar/view/day#rl-cal', { active: false, insert: true, setParent: true });
-                }
-            } catch {}
-            if (!tab) { resolve({ byDate: {}, error: 'could not open Outlook' }); return; }
-            const tick = setInterval(() => {
-                const done = GM_getValue(KEY_CAL_DONE, 0) > startedAt;
-                const timedOut = Date.now() - startedAt > timeoutMs;
-                if (!done && !timedOut) return;
+            let tab = null, settled = false;
+            const answered = () => GM_getValue(KEY_CAL_DONE, 0) > startedAt;
+            const done = (payload) => {
+                if (settled) return;
+                settled = true;
                 clearInterval(tick);
-                setTimeout(() => {
-                    try { tab.close(); } catch {}
-                    const res = GM_getValue(KEY_CAL_RESULT, null);
-                    if (done && res && res.at >= startedAt) resolve({ byDate: res.byDate || {}, error: res.error });
-                    else resolve({ byDate: {}, error: 'Outlook did not answer in time' });
-                }, 300);
+                setTimeout(() => { try { if (tab) tab.close(); } catch {} resolve(payload); }, tab ? 300 : 0);
+            };
+            const readResult = () => {
+                const res = GM_getValue(KEY_CAL_RESULT, null);
+                return (res && res.at >= startedAt) ? { byDate: res.byDate || {}, error: res.error } : null;
+            };
+            try { GM_setValue(KEY_CAL_REQUEST, { at: startedAt, dates }); } catch {}
+            const tick = setInterval(() => {
+                if (answered()) { done(readResult() || { byDate: {}, error: 'Outlook answered with nothing' }); return; }
+                // Give an already-open tab first refusal; only then open one of our own.
+                if (!tab && Date.now() - startedAt > CAL_QUIET_WAIT_MS) {
+                    try {
+                        if (typeof GM_openInTab === 'function') {
+                            tab = GM_openInTab('https://outlook.office.com/calendar/view/day#rl-cal',
+                                { active: false, insert: false, setParent: true });
+                        }
+                    } catch {}
+                    if (!tab) { done({ byDate: {}, error: 'could not open Outlook' }); return; }
+                }
+                if (Date.now() - startedAt > timeoutMs) done({ byDate: {}, error: 'Outlook did not answer in time' });
             }, 250);
         });
     }
@@ -2699,7 +2741,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 </label>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
-                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252; flex: 1;" title="Reads your Outlook calendar for the selected date and offers meetings, planning and training as timesheet entries. Meetings are booked at their real length FIRST; the plant distribution then splits whatever the workday has left. Opens Outlook in a background tab to read it — the access token stays in Outlook and is never stored.">
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252; flex: 1;" title="Reads your Outlook calendar for the selected date and offers meetings, planning and training as timesheet entries. Meetings are booked at their real length FIRST; the plant distribution then splits whatever the workday has left. If you already have Outlook open in a tab, it is read there and nothing is opened; otherwise a background tab opens at the end of the tab strip for a few seconds and closes itself. The access token stays inside Outlook and is never stored.">
                     <input type="checkbox" data-field="calendar" ${GM_getValue(KEY_CAL_ENABLED, false) ? 'checked' : ''}>
                     🗓 Include calendar (meetings &amp; admin)
                 </label>
