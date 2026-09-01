@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.1
+// @version      1.21.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.21.1';
+var IWDIE_VERSION = '1.21.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2445,7 +2445,7 @@ var IWDIE_TRACER = (typeof module !== 'undefined' && module.exports && module.ex
 // Cell style indexes into xlsxStylesXml()'s cellXfs (browser body).
 var XLSX_STYLE_DEFAULT = 0;
 var XLSX_STYLE_HEADER = 1;   // bold white on blue
-var XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
+var XLSX_STYLE_GROUP = 2;    // bold white on blue band (same look as the header)
 var XLSX_STYLE_UNIT = 3;     // bold white on gray-blue (unit band, all-units export)
 
 var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Unit ID', 'Unit name', 'Alias text', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
@@ -2460,8 +2460,8 @@ function iwdieParamAccessLabel(rw) {
   return value;
 }
 
-/* rows: [{cells, style?, outline?}] — header row (style 1), then one light
- * blue collapsible band per parameter group (style 2) with the group's
+/* rows: [{cells, style?, outline?}] — header row (style 1), then one
+ * header-blue collapsible band per parameter group (style 2) with the group's
  * parameters at outlineLevel 1, in grid order. The Group, Unit ID and Unit
  * name columns are repeated on every data row so Excel AutoFilter
  * sorting/filtering keeps working. unitId/unitName are the selected
@@ -2507,7 +2507,7 @@ var IWDIE_ALLUNITS_COL_WIDTHS = [18, 30, 22, 46, 16, 10, 12, 16, 14, 8, 38];
 
 /* unitBlocks: [{ unitLabel, unitId, unitName, records }] — the whole plant in
  * one sheet with a two-level outline: a gray-blue unit band per unit (collapse
- * a whole unit), light blue group bands inside it (outline 1), parameters at
+ * a whole unit), header-blue group bands inside it (outline 1), parameters at
  * outline 2. The unit band carries the id in column A and the name plus the
  * parameter count in column B, the same ID / Name split the UNITS list shows.
  * The Unit ID, Unit name and Group columns repeat on every data row so
@@ -3927,7 +3927,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function xlsxStylesXml() {
-      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FF0D47A1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1976D2"/><bgColor rgb="FF1976D2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3F2FD"/><bgColor rgb="FFE3F2FD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF455A64"/><bgColor rgb="FF455A64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FF0D47A1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1976D2"/><bgColor rgb="FF1976D2"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3F2FD"/><bgColor rgb="FFE3F2FD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF455A64"/><bgColor rgb="FF455A64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
     }
 
     function xlsxCell(ref, value, style) {

@@ -88,7 +88,7 @@ dialog) gets two buttons to the right of the ALIAS TEXT / UNIT ID / UNIT NAME ro
   Keep the tab in the foreground: Chrome throttles background tabs to a crawl.
 
 The workbook uses the same style as the supermarket-superuser parameter export: bold
-white-on-blue header row (frozen), one collapsible light-blue band per parameter group with
+white-on-blue header row (frozen), one collapsible header-blue band per parameter group with
 the group's parameters indented under it (Excel outline +/- buttons), AutoFilter dropdowns
 on every column, and numeric-looking values stored as real numbers so they sort and sum.
 Columns: Group, **Unit ID**, **Unit name** (v1.21.0), **Alias text** (v1.21.1), Access

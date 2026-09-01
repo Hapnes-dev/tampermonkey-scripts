@@ -68,7 +68,7 @@ A genuine `.xlsx` is built from scratch in the page (store-only ZIP + CRC32 + mi
 Both workbooks are styled and interactive (v4.7–4.13):
 
 - Bold white-on-blue **header row**, frozen while scrolling, with **AutoFilter** sort/filter dropdowns on every column.
-- One **collapsible block per parameter group**: a light-blue band row (`Group name (count)`) with a +/− outline button in the left margin and the group's parameters indented under it.
+- One **collapsible block per parameter group**: a header-styled blue band row (`Group name (count)`, white bold text — v4.15) with a +/− outline button in the left margin and the group's parameters indented under it.
 - Numeric-looking values become real numbers so Excel can sum/sort them.
 - **Access** shows Read vs Read/write — the parameter's real `att` (override-aware), batch-fetched by driver_id at export time; falls back to the sheet side if the lookup fails, and rows IWMAC serves in the write list are never downgraded. The export hint reports `(N writable)` — system units like the SM 850 genuinely have none, and the hint says so.
 - Every row gets **Allowed values** when the parameter defines them: the enum options from `format_extra` (`0 = OFF / 1 = ON`, `0 = Not used / 1 = High priority / …`) or the `range_min`–`range_max` limits (`-60.0 to 50.0`). For writable rows that's what you can change the value to; for read-only rows it describes the possible states/range (v4.12).
