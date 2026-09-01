@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.122
+// @version      4.123
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -437,10 +437,10 @@ var RL_RECAP_CAL = (function () {
         return !!ev && !ev.cancelled && !ev.declined && !ev.free && ev.endTs > ev.startTs;
     }
 
-    // Overlapping meetings must not double-charge the day: two events 10:00–11:00 and 10:30–11:30 are
-    // 90 minutes of calendar, not 120. Merge the timeline, then split the merged span back across the
-    // events proportionally so each row still books a sensible share. All-day events are excluded
-    // from the merge (they carry the whole day and are priced separately).
+    // Wall-clock minutes the day's meetings actually occupy, overlaps counted once: two events
+    // 10:00–11:00 and 10:30–11:30 span 90 minutes, not 120. No longer used for PRICING a row (v4.123
+    // books every meeting at its real length) — kept as an exported helper for tests and for reasoning
+    // about a double-booked day. All-day events are excluded (they carry the whole day, priced apart).
     function calMergedMinutes(events) {
         const spans = (events || []).filter(e => e && !e.allDay).map(e => [e.startTs, e.endTs])
             .sort((a, b) => a[0] - b[0]);
@@ -454,33 +454,22 @@ var RL_RECAP_CAL = (function () {
         return Math.round(total / 60000);
     }
 
-    // Minutes per event, rounded to `roundTo` and scaled so the day's rows sum to the merged total
-    // (never more). An all-day event is priced at the whole workday — a full-day course IS the day,
-    // and with "meetings first" that correctly leaves nothing for plant work.
+    // A meeting books EXACTLY as long as it stands in Outlook — always (v4.123, Thomas's rule). Earlier
+    // versions scaled the day's rows down to the merged wall-clock span and rounded them to the 5-minute
+    // grid, so a 60-minute meeting overlapping another booked as 45, and an odd-length one drifted off
+    // its real time. Being double-booked does not shorten the meeting you sat in, and a timesheet row
+    // that disagrees with the invite is simply wrong. Consequence, by design: on a double-booked day the
+    // meetings can sum past the wall clock, and since "meetings first" subtracts that sum, plant work
+    // gets the smaller remainder. `roundTo` is accepted for signature stability but deliberately unused.
+    // An all-day event is still priced at the whole workday — it has no clock duration, and a full-day
+    // course IS the day, which correctly leaves nothing for plant work.
     function calAllocate(events, workdayMin, roundTo) {
         const ok = (events || []).filter(calIsBookable);
         const allDay = ok.filter(e => e.allDay), timed = ok.filter(e => !e.allDay);
         const out = [];
         for (const e of allDay) out.push({ ev: e, minutes: workdayMin });
         if (allDay.length) return out; // the day is already fully accounted for
-        const merged = calMergedMinutes(timed);
-        const raw = timed.map(e => Math.round((e.endTs - e.startTs) / 60000));
-        const rawSum = raw.reduce((s, n) => s + n, 0);
-        const step = roundTo || 1;
-        let used = 0;
-        timed.forEach((e, i) => {
-            const share = rawSum > 0 ? (raw[i] / rawSum) * merged : 0;
-            const m = Math.max(step, step * Math.round(share / step));
-            used += m;
-            out.push({ ev: e, minutes: m });
-        });
-        // Rounding can push the sum past the merged total; take the excess off the largest row.
-        const drift = used - merged;
-        if (drift > 0 && out.length) {
-            let maxI = 0;
-            for (let i = 1; i < out.length; i++) if (out[i].minutes > out[maxI].minutes) maxI = i;
-            out[maxI].minutes = Math.max(step, out[maxI].minutes - step * Math.round(drift / step));
-        }
+        for (const e of timed) out.push({ ev: e, minutes: Math.max(1, Math.round((e.endTs - e.startTs) / 60000)) });
         return out;
     }
 
@@ -832,7 +821,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.122';
+    const SCRIPT_VERSION   = '4.123';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
