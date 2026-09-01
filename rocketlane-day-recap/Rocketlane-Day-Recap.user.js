@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.124
+// @version      4.125
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -830,7 +830,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.124';
+    const SCRIPT_VERSION   = '4.125';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4641,6 +4641,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const r = await loadVisitsForDate(iso, plantIds, onProg, { keepEvents: merging });
             visits = merging ? stampVisitTime(overlayAllLogsVisits(r.visits, al.visits)) : (r.visits || []);
         }
+        // Meetings first, plant work fills the rest (v4.117, Thomas's rule): calendar time is booked
+        // at its real duration and the plant distribution gets only what is left of the workday.
+        // Read BEFORE the no-plant-work return (v4.125): a day of nothing but meetings — a course, a
+        // day of workshops — used to leave here with no _calendar at all, so Book week booked nothing
+        // for it while Book day, which reads the calendar on its own, booked it fine.
+        const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
+        const workdayMin = Math.round(hours * 60);
+        let calRows = [];
+        if (GM_getValue(KEY_CAL_ENABLED, false)) {
+            statusCb && statusCb('reading your Outlook calendar…');
+            try { calRows = (await calRowsForDate(iso, workdayMin)).rows || []; } catch (e) { calRows = []; }
+        }
+        visits._calendar = calRows;
         if (!visits.length) return visits;
         const missing = visits.filter(v => !v.name).map(v => v.plant_id);
         if (missing.length) {
@@ -4652,17 +4665,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         statusCb && statusCb(`correlating config commits for ${visits.length} plant${visits.length === 1 ? '' : 's'}…`);
         await enrichVisitsWithCommits(visits, iso);
         for (const v of visits) v.normalized_minutes = null;
-        const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
-        const workdayMin = Math.round(hours * 60);
-        // Meetings first, plant work fills the rest (v4.117, Thomas's rule): calendar time is booked
-        // at its real duration and the plant distribution gets only what is left of the workday.
-        // Before this, meeting time was silently absorbed into the plant estimates.
-        let calRows = [];
-        if (GM_getValue(KEY_CAL_ENABLED, false)) {
-            statusCb && statusCb('reading your Outlook calendar…');
-            try { calRows = (await calRowsForDate(iso, workdayMin)).rows || []; } catch (e) { calRows = []; }
-        }
-        visits._calendar = calRows;
         const bookable = visits.filter(v => categorizeVisit(v)[CAT_CHECK] == null);
         if (bookable.length) normalizeMinutes(bookable, calRemainingWorkday(calRows, workdayMin), ROUND_TO_MIN);
         return visits;
@@ -4771,7 +4773,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const visits = await loadDayForBooking(iso,
                         (done, total) => say(`scanning ${done} of ${total} plants…`), override, say);
                     if (seq !== mySeq) return;
-                    const plan = visits.length ? await buildBookingPlan(visits, iso,
+                    // Meetings alone are worth a plan (v4.125): a day with no plant work but a calendar
+                    // full of them used to be skipped here, so Book week silently dropped it.
+                    const hasWork = visits.length || (visits._calendar && visits._calendar.length);
+                    const plan = hasWork ? await buildBookingPlan(visits, iso,
                         (n, total, v) => say(`reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
                     days.push({ iso, wd: WD[i], plan });
                     if (plan.length) backfillBucketDescriptions(plan, iso); // heal ⏭ bucket rows; serialized internally (v4.107)
