@@ -91,12 +91,13 @@ The workbook uses the same style as the supermarket-superuser parameter export: 
 white-on-blue header row (frozen), one collapsible light-blue band per parameter group with
 the group's parameters indented under it (Excel outline +/- buttons), AutoFilter dropdowns
 on every column, and numeric-looking values stored as real numbers so they sort and sum.
-Columns: Group, **Unit ID** (v1.20.0), Name, Access (Read / Read/write), Eng unit, Type,
-Application, Tag, SGR, Driver ID — the full record the popup's grid holds, including the
-columns it hides. The all-units sheet keeps its leading Unit (name) column, so there the
-order is Unit, Group, Unit ID, Name, … The Unit ID repeats on every parameter row — like
-Group and Unit — so filtering and sorting stay correct; group and unit band rows leave it
-blank. It is the id the UNITS list holds for that regulator (the popup's UNIT ID).
+Columns: Group, **Unit ID**, **Unit name** (v1.21.0), Name, Access (Read / Read/write), Eng
+unit, Type, Application, Tag, SGR, Driver ID — the full record the popup's grid holds,
+including the columns it hides. The all-units sheet leads with the unit instead, so there
+the order is Unit ID, Unit name, Group, Name, … Unit ID and Unit name are the ID and Name
+of the UNITS list, in that order (`ID01` / `360.001 Ventilasjon`), and repeat on every
+parameter row — like Group — so filtering and sorting stay correct. A unit band row puts
+the id in column A and `name (count)` in column B; group band rows leave both blank.
 
 The button is deliberately **not** a w2ui toolbar item: the host's ALIAS TEXT / UNIT ID /
 UNIT NAME row is a radio group ("which item adds to Label"), and clicking the export must
