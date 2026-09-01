@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      4.15
+// @version      4.16
 // @description  filters, move mode and batch editing of driver parameters
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,7 +18,7 @@
     'use strict';
 
     const POC_STYLE_ID = 'sm_params_poc_style';
-    const SCRIPT_VERSION = '4.15';
+    const SCRIPT_VERSION = '4.16';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -4632,10 +4632,11 @@
                         progress is shown at the bottom, and units that fail are skipped and counted in the final message.
                         The <em>All units</em> sheet has a collapsible block per unit with the group blocks inside — use Excel's
                         <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> outline buttons (top-left corner) to collapse the whole plant to unit rows.
-                        Columns: Unit, Group, Name, Value, Eng unit, Access, Allowed values, Driver ID.</li>
+                        Columns: Unit ID, Unit name, Group, Alias text, Value, Eng unit, Access, Allowed values, Type, Application, Driver ID.</li>
                         <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Show all parameters) – downloads the open
-                        unit only, as one <em>Parameters</em> sheet (columns Group, Name, Value, Unit, Access, Allowed values, Driver ID),
-                        with the writable rows first within each group. Column filters are respected — filter first to export just those rows.</li>
+                        unit only, as one <em>Parameters</em> sheet (columns Group, Unit ID, Unit name, Alias text, Value, Eng unit, Access,
+                        Allowed values, Type, Application, Driver ID), with the writable rows first within each group. Column filters are
+                        respected — filter first to export just those rows.</li>
                     </ul>
                     <p>Both files are real <code>.xlsx</code> workbooks:</p>
                     <ul>
@@ -4646,6 +4647,9 @@
                         <li><strong>Allowed values</strong> – the possible values: enum options like <code>0 = Off / 1 = On</code> or the
                         min–max range. For writable rows that is what you can change the value to; for read-only rows it describes
                         the possible states.</li>
+                        <li><strong>Unit ID, Unit name, Type, Application</strong> – the same columns the IWMAC Designer parameter export
+                        shows, read straight from the driver-parameter table at export time, so the two files line up side by side.
+                        (Designer's <em>Tag</em> and <em>SGR</em> are not available on the plant and are left out.)</li>
                         <li>Numeric values are real Excel numbers (sortable/summable), and the final message tells you how many of the
                         exported parameters are writable.</li>
                     </ul>
@@ -4897,21 +4901,34 @@
         return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
     }
 
+    // Last-resort Unit name when the driver-parameter lookup fails: whatever the
+    // unit dropdown calls this unit.
+    function unitLabelFor(unitId) {
+        if (!unitId) return '';
+        const option = getAllUnitOptions().find((item) => item.value === unitId);
+        return normalizeExportText(option?.text || '');
+    }
+
     function exportFileBase() {
         const plant = getPlantId() || 'plant';
         const unit = (getUnitId() || 'unit').replace(/[\\/?*\[\]:]/g, '-');
         return `parameters_${plant}_${unit}_${exportTimeStamp()}`;
     }
 
-    const EXPORT_HEADER = ['Group', 'Name', 'Value', 'Unit', 'Access', 'Allowed values', 'Driver ID'];
-    const EXPORT_COL_WIDTHS = [24, 46, 14, 10, 13, 34, 36];
+    // Same column set (and naming) as the IWMAC Designer parameter export, plus
+    // the two columns only this script can fill: the live Value and the
+    // Allowed values. Tag and SGR are deliberately absent — they live in the
+    // Designer's own paramgrid on legacy.iwmac.local, not in the plant's
+    // iw_gen_driver_parameters, so there is nothing to read them from here.
+    const EXPORT_HEADER = ['Group', 'Unit ID', 'Unit name', 'Alias text', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Type', 'Application', 'Driver ID'];
+    const EXPORT_COL_WIDTHS = [24, 18, 30, 46, 14, 10, 16, 34, 12, 16, 38];
 
     // ONE sheet for everything: one collapsible block per parameter group (a
     // styled band row with the +/- outline button, parameters at outlineLevel
     // 1). Within a group the writable (Read/write) rows come first, then the
-    // read-only ones — the Access column tells them apart per row. The Group
-    // column is repeated on every data row so AutoFilter sorting and filtering
-    // keep working on the flat data.
+    // read-only ones — the Access column tells them apart per row. The Group,
+    // Unit ID and Unit name columns are repeated on every data row so AutoFilter
+    // sorting and filtering keep working on the flat data.
     function buildCombinedExportRows(measurements, settings) {
         const rows = [{ cells: EXPORT_HEADER, style: XLSX_STYLE_HEADER }];
         const groups = new Map();
@@ -4931,19 +4948,29 @@
         return rows;
     }
 
-    const ALL_UNITS_EXPORT_HEADER = ['Unit', 'Group', 'Name', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Driver ID'];
-    const ALL_UNITS_COL_WIDTHS = [26, 22, 42, 12, 10, 13, 32, 34];
+    const ALL_UNITS_EXPORT_HEADER = ['Unit ID', 'Unit name', 'Group', 'Alias text', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Type', 'Application', 'Driver ID'];
+    const ALL_UNITS_COL_WIDTHS = [18, 30, 22, 46, 14, 10, 16, 32, 12, 16, 34];
+
+    // A single-unit row is [Group, Unit ID, Unit name, ...rest]; the all-units
+    // sheet leads with the unit instead, so the first three swap around.
+    const allUnitsRowOrder = (member) => [member[1], member[2], member[0], ...member.slice(3)];
 
     // All-units workbook: two-level outline — a gray-blue unit band per unit
     // (collapse a whole unit), header-blue group bands inside it (outline 1),
-    // parameters at outline 2. The Unit column is repeated on every data row
-    // so AutoFilter keeps working plant-wide.
+    // parameters at outline 2. The unit band carries the id in column A and the
+    // name plus the parameter count in column B, the same ID / Name split the
+    // unit dropdown shows. The Unit ID, Unit name and Group columns are
+    // repeated on every data row so AutoFilter keeps working plant-wide.
     function buildAllUnitsExportRows(unitBlocks) {
-        const pad = (label) => [label, ...Array(ALL_UNITS_EXPORT_HEADER.length - 1).fill('')];
+        const pad = (cells) => [...cells, ...Array(Math.max(ALL_UNITS_EXPORT_HEADER.length - cells.length, 0)).fill('')];
         const rows = [{ cells: ALL_UNITS_EXPORT_HEADER, style: XLSX_STYLE_HEADER }];
         unitBlocks.forEach((block) => {
-            const total = block.settings.length + block.measurements.length;
-            rows.push({ cells: pad(`${block.unitText} (${total})`), style: XLSX_STYLE_UNIT });
+            const all = [...block.settings, ...block.measurements];
+            const total = all.length;
+            const first = all[0] || [];
+            const unitId = normalizeExportText(first[1]) || block.unitId || '';
+            const unitName = normalizeExportText(first[2]) || block.unitText || '';
+            rows.push({ cells: pad([unitId, `${unitName} (${total})`]), style: XLSX_STYLE_UNIT });
             const groups = new Map();
             const bucket = (dataRow, sideKey) => {
                 const groupKey = normalizeExportText(dataRow[0]) || '-';
@@ -4953,11 +4980,9 @@
             block.settings.forEach((row) => bucket(row, 'settings'));
             block.measurements.forEach((row) => bucket(row, 'measurements'));
             groups.forEach((members, groupName) => {
-                const all = [...members.settings, ...members.measurements];
-                const bandCells = pad('');
-                bandCells[1] = `${groupName} (${all.length})`;
-                rows.push({ cells: bandCells, style: XLSX_STYLE_GROUP, outline: 1 });
-                all.forEach((member) => rows.push({ cells: [block.unitText, ...member], outline: 2 }));
+                const groupRows = [...members.settings, ...members.measurements];
+                rows.push({ cells: pad(['', '', `${groupName} (${groupRows.length})`]), style: XLSX_STYLE_GROUP, outline: 1 });
+                groupRows.forEach((member) => rows.push({ cells: allUnitsRowOrder(member), outline: 2 }));
             });
         });
         return rows;
@@ -5028,10 +5053,12 @@
         return '';
     }
 
-    // Look up att/range/format_extra for every exported driver_id so the sheet
-    // shows Read vs Read/write and, for writable rows, the accepted values.
-    // Failures degrade to side-based Access and a blank Allowed values column.
-    async function enrichExportRowsWithAccess(sheets) {
+    // Look up att/range/format_extra plus unit/type/application for every
+    // exported driver_id, turning the collected [group, alias, value, engUnit,
+    // driverId] rows into full EXPORT_HEADER rows. Failures degrade to
+    // side-based Access, the caller's unit fallback and blank Allowed
+    // values/Type/Application columns.
+    async function enrichExportRowsWithAccess(sheets, fallback = {}) {
         const ids = [...new Set(sheets.flatMap(({ rows }) => rows.map((row) => row[4])).filter(Boolean))];
         const plantId = getPlantId();
         let byId = new Map();
@@ -5050,7 +5077,19 @@
             // The page's own read/write split is authoritative for what IWMAC
             // lets you write — never downgrade a row served in the write list.
             if (side === 'settings' && !/w/.test(att)) att = 'rw';
-            return [row[0], row[1], row[2], row[3], accessLabelFromAtt(att), allowedValuesText(dbRow), row[4]];
+            return [
+                row[0],
+                normalizeExportText(dbRow?.unit_id) || fallback.unitId || '',
+                normalizeExportText(dbRow?.unit_name) || fallback.unitName || '',
+                row[1],
+                row[2],
+                row[3],
+                accessLabelFromAtt(att),
+                allowedValuesText(dbRow),
+                normalizeExportText(dbRow?.parameter_type),
+                normalizeExportText(dbRow?.application),
+                row[4]
+            ];
         }));
     }
 
@@ -5134,17 +5173,18 @@
             showHint('No parameters to export.');
             return;
         }
+        const unitId = getUnitId() || '';
         [measurements, settings] = await enrichExportRowsWithAccess([
             { rows: measurements, side: 'measurements' },
             { rows: settings, side: 'settings' }
-        ]);
+        ], { unitId, unitName: unitLabelFor(unitId) });
         try {
             const blob = buildXlsxBlob([
                 { name: 'Parameters', rows: buildCombinedExportRows(measurements, settings) }
             ]);
             triggerXlsxDownload(blob, `${exportFileBase()}.xlsx`);
             const writableCount = [...measurements, ...settings]
-                .filter((row) => /write/i.test(String(row[4] || ''))).length;
+                .filter((row) => /write/i.test(String(row[6] || ''))).length;
             const writableNote = writableCount
                 ? ` (${writableCount} writable)`
                 : ' (no writable parameters on this unit)';
@@ -5193,8 +5233,8 @@
                 [measurements, settings] = await enrichExportRowsWithAccess([
                     { rows: measurements, side: 'measurements' },
                     { rows: settings, side: 'settings' }
-                ]);
-                blocks.push({ unitText: unit.text, measurements, settings });
+                ], { unitId: unit.value, unitName: normalizeExportText(unit.text) });
+                blocks.push({ unitText: unit.text, unitId: unit.value, measurements, settings });
             } catch (error) {
                 console.log('[Supermarket Parameters POC] all-units export failed for unit:', unit.text, error);
                 failedUnits.push(unit.text);
@@ -5215,7 +5255,7 @@
             triggerXlsxDownload(blob, `parameters_${plantId}_all-units_${exportTimeStamp()}.xlsx`);
             const total = blocks.reduce((sum, block) => sum + block.measurements.length + block.settings.length, 0);
             const writable = blocks.reduce((sum, block) => (
-                sum + [...block.measurements, ...block.settings].filter((row) => /write/i.test(String(row[4] || ''))).length
+                sum + [...block.measurements, ...block.settings].filter((row) => /write/i.test(String(row[6] || ''))).length
             ), 0);
             const failNote = failedUnits.length ? `, ${failedUnits.length} unit(s) failed` : '';
             showHint(`Exported ${total} parameters from ${blocks.length} units (${writable} writable${failNote}).`);
@@ -5479,6 +5519,10 @@
             // wins when set) for the Excel export's Access/Allowed values.
             fd.append('sql_command', [
                 'SELECT p.driver_id, p.plant_pri, p.scale, p.raw_min, p.raw_max, p.eng_min, p.eng_max, p.`format`, p.att,',
+                // Unit ID / Unit name / Type / Application for the Excel export
+                // — the same four the Designer export shows, straight from the
+                // main table (the override table carries none of them).
+                'p.unit_id, p.unit_name, p.parameter_type, p.application,',
                 "COALESCE(NULLIF(o.att, ''), p.att) AS att_effective,",
                 "COALESCE(NULLIF(o.range_min, ''), p.range_min) AS range_min_effective,",
                 "COALESCE(NULLIF(o.range_max, ''), p.range_max) AS range_max_effective,",
