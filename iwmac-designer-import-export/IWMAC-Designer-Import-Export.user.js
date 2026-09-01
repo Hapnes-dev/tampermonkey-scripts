@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.0
+// @version      1.21.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.21.0';
+var IWDIE_VERSION = '1.21.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2448,7 +2448,7 @@ var XLSX_STYLE_HEADER = 1;   // bold white on blue
 var XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
 var XLSX_STYLE_UNIT = 3;     // bold white on gray-blue (unit band, all-units export)
 
-var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Unit ID', 'Unit name', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
+var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Unit ID', 'Unit name', 'Alias text', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
 var IWDIE_PARAM_EXPORT_COL_WIDTHS = [22, 18, 30, 46, 16, 10, 12, 16, 14, 8, 38];
 
 function iwdieParamAccessLabel(rw) {
@@ -2465,9 +2465,11 @@ function iwdieParamAccessLabel(rw) {
  * parameters at outlineLevel 1, in grid order. The Group, Unit ID and Unit
  * name columns are repeated on every data row so Excel AutoFilter
  * sorting/filtering keeps working. unitId/unitName are the selected
- * regulator's ID and Name exactly as the UNITS list shows them (ID01 /
+ * regulator's ID and Name exactly as the UNITS list shows them (V01 /
  * 360.001 Ventilasjon) — id first, name right after it. A row carrying its
- * own unit_id/unit_name wins, so a mixed grid still labels correctly. */
+ * own unit_id/unit_name wins, so a mixed grid still labels correctly.
+ * The three columns are named after the popup's own ALIAS TEXT / UNIT ID /
+ * UNIT NAME fields, so Alias text — not Name — heads the parameter text. */
 function iwdieBuildParamExportRows(records, unitId, unitName) {
   function clean(v) {
     return String(v == null ? '' : v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
@@ -2500,7 +2502,7 @@ function iwdieBuildParamExportRows(records, unitId, unitName) {
   return rows;
 }
 
-var IWDIE_ALLUNITS_EXPORT_HEADER = ['Unit ID', 'Unit name', 'Group', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
+var IWDIE_ALLUNITS_EXPORT_HEADER = ['Unit ID', 'Unit name', 'Group', 'Alias text', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
 var IWDIE_ALLUNITS_COL_WIDTHS = [18, 30, 22, 46, 16, 10, 12, 16, 14, 8, 38];
 
 /* unitBlocks: [{ unitLabel, unitId, unitName, records }] — the whole plant in
