@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.1
+// @version      1.20.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.19.1';
+var IWDIE_VERSION = '1.20.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2448,8 +2448,8 @@ var XLSX_STYLE_HEADER = 1;   // bold white on blue
 var XLSX_STYLE_GROUP = 2;    // bold dark blue on light blue band
 var XLSX_STYLE_UNIT = 3;     // bold white on gray-blue (unit band, all-units export)
 
-var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
-var IWDIE_PARAM_EXPORT_COL_WIDTHS = [22, 46, 16, 10, 12, 16, 14, 8, 38];
+var IWDIE_PARAM_EXPORT_HEADER = ['Group', 'Unit ID', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
+var IWDIE_PARAM_EXPORT_COL_WIDTHS = [22, 18, 46, 16, 10, 12, 16, 14, 8, 38];
 
 function iwdieParamAccessLabel(rw) {
   var value = String(rw || '').trim().toLowerCase();
@@ -2462,12 +2462,15 @@ function iwdieParamAccessLabel(rw) {
 
 /* rows: [{cells, style?, outline?}] — header row (style 1), then one light
  * blue collapsible band per parameter group (style 2) with the group's
- * parameters at outlineLevel 1, in grid order. The Group column is repeated
- * on every data row so Excel AutoFilter sorting/filtering keeps working. */
-function iwdieBuildParamExportRows(records) {
+ * parameters at outlineLevel 1, in grid order. The Group and Unit ID columns
+ * are repeated on every data row so Excel AutoFilter sorting/filtering keeps
+ * working. unitId is the selected regulator's id (the popup's UNIT ID); a row
+ * that carries its own unit_id wins, so a mixed grid still labels correctly. */
+function iwdieBuildParamExportRows(records, unitId) {
   function clean(v) {
     return String(v == null ? '' : v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
   }
+  var fallbackUnitId = clean(unitId);
   var rows = [{ cells: IWDIE_PARAM_EXPORT_HEADER.slice(), style: XLSX_STYLE_HEADER }];
   var order = [];
   var groups = {};
@@ -2484,7 +2487,8 @@ function iwdieBuildParamExportRows(records) {
     rows.push({ cells: band, style: XLSX_STYLE_GROUP });
     members.forEach(function (r) {
       rows.push({
-        cells: [groupName, clean(r.alias_text), iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
+        cells: [groupName, clean(r.unit_id) || fallbackUnitId, clean(r.alias_text),
+          iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
           clean(r.data_type), clean(r.application), clean(r.tag), clean(r.sgr), clean(r.driver_id)],
         outline: 1
       });
@@ -2493,14 +2497,14 @@ function iwdieBuildParamExportRows(records) {
   return rows;
 }
 
-var IWDIE_ALLUNITS_EXPORT_HEADER = ['Unit', 'Group', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
-var IWDIE_ALLUNITS_COL_WIDTHS = [26, 22, 46, 16, 10, 12, 16, 14, 8, 38];
+var IWDIE_ALLUNITS_EXPORT_HEADER = ['Unit', 'Group', 'Unit ID', 'Name', 'Access', 'Eng unit', 'Type', 'Application', 'Tag', 'SGR', 'Driver ID'];
+var IWDIE_ALLUNITS_COL_WIDTHS = [26, 22, 18, 46, 16, 10, 12, 16, 14, 8, 38];
 
-/* unitBlocks: [{ unitLabel, records }] — the whole plant in one sheet with a
+/* unitBlocks: [{ unitLabel, unitId, records }] — the whole plant in one sheet with a
  * two-level outline: a gray-blue unit band per unit (collapse a whole unit),
  * light blue group bands inside it (outline 1), parameters at outline 2. The
- * Unit and Group columns repeat on every data row so AutoFilter sorting and
- * filtering keep working plant-wide. Units with no parameters are dropped
+ * Unit, Group and Unit ID columns repeat on every data row so AutoFilter
+ * sorting and filtering keep working plant-wide. Units with no parameters are dropped
  * here; the caller reports how many. */
 function iwdieBuildAllUnitsExportRows(unitBlocks) {
   function clean(v) {
@@ -2515,6 +2519,7 @@ function iwdieBuildAllUnitsExportRows(unitBlocks) {
     var records = (block && block.records) || [];
     if (!records.length) return;
     var unitLabel = clean(block.unitLabel) || '-';
+    var blockUnitId = clean(block.unitId);
     rows.push({ cells: pad([unitLabel + ' (' + records.length + ')']), style: XLSX_STYLE_UNIT });
     var order = [];
     var groups = {};
@@ -2529,7 +2534,8 @@ function iwdieBuildAllUnitsExportRows(unitBlocks) {
       rows.push({ cells: pad(['', groupName + ' (' + members.length + ')']), style: XLSX_STYLE_GROUP, outline: 1 });
       members.forEach(function (r) {
         rows.push({
-          cells: [unitLabel, groupName, clean(r.alias_text), iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
+          cells: [unitLabel, groupName, clean(r.unit_id) || blockUnitId, clean(r.alias_text),
+            iwdieParamAccessLabel(r.rw), clean(r.eng_unit),
             clean(r.data_type), clean(r.application), clean(r.tag), clean(r.sgr), clean(r.driver_id)],
           outline: 2
         });
@@ -4002,6 +4008,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var records = pg.records || [];
       if (!records.length) { toast('No parameters loaded for this regulator.', true); return; }
       var unitLabel = String(unit.unit_name || unit.unit_id || 'unit');
+      var unitIdValue = String(unit.unit_id == null ? '' : unit.unit_id);
       var plant = '';
       try { plant = String(W.get_plant_id() || ''); } catch (e) { }
       if (!plant) {
@@ -4009,7 +4016,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         plant = m ? m[1] : 'plant';
       }
       var name = iwdieBuildParamExportFilename(plant, unitLabel, new Date());
-      var blob = buildXlsxBlob([{ name: 'Parameters', rows: iwdieBuildParamExportRows(records) }]);
+      var blob = buildXlsxBlob([{ name: 'Parameters', rows: iwdieBuildParamExportRows(records, unitIdValue) }]);
       triggerXlsxDownload(blob, name);
       W.__IWDIE.lastExport = { name: name, units: 1, params: records.length, failed: 0 };
       toast('Exported ' + records.length + ' parameters for ' + unitLabel + ' -> ' + name, false, 8000);
@@ -4141,6 +4148,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           blocks.push({
             unitLabel: String((rec && (rec.unit_name || rec.unit_id)) || recids[i]),
+            unitId: String((rec && rec.unit_id != null) ? rec.unit_id : ''),
             records: (pg.records || []).map(function (r) { return Object.assign({}, r); })
           });
           advance(rec);
