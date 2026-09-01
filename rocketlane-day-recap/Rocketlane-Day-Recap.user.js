@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.123
+// @version      4.124
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -485,12 +485,21 @@ var RL_RECAP_CAL = (function () {
     function calEntryNote(ev, mins) {
         if (!ev) return '';
         const when = ev.allDay ? 'All day' : `${calClock(ev.startTs)}–${calClock(ev.endTs)}`;
+        // Say the whole story on the note: when it ran, from when till when, and how long that is
+        // (v4.124). The booked minutes were the one fact the note never stated.
+        const dur = calDuration(mins);
         const lead = ev.allDay
             ? `Full-day calendar commitment: ${ev.subject}.`
-            : `Attended "${ev.subject}" (${when}).`;
-        const facts = [`Calendar: ${when}`, ev.recurring ? 'Recurring event' : '', ev.organizer ? 'Organiser' : '']
+            : `Attended "${ev.subject}" ${when}${dur ? ` (${dur})` : ''}.`;
+        const facts = [`Calendar: ${when}`, dur, ev.recurring ? 'Recurring event' : '', ev.organizer ? 'Organiser' : '']
             .filter(Boolean).join(' · ');
         return [lead, facts].filter(Boolean).join('\n\n');
+    }
+    function calDuration(mins) {
+        const m = Math.max(0, Math.round(mins || 0));
+        if (!m) return '';
+        const h = Math.floor(m / 60), r = m % 60;
+        return h ? (r ? `${h} h ${r} min` : `${h} h`) : `${r} min`;
     }
     function calClock(ts) {
         const d = new Date(ts);
@@ -500,7 +509,7 @@ var RL_RECAP_CAL = (function () {
     return {
         CAL_SECRET_RE, CAL_RULES,
         calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
-        calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock,
+        calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock, calDuration,
     };
 })();
 // ===== Rocketlane task matcher =======================================================
@@ -821,7 +830,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.123';
+    const SCRIPT_VERSION   = '4.124';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4195,10 +4204,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const projectId = GM_getValue(KEY_CAL_PROJECT, 0) || null;
         const projectName = GM_getValue(KEY_CAL_PROJECT_NAME, '') || null;
         for (const r of (calRows || [])) {
-            const act = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + ' '}${r.ev.subject}`.trim();
+            // The line Rocketlane shows leads with the FULL range, not just the start (v4.124):
+            // "09:00–10:00 Ukesmøte" reads as the meeting it came from.
+            const act = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + '–' + calClock(r.ev.endTs) + ' '}${r.ev.subject}`.trim();
+            // Entries booked before v4.124 carry only the start time ("09:00 Ukesmøte"). Match those too,
+            // or a re-run of an already-booked day would read them as new and book the meeting twice.
+            const actLegacy = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + ' '}${r.ev.subject}`.trim();
             const catId = cats[r.category] || null;
-            const dupe = !!catId && (existing || []).some(e => e.category && e.category.categoryId === catId
-                && String(e.activityName || '').trim() === act);
+            const dupe = !!catId && (existing || []).some(e => {
+                if (!(e.category && e.category.categoryId === catId)) return false;
+                const name = String(e.activityName || '').trim();
+                return name === act || name === actLegacy;
+            });
             out.push({
                 calendar: true,
                 plant_id: null, plant: r.ev.allDay ? 'All day' : `${calClock(r.ev.startTs)}–${calClock(r.ev.endTs)}`,
