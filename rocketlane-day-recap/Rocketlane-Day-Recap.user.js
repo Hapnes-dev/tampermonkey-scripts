@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.127
+// @version      4.128
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -882,7 +882,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.127';
+    const SCRIPT_VERSION   = '4.128';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2699,7 +2699,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         #${WEEK_ID} .rl-week-day small { color: #6f6f6f; font-weight: 500; text-align: right; }
         #${WEEK_ID} .rl-week-status { font-size: 12px; color: #525252; padding: 8px 0; }
         #${WEEK_ID} .rl-week-info { font-size: 12px; color: #0e6027; padding: 2px 0 6px; }
-        #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; }
+        #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; align-items: center; }
+        #${WEEK_ID} .rl-week-cal { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; font-weight: 400; cursor: pointer; padding: 0 4px; user-select: none; }
+        #${WEEK_ID} .rl-week-cal input { margin: 0; cursor: pointer; }
         #${WEEK_ID} .rl-week-nav button { font-size: 13px; line-height: 1.4; padding: 0 8px; border: 1px solid #c6c6c6; background: #fff; border-radius: 5px; cursor: pointer; }
         #${WEEK_BTN_ID} { white-space: nowrap; }
         #${PANEL_ID} .catsum-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; color: #21272a; }
@@ -2932,6 +2934,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         calendarChk?.addEventListener('change', () => {
             GM_setValue(KEY_CAL_ENABLED, !!calendarChk.checked);
             if (!calendarChk.checked) _calCache.clear();
+            // Book week carries the same toggle (v4.128) — keep it in step when both are open.
+            const wk = document.querySelector(`#${WEEK_ID} input[data-b="cal"]`);
+            if (wk) wk.checked = !!calendarChk.checked;
         });
 
         // Ensure we know who you are + have your recent list. Both live in pang's per-origin
@@ -4736,8 +4741,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // next build only (it caches every date it finds, so week navigation needs no repeat).
         let scanChoice = null, forceScanOnce = false;
 
+        // 🗓 toggle in the week head (v4.128, Thomas's ask). Book week has booked calendar rows since
+        // v4.125 and loadDayForBooking reads them — but the ONLY control for KEY_CAL_ENABLED lived on the
+        // Plants-visited panel, and it defaults to OFF. Book week opens standalone from the toolbar
+        // button, so unless he happened to have ticked that box in the other panel, the week silently
+        // booked no meetings and offered no way to notice or change it. Same key, so the two stay in step.
         const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
-            <span class="rl-week-nav"><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
+            <span class="rl-week-nav"><label class="rl-week-cal" title="Read your Outlook calendar for every weekday in this week and offer meetings, planning and training as timesheet entries. Meetings book at their real length FIRST; each day's plant distribution then splits whatever the workday has left. Same setting as the panel's 🗓 Include calendar."><input type="checkbox" data-b="cal"${GM_getValue(KEY_CAL_ENABLED, false) ? ' checked' : ''}> 🗓</label><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
         const wireNav = () => {
             // ↻ rebuilds this week from scratch: forget the session answers, then force the same sweep
             // the pre-build check-up offers — available in every state (check-up, building, results),
@@ -4745,6 +4755,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             box.querySelector('[data-b=refresh]')?.addEventListener('click', () => {
                 weekForgetCached(monday);
                 scanChoice = 'scan'; forceScanOnce = true;
+                build();
+            });
+            // Toggling rebuilds: the calendar is read per day inside loadDayForBooking, and turning it on
+            // also changes how each day's plant minutes are distributed (meetings take their real length
+            // off the workday first), so the existing plans cannot just be re-rendered.
+            box.querySelector('[data-b=cal]')?.addEventListener('change', (ev) => {
+                const on = !!ev.target.checked;
+                GM_setValue(KEY_CAL_ENABLED, on);
+                if (!on) _calCache.clear(); // same rule as the panel toggle: off drops the cache, so on re-asks Outlook
+                const chk = document.querySelector(`#${PANEL_ID} input[data-field="calendar"]`); // keep the panel in step
+                if (chk) chk.checked = on;
                 build();
             });
             box.querySelector('[data-b=prev]')?.addEventListener('click', () => { monday = addDaysISO(monday, -7); build(); });
@@ -4809,7 +4830,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const hasWork = visits.length || (visits._calendar && visits._calendar.length);
                     const plan = hasWork ? await buildBookingPlan(visits, iso,
                         (n, total, v) => say(`reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
-                    days.push({ iso, wd: WD[i], plan });
+                    // Carry the calendar count so the row can say "no calendar events" rather than leave a
+                    // silent empty calendar looking identical to a day with no meetings (v4.128) — the
+                    // exact ambiguity that hid this feature's first failure, see calRowsForDate.
+                    days.push({ iso, wd: WD[i], plan, cal: (visits._calendar || []).length });
                     // Building a week preview must not update task descriptions.
                 } catch (err) {
                     days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err) });
@@ -4826,6 +4850,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const teamProjects = (days.find(d => d.plan && d.plan._teamProjects && d.plan._teamProjects.length) || { plan: {} }).plan._teamProjects || [];
             const rememberedFallback = GM_getValue('book_fallback_project', 0);
             const rememberedCal = GM_getValue(KEY_CAL_PROJECT, 0);
+            const calOn = GM_getValue(KEY_CAL_ENABLED, false);
             const optsFor = (sel) => teamProjects.map(p => `<option value="${p.id}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
             const teamOpts = optsFor(rememberedFallback);
             let html = '';
@@ -4835,10 +4860,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const already = day.plan.filter(e => e.status === 'already-booked').length;
                 const noCat = day.plan.filter(e => e.status === 'no-category').length;
                 const mins = ready.reduce((s, e) => s + e.minutes, 0);
+                // With the calendar on, a day that returned no events says so — "no plant work" alone
+                // would read as "nothing happened" when it may mean the calendar was never consulted.
+                const calNote = calOn && !day.err && day.cal === 0 ? ' · 🗓 no calendar events' : '';
                 const side = day.err ? '⚠ ' + esc(day.err)
-                    : !day.plan.length ? 'no plant work'
+                    : !day.plan.length ? 'no plant work' + calNote
                     : unsafe ? '⚠ can’t verify what’s booked — day skipped'
-                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}`;
+                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}`;
                 html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
                 if (unsafe) continue;
                 for (const e of day.plan) {
