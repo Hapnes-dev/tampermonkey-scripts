@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.128
+// @version      4.129
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -534,10 +534,27 @@ var RL_RECAP_CAL = (function () {
         return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     }
 
+    // Which questions Book week's pre-build check-up must ask (v4.129). Pure so the once-a-day rule is
+    // testable — the rest of the check-up is markup, but this is the part that can be wrong in ways
+    // nobody notices: asking every single build (nagging) or never asking again (the bug it fixes).
+    //   fullScanRanToday  a full plant scan already ran today
+    //   scanChoice        the scan answer for THIS modal, null while pending
+    //   calChoice         the calendar answer for THIS modal, null while pending
+    //   calAskedDate      'YYYY-MM-DD' the calendar question was last asked on ('' = never)
+    //   today             'YYYY-MM-DD'
+    function weekCheckupPlan(s) {
+        s = s || {};
+        return {
+            askScan: !s.fullScanRanToday && s.scanChoice == null,
+            askCal: s.calChoice == null && String(s.calAskedDate || '') !== String(s.today || ''),
+        };
+    }
+
     return {
         CAL_SECRET_RE, CAL_RULES,
         calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
         calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock, calDuration,
+        weekCheckupPlan,
     };
 })();
 // ===== Rocketlane task matcher =======================================================
@@ -863,7 +880,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
 
-    const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock } = RL_RECAP_CAL;
+    const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan } = RL_RECAP_CAL;
 
     const { pickTask, bookDiscWeights } = RL_RECAP_MATCH;
 
@@ -882,7 +899,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.128';
+    const SCRIPT_VERSION   = '4.129';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1335,7 +1352,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_CAL_REQUEST = 'cal_request';   // { at, dates:[iso] } — written by Rocketlane, read in the Outlook tab
     const KEY_CAL_RESULT  = 'cal_result';    // { at, byDate:{iso:[event]}, error } — written back by the Outlook tab
     const KEY_CAL_DONE    = 'cal_done_ts';   // harvest completion signal, same pattern as KEY_HARVEST_DONE
-    const KEY_CAL_ENABLED = 'cal_enabled';   // user toggle on the panel
+    const KEY_CAL_ENABLED = 'cal_enabled';   // user toggle — the panel, and Book week's head + check-up
+    const KEY_CAL_ASKED   = 'cal_ask_date';  // 'YYYY-MM-DD' Book week last ASKED about the calendar (v4.129)
     // Rocketlane REQUIRES a project on every time entry (verified live: 160 historical entries, zero
     // project-less; the activities dialog keeps its submit disabled until a project is chosen), and
     // this tenant has no meetings/admin project. So calendar rows book against a project the user
@@ -2702,6 +2720,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; align-items: center; }
         #${WEEK_ID} .rl-week-cal { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; font-weight: 400; cursor: pointer; padding: 0 4px; user-select: none; }
         #${WEEK_ID} .rl-week-cal input { margin: 0; cursor: pointer; }
+        #${WEEK_ID} .rl-week-calask { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 13px; cursor: pointer; }
+        #${WEEK_ID} .rl-week-calask input { margin: 0; cursor: pointer; }
         #${WEEK_ID} .rl-week-nav button { font-size: 13px; line-height: 1.4; padding: 0 8px; border: 1px solid #c6c6c6; background: #fff; border-radius: 5px; cursor: pointer; }
         #${WEEK_BTN_ID} { white-space: nowrap; }
         #${PANEL_ID} .catsum-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; color: #21272a; }
@@ -4740,6 +4760,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Full-scan check-up state (v4.116): asked once per modal; a forced sweep applies to the
         // next build only (it caches every date it finds, so week navigation needs no repeat).
         let scanChoice = null, forceScanOnce = false;
+        let calChoice = null; // null = the calendar question is still pending for this modal (v4.129)
 
         // 🗓 toggle in the week head (v4.128, Thomas's ask). Book week has booked calendar rows since
         // v4.125 and loadDayForBooking reads them — but the ONLY control for KEY_CAL_ENABLED lived on the
@@ -4773,25 +4794,66 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             box.querySelectorAll('[data-b=cancel]').forEach(b => b.addEventListener('click', () => wrap.remove()));
         };
 
-        // Full-scan check-up (v4.116, Thomas's ask): before anything builds, say whether a full scan
-        // has run today and let him choose. The v4.101 cache gate below trusts any cached weekday —
-        // including one written by a quick Refresh, which can hide plant-admin/designer visits — so
-        // when no scan has run today the trust has to be his call, not silent.
-        function renderScanCheckup() {
-            box.innerHTML = headHtml() +
-                `<div class="rl-week-status">🔍 Check-up: <b>no full scan has run today.</b><br>` +
-                `<small>Cached weekdays may date from before today's work or come from a quick Refresh, which can miss ` +
-                `plant-admin/designer visits. A fresh sweep (~1 min) re-scans every plant and rewrites the cache for ` +
-                `every weekday at once.</small></div>` +
-                `<div class="bookplan-foot"><button type="button" data-b="scanfirst">🔍 Full scan first</button>` +
-                `<button type="button" data-b="cached">Use cached data</button></div>`;
+        // Pre-build check-up. Two questions, ONE screen (v4.129) — asking them in sequence would mean two
+        // modals before a week ever builds.
+        //
+        // Full scan (v4.116, Thomas's ask): the v4.101 cache gate below trusts any cached weekday —
+        // including one written by a quick Refresh, which can hide plant-admin/designer visits — so when
+        // no scan has run today the trust has to be his call, not silent.
+        //
+        // Calendar (v4.129, Thomas's ask: "it should give a prompt when you book week if you want to sync
+        // calendar"): 4.128 put a 🗓 toggle in the head, but a toggle you have to notice is not the same as
+        // being asked, and the setting defaults to OFF — so a week could still be booked without meetings
+        // simply because nobody thought about it. Asked once per DAY (KEY_CAL_ASKED), the same anti-nag
+        // rule the full-scan recommendation uses, because reopening Book week twice in an hour should not
+        // re-ask. The checkbox writes through immediately, so the head toggle and this never disagree.
+        function renderCheckup(askScan, askCal) {
+            const calOn = GM_getValue(KEY_CAL_ENABLED, false);
+            let body = '';
+            if (askScan) {
+                body += `<div class="rl-week-status">🔍 Check-up: <b>no full scan has run today.</b><br>` +
+                    `<small>Cached weekdays may date from before today's work or come from a quick Refresh, which can miss ` +
+                    `plant-admin/designer visits. A fresh sweep (~1 min) re-scans every plant and rewrites the cache for ` +
+                    `every weekday at once.</small></div>`;
+            }
+            if (askCal) {
+                body += `<div class="rl-week-status">🗓 <b>Sync your Outlook calendar for this week?</b><br>` +
+                    `<label class="rl-week-calask"><input type="checkbox" data-b="calask"${calOn ? ' checked' : ''}> ` +
+                    `Include meetings, planning and courses</label>` +
+                    `<small>Each weekday's events are booked at their real length first, and the plant estimates then split ` +
+                    `whatever the workday has left. If Outlook is already open in a tab it is read there; otherwise a ` +
+                    `background tab opens for a few seconds and closes itself. Asked once a day — the 🗓 box above changes ` +
+                    `it any time.</small></div>`;
+            }
+            const foot = askScan
+                ? `<button type="button" data-b="scanfirst">🔍 Full scan first</button><button type="button" data-b="cached">Use cached data</button>`
+                : `<button type="button" data-b="go">Build the week</button>`;
+            box.innerHTML = headHtml() + body + `<div class="bookplan-foot">${foot}</div>`;
             wireNav();
-            box.querySelector('[data-b=scanfirst]').addEventListener('click', () => { scanChoice = 'scan'; forceScanOnce = true; build(); });
-            box.querySelector('[data-b=cached]').addEventListener('click', () => { scanChoice = 'cached'; build(); });
+            // Write through on change rather than on continue: the head toggle reads the same key, and a
+            // checkbox that only takes effect when you press a button is exactly the kind of thing that
+            // leaves the two disagreeing.
+            box.querySelector('[data-b=calask]')?.addEventListener('change', (ev) => {
+                const on = !!ev.target.checked;
+                GM_setValue(KEY_CAL_ENABLED, on);
+                if (!on) _calCache.clear();
+                const head = box.querySelector('input[data-b=cal]');
+                if (head) head.checked = on;
+                const panel = document.querySelector(`#${PANEL_ID} input[data-field="calendar"]`);
+                if (panel) panel.checked = on;
+            });
+            const answered = () => { if (askCal) { GM_setValue(KEY_CAL_ASKED, todayISO()); calChoice = 'asked'; } };
+            box.querySelector('[data-b=scanfirst]')?.addEventListener('click', () => { answered(); scanChoice = 'scan'; forceScanOnce = true; build(); });
+            box.querySelector('[data-b=cached]')?.addEventListener('click', () => { answered(); scanChoice = 'cached'; build(); });
+            box.querySelector('[data-b=go]')?.addEventListener('click', () => { answered(); build(); });
         }
 
         async function build() {
-            if (!fullScanRanToday() && scanChoice === null) { renderScanCheckup(); return; }
+            const { askScan, askCal } = weekCheckupPlan({
+                fullScanRanToday: fullScanRanToday(), scanChoice, calChoice,
+                calAskedDate: GM_getValue(KEY_CAL_ASKED, ''), today: todayISO(),
+            });
+            if (askScan || askCal) { renderCheckup(askScan, askCal); return; }
             const force = forceScanOnce; forceScanOnce = false;
             const mySeq = ++seq;
             box.innerHTML = headHtml() + '<div class="rl-week-status">Building plans…</div>';
