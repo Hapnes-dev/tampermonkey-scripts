@@ -2,6 +2,14 @@
 
 Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, first/last action time, which actions you performed — shown as friendly labels with a colour-coded category dot (e.g. `direct_plant` → "Direct", `pma_local` → "phpMyAdmin", `upload` → "Backup") — and an estimated time split). At the top, a 📋 **Day by category** roll-up estimates how your plant time splits across your Rocketlane task categories (Integration, Drawing & Design, Setup), ready to copy straight into your timesheet. Short "just popped in to check" visits show as a separate **Quick check** line — left out of the booked total, since it's your call whether they're worth logging.
 
+## Accuracy improvements in 4.127
+
+Time estimates remain stable when a date is recalculated or reopened. Workday distribution now preserves the exact remaining minutes, including zero after a full calendar day, and never creates negative plant time or a five-minute minimum that exceeds the available budget. Separate visits hours apart are no longer collapsed into one short configuration session.
+
+Task matching gives specific setup equipment and changed drawing names more weight, excludes checklist/hardware sales rows on every path, and labels fallback guesses. Unavailable task lists or calendars can be retried instead of being treated as empty. Booking previews only read data; they no longer update task descriptions in the background.
+
+After updating, refresh an affected date to replace any old cached estimates. These are still estimates from activity logs: distributing a workday total is not a measurement of active time. Review guessed tasks before booking.
+
 ## Install
 
 [Click here to install](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js) (requires Tampermonkey).

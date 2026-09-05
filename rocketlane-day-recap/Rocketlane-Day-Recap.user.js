@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.126
+// @version      4.127
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -361,7 +361,35 @@ var RL_RECAP_TIME = (function () {
         return Math.max(0, extra);
     }
 
-    return { cappedGapCredit, dayEndExtension };
+    // Largest-remainder allocation: integer, nonnegative and exactly budget-conserving.
+    // Full rounding units are apportioned first; an off-grid remainder stays real minutes.
+    // No minimum per plant: a tiny remaining budget cannot buy five minutes for every plant.
+    function allocateMinutes(weights, targetMinutes, roundTo = 1) {
+        const target = Number.isFinite(targetMinutes) ? Math.max(0, Math.round(targetMinutes)) : 0;
+        const step = Number.isFinite(roundTo) ? Math.max(1, Math.floor(roundTo)) : 1;
+        if (!weights.length) return [];
+        let clean = weights.map(w => Number.isFinite(w) && w > 0 ? w : 0);
+        let sum = clean.reduce((a, b) => a + b, 0);
+        if (!sum) { clean = clean.map(() => 1); sum = clean.length; }
+        const units = Math.floor(target / step);
+        const shares = clean.map(w => w / sum * units);
+        const allocated = shares.map(q => Math.floor(q) * step);
+        const order = shares.map((q, i) => ({ i, fraction: q - Math.floor(q) }))
+            .sort((a, b) => b.fraction - a.fraction || clean[b.i] - clean[a.i] || a.i - b.i);
+        const left = units - allocated.reduce((a, b) => a + b, 0) / step;
+        for (let j = 0; j < left; j++) allocated[order[j].i] += step;
+        const remainder = target % step;
+        if (remainder) {
+            let best = 0;
+            for (let i = 1; i < clean.length; i++) {
+                if (clean[i] / sum * target - allocated[i] > clean[best] / sum * target - allocated[best]) best = i;
+            }
+            allocated[best] += remainder;
+        }
+        return allocated;
+    }
+
+    return { cappedGapCredit, dayEndExtension, allocateMinutes };
 })();
 // ===== Outlook calendar → meeting / admin time =======================================
 // pang only sees plant work, so meetings, planning and training never reached the timesheet — and
@@ -569,6 +597,7 @@ var RL_RECAP_MATCH = (function () {
         'design', 'integration', 'integrasjon', 'setup', 'oppsett', 'project', 'prosjekt',
         'plant', 'anlegg', 'system', 'task', 'oppgave', 'arbeid', 'work', 'image', 'new',
         'nye', 'nytt', 'den', 'det', 'har', 'ble', 'ikke', 'til', 'med', 'for', 'the', 'and', 'og',
+        'configured', 'configuration', 'konfigurert', 'konfigurering', 'completed', 'done',
     ]);
     const _bnhRe = {};
     // How many DISTINCTIVE words of a task's name appear in the day's evidence text (v4.114). Word-
@@ -636,7 +665,7 @@ var RL_RECAP_MATCH = (function () {
     // "IWMAC Image: System image - Machinery — x3") are price rows, not work packages — they contain
     // discipline words and would pollute the scoring. Covers the "N pcs", "xN"/"N stk" and IWMAC
     // Image/Aftermarket sales-line notations (seen live on 2701, v4.95).
-    const BOOK_QTY_TASK_RE = /\b\d+\s*(pcs|stk)\b|price per unit|aftermarket|^iwmac\s+(image|aftermarket)\b|[—–-]\s*x\s?\d+\s*$/i;
+    const BOOK_QTY_TASK_RE = /\b\d+\s*(pcs|stk)\b|price per unit|aftermarket|^iwmac\s+(image|aftermarket|hw|hardware|licen[cs]e)\b|[—–-]\s*x\s?\d+\s*$/i;
     // Checklist/admin rows are never time-booking targets, not even in rescue mode ("Customers approval",
     // "Alarm test", "Close sales order", "Documentation approved", "Project Satisfaction Survey", …).
     const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
@@ -648,7 +677,10 @@ var RL_RECAP_MATCH = (function () {
         // despite "no two categories land on the same task" being the documented promise. Filtering here
         // makes it hold on every path, including the drawing-name exact match and the single-candidate
         // shortcuts, which returned before rescue was ever reached.
-        tasks = (tasks || []).filter(t => !BOOK_QTY_TASK_RE.test(t.taskName) && !(used && used.has(t.taskId)));
+        const usedIds = new Set([...(used || [])].map(String));
+        tasks = (tasks || []).filter(t => t && t.taskId != null && typeof t.taskName === 'string'
+            && !BOOK_QTY_TASK_RE.test(t.taskName) && !BOOK_CHECKLIST_RE.test(t.taskName)
+            && !usedIds.has(String(t.taskId)));
         if (!tasks.length) return null;
         // TIERED evidence, strongest first — a later tier is consulted ONLY when every earlier one is
         // silent, so adding a tier can never overrule evidence that already decided:
@@ -697,9 +729,9 @@ var RL_RECAP_MATCH = (function () {
         // day guesses "Design: Refrigeration", not the alphabetical "Design: Energi") then name.
         const rescue = (sigCands, fences) => {
             const ok = t => !BOOK_CHECKLIST_RE.test(t.taskName) && !(used && used.has(t.taskId));
-            // Rescue is the last stop before an alphabetical guess, so here every tier counts at once.
-            const wSum = {};
-            for (const w of tiers) for (const k in w) wSum[k] = (wSum[k] || 0) + w[k];
+            // Rescue preserves the evidence hierarchy too: several weak unit-name words
+            // must not outweigh a device token that identifies today's actual work.
+            const strongest = tiers.find(w => Object.keys(w).length) || {};
             const discPri = t => { // index into TASK_DISCIPLINES (name first, else phase); unknown ⇒ last
                 let td = bookDiscOf(t.taskName.replace(/^[a-zæøå ]+\s*[:\-]/i, ''));
                 if (!td.size) td = bookDiscOf(t.phase || '');
@@ -718,7 +750,7 @@ var RL_RECAP_MATCH = (function () {
                         .sort((a, b) => (bookNameHits(b.taskName, nameBlob) - bookNameHits(a.taskName, nameBlob))
                             || (bookPriorRank(prior, a) - bookPriorRank(prior, b))
                             || (discPri(a) - discPri(b)) || a.taskName.localeCompare(b.taskName))[0] || null;
-                    const hit = bookPickWeighted(pool, wSum, /^[a-zæøå ]+\s*[:\-]/i, true, prior, nameBlob) || best(sigCands || []) || best(pool);
+                    const hit = bookPickWeighted(pool, strongest, /^[a-zæøå ]+\s*[:\-]/i, true, prior, nameBlob) || best(sigCands || []) || best(pool);
                     if (hit) return Object.assign({ rescued: true }, hit);
                 }
             }
@@ -729,20 +761,30 @@ var RL_RECAP_MATCH = (function () {
             // "Nytt oversiktsbilde", "Grafikk", "Skjermbilder", "System Image …").
             const design = tasks.filter(t => /^design\s*[:\-]/i.test(t.taskName) || /bilde|tegning|oversikt|grafikk|graphic|skjerm|visualis|image/i.test(t.taskName));
             const suf = t => bookNorm(t.taskName.replace(/^design\s*[:\-]/i, ''));
-            // The changed drawing's NAME beats everything: "Wireless Overview" → task "Design: Wireless overview".
-            // Rank exact > task-suffix-contains-name > name-contains-suffix with the LONGEST suffix winning —
-            // otherwise a generic "Design: Overview" steals "Wireless Overview" from "Design: Wireless overview".
-            for (const name of (texts.drawingNames || [])) {
-                const n = bookNorm(name);
-                if (!n) continue;
-                let hit = design.find(t => suf(t) === n);
-                if (!hit) hit = design.find(t => suf(t) && suf(t).includes(n));
-                if (!hit) hit = design.filter(t => suf(t) && n.includes(suf(t))).sort((a, b) => suf(b).length - suf(a).length)[0];
-                if (hit) return hit;
-                // Discipline bridge across languages: graphic "360.001 Ventilasjon" → task "Design: Ventilation".
-                const gd = bookDiscOf(name);
-                if (gd.size) { const dm = design.filter(t => [...gd].some(x => bookDiscOf(suf(t)).has(x))); if (dm.length === 1) return dm[0]; }
+            // Compare ALL changed drawings before returning. A generic first name such as
+            // "Overview" must not steal a later exact "Wireless overview" match.
+            const drawings = [...new Set((texts.drawingNames || []).map(bookNorm).filter(Boolean))];
+            const named = design.map(t => {
+                const suffix = suf(t);
+                let rank = 0, detail = 0;
+                for (const n of drawings) {
+                    const r = suffix === n ? 3 : suffix && suffix.includes(n) ? 2 : suffix && n.includes(suffix) ? 1 : 0;
+                    const d = r === 2 ? n.length : suffix.length;
+                    if (r > rank || (r === rank && d > detail)) { rank = r; detail = d; }
+                }
+                return { t, rank, detail };
+            }).filter(x => x.rank > 0).sort((a, b) => b.rank - a.rank || b.detail - a.detail
+                || Number(a.t.done) - Number(b.t.done) || bookPriorRank(prior, a.t) - bookPriorRank(prior, b.t)
+                || a.t.taskName.localeCompare(b.t.taskName) || String(a.t.taskId).localeCompare(String(b.t.taskId)));
+            if (named.length) {
+                const a = named[0], b = named[1];
+                const ambiguous = b && a.rank === b.rank && a.detail === b.detail;
+                return ambiguous ? Object.assign({ rescued: true }, a.t) : a.t;
             }
+            // Drawing names outrank device evidence for drawing work, including the language
+            // bridge (Ventilasjon → Ventilation). Combine names before deciding.
+            const drawingHit = bookPickWeighted(design, bookDiscWeights(gStr, true), /^design\s*[:\-]/i, false, prior, gStr.toLowerCase());
+            if (drawingHit) return drawingHit;
             if (design.length === 1) return design[0];
             // Fences: setup names stay out longest; integration names are relaxed first.
             return resolve(design, /^design\s*[:\-]/i) || rescue(design, [/ak3|scan\b|gateway|\brac\b|nport|server|port\s*forward/i, /integra(?:tion|sjon)/i]);
@@ -761,12 +803,22 @@ var RL_RECAP_MATCH = (function () {
             // plant" (Hardware & Network phases) are gateway-setup work too.
             const c = tasks.filter(t => /(ak3|scan|gateway|rac|nport|server|moxa|router|nettverk|network)\b|port\s*forward|forbindelse|tilkobling|connection/i.test(t.taskName));
             if (c.length === 1) return c[0];
+            // Setup work often has no discipline words. Match its specific equipment/tool
+            // name in today's evidence before the fixed gateway fallback, strongest source first.
+            // Generic workflow words (configured/setup) alone do not distinguish equipment.
+            for (const blob of [texts.tokStr, texts.logStr, texts.uStr]) {
+                const named = c.map(t => ({ t, score: bookNameHits(t.taskName, String(blob || '').toLowerCase()) }))
+                    .filter(x => x.score > 0).sort((a, b) => b.score - a.score || Number(a.t.done) - Number(b.t.done)
+                        || bookPriorRank(prior, a.t) - bookPriorRank(prior, b.t));
+                if (named.length && (named.length === 1 || named[0].score > named[1].score)) return named[0].t;
+                if (named.length) break; // ambiguous strong evidence must not be displaced by weaker text
+            }
             const hit = resolve(c, /^[a-zæøå ]+[:\-]/i);
             if (hit) return hit;
             // No evidence distinguishes gateway tasks — walk a fixed priority over the OPEN ones instead
             // of giving up (gateway-est name first).
             for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
-                { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return t; }
+                { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return Object.assign({ rescued: true }, t); }
             // Fences: design names stay out longest — gateway setup is integration-side work, so an
             // Integration task is the natural second choice ("Setup 18m → Design: Energi" was wrong).
             return rescue(c, [/design|bilde|tegning/i, /integra(?:tion|sjon)/i]);
@@ -830,7 +882,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.126';
+    const SCRIPT_VERSION   = '4.127';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1433,7 +1485,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (hit && Date.now() - hit.at < CAL_TTL_MS) return { rows: calPrice(hit.events, workdayMin), error: hit.error };
         const res = await calFetchDays([iso]);
         const events = (res.byDate && res.byDate[iso]) || [];
-        _calCache.set(iso, { at: Date.now(), events, error: res.error });
+        // An unavailable calendar is not evidence of an empty day; let the next preview retry.
+        if (!res.error) _calCache.set(iso, { at: Date.now(), events });
         return { rows: calPrice(events, workdayMin), error: res.error };
     }
     function calPrice(events, workdayMin) {
@@ -1595,8 +1648,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 data: JSON.stringify([{ jsonrpc: '2.0', method: 'get_commits', params: { plant_id: String(pid) }, id: 0 }]),
                 timeout: 60000,
                 onload: r => {
-                    let list = [];
-                    try { const p = JSON.parse(r.responseText); const res = Array.isArray(p) ? p[0] : p; if (Array.isArray(res?.result)) list = res.result; } catch {}
+                    let list = null;
+                    try {
+                        if (r.status === 200) {
+                            const p = JSON.parse(r.responseText), res = Array.isArray(p) ? p[0] : p;
+                            if (!res?.error && Array.isArray(res?.result)) list = res.result;
+                        }
+                    } catch {}
                     resolve(list);
                 },
                 onerror: () => resolve(null), ontimeout: () => resolve(null),
@@ -1619,7 +1677,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const pid = misses[idx++];
                 const list = await gmFetchCommitsOne(base, pid);
                 if (list !== null) { out[pid] = list; _commitsCache.set(pid, { ts: Date.now(), list }); }
-                else out[pid] = (_commitsCache.get(pid) || {}).list || []; // network miss → stale cache or empty
+                // Missing/failed history stays undefined: it must not prove there were no saves.
             }
         };
         const pool = []; for (let k = 0; k < Math.min(8, misses.length); k++) pool.push(worker());
@@ -2444,7 +2502,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (!events || events.length === 0) return { minutes, cappedGaps };
         // Deterministic order: by ts, tie-broken by plant_id so two clicks in the same second
         // never reorder run-to-run.
-        const sorted = [...events].sort((a, b) =>
+        const sorted = events.filter(e => e && e.plant_id != null && String(e.plant_id).trim() && Number.isFinite(e.ts)).sort((a, b) =>
             (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
         for (let i = 0; i < sorted.length; i++) {
             const cur = sorted[i];
@@ -2459,8 +2517,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // evidence (LONGGAP damping) — the cap credit is provisional for those.
             if (gap > ACTIVE_CAP_MS) (cappedGaps[cur.plant_id] = cappedGaps[cur.plant_id] || []).push({ ts: cur.ts, gap });
         }
-        // Convert ms → rounded minutes
-        for (const id of Object.keys(minutes)) minutes[id] = Math.max(1, Math.round(minutes[id] / 60000));
+        // Round the timeline total once, then apportion it. A burst of one-second visits
+        // must not manufacture a whole minute for every plant.
+        const ids = Object.keys(minutes), weights = ids.map(id => minutes[id]);
+        const rounded = RL_RECAP_TIME.allocateMinutes(weights, weights.reduce((a, b) => a + b, 0) / 60000);
+        ids.forEach((id, i) => { minutes[id] = rounded[i]; });
         return { minutes, cappedGaps };
     }
 
@@ -2474,7 +2535,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     function designerGapByPlant(events) {
         const minutes = {}, lastSession = {};
         if (!events || !events.length) return { minutes, lastSession };
-        const sorted = [...events].sort((a, b) => (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
+        const sorted = events.filter(e => e && e.plant_id != null && String(e.plant_id).trim() && Number.isFinite(e.ts)).sort((a, b) => (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
         for (let i = 0; i < sorted.length; i++) {
             if (!CAT_DESIGNER_ACTIONS.has(sorted[i].action)) continue;
             const plant = sorted[i].plant_id, start = sorted[i].ts;
@@ -2502,38 +2563,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return mm ? `${h}h ${mm}m` : `${h}h`;
     }
 
-    // Normalize raw per-plant minutes so they sum to targetMinutes, rounded to roundTo (5 min).
-    // Largest plant absorbs any leftover so the sum is exact.
+    // Distribute raw estimates to the exact available budget, including zero.
+    // Five-minute units are preferred; any remaining real minutes are preserved.
     function normalizeMinutes(visits, targetMinutes, roundTo) {
-        if (!visits.length || !targetMinutes) return;
-        const totalRaw = visits.reduce((s, v) => s + (v.estimated_minutes || 0), 0);
-        if (totalRaw <= 0) {
-            // No raw signal: split target evenly across plants
-            const each = roundTo * Math.max(1, Math.round((targetMinutes / visits.length) / roundTo));
-            for (const v of visits) v.normalized_minutes = each;
-            const drift = targetMinutes - visits.length * each;
-            if (visits[0]) visits[0].normalized_minutes += drift;
-            return;
-        }
-        // Proportional scaling
-        let runningSum = 0;
-        const scaled = visits.map(v => {
-            const raw = v.estimated_minutes || 0;
-            const exact = (raw / totalRaw) * targetMinutes;
-            const rounded = roundTo * Math.max(roundTo === 0 ? 0 : 1, Math.round(exact / roundTo));
-            runningSum += rounded;
-            return rounded;
-        });
-        // Fix rounding drift by adjusting the visit with the largest raw share.
-        const drift = targetMinutes - runningSum;
-        if (drift !== 0) {
-            let maxIdx = 0;
-            for (let i = 1; i < visits.length; i++) {
-                if ((visits[i].estimated_minutes || 0) > (visits[maxIdx].estimated_minutes || 0)) maxIdx = i;
-            }
-            scaled[maxIdx] = Math.max(roundTo, scaled[maxIdx] + drift);
-        }
-        for (let i = 0; i < visits.length; i++) visits[i].normalized_minutes = scaled[i];
+        const allocated = RL_RECAP_TIME.allocateMinutes(visits.map(v => v.estimated_minutes || 0), targetMinutes, roundTo);
+        for (let i = 0; i < visits.length; i++) visits[i].normalized_minutes = allocated[i];
     }
 
     const css = `
@@ -3454,9 +3488,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // the cache time and a Full scan always re-runs and overwrites it.
     const cacheVisit = (v) => ({
         plant_id: v.plant_id, name: v.name, first_ts: v.first_ts, last_ts: v.last_ts,
-        actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.estimated_minutes,
+        actions: v.actions, action_counts: v.action_counts, count: v.count, estimated_minutes: v.base_minutes ?? v.estimated_minutes,
         base_minutes: (v.base_minutes != null ? v.base_minutes : v.estimated_minutes), // click-only floor (never the commit-topped value)
-        designer_minutes: v.designer_minutes || 0, // v4.56: was dropped by the cache — cached dates silently lost gap-based Drawing (v4.54)
+        designer_minutes: v.designer_base_minutes ?? v.designer_minutes ?? 0, // cache the click baseline, never the extended session
         designer_last: v.designer_last || null,    // v4.60: last designer session {s,e} for the commit-anchored extension
         capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
         all_logs_notes: v.all_logs_notes || [],    // v4.110: masked All logs comments, so a cached day keeps them when the tool is down
@@ -3493,12 +3527,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // plant's own save commit (dayEndExtension, v4.114).
         const dayLastTs = Math.max(0, ...visits.map(v => v.last_ts || 0));
         for (const v of visits) {
+            const before = JSON.stringify([v.estimated_minutes, v.designer_minutes, v.changes_in_window, v.scheduled_in_window]);
+            // Preserve the click-only baseline across repeat calls and cached/reopened days.
+            if (v.base_minutes == null) v.base_minutes = v.estimated_minutes || 0;
+            if (v.designer_base_minutes == null) v.designer_base_minutes = v.designer_minutes || 0;
+            let adjustedBase = v.base_minutes;
+            v.designer_minutes = v.designer_base_minutes;
+            for (const key of ['longgap_cut_minutes', 'gap_commit_ext_minutes', 'designer_ext_minutes', 'tail_ext_minutes']) delete v[key];
             // A sparse-click visit that opened a CONFIG SURFACE (edit/access/vnc action) is a sub-tool
             // config session: the work happens in a tool that logs almost no pang clicks and the save
             // commits a while after your last click. For those, widen the window tail so the session-
             // ending commit is caught (for BOTH the badge and the time credit); else keep the tight window.
             const hasConfigAction = (v.actions || []).some(a => { const m = ACTION_META[a]; return m && (m.cat === 'edit' || m.cat === 'access' || m.cat === 'vnc'); });
-            const sparseConfig = (v.count || 0) <= SPARSE_CLICK_MAX && hasConfigAction;
+            // Two clicks hours apart are separate visits, not one short config session.
+            const sparseConfig = (v.count || 0) <= SPARSE_CLICK_MAX && hasConfigAction
+                && (v.last_ts || v.first_ts) - v.first_ts <= COMMIT_SESSION_MAX_MS;
             const start = v.first_ts - CHANGE_PAD_LEAD_MS;
             const end   = (v.last_ts || v.first_ts) + (sparseConfig ? COMMIT_SESSION_MAX_MS : CHANGE_PAD_TAIL_MS);
             const inWin = (commits[v.plant_id] || [])
@@ -3536,8 +3579,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     if (credit < capMin) cut += capMin - credit; else ext += credit - capMin;
                 }
                 if (cut || ext) {
-                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                    v.base_minutes = Math.max(1, b0 - cut + ext);
+                    adjustedBase = Math.max(0, adjustedBase - cut + ext);
                     if (cut) v.longgap_cut_minutes = cut;    // for the verification dump
                     if (ext) v.gap_commit_ext_minutes = ext; // commit-proven presence past the 30-min cap
                 }
@@ -3567,8 +3609,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (trigAll && !sparseConfig && v.last_ts && v.last_ts === dayLastTs) {
                 const extra = dayEndExtension(v.last_ts, trigAll, GAP_CREDIT_C);
                 if (extra > 0) {
-                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                    v.base_minutes = b0 + extra;
+                    adjustedBase += extra;
                     v.tail_ext_minutes = extra;
                 }
             }
@@ -3577,18 +3618,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // 30-min gap cap can credit it up to 30 min. Cap its click-only floor to ISOLATED_TOUCH_CAP.
             // Edit surfaces (Designer/AK3) and server actions are deliberate work and are NOT capped. Uses
             // v.actions (set on both scan paths), so the cap now also applies on quick/single-date scans. (v4.53, R-g)
-            if ((v.count || 0) === 1 && triggered.length === 0 && (v.actions || []).length === 1) {
+            if (Array.isArray(commitList) && (v.count || 0) === 1 && triggered.length === 0 && (v.actions || []).length === 1) {
                 const cat0 = (ACTION_META[v.actions[0]] || {}).cat;
                 if (cat0 === 'access' || cat0 === 'vnc' || cat0 === 'diag') {
-                    const b0 = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
-                    if (b0 > ISOLATED_TOUCH_CAP) v.base_minutes = ISOLATED_TOUCH_CAP;
+                    adjustedBase = Math.min(adjustedBase, ISOLATED_TOUCH_CAP);
                 }
             }
             // Time fusion — additive, bounded, idempotent (always recomputed from the click baseline, so
             // repeated re-renders never compound). For a sparse config session, credit the real active
             // span [first click → last triggered commit], clamped to [MIN, MAX], and lift estimated_minutes
             // to it when the click-only base is lower. Click-heavy plants never qualify, so addMs stays 0.
-            const base = (v.base_minutes != null ? v.base_minutes : v.estimated_minutes) || 0;
+            const base = adjustedBase;
             if (sparseConfig && triggered.length) {
                 // The triggered commit is the only hard evidence of when this sparse sub-tool session ended.
                 const lastC = tsFromPangDate(triggered[triggered.length - 1].date);
@@ -3602,7 +3642,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 v.estimated_minutes = base;
             }
             v.commit_added_minutes = v.estimated_minutes - base;      // may be negative when the cap artifact is corrected
-            if (triggered.length || v.commit_added_minutes) any = true;
+            if (before !== JSON.stringify([v.estimated_minutes, v.designer_minutes, v.changes_in_window, v.scheduled_in_window])) any = true;
         }
         // NOTE: no per-commit content classification. A measurement over 30 real days (457 triggered
         // commits across 94 plants) found 100% classify as "integration" — adding a device commits the
@@ -4047,9 +4087,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     async function rlTasks(projectId) {
         if (_rlTasksCache[projectId]) return _rlTasksCache[projectId];
         const r = await rlFetch('GET', `/tasks/search?project.value=${projectId}&match=all`);
+        if (r.status !== 200) throw new Error(`Could not read project tasks (HTTP ${r.status}). Retry the preview.`);
         let arr = r.json;
-        if (arr && !Array.isArray(arr)) arr = arr.tasks || arr.data || [];
-        const tasks = (Array.isArray(arr) ? arr : []).filter(t => t && t.taskId && t.taskName)
+        if (arr && !Array.isArray(arr)) arr = arr.tasks || arr.data;
+        if (!Array.isArray(arr)) throw new Error('Could not read project tasks: unexpected response. Retry the preview.');
+        const tasks = arr.filter(t => t && t.taskId && t.taskName && !t.deleted && !t.archived)
             .map(t => ({
                 taskId: t.taskId, taskName: String(t.taskName), done: !!t.completedAt, // done ⇒ ticked off in the plan
                 phase: String((t.projectPhase && t.projectPhase.projectPhaseName) || ''), // category/phase carries the discipline for bare-named tasks
@@ -4168,26 +4210,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const p = _describeChain.then(() => _bucketSubtaskDescribeNow(taskId, iso, act, notes));
         _describeChain = p.catch(() => {});
         return p;
-    }
-    // Heal missing Description logs whenever a day's plan is reviewed (v4.107). Bucket rows that
-    // plan as ⏭ already-booked never reach the book loop — their entry exists (booked before
-    // v4.106, or the describe failed that day) — so the visit log would stay missing forever.
-    // The existing subtask entry names the task; re-run the idempotent describe on it.
-    async function backfillBucketDescriptions(plan, iso) {
-        let added = 0;
-        try {
-            const ex = plan._existing || [];
-            for (const e of plan) {
-                if (e.status !== 'already-booked' || e.projectId) continue; // bucket rows only
-                const pidPfx = String(e.plant_id) + ' ';
-                const hit = ex.find(x => x.task && (x.task.taskId || x.task.id)
-                    && String(x.task.taskName || x.task.name || '').indexOf(pidPfx) === 0
-                    && (!e.categoryId || !x.category || x.category.categoryId === e.categoryId));
-                if (hit && await bucketSubtaskDescribe(hit.task.taskId || hit.task.id, iso, e.activityName, e.notes)) added++;
-            }
-        } catch (err) { LOG('book: describe backfill failed', String(err)); }
-        if (added) LOG('book: describe backfill added', added, 'section(s) for', iso);
-        return added;
     }
     // The task matcher lives in RL_RECAP_MATCH, above the IIFE — pure, and unit-tested by
     // task-match.test.js. It is the most heuristic code in the script; keep it measurable.
@@ -4437,9 +4459,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 rows = res.rows || [];
                 // A silent empty calendar is indistinguishable from "no meetings that day", which is
                 // exactly how this feature failed the first time. Say which it was.
-                if (res.error) calError = String(res.error);
+                if (res.error) throw new Error(String(res.error));
                 else if (!rows.length) calError = 'no calendar events found for this date';
-            } catch (e) { rows = []; calError = 'calendar read failed'; }
+            } catch (e) { throw new Error('Calendar unavailable: ' + (e.message || String(e)) + '. Retry, or turn off Calendar to review plant estimates only.'); }
             visits._calendar = rows;
             if (!rows.length) return;
             // Only re-scale when the panel is actually distributing to a total; with normalize off the
@@ -4474,7 +4496,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
-            backfillBucketDescriptions(plan, iso); // ⏭ bucket rows: heal missing Description logs in the background (v4.107)
+            // Preview is read-only. Task descriptions are updated only by the explicit booking action.
             function wire() {
                 const updateGo = () => {
                     const n = [...box.querySelectorAll('.bookplan-cb')].filter(c => c.checked).length;
@@ -4641,10 +4663,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
             const mine = ((GM_getValue(KEY_USER_PLANTS, {})[username]) || []).map(String);
             const plantIds = [...new Set([...recent, ...mine])];
-            if (!plantIds.length) return al ? al.visits : [];
-            const merging = !!al;
-            const r = await loadVisitsForDate(iso, plantIds, onProg, { keepEvents: merging });
-            visits = merging ? stampVisitTime(overlayAllLogsVisits(r.visits, al.visits)) : (r.visits || []);
+            if (!plantIds.length) visits = al ? al.visits : [];
+            else {
+                const merging = !!al;
+                const r = await loadVisitsForDate(iso, plantIds, onProg, { keepEvents: merging });
+                visits = merging ? stampVisitTime(overlayAllLogsVisits(r.visits, al.visits)) : (r.visits || []);
+            }
         }
         // Meetings first, plant work fills the rest (v4.117, Thomas's rule): calendar time is booked
         // at its real duration and the plant distribution gets only what is left of the workday.
@@ -4656,7 +4680,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         let calRows = [];
         if (GM_getValue(KEY_CAL_ENABLED, false)) {
             statusCb && statusCb('reading your Outlook calendar…');
-            try { calRows = (await calRowsForDate(iso, workdayMin)).rows || []; } catch (e) { calRows = []; }
+            const calendarResult = await calRowsForDate(iso, workdayMin);
+            if (calendarResult.error) throw new Error('Calendar unavailable: ' + calendarResult.error + '. Retry this day.');
+            calRows = calendarResult.rows || [];
         }
         visits._calendar = calRows;
         if (!visits.length) return visits;
@@ -4784,7 +4810,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const plan = hasWork ? await buildBookingPlan(visits, iso,
                         (n, total, v) => say(`reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
                     days.push({ iso, wd: WD[i], plan });
-                    if (plan.length) backfillBucketDescriptions(plan, iso); // heal ⏭ bucket rows; serialized internally (v4.107)
+                    // Building a week preview must not update task descriptions.
                 } catch (err) {
                     days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err) });
                 }
