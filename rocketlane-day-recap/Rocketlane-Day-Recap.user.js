@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.135
+// @version      4.136
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1108,7 +1108,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.135';
+    const SCRIPT_VERSION   = '4.136';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2452,7 +2452,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // The day boundary is Oslo local, matching every other date in the script.
     const markFullScanRan = () => { try { GM_setValue(KEY_LAST_FULL_SCAN, todayISO()); } catch (e) {} };
     const fullScanRanToday = () => GM_getValue(KEY_LAST_FULL_SCAN, '') === todayISO();
-    const shouldNudgeFullScan = () => !fullScanRanToday() && GM_getValue(KEY_FULLSCAN_NUDGE, '') !== todayISO();
+    // v4.136 (Thomas: "↻ refresh button does not behave as fullscan it look like"): the All-logs path
+    // used to call markFullScanRan(), so a day where IWMAC All logs answered was recorded as a completed
+    // pang sweep — the check-up vanished, the panel's tip vanished, and a later build said "a full scan
+    // has already run today" when none had. Coverage by All logs still satisfies the once-a-day
+    // recommendation (that was the 4.110 intent and it is sound: All logs is fleet-wide), but it is
+    // recorded under its own key and described as what it is, so ↻ — which really does run the sweep,
+    // verified live over 7 750 plants — can never look like it did nothing.
+    const KEY_LAST_ALL_LOGS_COVER = 'last_all_logs_cover_date'; // 'YYYY-MM-DD' All logs answered for every weekday
+    const markAllLogsCovered = () => { try { GM_setValue(KEY_LAST_ALL_LOGS_COVER, todayISO()); } catch (e) {} };
+    const allLogsCoveredToday = () => GM_getValue(KEY_LAST_ALL_LOGS_COVER, '') === todayISO();
+    const coveredToday = () => fullScanRanToday() || allLogsCoveredToday();
+    const shouldNudgeFullScan = () => !coveredToday() && GM_getValue(KEY_FULLSCAN_NUDGE, '') !== todayISO();
 
     // Cross-plant time attribution for a set of visits that still carry their `_events`. Flattens every
     // click into one timeline, credits each gap to the plant that was open across it, and stamps the
@@ -4669,6 +4680,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         budget.plant = readyPlant.reduce((s, e) => s + (e.status === 'ready' ? (e.minutes || 0) : 0), 0);
         budget.projected = budget.existing + readyCalMin + budget.plant;
         budget.normalized = distributing;
+        budget.hasPlantRows = readyPlant.length > 0; // v4.136: no plant rows ⇒ nothing was there to distribute, say nothing about it
         plan._budget = budget;
         LOG('book: budget', iso, 'workday', wdMin, 'existing', existingMin, 'cal', readyCalMin,
             'plant', budget.plant, '→ day totals', budget.projected, budget.over ? '(OVER)' : '');
@@ -4731,7 +4743,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 ` — ${t(budget.committed)} against a ${t(budget.workday)} day, <b>${t(budget.overBy)} too much</b>. ` +
                 `No plant time is added; untick something, or fix the sheet.</div>`;
         }
-        if (!budget.normalized) {
+        if (!budget.normalized && budget.hasPlantRows) {
             return `<div class="bookplan-warn">🕑 “Distribute to total” is off, so these are raw estimates and the day is not ` +
                 `held to ${t(budget.workday)}. ${t(budget.existing)} is already booked on this date.</div>`;
         }
@@ -5019,7 +5031,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (!(al.ok && !al.limit_reached)) stillNeed.push(iso);
             }
             if (!stillNeed.length) {
-                markFullScanRan(); // every weekday was covered fleet-wide — the daily recommendation is satisfied
+                markAllLogsCovered(); // fleet-wide coverage satisfies the daily recommendation — but it is NOT a pang sweep (v4.136)
                 return { ok: true, ran: false, from_all_logs: true };
             }
             need.length = 0;
@@ -5233,7 +5245,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
         async function build() {
             const { askScan, askCal } = weekCheckupPlan({
-                fullScanRanToday: fullScanRanToday(), scanChoice, calChoice,
+                fullScanRanToday: coveredToday(), scanChoice, calChoice, // All-logs coverage counts for asking, never as a sweep having run
                 calAskedDate: GM_getValue(KEY_CAL_ASKED, ''), today: todayISO(),
             });
             if (askScan || askCal) { renderCheckup(askScan, askCal); return; }
@@ -5251,9 +5263,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (seq !== mySeq) return;
                 if (!fs.ok) weekWarn = `⚠ Full scan unavailable (${esc(fs.reason)}) — built from quick data, plans may MISS plants.`;
                 else if (fs.ran && fs.failed) { weekWarn = `⚠ ${fs.failed} plant${fs.failed === 1 ? '' : 's'} unreachable during the full scan — using the partial result (not cached).`; override = fs.dates; }
-                else if (fs.from_all_logs) weekInfo = `✓ Check-up: IWMAC All logs answered for every weekday${force ? ' — no pang sweep needed' : ''}.`;
+                else if (fs.from_all_logs) weekInfo = '✓ Check-up: IWMAC All logs answered for every weekday — no pang sweep ran; ↻ runs one.';
                 else if (fs.ran) weekInfo = '✓ Check-up: full scan completed for this build.';
                 else if (fullScanRanToday()) weekInfo = '✓ Check-up: a full scan has already run today.';
+                else if (allLogsCoveredToday()) weekInfo = '✓ Check-up: IWMAC All logs covered every weekday today — no pang sweep has run; ↻ runs one.';
             } catch (err) {
                 if (seq !== mySeq) return;
                 weekWarn = `⚠ Full scan failed (${esc(String((err && err.message) || err))}) — built from quick data, plans may MISS plants.`;
