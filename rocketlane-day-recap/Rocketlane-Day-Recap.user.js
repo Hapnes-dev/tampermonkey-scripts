@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.131
+// @version      4.132
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -641,6 +641,29 @@ var RL_RECAP_CAL = (function () {
     //   calChoice         the calendar answer for THIS modal, null while pending
     //   calAskedDate      'YYYY-MM-DD' the calendar question was last asked on ('' = never)
     //   today             'YYYY-MM-DD'
+    // Why the calendar could not be read, as a stable code plus a sentence (v4.132, Thomas: "if you
+    // are not logged in to outlook give out warning and to login"). Signed-out is the failure that
+    // matters: the sync tab is redirected to the Microsoft login page, where this script never runs,
+    // so the only symptom used to be "Outlook did not answer in time" — which reads as slowness.
+    //   no-token  the Outlook tab loaded but its MSAL cache holds no calendar token ⇒ signed out
+    //   http      the REST call was refused; 401/403 ⇒ session expired, anything else ⇒ a read error
+    //   timeout   a tab was opened and never answered ⇒ almost always the login redirect
+    //   no-answer the tab answered with no result   open  no tab could be opened   exception  threw
+    function calErrorFor(kind, status) {
+        switch (kind) {
+            case 'no-token': return { code: 'signin', error: 'not signed in to Outlook' };
+            case 'http': return (status === 401 || status === 403)
+                ? { code: 'signin', error: 'Outlook session expired (HTTP ' + status + ')' }
+                : { code: 'read', error: 'Outlook returned HTTP ' + status };
+            case 'timeout': return { code: 'signin-likely', error: 'Outlook did not answer — most likely you are not signed in' };
+            case 'no-answer': return { code: 'read', error: 'Outlook answered with nothing' };
+            case 'open': return { code: 'open', error: 'could not open Outlook' };
+            case 'exception': return { code: 'read', error: 'calendar read failed' };
+            default: return { code: 'read', error: 'calendar unavailable' };
+        }
+    }
+    const calNeedsSignin = code => code === 'signin' || code === 'signin-likely';
+
     function weekCheckupPlan(s) {
         s = s || {};
         return {
@@ -653,7 +676,7 @@ var RL_RECAP_CAL = (function () {
         CAL_SECRET_RE, CAL_RULES,
         calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
         calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock, calDuration,
-        weekCheckupPlan,
+        weekCheckupPlan, calErrorFor, calNeedsSignin,
     };
 })();
 // ===== Rocketlane task matcher =======================================================
@@ -980,7 +1003,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
 
-    const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan } = RL_RECAP_CAL;
+    const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
 
     const { pickTask, bookDiscWeights } = RL_RECAP_MATCH;
 
@@ -999,7 +1022,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.131';
+    const SCRIPT_VERSION   = '4.132';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1525,7 +1548,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             token = calFindToken();
             if (!token) await new Promise(r => setTimeout(r, 500));
         }
-        if (!token) { finish({ byDate: {}, error: 'no Outlook session token — open Outlook and sign in' }); return; }
+        if (!token) { finish(Object.assign({ byDate: {} }, calErrorFor('no-token'))); return; }
         const byDate = {};
         try {
             for (const iso of dates) {
@@ -1538,14 +1561,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         Prefer: `outlook.timezone="${CAL_TZ}"`, // else every time comes back UTC
                     },
                 });
-                if (!r.ok) { byDate[iso] = []; continue; }
+                // A refused request is not an empty day (v4.132) — it used to be silently booked as one.
+                if (!r.ok) { finish(Object.assign({ byDate }, calErrorFor('http', r.status))); return; }
                 const j = await r.json();
                 byDate[iso] = (Array.isArray(j && j.value) ? j.value : [])
                     .map(calNormalizeEvent).filter(Boolean);
             }
             finish({ byDate });
         } catch (e) {
-            finish({ byDate, error: 'calendar read failed' });
+            finish(Object.assign({ byDate }, calErrorFor('exception')));
         }
     }
 
@@ -1573,11 +1597,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             };
             const readResult = () => {
                 const res = GM_getValue(KEY_CAL_RESULT, null);
-                return (res && res.at >= startedAt) ? { byDate: res.byDate || {}, error: res.error } : null;
+                return (res && res.at >= startedAt) ? { byDate: res.byDate || {}, error: res.error, code: res.code } : null;
             };
             try { GM_setValue(KEY_CAL_REQUEST, { at: startedAt, dates }); } catch {}
             const tick = setInterval(() => {
-                if (answered()) { done(readResult() || { byDate: {}, error: 'Outlook answered with nothing' }); return; }
+                if (answered()) { done(readResult() || Object.assign({ byDate: {} }, calErrorFor('no-answer'))); return; }
                 // Give an already-open tab first refusal; only then open one of our own.
                 if (!tab && Date.now() - startedAt > CAL_QUIET_WAIT_MS) {
                     try {
@@ -1586,9 +1610,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                                 { active: false, insert: false, setParent: true });
                         }
                     } catch {}
-                    if (!tab) { done({ byDate: {}, error: 'could not open Outlook' }); return; }
+                    if (!tab) { done(Object.assign({ byDate: {} }, calErrorFor('open'))); return; }
                 }
-                if (Date.now() - startedAt > timeoutMs) done({ byDate: {}, error: 'Outlook did not answer in time' });
+                // We opened a tab and it never answered: the script did not run there, which is what a
+                // redirect to the Microsoft login page looks like from here (v4.132).
+                if (Date.now() - startedAt > timeoutMs) done(Object.assign({ byDate: {} }, calErrorFor('timeout')));
             }, 250);
         });
     }
@@ -1597,15 +1623,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // session so re-opening a day never re-opens Outlook.
     const _calCache = new Map(); // iso -> { at, rows, error }
     const CAL_TTL_MS = 10 * 60 * 1000;
+    // A sign-in failure is latched for a minute (v4.132): Book week asks for five days in a row, and
+    // each would otherwise open a tab and wait the full timeout before reporting the same thing. The
+    // "Sign in to Outlook" button, the 🗓 toggles and ↻ all clear it, so a retry after signing in asks
+    // Outlook again.
+    let _calSigninFailedAt = 0;
+    function calResetSignin() { _calSigninFailedAt = 0; }
     async function calRowsForDate(iso, workdayMin) {
         if (!GM_getValue(KEY_CAL_ENABLED, false)) return { rows: [] };
+        if (_calSigninFailedAt && Date.now() - _calSigninFailedAt < 60000) return Object.assign({ rows: [] }, calErrorFor('no-token'));
         const hit = _calCache.get(iso);
         if (hit && Date.now() - hit.at < CAL_TTL_MS) return { rows: calPrice(hit.events, workdayMin), error: hit.error };
         const res = await calFetchDays([iso]);
         const events = (res.byDate && res.byDate[iso]) || [];
         // An unavailable calendar is not evidence of an empty day; let the next preview retry.
         if (!res.error) _calCache.set(iso, { at: Date.now(), events });
-        return { rows: calPrice(events, workdayMin), error: res.error };
+        if (calNeedsSignin(res.code)) _calSigninFailedAt = Date.now();
+        return { rows: calPrice(events, workdayMin), error: res.error, code: res.code };
     }
     function calPrice(events, workdayMin) {
         return calAllocate(events || [], workdayMin, ROUND_TO_MIN)
@@ -2805,6 +2839,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt { flex: 1; line-height: 1.35; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt small { color: #6f6f6f; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .rl-inline-btn { font-size: 11px; line-height: 1.3; padding: 1px 7px; margin-left: 4px; border: 1px solid #b1520a; background: #fff; color: #b1520a; border-radius: 4px; cursor: pointer; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-nb { font-size: 10px; color: #525252; background: #f4f4f4; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
@@ -3054,6 +3089,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         calendarChk?.addEventListener('change', () => {
             GM_setValue(KEY_CAL_ENABLED, !!calendarChk.checked);
             if (!calendarChk.checked) _calCache.clear();
+            calResetSignin();
             // Book week carries the same toggle (v4.128) — keep it in step when both are open.
             const wk = document.querySelector(`#${WEEK_ID} input[data-b="cal"]`);
             if (wk) wk.checked = !!calendarChk.checked;
@@ -4522,6 +4558,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return plan;
     }
 
+    // "Not signed in to Outlook" (v4.132): one banner for both flows, with a button that opens Outlook
+    // in a foreground tab so the user can sign in themselves — the script never touches credentials.
+    // Clicking it also clears the sign-in latch, so the next retry genuinely asks Outlook again.
+    const OUTLOOK_SIGNIN_URL = 'https://outlook.office.com/calendar/';
+    function calSigninHtml(detail) {
+        return `<div class="bookplan-warn">🗓 <b>Not signed in to Outlook</b>` + (detail ? ` — ${escapeHtml(detail)}` : '') +
+            `. Sign in, then retry. <button type="button" data-b="outlook" class="rl-inline-btn">Sign in to Outlook</button></div>`;
+    }
+    function wireOutlookSignin(root) {
+        root.querySelectorAll('[data-b=outlook]').forEach(b => b.addEventListener('click', () => {
+            calResetSignin();
+            try { GM_openInTab(OUTLOOK_SIGNIN_URL, { active: true, setParent: true }); }
+            catch { try { window.open(OUTLOOK_SIGNIN_URL, '_blank'); } catch {} }
+        }));
+    }
+
     // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
     // same one: after this booking, does the day read 7,5 h? Silence means it does.
     function budgetWarnHtml(budget) {
@@ -4652,9 +4704,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 rows = res.rows || [];
                 // A silent empty calendar is indistinguishable from "no meetings that day", which is
                 // exactly how this feature failed the first time. Say which it was.
-                if (res.error) throw new Error(String(res.error));
+                if (res.error) { const e = new Error(String(res.error)); e.calCode = res.code; throw e; }
                 else if (!rows.length) calError = 'no calendar events found for this date';
-            } catch (e) { throw new Error('Calendar unavailable: ' + (e.message || String(e)) + '. Retry, or turn off Calendar to review plant estimates only.'); }
+            } catch (e) {
+                const err = new Error('Calendar unavailable: ' + (e.message || String(e)) + '. Retry, or turn off Calendar to review plant estimates only.');
+                err.calCode = e && e.calCode; // signed-out gets its own screen below (v4.132)
+                throw err;
+            }
             visits._calendar = rows;
             if (!rows.length) return;
             // Only re-scale when the panel is actually distributing to a total; with normalize off the
@@ -4742,7 +4798,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 });
             }
         }).catch(err => {
-            box.innerHTML = `<div class="bookplan-head">Couldn't build the plan: ${esc(String(err && err.message || err))}</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>`;
+            const signin = calNeedsSignin(err && err.calCode);
+            box.innerHTML = signin
+                ? `<div class="bookplan-head">Couldn't read your calendar</div>` + calSigninHtml(String(err && err.message || '').replace(/^Calendar unavailable: /, '').replace(/\. Retry.*$/, '')) +
+                  `<div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>`
+                : `<div class="bookplan-head">Couldn't build the plan: ${esc(String(err && err.message || err))}</div><div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>`;
+            wireOutlookSignin(box);
             box.querySelector('[data-b=cancel]').addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
         });
     }
@@ -4875,7 +4936,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (GM_getValue(KEY_CAL_ENABLED, false)) {
             statusCb && statusCb('reading your Outlook calendar…');
             const calendarResult = await calRowsForDate(iso, workdayMin);
-            if (calendarResult.error) throw new Error('Calendar unavailable: ' + calendarResult.error + '. Retry this day.');
+            if (calendarResult.error) { const e = new Error('Calendar unavailable: ' + calendarResult.error + '. Retry this day.'); e.calCode = calendarResult.code; throw e; }
             calRows = calendarResult.rows || [];
         }
         visits._calendar = calRows;
@@ -4908,6 +4969,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         _allLogsDownUntil = 0;
         _commitsCache.clear();
         _rlWeekCache.clear();
+        calResetSignin(); // ↻ after signing in must ask Outlook again (v4.132)
     }
     function toggleWeekBooking() {
         const ex = document.getElementById(WEEK_ID);
@@ -4954,6 +5016,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const on = !!ev.target.checked;
                 GM_setValue(KEY_CAL_ENABLED, on);
                 if (!on) _calCache.clear(); // same rule as the panel toggle: off drops the cache, so on re-asks Outlook
+                calResetSignin();
                 const chk = document.querySelector(`#${PANEL_ID} input[data-field="calendar"]`); // keep the panel in step
                 if (chk) chk.checked = on;
                 build();
@@ -4961,6 +5024,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             box.querySelector('[data-b=prev]')?.addEventListener('click', () => { monday = addDaysISO(monday, -7); build(); });
             box.querySelector('[data-b=next]')?.addEventListener('click', () => { monday = addDaysISO(monday, 7); build(); });
             box.querySelectorAll('[data-b=cancel]').forEach(b => b.addEventListener('click', () => wrap.remove()));
+            wireOutlookSignin(box);
         };
 
         // Pre-build check-up. Two questions, ONE screen (v4.129) — asking them in sequence would mean two
@@ -5067,7 +5131,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     days.push({ iso, wd: WD[i], plan, cal: (visits._calendar || []).length });
                     // Building a week preview must not update task descriptions.
                 } catch (err) {
-                    days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err) });
+                    days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err), calCode: err && err.calCode });
                 }
             }
             if (seq !== mySeq) return;
@@ -5094,7 +5158,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // With the calendar on, a day that returned no events says so — "no plant work" alone
                 // would read as "nothing happened" when it may mean the calendar was never consulted.
                 const calNote = calOn && !day.err && day.cal === 0 ? ' · 🗓 no calendar events' : '';
-                const side = day.err ? '⚠ ' + esc(day.err)
+                const side = day.err ? (calNeedsSignin(day.calCode) ? '⚠ not signed in to Outlook — day skipped' : '⚠ ' + esc(day.err))
                     : !day.plan.length ? 'no plant work' + calNote
                     : unsafe ? '⚠ can’t verify what’s booked — day skipped'
                     : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}`;
@@ -5114,7 +5178,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 }
             }
             const readyRows = rows.filter(r => r.e.status === 'ready');
+            const signinDays = days.filter(d => calNeedsSignin(d.calCode)).length;
             box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
+                + (signinDays ? calSigninHtml(`${signinDays} of 5 days could not be read`) : '')
                 + (weekInfo ? `<div class="rl-week-info">${weekInfo}</div>` : '') + html +
                 `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
             wireNav();
