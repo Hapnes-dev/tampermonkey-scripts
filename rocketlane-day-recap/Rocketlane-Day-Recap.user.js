@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.129
+// @version      4.130
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -389,7 +389,35 @@ var RL_RECAP_TIME = (function () {
         return allocated;
     }
 
-    return { cappedGapCredit, dayEndExtension, allocateMinutes };
+    // The day's minute budget (v4.130, Thomas's rule: "the goal is to fill out 7.5 everyday … make sure
+    // you don't exceed that amount"). The target is what the weekday TOTALS, not what this script adds,
+    // so everything already on the timesheet for that date counts against it — including hours typed in
+    // by hand, which nothing here had ever looked at. Measured on the live sheet before this was written:
+    // 02.09 read 7,83 h and 04.09 7,92 h, because the plant distribution filled a whole 7,5 h on top of
+    // manual entries; other days sat at 5,83 h and 6,92 h.
+    //
+    // Order is deliberate. What is already booked is a fact and cannot be rescaled. Calendar time is
+    // real and priced first (v4.117). Plant estimates are the only soft number, so they absorb whatever
+    // is left — which is also why they are the only thing that can be squeezed to zero.
+    function dayBudget(o) {
+        o = o || {};
+        const num = v => (Number.isFinite(v) && v > 0 ? Math.round(v) : 0);
+        const workday = num(o.workdayMin);
+        const existing = num(o.existingMin);   // already on the sheet for this date, whoever put it there
+        const calendar = num(o.calendarMin);   // Outlook rows about to be booked (⏭ ones are in `existing`)
+        const committed = existing + calendar;
+        const plantMin = Math.max(0, workday - committed);
+        return {
+            workday, existing, calendar, committed, plantMin,
+            total: committed + plantMin,        // what the day reads once this booking lands
+            full: plantMin === 0 && committed > 0, // no room left for plant work
+            over: committed > workday,
+            overBy: Math.max(0, committed - workday),
+            under: Math.max(0, workday - (committed + plantMin)), // only non-zero if workday is 0
+        };
+    }
+
+    return { cappedGapCredit, dayEndExtension, allocateMinutes, dayBudget };
 })();
 // ===== Outlook calendar → meeting / admin time =======================================
 // pang only sees plant work, so meetings, planning and training never reached the timesheet — and
@@ -899,7 +927,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.129';
+    const SCRIPT_VERSION   = '4.130';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4377,7 +4405,65 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Team bucket projects ("Team Kulde Oppgaver", …) — offered as a fallback home for plants that
         // have no Rocketlane project of their own.
         plan._teamProjects = projects.filter(p => /^\s*team\s/i.test(p.name));
+
+        // ---- Land the day on the workday total (v4.130) -------------------------------------------
+        // Until now the plant distribution filled a whole 7,5 h regardless of what the sheet already
+        // held, so a day with manual entries on it finished ABOVE the target (measured live: 7,83 h and
+        // 7,92 h). Two things were missing: hours already booked never entered the budget, and the
+        // distribution ran in loadDayForBooking, before anything knew which rows were ⏭ duplicates — so
+        // the pot was also spread across rows that would never be booked, which pulled the day under.
+        // Both are settled here, where the plan finally knows the status of every row.
+        const wdMin = Math.round((GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS) * 60);
+        const existingMin = existing.reduce((s, e) => s + (Number(e && e.minutes) > 0 ? Number(e.minutes) : 0), 0);
+        const readyCalMin = plan.reduce((s, e) => s + (e.calendar && e.status === 'ready' ? (e.minutes || 0) : 0), 0);
+        const budget = RL_RECAP_TIME.dayBudget({ workdayMin: wdMin, existingMin, calendarMin: readyCalMin });
+        // Only the rows that will actually be booked share the remainder. A ⏭ row's minutes are already
+        // counted in `existingMin`; giving it a slice again would book the same time twice over.
+        const readyPlant = plan.filter(e => !e.calendar && e.status === 'ready');
+        // Distribute only when this day IS being distributed. `normalized_minutes` is set by
+        // normalizeMinutes and is the existing signal for it: Book week always sets it, Book day only
+        // when "Distribute to total" is ticked. Reading the GM flag directly would instead have made a
+        // day-panel preference silently switch off Book week's whole reason for existing.
+        const distributing = visits.some(v => v && v.normalized_minutes != null);
+        if (distributing && readyPlant.length) {
+            const share = RL_RECAP_TIME.allocateMinutes(readyPlant.map(e => e.minutes || 0), budget.plantMin, ROUND_TO_MIN);
+            for (let i = 0; i < readyPlant.length; i++) readyPlant[i].minutes = share[i];
+            // A row squeezed to zero must not be booked as a 0-minute entry — the day is already full.
+            for (const e of readyPlant) if (!e.minutes) e.status = 'over-budget';
+        }
+        budget.plant = readyPlant.reduce((s, e) => s + (e.status === 'ready' ? (e.minutes || 0) : 0), 0);
+        budget.projected = budget.existing + readyCalMin + budget.plant;
+        budget.normalized = distributing;
+        plan._budget = budget;
+        LOG('book: budget', iso, 'workday', wdMin, 'existing', existingMin, 'cal', readyCalMin,
+            'plant', budget.plant, '→ day totals', budget.projected, budget.over ? '(OVER)' : '');
         return plan;
+    }
+
+    // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
+    // same one: after this booking, does the day read 7,5 h? Silence means it does.
+    function budgetWarnHtml(budget) {
+        if (!budget || !budget.workday) return '';
+        const t = m => fmtMinutes(m);
+        if (budget.over) {
+            return `<div class="bookplan-warn">⚠ <b>Over the workday.</b> ${t(budget.existing)} is already booked on this date` +
+                (budget.calendar ? ` and the calendar adds ${t(budget.calendar)}` : '') +
+                ` — ${t(budget.committed)} against a ${t(budget.workday)} day, <b>${t(budget.overBy)} too much</b>. ` +
+                `No plant time is added; untick something, or fix the sheet.</div>`;
+        }
+        if (!budget.normalized) {
+            return `<div class="bookplan-warn">🕑 “Distribute to total” is off, so these are raw estimates and the day is not ` +
+                `held to ${t(budget.workday)}. ${t(budget.existing)} is already booked on this date.</div>`;
+        }
+        if (budget.full) {
+            return `<div class="bookplan-warn">🕑 <b>The day is already full.</b> ${t(budget.committed)} of ${t(budget.workday)} ` +
+                `is booked, so there is no room left for plant work.</div>`;
+        }
+        if (budget.projected < budget.workday) {
+            return `<div class="bookplan-warn">🕑 This day will total <b>${t(budget.projected)}</b> of ${t(budget.workday)} — ` +
+                `${t(budget.workday - budget.projected)} short. Nothing more was found to book; add the rest by hand.</div>`;
+        }
+        return ''; // lands exactly on the workday — nothing to say
     }
 
     async function bookPlanEntries(plan, iso, onProgress) {
@@ -4514,10 +4600,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
-                + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '');
+                + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
+                + budgetWarnHtml(plan._budget);
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
@@ -4931,6 +5018,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}`;
                 html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
                 if (unsafe) continue;
+                html += budgetWarnHtml(day.plan._budget); // silent when the day lands on the workday total
                 for (const e of day.plan) {
                     const i = rows.length;
                     rows.push({ e, day });
@@ -4939,7 +5027,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.status === 'already-booked' ? ' — already booked' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
