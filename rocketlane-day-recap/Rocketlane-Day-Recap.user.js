@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.133
+// @version      4.134
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -822,9 +822,20 @@ var RL_RECAP_MATCH = (function () {
     // Within a tier several projects can share the number ("11061 - Willys Östhammar" and "… - Fastighet"
     // — 12+ such pairs live). `lastBooked` (projectId → last date Thomas booked on it) picks the one
     // actually in use; with no history, list order, as before.
-    function findProjectForPlant(list, plantId, lastBooked) {
+    // Twins (v4.134, Thomas: "3530 looks like you did not find project for this / maybe there is more
+    // cases like this"). 13 numbers carry two live projects. Three of them are a real plan next to a
+    // SHELL — a project Rocketlane seeded with its default tasks and nobody planned in: 3530 (2 tasks vs
+    // 23), 2191 (2 vs 36), 9964 (34 vs 2). The 4.133 history tiebreak was actively wrong there: the old
+    // list-first rule had booked 3530 onto the shell, and those bookings then "confirmed" the shell. So
+    // among twins the order is now: a project the user PINNED for this number → the one with a real
+    // plan when the other is a shell → the one last booked (only between projects that both look real)
+    // → list order. Task counts and the pin are inputs, so this stays pure.
+    const SHELL_TASKS_MAX = 3; // a seeded-but-unplanned Rocketlane project carries 2 default tasks
+    function findProjectForPlant(list, plantId, lastBooked, opts) {
         const id = String(plantId == null ? '' : plantId).trim();
-        if (!id) return { project: null, tier: 0, candidates: [] };
+        const none = { project: null, tier: 0, candidates: [], reason: '' };
+        if (!id) return none;
+        const o = opts || {};
         const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const tiers = [
             new RegExp('^\\s*' + esc + '\\s*[-–—:.]'),
@@ -836,14 +847,35 @@ var RL_RECAP_MATCH = (function () {
             const v = typeof lastBooked.get === 'function' ? lastBooked.get(String(p.id)) : lastBooked[String(p.id)];
             return String(v || '');
         };
+        const countOf = p => {
+            const tc = o.taskCount; if (tc == null) return null;
+            const v = typeof tc === 'function' ? tc(p) : (typeof tc.get === 'function' ? tc.get(String(p.id)) : tc[String(p.id)]);
+            return (v != null && Number.isFinite(+v)) ? +v : null;
+        };
         for (let t = 0; t < tiers.length; t++) {
             const cands = (list || []).filter(p => p && tiers[t].test(String(p.name || '')));
             if (!cands.length) continue;
-            let pick = cands[0];
-            if (cands.length > 1) pick = cands.slice().sort((a, b) => lastOf(b).localeCompare(lastOf(a)))[0]; // stable: no history ⇒ list order
-            return { project: pick, tier: t + 1, candidates: cands };
+            let pick = cands[0], reason = '';
+            if (cands.length > 1) {
+                reason = 'first';
+                const pinned = o.pinned != null ? cands.find(p => String(p.id) === String(o.pinned)) : null;
+                if (pinned) { pick = pinned; reason = 'pinned'; }
+                else {
+                    const counted = cands.map(p => ({ p, n: countOf(p) }));
+                    const real = counted.filter(x => x.n != null && x.n > SHELL_TASKS_MAX);
+                    const shells = counted.filter(x => x.n != null && x.n <= SHELL_TASKS_MAX);
+                    if (real.length && shells.length && real.length + shells.length === cands.length) {
+                        // a plan next to a shell: the plan, and history only to choose BETWEEN plans
+                        pick = real.slice().sort((a, b) => lastOf(b.p).localeCompare(lastOf(a.p)))[0].p; reason = 'plan';
+                    } else {
+                        const byHist = cands.slice().sort((a, b) => lastOf(b).localeCompare(lastOf(a)));
+                        if (lastOf(byHist[0])) { pick = byHist[0]; reason = 'history'; }
+                    }
+                }
+            }
+            return { project: pick, tier: t + 1, candidates: cands, reason };
         }
-        return { project: null, tier: 0, candidates: [] };
+        return none;
     }
 
     // `kind` is 'drawing' | 'integration' | 'setup' — the module deliberately does NOT know
@@ -1015,7 +1047,7 @@ var RL_RECAP_MATCH = (function () {
 
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
-        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant,
+        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX,
     };
 })();
 
@@ -1060,7 +1092,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.133';
+    const SCRIPT_VERSION   = '4.134';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -1521,6 +1553,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // picks once in the review UI — remembered here, exactly like the team-bucket fallback.
     const KEY_CAL_PROJECT      = 'cal_project';
     const KEY_CAL_PROJECT_NAME = 'cal_project_name';
+    const KEY_PROJECT_PICK     = 'project_pick';     // { '<plant number>': projectId } — the user's choice between twin projects (v4.134)
 
     // Find a live Outlook access token in the SPA's MSAL cache. Entries are JSON blobs keyed by
     // account/scope; the one we want is credentialType AccessToken, targets a Calendars scope, and
@@ -4475,17 +4508,27 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const split = categorizeVisit(v);
             const bookable = Object.entries(split).filter(([c, m]) => !CAT_NOT_BOOKED.has(c) && Math.round(m) >= 1);
             if (!bookable.length) continue;
-            let match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast);
+            const pins = GM_getValue(KEY_PROJECT_PICK, {}) || {};
+            const pinOpts = { pinned: pins[String(v.plant_id)] || null };
+            let match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast, pinOpts);
             // A plant with no project may simply be newer than the daily project cache (8949 was booked
             // into the bucket while "8949 - Prix Selje: MQTT aftermarked" existed). Refresh the inventory
             // once per session on the first miss and look again (v4.133).
             if (!match.project && !_projectsRefreshedThisSession) {
                 _projectsRefreshedThisSession = true;
-                try { projects = await rlProjects(true); match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast); } catch (e) { /* keep the cached list */ }
+                try { projects = await rlProjects(true); match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast, pinOpts); } catch (e) { /* keep the cached list */ }
+            }
+            // Twins without a pin: read each candidate's task count (session-cached) and decide again
+            // with them — a real plan beats a seeded shell, whatever history says (v4.134).
+            let twinCounts = null;
+            if (match.candidates.length > 1 && match.reason !== 'pinned') {
+                twinCounts = new Map();
+                for (const c of match.candidates) { try { twinCounts.set(String(c.id), (await rlTasks(c.id)).length); } catch (e) { /* unknown stays unknown */ } }
+                match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast, Object.assign({ taskCount: twinCounts }, pinOpts));
             }
             const proj = match.project;
             if (proj && (match.tier > 1 || match.candidates.length > 1)) {
-                LOG('book: project for', v.plant_id, '→', proj.name, '(tier', match.tier + (match.candidates.length > 1 ? `, ${match.candidates.length} share the number` : '') + ')');
+                LOG('book: project for', v.plant_id, '→', proj.name, '(tier', match.tier + (match.candidates.length > 1 ? `, ${match.candidates.length} share the number, chose by ${match.reason}` : '') + ')');
             }
             const texts = await bookTexts(v);
             const tasks = proj ? await rlTasks(proj.id) : [];
@@ -4561,7 +4604,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
-                    projMatch: proj ? { tier: match.tier, n: match.candidates.length } : null, // how the project was found (v4.133)
+                    projMatch: proj ? { tier: match.tier, n: match.candidates.length, reason: match.reason, // how the project was found (v4.133/4.134)
+                        twins: match.candidates.length > 1 ? match.candidates.map(c => ({ id: c.id, name: c.name, tasks: twinCounts ? twinCounts.get(String(c.id)) : null })) : null } : null,
                     taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
                     category, categoryId: catId || null, minutes: Math.round(min), activityName: act, notes,
                     status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
@@ -4626,6 +4670,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             try { GM_openInTab(OUTLOOK_SIGNIN_URL, { active: true, setParent: true }); }
             catch { try { window.open(OUTLOOK_SIGNIN_URL, '_blank'); } catch {} }
         }));
+    }
+
+    // Two live projects carry this plant's number (v4.134): say which one was chosen and why, and let
+    // the user pin the right one. The pin is remembered per plant number and beats every other rule.
+    function twinHtml(e) {
+        const m = e && e.projMatch; if (!m || !m.twins || m.twins.length < 2) return '';
+        const why = m.reason === 'pinned' ? 'pinned by you' : m.reason === 'plan' ? 'the one with a real plan'
+            : m.reason === 'history' ? 'the one you last booked' : 'first in the list — pick the right one';
+        const opts = m.twins.map(t => `<option value="${escapeHtml(String(t.id))}"${String(t.id) === String(e.projectId) ? ' selected' : ''}>${escapeHtml(t.name)}${t.tasks != null ? ` (${t.tasks} tasks)` : ''}</option>`).join('');
+        return ` · <b>${m.twins.length} projects share this number</b> — ${why}: <select class="bookplan-proj bookplan-twin" data-n="${escapeHtml(String(e.plant_id))}" title="Pin the right project for this plant number — remembered from now on">${opts}</select>`;
+    }
+    function pinTwin(plantNo, projectId) {
+        const pins = GM_getValue(KEY_PROJECT_PICK, {}) || {};
+        pins[String(plantNo)] = +projectId;
+        GM_setValue(KEY_PROJECT_PICK, pins);
+        LOG('book: pinned project', projectId, 'for plant', plantNo);
     }
 
     // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
@@ -4792,7 +4852,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${e.projMatch && e.projMatch.n > 1 ? ' · ' + e.projMatch.n + ' projects share this number — using the one you last booked' : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
@@ -4809,7 +4869,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 };
                 box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
                 // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms.
-                box.querySelectorAll('.bookplan-proj').forEach(sel => sel.addEventListener('change', (ev) => {
+                box.querySelectorAll('.bookplan-twin').forEach(sel => sel.addEventListener('change', (ev) => {
+                    pinTwin(ev.target.dataset.n, ev.target.value);
+                    openBookingFlow(container, visits, iso); // rebuild: task pick, dupes and budget all follow the project
+                }));
+                box.querySelectorAll('.bookplan-proj:not(.bookplan-twin)').forEach(sel => sel.addEventListener('change', (ev) => {
                     const row = ev.target.closest('.bookplan-row');
                     const cb = row && row.querySelector('.bookplan-cb');
                     const val = +ev.target.value || 0;
@@ -5227,7 +5291,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${e.projMatch && e.projMatch.n > 1 ? ' · ' + e.projMatch.n + ' projects share this number — using the one you last booked' : ''}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
@@ -5245,7 +5309,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             };
             box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
             // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms (as in Book day).
-            box.querySelectorAll('.bookplan-proj').forEach(sel => sel.addEventListener('change', (ev) => {
+            box.querySelectorAll('.bookplan-twin').forEach(sel => sel.addEventListener('change', (ev) => {
+                pinTwin(ev.target.dataset.n, ev.target.value);
+                build(); // rebuild the week: task pick, dupes and budget all follow the project
+            }));
+            box.querySelectorAll('.bookplan-proj:not(.bookplan-twin)').forEach(sel => sel.addEventListener('change', (ev) => {
                 const row = ev.target.closest('.bookplan-row');
                 const cb = row && row.querySelector('.bookplan-cb');
                 const val = +ev.target.value || 0;
