@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.134
+// @version      4.135
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -878,6 +878,22 @@ var RL_RECAP_MATCH = (function () {
         return none;
     }
 
+    // What a project's task list amounts to for booking (v4.135, Thomas: "5590 did have any tasks. so
+    // tool was right" — and then asked for the row to say so). A project Rocketlane seeded with its two
+    // default Invoice rows and nothing else has NO bookable task; the entry books as an activity on the
+    // project, which is correct, but "✳ new activity" alone reads as a matcher miss. Sales-quantity and
+    // checklist rows are excluded exactly as pickTask excludes them.
+    function taskPoolSummary(tasks) {
+        const list = (tasks || []).filter(t => t && t.taskName);
+        let qty = 0, checklist = 0, bookable = 0;
+        for (const t of list) {
+            if (BOOK_QTY_TASK_RE.test(t.taskName)) qty++;
+            else if (BOOK_CHECKLIST_RE.test(t.taskName)) checklist++;
+            else bookable++;
+        }
+        return { total: list.length, bookable, checklist, qty, empty: bookable === 0 };
+    }
+
     // `kind` is 'drawing' | 'integration' | 'setup' — the module deliberately does NOT know
     // Rocketlane's category NAMES, so renaming a category upstream cannot silently break matching.
     function pickTask(tasks, kind, texts, used, prior) {
@@ -1047,7 +1063,7 @@ var RL_RECAP_MATCH = (function () {
 
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
-        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX,
+        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary,
     };
 })();
 
@@ -1075,7 +1091,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
 
-    const { pickTask, bookDiscWeights, findProjectForPlant } = RL_RECAP_MATCH;
+    const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary } = RL_RECAP_MATCH;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -1092,7 +1108,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.134';
+    const SCRIPT_VERSION   = '4.135';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4604,6 +4620,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
+                    // No task picked on a project that HAS none to pick: say so on the row instead of a
+                    // bare "new activity" (v4.135). A matcher miss on a project with real tasks stays plain.
+                    noTasks: (proj && !task) ? (s => s.empty ? s : null)(taskPoolSummary(tasks)) : null,
                     projMatch: proj ? { tier: match.tier, n: match.candidates.length, reason: match.reason, // how the project was found (v4.133/4.134)
                         twins: match.candidates.length > 1 ? match.candidates.map(c => ({ id: c.id, name: c.name, tasks: twinCounts ? twinCounts.get(String(c.id)) : null })) : null } : null,
                     taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
@@ -4670,6 +4689,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             try { GM_openInTab(OUTLOOK_SIGNIN_URL, { active: true, setParent: true }); }
             catch { try { window.open(OUTLOOK_SIGNIN_URL, '_blank'); } catch {} }
         }));
+    }
+
+    // The "no task" line of a plan row (v4.135). Three cases, each said plainly: the project has no
+    // work tasks at all (only Rocketlane's seeded checklist rows, or nothing), the plant has no project,
+    // or the matcher simply found nothing that fits on a project that does have tasks.
+    function activityLabelHtml(e) {
+        const act = escapeHtml(e.activityName || '');
+        const nt = e && e.noTasks;
+        if (nt) {
+            const only = nt.total ? ` — only ${nt.total} checklist/sales row${nt.total === 1 ? '' : 's'}, nothing to book onto` : '';
+            return `✳ <b>no work tasks in this project yet</b>${only}. Booked as activity: ${act}`;
+        }
+        return '✳ new activity: ' + act;
     }
 
     // Two live projects carry this plant's number (v4.134): say which one was chosen and why, and let
@@ -4852,7 +4884,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
@@ -5291,7 +5323,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
