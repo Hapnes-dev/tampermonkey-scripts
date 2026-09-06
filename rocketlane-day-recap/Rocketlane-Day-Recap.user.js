@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.136
+// @version      4.137
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -894,6 +894,18 @@ var RL_RECAP_MATCH = (function () {
         return { total: list.length, bookable, checklist, qty, empty: bookable === 0 };
     }
 
+    // Whether time on a project may be billable, from the project's FULL object (v4.137 — Thomas booked
+    // a week and got "Bad Request: Cannot make billable time entries for non billable project budget" on
+    // every 3530 and 10251 row). The list endpoint does not carry it; `GET /projects/{id}` does, as
+    // `financialContractType` (top level and again under `projectFinancialsDetailModel`): NON_BILLABLE on
+    // those two, FIXED_FEE on 6272 which booked fine. Unknown ⇒ billable, the behaviour every entry had
+    // until now; the booking path still catches the rejection and retries non-billable once.
+    function projectIsBillable(json) {
+        const j = json || {};
+        const t = j.financialContractType || (j.projectFinancialsDetailModel && j.projectFinancialsDetailModel.financialContractType) || '';
+        return String(t).toUpperCase() !== 'NON_BILLABLE';
+    }
+
     // `kind` is 'drawing' | 'integration' | 'setup' — the module deliberately does NOT know
     // Rocketlane's category NAMES, so renaming a category upstream cannot silently break matching.
     function pickTask(tasks, kind, texts, used, prior) {
@@ -1063,7 +1075,7 @@ var RL_RECAP_MATCH = (function () {
 
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
-        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary,
+        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary, projectIsBillable,
     };
 })();
 
@@ -1091,7 +1103,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
 
-    const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary } = RL_RECAP_MATCH;
+    const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable } = RL_RECAP_MATCH;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -1108,7 +1120,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.136';
+    const SCRIPT_VERSION   = '4.137';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3974,6 +3986,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (list.length) GM_setValue(KEY_RL_PROJECTS, { v: 2, fetched_at: Date.now(), list });
         return list.length ? list : (cached && cached.list) || [];
     }
+    // Billability per project, once per session (v4.137). One GET per project that appears in a plan;
+    // a rejection at book time also writes `false` here so the rest of that project's rows skip the
+    // failed attempt.
+    const _rlBillableCache = new Map(); // projectId -> boolean
+    async function rlProjectBillable(projectId) {
+        const k = String(projectId);
+        if (_rlBillableCache.has(k)) return _rlBillableCache.get(k);
+        let b = true;
+        try { const r = await rlFetch('GET', `/projects/${projectId}`); if (r.status === 200 && r.json) b = projectIsBillable(r.json); } catch (e) { /* unknown ⇒ billable, the retry covers it */ }
+        _rlBillableCache.set(k, b);
+        return b;
+    }
     function rlFindProject(list, plantId, lastBooked) { // v4.133: see RL_RECAP_MATCH.findProjectForPlant
         return findProjectForPlant(list, plantId, lastBooked).project;
     }
@@ -4554,6 +4578,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast, Object.assign({ taskCount: twinCounts }, pinOpts));
             }
             const proj = match.project;
+            const projBillable = proj ? await rlProjectBillable(proj.id) : null; // v4.137
             if (proj && (match.tier > 1 || match.candidates.length > 1)) {
                 LOG('book: project for', v.plant_id, '→', proj.name, '(tier', match.tier + (match.candidates.length > 1 ? `, ${match.candidates.length} share the number, chose by ${match.reason}` : '') + ')');
             }
@@ -4631,6 +4656,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
+                    billable: proj ? projBillable : null, // null = decided at book time (bucket rows)
                     // No task picked on a project that HAS none to pick: say so on the row instead of a
                     // bare "new activity" (v4.135). A matcher miss on a project with real tasks stays plain.
                     noTasks: (proj && !task) ? (s => s.empty ? s : null)(taskPoolSummary(tasks)) : null,
@@ -4802,7 +4828,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // or course is booked so the day accounts for itself, not to be invoiced to the customer
             // whose project hosts it — and these sit on a Team bucket, so a billable flag there would
             // put internal time on someone's invoice.
-            const body = { date: iso, minutes: e.minutes, billable: !e.calendar, categoryId: e.categoryId, projectId };
+            // A NON_BILLABLE project rejects billable entries outright ("Cannot make billable time entries
+            // for non billable project budget" — a whole week of 3530/10251 rows, 2026-09-07). The plan
+            // row already knows for its own project; a bucket row is looked up here, once per project.
+            const billable = e.calendar ? false : (e.billable != null ? e.billable : await rlProjectBillable(projectId));
+            const body = { date: iso, minutes: e.minutes, billable, categoryId: e.categoryId, projectId };
             const notes = e.notes || '';
             if (taskId) { body.taskId = taskId; body.notes = notes || act; } // task entry: details (or the title) → notes
             else { body.activityName = act; if (notes) body.notes = notes; } // activity entry: details → Notes field
@@ -4825,6 +4855,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 else if (now._checkOk) r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
                 // check unavailable ⇒ leave the failure — a rebuilt plan dedupes correctly later
             }
+            // Safety net for the billability lookup (v4.137): the exact rejection, once, as non-billable.
+            if (!(r.status === 200 || r.status === 201) && body.billable) {
+                const e0 = (r.json && r.json.errors && r.json.errors[0]) || {};
+                const msg = String(e0.errorMessage || e0.reason || (r.json && r.json.message) || r.raw || '');
+                if (/non.?billable/i.test(msg)) {
+                    _rlBillableCache.set(String(projectId), false);
+                    LOG('book: project', projectId, 'rejects billable time — retrying', e.plant_id, 'as non-billable');
+                    body.billable = false;
+                    r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
+                }
+            }
+            e.billable = body.billable;
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
             if (e.status === 'booked') ok++; else {
                 fail++;
@@ -4895,7 +4937,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">'
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
+                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${(e.calendar || e.billable === false) ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
                     <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
@@ -5335,7 +5377,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="Untick to skip this entry">'
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
+                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${(e.calendar || e.billable === false) ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
                         <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
