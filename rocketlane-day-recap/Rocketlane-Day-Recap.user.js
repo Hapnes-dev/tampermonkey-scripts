@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.130
+// @version      4.131
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -257,47 +257,106 @@ var RL_RECAP_NOTE_TEXT = (function () {
             + bookAndList(t.slice(0, 4).map(x => x.label + (x.count > 1 ? ` (×${x.count})` : '')), 4)]);
     }
 
-    // The finished Notes field: summary, then what the operations log said, then the diff. Blank-line
-    // separated so the summary stands alone as the one line Rocketlane shows collapsed.
-    function composeEntryNote(summary, logNotes, details) {
-        const logLines = (logNotes || []).filter(Boolean).map(l => 'Log: ' + l).join('\n');
-        return [summary, logLines, details].filter(Boolean).join('\n\n');
+    // The finished Notes field, in two blocks for two readers (v4.131, Thomas: "so my boss can easily
+    // read it … under the note should also be technical of what you actually did"):
+    //
+    //   <plain-language line — what happened to the plant, for the project leader>
+    //   Site note: <what you wrote in the operations log that day, your own words>
+    //
+    //   Technical: <the engineer's sentence>
+    //   <the diff lines, as evidence>
+    //
+    // Rocketlane shows only the first line collapsed, so the leader's line is the first line. The site
+    // note sits in the same block because it is the most human description there is; it used to be
+    // labelled "Log:" and parked under the summary, which read as machinery. The technical block is
+    // labelled so the split is unmistakable when the note is expanded or rendered into a task's
+    // Description.
+    function composeEntryNote(summary, logNotes, details, tech) {
+        const site = (logNotes || []).filter(Boolean).map(l => 'Site note: ' + l).join('\n');
+        const top = [summary, site].filter(Boolean).join('\n');
+        const bottom = [tech ? 'Technical: ' + tech : '', details].filter(Boolean).join('\n');
+        return [top, bottom].filter(Boolean).join('\n\n');
     }
 
-    // ---- Leader-facing opening line (v4.114) ----------------------------------------------------
+    // ---- Leader-facing opening line (v4.114, rewritten v4.131) ---------------------------------
     // The first line of a booked note is the only one Rocketlane shows collapsed, and the person
-    // reading it is usually the project leader, not the engineer. These helpers phrase the day in
-    // plain service terms — what happened to the plant — while the technical sentence and the diff
-    // still follow underneath as evidence. `discs` = the day's detected disciplines, best first.
+    // reading it is the project leader, not the engineer. v4.114 phrased it in service terms but
+    // dropped the one thing a non-technical reader recognises — the equipment's own names ("Kjøttdisk
+    // 3", "Fryserom") — and asserted "control and alarm settings" for every tuned device, including a
+    // Data Engine poll rate. v4.131 names the equipment, frames the day (commissioning / service /
+    // follow-up), says what the change means, and only claims alarm limits when a parameter label
+    // actually says so. `discs` = the day's detected disciplines, best first.
     const LEAD_NOUN = {
         refrig: 'refrigeration controller', vent: 'ventilation controller', energy: 'energy meter',
         wireless: 'wireless sensor', heat: 'heating controller', machine: 'machine-room controller',
     };
+    const LEAD_SYSTEM = {
+        refrig: 'refrigeration', vent: 'ventilation', energy: 'energy', wireless: 'wireless-sensor',
+        heat: 'heating', machine: 'machine-room',
+    };
+    const LEAD_REPORTS = {
+        refrig: 'temperatures and alarms', vent: 'temperatures, airflow and alarms', energy: 'consumption readings',
+        wireless: 'readings', heat: 'temperatures and alarms', machine: 'status and alarms',
+    };
+    // The tools of a session, in words a leader reads without a glossary.
+    const LEAD_TOOL = {
+        'phpMyAdmin': 'database work', 'VNC': 'a remote-desktop session on the site server',
+        'topology': 'a review of the system layout', 'direct login': 'logging in to the plant',
+        'status check': 'a status check', 'restarts': 'restarting plant services', 'backup': 'a backup',
+        'AK3': 'scanner setup', 'client admin': 'client administration', 'file upload': 'a file upload',
+        'Designer': 'work in the drawing tool', 'alarm settings': 'alarm-setting changes',
+        'duty list': 'a duty-list update', 'service logon': 'a service logon', 'note': 'a handover note',
+        'alarm call': 'an alarm call',
+    };
+    const leadTools = (tools, max) => (tools || []).filter(x => x && x.label).slice(0, max).map(x => LEAD_TOOL[x.label] || String(x.label));
+
+    // What a set of changed parameter labels amounts to, in plain words — and ONLY what they amount to.
+    // Labels are snake_case column names ("sp_temp", "alarm_high"); `_` is a word character to ``, so
+    // separators are normalised to spaces first or "sp_temp" would never read as a setpoint.
+    function leadTuneKinds(labels) {
+        const t = (labels || []).map(x => String(x).toLowerCase().replace(/[_\-.]+/g, ' '));
+        const kinds = [];
+        if (t.some(x => /alarm|\balm\b|delay|limit|grense|\bhigh\b|\blow\b|\bhi\b|\blo\b/.test(x))) kinds.push('alarm limits');
+        if (t.some(x => /setpoint|set_?p\b|\bsp\b|settpunkt|\btemp/.test(x))) kinds.push('setpoints');
+        if (t.some(x => /poll|interval|\blog|address|\badr|baud|\bport|timeout/.test(x))) kinds.push('communication settings');
+        return kinds.length ? bookAndList(kinds, 3) : 'settings';
+    }
 
     function summarizeLeadIntegration(f, discs) {
         f = f || {};
-        const noun = LEAD_NOUN[(discs || [])[0]] || 'device';
+        const d = (discs || [])[0];
+        const noun = LEAD_NOUN[d] || 'device', sys = LEAD_SYSTEM[d] ? LEAD_SYSTEM[d] + ' ' : '';
         const clauses = [];
         const nAdd = f.uAdd || (f.devAdd || []).length;
-        if (nAdd) clauses.push(`connected ${bookPlural(nAdd, 'new ' + noun)} to the monitoring platform`);
-        const nTuned = (f.devMod || []).filter(x => (f.devAdd || []).indexOf(x) < 0).length;
-        if (nTuned) clauses.push(`adjusted control and alarm settings on ${bookPlural(nTuned, 'device')}`);
-        if (f.uRen) clauses.push(`renamed ${bookPlural(f.uRen, 'device')} for a clearer overview`);
+        if (nAdd) {
+            const names = (f.uAddNames || []).map(bookBareLabel).filter(Boolean);
+            clauses.push(`connected ${bookPlural(nAdd, 'new ' + noun)}` + (names.length ? ` (${bookAndList(names, 3)})` : '') + ' to the monitoring platform');
+        }
+        const tuned = (f.devMod || []).filter(x => (f.devAdd || []).indexOf(x) < 0);
+        if (tuned.length) clauses.push(`fine-tuned ${leadTuneKinds(f.tuneLabels)} on ${bookPlural(tuned.length, 'device')}`);
+        if (f.uRen) clauses.push(`gave ${bookPlural(f.uRen, 'device')} clearer names` + ((f.renPairs || []).length ? ` (${bookAndList(f.renPairs.slice(0, 2), 2)})` : ''));
         if (f.uDel) clauses.push(`removed ${bookPlural(f.uDel, 'device')} from monitoring`);
         if ((f.settNames || []).length) clauses.push('adjusted plant-level settings');
-        if (f.virtVals) clauses.push('updated the plant\'s calculated values');
-        return bookSentence(clauses);
+        if (f.virtVals) clauses.push("updated the plant's calculated values");
+        if (!clauses.length) return '';
+        const frame = nAdd ? `Commissioning work on the plant's ${sys}monitoring`
+            : tuned.length ? `Service work on the plant's ${sys}monitoring`
+            : `Work on the plant's ${sys}monitoring setup`;
+        const outcome = nAdd ? ` ${nAdd === 1 ? 'It now reports' : 'They now report'} ${LEAD_REPORTS[d] || 'status'} to the platform.` : '';
+        return bookSentence([frame + ' — ' + bookAndList(clauses, 6)]) + outcome;
     }
 
-    function summarizeLeadDrawing(panelInfo, drawingNames) {
+    function summarizeLeadDrawing(panelInfo, drawingNames, discs) {
         const p = panelInfo || [];
         const n = p.length || (drawingNames || []).length;
         if (!n) return '';
+        const names = (p.length ? p.map(x => x.panel) : drawingNames).map(bookBareLabel).filter(Boolean);
         const created = p.filter(x => x.added).length;
-        const verb = (created && created === n) ? 'built' : 'updated';
-        const names = (p.length ? p.map(x => x.panel) : drawingNames).filter(Boolean);
-        return bookSentence([`${verb} ${bookPlural(n, 'overview screen')} for the plant's operator display`
-            + (names.length ? ` (${bookAndList(names.map(bookBareLabel).map(x => `"${x}"`), 3)})` : '')]);
+        const sys = LEAD_SYSTEM[(discs || [])[0]];
+        const what = `${sys ? sys + ' ' : ''}overview screen${n === 1 ? '' : 's'}`;
+        const verb = created && created === n ? (n === 1 ? 'Built a new' : `Built ${n} new`) : (n === 1 ? 'Updated the' : `Updated ${n}`);
+        const list = names.length ? ` (${bookAndList(names.map(x => `"${x}"`), 3)})` : '';
+        return `${verb} ${what}${list} — the display the plant's operators use to see live status and alarms.`;
     }
 
     function summarizeLeadSetup(rac) {
@@ -306,14 +365,26 @@ var RL_RECAP_NOTE_TEXT = (function () {
             : 'Set up the plant\'s AK3 gateway/scanner so its devices report to the monitoring platform.';
     }
 
-    function summarizeLeadSupport() {
-        return 'Remote follow-up on the plant — checked status and logs.';
+    // A session that left no describable configuration change: say what was done in plain words, and
+    // say honestly whether anything was saved. `saved` is true when config commits existed but carried
+    // nothing worth reporting (noise tables only), false when the day left no commit at all.
+    function summarizeLeadActions(tools, saved) {
+        const t = leadTools(tools, 4);
+        if (!t.length) return '';
+        return `Remote maintenance on the plant's monitoring system — ${bookAndList(t, 4)}; ` +
+            (saved ? 'only minor configuration changes were saved.' : 'no configuration changes were saved.');
+    }
+
+    function summarizeLeadSupport(tools) {
+        const t = leadTools(tools, 3);
+        return 'Follow-up on the plant from the office — ' + (t.length ? bookAndList(t, 3) : 'checked its status and logs') + '; no configuration was changed.';
     }
 
     return {
         bookAndList, bookSentence, bookPlural, bookBareLabel,
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
+        summarizeLeadActions, leadTuneKinds,
     };
 })();
 // ===== Transition-based time evidence ================================================
@@ -904,6 +975,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
+        summarizeLeadActions,
     } = RL_RECAP_NOTE_TEXT;
 
     const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
@@ -927,7 +999,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.130';
+    const SCRIPT_VERSION   = '4.131';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3917,7 +3989,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             ? 'Worked via ' + actEntries.slice(0, 5).map(([a, n]) => ACT_WORDS[a] + (n > 1 ? ` ×${n}` : '')).join(' · ')
             : '';
         // Same facts as a sentence — the lead line when the day left no config commit to describe.
-        out.sumActions = summarizeActions(actEntries.map(([a, n]) => ({ label: ACT_WORDS[a], count: n })));
+        out.tools = actEntries.map(([a, n]) => ({ label: ACT_WORDS[a], count: n }));
+        out.sumActions = summarizeActions(out.tools);
         if (v.designer_last && v.designer_last.s) out.designerSession = 'Designer session'; // no timestamps — the entry carries its own date/duration
         // Texts read the visit-window commits PLUS the rest of the day's triggered commits — the save
         // that describes your work often lands after the visit window (e.g. during the next plant).
@@ -3928,6 +4001,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (!newest.length) {
             out.notesDraw = out.designerSession || '';
             if (out.designerSession) out.sumDraw = 'Worked in the Designer on the plant\'s drawings.';
+            // No commit to describe — the leader still gets a plain line (v4.131), and the disciplines
+            // can only come from the day's own note here.
+            const wl = bookDiscWeights(out.logStr || '', true);
+            out.discs = Object.keys(wl).sort((a, b) => wl[b] - wl[a]);
+            out.leadActions = summarizeLeadActions(out.tools, false);
             return out;
         }
         const cids = newest.map(c => String(c.id));
@@ -4127,8 +4205,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         out.discs = Object.keys(discSum).sort((a, b) => discSum[b] - discSum[a]);
         // Leader-facing opening lines (v4.114): the plain-language first line of the entry's note.
         // The technical sentence (sumInteg / sumDraw) moves down into the detail block as evidence.
-        out.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames }, out.discs);
-        out.leadDraw = summarizeLeadDrawing(out.panelInfo, out.drawingNames);
+        const tuneLabels = [].concat(...[...tuneMap.values()]);
+        out.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames, tuneLabels }, out.discs);
+        out.leadDraw = summarizeLeadDrawing(out.panelInfo, out.drawingNames, out.discs);
+        out.leadActions = summarizeLeadActions(out.tools, true); // commits existed; used only when nothing above could be said
         return out;
     }
 
@@ -4359,34 +4439,36 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // project LEADER — so it is the plain-language summary of what happened to the plant.
                 // The technical sentence moves to the top of the detail block as evidence, then the
                 // log lines, then the precise diff.
-                let summary, details;
-                const tech = [];
+                // Two readers, two blocks (v4.131): `summary` is the leader's plain line, `tech` the
+                // engineer's sentence, `details` the diff. A day with no describable change still gets a
+                // plain line (leadActions) instead of falling straight to the tools sentence.
+                let summary, tech, details;
                 if (category === CAT_DRAWING) {
-                    summary = texts.leadDraw || texts.sumDraw || texts.sumActions || '';
-                    if (texts.leadDraw && texts.sumDraw && texts.leadDraw !== texts.sumDraw) tech.push(texts.sumDraw);
+                    summary = texts.leadDraw || texts.leadActions || texts.sumDraw || '';
+                    tech = texts.sumDraw || texts.sumActions || '';
                     details = texts.notesDraw || '';
                 } else if (category === CAT_SETUP_PC) {
                     // Setup is reached two ways: an AK3 scanner day, or an integration day on a RAC
                     // plant that belongs under gateway setup. Say which — the old note always claimed AK3.
                     summary = summarizeLeadSetup(racRedirect);
-                    if (texts.sumInteg || texts.sumActions) tech.push(texts.sumInteg || texts.sumActions);
+                    tech = texts.sumInteg || texts.sumActions || '';
                     details = texts.notesInteg || '';
                 } else if (category === CAT_INTEGRATION) {
-                    summary = texts.leadInteg || texts.sumInteg || texts.sumActions || '';
-                    if (texts.leadInteg && (texts.sumInteg || texts.sumActions)) tech.push(texts.sumInteg || texts.sumActions);
+                    summary = texts.leadInteg || texts.leadActions || texts.sumInteg || '';
+                    tech = texts.sumInteg || texts.sumActions || '';
                     details = texts.notesInteg || '';
                 } else {
                     // Support - External: a follow-up session that left no config evidence — say so in
                     // service terms; the tools sentence stays as the technical detail.
-                    summary = summarizeLeadSupport();
-                    if (texts.sumActions) tech.push(texts.sumActions);
+                    summary = summarizeLeadSupport(texts.tools);
+                    tech = texts.sumActions || '';
                     details = texts.notesInteg || '';
                 }
-                details = [tech.join(' '), details].filter(Boolean).join('\n');
+                if (tech === summary) tech = ''; // the summary had to fall back to the technical line — do not print it twice
                 // Whatever you wrote in the operations log / a handover note that day says more about the
-                // work than any diff can (already masked; secret values never travel). `details` is the
-                // commit-derived diff only — the tools fallback already IS the summary, so it never repeats.
-                const notes = composeEntryNote(summary, String(texts.notesLogs || '').split('\n'), details);
+                // work than any diff can (already masked; secret values never travel); it joins the
+                // leader's block as "Site note:".
+                const notes = composeEntryNote(summary, String(texts.notesLogs || '').split('\n'), details, tech);
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
