@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.132
+// @version      4.133
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -808,6 +808,44 @@ var RL_RECAP_MATCH = (function () {
     // Checklist/admin rows are never time-booking targets, not even in rescue mode ("Customers approval",
     // "Alarm test", "Close sales order", "Documentation approved", "Project Satisfaction Survey", …).
     const BOOK_CHECKLIST_RE = /approv|godkjen|survey|dokumentasjon|documentation|subscription|abonnement|\border\b|ordre|handover|overlever|quality|kvalitet|\bsales\b|salg|faktur|invoice|received|alarm test|milestone|møte|meeting/i;
+    // Which Rocketlane project a plant belongs to, by the number in the project's name (v4.133,
+    // Thomas: "if they match same number its the right rocketlane project"). Measured on the live
+    // tenant: 863 non-archived projects, of which 410 follow the "<n> - Name" convention, **171** are
+    // "<n> Name" with no separator at all, 6 carry the number elsewhere ("10109 (8547) - Joker Blaker"),
+    // 276 have no number. The old rule required the separator, so all 171 were invisible and their
+    // plants went to the Team bucket. Tiers, strictest first — the first tier with any hit wins, so a
+    // properly named "<n> - X" always beats a loose mention of the same number somewhere else:
+    //   1  "<n> - X" / "<n>: X" / "<n>. X"        the naming convention
+    //   2  "<n> X"                                 the convention minus its separator
+    //   3  the number anywhere as a whole token    "10109 (8547) - Joker Blaker", "… -9466 Coop Jokkmokk"
+    // The number must be the WHOLE token: 1023 never matches "10232 - …" and 10232 never "1023 - …".
+    // Within a tier several projects can share the number ("11061 - Willys Östhammar" and "… - Fastighet"
+    // — 12+ such pairs live). `lastBooked` (projectId → last date Thomas booked on it) picks the one
+    // actually in use; with no history, list order, as before.
+    function findProjectForPlant(list, plantId, lastBooked) {
+        const id = String(plantId == null ? '' : plantId).trim();
+        if (!id) return { project: null, tier: 0, candidates: [] };
+        const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const tiers = [
+            new RegExp('^\\s*' + esc + '\\s*[-–—:.]'),
+            new RegExp('^\\s*' + esc + '\\s+\\S'),
+            new RegExp('(^|[^0-9])' + esc + '([^0-9]|$)'),
+        ];
+        const lastOf = p => {
+            if (!lastBooked) return '';
+            const v = typeof lastBooked.get === 'function' ? lastBooked.get(String(p.id)) : lastBooked[String(p.id)];
+            return String(v || '');
+        };
+        for (let t = 0; t < tiers.length; t++) {
+            const cands = (list || []).filter(p => p && tiers[t].test(String(p.name || '')));
+            if (!cands.length) continue;
+            let pick = cands[0];
+            if (cands.length > 1) pick = cands.slice().sort((a, b) => lastOf(b).localeCompare(lastOf(a)))[0]; // stable: no history ⇒ list order
+            return { project: pick, tier: t + 1, candidates: cands };
+        }
+        return { project: null, tier: 0, candidates: [] };
+    }
+
     // `kind` is 'drawing' | 'integration' | 'setup' — the module deliberately does NOT know
     // Rocketlane's category NAMES, so renaming a category upstream cannot silently break matching.
     function pickTask(tasks, kind, texts, used, prior) {
@@ -977,7 +1015,7 @@ var RL_RECAP_MATCH = (function () {
 
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
-        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask,
+        bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant,
     };
 })();
 
@@ -1005,7 +1043,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
 
-    const { pickTask, bookDiscWeights } = RL_RECAP_MATCH;
+    const { pickTask, bookDiscWeights, findProjectForPlant } = RL_RECAP_MATCH;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -1022,7 +1060,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.132';
+    const SCRIPT_VERSION   = '4.133';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3876,9 +3914,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (list.length) GM_setValue(KEY_RL_PROJECTS, { v: 2, fetched_at: Date.now(), list });
         return list.length ? list : (cached && cached.list) || [];
     }
-    function rlFindProject(list, plantId) {
-        const re = new RegExp('^\\s*' + String(plantId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-–—:.]');
-        return list.find(p => re.test(p.name)) || null;
+    function rlFindProject(list, plantId, lastBooked) { // v4.133: see RL_RECAP_MATCH.findProjectForPlant
+        return findProjectForPlant(list, plantId, lastBooked).project;
     }
     let _rlCategories = null; // name → categoryId (session cache)
     async function rlCategories() {
@@ -3944,12 +3981,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // would instead cement any mistake it ever made, since the script reads back its own bookings.
     const PRIOR_WEEKS = 8;
     let _priorPromise = null;
+    let _projectsRefreshedThisSession = false; // one forced re-read of the project inventory per session (v4.133)
     function rlTaskPrior() { // -> Promise<Map<`${projectId}|${categoryId}`, taskId[]>> (best first)
         if (_priorPromise) return _priorPromise;
         _priorPromise = (async () => {
             const out = new Map();
             const creds = rlCreds(); if (!creds) return out;
             const counts = new Map(); // key -> Map<taskId, {n, last}>
+            const projLast = new Map(); // projectId -> last date booked — settles duplicate project numbers (v4.133)
             const monday = new Date(); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
             for (let w = 0; w < PRIOR_WEEKS; w++) {
                 const m = new Date(monday); m.setDate(monday.getDate() - 7 * w);
@@ -3970,6 +4009,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     })(r.json, 0);
                     for (const e of entries) {
                         const pid = e.project && (e.project.id || e.project.projectId);
+                        if (pid && e.date && String(e.date) > (projLast.get(String(pid)) || '')) projLast.set(String(pid), String(e.date));
                         const cid = e.category && e.category.categoryId;
                         const tid = e.task && (e.task.taskId || e.task.id);
                         if (!pid || !cid || !tid) continue;
@@ -3986,7 +4026,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     .sort((a, b) => (b[1].n - a[1].n) || b[1].last.localeCompare(a[1].last)) // modal, then most recent
                     .map(x => x[0]));
             }
-            LOG('book: task prior built over', PRIOR_WEEKS, 'weeks —', out.size, 'project+category pairs');
+            out.projLast = projLast;
+            LOG('book: task prior built over', PRIOR_WEEKS, 'weeks —', out.size, 'project+category pairs,', projLast.size, 'projects booked');
             return out;
         })();
         return _priorPromise;
@@ -4422,7 +4463,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     async function buildBookingPlan(visits, iso, onStep) {
-        const [projects, cats, existing] = [await rlProjects(false), await rlCategories(), await rlEntriesOn(iso)];
+        let projects = await rlProjects(false);
+        const cats = await rlCategories(), existing = await rlEntriesOn(iso);
         // Built once per session and only used to break evidence ties (v4.113). A failure here must never
         // block a booking, so it resolves to an empty Map rather than throwing.
         const taskPrior = await rlTaskPrior().catch(() => new Map());
@@ -4433,7 +4475,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const split = categorizeVisit(v);
             const bookable = Object.entries(split).filter(([c, m]) => !CAT_NOT_BOOKED.has(c) && Math.round(m) >= 1);
             if (!bookable.length) continue;
-            const proj = rlFindProject(projects, v.plant_id);
+            let match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast);
+            // A plant with no project may simply be newer than the daily project cache (8949 was booked
+            // into the bucket while "8949 - Prix Selje: MQTT aftermarked" existed). Refresh the inventory
+            // once per session on the first miss and look again (v4.133).
+            if (!match.project && !_projectsRefreshedThisSession) {
+                _projectsRefreshedThisSession = true;
+                try { projects = await rlProjects(true); match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast); } catch (e) { /* keep the cached list */ }
+            }
+            const proj = match.project;
+            if (proj && (match.tier > 1 || match.candidates.length > 1)) {
+                LOG('book: project for', v.plant_id, '→', proj.name, '(tier', match.tier + (match.candidates.length > 1 ? `, ${match.candidates.length} share the number` : '') + ')');
+            }
             const texts = await bookTexts(v);
             const tasks = proj ? await rlTasks(proj.id) : [];
             const racProject = proj ? RAC_RE.test(proj.name) : false;
@@ -4508,6 +4561,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
+                    projMatch: proj ? { tier: match.tier, n: match.candidates.length } : null, // how the project was found (v4.133)
                     taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
                     category, categoryId: catId || null, minutes: Math.round(min), activityName: act, notes,
                     status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
@@ -4738,7 +4792,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : '✳ new activity: ' + esc(e.activityName)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${e.projMatch && e.projMatch.n > 1 ? ' · ' + e.projMatch.n + ' projects share this number — using the one you last booked' : ''}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
@@ -5173,7 +5227,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : '✳ new activity: ' + esc(e.activityName)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${e.projMatch && e.projMatch.n > 1 ? ' · ' + e.projMatch.n + ' projects share this number — using the one you last booked' : ''}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
