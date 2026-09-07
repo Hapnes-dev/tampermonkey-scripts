@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.8
+// @version      9.9
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -207,6 +207,8 @@
     #seii-drivers .drv .meta{opacity:.65;font-size:11px}
     #seii-drivers .drv:hover .meta{opacity:.9}
     #seii-drivers .drv.sub{padding-left:24px}
+    #seii-drivers .drv .unit{padding-left:16px;font-size:11px;opacity:.8}
+    #seii-drivers .drv:hover .unit{opacity:1}
     #seii-plantrow a{font:11px -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#2b6cb0;text-decoration:none;white-space:nowrap}
     #seii-plantrow a:hover{text-decoration:underline}
     `;
@@ -634,10 +636,13 @@
             const pat = likeQ(t);
             return `(driver_type LIKE ${pat} OR sql_text LIKE ${pat})`;
         }).join(' AND ');
-        // Only the first 3 haystack lines come back (order_no, regulators,
-        // unit count) — the unit/grp names are searched server-side but never
-        // transferred or displayed.
-        const sql = `SELECT display_name AS plant_id, driver_type, SUBSTRING_INDEX(sql_text, '\\n', 3) AS head FROM ${IDX_TABLE}` +
+        // Only the first 3 haystack lines come back whole (order_no, regulators,
+        // unit count) plus ONE unit name — the first of the alphabetical line-4
+        // list, cut out server-side so the full unit/grp name lists are still
+        // searched but never transferred. Every index row has all 5 lines
+        // (upsertIndex always writes them), so line 4 is always the unit names.
+        const unit1 = `SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(sql_text, '\\n', 4), '\\n', -1), ', ', 1)`;
+        const sql = `SELECT display_name AS plant_id, driver_type, SUBSTRING_INDEX(sql_text, '\\n', 3) AS head, ${unit1} AS unit1 FROM ${IDX_TABLE}` +
             ` WHERE name LIKE ${likePrefixQ(IDX_PREFIX)} AND ${where}` +
             ` ORDER BY CAST(display_name AS UNSIGNED) DESC, driver_type LIMIT 60`;
         const rs = await toolboxSql(sql);
@@ -649,6 +654,7 @@
                 order_no: head[0] || '',
                 regs: head[1] || '',
                 n_units: Number(head[2]) || 0,
+                unit1: String(r.unit1 || '').trim(),
             };
         });
     }
@@ -658,10 +664,16 @@
         box.innerHTML = rows.map(r => {
             const pid = r.plant_id;
             if (!/^\d+$/.test(pid)) return '';
+            // One unit name on the line under the hit (v9.9) so a cryptic
+            // order_no still reads as something recognisable; the count above
+            // says how many more there are.
+            const unitLine = r.unit1
+                ? `<div class="unit"><span class="meta">${r.n_units > 1 ? 'e.g.' : 'unit'}</span> ${escapeHtml(clip(r.unit1, 60))}</div>`
+                : '';
             return `<div class="drv" data-plant="${pid}" data-drv="${escapeHtml(r.driver_type)}" data-order="${escapeHtml(r.order_no)}">` +
                 `<b>${escapeHtml(r.driver_type)}</b>${r.order_no ? ' ↳ ' + escapeHtml(r.order_no) : ''}` +
                 ` <span class="meta">— plant ${pid} — ${r.n_units} unit${r.n_units === 1 ? '' : 's'}` +
-                `${r.regs ? ' — ' + escapeHtml(clip(r.regs, 60)) : ''}</span></div>`;
+                `${r.regs ? ' — ' + escapeHtml(clip(r.regs, 60)) : ''}</span>${unitLine}</div>`;
         }).join('') || '<div class="drv"><span class="meta">no indexed equipment matches — the index covers plants this tool has loaded</span></div>';
         box.classList.add('show');
     }
