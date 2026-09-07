@@ -2,6 +2,10 @@
 
 Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, first/last action time, which actions you performed — shown as friendly labels with a colour-coded category dot (e.g. `direct_plant` → "Direct", `pma_local` → "phpMyAdmin", `upload` → "Backup") — and an estimated time split). At the top, a 📋 **Day by category** roll-up estimates how your plant time splits across your Rocketlane task categories (Integration, Drawing & Design, Setup), ready to copy straight into your timesheet. Short "just popped in to check" visits show as a separate **Quick check** line — left out of the booked total, since it's your call whether they're worth logging.
 
+## Accuracy improvements in 4.147
+
+Progress bar on Book day / Book week is sticky, 12px tall, shows a **%** prefix, pulses while busy, and never sits at an empty 0% during a long first step (Playwright caught the old 6px bar reading as “missing”).
+
 ## Accuracy improvements in 4.146
 
 ⤴ **Book day** and ⤴ **Book week** show a progress bar while the plan builds (calendar / what-changed reads) and while entries are written — with an `N of M` label, not only a frozen “Booking…” button.

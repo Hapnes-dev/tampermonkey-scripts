@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.146
+// @version      4.147
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3252,12 +3252,35 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[disabled] { opacity: .5; cursor: default; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-sum { font-size: 12px; color: #24a148; font-weight: 600; flex: 1; }
-        /* Progress for plan-build + write (v4.146) — same blue as the panel scan bar */
-        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress { margin: 6px 0 8px; }
-        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress[hidden] { display: none; }
-        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-track { height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden; }
-        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-fill { height: 100%; width: 0%; background: #0f62fe; border-radius: 3px; transition: width .15s ease; }
-        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-lbl { font-size: 11px; color: #525252; margin-top: 4px; }
+        /* Progress for plan-build + write (v4.146, made obvious in v4.147 — sticky, thicker, % label).
+           Live Playwright check showed the 6px non-sticky bar sitting at ~10% for long calendar waits
+           and reading as "no progress bar" even though the node was in the DOM. */
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress {
+            display: none; margin: 0 0 8px; padding: 8px 0 6px;
+            position: sticky; top: 28px; z-index: 2; background: #f9fbff;
+            border-bottom: 1px solid #e8eef9;
+        }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress.is-on { display: block; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-track {
+            height: 12px; background: #d0d7e2; border-radius: 6px; overflow: hidden;
+            box-shadow: inset 0 0 0 1px rgba(0,0,0,.04);
+        }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-fill {
+            height: 100%; width: 0%; background: linear-gradient(90deg, #0f62fe, #4589ff);
+            border-radius: 6px; transition: width .2s ease;
+        }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress.is-busy .bookplan-progress-fill {
+            background-size: 40px 12px;
+            background-image: linear-gradient(110deg, #0f62fe 0 40%, #78a9ff 40% 60%, #0f62fe 60% 100%);
+            animation: rl-recap-progress-slide 1s linear infinite;
+        }
+        @keyframes rl-recap-progress-slide { to { background-position: 40px 0; } }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-lbl {
+            font-size: 12px; font-weight: 600; color: #161616; margin-top: 6px; line-height: 1.35;
+        }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-pct {
+            color: #0f62fe; margin-right: 6px;
+        }
         #${WEEK_ID} { position: fixed; top: 64px; right: 24px; width: 480px; max-width: calc(100vw - 40px); background: #f9fbff; border: 1px solid #d0d7e2; border-radius: 10px; box-shadow: 0 10px 30px rgba(16,24,40,.22); z-index: 2147483000; padding: 12px 14px; color: #21272a; font-family: inherit; }
         #${WEEK_ID} .bookplan { max-height: 68vh; }
         #${WEEK_ID} .rl-week-day { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; font-size: 12px; color: #0043ce; margin-top: 8px; padding: 6px 0 2px; border-top: 2px solid #dfe6f2; }
@@ -5238,16 +5261,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return ''; // lands exactly on the workday — nothing to say
     }
 
-    // Progress bar shared by ⤴ Book day and ⤴ Book week (v4.146). Plan-build and the write itself
-    // can each take tens of seconds with no other signal than a frozen "Booking…" button.
+    // Progress bar shared by ⤴ Book day and ⤴ Book week (v4.146 → v4.147). Plan-build and the write
+    // itself can each take tens of seconds; the first ship used a 6px non-sticky bar that stayed near
+    // 10% during long Outlook waits and was easy to miss (confirmed live via Playwright).
     function bookProgressMarkup() {
-        return `<div class="bookplan-progress" hidden><div class="bookplan-progress-track"><div class="bookplan-progress-fill" style="width:0%"></div></div><div class="bookplan-progress-lbl"></div></div>`;
+        return `<div class="bookplan-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="bookplan-progress-track"><div class="bookplan-progress-fill" style="width:0%"></div></div><div class="bookplan-progress-lbl"></div></div>`;
     }
     function ensureBookProgress(root) {
         if (!root) return null;
         let el = root.querySelector('.bookplan-progress');
         if (!el) {
-            const head = root.querySelector('.bookplan-head') || root.querySelector('.rl-week-status');
+            const head = root.querySelector('.bookplan-head');
             if (head) head.insertAdjacentHTML('afterend', bookProgressMarkup());
             else root.insertAdjacentHTML('afterbegin', bookProgressMarkup());
             el = root.querySelector('.bookplan-progress');
@@ -5257,18 +5281,30 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     function setBookProgress(root, done, total, label) {
         const el = ensureBookProgress(root);
         if (!el) return;
-        el.hidden = false;
+        el.classList.add('is-on');
         const t = Number.isFinite(total) && total > 0 ? total : 0;
         const d = Number.isFinite(done) ? Math.max(0, done) : 0;
-        const pct = t ? Math.min(100, Math.round(d / t * 100)) : 0;
+        // Keep a visible stub (≥8%) while work is running so a long first step does not look empty.
+        const pct = t ? Math.min(100, Math.max(d > 0 || label ? 8 : 0, Math.round(d / t * 100))) : (label ? 8 : 0);
         const fill = el.querySelector('.bookplan-progress-fill');
         const lbl = el.querySelector('.bookplan-progress-lbl');
         if (fill) fill.style.width = pct + '%';
-        if (lbl) lbl.textContent = label || (t ? `${d} of ${t}` : '');
+        el.classList.toggle('is-busy', pct > 0 && pct < 100);
+        el.setAttribute('aria-valuenow', String(pct));
+        if (lbl) {
+            const text = label || (t ? `${d} of ${t}` : '');
+            lbl.innerHTML = `<span class="bookplan-progress-pct">${pct}%</span>${escapeHtml(text)}`;
+        }
     }
     function hideBookProgress(root) {
         const el = root && root.querySelector('.bookplan-progress');
-        if (el) { el.hidden = true; const fill = el.querySelector('.bookplan-progress-fill'); if (fill) fill.style.width = '0%'; }
+        if (!el) return;
+        el.classList.remove('is-on', 'is-busy');
+        const fill = el.querySelector('.bookplan-progress-fill');
+        if (fill) fill.style.width = '0%';
+        const lbl = el.querySelector('.bookplan-progress-lbl');
+        if (lbl) lbl.textContent = '';
+        el.setAttribute('aria-valuenow', '0');
     }
     // Rows bookPlanEntries will actually walk (matches its skip rules) — for a honest progress total.
     function bookProgressTargets(plan) {
@@ -5857,7 +5893,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // when the scan itself is impossible, and then it's flagged loudly.
             let weekWarn = '', weekInfo = '', override = null;
             try {
-                const fs = await weekEnsureFullScan(monday, msg => sayProgress(0, 5, msg), force);
+                sayProgress(0.05, 5, 'Checking full-scan coverage…');
+                const fs = await weekEnsureFullScan(monday, msg => sayProgress(0.1, 5, msg), force);
                 if (seq !== mySeq) return;
                 if (!fs.ok) weekWarn = `⚠ Full scan unavailable (${esc(fs.reason)}) — built from quick data, plans may MISS plants.`;
                 else if (fs.ran && fs.failed) { weekWarn = `⚠ ${fs.failed} plant${fs.failed === 1 ? '' : 's'} unreachable during the full scan — using the partial result (not cached).`; override = fs.dates; }
@@ -5874,17 +5911,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const iso = addDaysISO(monday, i);
                 if (seq !== mySeq) return;
                 const dayLabel = `${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)`;
-                sayProgress(i, 5, `Loading ${dayLabel}…`);
+                // Within-day fractions so a long Outlook wait still moves the bar (v4.147).
+                sayProgress(i + 0.05, 5, `Loading ${dayLabel}…`);
                 try {
-                    const say = txt => sayProgress(i + 0.5, 5, `${dayLabel} — ${txt}`);
+                    const say = (frac, txt) => sayProgress(i + frac, 5, `${dayLabel} — ${txt}`);
                     const visits = await loadDayForBooking(iso,
-                        (done, total) => say(`scanning ${done} of ${total} plants…`), override, say);
+                        (done, total) => say(0.15 + 0.35 * (total ? done / total : 0), `scanning ${done} of ${total} plants…`),
+                        override,
+                        txt => say(0.2, txt));
                     if (seq !== mySeq) return;
                     // Meetings alone are worth a plan (v4.125): a day with no plant work but a calendar
                     // full of them used to be skipped here, so Book week silently dropped it.
                     const hasWork = visits.length || (visits._calendar && visits._calendar.length);
                     const plan = hasWork ? await buildBookingPlan(visits, iso,
-                        (n, total, v) => say(`reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
+                        (n, total, v) => say(0.55 + 0.4 * (total ? n / total : 0),
+                            `reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
                     // Carry the calendar count so the row can say "no calendar events" rather than leave a
                     // silent empty calendar looking identical to a day with no meetings (v4.128) — the
                     // exact ambiguity that hid this feature's first failure, see calRowsForDate.
@@ -5893,6 +5934,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     sayProgress(i + 1, 5, `Loaded ${dayLabel}`);
                 } catch (err) {
                     days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err), calCode: err && err.calCode });
+                    sayProgress(i + 1, 5, `Skipped ${dayLabel}`);
                 }
             }
             if (seq !== mySeq) return;
