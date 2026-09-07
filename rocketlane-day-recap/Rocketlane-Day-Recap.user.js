@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.144
+// @version      4.145
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -354,10 +354,29 @@ var RL_RECAP_NOTE_TEXT = (function () {
         'status check': 'a status check', 'restarts': 'restarting plant services', 'backup': 'a backup',
         'AK3': 'scanner setup', 'client admin': 'client administration', 'file upload': 'a file upload',
         'Designer': 'work in the drawing tool', 'alarm settings': 'alarm-setting changes',
-        'duty list': 'a duty-list update', 'service logon': 'a service logon', 'note': 'a handover note',
-        'alarm call': 'an alarm call',
+        'plant settings': 'plant-setting changes', 'duty list': 'a duty-list update',
+        'service logon': 'a service logon', 'note': 'a handover note', 'alarm call': 'an alarm call',
+        'user access': 'a user-access change', 'RAC get units': 'a remote unit scan',
+        'RAC get info': 'a remote info check', 'RAC start': 'starting the remote access client',
+        'Remote VNC': 'a remote VNC session',
     };
     const leadTools = (tools, max) => (tools || []).filter(x => x && x.label).slice(0, max).map(x => LEAD_TOOL[x.label] || String(x.label));
+
+    // Ops-log / handover comments good enough to lead a timesheet note (v4.145). Skip empty lines and
+    // the IWMAC boilerplate that only restates the action ("Changed plant settings") — the useful ones
+    // name what actually changed ("Changed plant reception block status", "Byttet føler i kjøledisk 3").
+    const LEAD_NOTE_BOILER = /^(changed plant settings|changed alarm settings|launch\b.*|cmd(?: \(rescan\))?)$/i;
+    function pickLeadSiteNote(notes) {
+        const list = (notes || []).map(n => String(n == null ? '' : n).replace(/\s+/g, ' ').trim()).filter(Boolean);
+        let best = '', bestScore = 0;
+        for (const n of list) {
+            if (LEAD_NOTE_BOILER.test(n)) continue;
+            // Prefer concrete length, but keep the first line of a Rocketlane note readable.
+            const score = Math.min(n.length, 160) + (/[æøå]/i.test(n) || /\d/.test(n) ? 20 : 0);
+            if (score > bestScore) { best = n.length > 160 ? n.slice(0, 159) + '…' : n; bestScore = score; }
+        }
+        return best;
+    }
 
     // What a set of changed parameter labels amounts to, in plain words — and ONLY what they amount to.
     // Labels are snake_case column names ("sp_temp", "alarm_high"); `_` is a word character to ``, so
@@ -414,26 +433,41 @@ var RL_RECAP_NOTE_TEXT = (function () {
             : 'Set up the plant\'s AK3 gateway/scanner so its devices report to the monitoring platform.';
     }
 
-    // A session that left no describable configuration change: say what was done in plain words, and
-    // say honestly whether anything was saved. `saved` is true when config commits existed but carried
-    // nothing worth reporting (noise tables only), false when the day left no commit at all.
-    function summarizeLeadActions(tools, saved) {
+    // A session that left no describable configuration *commit*: say what was done in plain words.
+    // `saved` is true when config commits existed but carried nothing worth reporting (noise tables
+    // only). `opsChanged` (v4.145) is true when All-logs recorded a real ops-log change
+    // (alarm/plant settings, duty list, …) — that is configuration work even with no pang commit,
+    // so we must not claim "no configuration changes were saved".
+    function summarizeLeadActions(tools, saved, opsChanged) {
         const t = leadTools(tools, 4);
-        if (!t.length) return '';
-        return `Remote maintenance on the plant's monitoring system — ${bookAndList(t, 4)}; ` +
-            (saved ? 'only minor configuration changes were saved.' : 'no configuration changes were saved.');
+        if (!t.length && !opsChanged) return '';
+        const work = t.length ? bookAndList(t, 4) : 'operations-log updates';
+        let ending;
+        if (opsChanged) ending = 'operations-log settings were updated.';
+        else if (saved) ending = 'only minor configuration changes were saved.';
+        else ending = 'no configuration changes were saved.';
+        return `Remote maintenance on the plant's monitoring system — ${work}; ${ending}`;
     }
 
-    function summarizeLeadSupport(tools) {
+    function summarizeLeadSupport(tools, opsChanged) {
         const t = leadTools(tools, 3);
-        return 'Follow-up on the plant from the office — ' + (t.length ? bookAndList(t, 3) : 'checked its status and logs') + '; no configuration was changed.';
+        const body = t.length ? bookAndList(t, 3) : 'checked its status and logs';
+        return 'Follow-up on the plant from the office — ' + body +
+            (opsChanged ? '; operations-log settings were updated.' : '; no configuration was changed.');
+    }
+
+    // Drop a promoted site note from the Site note: list so it is not printed twice (v4.145).
+    function remainingSiteNotes(notes, promoted) {
+        const p = String(promoted || '').trim();
+        if (!p) return (notes || []).filter(Boolean);
+        return (notes || []).filter(n => String(n || '').trim() && String(n).trim() !== p);
     }
 
     return {
         bookAndList, bookSentence, bookPlural, bookBareLabel,
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
-        summarizeLeadActions, leadTuneKinds,
+        summarizeLeadActions, leadTuneKinds, pickLeadSiteNote, remainingSiteNotes, LEAD_NOTE_BOILER,
     };
 })();
 // ===== Transition-based time evidence ================================================
@@ -1317,7 +1351,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
-        summarizeLeadActions,
+        summarizeLeadActions, pickLeadSiteNote, remainingSiteNotes,
     } = RL_RECAP_NOTE_TEXT;
 
     const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
@@ -4416,13 +4450,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Always-available fallbacks (no commits needed): what TOOLS the session used, and when the
         // Designer session ran — far more informative than a generic "device/DB config".
         const ACT_WORDS = { pma_local: 'phpMyAdmin', sys_tools: 'topology', start_vnc: 'VNC', restart_plant_server: 'restarts', upload: 'backup', ak3_setup: 'AK3', client_admin: 'client admin', file_upload: 'file upload', direct_plant: 'direct login', designer4: 'Designer', designer3: 'Designer', get_status: 'status check',
-            // All logs activity (v4.110)
-            changed_alarm_settings: 'alarm settings', change_duty_list: 'duty list', service: 'service logon', pang_note: 'note', call_plant_link: 'alarm call' };
+            // All logs activity (v4.110 / v4.145)
+            changed_alarm_settings: 'alarm settings', changed_plant_settings: 'plant settings',
+            change_duty_list: 'duty list', service: 'service logon', pang_note: 'note', call_plant_link: 'alarm call',
+            user_access: 'user access', get_units: 'RAC get units', get_info: 'RAC get info',
+            start_server: 'RAC start', rvnc: 'Remote VNC' };
         // What the operations log / handover notes said about this plant that day. Masked on capture —
         // and RE-masked here (v4.115), because a day cached before a secret-pattern widening still
         // carries the raw comment in full_scan_cache and must never reach a timesheet note.
         const maskedNotes = [...new Set((v.all_logs_notes || []).map(maskAllLogsComment).filter(Boolean))];
         out.notesLogs = formatAllLogsNotes(maskedNotes);
+        // Best human comment for the collapsed first line when no commit-derived lead exists (v4.145).
+        out.leadFromNote = pickLeadSiteNote(maskedNotes);
         // …and the same text as matcher evidence (v4.112). This is the one source that describes the work
         // in Thomas's own words ("Byttet føler i kjøledisk 3" ⇒ refrigeration) rather than by its
         // side-effects in the database, and it is the ONLY evidence on a day that left no config commit.
@@ -4439,6 +4478,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Same facts as a sentence — the lead line when the day left no config commit to describe.
         out.tools = actEntries.map(([a, n]) => ({ label: ACT_WORDS[a], count: n }));
         out.sumActions = summarizeActions(out.tools);
+        // Ops-log changes are real configuration even without a pang commit (v4.145).
+        out.opsChanged = actEntries.some(([a]) => /^(changed_alarm_settings|changed_plant_settings|change_duty_list)$/.test(a));
         if (v.designer_last && v.designer_last.s) out.designerSession = 'Designer session'; // no timestamps — the entry carries its own date/duration
         // Texts read the visit-window commits PLUS the rest of the day's triggered commits — the save
         // that describes your work often lands after the visit window (e.g. during the next plant).
@@ -4458,7 +4499,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // can only come from the day's own note here.
             const wl = bookDiscWeights(out.logStr || '', true);
             out.discs = Object.keys(wl).sort((a, b) => wl[b] - wl[a]);
-            out.leadActions = summarizeLeadActions(out.tools, false);
+            out.leadActions = summarizeLeadActions(out.tools, false, out.opsChanged);
             return out;
         }
         const cids = scan.map(c => String(c.id));
@@ -4690,7 +4731,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const tuneLabels = [].concat(...[...tuneMap.values()]);
             T.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames, tuneLabels }, T.discs);
             T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, T.discs);
-            T.leadActions = summarizeLeadActions(out.tools, true); // commits existed; used only when nothing above could be said
+            T.leadActions = summarizeLeadActions(out.tools, true, out.opsChanged); // commits existed; used only when nothing above could be said
             return T;
         };
         Object.assign(out, compose(null));
@@ -4973,7 +5014,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // plain line (leadActions) instead of falling straight to the tools sentence.
                     let summary, tech, details;
                     if (category === CAT_DRAWING) {
-                        summary = t.leadDraw || t.leadActions || t.sumDraw || '';
+                        summary = t.leadDraw || t.leadFromNote || t.leadActions || t.sumDraw || '';
                         tech = t.sumDraw || t.sumActions || '';
                         details = t.notesDraw || '';
                     } else if (category === CAT_SETUP_PC) {
@@ -4983,21 +5024,24 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         tech = t.sumInteg || t.sumActions || '';
                         details = t.notesInteg || '';
                     } else if (category === CAT_INTEGRATION) {
-                        summary = t.leadInteg || t.leadActions || t.sumInteg || '';
+                        // Prefer commit-derived lead, then your own ops/handover wording, then tools fallback (v4.145).
+                        summary = t.leadInteg || t.leadFromNote || t.leadActions || t.sumInteg || '';
                         tech = t.sumInteg || t.sumActions || '';
                         details = t.notesInteg || '';
                     } else {
                         // Support - External: a follow-up session that left no config evidence — say so in
                         // service terms; the tools sentence stays as the technical detail.
-                        summary = summarizeLeadSupport(t.tools);
+                        summary = t.leadFromNote || summarizeLeadSupport(t.tools, t.opsChanged);
                         tech = t.sumActions || '';
                         details = t.notesInteg || '';
                     }
                     if (tech === summary) tech = ''; // the summary had to fall back to the technical line — do not print it twice
                     // Whatever you wrote in the operations log / a handover note that day says more about the
                     // work than any diff can (already masked; secret values never travel); it joins the
-                    // leader's block as "Site note:".
-                    const notes = composeEntryNote(summary, String(t.notesLogs || '').split('\n'), details, tech);
+                    // leader's block as "Site note:". If that text was promoted to the first line, drop it
+                    // from the Site note list so it is not duplicated (v4.145).
+                    const siteLines = remainingSiteNotes(String(t.notesLogs || '').split('\n'), summary === t.leadFromNote ? t.leadFromNote : '');
+                    const notes = composeEntryNote(summary, siteLines, details, tech);
                     plan.push({
                         plant_id: v.plant_id, plant: v.name || v.plant_id,
                         projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,

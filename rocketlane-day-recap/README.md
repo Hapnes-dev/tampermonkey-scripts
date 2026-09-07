@@ -2,6 +2,10 @@
 
 Adds a 🏭 **Plants visited** button on Rocketlane's **My Timesheet** — pick a date and see every IWMAC plant you visited that day (plant_id, plant name, first/last action time, which actions you performed — shown as friendly labels with a colour-coded category dot (e.g. `direct_plant` → "Direct", `pma_local` → "phpMyAdmin", `upload` → "Backup") — and an estimated time split). At the top, a 📋 **Day by category** roll-up estimates how your plant time splits across your Rocketlane task categories (Integration, Drawing & Design, Setup), ready to copy straight into your timesheet. Short "just popped in to check" visits show as a separate **Quick check** line — left out of the booked total, since it's your call whether they're worth logging.
 
+## Accuracy improvements in 4.145
+
+Booked Notes prefer your real ops-log / handover wording on the collapsed first line when there is no commit-derived summary, and no longer claim “no configuration changes” when All logs shows alarm/plant settings or duty-list updates. Boilerplate IWMAC comments stay out of the lead.
+
 ## Accuracy improvements in 4.144
 
 Passive All-logs rows (RAC bursts, notes, service logons, `user_access`) no longer own a full 30-minute silence when they sit before a long gap — they keep a 5-minute presence blip instead. Pang clicks and real config/ops changes are unchanged. Refresh the date (or re-run All logs) so cached days pick this up.
