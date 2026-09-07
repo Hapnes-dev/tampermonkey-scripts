@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.142
+// @version      4.143
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -534,7 +534,44 @@ var RL_RECAP_TIME = (function () {
         return `${y}-${String(mon).padStart(2, '0')}-${String(+t[1]).padStart(2, '0')}`;
     }
 
-    return { cappedGapCredit, dayEndExtension, allocateMinutes, dayBudget, timesheetWeekFromPage };
+    // Which plan rows book, and with how many minutes (v4.143, Thomas: "it books way to much hours
+    // it should be 7.5 when distribute to total is ticket … should be 7.5 but now its 11h / calander
+    // should allways be the exact amount"). 4.130 held the day to the workday over the rows that were
+    // `ready` when the plan was built — but the review lets you ARM more rows afterwards: a no-project
+    // plant sent to a team bucket, a meeting given its project. Those booked their own minutes on top of
+    // plant rows that had already been stretched to fill the whole remainder: 7,5 h of plants plus 3,5 h
+    // of meetings made 11 h. So the budget is a function of the SELECTION, evaluated over the rows that
+    // will actually book: a ready row unless unticked, or a no-project row armed with a project.
+    //   - calendar rows book their exact minutes, always (4.123) — they are priced first and never scaled;
+    //   - plant rows share `workday − already on the sheet − booked meetings` by their raw estimate
+    //     (`weight`, the pre-rebalance minutes) when the day is being distributed, else keep their own;
+    //   - a plant row squeezed to zero does not book (`overBudget`).
+    // Returns per-row { book, minutes, overBudget } plus the dayBudget the banner reads.
+    function bookingShares(rows, o) {
+        o = o || {};
+        const list = rows || [];
+        const willBook = e => !!e && ((e.status === 'ready' && e.selected !== false)
+            || (e.status === 'no-project' && e.selected === true && !!e.fallbackProjectId));
+        const books = list.map(willBook);
+        const mins = e => Math.max(0, Math.round(Number(e && e.minutes) || 0));
+        const calMin = list.reduce((s, e, i) => s + (books[i] && e.calendar ? mins(e) : 0), 0);
+        const plantIdx = list.map((e, i) => i).filter(i => books[i] && !list[i].calendar);
+        const budget = dayBudget({ workdayMin: o.workdayMin, existingMin: o.existingMin, calendarMin: calMin });
+        const out = list.map((e, i) => ({ book: books[i], minutes: mins(e), overBudget: false }));
+        if (o.distributing && plantIdx.length) {
+            const weights = plantIdx.map(i => { const e = list[i]; const w = Number(e.weight != null ? e.weight : e.minutes); return Number.isFinite(w) && w > 0 ? w : 0; });
+            const share = allocateMinutes(weights, budget.plantMin, o.roundTo);
+            plantIdx.forEach((i, k) => { out[i].minutes = share[k]; if (!share[k]) { out[i].book = false; out[i].overBudget = true; } });
+        }
+        const plant = out.reduce((s, r, i) => s + (r.book && !list[i].calendar ? r.minutes : 0), 0);
+        budget.plant = plant;
+        budget.projected = budget.existing + calMin + plant;
+        budget.normalized = !!o.distributing;
+        budget.hasPlantRows = plantIdx.length > 0;
+        return { rows: out, budget };
+    }
+
+    return { cappedGapCredit, dayEndExtension, allocateMinutes, dayBudget, timesheetWeekFromPage, bookingShares };
 })();
 // ===== Outlook calendar → meeting / admin time =======================================
 // pang only sees plant work, so meetings, planning and training never reached the timesheet — and
@@ -1274,7 +1311,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.142';
+    const SCRIPT_VERSION   = '4.143';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3139,6 +3176,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .rl-inline-btn { font-size: 11px; line-height: 1.3; padding: 1px 7px; margin-left: 4px; border: 1px solid #b1520a; background: #fff; color: #b1520a; border-radius: 4px; cursor: pointer; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-nb { font-size: 10px; color: #525252; background: #f4f4f4; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-split { color: #0f62fe; cursor: help; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-row.bookplan-zero .bookplan-txt { opacity: .55; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
@@ -4961,30 +4999,40 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Both are settled here, where the plan finally knows the status of every row.
         const wdMin = Math.round((GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS) * 60);
         const existingMin = existing.reduce((s, e) => s + (Number(e && e.minutes) > 0 ? Number(e.minutes) : 0), 0);
-        const readyCalMin = plan.reduce((s, e) => s + (e.calendar && e.status === 'ready' ? (e.minutes || 0) : 0), 0);
-        const budget = RL_RECAP_TIME.dayBudget({ workdayMin: wdMin, existingMin, calendarMin: readyCalMin });
-        // Only the rows that will actually be booked share the remainder. A ⏭ row's minutes are already
-        // counted in `existingMin`; giving it a slice again would book the same time twice over.
-        const readyPlant = plan.filter(e => !e.calendar && e.status === 'ready');
         // Distribute only when this day IS being distributed. `normalized_minutes` is set by
         // normalizeMinutes and is the existing signal for it: Book week always sets it, Book day only
         // when "Distribute to total" is ticked. Reading the GM flag directly would instead have made a
         // day-panel preference silently switch off Book week's whole reason for existing.
         const distributing = visits.some(v => v && v.normalized_minutes != null);
-        if (distributing && readyPlant.length) {
-            const share = RL_RECAP_TIME.allocateMinutes(readyPlant.map(e => e.minutes || 0), budget.plantMin, ROUND_TO_MIN);
-            for (let i = 0; i < readyPlant.length; i++) readyPlant[i].minutes = share[i];
-            // A row squeezed to zero must not be booked as a 0-minute entry — the day is already full.
-            for (const e of readyPlant) if (!e.minutes) e.status = 'over-budget';
-        }
-        budget.plant = readyPlant.reduce((s, e) => s + (e.status === 'ready' ? (e.minutes || 0) : 0), 0);
-        budget.projected = budget.existing + readyCalMin + budget.plant;
-        budget.normalized = distributing;
-        budget.hasPlantRows = readyPlant.length > 0; // v4.136: no plant rows ⇒ nothing was there to distribute, say nothing about it
-        plan._budget = budget;
-        LOG('book: budget', iso, 'workday', wdMin, 'existing', existingMin, 'cal', readyCalMin,
+        // The estimate every rebalance weighs by (v4.143) — kept apart from `minutes`, which the budget
+        // rewrites each time the selection changes. A ⏭ row's minutes are already in `existingMin`.
+        for (const e of plan) if (!e.calendar && e.weight == null) e.weight = e.minutes || 0;
+        plan._workdayMin = wdMin; plan._existingMin = existingMin; plan._distributing = distributing;
+        const budget = applyBudget(plan); // over the default selection: ready rows book, armable rows do not yet
+        LOG('book: budget', iso, 'workday', wdMin, 'existing', existingMin, 'cal', budget.calendar,
             'plant', budget.plant, '→ day totals', budget.projected, budget.over ? '(OVER)' : '');
         return plan;
+    }
+
+    // Hold the day to the workday over the rows that will actually book (v4.143). Runs when the plan is
+    // built (default selection), again on every tick or picker change in the review, and once more when
+    // Book is pressed — so a plant armed for a team bucket or a meeting given its project SHRINKS the
+    // plant rows instead of landing on top of them (measured live: 7,5 h of plants + 3,5 h of meetings
+    // booked as 11 h). Calendar rows are never rescaled: a meeting books exactly as long as it stood in
+    // Outlook. A plan that is not being distributed keeps its raw estimates; the banner says so.
+    function applyBudget(plan) {
+        if (!plan || !Number.isFinite(plan._workdayMin)) return plan && plan._budget || null;
+        const r = RL_RECAP_TIME.bookingShares(plan, { workdayMin: plan._workdayMin, existingMin: plan._existingMin || 0, roundTo: ROUND_TO_MIN, distributing: !!plan._distributing });
+        if (plan._distributing) plan.forEach((e, i) => {
+            if (!e || e.calendar) return; // exact, always
+            const s = r.rows[i];
+            if (s.book || s.overBudget) e.minutes = s.minutes;
+            // A row squeezed to zero cannot be booked; one that has room again is bookable again.
+            if (s.overBudget && e.status === 'ready') e.status = 'over-budget';
+            else if (e.status === 'over-budget' && s.minutes > 0 && s.book) e.status = 'ready';
+        });
+        plan._budget = r.budget;
+        return r.budget;
     }
 
     // "Not signed in to Outlook" (v4.132): one banner for both flows, with a button that opens Outlook
@@ -5053,6 +5101,25 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             `To have them billable, change the project's contract type first (project → Settings → Financials) and book again.</div>`;
     }
 
+    // Repaint one row's minutes after a rebalance (v4.143): the number, and a mark on a row squeezed out.
+    function paintRowMinutes(rowEl, e) {
+        if (!rowEl || !e) return;
+        const m = rowEl.querySelector('.bookplan-min');
+        if (m) m.textContent = fmtMinutes(e.minutes || 0);
+        rowEl.classList.toggle('bookplan-zero', !e.calendar && !(e.minutes > 0));
+    }
+    // Repaint a day's rows and its budget banner after a rebalance. Book day passes its plan (one banner,
+    // rows indexed by plan position); Book week passes one day's rows plus the shared `rows` list, whose
+    // index is the row element's data-i.
+    function paintBudget(box, entries, budget, iso, allRows) {
+        for (const e of entries) {
+            const i = allRows ? allRows.findIndex(r => r.e === e) : entries.indexOf(e);
+            if (i >= 0) paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
+        }
+        const banner = iso ? box.querySelector(`.bookplan-budget[data-iso="${iso}"]`) : box.querySelector('.bookplan-budget');
+        if (banner) banner.innerHTML = budgetWarnHtml(budget);
+    }
+
     // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
     // same one: after this booking, does the day read 7,5 h? Silence means it does.
     function budgetWarnHtml(budget) {
@@ -5082,6 +5149,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     async function bookPlanEntries(plan, iso, onProgress) {
         const creds = rlCreds();
         let ok = 0, fail = 0;
+        applyBudget(plan); // over the selection as it stands now — armed rows included (v4.143)
         for (const e of plan) {
             // A calendar row the user armed by picking a project: remember the choice and book it as
             // a plain activity (no task — Rocketlane allows a task-less entry as long as it has a
@@ -5096,6 +5164,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // Fallback rows: a no-project plant the user chose to book into a team bucket project.
             const isFallback = !e.calendar && e.status === 'no-project' && e.selected === true && e.fallbackProjectId;
             if (!isFallback && (e.status !== 'ready' || e.selected === false)) continue; // unticked rows stay untouched
+            // A plant row the budget left nothing for books nothing (v4.143) — the day is already full.
+            if (!e.calendar && !(e.minutes > 0)) { e.status = 'over-budget'; onProgress && onProgress(e); continue; }
             let projectId = e.projectId, taskId = e.taskId, act = e.activityName;
             if (isFallback) {
                 projectId = e.fallbackProjectId; taskId = null;
@@ -5234,12 +5304,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="' + (e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
+                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b class="bookplan-min">${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
                     <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${splitHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
-                + budgetWarnHtml(plan._budget)
+                + '<div class="bookplan-budget">' + budgetWarnHtml(plan._budget) + '</div>'
                 + nonBillableWarnHtml(plan);
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
@@ -5251,7 +5321,26 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const go = box.querySelector('[data-b=go]');
                     if (go) { go.disabled = n === 0; go.textContent = `Book ${n} entr${n === 1 ? 'y' : 'ies'}`; }
                 };
-                box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
+                // The selection as the review shows it → the plan rows (v4.143). `lock` freezes the controls for booking.
+                const readChoices = (lock) => {
+                    box.querySelectorAll('.bookplan-row').forEach(row => {
+                        const idx = +row.dataset.i, e = plan[idx]; if (!e) return;
+                        const cb = row.querySelector('.bookplan-cb');
+                        if (cb) { e.selected = cb.checked; if (lock) cb.disabled = true; }
+                        const sel = row.querySelector('.bookplan-proj:not(.bookplan-twin)');
+                        if (sel) { e.fallbackProjectId = +sel.value || null; e.fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null; }
+                        if (lock) row.querySelectorAll('.bookplan-proj').forEach(s => { s.disabled = true; });
+                    });
+                };
+                // Every tick and every picker choice re-applies the workday budget, so the minutes on the
+                // rows and the banner always show what Book will write (v4.143).
+                const refreshBudget = () => {
+                    readChoices(false);
+                    applyBudget(plan);
+                    paintBudget(box, plan, plan._budget, null);
+                    updateGo();
+                };
+                box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', refreshBudget));
                 // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms.
                 box.querySelectorAll('.bookplan-twin').forEach(sel => sel.addEventListener('change', (ev) => {
                     pinTwin(ev.target.dataset.n, ev.target.value);
@@ -5269,26 +5358,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         GM_setValue(isCal ? KEY_CAL_PROJECT : 'book_fallback_project', val);
                         if (isCal) GM_setValue(KEY_CAL_PROJECT_NAME, ev.target.options[ev.target.selectedIndex].text);
                     }
-                    updateGo();
+                    refreshBudget();
                 }));
                 box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
                 box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
                     ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
                     // Freeze the selection: unticked rows are skipped (and their boxes locked).
-                    box.querySelectorAll('.bookplan-row').forEach(row => {
-                        const idx = +row.dataset.i, cb = row.querySelector('.bookplan-cb');
-                        if (cb && plan[idx]) { plan[idx].selected = cb.checked; cb.disabled = true; }
-                        const sel = row.querySelector('.bookplan-proj');
-                        if (sel && plan[idx]) {
-                            plan[idx].fallbackProjectId = +sel.value || null;
-                            plan[idx].fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null;
-                            sel.disabled = true;
-                        }
-                    });
+                    readChoices(true);
                     await bookPlanEntries(plan, iso, (e) => {
                         const i = plan.indexOf(e);
                         const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
-                        if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : '❌';
+                        if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : e.status === 'over-budget' ? '⚠' : '❌';
+                        paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
                         if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
                     });
                     const okN = plan.filter(e => e.status === 'booked').length;
@@ -5694,7 +5775,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}`;
                 html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
                 if (unsafe) continue;
-                html += budgetWarnHtml(day.plan._budget); // silent when the day lands on the workday total
+                html += `<div class="bookplan-budget" data-iso="${esc(day.iso)}">` + budgetWarnHtml(day.plan._budget) + '</div>'; // silent when the day lands on the workday total
                 html += nonBillableWarnHtml(day.plan);
                 for (const e of day.plan) {
                     const i = rows.length;
@@ -5703,7 +5784,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="' + (e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
+                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b class="bookplan-min">${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
                         <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${splitHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
@@ -5720,7 +5801,27 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const go = box.querySelector('[data-b=go]');
                 if (go) { go.disabled = n === 0; go.textContent = `Book ${n} entr${n === 1 ? 'y' : 'ies'}`; }
             };
-            box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', updateGo));
+            // The selection as the review shows it → the plan rows (v4.143). `lock` freezes the controls for booking.
+            const readChoices = (lock) => {
+                box.querySelectorAll('.bookplan-row').forEach(rowEl => {
+                    const idx = +rowEl.dataset.i, r = rows[idx]; if (!r) return;
+                    const cb = rowEl.querySelector('.bookplan-cb');
+                    if (cb) { r.e.selected = cb.checked; if (lock) cb.disabled = true; }
+                    const sel = rowEl.querySelector('.bookplan-proj:not(.bookplan-twin)');
+                    if (sel) { r.e.fallbackProjectId = +sel.value || null; r.e.fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null; }
+                    if (lock) rowEl.querySelectorAll('.bookplan-proj').forEach(s => { s.disabled = true; });
+                });
+            };
+            // Every tick and every picker choice re-applies each day's workday budget (v4.143).
+            const refreshBudget = () => {
+                readChoices(false);
+                for (const day of new Set(rows.map(r => r.day))) {
+                    applyBudget(day.plan);
+                    paintBudget(box, rows.filter(r => r.day === day).map(r => r.e), day.plan._budget, day.iso, rows);
+                }
+                updateGo();
+            };
+            box.querySelectorAll('.bookplan-cb').forEach(cb => cb.addEventListener('change', refreshBudget));
             // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms (as in Book day).
             box.querySelectorAll('.bookplan-twin').forEach(sel => sel.addEventListener('change', (ev) => {
                 pinTwin(ev.target.dataset.n, ev.target.value);
@@ -5738,28 +5839,20 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     GM_setValue(isCal ? KEY_CAL_PROJECT : 'book_fallback_project', val);
                     if (isCal) GM_setValue(KEY_CAL_PROJECT_NAME, ev.target.options[ev.target.selectedIndex].text);
                 }
-                updateGo();
+                refreshBudget();
             }));
             box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
                 ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
                 box.querySelector('[data-b=prev]')?.setAttribute('disabled', '');
                 box.querySelector('[data-b=next]')?.setAttribute('disabled', '');
                 // Freeze the selection, then book day by day.
-                box.querySelectorAll('.bookplan-row').forEach(rowEl => {
-                    const idx = +rowEl.dataset.i, cb = rowEl.querySelector('.bookplan-cb');
-                    if (cb && rows[idx]) { rows[idx].e.selected = cb.checked; cb.disabled = true; }
-                    const sel = rowEl.querySelector('.bookplan-proj');
-                    if (sel && rows[idx]) {
-                        rows[idx].e.fallbackProjectId = +sel.value || null;
-                        rows[idx].e.fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null;
-                        sel.disabled = true;
-                    }
-                });
+                readChoices(true);
                 const onOne = (e) => {
                     const i = rows.findIndex(r => r.e === e);
                     if (i < 0) return;
                     const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
-                    if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : '❌';
+                    if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : e.status === 'over-budget' ? '⚠' : '❌';
+                    paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
                     if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
                 };
                 for (const day of new Set(rows.map(r => r.day))) {
