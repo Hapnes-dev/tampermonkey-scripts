@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.9
+// @version      9.10
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -664,16 +664,20 @@
         box.innerHTML = rows.map(r => {
             const pid = r.plant_id;
             if (!/^\d+$/.test(pid)) return '';
-            // One unit name on the line under the hit (v9.9) so a cryptic
-            // order_no still reads as something recognisable; the count above
-            // says how many more there are.
-            const unitLine = r.unit1
-                ? `<div class="unit"><span class="meta">${r.n_units > 1 ? 'e.g.' : 'unit'}</span> ${escapeHtml(clip(r.unit1, 60))}</div>`
-                : '';
+            // The unit count and one unit name share the line under the hit
+            // (v9.9/v9.10: "1 unit: FS Plugin", "3 units, e.g. FS Plugin"), so
+            // the top line stays driver ↳ order_no — plant — regulators and a
+            // long order_no is not pushed onto a wrapped line by "— 1 unit —".
+            // A regulator type that merely repeats the order_no (CARELBOSS,
+            // EM270) is left out for the same reason.
+            const count = `${r.n_units} unit${r.n_units === 1 ? '' : 's'}`;
+            const name = r.unit1 ? escapeHtml(clip(r.unit1, 60)) : '';
+            const unitLine = `<div class="unit"><span class="meta">${count}${name ? (r.n_units > 1 ? ', e.g.' : ':') : ''}</span>${name ? ' ' + name : ''}</div>`;
+            const regs = r.regs && r.regs.toLowerCase() !== r.order_no.toLowerCase() ? r.regs : '';
             return `<div class="drv" data-plant="${pid}" data-drv="${escapeHtml(r.driver_type)}" data-order="${escapeHtml(r.order_no)}">` +
                 `<b>${escapeHtml(r.driver_type)}</b>${r.order_no ? ' ↳ ' + escapeHtml(r.order_no) : ''}` +
-                ` <span class="meta">— plant ${pid} — ${r.n_units} unit${r.n_units === 1 ? '' : 's'}` +
-                `${r.regs ? ' — ' + escapeHtml(clip(r.regs, 60)) : ''}</span>${unitLine}</div>`;
+                ` <span class="meta">— plant ${pid}` +
+                `${regs ? ' — ' + escapeHtml(clip(regs, 60)) : ''}</span>${unitLine}</div>`;
         }).join('') || '<div class="drv"><span class="meta">no indexed equipment matches — the index covers plants this tool has loaded</span></div>';
         box.classList.add('show');
     }
