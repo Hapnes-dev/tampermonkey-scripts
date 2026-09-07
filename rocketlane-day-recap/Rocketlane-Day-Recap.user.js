@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.139
+// @version      4.140
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1139,7 +1139,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.139';
+    const SCRIPT_VERSION   = '4.140';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4676,12 +4676,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 plan.push({
                     plant_id: v.plant_id, plant: v.name || v.plant_id,
                     projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
-                    // v4.138 (Thomas: "force projects that is non billable to billable to write hours and for
-                    // calendar write non billable only"): plant hours are ALWAYS billable. A project whose
-                    // contract is NON_BILLABLE refuses them — the API cannot change the contract (the public
-                    // update-project body carries no such field), so the row is flagged and left unticked
-                    // until the project is fixed in Rocketlane. 4.137's silent fallback to non-billable is
-                    // gone: it quietly turned billable work into non-billable hours.
+                    // v4.140 (Thomas: "3530 did not fill out. had to do it manually"): the hours get WRITTEN.
+                    // Billable wherever Rocketlane allows; non-billable only on a project whose contract is
+                    // NON_BILLABLE, because that is the only thing Rocketlane accepts there — his manual entry
+                    // on 1435018 went in as billable:false for exactly that reason. The API cannot change the
+                    // contract, so the row is ticked, booked non-billable, and says so; the banner links the
+                    // project for whoever wants those hours billable. Calendar rows stay non-billable always.
                     projectBillable: proj ? projBillable : null,
                     // No task picked on a project that HAS none to pick: say so on the row instead of a
                     // bare "new activity" (v4.135). A matcher miss on a project with real tasks stays plain.
@@ -4792,8 +4792,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (!seen.size) return '';
         const items = [...seen.entries()].map(([id, name]) => `<a href="https://kiona.rocketlane.com/projects/${escapeHtml(String(id))}/plan" target="_blank" rel="noopener">${escapeHtml(name)}</a>`).join(', ');
         return `<div class="bookplan-warn">⚠ <b>${seen.size === 1 ? 'This project is' : seen.size + ' projects are'} non-billable in Rocketlane:</b> ${items}. ` +
-            `Plant hours are always booked billable and Rocketlane refuses them there — change the project's contract type to a billable one ` +
-            `(project → Settings → Financials), then tick the rows and book. Only calendar time is booked non-billable.</div>`;
+            `Rocketlane refuses billable time there, so these rows book as <b>non-billable</b> — the hours still land. ` +
+            `To have them billable, change the project's contract type first (project → Settings → Financials) and book again.</div>`;
     }
 
     // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
@@ -4866,10 +4866,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // or course is booked so the day accounts for itself, not to be invoiced to the customer
             // whose project hosts it — and these sit on a Team bucket, so a billable flag there would
             // put internal time on someone's invoice.
-            // Plant hours are always billable; only calendar time is not (v4.126, reaffirmed v4.138). A
-            // NON_BILLABLE project refuses billable entries — that is the project's setup to fix, not a
-            // reason to write the hours as non-billable.
-            const body = { date: iso, minutes: e.minutes, billable: !e.calendar, categoryId: e.categoryId, projectId };
+            // Plant hours are billable (v4.126) — except on a NON_BILLABLE project, where Rocketlane refuses
+            // them and the hours must still be written (v4.140). Bucket rows look their project up here.
+            const projectBillable = e.calendar ? false : (e.projectBillable != null ? e.projectBillable : await rlProjectBillable(projectId));
+            const body = { date: iso, minutes: e.minutes, billable: !e.calendar && projectBillable !== false, categoryId: e.categoryId, projectId };
+            if (!e.calendar && projectBillable === false) e.bookedNonBillable = true;
             const notes = e.notes || '';
             if (taskId) { body.taskId = taskId; body.notes = notes || act; } // task entry: details (or the title) → notes
             else { body.activityName = act; if (notes) body.notes = notes; } // activity entry: details → Notes field
@@ -4892,24 +4893,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 else if (now._checkOk) r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
                 // check unavailable ⇒ leave the failure — a rebuilt plan dedupes correctly later
             }
-            // The exact rejection a NON_BILLABLE project gives: remember it for the session (the plan
-            // flags the project from now on) and say what to change. No retry as non-billable (v4.138).
+            // Safety net when the lookup missed it: the exact rejection, once, as non-billable — the hours
+            // get written either way (v4.140), and the row says how.
             if (!(r.status === 200 || r.status === 201) && body.billable) {
                 const e0 = (r.json && r.json.errors && r.json.errors[0]) || {};
                 const msg = String(e0.errorMessage || e0.reason || (r.json && r.json.message) || r.raw || '');
                 if (/non.?billable/i.test(msg)) {
                     _rlBillableCache.set(String(projectId), false);
-                    e.nonBillableProject = true;
-                    LOG('book: project', projectId, 'is non-billable in Rocketlane — plant hours refused for', e.plant_id);
+                    LOG('book: project', projectId, 'refuses billable time — writing', e.plant_id, 'as non-billable');
+                    body.billable = false; e.bookedNonBillable = true;
+                    r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
                 }
             }
             e.status = (r.status === 200 || r.status === 201) ? 'booked' : 'failed';
             if (e.status === 'booked') ok++; else {
                 fail++;
                 const err0 = (r.json && r.json.errors && r.json.errors[0]) || {};
-                e.error = e.nonBillableProject
-                    ? 'project is set non-billable in Rocketlane — plant hours are always billable; change the project\'s contract type to a billable one, then book again'
-                    : (err0.errorMessage || err0.reason || (r.json && r.json.message) || ('HTTP ' + r.status));
+                e.error = err0.errorMessage || err0.reason || (r.json && r.json.message) || ('HTTP ' + r.status);
             }
             // Bucket-subtask entries also log the day's work into the subtask's Description (v4.106).
             if (e.status === 'booked' && isFallback && taskId) await bucketSubtaskDescribe(taskId, iso, e.activityName, e.notes);
@@ -4972,10 +4972,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // same mechanism with their own remembered project, since meetings have no project at all.
             const lines = plan.map((e, i) =>
                 `<div class="bookplan-row" data-i="${i}">
-                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb"' + (e.projectBillable === false ? '' : ' checked') + ' title="' + (e.projectBillable === false ? 'Unticked: this project is non-billable in Rocketlane and will refuse billable hours — fix the project, then tick' : 'Untick to skip this entry') + '">'
+                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="' + (e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">⚠ project non-billable in Rocketlane</span>' : ''}<br>
+                    <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
                     <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
@@ -5432,10 +5432,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const i = rows.length;
                     rows.push({ e, day });
                     html += `<div class="bookplan-row" data-i="${i}">
-                        <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb"' + (e.projectBillable === false ? '' : ' checked') + ' title="' + (e.projectBillable === false ? 'Unticked: this project is non-billable in Rocketlane and will refuse billable hours — fix the project, then tick' : 'Untick to skip this entry') + '">'
+                        <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="' + (e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
-                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">⚠ project non-billable in Rocketlane</span>' : ''}<br>
+                        <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
                         <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
