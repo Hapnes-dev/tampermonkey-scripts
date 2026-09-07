@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.140
+// @version      4.141
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1091,9 +1091,115 @@ var RL_RECAP_MATCH = (function () {
         return null;
     }
 
+    // ---- One category, several tasks (v4.141) --------------------------------------------------
+    // Thomas: "Sometimes there are multiple tasks completed on the same plant on the same day …
+    // identify the different tasks and divide the time between them as accurately as possible."
+    // Until now a plant-day's Integration minutes went to ONE task — whichever discipline had the most
+    // tokens over the day — even when the saves plainly show refrigeration controllers in the morning
+    // and a ventilation unit after lunch. Evidence is therefore read per SAVE: each change-triggered
+    // commit is a `segment` { id, ts, tokStr, uStr, drawingNames } holding only what that save wrote.
+    //
+    // Time follows the saves. The work before a save belongs to what was saved, so a segment's weight
+    // is the span from the previous save (or the visit's first click, less the same 2-min lead the
+    // commit window uses) up to it. Three corrections, each borrowed from the estimator so the split
+    // and the day total agree about the same minutes:
+    //   - a long click silence inside the span counts as the estimator's 30-min cap, not as wall time
+    //     (`capped_gaps`, recorded per visit since v4.56 — a lunch between two saves is not work on
+    //     the second one);
+    //   - a save that lands after you left the plant is credited only up to 20 min past the last
+    //     click, the commit-fusion window: the work happened before you left, not on the next plant;
+    //   - a span is clamped to [1, 60] min — a burst of saves is not inflated, and beyond the 60-min
+    //     trust horizon the previous save says nothing about the later one.
+    // Weights are only ever compared with each other: the category's minutes are apportioned by them
+    // (largest-remainder, sum preserved) and never added to.
+    const SPLIT_C = { leadMs: 2 * 60000, afterMs: 20 * 60000, minMs: 60000, capMs: 60 * 60000, gapCapMs: 30 * 60000, minShareMin: 15 };
+    function segmentWeights(segments, win, C) {
+        C = Object.assign({}, SPLIT_C, C || {});
+        const w = win || {};
+        const first = Number.isFinite(w.first_ts) ? w.first_ts : null;
+        const last = Number.isFinite(w.last_ts) ? w.last_ts : first;
+        const gaps = (w.capped_gaps || []).filter(g => g && Number.isFinite(g.ts) && Number.isFinite(g.gap) && g.gap > C.gapCapMs);
+        const segs = (segments || []).filter(s => s && s.id != null && Number.isFinite(s.ts)).slice().sort((a, b) => a.ts - b.ts);
+        const out = new Map();
+        let prev = first != null ? first - C.leadMs : null;
+        for (const s of segs) {
+            const end = last != null ? Math.min(s.ts, last + C.afterMs) : s.ts;
+            let span = prev == null ? C.minMs : end - prev;
+            if (prev != null) for (const g of gaps) { // a capped click silence is worth the cap, not its length
+                const ov = Math.min(end, g.ts + g.gap) - Math.max(prev, g.ts);
+                if (ov > C.gapCapMs) span -= ov - C.gapCapMs;
+            }
+            out.set(String(s.id), Math.min(C.capMs, Math.max(C.minMs, span)));
+            prev = s.ts;
+        }
+        return out;
+    }
+    // Apportion one category of one plant-day over tasks. Returns [{ task, minutes, share, weight,
+    // segIds }] — a single element when nothing splits, whose `task` is exactly what pickTask returns
+    // for the whole day (null ⇒ the activity fallback), so an unsplit day books as it always did.
+    // A second task opens only for saves whose OWN evidence names a discipline the primary task does
+    // not cover, and only when the matcher finds that task without guessing: rescue guesses, the
+    // single-open-task fallback and same-discipline siblings ("Integration: Kjøl" next to
+    // "Integration: Refrigeration") all fold into the primary. A split has to be evidenced twice over
+    // — by the save and by the task's own name — or it does not happen. Shares under `minShareMin`
+    // minutes fold into the largest share: a five-minute entry on a second task is noise for the
+    // reader and below the timesheet's own rounding.
+    function splitCategory(o) {
+        o = o || {};
+        const C = Object.assign({}, SPLIT_C, o.C || {});
+        const total = Number.isFinite(o.minutes) ? Math.max(0, Math.round(o.minutes)) : 0;
+        const texts = o.texts || {};
+        const segs = (o.segments || []).filter(s => s && s.id != null);
+        const primary = pickTask(o.tasks, o.kind, texts, o.used, o.prior);
+        const whole = t => [{ task: t, minutes: total, share: 1, weight: 1, segIds: segs.map(s => String(s.id)) }];
+        if (!primary || !total || segs.length < 2) return whole(primary);
+        const strip = /^[a-zæøå ]+\s*[:\-]/i;
+        const discOfTask = t => { let d = bookDiscOf(String(t.taskName || '').replace(strip, '')); if (!d.size && t.phase) d = bookDiscOf(t.phase); return d; };
+        const primDisc = discOfTask(primary);
+        const weights = segmentWeights(segs, o.win, C);
+        const groups = new Map(); // taskId -> { task, weight, segIds }
+        for (const s of segs) {
+            const gStr = (s.drawingNames || []).join(' ');
+            const segDisc = new Set(Object.keys(bookDiscWeights((s.tokStr || '') + ' ' + gStr)).concat(Object.keys(bookDiscWeights(s.uStr || ''))));
+            let task = primary;
+            if (segDisc.size) {
+                const hit = pickTask(o.tasks, o.kind, { tokStr: s.tokStr || '', uStr: s.uStr || '', drawingNames: s.drawingNames || [], logStr: texts.logStr || '' }, o.used, o.prior);
+                if (hit && !hit.rescued) {
+                    const hd = discOfTask(hit);
+                    const backed = hd.size > 0 && [...hd].some(d => segDisc.has(d)); // the task's own name carries a discipline this save wrote
+                    // The primary itself, backed by this save's own evidence: no longer a whole-day tie-break guess.
+                    if (backed && String(hit.taskId) === String(primary.taskId)) task = hit;
+                    else if (backed && ![...hd].some(d => primDisc.has(d)) && ![...segDisc].some(d => primDisc.has(d))) task = hit;
+                }
+            }
+            const k = String(task.taskId);
+            const g = groups.get(k) || { task, weight: 0, segIds: [] };
+            if (g.task.rescued && !task.rescued) g.task = task; // one evidenced save outranks a guessed label
+            g.weight += weights.get(String(s.id)) || 0;
+            g.segIds.push(String(s.id));
+            groups.set(k, g);
+        }
+        let list = [...groups.values()];
+        if (list.length === 1) return whole(list[0].task);
+        const isPrimary = g => String(g.task.taskId) === String(primary.taskId);
+        // Apportion, then fold shares under the floor into the largest one until every share clears it.
+        for (;;) {
+            const mins = RL_RECAP_TIME.allocateMinutes(list.map(g => g.weight), total, 1);
+            list.forEach((g, i) => { g.minutes = mins[i]; });
+            list.sort((a, b) => (b.minutes - a.minutes) || (Number(isPrimary(b)) - Number(isPrimary(a))) || (b.weight - a.weight));
+            const small = list.filter((g, i) => i > 0 && g.minutes < C.minShareMin);
+            if (!small.length) break;
+            for (const g of small) { list[0].weight += g.weight; list[0].segIds.push(...g.segIds); }
+            list = list.filter(g => !small.includes(g));
+        }
+        if (list.length === 1) return whole(list[0].task);
+        return list.map(g => ({ task: g.task, minutes: g.minutes, share: g.minutes / total, weight: g.weight, segIds: g.segIds }));
+    }
+
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
         bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary, projectIsBillable,
+        SPLIT_C, segmentWeights, splitCategory,
     };
 })();
 
@@ -1122,7 +1228,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
     const { timesheetWeekFromPage } = RL_RECAP_TIME;
 
-    const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable } = RL_RECAP_MATCH;
+    const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -1139,7 +1245,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.140';
+    const SCRIPT_VERSION   = '4.141';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2971,6 +3077,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-nb-warn { color: #b1520a; border-color: #f0d6b0; background: #fff4e5; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .rl-inline-btn { font-size: 11px; line-height: 1.3; padding: 1px 7px; margin-left: 4px; border: 1px solid #b1520a; background: #fff; color: #b1520a; border-radius: 4px; cursor: pointer; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-nb { font-size: 10px; color: #525252; background: #f4f4f4; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-split { color: #0f62fe; cursor: help; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
@@ -3954,7 +4061,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const RL_API = 'https://kiona.api.rocketlane.com/api/v1';
     const KEY_RL_PROJECTS = 'rl_projects_cache';      // { fetched_at, list: [{id, name}] }
     const RL_PROJECTS_TTL_MS = 24 * 60 * 60 * 1000;   // project inventory refreshes daily (or on a cache miss)
-    const BOOK_MAX_COMMITS = 4;                       // newest triggered commits inspected for activity texts
+    const BOOK_MAX_COMMITS = 4;                       // newest triggered commits whose CONTENT is diffed for the notes
+    const BOOK_MAX_COMMITS_SCAN = 12;                 // newest triggered commits whose TABLE LIST feeds the matcher and the task split (v4.141)
     // "RAC" in the matched project name or in a changed table ⇒ the work is gateway setup, not integration.
     const RAC_RE = /(^|[\s_.:\-(])rac([\s_.:\-)]|$|\d)/i;
     // Internal plant machinery whose tables change as a side-effect of the system running — never present
@@ -4178,8 +4286,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const seen = new Set(); const commits = [];
         for (const c of [...(v.window_commits || []), ...(v.day_commits || [])]) { const id = String(c.id); if (!seen.has(id)) { seen.add(id); commits.push(c); } }
         commits.sort((a, b) => tsFromPangDate(a.date) - tsFromPangDate(b.date));
-        const newest = commits.slice(-BOOK_MAX_COMMITS);
-        if (!newest.length) {
+        // Two horizons (v4.141). EVIDENCE — which tables each save wrote — is read for the newest
+        // BOOK_MAX_COMMITS_SCAN saves: one batched request whatever the count, and the task split has
+        // to see every save of the day, not the last four. CONTENT diffs (unit names, changed settings,
+        // tuned params, drawing panels) stay limited to the newest BOOK_MAX_COMMITS, as before.
+        const scan = commits.slice(-BOOK_MAX_COMMITS_SCAN);
+        const detail = new Set(scan.slice(-BOOK_MAX_COMMITS).map(c => String(c.id)));
+        if (!scan.length) {
             out.notesDraw = out.designerSession || '';
             if (out.designerSession) out.sumDraw = 'Worked in the Designer on the plant\'s drawings.';
             // No commit to describe — the leader still gets a plain line (v4.131), and the disciplines
@@ -4189,12 +4302,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             out.leadActions = summarizeLeadActions(out.tools, false);
             return out;
         }
-        const cids = newest.map(c => String(c.id));
+        const cids = scan.map(c => String(c.id));
+        const tsBy = {}; for (const c of scan) tsBy[String(c.id)] = tsFromPangDate(c.date);
         let patches = {};
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
-        const devAdd = [], devMod = new Set(), graphicCids = [], unitJobs = [], settJobs = [], tuneJobs = [];
+        // Per-save facts (v4.141). Every fact carries the commit that wrote it, so the same composition
+        // below can run for ALL saves (the day's texts) or for one task's share of them.
+        const F = { devAdd: [], devMod: [], tok: [], virt: new Set(), unitAdd: [], unitDel: [], unitRen: [], sett: [], tune: [], panel: [] };
+        const graphicCids = [], unitJobs = [], settJobs = [], tuneJobs = [];
         const tuneSeen = new Set();
-        let virtVals = false;
         for (const cid of cids) {
             const tables = Object.entries(patches[cid] || {}).filter(([t, m]) => m && m.mode);
             for (const [t, m] of tables) {
@@ -4202,23 +4318,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // Internal machinery, not user work: the Data Engine / sysinfo tables drift as a side-effect
                 // of running the plant — "tuned Data Engine" in a timesheet is meaningless noise.
                 if (BOOK_NOISE_RE.test(t)) continue;
-                if (/^iw_set_/.test(t)) { if (m.mode === 'add') devAdd.push(bookPrettyToken(t)); else if (/^mod/.test(m.mode)) devMod.add(bookPrettyToken(t)); }
+                if (/^iw_set_/.test(t)) { if (m.mode === 'add') F.devAdd.push({ cid, v: bookPrettyToken(t) }); else if (/^mod/.test(m.mode)) F.devMod.push({ cid, v: bookPrettyToken(t) }); }
                 // Parameter tuning lives in iw_par_<device>_param/_groups — count a MOD there as "tuned <device>"
-                if (/^iw_par_.+_(param|groups)$/.test(t) && /^mod/.test(m.mode)) devMod.add(bookPrettyToken(t));
+                if (/^iw_par_.+_(param|groups)$/.test(t) && /^mod/.test(m.mode)) F.devMod.push({ cid, v: bookPrettyToken(t) });
+                // Matcher evidence: device-table tokens — framework tables iw_sys_*/iw_gen_*/iw_lnk_* excluded,
+                // their names word-match nonsense.
+                if (!/^iw_(sys|gen|lnk)_/.test(t)) F.tok.push({ cid, v: bookPrettyToken(t).toLowerCase() });
+                if (t === 'iw_sys_virtual_values' && /^mod/.test(m.mode)) F.virt.add(cid);
+                if (/graphic_designer/i.test(t)) graphicCids.push(cid);
+                if (!detail.has(cid)) continue; // content diffs only for the newest saves
                 // Diff a few tuned tables so the notes can say WHICH params changed (newest commit wins per table).
                 if ((/^iw_set_/.test(t) || /^iw_par_.+_param$/.test(t)) && /^mod/.test(m.mode) && !tuneSeen.has(t) && tuneJobs.length < 4) { tuneSeen.add(t); tuneJobs.push({ table_name: t, commit: cid }); }
-                if (t === 'iw_sys_virtual_values' && /^mod/.test(m.mode)) virtVals = true;
-                if (/graphic_designer/i.test(t)) graphicCids.push(cid);
                 if (t === 'iw_sys_plant_units') unitJobs.push({ table_name: t, commit: cid });
                 if (t === 'iw_sys_plant_settings' && /^mod/.test(m.mode)) settJobs.push({ table_name: t, commit: cid });
             }
         }
         // When nothing was "added", say what really happened: diff the units table (added / removed /
         // RENAMED units, with a couple of the new names) and plant settings (which settings changed).
-        let uAdd = 0, uDel = 0, uRen = 0;
-        const uAddNames = [], uRenNames = [], renPairs = [];  // unit LABELS + "old → new" rename pairs, drawer-style
-        const settNames = [], settDetails = [];               // names for the title; "name: old → new" for the notes
-        const tuneMap = new Map();                            // device pretty-name -> [changed param labels]
         const bookClipVal = s => { s = String(s == null ? '' : s); return s.length > 18 ? s.slice(0, 16) + '…' : s; };
         const SECRET_RE = ALL_LOGS_SECRET_RE;                 // never print secret VALUES in a timesheet note
         const jobs = unitJobs.concat(settJobs, tuneJobs);
@@ -4229,167 +4345,205 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const ver = vers[i]; if (!ver) continue;
                     const d = chgDiff(ver);
                     if (d.unreadable) continue;
-                    const tbl = jobs[i].table_name;
+                    const tbl = jobs[i].table_name, cid = String(jobs[i].commit);
                     if (tbl === 'iw_sys_plant_units') {
-                        uAdd += d.added.length; uDel += d.removed.length;
-                        for (const a of d.added) { const l = chgUnitLabel(a); if (l && !uAddNames.includes(l)) uAddNames.push(l); }
-                        const renRows = new Set();
-                        for (const m of d.modified) if (m.col === 'unit_name') {
-                            renRows.add(m.key);
-                            if (m.to && !uRenNames.includes(m.to)) uRenNames.push(m.to);
-                            const pair = (m.from ? m.from + ' → ' : '') + (m.to || '');
-                            if (pair && !renPairs.includes(pair)) renPairs.push(pair);
-                        }
-                        uRen += renRows.size;
+                        for (const a of d.added) F.unitAdd.push({ cid, label: chgUnitLabel(a) || '' });
+                        for (let k = 0; k < d.removed.length; k++) F.unitDel.push({ cid });
+                        for (const m of d.modified) if (m.col === 'unit_name') F.unitRen.push({ cid, key: m.key, from: m.from, to: m.to });
                     } else if (tbl === 'iw_sys_plant_settings') {
                         for (const m of d.modified) {
                             const full = String(chgRowLabel(m) || '');
                             // System-internal settings churn on their own ("scripts (PHP-APP)" stream lists,
                             // data-engine/sysinfo housekeeping) — never present them as work.
                             if (SETT_NOISE_RE.test(full)) continue;
-                            const lbl = full.replace(/\s*\(.*\)$/, '');
-                            if (lbl && !settNames.includes(lbl)) settNames.push(lbl);
                             const f = bookClipVal(m.from), t = bookClipVal(m.to);
                             // Secret values, or values identical after clipping ("1;stream_… → 1;stream_…"): say "changed".
-                            const detail = (SECRET_RE.test(full) || f === t) ? `${full}: changed` : `${full}: ${f} → ${t}`;
-                            if (full && !settDetails.some(x => x.startsWith(full + ':'))) settDetails.push(detail);
+                            F.sett.push({ cid, full, lbl: full.replace(/\s*\(.*\)$/, ''), detail: (SECRET_RE.test(full) || f === t) ? `${full}: changed` : `${full}: ${f} → ${t}` });
                         }
                     } else {
                         // a tuned device table: collect WHICH params changed (drawer-style row labels)
-                        const dev = bookPrettyToken(tbl);
-                        const rowsSeen = tuneMap.get(dev) || [];
+                        const rows = [];
                         for (const m of d.modified) {
                             const lbl = String(chgRowLabel(m) || m.col || '').trim();
-                            if (lbl && rowsSeen.length < 6 && !rowsSeen.includes(lbl)) rowsSeen.push(lbl);
+                            if (lbl && rows.length < 6 && !rows.includes(lbl)) rows.push(lbl);
                         }
-                        if (rowsSeen.length) tuneMap.set(dev, rowsSeen);
+                        if (rows.length) F.tune.push({ cid, dev: bookPrettyToken(tbl), rows });
                     }
                 }
             } catch (e) { /* keep what we have */ }
         }
-        // Compose the Integration text. Added units are named by their UNIT LABELS (like the 🔧 drawer's
-        // "Device added: AK-CC55-017x 6 (000:006)") — the raw driver-table tokens ("080Z0202 041X") only
-        // appear when the units diff wasn't available.
-        const bits = [];
-        if (uAdd) {
-            bits.push('added ' + uAddNames.slice(0, 2).join(', ') + (uAdd > 2 ? ` +${uAdd - 2} more` : ''));
-        } else if (devAdd.length) {
-            const u = [...new Set(devAdd)];
-            bits.push('added ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3} more` : ''));
-        }
-        if (uDel) bits.push(`-${uDel} unit${uDel === 1 ? '' : 's'}`);
-        if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (uRenNames.length ? ` (${uRenNames.slice(0, 2).join(', ')}…)` : ''));
-        if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3}` : '')); }
-        if (virtVals) bits.push('virtual values');
-        if (settNames.length) bits.push('plant settings: ' + settNames.slice(0, 2).join(', ') + (settNames.length > 2 ? ` +${settNames.length - 2}` : ''));
-        let integ = bits.join(' · ');
-        if (integ.length > 110) integ = integ.slice(0, 108) + '…';
-        out.integration = integ;
-        if (graphicCids.length) {
-            const jobs = [...new Set(graphicCids)].map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
+        // Per-panel detail, drawer-style: first rev → last rev + what was edited (layout / background
+        // image), for the newest few graphic saves. Feeds both the names and the Notes lines.
+        const gJobs = [...new Set(graphicCids)].slice(-BOOK_MAX_COMMITS).map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
+        if (gJobs.length) {
             try {
-                const vers = await gmFetchTwoVersionsBatch(jobs);
-                // Per-panel detail across the day's commits, drawer-style: first rev → last rev + what
-                // was edited (layout / background image). Feeds both the names and the Notes lines.
-                const panels = new Map(); // panel -> { from, to, what:Set, added }
-                for (const ver of vers) {
-                    if (!ver) continue;
-                    const d = chgDiff(ver);
+                const vers = await gmFetchTwoVersionsBatch(gJobs);
+                for (let i = 0; i < gJobs.length; i++) {
+                    const ver = vers[i]; if (!ver) continue;
+                    const d = chgDiff(ver), cid = String(gJobs[i].commit);
                     const byPanel = new Map();
                     for (const m of d.modified) { if (!byPanel.has(m.key)) byPanel.set(m.key, []); byPanel.get(m.key).push(m); }
                     for (const [key, mods] of byPanel) {
-                        const panel = String(key).split(CHG_SEP).filter(Boolean).join(' / ') || '(panel)';
-                        const p = panels.get(panel) || { from: null, to: null, what: new Set(), added: false };
                         const rev = mods.find(m => m.col === 'revision');
-                        if (rev) { if (p.from == null) p.from = rev.from; p.to = rev.to; }
-                        if (mods.some(m => m.col === 'xml' || m.col === 'json')) p.what.add('layout');
-                        if (mods.some(m => /picture|image|thumb|icon/i.test(m.col || ''))) p.what.add('background image');
-                        panels.set(panel, p);
+                        F.panel.push({ cid, panel: String(key).split(CHG_SEP).filter(Boolean).join(' / ') || '(panel)', added: false,
+                            rev: !!rev, from: rev ? rev.from : null, to: rev ? rev.to : null,
+                            what: [].concat(mods.some(m => m.col === 'xml' || m.col === 'json') ? ['layout'] : [],
+                                mods.some(m => /picture|image|thumb|icon/i.test(m.col || '')) ? ['background image'] : []) });
                     }
-                    for (const a of d.added) { const l = chgRowLabel(a); if (l && !panels.has(l)) panels.set(l, { from: null, to: null, what: new Set(), added: true }); }
-                }
-                if (panels.size) {
-                    out.drawingNames = [...panels.keys()];
-                    out.drawing = out.drawingNames.slice(0, 3).join(', ');
-                    // Structured form, so the summary sentence can phrase what happened instead of
-                    // re-parsing the rendered line.
-                    out.panelInfo = [...panels.entries()].map(([panel, p]) => ({ panel, added: !!p.added, from: p.from, to: p.to, what: [...p.what] }));
-                    out.drawingLines = [...panels.entries()].map(([panel, p]) => {
-                        let txt = panel;
-                        if (p.added) txt += ' (new)';
-                        if (p.from != null) txt += `: rev ${p.from} → ${p.to}`;
-                        if (p.what.size) txt += ' · ' + [...p.what].join(' + ') + ' edited';
-                        return txt;
-                    });
+                    for (const a of d.added) { const l = chgRowLabel(a); if (l) F.panel.push({ cid, panel: l, added: true, rev: false, from: null, to: null, what: [] }); }
                 }
             } catch (e) { /* fallback text */ }
         }
-        // DETAILED multi-line notes for the time entry's Notes field — informative but CAPPED, so a big
-        // commissioning day doesn't dump 20 lines into one note (the activity title stays short regardless).
-        const nInteg = [];
-        if (uAddNames.length) nInteg.push('Added: ' + uAddNames.slice(0, 5).join(', ') + (uAdd > 5 ? ` (+${uAdd - 5} more)` : ''));
-        else if (devAdd.length) { const u = [...new Set(devAdd)]; nInteg.push('Added: ' + u.slice(0, 5).join(', ') + (u.length > 5 ? ` (+${u.length - 5} more)` : '')); }
-        if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 5).join(', ') + (uRen > 5 ? ` (+${uRen - 5} more)` : ''));
-        if (uDel) nInteg.push(`Removed: ${uDel} unit${uDel === 1 ? '' : 's'}`);
-        if (devMod.size) {
-            const u = [...devMod].filter(x => devAdd.indexOf(x) < 0);
-            if (u.length) {
-                // Show WHICH params changed for up to 2 tuned devices ("Data Engine (poll_rate, log_level +3)");
-                // remaining devices by name only.
-                const parts = [];
-                for (const dev of u.slice(0, 4)) {
-                    const rows = tuneMap.get(dev);
-                    if (rows && rows.length && parts.filter(p => p.includes('(')).length < 2) {
-                        parts.push(dev + ' (' + rows.slice(0, 3).join(', ') + (rows.length > 3 ? ` +${rows.length - 3}` : '') + ')');
-                    } else parts.push(dev);
-                }
-                nInteg.push('Tuned params: ' + parts.join(', ') + (u.length > 4 ? ` (+${u.length - 4} more)` : ''));
+        // Compose the texts from a SET of saves — every save for the day's own texts, one task's saves
+        // for a split entry (v4.141). Same facts, same wording, same caps either way.
+        const compose = (sel) => {
+            const T = {};
+            const inSel = r => !sel || sel.has(String(r.cid));
+            const devAdd = F.devAdd.filter(inSel).map(r => r.v);
+            const devMod = new Set(F.devMod.filter(inSel).map(r => r.v));
+            const virtVals = [...F.virt].some(c => inSel({ cid: c }));
+            let uAdd = 0, uRen = 0;
+            const uDel = F.unitDel.filter(inSel).length;
+            const uAddNames = [], uRenNames = [], renPairs = [];  // unit LABELS + "old → new" rename pairs, drawer-style
+            for (const r of F.unitAdd.filter(inSel)) { uAdd++; if (r.label && !uAddNames.includes(r.label)) uAddNames.push(r.label); }
+            for (const r of F.unitRen.filter(inSel)) {
+                uRen++;
+                if (r.to && !uRenNames.includes(r.to)) uRenNames.push(r.to);
+                const pair = (r.from ? r.from + ' → ' : '') + (r.to || '');
+                if (pair && !renPairs.includes(pair)) renPairs.push(pair);
             }
-        }
-        if (virtVals) nInteg.push('Virtual values changed');
-        if (settDetails.length) nInteg.push('Plant settings: ' + settDetails.slice(0, 3).join('; ') + (settDetails.length > 3 ? ` (+${settDetails.length - 3} more)` : ''));
-        else if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
-        out.notesInteg = nInteg.join('\n');
-        // The same facts as one sentence, for the top of the note.
-        out.sumInteg = summarizeIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames });
-        const nDraw = [];
-        if (out.drawingLines && out.drawingLines.length) {
-            const lines = out.drawingLines.slice(0, 4);
-            nDraw.push(lines.length === 1 ? 'Drawing changed: ' + lines[0] : 'Drawings changed:');
-            if (lines.length > 1) for (const l of lines) nDraw.push('- ' + l);
-            if (out.drawingLines.length > 4) nDraw.push(`(+${out.drawingLines.length - 4} more drawings)`);
-        } else if (out.drawingNames.length) {
-            nDraw.push('Drawings changed: ' + out.drawingNames.slice(0, 4).join(', '));
-        } else if (out.designerSession) {
-            nDraw.push(out.designerSession); // fallback only — real drawing detail replaces it
-        }
-        out.notesDraw = nDraw.join('\n');
-        // …and the drawing work as a sentence.
-        out.sumDraw = summarizeDrawing(out.panelInfo, out.drawingNames, !!out.designerSession);
-        // Curated evidence for the task matcher, TIERED (v4.82): tokStr = device-table tokens (framework
-        // tables iw_sys_*/iw_gen_*/iw_lnk_* excluded — their names word-match nonsense) — system-level
-        // truth; uStr = unit add/rename NAMES — fallback tier only, since MQTT sensors get renamed to
-        // "Kjøttdisk"/"Fryserom" and would otherwise pull every day into refrigeration.
-        const tokset = new Set();
-        for (const cid of cids) for (const [t, m] of Object.entries(patches[cid] || {})) {
-            if (m && m.mode && !/^iw_(sys|gen|lnk)_/.test(t) && !BOOK_NOISE_RE.test(t)) tokset.add(bookPrettyToken(t).toLowerCase());
-        }
-        out.tokStr = [...tokset].concat(devAdd, [...devMod]).join(' ').toLowerCase();
-        out.uStr = uAddNames.concat(uRenNames).join(' ').toLowerCase();
-        out.hints = [out.tokStr, out.logStr, out.uStr, settNames.join(' '), out.drawingNames.join(' ')].join(' ').toLowerCase(); // for the LOG
-        // The day's dominant disciplines, best first — device-table evidence plus the day's own note —
-        // so the leader-facing summary can say "refrigeration controller" instead of "unit" (v4.114).
-        const discSum = {};
-        for (const w of [bookDiscWeights(out.tokStr || ''), bookDiscWeights(out.logStr || '', true)]) {
-            for (const k in w) discSum[k] = (discSum[k] || 0) + w[k];
-        }
-        out.discs = Object.keys(discSum).sort((a, b) => discSum[b] - discSum[a]);
-        // Leader-facing opening lines (v4.114): the plain-language first line of the entry's note.
-        // The technical sentence (sumInteg / sumDraw) moves down into the detail block as evidence.
-        const tuneLabels = [].concat(...[...tuneMap.values()]);
-        out.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames, tuneLabels }, out.discs);
-        out.leadDraw = summarizeLeadDrawing(out.panelInfo, out.drawingNames, out.discs);
-        out.leadActions = summarizeLeadActions(out.tools, true); // commits existed; used only when nothing above could be said
+            const settNames = [], settDetails = [];               // names for the title; "name: old → new" for the notes
+            for (const r of F.sett.filter(inSel)) {
+                if (r.lbl && !settNames.includes(r.lbl)) settNames.push(r.lbl);
+                if (r.full && !settDetails.some(x => x.startsWith(r.full + ':'))) settDetails.push(r.detail);
+            }
+            const tuneMap = new Map();                            // device pretty-name -> [changed param labels]
+            for (const r of F.tune.filter(inSel)) {
+                const rowsSeen = tuneMap.get(r.dev) || [];
+                for (const lbl of r.rows) if (rowsSeen.length < 6 && !rowsSeen.includes(lbl)) rowsSeen.push(lbl);
+                if (rowsSeen.length) tuneMap.set(r.dev, rowsSeen);
+            }
+            // Compose the Integration text. Added units are named by their UNIT LABELS (like the 🔧 drawer's
+            // "Device added: AK-CC55-017x 6 (000:006)") — the raw driver-table tokens ("080Z0202 041X") only
+            // appear when the units diff wasn't available.
+            const bits = [];
+            if (uAdd) {
+                bits.push('added ' + uAddNames.slice(0, 2).join(', ') + (uAdd > 2 ? ` +${uAdd - 2} more` : ''));
+            } else if (devAdd.length) {
+                const u = [...new Set(devAdd)];
+                bits.push('added ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3} more` : ''));
+            }
+            if (uDel) bits.push(`-${uDel} unit${uDel === 1 ? '' : 's'}`);
+            if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (uRenNames.length ? ` (${uRenNames.slice(0, 2).join(', ')}…)` : ''));
+            if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3}` : '')); }
+            if (virtVals) bits.push('virtual values');
+            if (settNames.length) bits.push('plant settings: ' + settNames.slice(0, 2).join(', ') + (settNames.length > 2 ? ` +${settNames.length - 2}` : ''));
+            let integ = bits.join(' · ');
+            if (integ.length > 110) integ = integ.slice(0, 108) + '…';
+            T.integration = integ;
+            const panels = new Map(); // panel -> { from, to, what:Set, added }
+            for (const r of F.panel.filter(inSel)) {
+                if (r.added) { if (!panels.has(r.panel)) panels.set(r.panel, { from: null, to: null, what: new Set(), added: true }); continue; }
+                const p = panels.get(r.panel) || { from: null, to: null, what: new Set(), added: false };
+                if (r.rev) { if (p.from == null) p.from = r.from; p.to = r.to; }
+                for (const w of r.what) p.what.add(w);
+                panels.set(r.panel, p);
+            }
+            T.drawingNames = []; T.drawing = ''; T.drawingLines = [];
+            if (panels.size) {
+                T.drawingNames = [...panels.keys()];
+                T.drawing = T.drawingNames.slice(0, 3).join(', ');
+                // Structured form, so the summary sentence can phrase what happened instead of
+                // re-parsing the rendered line.
+                T.panelInfo = [...panels.entries()].map(([panel, p]) => ({ panel, added: !!p.added, from: p.from, to: p.to, what: [...p.what] }));
+                T.drawingLines = [...panels.entries()].map(([panel, p]) => {
+                    let txt = panel;
+                    if (p.added) txt += ' (new)';
+                    if (p.from != null) txt += `: rev ${p.from} → ${p.to}`;
+                    if (p.what.size) txt += ' · ' + [...p.what].join(' + ') + ' edited';
+                    return txt;
+                });
+            }
+            // DETAILED multi-line notes for the time entry's Notes field — informative but CAPPED, so a big
+            // commissioning day doesn't dump 20 lines into one note (the activity title stays short regardless).
+            const nInteg = [];
+            if (uAddNames.length) nInteg.push('Added: ' + uAddNames.slice(0, 5).join(', ') + (uAdd > 5 ? ` (+${uAdd - 5} more)` : ''));
+            else if (devAdd.length) { const u = [...new Set(devAdd)]; nInteg.push('Added: ' + u.slice(0, 5).join(', ') + (u.length > 5 ? ` (+${u.length - 5} more)` : '')); }
+            if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 5).join(', ') + (uRen > 5 ? ` (+${uRen - 5} more)` : ''));
+            if (uDel) nInteg.push(`Removed: ${uDel} unit${uDel === 1 ? '' : 's'}`);
+            if (devMod.size) {
+                const u = [...devMod].filter(x => devAdd.indexOf(x) < 0);
+                if (u.length) {
+                    // Show WHICH params changed for up to 2 tuned devices ("Data Engine (poll_rate, log_level +3)");
+                    // remaining devices by name only.
+                    const parts = [];
+                    for (const dev of u.slice(0, 4)) {
+                        const rows = tuneMap.get(dev);
+                        if (rows && rows.length && parts.filter(p => p.includes('(')).length < 2) {
+                            parts.push(dev + ' (' + rows.slice(0, 3).join(', ') + (rows.length > 3 ? ` +${rows.length - 3}` : '') + ')');
+                        } else parts.push(dev);
+                    }
+                    nInteg.push('Tuned params: ' + parts.join(', ') + (u.length > 4 ? ` (+${u.length - 4} more)` : ''));
+                }
+            }
+            if (virtVals) nInteg.push('Virtual values changed');
+            if (settDetails.length) nInteg.push('Plant settings: ' + settDetails.slice(0, 3).join('; ') + (settDetails.length > 3 ? ` (+${settDetails.length - 3} more)` : ''));
+            else if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
+            T.notesInteg = nInteg.join('\n');
+            // The same facts as one sentence, for the top of the note.
+            T.sumInteg = summarizeIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames });
+            const nDraw = [];
+            if (T.drawingLines.length) {
+                const lines = T.drawingLines.slice(0, 4);
+                nDraw.push(lines.length === 1 ? 'Drawing changed: ' + lines[0] : 'Drawings changed:');
+                if (lines.length > 1) for (const l of lines) nDraw.push('- ' + l);
+                if (T.drawingLines.length > 4) nDraw.push(`(+${T.drawingLines.length - 4} more drawings)`);
+            } else if (T.drawingNames.length) {
+                nDraw.push('Drawings changed: ' + T.drawingNames.slice(0, 4).join(', '));
+            } else if (out.designerSession) {
+                nDraw.push(out.designerSession); // fallback only — real drawing detail replaces it
+            }
+            T.notesDraw = nDraw.join('\n');
+            // …and the drawing work as a sentence.
+            T.sumDraw = summarizeDrawing(T.panelInfo, T.drawingNames, !!out.designerSession);
+            // Curated evidence for the task matcher, TIERED (v4.82): tokStr = device-table tokens (framework
+            // tables iw_sys_*/iw_gen_*/iw_lnk_* excluded — their names word-match nonsense) — system-level
+            // truth; uStr = unit add/rename NAMES — fallback tier only, since MQTT sensors get renamed to
+            // "Kjøttdisk"/"Fryserom" and would otherwise pull every day into refrigeration.
+            const tokset = new Set(F.tok.filter(inSel).map(r => r.v));
+            T.tokStr = [...tokset].concat(devAdd, [...devMod]).join(' ').toLowerCase();
+            T.uStr = uAddNames.concat(uRenNames).join(' ').toLowerCase();
+            T.hints = [T.tokStr, out.logStr, T.uStr, settNames.join(' '), T.drawingNames.join(' ')].join(' ').toLowerCase(); // for the LOG
+            // The day's dominant disciplines, best first — device-table evidence plus the day's own note —
+            // so the leader-facing summary can say "refrigeration controller" instead of "unit" (v4.114).
+            // For one task's share of the saves (v4.141) the note is the plant-day's, not this task's: its
+            // own tables and drawings decide, and the note is consulted only when they say nothing.
+            const discSum = {};
+            const own = sel ? bookDiscWeights((T.tokStr || '') + ' ' + T.drawingNames.join(' ')) : bookDiscWeights(T.tokStr || '');
+            const sources = [own];
+            if (!sel || !Object.keys(own).length) sources.push(bookDiscWeights(out.logStr || '', true));
+            for (const w of sources) {
+                for (const k in w) discSum[k] = (discSum[k] || 0) + w[k];
+            }
+            T.discs = Object.keys(discSum).sort((a, b) => discSum[b] - discSum[a]);
+            // Leader-facing opening lines (v4.114): the plain-language first line of the entry's note.
+            // The technical sentence (sumInteg / sumDraw) moves down into the detail block as evidence.
+            const tuneLabels = [].concat(...[...tuneMap.values()]);
+            T.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames, tuneLabels }, T.discs);
+            T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, T.discs);
+            T.leadActions = summarizeLeadActions(out.tools, true); // commits existed; used only when nothing above could be said
+            return T;
+        };
+        Object.assign(out, compose(null));
+        // The same texts for a SUBSET of saves — what a split entry is described by (v4.141).
+        out.forCommits = ids => Object.assign({}, out, compose(new Set((ids || []).map(String))));
+        // One evidence segment per save, for RL_RECAP_MATCH.splitCategory: what THAT save wrote.
+        out.segments = cids.map(cid => {
+            const own = r => String(r.cid) === cid;
+            const toks = [...new Set(F.tok.filter(own).map(r => r.v))].concat(F.devAdd.filter(own).map(r => r.v), F.devMod.filter(own).map(r => r.v));
+            const names = F.unitAdd.filter(own).map(r => r.label).concat(F.unitRen.filter(own).map(r => r.to)).filter(Boolean);
+            return { id: cid, ts: tsBy[cid], tokStr: toks.join(' ').toLowerCase(), uStr: names.join(' ').toLowerCase(), drawingNames: [...new Set(F.panel.filter(own).map(r => r.panel))] };
+        });
         return out;
     }
 
@@ -4608,17 +4762,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const usedTasks = new Set(); // rescue must not book two categories onto the same task
             for (const [cat, min] of bookable) {
                 let category = cat;
-                let act;
-                if (cat === CAT_INTEGRATION) act = 'Integration: ' + (texts.integration || (texts.actionsWork ? texts.actionsWork + ' work' : 'device/DB config'));
-                else if (cat === CAT_DRAWING) act = 'Drawing: ' + (texts.drawing || texts.designerSession || 'graphics update in Designer');
-                else if (cat === CAT_SETUP_PC) act = 'Setup: AK3 scanner setup';
-                else act = CAT_SHORT[cat] + ': ' + (texts.actionsWork ? texts.actionsWork + ' follow-up' : 'follow-up and status check');
                 // RAC ⇒ the "integration" is really gateway setup: move it to Setup - PC / Gateway.
                 const racRedirect = (texts.racHit || racProject) && cat === CAT_INTEGRATION; // Setup reached via RAC, not via AK3
-                if ((texts.racHit || racProject) && cat === CAT_INTEGRATION) {
-                    category = CAT_SETUP_PC;
-                    act = 'Setup: RAC' + (texts.integration ? ' — ' + texts.integration : ' setup');
-                }
+                if (racRedirect) category = CAT_SETUP_PC;
                 // Prefer an existing project task; the rich text then rides along as the entry's note.
                 // The matcher takes a category KIND, not Rocketlane's category name — see RL_RECAP_MATCH.
                 const kind = category === CAT_DRAWING ? 'drawing' : category === CAT_SETUP_PC ? 'setup'
@@ -4626,9 +4772,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     : category === CAT_SUPPORT ? 'support' : null;
                 const catIdEarly = cats[category];
                 const priorList = (proj && catIdEarly && taskPrior.get(proj.id + '|' + catIdEarly)) || null;
-                const task = kind ? pickTask(tasks, kind, texts, usedTasks, priorList) : null;
-                if (task) usedTasks.add(task.taskId);
-                LOG('book: pick', v.plant_id, category, '→', task ? task.taskName + (task.rescued ? ' (rescue)' : '') : '(new activity)', '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
+                // One category, possibly several tasks (v4.141, Thomas: "multiple tasks completed on the same
+                // plant on the same day … divide the time between them as accurately as possible"). The
+                // category's minutes are apportioned over the tasks the day's SAVES point at, weighted by
+                // the time before each save — one part when every save points the same way, and that
+                // part's task is exactly the pick this loop made before. Rules: RL_RECAP_MATCH.splitCategory.
+                const parts = kind
+                    ? splitCategory({ tasks, kind, texts, segments: texts.segments, minutes: Math.round(min), used: usedTasks, prior: priorList,
+                        win: { first_ts: v.first_ts, last_ts: v.last_ts, capped_gaps: v.capped_gaps } })
+                    : [{ task: null, minutes: Math.round(min), share: 1, segIds: [] }];
+                for (const p of parts) if (p.task) usedTasks.add(p.task.taskId);
+                LOG('book: pick', v.plant_id, category, '→', parts.map(p => p.task ? p.task.taskName + (p.task.rescued ? ' (rescue)' : '') + (parts.length > 1 ? ` ${p.minutes}m` : '') : '(new activity)').join(' + '),
+                    '· tasks', tasks.length, '· hints', String(texts.hints || '').slice(0, 120));
                 const catId = cats[category];
                 const dupe = proj && existing.some(e => e.project && e.project.id === proj.id && e.category && e.category.categoryId === catId);
                 // A no-project plant already booked into a TEAM BUCKET today (activity "<plant id> …",
@@ -4638,60 +4793,74 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const bucketDupe = !proj && !!catId && existing.some(e => e.category && e.category.categoryId === catId
                     && (String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0
                         || String((e.task && (e.task.taskName || e.task.name)) || e.taskName || '').indexOf(String(v.plant_id) + ' ') === 0));
-                // The entry's Notes field, in three parts (v4.111, restructured v4.114): the FIRST
-                // line is the only one Rocketlane shows collapsed and its reader is usually the
-                // project LEADER — so it is the plain-language summary of what happened to the plant.
-                // The technical sentence moves to the top of the detail block as evidence, then the
-                // log lines, then the precise diff.
-                // Two readers, two blocks (v4.131): `summary` is the leader's plain line, `tech` the
-                // engineer's sentence, `details` the diff. A day with no describable change still gets a
-                // plain line (leadActions) instead of falling straight to the tools sentence.
-                let summary, tech, details;
-                if (category === CAT_DRAWING) {
-                    summary = texts.leadDraw || texts.leadActions || texts.sumDraw || '';
-                    tech = texts.sumDraw || texts.sumActions || '';
-                    details = texts.notesDraw || '';
-                } else if (category === CAT_SETUP_PC) {
-                    // Setup is reached two ways: an AK3 scanner day, or an integration day on a RAC
-                    // plant that belongs under gateway setup. Say which — the old note always claimed AK3.
-                    summary = summarizeLeadSetup(racRedirect);
-                    tech = texts.sumInteg || texts.sumActions || '';
-                    details = texts.notesInteg || '';
-                } else if (category === CAT_INTEGRATION) {
-                    summary = texts.leadInteg || texts.leadActions || texts.sumInteg || '';
-                    tech = texts.sumInteg || texts.sumActions || '';
-                    details = texts.notesInteg || '';
-                } else {
-                    // Support - External: a follow-up session that left no config evidence — say so in
-                    // service terms; the tools sentence stays as the technical detail.
-                    summary = summarizeLeadSupport(texts.tools);
-                    tech = texts.sumActions || '';
-                    details = texts.notesInteg || '';
+                for (const p of parts) {
+                    const task = p.task;
+                    // A split entry is described by ITS OWN saves (v4.141) — the ventilation entry must not
+                    // claim the refrigeration controllers — while an unsplit entry reads the whole day, as before.
+                    const t = (parts.length > 1 && texts.forCommits) ? texts.forCommits(p.segIds) : texts;
+                    let act;
+                    if (cat === CAT_INTEGRATION) act = 'Integration: ' + (t.integration || (t.actionsWork ? t.actionsWork + ' work' : 'device/DB config'));
+                    else if (cat === CAT_DRAWING) act = 'Drawing: ' + (t.drawing || t.designerSession || 'graphics update in Designer');
+                    else if (cat === CAT_SETUP_PC) act = 'Setup: AK3 scanner setup';
+                    else act = CAT_SHORT[cat] + ': ' + (t.actionsWork ? t.actionsWork + ' follow-up' : 'follow-up and status check');
+                    if (racRedirect) act = 'Setup: RAC' + (t.integration ? ' — ' + t.integration : ' setup');
+                    // The entry's Notes field, in three parts (v4.111, restructured v4.114): the FIRST
+                    // line is the only one Rocketlane shows collapsed and its reader is usually the
+                    // project LEADER — so it is the plain-language summary of what happened to the plant.
+                    // The technical sentence moves to the top of the detail block as evidence, then the
+                    // log lines, then the precise diff.
+                    // Two readers, two blocks (v4.131): `summary` is the leader's plain line, `tech` the
+                    // engineer's sentence, `details` the diff. A day with no describable change still gets a
+                    // plain line (leadActions) instead of falling straight to the tools sentence.
+                    let summary, tech, details;
+                    if (category === CAT_DRAWING) {
+                        summary = t.leadDraw || t.leadActions || t.sumDraw || '';
+                        tech = t.sumDraw || t.sumActions || '';
+                        details = t.notesDraw || '';
+                    } else if (category === CAT_SETUP_PC) {
+                        // Setup is reached two ways: an AK3 scanner day, or an integration day on a RAC
+                        // plant that belongs under gateway setup. Say which — the old note always claimed AK3.
+                        summary = summarizeLeadSetup(racRedirect);
+                        tech = t.sumInteg || t.sumActions || '';
+                        details = t.notesInteg || '';
+                    } else if (category === CAT_INTEGRATION) {
+                        summary = t.leadInteg || t.leadActions || t.sumInteg || '';
+                        tech = t.sumInteg || t.sumActions || '';
+                        details = t.notesInteg || '';
+                    } else {
+                        // Support - External: a follow-up session that left no config evidence — say so in
+                        // service terms; the tools sentence stays as the technical detail.
+                        summary = summarizeLeadSupport(t.tools);
+                        tech = t.sumActions || '';
+                        details = t.notesInteg || '';
+                    }
+                    if (tech === summary) tech = ''; // the summary had to fall back to the technical line — do not print it twice
+                    // Whatever you wrote in the operations log / a handover note that day says more about the
+                    // work than any diff can (already masked; secret values never travel); it joins the
+                    // leader's block as "Site note:".
+                    const notes = composeEntryNote(summary, String(t.notesLogs || '').split('\n'), details, tech);
+                    plan.push({
+                        plant_id: v.plant_id, plant: v.name || v.plant_id,
+                        projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
+                        // v4.140 (Thomas: "3530 did not fill out. had to do it manually"): the hours get WRITTEN.
+                        // Billable wherever Rocketlane allows; non-billable only on a project whose contract is
+                        // NON_BILLABLE, because that is the only thing Rocketlane accepts there — his manual entry
+                        // on 1435018 went in as billable:false for exactly that reason. The API cannot change the
+                        // contract, so the row is ticked, booked non-billable, and says so; the banner links the
+                        // project for whoever wants those hours billable. Calendar rows stay non-billable always.
+                        projectBillable: proj ? projBillable : null,
+                        // No task picked on a project that HAS none to pick: say so on the row instead of a
+                        // bare "new activity" (v4.135). A matcher miss on a project with real tasks stays plain.
+                        noTasks: (proj && !task) ? (s => s.empty ? s : null)(taskPoolSummary(tasks)) : null,
+                        projMatch: proj ? { tier: match.tier, n: match.candidates.length, reason: match.reason, // how the project was found (v4.133/4.134)
+                            twins: match.candidates.length > 1 ? match.candidates.map(c => ({ id: c.id, name: c.name, tasks: twinCounts ? twinCounts.get(String(c.id)) : null })) : null } : null,
+                        taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
+                        category, categoryId: catId || null, minutes: p.minutes, activityName: act, notes,
+                        // Several tasks share this plant's category (v4.141): the row says which share it carries.
+                        split: parts.length > 1 ? { share: p.share, n: parts.length, saves: p.segIds.length, of: Math.round(min) } : null,
+                        status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
+                    });
                 }
-                if (tech === summary) tech = ''; // the summary had to fall back to the technical line — do not print it twice
-                // Whatever you wrote in the operations log / a handover note that day says more about the
-                // work than any diff can (already masked; secret values never travel); it joins the
-                // leader's block as "Site note:".
-                const notes = composeEntryNote(summary, String(texts.notesLogs || '').split('\n'), details, tech);
-                plan.push({
-                    plant_id: v.plant_id, plant: v.name || v.plant_id,
-                    projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
-                    // v4.140 (Thomas: "3530 did not fill out. had to do it manually"): the hours get WRITTEN.
-                    // Billable wherever Rocketlane allows; non-billable only on a project whose contract is
-                    // NON_BILLABLE, because that is the only thing Rocketlane accepts there — his manual entry
-                    // on 1435018 went in as billable:false for exactly that reason. The API cannot change the
-                    // contract, so the row is ticked, booked non-billable, and says so; the banner links the
-                    // project for whoever wants those hours billable. Calendar rows stay non-billable always.
-                    projectBillable: proj ? projBillable : null,
-                    // No task picked on a project that HAS none to pick: say so on the row instead of a
-                    // bare "new activity" (v4.135). A matcher miss on a project with real tasks stays plain.
-                    noTasks: (proj && !task) ? (s => s.empty ? s : null)(taskPoolSummary(tasks)) : null,
-                    projMatch: proj ? { tier: match.tier, n: match.candidates.length, reason: match.reason, // how the project was found (v4.133/4.134)
-                        twins: match.candidates.length > 1 ? match.candidates.map(c => ({ id: c.id, name: c.name, tasks: twinCounts ? twinCounts.get(String(c.id)) : null })) : null } : null,
-                    taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
-                    category, categoryId: catId || null, minutes: Math.round(min), activityName: act, notes,
-                    status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
-                });
             }
         }
         // Calendar entries (v4.117) lead the plan — they are booked at their real duration and the
@@ -4766,6 +4935,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             return `✳ <b>no work tasks in this project yet</b>${only}. Booked as activity: ${act}`;
         }
         return '✳ new activity: ' + act;
+    }
+
+    // Several tasks share this plant's category (v4.141): the row says which share it carries and why.
+    function splitHtml(e) {
+        const s = e && e.split; if (!s || !(s.n > 1)) return '';
+        const pct = Math.round((s.share || 0) * 100);
+        const tip = `This plant's ${CAT_SHORT[e.category] || e.category} time (${fmtMinutes(s.of)}) points at ${s.n} tasks. `
+            + `The share follows the saves: the time before each save belongs to what it saved — ${s.saves} save${s.saves === 1 ? '' : 's'} for this task.`;
+        return ` · <span class="bookplan-split" title="${escapeHtml(tip)}">⚖ ${pct}% of ${fmtMinutes(s.of)}, split over ${s.n} tasks</span>`;
     }
 
     // Two live projects carry this plant's number (v4.134): say which one was chosen and why, and let
@@ -4883,12 +5061,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 _rlWeekCache.clear();
                 const now = await rlEntriesOn(iso);
                 // Build-time dedupe guarantees the sheet had NO entry for this project+category today,
-                // so one appearing now can only be OUR write that the gateway failed to acknowledge.
+                // so one appearing now can only be OUR write that the gateway failed to acknowledge —
+                // except that a split (v4.141) books several task rows on one project+category, so a
+                // task row has to find ITS task there, not a sibling's.
+                const sameTask = x => !!(x.task && (String(x.task.taskId) === String(taskId) || String(x.task.id) === String(taskId)));
                 const landed = now._checkOk && now.some(x => x.project && x.project.id === projectId
                     && x.category && x.category.categoryId === e.categoryId
-                    && (!isFallback
-                        || String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0
-                        || (taskId && x.task && (x.task.taskId === taskId || x.task.id === taskId))));
+                    && (taskId ? sameTask(x)
+                        : (!isFallback || String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0)));
                 if (landed) r = { status: 201, json: null };
                 else if (now._checkOk) r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
                 // check unavailable ⇒ leave the failure — a rebuilt plan dedupes correctly later
@@ -4976,7 +5156,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${splitHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
@@ -5436,7 +5616,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b>${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${splitHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
