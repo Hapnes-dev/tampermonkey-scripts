@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.143
+// @version      4.144
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -66,6 +66,25 @@ var RL_RECAP_ALL_LOGS = (function () {
         return (rec && rec.action) || String(sys || '').toLowerCase();
     }
 
+    // Soft All-logs evidence (v4.144): rows that prove presence but must not own a long cross-plant
+    // silence the way a pang click does. Measured on thomas.kvalvag 2025-08-04…2026-09-07 (10 410
+    // rows, 254 active days): RAC|get_units / NOTES / OP_LOG|service / user_access were the events
+    // that sat before 30–167 min gaps and billed the previous plant up to the 30-min cap. Soft rows
+    // still enter the timeline (so a notes-only plant is not invisible) but attributeTime caps them
+    // at SOFT_EVENT_CAP and never opens a commit-liftable capped_gap for them.
+    const SOFT_ALL_LOGS_SYSTEMS = /^(NOTES|RAC|PING|CRM_PLANT|BATCH|BACKUP|AC|CRASH)$/i;
+    const SOFT_ALL_LOGS_ACTIONS = /^(user_access|service|get_units|get_info|start_server|rvnc)$/i;
+    function isSoftAllLogsRow(rec) {
+        if (!rec) return false;
+        if (isPang1LogSystem(rec.system)) return false; // pang clicks are always hard
+        const sys = String(rec.system || '');
+        const act = String(rec.action || '');
+        if (SOFT_ALL_LOGS_SYSTEMS.test(sys)) return true;
+        if (SOFT_ALL_LOGS_ACTIONS.test(act)) return true;
+        if (/^OP_LOG$/i.test(sys) && /^service$/i.test(act)) return true;
+        return false;
+    }
+
     // service.php takes a wall-clock window, so one calendar day is 00:00:00 … 23:59:59 local (Oslo),
     // matching every other date in the script.
     function allLogsDateWindow(iso) {
@@ -112,15 +131,16 @@ var RL_RECAP_ALL_LOGS = (function () {
             const events = [];
             for (const r of g.pang1) {
                 const ts = toTs(r.date);
-                if (isFinite(ts)) events.push({ ts, action: allLogsChipCode(r), click: true });
+                if (isFinite(ts)) events.push({ ts, action: allLogsChipCode(r), click: true, soft: false });
             }
             for (const r of g.extra) {
                 const ts = toTs(r.date);
                 // A non-click row (a note, an operations-log entry) is evidence the plant was worked on,
                 // but it is not a pang click — counting it as one would push a real session past
                 // SPARSE_CLICK_MAX and disable the commit fusion. Only when the plant has NO pang clicks
-                // at all do these rows stand in as the visit's clicks.
-                if (isFinite(ts)) events.push({ ts, action: allLogsChipCode(r), click: !hasClicks });
+                // at all do these rows stand in as the visit's clicks. Soft rows still enter the
+                // timeline but attributeTime will not let them own a long silence (v4.144).
+                if (isFinite(ts)) events.push({ ts, action: allLogsChipCode(r), click: !hasClicks, soft: isSoftAllLogsRow(r) });
             }
             if (!events.length) continue;
             events.sort((a, b) => a.ts - b.ts);
@@ -198,6 +218,7 @@ var RL_RECAP_ALL_LOGS = (function () {
     return {
         ALL_LOGS_SECRET_RE, ALL_LOGS_NOTE_CAP,
         rlRecapNormalizeUser, isPang1LogSystem, allLogsChipCode, allLogsDateWindow,
+        isSoftAllLogsRow, SOFT_ALL_LOGS_SYSTEMS, SOFT_ALL_LOGS_ACTIONS,
         maskAllLogsComment, filterAllLogsRecords, visitsFromAllLogsRecords,
         formatAllLogsNotes, mergeVisitEventLists,
         allLogsScanScope, datesWithinRange,
@@ -448,6 +469,16 @@ var RL_RECAP_TIME = (function () {
         return C.capMin;
     }
 
+    // How many ms of a raw silence one timeline event may claim (v4.144). Hard events (pang clicks,
+    // real ops changes) keep the 30-min work cap; soft All-logs rows (notes, RAC bursts, service
+    // logons, user_access) only keep a short presence blip so they cannot steal a lunch break.
+    function eventGapCapMs(soft, C) {
+        C = C || {};
+        const hard = Number.isFinite(C.capMs) ? C.capMs : 30 * 60 * 1000;
+        const softCap = Number.isFinite(C.softCapMs) ? C.softCapMs : 5 * 60 * 1000;
+        return soft ? softCap : hard;
+    }
+
     // The day's very LAST action gets a flat tail wrap-up (10 min) — but when the plant's own
     // change-triggered commit lands shortly after it, the save timestamps the real end of the day.
     // Returns the EXTRA minutes to add on top of the tail already credited (0 when no commit within
@@ -571,7 +602,7 @@ var RL_RECAP_TIME = (function () {
         return { rows: out, budget };
     }
 
-    return { cappedGapCredit, dayEndExtension, allocateMinutes, dayBudget, timesheetWeekFromPage, bookingShares };
+    return { cappedGapCredit, dayEndExtension, eventGapCapMs, allocateMinutes, dayBudget, timesheetWeekFromPage, bookingShares };
 })();
 // ===== Outlook calendar → meeting / admin time =======================================
 // pang only sees plant work, so meetings, planning and training never reached the timesheet — and
@@ -1289,7 +1320,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         summarizeLeadActions,
     } = RL_RECAP_NOTE_TEXT;
 
-    const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
+    const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
     const { timesheetWeekFromPage } = RL_RECAP_TIME;
@@ -1327,6 +1358,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // pause down to 2 min, scoring a ~7h day as ~1.6h and skewing the per-plant split toward whoever
     // clicked fastest — this 30-min cap bills genuine pauses as the work they are.)
     const ACTIVE_CAP_MS = 30 * 60 * 1000; // each gap counts at most 30 min (normal work pauses count; real breaks are capped)
+    const SOFT_EVENT_CAP_MS = 5 * 60 * 1000; // v4.144: soft All-logs rows (notes/RAC/service/user_access) — presence only
     const TAIL_MS       = 10 * 60 * 1000; // wrap-up credited to the day's very last click
     const ISOLATED_TOUCH_CAP = 8;         // minutes: a single config-surface click (pma/sys) with no commit is a quick check, not 30 min of work
     // Long-silence damping (v4.56). A 39-day corpus (1,043 clicks) showed 40% of all raw credit was
@@ -2679,7 +2711,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const pending = (visits || []).filter(v => Array.isArray(v._events) && v._events.length);
         if (!pending.length) return visits || [];
         const allEvents = [];
-        for (const v of pending) for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action });
+        for (const v of pending) for (const e of v._events) allEvents.push({ plant_id: v.plant_id, ts: e.ts, action: e.action, soft: !!e.soft });
         const { minutes: minsByPlant, cappedGaps } = attributeTime(allEvents);
         const draw = designerGapByPlant(allEvents);
         for (const v of pending) {
@@ -2980,7 +3012,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     // Build a cross-plant attribution of estimated time spent.
-    // Input: array of { plant_id, ts } across ALL plants for the day.
+    // Input: array of { plant_id, ts, soft? } across ALL plants for the day.
     // Output: { [plant_id]: minutes_estimated }
     function attributeTime(events) {
         const minutes = {}, cappedGaps = {};
@@ -2989,18 +3021,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // never reorder run-to-run.
         const sorted = events.filter(e => e && e.plant_id != null && String(e.plant_id).trim() && Number.isFinite(e.ts)).sort((a, b) =>
             (a.ts - b.ts) || String(a.plant_id).localeCompare(String(b.plant_id)));
+        const gapCaps = { capMs: ACTIVE_CAP_MS, softCapMs: SOFT_EVENT_CAP_MS };
         for (let i = 0; i < sorted.length; i++) {
             const cur = sorted[i];
             const next = sorted[i + 1];
             // Gap to the next click anywhere (clamp negative jitter to 0), or the tail credit for the
-            // day's very last click. Bill it to the plant that was open across it, capped at
-            // ACTIVE_CAP_MS so a real break doesn't get billed as work on that plant.
+            // day's very last click. Bill it to the plant that was open across it. Hard events cap at
+            // ACTIVE_CAP_MS; soft All-logs evidence (v4.144) caps at SOFT_EVENT_CAP_MS so a note/RAC
+            // blip cannot steal a lunch break from the plant that actually held the session.
             const gap = next ? Math.max(0, next.ts - cur.ts) : TAIL_MS;
-            const credit = Math.min(gap, ACTIVE_CAP_MS);
+            const cap = eventGapCapMs(!!cur.soft, gapCaps);
+            const credit = Math.min(gap, cap);
             minutes[cur.plant_id] = (minutes[cur.plant_id] || 0) + credit;
             // Record capped gaps so enrichment can later re-judge long silences against commit
-            // evidence (LONGGAP damping) — the cap credit is provisional for those.
-            if (gap > ACTIVE_CAP_MS) (cappedGaps[cur.plant_id] = cappedGaps[cur.plant_id] || []).push({ ts: cur.ts, gap });
+            // evidence (LONGGAP damping) — the cap credit is provisional for those. Soft rows never
+            // open a capped_gap: commit fusion must not lift a soft-owned silence back to 30+.
+            if (!cur.soft && gap > ACTIVE_CAP_MS) (cappedGaps[cur.plant_id] = cappedGaps[cur.plant_id] || []).push({ ts: cur.ts, gap });
         }
         // Round the timeline total once, then apportion it. A burst of one-second visits
         // must not manufacture a whole minute for every plant.
@@ -3813,9 +3849,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // tool's own action names, not invented ones.
         pang_note:             { label: 'Note',             cat: 'other' },
         changed_alarm_settings:{ label: 'Alarm settings',   cat: 'edit' },
+        changed_plant_settings:{ label: 'Plant settings',   cat: 'edit' },
         change_duty_list:      { label: 'Duty list',        cat: 'other' },
+        user_access:           { label: 'User access',      cat: 'other' },
         service:               { label: 'Service logon',    cat: 'access' },
         call_plant_link:       { label: 'Alarm call',       cat: 'other' },
+        get_units:             { label: 'RAC get units',    cat: 'other' },
+        get_info:              { label: 'RAC get info',     cat: 'other' },
+        start_server:          { label: 'RAC start',        cat: 'other' },
+        rvnc:                  { label: 'Remote VNC',       cat: 'vnc' },
     };
     // Chip order: most work-significant category first, so the row reads "what they did" at a glance.
     const ACTION_CAT_ORDER = ['edit', 'server', 'vnc', 'access', 'diag', 'other'];
