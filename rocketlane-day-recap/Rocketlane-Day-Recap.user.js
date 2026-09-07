@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.141
+// @version      4.142
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -168,11 +168,39 @@ var RL_RECAP_ALL_LOGS = (function () {
         return out.sort((x, y) => x.ts - y.ts);
     }
 
+    // ---- All logs as the scan index (v4.142) ----------------------------------------------------
+    // Which plants a pang full scan has to read for one user over a date range: every plant with any
+    // All logs row for that user in the range, plus whatever the caller wants kept regardless (pang's
+    // own recent list). Measured 2026-09-07 over the user's whole history — a Node-side sweep of every
+    // plant id (6 942 plants with history, 279 MB) against one All logs range request: 11 266 plant-days
+    // over 1 012 days, and NOT ONE plant-day pang knew that All logs PANG1 did not, in any month since
+    // 2021-10 (All logs even holds a few more: pang's 500-row cap trims busy plants' older history).
+    // So a scan scoped this way reads the same days the 7 600-plant sweep would, from a few hundred
+    // plants instead. Any system counts as presence — a note or an operations-log entry is a visit too.
+    function allLogsScanScope(records, username, keepIds) {
+        const me = rlRecapNormalizeUser(username);
+        const ids = new Set((keepIds || []).map(x => String(x == null ? '' : x).trim()).filter(Boolean));
+        for (const r of (records || [])) {
+            if (!r || rlRecapNormalizeUser(r.user) !== me) continue;
+            const pid = String(r.plant_id == null ? '' : r.plant_id).trim();
+            if (pid) ids.add(pid);
+        }
+        return ids;
+    }
+    // A scoped scan is complete only for the dates it was scoped over: a scoped plant's history reaches
+    // further back, but for those older dates the other plants were not read. Keep just the range.
+    function datesWithinRange(dates, fromIso, toIso) {
+        const out = {};
+        for (const iso in (dates || {})) if (iso >= fromIso && iso <= toIso) out[iso] = dates[iso];
+        return out;
+    }
+
     return {
         ALL_LOGS_SECRET_RE, ALL_LOGS_NOTE_CAP,
         rlRecapNormalizeUser, isPang1LogSystem, allLogsChipCode, allLogsDateWindow,
         maskAllLogsComment, filterAllLogsRecords, visitsFromAllLogsRecords,
         formatAllLogsNotes, mergeVisitEventLists,
+        allLogsScanScope, datesWithinRange,
     };
 })();
 // ===== Timesheet note prose ==========================================================
@@ -1216,6 +1244,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         ALL_LOGS_SECRET_RE, ALL_LOGS_NOTE_CAP, allLogsDateWindow, maskAllLogsComment,
         visitsFromAllLogsRecords, formatAllLogsNotes, mergeVisitEventLists,
     } = RL_RECAP_ALL_LOGS;
+    const { allLogsScanScope, datesWithinRange } = RL_RECAP_ALL_LOGS; // the scan index (v4.142)
 
     const {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
@@ -1245,7 +1274,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.141';
+    const SCRIPT_VERSION   = '4.142';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2761,23 +2790,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // `user` is sent EXACT: the server matches it as a substring, and "thomas" would also return every
     // other Thomas. Client-side filtering (normalizeUser) still runs, because the log stores some users
     // as bare names and others as e-mail addresses.
-    async function gmFetchAllLogs(isoDate, username) {
-        if (!username) return { ok: false };
-        const key = username + '|' + isoDate;
-        const ttl = isoDate === todayISO() ? ALL_LOGS_TTL_TODAY_MS : ALL_LOGS_TTL_PAST_MS;
-        const hit = _allLogsCache.get(key);
-        if (hit && Date.now() - hit.at < ttl) return hit.res;
-        if (Date.now() < _allLogsDownUntil) return { ok: false };
-        const win = allLogsDateWindow(isoDate);
-        const body = JSON.stringify({ cmd: 'load', user: username, date_from: win.date_from, date_to: win.date_to });
-        const res = await new Promise(resolve => {
+    // The request itself, shared by the per-day fetch and the range fetch (v4.142). Never throws.
+    function allLogsRequest(bodyObj, timeoutMs) {
+        return new Promise(resolve => {
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: ALL_LOGS_URL,
                 headers: { 'Content-Type': 'application/json' },
-                data: body,
+                data: JSON.stringify(bodyObj),
                 anonymous: false, // the tool is session-authed — the login cookie must ride along
-                timeout: ALL_LOGS_TIMEOUT_MS,
+                timeout: timeoutMs || ALL_LOGS_TIMEOUT_MS,
                 onload: r => {
                     try {
                         const parsed = JSON.parse(r.responseText);
@@ -2792,9 +2814,48 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 ontimeout: () => resolve({ ok: false }),
             });
         });
+    }
+    async function gmFetchAllLogs(isoDate, username) {
+        if (!username) return { ok: false };
+        const key = username + '|' + isoDate;
+        const ttl = isoDate === todayISO() ? ALL_LOGS_TTL_TODAY_MS : ALL_LOGS_TTL_PAST_MS;
+        const hit = _allLogsCache.get(key);
+        if (hit && Date.now() - hit.at < ttl) return hit.res;
+        if (Date.now() < _allLogsDownUntil) return { ok: false };
+        const win = allLogsDateWindow(isoDate);
+        const res = await allLogsRequest({ cmd: 'load', user: username, date_from: win.date_from, date_to: win.date_to });
         if (res.ok) { _allLogsDownUntil = 0; _allLogsCache.set(key, { at: Date.now(), res }); }
         else { _allLogsDownUntil = Date.now() + ALL_LOGS_DOWN_TTL_MS; } // don't cache a failure as a day's answer
         return res;
+    }
+
+    // ---- All logs as the scan index (v4.142, Thomas: "is there way to optimize the full scan speed?") --
+    // The sweep's cost is the server's: ~20 ms per plant for a 45–60 KB history that ignores every
+    // filter, 7 600 plants, six browser connections — about a minute, and no client knob left after
+    // v4.85. What CAN change is how many plants are read. All logs already answers "which plants did
+    // this user touch between A and B" fleet-wide in one request, and the measurement above
+    // (RL_RECAP_ALL_LOGS.allLogsScanScope) shows its PANG1 mirror missed none of the user's plant-days
+    // in five years. So the full scan asks All logs for the plants first and reads pang for those —
+    // hundreds instead of thousands, seconds instead of a minute — and still reads PANG, so the cache
+    // is rewritten from pang exactly as before. The 7 600-plant sweep stays the fallback whenever All
+    // logs is unreachable, truncated, or names nothing (a wrong username looks like "nothing").
+    const SCAN_SCOPE_DAYS = 400;              // how far back the panel's Full scan reaches — the multi-date cache keeps 400 dates
+    const ALL_LOGS_RANGE_TIMEOUT_MS = 45000;  // a five-year user range measured 59 162 rows in under a second; a scan can wait longer than a display
+    async function gmFetchAllLogsRange(fromIso, toIso, username) {
+        if (!username) return { ok: false };
+        if (Date.now() < _allLogsDownUntil) return { ok: false };
+        const res = await allLogsRequest({ cmd: 'load', user: username, date_from: fromIso + ' 00:00:00', date_to: toIso + ' 23:59:59' }, ALL_LOGS_RANGE_TIMEOUT_MS);
+        if (res.ok) _allLogsDownUntil = 0; else _allLogsDownUntil = Date.now() + ALL_LOGS_DOWN_TTL_MS;
+        return res;
+    }
+    // Which plants a full scan reads. null ⇒ All logs could not answer completely ⇒ sweep every plant.
+    async function scanScopeFromAllLogs(username, fromIso, toIso, statusCb) {
+        statusCb && statusCb('Asking IWMAC All logs which plants carry your activity…');
+        const al = await gmFetchAllLogsRange(fromIso, toIso, username);
+        if (!al.ok || al.limit_reached) return null;
+        // pang's own recent list rides along: a click made seconds ago may not be mirrored yet.
+        const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
+        return { ids: [...allLogsScanScope(al.records, username, recent)], from: fromIso, to: toIso, records: al.records.length };
     }
 
     // Build a full day's visits from All logs. Returns null when the tool is unreachable / the session
@@ -3153,8 +3214,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 <button data-action="search" title="Re-scan the selected date (your recent + previously-visited plants) and refresh its cache">Refresh</button>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
-                <button data-action="fullscan" title="Scans ALL ~7,600 IWMAC plants so visits made via plant-admin/designer are found too. Slow (~1 min) and briefly opens pang; the result is cached per date.">🔍 Full scan</button>
-                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Refresh = your recent + previously-visited plants (fast). Full scan = all ~7,600 plants (~1 min, cached).</span>
+                <button data-action="fullscan" title="Finds visits made via plant-admin/designer too: IWMAC All logs names every plant with your activity in the last 400 days and pang is read for those (seconds). Only when All logs cannot answer are all ~7,600 plants read (~1 min). Briefly opens pang when the inventory is needed; the result is cached per date.">🔍 Full scan</button>
+                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Refresh = your recent + previously-visited plants (fast). Full scan = every plant IWMAC All logs names for you (seconds, cached; all ~7,600 plants only when All logs cannot answer).</span>
             </div>
             <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
                 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
@@ -3446,15 +3507,26 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     return;
                 }
 
-                let plantIds;
+                let plantIds, scope = null;
                 if (mode === 'full') {
-                    plantIds = await ensureAllPlants();
-                    if (!plantIds || plantIds.length === 0) {
-                        plantIds = GM_getValue(KEY_KNOWN_PLANTS, []); // inventory unavailable — fall back to recent
-                    }
-                    if (!plantIds || plantIds.length === 0) {
-                        list.innerHTML = `<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> manually.</div>`;
-                        return;
+                    // v4.142: All logs names the plants that carry your activity in the range and pang is
+                    // read for those only — see scanScopeFromAllLogs. The range reaches back SCAN_SCOPE_DAYS
+                    // and always includes the selected date. The 7 600-plant sweep remains the fallback.
+                    const uname = effectiveUsername();
+                    const scopeTo = todayISO(), scopeFrom = [addDaysISO(scopeTo, -SCAN_SCOPE_DAYS), iso].sort()[0];
+                    scope = uname ? await scanScopeFromAllLogs(uname, scopeFrom, scopeTo) : null;
+                    if (seq !== scanSeq) return;
+                    if (scope && scope.ids.length) plantIds = scope.ids.slice();
+                    else {
+                        scope = null;
+                        plantIds = await ensureAllPlants();
+                        if (!plantIds || plantIds.length === 0) {
+                            plantIds = GM_getValue(KEY_KNOWN_PLANTS, []); // inventory unavailable — fall back to recent
+                        }
+                        if (!plantIds || plantIds.length === 0) {
+                            list.innerHTML = `<div class="empty">Could not load the plant inventory. Make sure pop-ups are allowed for kiona.rocketlane.com, or open <a href="${pangBase()}/pang.qxs" target="_blank">pang</a> manually.</div>`;
+                            return;
+                        }
                     }
                 } else {
                     // Quick scope = recent plants ∪ every plant this user has been found on before
@@ -3479,7 +3551,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     for (const id of plantIds.map(String)) (pri.has(id) ? head : tail).push(id);
                     plantIds = [...head, ...tail];
                 }
-                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${mode === 'full' ? '<br><small>full scan — about a minute; caches the whole period</small>' : ''}<div class="scan-live"></div></div>`;
+                const fullNote = mode !== 'full' ? '' : scope
+                    ? `<br><small>full scan, scoped by IWMAC All logs: ${scope.ids.length} plant${scope.ids.length === 1 ? '' : 's'} carry your activity since ${isoToNorwegianDate(scope.from)} — seconds, not a minute; caches every date in that range</small>`
+                    : '<br><small>full scan — about a minute; caches the whole period</small>';
+                list.innerHTML = `<div class="empty">Querying pang across ${plantIds.length} plant${plantIds.length === 1 ? '' : 's'}…${fullNote}<div class="scan-live"></div></div>`;
                 const liveEl = list.querySelector('.scan-live');
                 const onProg = (done, total, foundSel) => { // a superseded scan must stop moving the bar
                     if (seq !== scanSeq) return;
@@ -3496,15 +3571,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     renderFullScanNudge();  // …so take the tip down even if this run is superseded below
                     if (seq !== scanSeq) return;
                     username = all.username; scanned = all.scanned;
-                    visits = all.dates[iso] || [];
+                    // A scoped scan is complete only for the dates it was scoped over (v4.142) — older
+                    // dates in a scoped plant's history are neither shown nor cached from this run.
+                    const dates = scope ? datesWithinRange(all.dates, scope.from, scope.to) : all.dates;
+                    visits = dates[iso] || [];
                     lastFailed = all.failed || 0;
+                    if (scope) LOG('scan: full scan scoped by All logs —', plantIds.length, 'plants,', scope.records, 'log rows,', scope.from, '…', scope.to, '·', Object.keys(dates).length, 'dates cached');
                     if (username) {
                         // Don't cache a partial scan as authoritative — a batch that failed (even after
                         // retry) would otherwise leave a silent hole in EVERY cached date until the next
                         // full scan. The footer warns instead, so you know to re-run.
-                        if (!lastFailed) writeCacheDates(username, all.dates, scanned); // cache every date this scan found
+                        if (!lastFailed) writeCacheDates(username, dates, scanned); // cache every date this scan found
                         const fp = new Set();
-                        for (const d in all.dates) for (const v of all.dates[d]) fp.add(v.plant_id);
+                        for (const d in dates) for (const v of dates[d]) fp.add(v.plant_id);
                         rememberUserPlants(username, [...fp].map(id => ({ plant_id: id })));
                     }
                     // Display-only overlay: a full scan owns the multi-date cache, but the selected date
@@ -3586,10 +3665,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const fullScanWithWarning = () => {
             list.innerHTML = `
                 <div class="warn">
-                    <strong>⚠️ Full scan — all plants</strong>
-                    <p>Queries <b>all ~7,600 IWMAC plants</b> (one request each) to catch visits made through plant-admin/designer, not just the plants you opened in pang.</p>
+                    <strong>⚠️ Full scan — every plant with your activity</strong>
+                    <p>Asks IWMAC All logs which plants carry your activity in the last 400 days and reads pang for those, so visits made through plant-admin/designer are found too — not just the plants you opened in pang. Only when All logs cannot answer are <b>all ~7,600 plants</b> read (one request each).</p>
                     <ul>
-                        <li>Takes about <b>a minute</b></li>
+                        <li>Takes <b>seconds</b> (about a minute if every plant has to be read)</li>
                         <li>Briefly opens pang in the foreground, then closes it</li>
                         <li>The result is cached for this date</li>
                     </ul>
@@ -3609,7 +3688,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const renderFullScanNudge = () => {
             if (!shouldNudgeFullScan()) { nudgeEl.hidden = true; nudgeEl.textContent = ''; return; }
             nudgeEl.innerHTML = `
-                <div><b>No full scan yet today.</b> What you see comes from your recent + previously-visited plants — visits made through plant-admin or the designer are missing until a full scan runs. One scan takes about a minute, briefly opens pang, and caches every date it finds.</div>
+                <div><b>No full scan yet today.</b> What you see comes from your recent + previously-visited plants — visits made through plant-admin or the designer are missing until a full scan runs. One scan takes seconds (IWMAC All logs names your plants; about a minute only when it cannot), may briefly open pang, and caches every date it finds.</div>
                 <div class="fsnudge-btns">
                     <button type="button" data-action="nudge-go">🔍 Run full scan</button>
                     <button type="button" data-action="nudge-later">Not today</button>
@@ -3881,7 +3960,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     // ----- Full-scan result cache (keyed by username + date; hoisted from the panel in v4.101) -----
-    // A full scan is ~7,600 requests / ~1 min, so we cache its result per date. Past dates
+    // A full sweep is ~7,600 requests / ~1 min (scoped by All logs since 4.142: hundreds, seconds), so we cache its result per date. Past dates
     // never change; today's can go stale as you keep working, which is why the footer shows
     // the cache time and a Full scan always re-runs and overwrites it.
     const cacheVisit = (v) => ({
@@ -5298,7 +5377,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             need.length = 0;
             need.push(...stillNeed);
         }
-        let plantIds = (await weekEnsureAllPlants(statusCb)).map(String);
+        // v4.142: All logs names the plants to read — one request over the uncached days; pang is then
+        // re-read for those only, so the cache is still rewritten from pang. The 7 600-plant sweep is
+        // the fallback when All logs is unreachable, truncated or names nothing.
+        const range = need.slice().sort();
+        let scope = await scanScopeFromAllLogs(username, range[0], range[range.length - 1], statusCb);
+        if (scope && !scope.ids.length) scope = null;
+        let plantIds = scope ? scope.ids.slice() : (await weekEnsureAllPlants(statusCb)).map(String);
         if (!plantIds.length) return { ok: false, reason: 'plant inventory unavailable' };
         // Footprint-first ordering (same as the panel's Full scan): pure reordering, identical result.
         const pri = new Set([
@@ -5309,12 +5394,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         for (const id of plantIds) (pri.has(id) ? head : tail).push(id);
         plantIds = [...head, ...tail];
         const all = await loadUserHistoryAllDates(plantIds, need[0], (done, total) =>
-            statusCb && statusCb(`Full scan (${need.length} day${need.length === 1 ? '' : 's'} uncached) — ${done} of ${total} plants…`));
+            statusCb && statusCb(`Full scan (${need.length} day${need.length === 1 ? '' : 's'} uncached${scope ? `, ${total} plant${total === 1 ? '' : 's'} named by All logs` : ''}) — ${done} of ${total} plants…`));
         markFullScanRan(); // Book week swept every plant too — the panel must not recommend it again today (v4.109)
         if (!all.username) return { ok: false, reason: 'could not identify your pang user in the scan' };
-        rememberUserPlants(all.username, [].concat(...Object.values(all.dates || {})));
-        if (!all.failed) writeCacheDates(all.username, all.dates, all.scanned); // partial scans are never cached (silent holes)
-        return { ok: true, ran: true, failed: all.failed || 0, dates: all.dates || {}, scanned: all.scanned };
+        // A scoped scan is complete only for its range (v4.142); an unscoped sweep for every date it found.
+        const dates = scope ? datesWithinRange(all.dates || {}, scope.from, scope.to) : (all.dates || {});
+        if (scope) LOG('week: full scan scoped by All logs —', plantIds.length, 'plants,', scope.records, 'log rows,', scope.from, '…', scope.to);
+        rememberUserPlants(all.username, [].concat(...Object.values(dates)));
+        if (!all.failed) writeCacheDates(all.username, dates, all.scanned); // partial scans are never cached (silent holes)
+        return { ok: true, ran: true, failed: all.failed || 0, dates, scanned: all.scanned, scoped: !!scope };
     }
     // Load one day's visits ready for booking: full-scan cache when present (instant + complete),
     // else a quick scan over recent + footprint plants; then names, commit enrichment, and the
@@ -5487,7 +5575,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (askScan) {
                 body += `<div class="rl-week-status">🔍 Check-up: <b>no full scan has run today.</b><br>` +
                     `<small>Cached weekdays may date from before today's work or come from a quick Refresh, which can miss ` +
-                    `plant-admin/designer visits. A fresh sweep (~1 min) re-scans every plant and rewrites the cache for ` +
+                    `plant-admin/designer visits. A fresh sweep re-reads pang for every plant IWMAC All logs names for the week (seconds; every plant, ~1 min, only when All logs cannot answer) and rewrites the cache for ` +
                     `every weekday at once.</small></div>`;
             }
             if (askCal) {
