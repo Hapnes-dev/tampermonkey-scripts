@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.138
+// @version      4.139
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -488,7 +488,25 @@ var RL_RECAP_TIME = (function () {
         };
     }
 
-    return { cappedGapCredit, dayEndExtension, allocateMinutes, dayBudget };
+    // Which week Rocketlane's My Timesheet page is showing (v4.139, Thomas: "Automatic find what week
+    // i have opened so i don't have to navigate with the tool to the right week"). Two sources, read
+    // from the page: the URL — `/timesheets/2026-08-31/my-timesheet` for a chosen week, `this-week`
+    // for the current one — and, as a fallback, the week-range button's text ("31 Aug 26 - 06 Sep 26",
+    // `data-cy-button="week-range-picker-trigger"`). Returns an ISO date inside that week, the literal
+    // 'this-week', or null. The caller normalises to the Monday.
+    const PAGE_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    function timesheetWeekFromPage(o) {
+        o = o || {};
+        const m = /\/timesheets\/(\d{4}-\d{2}-\d{2}|this-week)(?:\/|$|\?)/i.exec(String(o.pathname || ''));
+        if (m) return m[1].toLowerCase();
+        const t = /(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{2,4})/.exec(String(o.rangeText || ''));
+        if (!t) return null;
+        const mon = PAGE_MONTHS[t[2].toLowerCase()]; if (!mon) return null;
+        const y = t[3].length === 2 ? 2000 + +t[3] : +t[3];
+        return `${y}-${String(mon).padStart(2, '0')}-${String(+t[1]).padStart(2, '0')}`;
+    }
+
+    return { cappedGapCredit, dayEndExtension, allocateMinutes, dayBudget, timesheetWeekFromPage };
 })();
 // ===== Outlook calendar → meeting / admin time =======================================
 // pang only sees plant work, so meetings, planning and training never reached the timesheet — and
@@ -1102,6 +1120,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { cappedGapCredit, dayEndExtension } = RL_RECAP_TIME;
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
+    const { timesheetWeekFromPage } = RL_RECAP_TIME;
 
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable } = RL_RECAP_MATCH;
 
@@ -1120,7 +1139,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.138';
+    const SCRIPT_VERSION   = '4.139';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -5209,9 +5228,27 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const esc = escapeHtml;
         const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
         let seq = 0;
-        // Start on the week of the panel's selected date when the panel is open, else the current week.
+        // Start on the week Rocketlane's page is showing (v4.139) — the URL carries it, the range button
+        // is the fallback — so ⤴ Book week never needs ‹ › to reach the week already on screen. Only
+        // when the page gives no week: the panel's selected date, else the current week.
+        const pageWeekMonday = () => {
+            const trig = document.querySelector('[data-cy-button="week-range-picker-trigger"]');
+            const w = timesheetWeekFromPage({ pathname: location.pathname, rangeText: trig ? trig.textContent : '' });
+            if (!w) return null;
+            return mondayOfISO(w === 'this-week' ? todayISO() : w);
+        };
         const panelDate = document.querySelector(`#${PANEL_ID} input[type=date]`);
-        let monday = mondayOfISO((panelDate && panelDate.value) || todayISO());
+        let pageWeek = pageWeekMonday();
+        let monday = pageWeek || mondayOfISO((panelDate && panelDate.value) || todayISO());
+        if (pageWeek) LOG('week: opened on the page\'s week', pageWeek);
+        // Follow the page: if the user changes week in Rocketlane while the modal is open, rebuild on
+        // that week. Keyed on the PAGE's week, so ‹ › inside the modal (which leaves the page alone)
+        // never snaps back. Stops itself when the modal is gone.
+        const follow = setInterval(() => {
+            if (!document.getElementById(WEEK_ID)) { clearInterval(follow); return; }
+            const m = pageWeekMonday();
+            if (m && m !== pageWeek) { pageWeek = m; monday = m; LOG('week: page moved to', m, '— following'); build(); }
+        }, 1000);
         // Full-scan check-up state (v4.116): asked once per modal; a forced sweep applies to the
         // next build only (it caches every date it finds, so week navigation needs no repeat).
         let scanChoice = null, forceScanOnce = false;
