@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.145
+// @version      4.146
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3252,6 +3252,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[data-b=go] { background: #0f62fe; border-color: #0f62fe; color: #fff; font-weight: 600; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button[disabled] { opacity: .5; cursor: default; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-sum { font-size: 12px; color: #24a148; font-weight: 600; flex: 1; }
+        /* Progress for plan-build + write (v4.146) — same blue as the panel scan bar */
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress { margin: 6px 0 8px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress[hidden] { display: none; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-track { height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-fill { height: 100%; width: 0%; background: #0f62fe; border-radius: 3px; transition: width .15s ease; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-lbl { font-size: 11px; color: #525252; margin-top: 4px; }
         #${WEEK_ID} { position: fixed; top: 64px; right: 24px; width: 480px; max-width: calc(100vw - 40px); background: #f9fbff; border: 1px solid #d0d7e2; border-radius: 10px; box-shadow: 0 10px 30px rgba(16,24,40,.22); z-index: 2147483000; padding: 12px 14px; color: #21272a; font-family: inherit; }
         #${WEEK_ID} .bookplan { max-height: 68vh; }
         #${WEEK_ID} .rl-week-day { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; font-size: 12px; color: #0043ce; margin-top: 8px; padding: 6px 0 2px; border-top: 2px solid #dfe6f2; }
@@ -5232,6 +5238,44 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return ''; // lands exactly on the workday — nothing to say
     }
 
+    // Progress bar shared by ⤴ Book day and ⤴ Book week (v4.146). Plan-build and the write itself
+    // can each take tens of seconds with no other signal than a frozen "Booking…" button.
+    function bookProgressMarkup() {
+        return `<div class="bookplan-progress" hidden><div class="bookplan-progress-track"><div class="bookplan-progress-fill" style="width:0%"></div></div><div class="bookplan-progress-lbl"></div></div>`;
+    }
+    function ensureBookProgress(root) {
+        if (!root) return null;
+        let el = root.querySelector('.bookplan-progress');
+        if (!el) {
+            const head = root.querySelector('.bookplan-head') || root.querySelector('.rl-week-status');
+            if (head) head.insertAdjacentHTML('afterend', bookProgressMarkup());
+            else root.insertAdjacentHTML('afterbegin', bookProgressMarkup());
+            el = root.querySelector('.bookplan-progress');
+        }
+        return el;
+    }
+    function setBookProgress(root, done, total, label) {
+        const el = ensureBookProgress(root);
+        if (!el) return;
+        el.hidden = false;
+        const t = Number.isFinite(total) && total > 0 ? total : 0;
+        const d = Number.isFinite(done) ? Math.max(0, done) : 0;
+        const pct = t ? Math.min(100, Math.round(d / t * 100)) : 0;
+        const fill = el.querySelector('.bookplan-progress-fill');
+        const lbl = el.querySelector('.bookplan-progress-lbl');
+        if (fill) fill.style.width = pct + '%';
+        if (lbl) lbl.textContent = label || (t ? `${d} of ${t}` : '');
+    }
+    function hideBookProgress(root) {
+        const el = root && root.querySelector('.bookplan-progress');
+        if (el) { el.hidden = true; const fill = el.querySelector('.bookplan-progress-fill'); if (fill) fill.style.width = '0%'; }
+    }
+    // Rows bookPlanEntries will actually walk (matches its skip rules) — for a honest progress total.
+    function bookProgressTargets(plan) {
+        return (plan || []).filter(e => e && ((e.status === 'ready' && e.selected !== false)
+            || (e.status === 'no-project' && e.selected === true && e.fallbackProjectId)));
+    }
+
     async function bookPlanEntries(plan, iso, onProgress) {
         const creds = rlCreds();
         let ok = 0, fail = 0;
@@ -5337,7 +5381,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // The confirm-then-book flow, rendered inside the .catsum container.
     function openBookingFlow(container, visits, iso) {
         const saved = container.innerHTML;
-        container.innerHTML = '<div class="bookplan"><div class="bookplan-head">⤴ Book to timesheet — building plan…</div></div>';
+        container.innerHTML = `<div class="bookplan"><div class="bookplan-head">⤴ Book to timesheet — building plan…</div>${bookProgressMarkup()}</div>`;
         const box = container.querySelector('.bookplan');
         const esc = escapeHtml;
         // The calendar (v4.121). Book WEEK gets its rows from loadDayForBooking, but Book DAY books the
@@ -5349,6 +5393,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (!GM_getValue(KEY_CAL_ENABLED, false)) { visits._calendar = []; return; }
             const head = box.querySelector('.bookplan-head');
             if (head) head.textContent = '⤴ Book to timesheet — reading your Outlook calendar…';
+            setBookProgress(box, 0, 1, 'Reading Outlook calendar…');
             const hours = GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS;
             const workdayMin = Math.round(hours * 60);
             let rows = [];
@@ -5373,7 +5418,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 normalizeMinutes(bookable, calRemainingWorkday(rows, workdayMin), ROUND_TO_MIN);
             }
         })();
-        withCalendar.then(() => buildBookingPlan(visits, iso)).then(plan => {
+        withCalendar.then(() => {
+            const head = box.querySelector('.bookplan-head');
+            if (head) head.textContent = '⤴ Book to timesheet — reading what changed…';
+            setBookProgress(box, 0, Math.max(1, visits.length), `Reading plant 0 of ${visits.length}…`);
+            return buildBookingPlan(visits, iso, (n, total, v) => {
+                setBookProgress(box, n, total, `Reading what changed — plant ${n} of ${total}${v && v.plant_id ? ` (${v.plant_id})` : ''}…`);
+            });
+        }).then(plan => {
+            hideBookProgress(box);
             if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div>' + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '') + '<div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
             const ready = plan.filter(e => e.status === 'ready');
             const teamProjects = plan._teamProjects || [];
@@ -5397,7 +5450,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
                 + '<div class="bookplan-budget">' + budgetWarnHtml(plan._budget) + '</div>'
                 + nonBillableWarnHtml(plan);
-            box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${lines}
+            box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${bookProgressMarkup()}${lines}
                 <div class="bookplan-foot"><button type="button" data-b="go" ${ready.length ? '' : 'disabled'}>Book ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Cancel</button></div>`;
             wire();
             // Preview is read-only. Task descriptions are updated only by the explicit booking action.
@@ -5451,13 +5504,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
                     // Freeze the selection: unticked rows are skipped (and their boxes locked).
                     readChoices(true);
+                    const targets = bookProgressTargets(plan);
+                    let done = 0;
+                    setBookProgress(box, 0, Math.max(1, targets.length), targets.length ? `Booking 0 of ${targets.length}…` : 'Booking…');
                     await bookPlanEntries(plan, iso, (e) => {
                         const i = plan.indexOf(e);
                         const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
                         if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : e.status === 'over-budget' ? '⚠' : '❌';
                         paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
                         if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
+                        done++;
+                        setBookProgress(box, done, Math.max(1, targets.length), `Booking ${done} of ${targets.length}…`);
                     });
+                    hideBookProgress(box);
                     const okN = plan.filter(e => e.status === 'booked').length;
                     const failN = plan.filter(e => e.status === 'failed').length;
                     const skipN = plan.filter(e => e.status === 'ready' && e.selected === false).length;
@@ -5785,15 +5844,20 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (askScan || askCal) { renderCheckup(askScan, askCal); return; }
             const force = forceScanOnce; forceScanOnce = false;
             const mySeq = ++seq;
-            box.innerHTML = headHtml() + '<div class="rl-week-status">Building plans…</div>';
+            box.innerHTML = headHtml() + bookProgressMarkup() + '<div class="rl-week-status">Building plans…</div>';
             wireNav();
             const statusEl = () => box.querySelector('.rl-week-status');
+            const sayProgress = (done, total, msg) => {
+                if (seq !== mySeq) return;
+                const s = statusEl(); if (s) s.textContent = msg;
+                setBookProgress(box, done, total, msg);
+            };
             // Full-scan gate (v4.101): the week's plans must come from FULL-scan data — run one scan
             // covering every uncached weekday before building. Quick data is only ever the fallback
             // when the scan itself is impossible, and then it's flagged loudly.
             let weekWarn = '', weekInfo = '', override = null;
             try {
-                const fs = await weekEnsureFullScan(monday, msg => { const s = statusEl(); if (s && seq === mySeq) s.textContent = msg; }, force);
+                const fs = await weekEnsureFullScan(monday, msg => sayProgress(0, 5, msg), force);
                 if (seq !== mySeq) return;
                 if (!fs.ok) weekWarn = `⚠ Full scan unavailable (${esc(fs.reason)}) — built from quick data, plans may MISS plants.`;
                 else if (fs.ran && fs.failed) { weekWarn = `⚠ ${fs.failed} plant${fs.failed === 1 ? '' : 's'} unreachable during the full scan — using the partial result (not cached).`; override = fs.dates; }
@@ -5808,12 +5872,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const days = [];
             for (let i = 0; i < 5; i++) {
                 const iso = addDaysISO(monday, i);
-                const st = statusEl();
                 if (seq !== mySeq) return;
-                if (st) st.textContent = `Loading ${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)…`;
+                const dayLabel = `${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)`;
+                sayProgress(i, 5, `Loading ${dayLabel}…`);
                 try {
-                    const dayLabel = `${WD[i]} ${isoToNorwegianDate(iso)} (${i + 1}/5)`;
-                    const say = txt => { const s = statusEl(); if (s && seq === mySeq) s.textContent = `${dayLabel} — ${txt}`; };
+                    const say = txt => sayProgress(i + 0.5, 5, `${dayLabel} — ${txt}`);
                     const visits = await loadDayForBooking(iso,
                         (done, total) => say(`scanning ${done} of ${total} plants…`), override, say);
                     if (seq !== mySeq) return;
@@ -5827,11 +5890,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // exact ambiguity that hid this feature's first failure, see calRowsForDate.
                     days.push({ iso, wd: WD[i], plan, cal: (visits._calendar || []).length });
                     // Building a week preview must not update task descriptions.
+                    sayProgress(i + 1, 5, `Loaded ${dayLabel}`);
                 } catch (err) {
                     days.push({ iso, wd: WD[i], plan: [], err: String((err && err.message) || err), calCode: err && err.calCode });
                 }
             }
             if (seq !== mySeq) return;
+            hideBookProgress(box);
             render(days, weekWarn, weekInfo);
         }
 
@@ -5879,7 +5944,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const signinDays = days.filter(d => calNeedsSignin(d.calCode)).length;
             box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
                 + (signinDays ? calSigninHtml(`${signinDays} of 5 days could not be read`) : '')
-                + (weekInfo ? `<div class="rl-week-info">${weekInfo}</div>` : '') + html +
+                + (weekInfo ? `<div class="rl-week-info">${weekInfo}</div>` : '') + bookProgressMarkup() + html +
                 `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
             wireNav();
             const updateGo = () => {
@@ -5933,6 +5998,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 box.querySelector('[data-b=next]')?.setAttribute('disabled', '');
                 // Freeze the selection, then book day by day.
                 readChoices(true);
+                const dayList = [...new Set(rows.map(r => r.day))].filter(day => day.plan._dedupeOk !== false);
+                const targets = dayList.flatMap(day => bookProgressTargets(day.plan));
+                let done = 0;
+                setBookProgress(box, 0, Math.max(1, targets.length), targets.length ? `Booking 0 of ${targets.length}…` : 'Booking…');
                 const onOne = (e) => {
                     const i = rows.findIndex(r => r.e === e);
                     if (i < 0) return;
@@ -5940,11 +6009,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : e.status === 'over-budget' ? '⚠' : '❌';
                     paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
                     if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
+                    done++;
+                    setBookProgress(box, done, Math.max(1, targets.length), `Booking ${done} of ${targets.length}…`);
                 };
-                for (const day of new Set(rows.map(r => r.day))) {
-                    if (day.plan._dedupeOk === false) continue; // belt & braces — these rows were never rendered
+                for (const day of dayList) {
                     await bookPlanEntries(day.plan, day.iso, onOne);
                 }
+                hideBookProgress(box);
                 const all = rows.map(r => r.e);
                 const okN = all.filter(e => e.status === 'booked').length;
                 const failN = all.filter(e => e.status === 'failed').length;
