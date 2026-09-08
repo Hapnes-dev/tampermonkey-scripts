@@ -12,16 +12,16 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. Af
 
 On a Rocketlane project page (`https://kiona.rocketlane.com/projects/<id>/…`):
 
-1. Injects a branded pill button (Younium logo + label) into the project tab bar, immediately after **All files**.
+1. Injects a pill chip (Younium logo + label, the same chip style as the tracker's project-header Younium status chip) into the project tab bar, immediately after **All files**.
 2. Extracts the plant ID from the project name (`"10112 - Bunnpris Betna: Ny Butikk"` → `10112`).
-3. **On project open** (and on every in-app navigation to another project), it queries Younium directly (CORS-bypassed via `GM_xmlhttpRequest`) for that plant's orders, promotes the most-recently-modified order as the **Order / offer**, finds the **IWMAC subscription** order (via the `plant_id` custom field), fetches invoice history + the audit event log, computes a verdict, and **tints the button + shows the verdict label** (e.g. `Younium: ✓ All good`) — no click required. Results are cached per plant for the session, and concurrent/stale computes are discarded so the button never shows the wrong plant's status.
+3. **On project open** (and on every in-app navigation to another project), it queries Younium directly (CORS-bypassed via `GM_xmlhttpRequest`) for that plant's orders, promotes the most-recently-modified order that is not the subscription agreement (an "… Abonnementsavtale") as the **Order / offer**, finds the **IWMAC subscription** order (via the `plant_id` custom field), fetches invoice history + the audit event log, computes a verdict, and **tints the button + shows the verdict label** (e.g. `Younium: ✓ All good`) — no click required. Results are cached per plant for the session, and concurrent/stale computes are discarded so the button never shows the wrong plant's status.
 4. **Clicking** the button opens a fullscreen-centered modal titled **"Younium status details · &lt;project name&gt;"** (instant from the cached verdict) with:
    - a colored **summary** one-liner (action-oriented),
    - a **Warnings** panel (when problems exist),
    - an **Order / offer** section (link, IDs, status, invoice status, totals, dates, *Created by* / *Last updated by* from the event log),
    - a **Subscription** section (the IWMAC subscription order's status + dates + attribution, or a "none" note for one-time sales),
    - an **Other orders for this plant** section (click-to-expand sibling orders).
-5. The nav button is tinted by the verdict (🟢 green / 🟡 yellow / 🔴 red / ⚪ gray).
+5. The nav button is tinted by the verdict (🟢 green / 🟡 yellow / 🔴 red / ⚪ gray), and its hover tooltip lists the problems behind a yellow/red verdict.
 
 **Read-only** — the modal never writes to Younium.
 
@@ -34,6 +34,7 @@ On a Rocketlane project page (`https://kiona.rocketlane.com/projects/<id>/…`):
 | 🟡 Yellow | `⏳ Awaiting first invoice` | Order present, no posted invoices yet |
 | 🟡 Yellow | `⏳ Subscription starts <date>` | Subscription start date is in the future |
 | 🟡 Yellow | `⚠ Partially delivered` | Younium order is only partially delivered |
+| 🟡 Yellow | `— Partially paid` | Younium order is invoiced but not fully paid (status 10) |
 | 🔴 Red | `⚠ Activate order in Younium` | Order is Draft (status 5) — needs activation |
 | 🔴 Red | `⚠ Finalize order in Younium` | Order is Created but not finalized |
 | 🔴 Red | `⚠ Activate subscription in Younium` | IWMAC subscription order is Draft |

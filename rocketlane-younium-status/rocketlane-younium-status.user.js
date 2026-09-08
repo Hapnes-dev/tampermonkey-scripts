@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane Younium Status
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.0.5
+// @version      1.1.0
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -376,11 +376,28 @@
   function youniumInvoiceIsPosted(inv) {
     return !!(inv && (inv.status === 3 || inv.status === 2 || inv.posted));
   }
+  // Younium's UI calls an order "Draft" until it assigns a real O-###### number,
+  // and the status FIELD can stay 1 ("Created") after activation — so "created
+  // but not finalized" is only trusted while the number still looks like a draft
+  // (verified live on O-015444 / plant 10113: API status 1, UI badge "Active").
+  function youniumOrderNumberLooksDraft(orderNumber) {
+    const s = String(orderNumber || "").trim();
+    return !s || /^draft\b/i.test(s);
+  }
+  // Younium's NATIVE order-header status badge, beyond the invoice-workflow
+  // "Invoiced": the delivery dimension (7/8) and the payment dimension (10/11).
+  // 10 = "Partially paid" verified live on O-014603; 11 = "Paid" is inferred.
   function youniumDeliveryStatusLabel(status) {
-    if (status === 7) return "Partially delivered";
-    if (status === 8) return "Delivered";
+    if (status === 7)  return "Partially delivered";
+    if (status === 8)  return "Delivered";
+    if (status === 10) return "Partially paid";
+    if (status === 11) return "Paid";
     return null;
   }
+  // "Partially delivered" (7) and "Partially paid" (10) are not finished states,
+  // so an otherwise-green verdict must not read "All good" — downgrade to yellow.
+  // The partial-payment warning line is added by buildYouniumExtraWarnings so it
+  // shows even when the verdict is red for a worse reason (e.g. a Draft sub).
   function youniumApplyPartialDeliveryDowngrade(out) {
     if (out && out.color === "green" && out.deliveryStatus === "Partially delivered") {
       out.color = "yellow";
@@ -388,6 +405,10 @@
       (out.problems = out.problems || []).push(
         "Order is only Partially delivered in Younium — not fully delivered yet.",
       );
+    }
+    if (out && out.color === "green" && out.deliveryStatus === "Partially paid") {
+      out.color = "yellow";
+      out.label = "Younium: — Partially paid";
     }
     return out;
   }
@@ -398,9 +419,10 @@
     const invoicesKnown = typeof postedInvoiceCount === "number";
     if (Number.isFinite(tsCancelled) && tsCancelled <= now) return "Cancelled";
     if (o?.status === 5 || o?.status === 0) return "Draft";
-    if (o?.status === 1) return "Created";
-    if (o?.status === 10) return "Partially paid"; // Younium native payment status
-    const delivered = youniumDeliveryStatusLabel(o?.status);
+    // status 1 = Created ONLY while the number still looks like a draft;
+    // an activated order keeps status 1 with a real O-###### number.
+    if (o?.status === 1 && youniumOrderNumberLooksDraft(o?.orderNumber)) return "Created";
+    const delivered = youniumDeliveryStatusLabel(o?.status); // 7/8/10/11 — Younium's header badge
     if (delivered) return delivered;
     if (invoicesKnown && postedInvoiceCount > 0) return "Invoiced";
     if (Number.isFinite(tsStart) && tsStart > now) return "Pending start";
@@ -455,13 +477,22 @@
       return out;
     }
 
-    // Promote the most-recently-modified order as the project's Order/offer.
+    // Promote the most-recently-modified order as the project's Order/offer —
+    // but PREFER a non-subscription document for that slot. Subscription
+    // agreements are named "… Abonnementsavtale" in this tenant and belong in
+    // the Subscription section below, not on top. Without this, a freshly
+    // activated Abonnementsavtale (newest modified) hijacked the Order/offer
+    // section while the real store order sat under "Other orders" (seen on
+    // plant 10113). Fall back to the newest order when the plant only has the
+    // subscription agreement.
     const sorted = allOrders.slice().sort((a, b) => {
       const ta = Date.parse(a?.modified || a?.created || 0) || 0;
       const tb = Date.parse(b?.modified || b?.created || 0) || 0;
       return tb - ta;
     });
-    const primarySummary = sorted[0];
+    const looksLikeSubscriptionAgreement = (o) =>
+      /\babonnementsavtale\b|\bsubscription agreement\b|\bsubscription\b/i.test(String(o?.description || ""));
+    const primarySummary = sorted.find((o) => !looksLikeSubscriptionAgreement(o)) || sorted[0];
     let order;
     try { order = await youniumFetchOrderDetails(primarySummary.id); }
     catch (e) {
@@ -524,9 +555,7 @@
 
     // ── Subscription status derivation ──
     const subOrder = subscriptionOrder || order;
-    const subOrderNumberStr = String(subOrder.orderNumber || "").trim();
-    const subOrderNumberLooksDraft =
-      !subOrderNumberStr || subOrderNumberStr.toLowerCase() === "draft" || /^draft\b/i.test(subOrderNumberStr);
+    const subOrderNumberLooksDraft = youniumOrderNumberLooksDraft(subOrder.orderNumber);
     const subIsRawDraft = subOrder.status === 5 || subOrderNumberLooksDraft;
     const subIsRawCreated = subOrder.status === 1 && subOrderNumberLooksDraft;
     const subTsStart = subOrder.effectiveStartDate ? Date.parse(subOrder.effectiveStartDate) : NaN;
@@ -559,7 +588,10 @@
     // 10=Partially paid (verified live on O-014603). Prefer Younium's own
     // payment status, then fall back to the invoice-derived paid/partial state.
     const isRawDraft = order.status === 5;
-    const isRawCreated = order.status === 1;
+    // status 1 means "not finalized" ONLY while the order number still looks
+    // like a draft. Once activated, Younium assigns a real number (O-######)
+    // but the status FIELD stays 1 while the UI badge reads "Active".
+    const isRawCreated = order.status === 1 && youniumOrderNumberLooksDraft(order.orderNumber);
     if (isCancelled) out.orderStatus = "Cancelled";
     else if (isRawDraft) out.orderStatus = "Draft";
     else if (isRawCreated) out.orderStatus = "Created (not finalized)";
@@ -568,7 +600,9 @@
     else if (paidInvoices.length > 0) out.orderStatus = "Partially paid";
     else if (postedInvoices.length > 0) out.orderStatus = "Invoiced";
     else if (startsInFuture) out.orderStatus = "Order (pending start)";
-    else if (order.isLastVersion) out.orderStatus = "Order (not invoiced)";
+    // Reached only by an ACTIVATED order (real number, started, latest version,
+    // nothing invoiced yet) — Younium's badge calls this "Active", so mirror it.
+    else if (order.isLastVersion) out.orderStatus = "Active";
     else out.orderStatus = "Draft (outdated version)";
     out.deliveryStatus = youniumDeliveryStatusLabel(order.status);
 
@@ -667,7 +701,7 @@
         --text: rgba(255,255,255,0.94);
         --muted: rgba(255,255,255,0.66);
         --muted2: rgba(255,255,255,0.46);
-        --accent: #7dd3fc;
+        --accent: #7dd3fc; --accent-soft: rgba(125,211,252,0.14); --accent-stroke: rgba(125,211,252,0.36);
         --good: #34d399;  --good-soft: rgba(52,211,153,0.13);
         --warn: #fbbf24;  --warn-soft: rgba(251,191,36,0.13);
         --bad: #fb7185;   --bad-soft: rgba(251,113,133,0.13);
@@ -683,41 +717,50 @@
           --text: rgba(15,23,42,0.94);
           --muted: rgba(15,23,42,0.64);
           --muted2: rgba(15,23,42,0.44);
-          --accent: #0284c7;
+          --accent: #0284c7; --accent-soft: rgba(2,132,199,0.10); --accent-stroke: rgba(2,132,199,0.30);
         }
       }
 
       /* ── Nav button (sits on Rocketlane's own header) ──
+         The same chip as the tracker's project-header Younium chip
+         (.btn.youniumStatusBtn): padding 5px 12px · font-size 11.5px · gap 7px
+         · pill radius · soft tint + matching text color, no hard border.
          Colors here are FIXED, not driven by prefers-color-scheme: the button
          lives on Rocketlane's surface, whose light/dark theme is independent of
          the OS setting (Rocketlane's header is white even when the OS is in dark
-         mode). The default assumes a LIGHT header; .yn-on-dark (toggled at
-         runtime from the detected header luminance) adapts when it's dark. The
-         verdict tints use the brand colors, which read on both. */
+         mode). The default is the tracker's LIGHT-theme chip; .yn-on-dark
+         (toggled at runtime from the detected header luminance) switches to its
+         dark-theme chip. The verdict tints use the brand colors, which read on
+         both. */
       .ynNavBtnCell { display: inline-flex; align-items: center; padding: 0 6px; }
       .ynNavBtn {
-        display: inline-flex; align-items: center; gap: 6px;
-        height: 30px; padding: 0 12px;
-        font-size: 13px; font-weight: 500; line-height: 1;
-        border-radius: 999px; cursor: pointer; white-space: nowrap;
-        border: 1px solid rgba(15, 23, 42, 0.14);
-        background: rgba(15, 23, 42, 0.05);
-        color: rgba(15, 23, 42, 0.66);
-        font-family: inherit;
-        transition: background .15s, color .15s, border-color .15s;
+        display: inline-flex; align-items: center; gap: 7px;
+        height: auto; min-height: 24px; padding: 5px 12px;
+        font-size: 11.5px; font-weight: 500; line-height: 1.35; letter-spacing: 0.005em;
+        border-radius: 999px; border: 1px solid transparent;
+        background: rgba(15, 23, 42, 0.05); color: rgba(15, 23, 42, 0.66);
+        white-space: nowrap; cursor: pointer; user-select: none; font-family: inherit;
+        transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
       }
-      .ynNavBtn:hover { background: rgba(15, 23, 42, 0.09); color: rgba(15, 23, 42, 0.92); }
-      .ynNavBtn.yn-on-dark { border-color: rgba(255, 255, 255, 0.16); background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.72); }
-      .ynNavBtn.yn-on-dark:hover { background: rgba(255, 255, 255, 0.13); color: rgba(255, 255, 255, 0.95); }
-      .ynNavBtnLogo { width: 15px; height: 15px; border-radius: 3px; display: block; flex: 0 0 auto; object-fit: contain; }
+      .ynNavBtn.yn-on-dark { background: rgba(255, 255, 255, 0.07); color: rgba(255, 255, 255, 0.66); }
+      .ynNavBtnLogo { width: 14px; height: 14px; border-radius: 3px; display: block; flex: 0 0 auto; object-fit: contain; }
       .ynNavBtnSpinner { display: none; width: 11px; height: 11px; border-radius: 50%; border: 2px solid rgba(128, 130, 140, 0.3); border-top-color: currentColor; flex: 0 0 auto; animation: ynSpin 0.7s linear infinite; }
       .ynNavBtn.yn-loading .ynNavBtnSpinner { display: inline-block; }
       .ynNavBtn.yn-loading .ynNavBtnLabel { opacity: 0.85; }
       @keyframes ynSpin { to { transform: rotate(360deg); } }
+      /* Verdict tints — soft fill + matching text color, no aggressive border
+         (the tracker's .tag.good / .tag.warn / .tag.bad pattern). */
       .ynNavBtn.yn-green  { background: var(--good-soft); color: var(--good); border-color: transparent; }
       .ynNavBtn.yn-yellow { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
       .ynNavBtn.yn-red    { background: var(--bad-soft);  color: var(--bad);  border-color: transparent; }
-      .ynNavBtn.yn-gray   { }
+      .ynNavBtn.yn-gray   { /* chip defaults above */ }
+      /* Hover lifts the chip the way the tracker's does: a brightness bump and
+         a neutral fill over the tint (declared after the tints on purpose). */
+      .ynNavBtn:hover { filter: brightness(1.15); background: rgba(15, 23, 42, 0.09); }
+      .ynNavBtn.yn-on-dark:hover { background: rgba(255, 255, 255, 0.10); }
+      .ynNavBtn.yn-gray:hover { border-color: rgba(15, 23, 42, 0.12); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+      .ynNavBtn.yn-gray.yn-on-dark:hover { border-color: rgba(255, 255, 255, 0.10); }
+      .ynNavBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
       /* ── Younium status modal (ported from the Project Progress Tracker) ── */
       dialog.dlgYouniumStatus[open] {
@@ -726,7 +769,7 @@
         background: #0f1424; color: var(--text);
         box-shadow: var(--shadow-lg);
         display: flex; flex-direction: column; overflow: hidden;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
       }
       dialog.dlgYouniumStatus::backdrop { background: rgba(0,0,0,0.6); }
       @media (prefers-color-scheme: light) { dialog.dlgYouniumStatus[open] { background: #ffffff; } }
@@ -741,15 +784,16 @@
       }
       .dlgYouniumStatusXBtn:hover { background: rgba(255,255,255,0.08); color: var(--text); border-color: var(--hairline); }
       .dlgYouniumStatusXBtn:active { background: rgba(255,255,255,0.14); }
+      .dlgYouniumStatusXBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       @media (prefers-color-scheme: light) {
         .dlgYouniumStatusXBtn:hover { background: rgba(15,23,42,0.06); }
         .dlgYouniumStatusXBtn:active { background: rgba(15,23,42,0.12); }
       }
       .dlgYouniumStatusHd {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 14px 18px; border-bottom: 1px solid var(--hairline);
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        padding: 16px 20px; border-bottom: 1px solid var(--hairline);
       }
-      .dlgYouniumStatusHd strong { font-size: 15px; font-weight: 600; }
+      .dlgYouniumStatusHd strong { font-size: 14px; font-weight: 600; }
       .dlgYouniumStatusBody {
         padding: 16px 18px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
         display: grid; gap: 14px;
@@ -758,13 +802,20 @@
         padding: 12px 18px; border-top: 1px solid var(--hairline);
         display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
       }
+      /* Footer actions — the tracker's .btn base (unified 34px height, subtle
+         hover lift, soft focus ring), scoped so Rocketlane's own buttons are
+         untouched. */
       .dlgYouniumStatusFooter .ynBtn {
-        font-family: inherit; font-size: 12.5px; padding: 7px 12px;
-        border-radius: 8px; cursor: pointer; text-decoration: none;
-        border: 1px solid var(--hairline-strong); background: var(--surface-3);
-        color: var(--text); display: inline-flex; align-items: center;
+        position: relative; display: inline-flex; align-items: center; gap: 6px;
+        height: 34px; padding: 7px 14px; border-radius: 10px;
+        font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; letter-spacing: 0.005em;
+        white-space: nowrap; cursor: pointer; user-select: none; text-decoration: none;
+        border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text);
+        transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
       }
-      .dlgYouniumStatusFooter .ynBtn:hover { filter: brightness(1.1); }
+      .dlgYouniumStatusFooter .ynBtn:hover { background: var(--surface-3); border-color: var(--hairline-strong); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+      .dlgYouniumStatusFooter .ynBtn:active { transform: translateY(0.5px); box-shadow: none; }
+      .dlgYouniumStatusFooter .ynBtn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent-stroke); }
       .youniumSummary {
         padding: 12px 14px 12px 15px; border-radius: 8px;
         font-size: 13.5px; font-weight: 500;
@@ -775,6 +826,7 @@
       .youniumSummary.youniumStatus-yellow { border-left-color: var(--warn); }
       .youniumSummary.youniumStatus-red    { border-left-color: var(--bad); }
       .youniumSummary.youniumStatus-gray   { border-left-color: var(--muted2); }
+      .youniumSummary small { display: block; font-weight: 400; font-size: 11.5px; margin-top: 4px; color: var(--muted); }
       .youniumSection {
         border: 1px solid var(--hairline); border-radius: 10px;
         padding: 12px 14px; background: var(--surface-1);
@@ -865,8 +917,8 @@
       '<div class="dlgYouniumStatusFooter" id="dlgYouniumStatusFooter">' +
         '<button class="ynBtn" type="button" id="btnYouniumStatusRefresh">Refresh status</button>' +
         '<button class="ynBtn" type="button" id="btnYouniumStatusCopy">Copy summary</button>' +
-        '<a class="ynBtn" id="btnYouniumStatusOpenOrder" target="_blank" rel="noopener noreferrer" style="display:none;">Open Younium order ↗</a>' +
-        '<a class="ynBtn" id="btnYouniumStatusOpenYouniumSub" target="_blank" rel="noopener noreferrer" style="display:none;">Open Younium subscription ↗</a>' +
+        '<a class="ynBtn" id="btnYouniumStatusOpenOrder" target="_blank" rel="noopener noreferrer" style="display:none;">Open Younium order</a>' +
+        '<a class="ynBtn" id="btnYouniumStatusOpenYouniumSub" target="_blank" rel="noopener noreferrer" style="display:none;">Open Younium subscription</a>' +
       '</div>';
     document.body.appendChild(dlg);
 
@@ -920,7 +972,8 @@
         "Order number: " + (v.orderNumber || "?"),
         "Last checked: " + (v.lastCheckedAt ? new Date(v.lastCheckedAt).toLocaleString(UI_LOCALE) : "?"),
         "Younium URL: " + (v.links?.saved || "(none)"),
-      ];
+        (v.problems && v.problems.length ? "Issues:\n  - " + v.problems.join("\n  - ") : ""),
+      ].filter(Boolean);
       try {
         await navigator.clipboard.writeText(lines.join("\n"));
         els.btnYouniumStatusCopy.textContent = "Copied ✓";
@@ -947,7 +1000,7 @@
   }
 
   // Set the nav button's color tint + label text (the logo stays put).
-  function setButtonState(color, label, loading) {
+  function setButtonState(color, label, loading, problems) {
     const btn = document.getElementById("ynNavBtn");
     if (!btn) return;
     btn.classList.remove("yn-green", "yn-yellow", "yn-red", "yn-gray");
@@ -955,9 +1008,17 @@
     btn.classList.toggle("yn-loading", !!loading);
     const el = btn.querySelector(".ynNavBtnLabel");
     if (el) el.textContent = label || "Younium";
-    btn.title = loading
-      ? "Checking Younium status…"
-      : ((label && label !== "Younium" ? label : "Younium status") + " — click for details");
+    if (loading) { btn.title = "Fetching latest Younium status…"; return; }
+    // Tooltip (same format as the tracker's chip): the verdict on the first
+    // line, then each problem on its own line, so hovering explains WHY the
+    // chip is yellow/red without opening the modal.
+    const lines = [label && label !== "Younium" ? label : "Younium status"];
+    if (Array.isArray(problems) && problems.length) {
+      lines.push("");
+      for (const p of problems) lines.push("• " + p);
+    }
+    lines.push("", "Click for details.");
+    btn.title = lines.join("\n");
   }
 
   // Read the current project's name + plant ID from the page.
@@ -983,7 +1044,7 @@
   function applyVerdictToButton(plantId, verdict) {
     const btn = document.getElementById("ynNavBtn");
     if (!btn || btn.dataset.plantId !== plantId) return;
-    setButtonState(verdict?.color || "gray", verdict?.label || "Younium");
+    setButtonState(verdict?.color || "gray", verdict?.label || "Younium", false, verdict?.problems);
   }
 
   // Keep the nav button in sync with whichever project is open. Called on
@@ -1013,6 +1074,18 @@
     });
   }
 
+  // Warnings beyond what the verdict engine records in `problems`. "Partially
+  // paid" lives here (not only in the green→yellow downgrade) so it is visible
+  // even when the verdict is red for a worse reason — e.g. an invoiced +
+  // partially-paid order whose subscription is still Draft.
+  function buildYouniumExtraWarnings(verdict) {
+    const out = [];
+    if (verdict?.deliveryStatus === "Partially paid") {
+      out.push("Order is only partially paid in Younium — full payment is still outstanding.");
+    }
+    return out;
+  }
+
   function renderYouniumStatusModalBody(verdict, gen) {
     const p = currentYouniumStatusProject;
     if (!p) return;
@@ -1027,7 +1100,7 @@
     const fmtDateOnly = (iso) => iso ? new Date(iso).toLocaleDateString(UI_LOCALE) : "—";
 
     const orderLink = p.youniumUrl || (verdict.links && verdict.links.saved) || "";
-    const allWarnings = [...(verdict.problems || [])];
+    const allWarnings = [...(verdict.problems || []), ...buildYouniumExtraWarnings(verdict)];
 
     // ── Summary header text ──
     let summaryText;
@@ -1054,10 +1127,12 @@
       summaryText = "Action needed: " + (verdict.label?.replace(/^Younium:\s*[✗⚠✓]?\s*/, "") || "Younium needs attention.");
     } else if (verdict.color === "yellow" && verdict.deliveryStatus === "Partially delivered") {
       summaryText = "Partially delivered — the order isn't fully delivered in Younium yet (invoice + subscription otherwise fine).";
+    } else if (verdict.color === "yellow" && verdict.deliveryStatus === "Partially paid") {
+      summaryText = "Partially paid — the order is invoiced but not fully paid in Younium yet (subscription otherwise fine).";
     } else if (verdict.color === "yellow" && verdict.orderStatus === "Invoiced") {
       summaryText = "Pending — Order is Invoiced, waiting for Subscription to become Active.";
-    } else if (verdict.color === "yellow" && verdict.orderStatus === "Order (not invoiced)") {
-      summaryText = "Pending — Order hasn't been invoiced yet.";
+    } else if (verdict.color === "yellow" && (verdict.orderStatus === "Active" || verdict.orderStatus === "Order (not invoiced)")) {
+      summaryText = "Pending — Order is Active in Younium, awaiting the first posted invoice.";
     } else if (verdict.color === "yellow" && verdict.orderStatus === "Order (pending start)") {
       summaryText = "Pending — Subscription starts " + (order?.effectiveStartDate || "").slice(0, 10) + ".";
     } else if (verdict.color === "yellow") {
@@ -1071,13 +1146,15 @@
     const orderName = order ? (order.description || order.orderNumber || verdict.orderNumber || "—") : (quote?.description || quote?.number || "—");
 
     const displayOrderStatus = verdict.deliveryStatus || verdict.orderStatus;
-    // "Partially paid" is a half-way state (some invoices still outstanding), so
-    // it reads yellow with a "–" prefix — not green with a ✓ like a fully-good state.
-    const orderIsPartiallyPaid = displayOrderStatus === "Partially paid";
-    const orderIsGood = ["Invoiced", "Delivered", "Paid"].includes(displayOrderStatus);
+    // "Partially …" (paid / delivered) is an in-progress state, not done — it
+    // reads yellow with a leading em-dash, never the green ✓. The complete
+    // states "Paid" / "Delivered" / "Invoiced" and an activated "Active" order
+    // stay green ✓.
+    const orderIsPartial = displayOrderStatus.startsWith("Partially");
+    const orderIsGood = ["Invoiced", "Delivered", "Paid", "Active"].includes(displayOrderStatus);
     const orderIsBad = ["Cancelled", "Expired"].includes(displayOrderStatus) || displayOrderStatus.startsWith("Draft") || displayOrderStatus.startsWith("Created");
     const orderStatusColor = orderIsGood ? "var(--good)" : (orderIsBad ? "var(--bad)" : "var(--warn)");
-    const orderStatusPrefix = orderIsGood ? "✓ " : (orderIsPartiallyPaid ? "– " : "");
+    const orderStatusPrefix = orderIsGood ? "✓ " : (orderIsPartial ? "— " : "");
     // Invoice payment rollup — how many issued invoices are actually paid, so the
     // row reads "Paid" / "Partly paid — X of N paid (Y outstanding)" / "awaiting".
     const issuedInvoiceCount = invoices.filter((i) => i && (i.posted || i.status >= 1)).length;
@@ -1178,7 +1255,9 @@
       const issuedInv = inv.filter((i) => i && (i.posted || i.status >= 1));
       const paidInv = inv.filter((i) => i && (i.status === 3 || i.paymentDate));
       const isRawDraft = o.status === 5;
-      const isRawCreated = o.status === 1;
+      // status 1 = "not finalized" only while the number looks like a draft
+      // (activated orders keep status 1 with a real O-###### number).
+      const isRawCreated = o.status === 1 && youniumOrderNumberLooksDraft(o.orderNumber);
       let statusLbl;
       if (isCancelled) statusLbl = "Cancelled";
       else if (isExpired) statusLbl = "Expired";
@@ -1189,13 +1268,13 @@
       else if (paidInv.length > 0) statusLbl = "Partially paid";
       else if (postedInvoices.length) statusLbl = "Invoiced";
       else if (startsInFuture) statusLbl = "Order (pending start)";
-      else if (o.isLastVersion) statusLbl = "Order (not invoiced)";
+      else if (o.isLastVersion) statusLbl = "Active"; // activated + started, not invoiced yet — Younium's badge
       else statusLbl = "Draft (outdated version)";
-      const isPartiallyPaid = statusLbl === "Partially paid";
-      const isGood = ["Invoiced", "Paid"].includes(statusLbl);
+      const isPartial = statusLbl.startsWith("Partially");
+      const isGood = ["Invoiced", "Paid", "Active"].includes(statusLbl);
       const isBad = ["Cancelled", "Expired"].includes(statusLbl) || statusLbl.startsWith("Draft") || statusLbl.startsWith("Created");
       const statusColor = isGood ? "var(--good)" : (isBad ? "var(--bad)" : "var(--warn)");
-      const statusPrefix = isGood ? "✓ " : (isPartiallyPaid ? "– " : "");
+      const statusPrefix = isGood ? "✓ " : (isPartial ? "— " : "");
       const relInvoiceLabel = issuedInv.length === 0
         ? "No invoices yet"
         : (paidInv.length >= issuedInv.length ? "✓ Paid (" + issuedInv.length + ")"
