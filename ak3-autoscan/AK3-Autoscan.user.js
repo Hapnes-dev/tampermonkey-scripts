@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.1
+// @version      9.2
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -177,16 +177,19 @@
             enableButton(target);
             try { target.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) {}
             await sleep(150);
+            // Attempts 1–2: one native click. 3–4: add the synthetic MouseEvent
+            // and the jQuery trigger. 5+: also submit the enclosing form, if any
+            // — dead where #ipSave sits outside the form (plant 10232), a page
+            // reload (pausing the run) where it does not.
             clickEl(target, (label || 'Lagre ip-adresser') + ' (click ' + i + '/' + maxAttempts + ')');
-            try {
-                const jq = window.jQuery || window.$;
-                if (jq && typeof jq === 'function') jq('#ipSave').trigger('click');
-            } catch (e) {}
-            try {
-                const form = target.closest('form');
-                if (form && typeof form.requestSubmit === 'function') form.requestSubmit(target);
-                else if (form) form.submit();
-            } catch (e) { log('ipSave form submit fallback: ' + e.message); }
+            if (i >= 3) { clickSynthetic(target); clickJQuery(target); }
+            if (i >= 5) {
+                try {
+                    const form = target.closest('form');
+                    if (form && typeof form.requestSubmit === 'function') form.requestSubmit(target);
+                    else if (form) form.submit();
+                } catch (e) { log('ipSave form submit fallback: ' + e.message); }
+            }
             // Wait briefly for confirmation between clicks; total wait grows over attempts.
             const perClickWait = 4000;
             const start = Date.now();
@@ -288,18 +291,55 @@
             ? '.' + el.className.split(/\s+/).filter(Boolean).slice(0, 2).join('.') : '';
         return (txt ? '"' + txt + '" ' : '') + el.tagName.toLowerCase() + id + cls;
     }
+    // One native click. Every listener type (addEventListener, on*, jQuery)
+    // sees it; the only element that ignores it is a disabled one, which is
+    // what enableButton() is for. Firing a synthetic MouseEvent and a jQuery
+    // trigger on top — the 7.x–9.1 strategy — ran each handler three times on
+    // ak3_setup: three partial loads per tab click (racing this script's DOM
+    // reads), three scan iframes per "Scan anlegg", two copy/activate requests.
+    // Those strategies survive only as escalation in clickVerified().
     function clickEl(el, label) {
         log('Click → ' + (label || describe(el)));
         try { el.click(); } catch (e) {}
-        // Dispatch a real MouseEvent too — some handlers don't react to .click().
+    }
+    function clickSynthetic(el) {
         try {
             el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         } catch (e) {}
-        // If jQuery is present (it is on ak3_setup), also trigger via jQuery.
+    }
+    function clickJQuery(el) {
         try {
             const jq = window.jQuery || window.$;
             if (jq && typeof jq === 'function') jq(el).trigger('click');
         } catch (e) {}
+    }
+    // Click, then wait up to `ms` for effect() to become true. If it does not,
+    // escalate to a synthetic MouseEvent and then a jQuery trigger, each with
+    // the same wait. Returns true once the effect was seen.
+    async function clickVerified(el, label, effect, ms) {
+        const waitMs = ms || 1500;
+        const name = label || describe(el);
+        const seen = async () => {
+            const start = Date.now();
+            while (Date.now() - start < waitMs) {
+                try { if (effect()) return true; } catch (e) {}
+                if (_abortRequested) return false;
+                await sleep(100);
+            }
+            try { return !!effect(); } catch (e) { return false; }
+        };
+        clickEl(el, label);
+        if (await seen()) return true;
+        if (_abortRequested) return false;
+        log('No effect after native click on ' + name + ' — retrying with a synthetic MouseEvent');
+        clickSynthetic(el);
+        if (await seen()) return true;
+        if (_abortRequested) return false;
+        log('Still no effect — retrying via jQuery trigger');
+        clickJQuery(el);
+        if (await seen()) return true;
+        log('WARNING: no visible effect from any click strategy on ' + name);
+        return false;
     }
     // Put a checkbox into a known state. clickEl() must not be used on
     // checkboxes: each of its three click strategies toggles the box, so the
@@ -728,10 +768,25 @@
             el.style.opacity = '1';
         } catch (e) {}
     }
+    // Click a menu tab and wait for #content to be replaced by the tab's
+    // partial. A hidden probe appended to the old content disappears when the
+    // page's $('#content').load() swaps the HTML — even when the same tab is
+    // reloaded — which is the one reliable "the click registered" signal this
+    // page gives. Callers still waitFor() the elements they need.
     async function clickTab(id) {
         const li = await waitFor('li#' + id);
-        clickEl(li, 'Tab: ' + (li.textContent || id).trim());
-        await sleep(400);
+        const content = document.getElementById('content');
+        let probe = null;
+        if (content) {
+            probe = document.createElement('span');
+            probe.className = 'ak3-tab-probe';
+            probe.style.display = 'none';
+            content.appendChild(probe);
+        }
+        const loaded = () => !probe || !probe.isConnected;
+        await clickVerified(li, 'Tab: ' + (li.textContent || id).trim(), loaded, 6000);
+        if (probe && probe.isConnected) probe.remove();
+        await sleep(150);
     }
 
     // Read an IPv4 out of the "<h2>... config satt til <em>...</em></h2>" hint,
@@ -884,14 +939,19 @@
                     await waitFor('.test-box', { timeout: 10000 });
                     await sleep(500);
 
-                    // Check each database individually by inspecting its own test-box text
-                    const testBoxes = document.querySelectorAll('.test-box p');
+                    // Each database has its own .test-box, server-rendered with
+                    // class "ok" or "error". The text is the fallback for page
+                    // versions without those classes.
+                    const testBoxes = document.querySelectorAll('.test-box');
                     let server3Ok = false;
                     let scannerOk = false;
-                    testBoxes.forEach(p => {
-                        const txt = p.textContent;
-                        if (txt.includes('iw_plant_server3') && isOkStatus(txt)) server3Ok = true;
-                        if (txt.includes('iw_ak3_scanner') && isOkStatus(txt)) scannerOk = true;
+                    testBoxes.forEach((box) => {
+                        const txt = box.textContent || '';
+                        const ok = box.classList.contains('ok') ? true
+                                 : box.classList.contains('error') ? false
+                                 : isOkStatus(txt);
+                        if (txt.includes('iw_plant_server3') && ok) server3Ok = true;
+                        if (txt.includes('iw_ak3_scanner') && ok) scannerOk = true;
                     });
                     log('DB status — iw_plant_server3: ' + (server3Ok ? 'OK' : 'NOT OK') +
                         ', iw_ak3_scanner: ' + (scannerOk ? 'OK' : 'NOT OK'));
@@ -956,9 +1016,12 @@
 
                     log('Clicking "Test tilkobling til AK-SM850" (HTTPS on)');
                     {
+                        // The page's handler disables the button synchronously
+                        // while the test runs — the "click registered" signal.
                         const ipFormBtn0 = await waitFor('input#ipForm');
                         enableButton(ipFormBtn0);
-                        clickEl(ipFormBtn0, 'Test tilkobling til AK-SM850');
+                        await clickVerified(ipFormBtn0, 'Test tilkobling til AK-SM850',
+                            () => ipFormBtn0.disabled === true, 1500);
                     }
                     // Poll continuously for up to 60s — slow plants can take a
                     // while to render the Save button after the HTTPS test.
@@ -984,8 +1047,9 @@
                             const ipFormBtn = await waitFor('input#ipForm');
                             enableButton(ipFormBtn);
                             if (ipFormBtn.disabled) log('ipForm still reports disabled after enable');
-                            clickEl(ipFormBtn,
-                                    'Test tilkobling til AK-SM850 (retry ' + attempt + ', HTTPS off)');
+                            await clickVerified(ipFormBtn,
+                                    'Test tilkobling til AK-SM850 (retry ' + attempt + ', HTTPS off)',
+                                    () => ipFormBtn.disabled === true, 1500);
                             // NOTE: do NOT call form.submit() here — Test tilkobling is
                             // AJAX-only; submitting the form caused a real POST/navigation
                             // that reloaded the page back to the start of the workflow.
@@ -1011,7 +1075,8 @@
                         {
                             const b = await waitFor('input#ipForm');
                             enableButton(b);
-                            clickEl(b, 'Test tilkobling til AK-SM850 (retry)');
+                            await clickVerified(b, 'Test tilkobling til AK-SM850 (retry)',
+                                () => b.disabled === true, 1500);
                         }
                         // Always go through findVisibleIpSave (via waitForIpSaveButton):
                         // a bare querySelector('#ipSave') can return a hidden template.
@@ -1077,8 +1142,12 @@
                     await clickTab('scan');
                     await sleep(500);
 
+                    // The page appends an iframe per "Scan anlegg" click and never
+                    // removes old ones, so the newest (last) one is this scan.
+                    const scanFrames = () => document.querySelectorAll('#scanWindow iframe, iframe[src*="iframe/scan"]');
                     const getIframeDoc = () => {
-                        const f = document.querySelector('#scanWindow iframe, iframe[src*="iframe/scan"]');
+                        const frames = scanFrames();
+                        const f = frames[frames.length - 1];
                         try { return f && (f.contentDocument || f.contentWindow.document); }
                         catch { return null; }
                     };
@@ -1107,7 +1176,10 @@
                     if (staleDone) log('Scan window still shows a finished earlier scan — waiting for it to reset before trusting completion');
 
                     const scanBtn = await waitFor('input#scanButton');
-                    clickEl(scanBtn, 'Scan anlegg');
+                    const framesBefore = scanFrames().length;
+                    // The handler hides the button and appends the scan iframe.
+                    await clickVerified(scanBtn, 'Scan anlegg',
+                        () => scanFrames().length > framesBefore || scanBtn.offsetParent === null, 3000);
                     log('Scan started — waiting for completion (up to 2 hours)');
                     noteStep('scan', { scanStartedAt: Date.now() });
 
@@ -1176,8 +1248,10 @@
                     log('Opening Kopier til anlegg tab');
                     await clickTab('copyplant');
                     log('Waiting for "Kopier og overskriv ALT" button');
-                    clickEl(await waitFor('button#copy_db', { timeout: 600000 }),
-                            'Kopier og overskriv ALT');
+                    const copyBtn = await waitFor('button#copy_db', { timeout: 600000 });
+                    // The handler disables the button and relabels it "Vennligst vent".
+                    await clickVerified(copyBtn, 'Kopier og overskriv ALT',
+                        () => copyBtn.disabled === true || /vent/i.test(copyBtn.textContent || ''), 1500);
                     // The confirm dialog may render a moment after the click; a
                     // synchronous querySelector would miss it and the copy would
                     // never be confirmed.
@@ -1196,8 +1270,9 @@
                     log('Opening Aktiver anlegg tab');
                     await clickTab('activate');
                     log('Waiting for "Aktiver alle" button');
-                    clickEl(await waitFor('button#activateAllButton', { timeout: 600000 }),
-                            'Aktiver alle');
+                    const activateBtn = await waitFor('button#activateAllButton', { timeout: 600000 });
+                    // The handler disables the button before posting.
+                    await clickVerified(activateBtn, 'Aktiver alle', () => activateBtn.disabled === true, 1500);
                     log('Waiting for "Enheter aktivert" confirmation');
                     await waitForText('#message', 'Enheter aktivert', { timeout: 600000 });
                     log('Devices activated');

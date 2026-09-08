@@ -16,7 +16,7 @@ The script auto-updates — when a new version is pushed here, Tampermonkey will
 
 ## What it is
 
-A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.1) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
+A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.2) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
 
 ## Key constants
 
@@ -54,7 +54,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 
 ### 1. `dbcheck`
 - Opens the **DB Sjekk** tab (`li#databasetest`)
-- If both `iw_plant_server3 : OK` and `iw_ak3_scanner : OK` are present, skips to next step (`OK` as a whole word, not `IKKE OK`)
+- If both `.test-box` entries for `iw_plant_server3` and `iw_ak3_scanner` carry class `ok` (text `OK` as a whole word is the fallback; `error` / `IKKE OK` never count), skips to next step
 - If `button#create_scan_db` ("Lag database iw_ak3_scanner") exists, clicks it and waits for `"Database opprettet"` message
 - Proceeds to ipconfig
 
@@ -112,7 +112,8 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 |---|---|
 | `waitFor(selector, {timeout})` | Polls DOM for element, default 30s |
 | `waitForText(selector, text, {timeout})` | Polls DOM for element containing text, default 30s |
-| `clickEl(el)` | Clicks via `.click()`, `MouseEvent`, and jQuery `$.trigger()` (buttons only — never checkboxes) |
+| `clickEl(el)` | One native `.click()` (buttons and tabs, never checkboxes) |
+| `clickVerified(el, label, effect, ms)` | Native click, then waits for `effect()`; escalates to a synthetic `MouseEvent` and a jQuery trigger only if nothing happened. Used for tabs, Test tilkobling, Scan anlegg, Kopier, Aktiver |
 | `setCheckbox(el, want)` | One native click if the state differs, then verify and force-set |
 | `revertToStandardMode(plantId)` | Best-effort StandardMode revert, logs a WARNING instead of throwing |
 | `stopRun(msg)` | Clears state, logs, alerts — callers revert first |
@@ -123,7 +124,7 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 | `enableButton(el)` | Force-enables a disabled button |
 | `gmPost(url, body)` | `GM_xmlhttpRequest` POST wrapper returning parsed JSON |
 | `sleep(ms)` | Promise-based delay |
-| `clickTab(id)` | Clicks `li#id` menu tab and waits 400ms |
+| `clickTab(id)` | Clicks `li#id` once and waits for `#content` to be replaced (hidden probe element), up to 6 s per strategy |
 
 ## GM grants
 
