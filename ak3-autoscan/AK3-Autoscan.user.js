@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.0
+// @version      9.1
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_notification
 // @connect      toolbox.iwmac.local
 // @connect      toolbox.iwmac.local:8505
 // @connect      tools.iwmac.local
@@ -67,6 +68,8 @@
     const STATE_KEY = stateKeyFor(TAB_PLANT_ID);
     const LOG_KEY   = logKeyFor(TAB_PLANT_ID);
     const PANEL_CLOSED_KEY = panelClosedKeyFor(TAB_PLANT_ID);
+    const summaryKeyFor     = (pid) => 'ak3_summary_'      + (pid || 'unknown');
+    const SUMMARY_KEY = summaryKeyFor(TAB_PLANT_ID);
 
     // One-time cleanup of pre-7.7 global keys so they don't linger in storage.
     try {
@@ -87,6 +90,38 @@
     function clearState() {
         GM_deleteValue(STATE_KEY);
         refreshControls();
+    }
+
+    // ---------- Run summary (feeds the completion card) ----------
+    // Per plant, reset on every start, kept across reloads/resumes. Each step
+    // records when it started and ended plus whatever the page said.
+    const getSummary = () => GM_getValue(SUMMARY_KEY, null) || { steps: {} };
+    function updateSummary(fn) {
+        const s = getSummary();
+        if (!s.steps) s.steps = {};
+        fn(s);
+        GM_setValue(SUMMARY_KEY, s);
+        return s;
+    }
+    function stepStarted(step) {
+        updateSummary((s) => {
+            const st = s.steps[step] = s.steps[step] || {};
+            if (!st.startedAt) st.startedAt = Date.now();
+            st.visits = (st.visits || 0) + 1;
+        });
+    }
+    function noteStep(step, patch) {
+        updateSummary((s) => { s.steps[step] = Object.assign(s.steps[step] || {}, patch); });
+    }
+    function stepDone(step, patch) {
+        updateSummary((s) => {
+            s.steps[step] = Object.assign(s.steps[step] || {}, patch || {}, { endedAt: Date.now() });
+        });
+    }
+    // The page's status line, as shown ("IPer oppdatert", "Enheter aktivert", ...).
+    function msgText() {
+        const el = document.querySelector('#message');
+        return el ? el.textContent.replace(/\s+/g, ' ').trim().slice(0, 160) : '';
     }
     function ts() {
         const d = new Date();
@@ -159,6 +194,7 @@
                 const msg = document.querySelector('#message');
                 if (msg && msg.textContent.includes('IPer oppdatert')) {
                     log((label || 'ipSave click') + ' — confirmed after ' + i + ' click(s)');
+                    noteStep('ipconfig', { saveClicks: i });
                     return true;
                 }
                 await sleep(250);
@@ -467,6 +503,160 @@
         if (resume) resume.style.display = (s && !_running) ? '' : 'none';
         if (abort)  abort.style.display  = s ? '' : 'none';
     }
+
+    // ---------- Completion card ----------
+    // Replaces the bare alert(): per-step timings and results, the IPs used,
+    // DB and scan outcome, the AK3 mode, a Copy-summary button, plus a title
+    // prefix and a desktop notification so a background tab still shows it.
+    const STEP_ORDER  = ['dbcheck', 'ipconfig', 'scan', 'default_links', 'copyplant', 'activate'];
+    const STEP_LABELS = { dbcheck: 'DB check', ipconfig: 'IP config', scan: 'Scan',
+                          default_links: 'Default links', copyplant: 'Copy to plant', activate: 'Activate' };
+    function fmtDur(ms) {
+        if (!Number.isFinite(ms) || ms < 0) return '?';
+        const total = Math.round(ms / 1000);
+        const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
+        return (h ? h + 'h ' : '') + ((h || m) ? m + 'm ' : '') + sec + 's';
+    }
+    function fmtClock(t) {
+        if (!t) return '?';
+        const d = new Date(t), p = (n) => String(n).padStart(2, '0');
+        return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+    function stepResult(step, st) {
+        if (!st) return 'not recorded';
+        const parts = [];
+        if (step === 'dbcheck') {
+            parts.push(st.created ? 'iw_ak3_scanner created'
+                     : (st.server3Ok && st.scannerOk) ? 'both databases present' : 'checked');
+            if (st.created && st.message) parts.push(st.message);
+        } else if (step === 'ipconfig') {
+            if (st.localIp)  parts.push('server ' + st.localIp + (st.localSource === 'page' ? '' : ' (default)'));
+            if (st.remoteIp) parts.push('AK-SM850 ' + st.remoteIp + (st.remoteSource === 'page' ? '' : ' (default)'));
+            if (st.transport) parts.push(st.transport + (st.testAttempts > 1 ? ' after ' + st.testAttempts + ' tests' : ''));
+            if (st.saveClicks) parts.push(st.saveClicks + ' save click' + (st.saveClicks > 1 ? 's' : ''));
+            if (st.manual) parts.push('fixed manually');
+            if (!parts.length) parts.push(st.message || 'saved');
+        } else if (step === 'scan') {
+            if (st.scanStartedAt && st.scanEndedAt) parts.push('scanned in ' + fmtDur(st.scanEndedAt - st.scanStartedAt));
+            parts.push(st.report || (st.lastPercent != null ? st.lastPercent + '%' : 'done'));
+        } else if (step === 'copyplant') {
+            parts.push(st.message || 'copied');
+            if (st.confirmed) parts.push('dialog confirmed');
+        } else {
+            parts.push(st.message || 'done');
+        }
+        return parts.join(' · ');
+    }
+    function summaryText(plantId, s) {
+        const lines = [];
+        lines.push('AK3 Scan Completed — plant ' + plantId + ' (' + location.host + ')');
+        lines.push('Started ' + fmtClock(s.startedAt) + ', finished ' + fmtClock(s.finishedAt) +
+                   ', total ' + fmtDur(s.finishedAt - s.startedAt));
+        lines.push('AK3 mode: ' + (s.reverted === false
+            ? 'WARNING — StandardMode revert failed, check packet_timeout / packet_interval'
+            : 'StandardMode restored'));
+        lines.push('Run ' + (s.runId || '?') + (s.resumes ? ', resumed ' + s.resumes + '×' : ''));
+        for (const step of STEP_ORDER) {
+            const st = (s.steps || {})[step];
+            const dur = st && st.startedAt && st.endedAt ? fmtDur(st.endedAt - st.startedAt) : '?';
+            lines.push('- ' + STEP_LABELS[step] + ': ' + dur + ' — ' + stepResult(step, st));
+        }
+        return lines.join('\n');
+    }
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    function showCompletionCard(plantId, s) {
+        const total = fmtDur(s.finishedAt - s.startedAt);
+        const modeOk = s.reverted !== false;
+        try {
+            const old = document.getElementById('ak3-complete-backdrop');
+            if (old) old.remove();
+            const cell = 'padding:6px 8px;border-top:1px solid #1f2937;';
+            const rows = STEP_ORDER.map((step) => {
+                const st = (s.steps || {})[step];
+                const dur = st && st.startedAt && st.endedAt ? fmtDur(st.endedAt - st.startedAt) : '—';
+                return '<tr><td style="' + cell + 'white-space:nowrap;font-weight:600;">' + esc(STEP_LABELS[step]) + '</td>' +
+                       '<td style="' + cell + 'white-space:nowrap;color:#9ca3af;">' + esc(dur) + '</td>' +
+                       '<td style="' + cell + 'word-break:break-word;">' + esc(stepResult(step, st)) + '</td></tr>';
+            }).join('');
+            const el = document.createElement('div');
+            el.id = 'ak3-complete-backdrop';
+            el.setAttribute('style', 'position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.55);' +
+                'display:flex;align-items:center;justify-content:center;font:13px/1.45 system-ui,"Segoe UI",sans-serif;');
+            el.innerHTML =
+                '<div id="ak3-complete-card" role="dialog" aria-labelledby="ak3-complete-title" ' +
+                'style="width:min(600px,94vw);max-height:90vh;overflow:auto;background:#111827;color:#e5e7eb;' +
+                'border:1px solid #374151;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.6);">' +
+                  '<div style="display:flex;align-items:center;gap:14px;padding:16px 20px;background:#16a34a;color:#fff;border-radius:10px 10px 0 0;">' +
+                    '<div style="font-size:30px;line-height:1;">✔</div>' +
+                    '<div><div id="ak3-complete-title" style="font-size:19px;font-weight:700;">AK3 Scan Completed</div>' +
+                    '<div style="opacity:.92;">Plant ' + esc(plantId) + ' · ' + esc(location.host) + '</div></div>' +
+                  '</div>' +
+                  '<div style="padding:14px 20px 6px;">' +
+                    '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin-bottom:12px;">' +
+                      '<span style="color:#9ca3af;">Duration</span><span><b>' + esc(total) + '</b> · ' +
+                        esc(fmtClock(s.startedAt)) + ' → ' + esc(fmtClock(s.finishedAt)) + '</span>' +
+                      '<span style="color:#9ca3af;">AK3 mode</span><span style="color:' + (modeOk ? '#34d399' : '#fbbf24') + ';font-weight:600;">' +
+                        (modeOk ? 'StandardMode restored ✔'
+                                : 'WARNING — StandardMode revert failed, check packet_timeout / packet_interval manually') + '</span>' +
+                      '<span style="color:#9ca3af;">Run</span><span style="font-family:monospace;">' + esc(String(s.runId || '?').slice(0, 8)) + '</span>' +
+                      (s.resumes ? '<span style="color:#9ca3af;">Resumed</span><span>' + esc(s.resumes) + '×</span>' : '') +
+                    '</div>' +
+                    '<table style="width:100%;border-collapse:collapse;">' +
+                      '<thead><tr style="color:#9ca3af;text-align:left;"><th style="padding:4px 8px;font-weight:600;">Step</th>' +
+                      '<th style="padding:4px 8px;font-weight:600;">Time</th><th style="padding:4px 8px;font-weight:600;">Result</th></tr></thead>' +
+                      '<tbody>' + rows + '</tbody></table>' +
+                  '</div>' +
+                  '<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 20px 16px;">' +
+                    '<button id="ak3-complete-copy" style="cursor:pointer;background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;">Copy summary</button>' +
+                    '<button id="ak3-complete-log" style="cursor:pointer;background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;">Show log</button>' +
+                    '<button id="ak3-complete-close" style="cursor:pointer;background:#16a34a;color:#fff;border:none;padding:8px 18px;border-radius:6px;font-weight:700;">Close</button>' +
+                  '</div>' +
+                '</div>';
+            document.body.appendChild(el);
+            const origTitle = document.title;
+            document.title = '✔ AK3 done · ' + plantId;
+            const onKey = (e) => { if (e.key === 'Escape') close(); };
+            const close = () => {
+                el.remove();
+                document.removeEventListener('keydown', onKey);
+                if (document.title.startsWith('✔ AK3 done')) document.title = origTitle;
+            };
+            document.addEventListener('keydown', onKey);
+            el.querySelector('#ak3-complete-close').onclick = close;
+            el.querySelector('#ak3-complete-log').onclick = () => {
+                GM_deleteValue(PANEL_CLOSED_KEY);
+                injectDebugPanel();
+                renderDebugPanel();
+            };
+            el.querySelector('#ak3-complete-copy').onclick = (e) => {
+                const btn = e.target;
+                const done = (ok) => {
+                    btn.textContent = ok ? 'Copied ✔' : 'Copy failed';
+                    setTimeout(() => { btn.textContent = 'Copy summary'; }, 2000);
+                };
+                try {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(summaryText(plantId, s)).then(() => done(true), () => done(false));
+                    } else done(false);
+                } catch (err) { done(false); }
+            };
+            el.querySelector('#ak3-complete-close').focus();
+        } catch (e) {
+            log('Completion card failed to render (' + e.message + ') — falling back to alert');
+            alert('AK3 Scan Completed ✔\nPlant ' + plantId + ' — ' + total +
+                  (modeOk ? '' : '\n\nWARNING: could not set StandardMode — check packet_timeout / packet_interval manually!'));
+        }
+        try {
+            if (typeof GM_notification === 'function') {
+                GM_notification({
+                    title: 'AK3 Scan Completed — plant ' + plantId,
+                    text: 'Finished in ' + total + '. ' + (modeOk ? 'AK3 is back in StandardMode.' : 'WARNING: StandardMode revert failed!'),
+                    timeout: 0
+                });
+            }
+        } catch (e) {}
+    }
     function renderDebugPanel() {
         const body = document.getElementById('ak3-debug-body');
         if (!body) return;
@@ -606,6 +796,7 @@
         _runId = makeUuid();
         _runIdPlant = String(plantId);
         log('Auto Scan started for plant ' + plantId + ' (run ' + _runId + ')');
+        GM_setValue(SUMMARY_KEY, { startedAt: Date.now(), runId: _runId, resumes: 0, steps: {} });
         // State first, so the pma_local flag and the trace id are persisted by
         // the ScannerMode call; on failure stopRun() clears it again.
         setState({ plantId, step: 'dbcheck' });
@@ -639,6 +830,11 @@
         }
         if (saved.runId) { _runId = saved.runId; _runIdPlant = String(plantId); }
         log('Resuming Auto Scan at step "' + saved.step + '" (resume ' + resumes + '/' + MAX_RESUMES_PER_STEP + ')');
+        updateSummary((s) => {
+            s.startedAt = s.startedAt || saved.ts || Date.now();
+            s.runId = s.runId || _runId;
+            s.resumes = (s.resumes || 0) + 1;
+        });
         setState({ ...saved, resumes });
         try {
             // Whatever caused the reload may also have reset the AK3 packet
@@ -678,6 +874,7 @@
                 state = getState();
                 if (!state) return;
                 log('=== Step: ' + state.step + ' ===');
+                stepStarted(state.step);
 
                 if (state.step === 'dbcheck') {
                     log('Opening DB Sjekk tab');
@@ -701,6 +898,7 @@
 
                     if (server3Ok && scannerOk) {
                         log('Both databases OK — skipping creation');
+                        noteStep('dbcheck', { server3Ok, scannerOk, created: false });
                     } else {
                         // Wait for the "Lag database" button to appear
                         let dbCreated = false;
@@ -715,6 +913,7 @@
                         } catch (e) {
                             log('No create button found — continuing anyway');
                         }
+                        noteStep('dbcheck', { server3Ok, scannerOk, created: dbCreated, message: msgText() });
                         // Creating iw_ak3_scanner regenerates the AK3 plant settings, which
                         // wipes the ScannerMode packet values (timeout=100/interval=400) set on
                         // Auto-Scan start. Re-apply ScannerMode now so the scan polls fast.
@@ -726,6 +925,7 @@
                     }
 
                     await sleep(500);
+                    stepDone('dbcheck');
                     setState({ plantId, step: 'ipconfig' });
                 }
                 else if (state.step === 'ipconfig') {
@@ -742,6 +942,10 @@
                     const remoteIpToUse  = detectedRemote || REMOTE_IP;
                     log('localIp '  + (detectedLocal  ? 'detected on page' : 'using default') + ' = ' + localIpToUse);
                     log('remoteIp ' + (detectedRemote ? 'detected on page' : 'using default') + ' = ' + remoteIpToUse);
+                    noteStep('ipconfig', {
+                        localIp: localIpToUse,   localSource:  detectedLocal  ? 'page' : 'default',
+                        remoteIp: remoteIpToUse, remoteSource: detectedRemote ? 'page' : 'default'
+                    });
                     setInput(local,  localIpToUse);
                     setInput(remote, remoteIpToUse);
 
@@ -761,7 +965,7 @@
                     let saveBtn = null;
                     {
                         const r = await waitForSaveOrInvalid(60000, 'ipSave/invalid after HTTPS test');
-                        if (r.kind === 'save') saveBtn = r.el;
+                        if (r.kind === 'save') { saveBtn = r.el; noteStep('ipconfig', { transport: 'HTTPS', testAttempts: 1 }); }
                         else if (r.kind === 'invalid') log('remoteIp invalid → HTTPS test failed, will disable HTTPS and retry');
                     }
 
@@ -787,7 +991,7 @@
                             // that reloaded the page back to the start of the workflow.
                             const waitMs = attempt === 1 ? 20000 : attempt === 2 ? 25000 : 30000;
                             const r = await waitForSaveOrInvalid(waitMs, 'ipSave/invalid after HTTP retry ' + attempt);
-                            if (r.kind === 'save') saveBtn = r.el;
+                            if (r.kind === 'save') { saveBtn = r.el; noteStep('ipconfig', { transport: 'HTTP', testAttempts: attempt + 1 }); }
                             else if (r.kind === 'invalid') log('remoteIp invalid on HTTP retry ' + attempt + ' — will retry');
                         }
                     }
@@ -800,6 +1004,7 @@
 
                     if (!ok) {
                         log('First save did not confirm — retrying with HTTPS off');
+                        noteStep('ipconfig', { transport: 'HTTP', saveRetry: true });
                         const https2 = await waitFor('input#httpsForm');
                         setCheckbox(https2, false, 'HTTPS checkbox');
                         await sleep(500);
@@ -829,6 +1034,7 @@
                     }
                     if (!ok) {
                         log('Automatic IP setup failed — waiting for user to fix manually');
+                        noteStep('ipconfig', { manual: true });
                         // Show a non-blocking banner so the user knows what to do.
                         let banner = document.getElementById('ak3-manual-banner');
                         if (!banner) {
@@ -858,6 +1064,7 @@
                         // Refresh state timestamp so auto-resume stays valid.
                         setState({ plantId, step: 'ipconfig' });
                     }
+                    stepDone('ipconfig', { message: msgText() });
                     setState({ plantId, step: 'scan' });
                     await sleep(500);
                 }
@@ -886,6 +1093,11 @@
                                       doneEl.textContent.includes('Scan done')))
                         };
                     };
+                    // Whatever the scan window says when it is done (counts, "Scan done").
+                    const scanReport = (doc) => {
+                        try { return ((doc.body && doc.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 160); }
+                        catch (e) { return ''; }
+                    };
                     // A scan window left from an earlier scan can already read
                     // "100% / Scan done". Remember it, so that old result is not
                     // taken for this scan's completion: the window has to reset
@@ -897,6 +1109,7 @@
                     const scanBtn = await waitFor('input#scanButton');
                     clickEl(scanBtn, 'Scan anlegg');
                     log('Scan started — waiting for completion (up to 2 hours)');
+                    noteStep('scan', { scanStartedAt: Date.now() });
 
                     await new Promise((resolve, reject) => {
                         const start = Date.now();
@@ -912,7 +1125,10 @@
                                     lastLoggedPct = r.percent;
                                     log('Scan progress ' + r.percent + '% (' + ((Date.now() - start) / 60000).toFixed(1) + ' min)');
                                 }
-                                if (sawReset && r.done) return resolve();
+                                if (sawReset && r.done) {
+                                    noteStep('scan', { scanEndedAt: Date.now(), lastPercent: r.percent, report: scanReport(doc) });
+                                    return resolve();
+                                }
                             }
                             if (Date.now() - start > 7200000) return reject(new Error('scan timeout'));
                             setTimeout(tick, 500);
@@ -920,6 +1136,7 @@
                         tick();
                     });
                     log('Scan completed');
+                    stepDone('scan');
                     await sleep(1200);
                     setState({ plantId, step: 'default_links' });
                 }
@@ -935,6 +1152,7 @@
                     log('Waiting for "Default links oppdatert" confirmation');
                     await waitForText('#message', 'Default links oppdatert', { timeout: 600000 });
                     log('Default links updated');
+                    noteStep('default_links', { message: msgText() });
                     log('Waiting for loading message to disappear (up to 1 hour)...');
                     await new Promise((resolve, reject) => {
                         const start = Date.now();
@@ -951,6 +1169,7 @@
                     });
                     log('Loading complete — ready to continue');
                     await sleep(500);
+                    stepDone('default_links');
                     setState({ plantId, step: 'copyplant' });
                 }
                 else if (state.step === 'copyplant') {
@@ -969,6 +1188,7 @@
                     log('Waiting for "Database kopiert" confirmation');
                     await waitForText('#message', 'Database kopiert', { timeout: 600000 });
                     log('Database copied');
+                    stepDone('copyplant', { message: msgText(), confirmed: !!maybeOk });
                     await sleep(500);
                     setState({ plantId, step: 'activate' });
                 }
@@ -981,13 +1201,15 @@
                     log('Waiting for "Enheter aktivert" confirmation');
                     await waitForText('#message', 'Enheter aktivert', { timeout: 600000 });
                     log('Devices activated');
+                    stepDone('activate', { message: msgText() });
                     await sleep(500);
                     const reverted = await revertToStandardMode(plantId);
                     clearState();
-                    log('AK3 Scan Completed for plant ' + plantId +
+                    const summary = updateSummary((s) => { s.finishedAt = Date.now(); s.reverted = reverted; });
+                    log('AK3 Scan Completed for plant ' + plantId + ' in ' + fmtDur(summary.finishedAt - summary.startedAt) +
                         (reverted ? '' : ' — WARNING: StandardMode revert failed, check packet settings manually'));
-                    alert('AK3 Scan Completed ✔\nPlant ' + plantId +
-                          (reverted ? '' : '\n\nWARNING: could not set StandardMode — check packet_timeout / packet_interval manually!'));
+                    log('Summary:\n' + summaryText(plantId, summary));
+                    showCompletionCard(plantId, summary);
                     return;
                 }
                 else {

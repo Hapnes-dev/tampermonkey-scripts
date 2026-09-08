@@ -16,7 +16,7 @@ The script auto-updates — when a new version is pushed here, Tampermonkey will
 
 ## What it is
 
-A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.0) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
+A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.1) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
 
 ## Key constants
 
@@ -27,6 +27,7 @@ A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.0) that automates the AK3 
 | `STATE_KEY` | `ak3_state_<plantId>` (GM storage, per-plant) |
 | `LOG_KEY` | `ak3_log_<plantId>` (GM storage, per-plant, max 300 lines) |
 | `PANEL_CLOSED_KEY` | `ak3_panel_closed_<plantId>` (GM storage, per-plant) |
+| `SUMMARY_KEY` | `ak3_summary_<plantId>` (GM storage, per-plant run summary behind the completion card) |
 | `X_CALLER` | `AK3-Autoscan` |
 
 ## Multi-plant isolation
@@ -87,7 +88,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 ### 6. `activate`
 - Opens **"Aktiver anlegg"** tab, clicks **"Aktiver alle"**
 - Waits for `"Enheter aktivert"`
-- Sets AK3 mode back to **StandardMode** (a failed revert is reported in the completion alert), clears state, shows completion alert
+- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, save clicks, scan time and the scan window's final text, the page's own confirmation lines), AK3 mode, run id, Copy summary / Show log buttons. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
 
 ## AK3 mode switching
 
@@ -103,6 +104,7 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 
 - **"Auto Scan" button**: Green button injected at top of `#mainmenu` sidebar; label follows the state (`▶ Auto Scan`, `▶ Resume Auto Scan`, `⏳ Auto Scan running…`)
 - **Debug panel**: Fixed top-right overlay with timestamped log. Has Resume/Abort (shown while a run is saved), clear, minimize and close buttons. Shown during a run and again on every load while a run is saved.
+- **Completion card**: Centered dark overlay shown when the run finishes (see step 6). Close with the button or Escape.
 
 ## Helper functions
 
@@ -115,6 +117,8 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 | `revertToStandardMode(plantId)` | Best-effort StandardMode revert, logs a WARNING instead of throwing |
 | `stopRun(msg)` | Clears state, logs, alerts — callers revert first |
 | `isOkStatus(txt)` | Whole-word `OK`, not negated |
+| `stepStarted` / `noteStep` / `stepDone` / `msgText` | Record the run summary per step |
+| `showCompletionCard(plantId, summary)` | Render the completion card; falls back to `alert()` if rendering throws |
 | `setInput(el, value)` | Sets value via property descriptor + fires input/change/keyup/blur |
 | `enableButton(el)` | Force-enables a disabled button |
 | `gmPost(url, body)` | `GM_xmlhttpRequest` POST wrapper returning parsed JSON |
@@ -123,7 +127,7 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 
 ## GM grants
 
-`GM_setValue`, `GM_getValue`, `GM_deleteValue`, `GM_xmlhttpRequest`
+`GM_setValue`, `GM_getValue`, `GM_deleteValue`, `GM_xmlhttpRequest`, `GM_notification`
 
 ## Files
 
