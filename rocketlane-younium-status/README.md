@@ -1,60 +1,70 @@
 # Rocketlane improvements
 
-Formerly **Rocketlane Younium Status** — the folder, file and install link are unchanged, so an installed copy keeps auto-updating.
+One Tampermonkey userscript with three independent improvements for `kiona.rocketlane.com`:
 
-Adds a **Younium** button (with the Younium logo) to the Rocketlane project navigation (right after **All files**). It **computes the plant's Younium status automatically when you open the project** and shows the colored verdict right on the button — no click needed. Clicking it opens the full **Younium order + subscription status** modal — the same verdict engine and look as the [Project Progress Tracker](https://github.com/Hapnes-dev/Project-Progress-Tracker).
+1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
+2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
+3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0).
+
+The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
 ## Install
 
 👉 [**Install Rocketlane improvements**](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js)
 
-Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. After installing, **visit `https://eu.younium.com` once while logged in** (so the Frontegg session cookie is in the browser and the bridge can mint API tokens). Then open any Rocketlane project — the button appears in the nav.
+Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 
-## What it does
+- For the Younium status: **visit `https://eu.younium.com` once while logged in** (so the Frontegg session cookie is in the browser and the script can mint API tokens). Then open any Rocketlane project — the chip appears in the nav.
+- **If you had *Rocketlane Enhancer* or *Rocketlane Project Notes Column* installed, uninstall them in Tampermonkey** after installing this script. Their features live here now; the old scripts no longer receive updates.
+- Notes: the column width and a custom SQL API URL start from their defaults after the merge (the old script's settings are in its own Tampermonkey storage). The notes themselves are read back from the toolbox SQL table.
+
+---
+
+## 1. Younium status
 
 On a Rocketlane project page (`https://kiona.rocketlane.com/projects/<id>/…`):
 
-1. Injects a pill chip (Younium logo + label, the same chip style as the tracker's project-header Younium status chip) into the project tab bar, immediately after **All files**.
+1. Injects a pill chip (Younium logo + label, the same chip style as the [Project Progress Tracker](https://github.com/Hapnes-dev/Project-Progress-Tracker)'s project-header Younium status chip) into the project tab bar, immediately after **All files**.
 2. Extracts the plant ID from the project name (`"10112 - Bunnpris Betna: Ny Butikk"` → `10112`).
-3. **On project open** (and on every in-app navigation to another project), it queries Younium directly (CORS-bypassed via `GM_xmlhttpRequest`) for that plant's orders, promotes the most-recently-modified order that is not the subscription agreement (an "… Abonnementsavtale") as the **Order / offer**, finds the **IWMAC subscription** order (via the `plant_id` custom field), fetches invoice history + the audit event log, computes a verdict, and **tints the button + shows the verdict label** (e.g. `Younium: ✓ All good`) — no click required. Results are cached per plant for the session, and concurrent/stale computes are discarded so the button never shows the wrong plant's status.
-4. **Clicking** the button opens a fullscreen-centered modal titled **"Younium status details · &lt;project name&gt;"** (instant from the cached verdict) with:
+3. **On project open** (and on every in-app navigation to another project), it queries Younium directly (CORS-bypassed via `GM_xmlhttpRequest`) for that plant's orders, promotes the most-recently-modified order that is not the subscription agreement (an "… Abonnementsavtale") as the **Order / offer**, finds the **IWMAC subscription** order (via the `plant_id` custom field), fetches invoice history + the audit event log, computes a verdict, and **tints the chip + shows the verdict label** (e.g. `Younium: ✓ All good`) — no click required. Results are cached per plant for the session, and concurrent/stale computes are discarded so the chip never shows the wrong plant's status.
+4. **Clicking** the chip opens a fullscreen-centered modal titled **"Younium status details · &lt;project name&gt;"** (instant from the cached verdict) with:
    - a colored **summary** one-liner (action-oriented),
    - a **Warnings** panel (when problems exist),
    - an **Order / offer** section (link, IDs, status, invoice status, totals, dates, *Created by* / *Last updated by* from the event log),
    - a **Subscription** section (the IWMAC subscription order's status + dates + attribution, or a "none" note for one-time sales),
    - an **Other orders for this plant** section (click-to-expand sibling orders).
-5. The nav button is tinted by the verdict (🟢 green / 🟡 yellow / 🔴 red / ⚪ gray), and its hover tooltip lists the problems behind a yellow/red verdict.
+5. The chip is tinted by the verdict (🟢 green / 🟡 yellow / 🔴 red / ⚪ gray), and its hover tooltip lists the problems behind a yellow/red verdict.
 
 **Read-only** — the modal never writes to Younium.
 
-## Verdict labels
+### Verdict labels
 
 | Color | Label | When |
 |---|---|---|
 | 🟢 Green | `✓ All good` | Order Invoiced **and** IWMAC subscription Active |
 | 🟢 Green | `✓ Invoiced (one-time)` | Order Invoiced, no IWMAC subscription product |
-| 🟡 Yellow | `⏳ Awaiting first invoice` | Order present, no posted invoices yet |
+| 🟡 Yellow | `⏳ Awaiting first invoice` | Order present (an activated order reads *Active*), no posted invoices yet |
 | 🟡 Yellow | `⏳ Subscription starts <date>` | Subscription start date is in the future |
 | 🟡 Yellow | `⚠ Partially delivered` | Younium order is only partially delivered |
 | 🟡 Yellow | `— Partially paid` | Younium order is invoiced but not fully paid (status 10) |
 | 🔴 Red | `⚠ Activate order in Younium` | Order is Draft (status 5) — needs activation |
-| 🔴 Red | `⚠ Finalize order in Younium` | Order is Created but not finalized |
+| 🔴 Red | `⚠ Finalize order in Younium` | Order is Created but not finalized (status 1 with a draft-looking number) |
 | 🔴 Red | `⚠ Activate subscription in Younium` | IWMAC subscription order is Draft |
 | 🔴 Red | `✗ Cancelled` / `✗ Expired` | Terminal — can't recover |
 | ⚪ Gray | `No orders found` / `no plant ID` | Nothing to show for this plant |
 
-## How it works
+### How it works
 
-### Two run contexts (`@match`)
+**Two run contexts (`@match`)**
 
 - **`*.younium.com`** — captures only the hublet **region** (`eu`/`us`) into `GM_setValue("ynRegion")`, then returns. No token is captured here.
-- **`kiona.rocketlane.com`** — runs the nav button + modal. All other hosts are ignored.
+- **`kiona.rocketlane.com`** — runs the chip + modal (and the two other modules below). All other hosts are ignored.
 
-### Younium auth (no token stored in the page)
+**Younium auth (no token stored in the page)**
 
 The Younium API uses Frontegg JWT auth. The script mints a fresh access token on demand by POSTing to `https://auth.<region>.younium.com/frontegg/.../token/refresh` with the **HttpOnly refresh cookie** already in the browser jar (sent automatically by `GM_xmlhttpRequest`). The minted token is cached in GM storage with its expiry and used as a `Bearer` against `api.younium.com`. On a 401 it refreshes once and retries. The Bearer token is **never** attached to a non-`api.younium.com` origin. This auth core is ported verbatim from the `rocketlane-chat-bridge` `YouniumBridge`.
 
-### Younium endpoints used
+**Younium endpoints used**
 
 | Call | Endpoint |
 |---|---|
@@ -63,23 +73,107 @@ The Younium API uses Frontegg JWT auth. The script mints a fresh access token on
 | Invoice history | `POST /api/order/invoicesForHistory` `{ orderNumber }` |
 | Audit event log | `GET /api/eventlog/order/id/{id}` |
 
-### Subscription detection
+**Subscription detection**
 
 An order is treated as the IWMAC subscription only when a product line matches the strict pattern `/\bIWMAC\s*(?:Abonnement|Subscription)\b/i` — i.e. literally `IWMAC Subscription` / `IWMAC Abonnement`. `IWMAC Modul: …` / `IWMAC Product: …` line items are one-time deliverables, not subscription evidence.
 
-## Security
+### Security
 
 - **No secrets in the page.** The Younium token lives only in Tampermonkey GM storage; the Frontegg refresh cookie stays in the browser jar.
 - The Bearer token is origin-scoped — `gmYouniumRequest` refuses to send it to any origin other than `https://api.younium.com`.
 - All Younium response data interpolated into the modal is **HTML-escaped by default** (`renderKV` only emits verbatim HTML for code-built `RAW()` values). Every link `href` passes through `toHttpUrl()` (strips non-`http(s)` schemes).
 
-## Troubleshooting
+### Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Button doesn't appear | Make sure you're on a `…/projects/<id>/…` page; the script injects after the nav renders. |
+| Chip doesn't appear | Make sure you're on a `…/projects/<id>/…` page; the script injects after the nav renders. |
 | Modal says "Younium session expired" | Visit `https://eu.younium.com` once while logged in, then retry. |
 | "Couldn't read a plant ID" | The project name must start with the plant number, e.g. `10112 - …`. |
 | "No Younium orders found" | No order in Younium carries that `plant_id`, or you're in the wrong region. |
 
-Diagnostics in DevTools: `window.__ynStatus.token()` (token/region status), `window.__ynStatus.search("<plantId>")` (raw order search), `window.closeYouniumModal()` (force-close the modal).
+---
+
+## 2. Gantt calendar + floating chat panel
+
+Formerly *Rocketlane Enhancer* (v2.0). Runs at `document-start` so the calendar never flashes before it is hidden.
+
+### Hide the Gantt calendar
+
+- On any project page (`/projects/<id>/…`) the right-side Gantt chart is hidden — timeline bars, month/week headers, the splitter divider and the toolbar row — and the task list on the left expands to fill the full width.
+- A **calendar toggle button** (calendar icon) is injected next to the **Present** button. Click it to show or hide the calendar; the preference persists in `localStorage` (`rl-calendar-hidden`, hidden by default).
+
+### Floating chat panel
+
+- Appears on the timeline page (`/projects/<id>/plan/timeline`) and loads the project's chat conversations in iframes so you can chat without leaving the timeline.
+
+| Capability | Detail |
+|---|---|
+| Conversation tabs | Private and General — instant switch (both iframes preloaded) |
+| Draggable | Grab the header bar to move the panel |
+| Resizable | Drag any edge or corner (8 resize handles) |
+| Collapsible | Arrow button collapses to the header bar only |
+| Closable | X button removes the panel until the next navigation |
+| Persistent | Size, collapsed state and active tab saved to `localStorage` (`rl-floating-chat-*`) |
+
+The two conversation IDs are hardcoded near the top of the module (`CONVERSATIONS`: `12287338` Private, `12287339` General). Find IDs in the URL when opening a chat (`/chat/<id>`) and update them there if your project uses different conversations. The panel injects CSS into each chat iframe to hide the app chrome and the conversation sidebar so only the message list and the composer remain.
+
+---
+
+## 3. Project Notes column
+
+Formerly *Rocketlane Project Notes Column* (v1.10.0). Adds a writable **Note** column after the project name on the Rocketlane Projects list (AG Grid). Notes persist to the Toolbox SQL API (`team_status.iw_project_notes`) with a local Tampermonkey-storage fallback; the header shows the live SQL save status and offers a `/health` connection test.
+
+### Features
+
+- Empty cells show an `Add note…` placeholder. Each cell has two hover buttons: `✎` **Edit** (inline editor in the cell) and `⤢` **Expand** (a roomy popover editor, resizable, Alt+Enter maximizes, Ctrl/Cmd+Enter saves, Esc cancels).
+- URLs render as blue links **while you type** (the editors are `contenteditable`, not textareas) and in the display cell. Click a link to open it in a new tab; hold **Alt** while clicking to place the caret inside the URL.
+- Inline editor: Enter saves, Shift+Enter inserts a newline. Popover: Enter inserts a newline, Ctrl/Cmd+Enter saves. Paste and drop are forced to plain text.
+- The header is resizable (drag handle; width saved to GM storage) and shows the SQL status:
+
+| Icon | Meaning |
+|---|---|
+| `…` | Pulsing gray — SQL request in flight |
+| `✓` | Green — last save/delete succeeded (auto-fades) |
+| `!` | Red — SQL call failed, note saved locally only. Click for details and retry. |
+| `⚡` | Run `GET <api>/health` and report the result |
+| `⚙` | Configure the SQL API URL (prompt; runs the health check afterwards) |
+
+### SQL API contract
+
+POST form-encoded `sql_command=<SQL>` to `http://toolbox.iwmac.local:8505/toolbox-sql` (configurable via `⚙`). The API only allows `SELECT/INSERT/UPDATE/DELETE` and returns JSON `{success, results: [{data|affected_rows, ...}], request_id, error}`.
+
+| Operation | SQL |
+|---|---|
+| Read all | `SELECT project_id, note FROM team_status.iw_project_notes` (on load and every 60 s) |
+| Upsert | `UPDATE … SET note='…', updated_at='…' WHERE project_id='…'`; if no row was affected, `INSERT INTO … (project_id, note, updated_at) VALUES (…)` |
+| Delete | `DELETE FROM team_status.iw_project_notes WHERE project_id='…'` |
+| Health | `GET /toolbox-sql/health` — `200` OK, `503` MariaDB down |
+
+Create the schema once on the MariaDB host (the Toolbox SQL API blocks DDL):
+
+```sql
+CREATE DATABASE IF NOT EXISTS team_status
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS team_status.iw_project_notes (
+  project_id  VARCHAR(64)   NOT NULL,
+  note        TEXT          NOT NULL,
+  updated_at  DATETIME(3)   NULL,
+  PRIMARY KEY (project_id),
+  KEY idx_updated_at (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+---
+
+## Metadata
+
+| Field | Value |
+|---|---|
+| `@match` | `https://kiona.rocketlane.com/*`, `https://eu.younium.com/*`, `https://us.younium.com/*`, `https://app.younium.com/*` |
+| `@connect` | `auth.eu.younium.com`, `auth.us.younium.com`, `api.younium.com`, `toolbox.iwmac.local` |
+| `@grant` | `GM_xmlhttpRequest`, `GM_setValue`, `GM_getValue` |
+| `@run-at` | `document-start` — the Gantt module needs it; the Younium chip and the Notes column wait for the DOM |
+
+The three modules share nothing but the page: each keeps its own storage keys, styles and observers, exactly as in the scripts they came from.
