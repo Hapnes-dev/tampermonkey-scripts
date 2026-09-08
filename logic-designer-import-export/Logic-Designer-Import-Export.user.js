@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.39.0
+// @version      1.39.1
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -960,7 +960,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.39.0';
+    var VERSION = '1.39.1';
     var UNDO_LIMIT = 20;   // Ctrl+Z steps kept for the script's own canvas operations
     var ADD_GAP = 120;     // px between the lowest existing block and an added tile
     var LOAD_FLAG = '__LDIO_LOADED';
@@ -2465,25 +2465,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       overlay.addEventListener('click', function () { finish(null); });
 
       var h = document.createElement('h3');
-      h.textContent = 'The canvas already has ' + existingCount + ' block' + (existingCount === 1 ? '' : 's');
+      h.textContent = 'Add on top of the existing sketch, or replace it?';
       panel.appendChild(h);
 
+      var p0 = document.createElement('p');
+      p0.className = 'ldio-choice-text';
+      p0.innerHTML = 'The canvas already holds <b>' + existingCount + ' block' + (existingCount === 1 ? '' : 's') + '</b>. ' +
+        'The file brings <b>' + sketch.blocks.length + ' block' + (sketch.blocks.length === 1 ? '' : 's') + ' / ' +
+        sketch.connections.length + ' wire' + (sketch.connections.length === 1 ? '' : 's') + '</b>. ' +
+        'Do you want to <b>add</b> them on top of the existing sketch, or <b>replace the entire sketch</b> with the file?';
+      panel.appendChild(p0);
       var p1 = document.createElement('p');
       p1.className = 'ldio-choice-text';
-      p1.innerHTML = '<b>Add to canvas</b> keeps everything that is here and places the file\u2019s ' +
-        sketch.blocks.length + ' block' + (sketch.blocks.length === 1 ? '' : 's') + ' / ' +
-        sketch.connections.length + ' wire' + (sketch.connections.length === 1 ? '' : 's') +
-        ' below it, renumbered so nothing collides. Ctrl+S still saves the open sketch.';
+      p1.innerHTML = '<b>Add on top</b> \u2014 keeps everything that is here; the new blocks are placed below it, ' +
+        'renumbered so nothing collides. Ctrl+S still saves the open sketch.';
       panel.appendChild(p1);
       var p2 = document.createElement('p');
       p2.className = 'ldio-choice-text';
-      p2.innerHTML = '<b>Replace canvas</b> clears it first' +
-        (unsaved ? ' \u2014 <b>the canvas has unsaved changes</b> that would be lost' : '') +
+      p2.innerHTML = '<b>Replace entire sketch</b> \u2014 clears the canvas first' +
+        (unsaved ? ' (<b>it has unsaved changes</b> that would be lost)' : '') +
         '. The next save is a Save-as.';
       panel.appendChild(p2);
       var p3 = document.createElement('p');
       p3.className = 'ldio-choice-text';
-      p3.textContent = 'Either way, Ctrl+Z on the canvas undoes it.';
+      p3.textContent = 'Ctrl+Z undoes either choice.';
       panel.appendChild(p3);
 
       var btnRow = document.createElement('div');
@@ -2497,11 +2502,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       cancelBtn.style.marginRight = '6px';
       cancelBtn.addEventListener('click', function () { finish(null); });
       var replaceBtn = document.createElement('button');
-      replaceBtn.type = 'button'; replaceBtn.className = 'ldio-btn'; replaceBtn.textContent = 'Replace canvas';
+      replaceBtn.type = 'button'; replaceBtn.className = 'ldio-btn'; replaceBtn.textContent = 'Replace entire sketch';
       replaceBtn.style.marginRight = '6px';
       replaceBtn.addEventListener('click', function () { finish('replace'); });
       var addBtn = document.createElement('button');
-      addBtn.type = 'button'; addBtn.className = 'ldio-btn ldio-btn-primary'; addBtn.textContent = 'Add to canvas';
+      addBtn.type = 'button'; addBtn.className = 'ldio-btn ldio-btn-primary'; addBtn.textContent = 'Add on top of existing';
       addBtn.addEventListener('click', function () { finish('add'); });
       btns.appendChild(cancelBtn); btns.appendChild(replaceBtn); btns.appendChild(addBtn);
       btnRow.appendChild(ver); btnRow.appendChild(btns);
