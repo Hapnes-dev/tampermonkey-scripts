@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.2.0
-// @description  Rocketlane improvements in one script: a Younium order + subscription status chip and modal on project pages (same verdict engine as the Project Progress Tracker), a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links).
+// @version      1.3.0
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -14,6 +14,8 @@
 // @connect      auth.eu.younium.com
 // @connect      auth.us.younium.com
 // @connect      api.younium.com
+// @connect      app.oneflow.com
+// @connect      kiona.api.rocketlane.com
 // @connect      toolbox.iwmac.local
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -24,7 +26,7 @@
 /*
  * Rocketlane improvements
  * ───────────────────────
- * One userscript, three independent modules on kiona.rocketlane.com:
+ * One userscript, four independent modules on kiona.rocketlane.com:
  *
  *  1. Younium status (sections 1–5 below; formerly "Rocketlane Younium Status").
  *     On younium.com pages it only captures the hublet region (eu/us) into GM
@@ -36,6 +38,14 @@
  *     engine and look as the Project Progress Tracker. No tokens are stored in
  *     the page; the Bearer JWT is minted on demand and held only in GM storage
  *     with an expiry. Read-only: the modal never writes to Younium.
+ *  1b. Oneflow signing status (section 5b), ported from the tracker's Oneflow
+ *     status checker: an "Oneflow: …" chip right of the Younium chip and an
+ *     "Oneflow status details" modal. The documents come from the links the
+ *     tracker stores on the Rocketlane project (Hubspot Deal Description /
+ *     Delivery status update message custom fields, read with the api-key the
+ *     Rocketlane SPA keeps in localStorage) or, failing that, from an Oneflow
+ *     search for the plant ID. Oneflow is called with the browser's own
+ *     session cookie through GM_xmlhttpRequest. Read-only.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -1532,11 +1542,13 @@
     return { r: 255, g: 255, b: 255, a: 1 }; // assume a light header
   }
   function applyButtonSurface() {
-    const btn = document.getElementById("ynNavBtn");
-    if (!btn) return;
-    const c = ynEffectiveBg(btn.parentElement || btn);
-    const lum = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255;
-    btn.classList.toggle("yn-on-dark", lum < 0.5);
+    for (const id of ["ynNavBtn", "ofNavBtn"]) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      const c = ynEffectiveBg(btn.parentElement || btn);
+      const lum = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255;
+      btn.classList.toggle("yn-on-dark", lum < 0.5);
+    }
   }
 
   function getNavRow() {
@@ -1607,8 +1619,14 @@
       const allFiles = getAllFilesCell(row);
       row.insertBefore(cell, allFiles ? allFiles.nextSibling : null);
     }
+    // The Oneflow chip sits immediately to the right of the Younium chip.
+    if (!document.getElementById("ofNavBtn")) {
+      const ynCell = document.getElementById("ynNavBtn")?.closest(".ynNavBtnCell");
+      if (ynCell && ynCell.parentElement) ynCell.parentElement.insertBefore(buildOneflowNavButton(), ynCell.nextSibling);
+    }
     applyButtonSurface();
     refreshButtonForCurrentProject();
+    refreshOneflowButtonForCurrentProject();
   }
 
   let ensureTimer = null;
@@ -1617,7 +1635,8 @@
     // nothing for the mutation observer to do (route changes are handled by the
     // history hooks below), so we never schedule work on the SPA's hot path.
     const btn = document.getElementById("ynNavBtn");
-    if (btn && btn.isConnected) return;
+    const ofBtn = document.getElementById("ofNavBtn");
+    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected) return;
     if (ensureTimer) return;
     ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 300);
   }
@@ -1638,6 +1657,726 @@
     }
     window.addEventListener("popstate", onRouteChange);
   })();
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5b. Oneflow signing status — ported from the Project Progress Tracker's
+  //     Oneflow status checker: an "Oneflow: …" chip right of the Younium chip
+  //     and an "Oneflow status details" modal that reuses the Younium dialog's
+  //     look. The tracker reads the document links saved on its project; here
+  //     they come from the Rocketlane project's own custom fields (the
+  //     "Links:" block the tracker writes into Hubspot Deal Description, the
+  //     Delivery status update message, or an Oneflow agreement-id field) and,
+  //     when nothing is stored, from an Oneflow search for the plant ID.
+  //     Read-only: nothing is written to Oneflow or Rocketlane.
+  // ════════════════════════════════════════════════════════════════════════
+
+  const ONEFLOW_HOST = "https://app.oneflow.com";
+  const ONEFLOW_API = ONEFLOW_HOST + "/api";
+  const ROCKETLANE_API_ORIGIN = "https://kiona.api.rocketlane.com";
+  const ROCKETLANE_API = ROCKETLANE_API_ORIGIN + "/api/v1";
+  const ONEFLOW_LOGO_URL = "https://www.google.com/s2/favicons?domain=oneflow.com&sz=32";
+  const ONEFLOW_STATE_LABEL = { 0: "Draft", 1: "Pending", 2: "Overdue", 3: "Declined", 4: "Signed", 5: "Cancelled" };
+
+  // ── Oneflow transport (ported from the chat bridge's OneflowBridge) ──
+  // Oneflow's session cookie is HttpOnly and travels with GM_xmlhttpRequest's
+  // cookie jar (anonymous: false). This module only reads, so the XSRF token
+  // Oneflow wants on writes is never needed. On 401/403 one warm-up GET to
+  // /positions/me is tried before giving up with an "open Oneflow" message.
+  function gmOneflowSendRaw(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "GET",
+        url,
+        headers: { accept: "application/json" },
+        timeout: 20000,
+        anonymous: false,
+        onload: (res) => {
+          const text = res.responseText || "";
+          let json = null;
+          if (text) { try { json = JSON.parse(text); } catch (_) { /* non-JSON */ } }
+          resolve({ status: res.status, json, text });
+        },
+        onerror: () => reject(new Error("Network error reaching Oneflow API")),
+        ontimeout: () => reject(new Error("Oneflow API timed out")),
+      });
+    });
+  }
+  let ofRenewInFlight = null;
+  let ofLastRenewAttempt = 0;
+  function oneflowRenewSession() {
+    if (ofRenewInFlight) return ofRenewInFlight;
+    const now = Date.now();
+    if (now - ofLastRenewAttempt < 5000) return Promise.resolve(false);
+    ofLastRenewAttempt = now;
+    ofRenewInFlight = (async () => {
+      try {
+        const res = await gmOneflowSendRaw(ONEFLOW_API + "/positions/me");
+        return res.status >= 200 && res.status < 300;
+      } catch (_) {
+        return false;
+      } finally {
+        setTimeout(() => { ofRenewInFlight = null; }, 0);
+      }
+    })();
+    return ofRenewInFlight;
+  }
+  async function gmOneflowRequest(path) {
+    const url = /^https?:/i.test(path) ? path : (ONEFLOW_API + path);
+    // SECURITY: the Oneflow session cookie only ever goes to the Oneflow origin.
+    let origin = "";
+    try { origin = new URL(url).origin; } catch (_) {}
+    if (origin !== ONEFLOW_HOST) throw new Error("Refusing to send Oneflow credentials to non-Oneflow origin: " + (origin || url));
+    let res = await gmOneflowSendRaw(url);
+    if (res.status === 401 || res.status === 403) {
+      if (await oneflowRenewSession()) res = await gmOneflowSendRaw(url);
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("HTTP " + res.status + ": Oneflow session expired or missing. Open https://app.oneflow.com once while logged in, then try again.");
+    }
+    if (res.status < 200 || res.status >= 300) throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
+    return res.json;
+  }
+
+  // ── Rocketlane API (read-only) — the api-key the Rocketlane SPA keeps in this
+  //    page's localStorage, read the same way the chat bridge captures it. ──
+  function rlReadApiKey() {
+    try {
+      const raw = window.localStorage.getItem("__api_key");
+      if (!raw) return "";
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return "";
+      return parsed.find((v) => typeof v === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v)) || "";
+    } catch (_) { return ""; }
+  }
+  function gmRocketlaneGet(path, query) {
+    return new Promise((resolve, reject) => {
+      const apiKey = rlReadApiKey();
+      if (!apiKey) { reject(new Error("No Rocketlane api-key in this page yet — reload the page once you are logged in.")); return; }
+      let url;
+      try {
+        url = new URL(ROCKETLANE_API + path);
+        for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, String(v));
+      } catch (_) { reject(new Error("Bad Rocketlane API path: " + path)); return; }
+      // SECURITY: the api-key only ever goes to the Rocketlane API origin.
+      if (url.origin !== ROCKETLANE_API_ORIGIN) { reject(new Error("Refusing to send the Rocketlane api-key to " + url.origin)); return; }
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: url.toString(),
+        headers: { "api-key": apiKey, accept: "application/json" },
+        timeout: 20000,
+        onload: (res) => {
+          if (res.status < 200 || res.status >= 300) { reject(new Error("HTTP " + res.status + ": " + (res.responseText || "").slice(0, 300))); return; }
+          if (!res.responseText) { resolve(null); return; }
+          try { resolve(JSON.parse(res.responseText)); } catch (_) { resolve(null); }
+        },
+        onerror: () => reject(new Error("Network error reaching Rocketlane API")),
+        ontimeout: () => reject(new Error("Rocketlane API timed out")),
+      });
+    });
+  }
+
+  // ── Document discovery ──
+  function ofExtractAgreementId(url) {
+    const s = String(url ?? "").trim();
+    if (!s) return "";
+    const m = s.match(/\/(?:documents|agreements)\/(\d+)/i);
+    if (m) return m[1];
+    if (/^\d+$/.test(s)) return s;
+    return "";
+  }
+  function ofDocumentUrl(id) {
+    const s = String(id ?? "").trim();
+    return s ? ONEFLOW_HOST + "/documents/" + encodeURIComponent(s) : "";
+  }
+  function ofIsOneflowUrl(href) {
+    try { return /(?:^|\.)oneflow\.com$/i.test(new URL(href).hostname); } catch (_) { return false; }
+  }
+  // "Subscription" wins when both could match — "Subscription order" is more
+  // likely a subscription agreement than a sales order (tracker rule).
+  function ofKindByLabel(label) {
+    const l = String(label || "").toLowerCase();
+    if (/\babonnement|\bsubscription/.test(l)) return "subscription";
+    if (/\b(?:order|offer|tilbud|ordre)\b/.test(l)) return "order";
+    return "unknown";
+  }
+  // Subscriptions in this tenant carry "Abonnementsavtale" in the document name.
+  function ofKindByName(name) {
+    const n = String(name ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+    return /\babonnementsavtale\b|\bsubscription agreement\b|\bsubscription\b/i.test(n) ? "subscription" : "order";
+  }
+  // Slot the Oneflow links found in one rich-text field. Walks every <li>/<p>/
+  // <div>/<tr> holding an <a href> (the tracker writes "Oneflow (Order): <a>"
+  // lines), classifies by URL shape, then by the surrounding label for order vs
+  // subscription. Bare URLs in plain text count too, as unknown-kind links;
+  // unknown links fill the order slot first, then the subscription slot.
+  function ofParseLinksFromHtml(html) {
+    const out = { order: "", subscription: "", ambiguous: [] };
+    const text = String(html || "");
+    if (!text) return out;
+    const put = (href, kind, labelText) => {
+      if (!ofIsOneflowUrl(href) || !ofExtractAgreementId(href)) return;
+      if (out.order === href || out.subscription === href) return;
+      if (kind === "subscription" && !out.subscription) out.subscription = href;
+      else if (kind === "order" && !out.order) out.order = href;
+      else if (kind === "unknown") {
+        if (!out.order) { out.order = href; out.ambiguous.push({ href, labelText }); }
+        else if (!out.subscription) { out.subscription = href; out.ambiguous.push({ href, labelText }); }
+      }
+    };
+    try {
+      const doc = new DOMParser().parseFromString(text, "text/html");
+      for (const c of doc.body.querySelectorAll("li, p, div, tr")) {
+        const a = c.querySelector("a[href]");
+        if (!a) continue;
+        const href = (a.getAttribute("href") || "").trim();
+        if (!/^https?:/i.test(href)) continue;
+        const labelText = (c.textContent || "").replace(/\s+/g, " ").trim();
+        put(href, ofKindByLabel(labelText), labelText);
+      }
+    } catch (_) {}
+    const re = /https?:\/\/[^\s<>"']+/gi;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const href = m[0].replace(/[).,;]+$/, "");
+      const ctx = text.slice(Math.max(0, m.index - 40), m.index);
+      put(href, ofKindByLabel(ctx), ctx.trim());
+    }
+    return out;
+  }
+  // Rocketlane's /projects payload stores custom-field values under `fieldValue`.
+  function rlReadField(fields, prefix) {
+    const want = String(prefix).toLowerCase().replace(/\s+/g, "");
+    const f = (fields || []).find((x) => String(x?.fieldName ?? "").toLowerCase().replace(/\s+/g, "").startsWith(want));
+    if (!f) return "";
+    const v = (f.fieldValue !== undefined && f.fieldValue !== null) ? f.fieldValue : f.value;
+    if (v == null) return "";
+    if (Array.isArray(v)) {
+      return v.map((x) => (typeof x === "object" ? x?.label || x?.value : x))
+        .filter((x) => x != null && x !== "").map(String).join(" ");
+    }
+    if (typeof v === "object") return v.value != null ? String(v.value).trim() : "";
+    return String(v).trim();
+  }
+  // Oneflow links stored on the Rocketlane project: Hubspot Deal Description
+  // first (the tracker writes "Oneflow (Order): …" / "Oneflow (Subscription): …"
+  // lines there), then the Delivery status update message, then a bare Oneflow
+  // agreement-id field. An empty slot falls through to the next source.
+  async function ofLinksFromRocketlaneProject(rlProjectId) {
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId), { includeAllFields: true });
+    const project = json?.data ?? json;
+    const fields = Array.isArray(project?.fields) ? project.fields : [];
+    const links = { order: "", subscription: "", ambiguous: [], sources: [] };
+    const merge = (parsed, sourceName) => {
+      let used = false;
+      if (!links.order && parsed.order) { links.order = parsed.order; used = true; }
+      if (!links.subscription && parsed.subscription) { links.subscription = parsed.subscription; used = true; }
+      if (used) links.sources.push(sourceName);
+      links.ambiguous.push(...parsed.ambiguous);
+    };
+    merge(ofParseLinksFromHtml(rlReadField(fields, "hubspotdealdescription") || rlReadField(fields, "dealdescription")), "Hubspot Deal Description");
+    merge(ofParseLinksFromHtml(rlReadField(fields, "hubspotdeliverystatusupdatemessage") || rlReadField(fields, "deliverystatusupdatemessage") || rlReadField(fields, "hubspotdeliverystatus")), "Delivery status update message");
+    const fk = ofExtractAgreementId(rlReadField(fields, "oneflowagreementid") || rlReadField(fields, "oneflowid"));
+    if (fk && !links.order && !links.subscription) { links.order = ofDocumentUrl(fk); links.sources.push("Oneflow agreement id field"); }
+    return links;
+  }
+  function ofPlantIdFromDataFields(a) {
+    const fields = Array.isArray(a?.data_fields) ? a.data_fields : (Array.isArray(a?.dataFields) ? a.dataFields : []);
+    const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    for (const f of fields) {
+      const value = String(f?.value ?? "").trim();
+      if (!value) continue;
+      // Exact "plantid" only — not "Plant ID-Invoice Account CM".
+      if (norm(f?.name) === "plantid" || norm(f?.custom_id ?? f?.customId) === "plantid") return value.replace(/\D+/g, "") || value;
+    }
+    return "";
+  }
+  // No link stored on the project: search Oneflow for the plant ID, hydrate the
+  // first candidates (search rows may omit data_fields), keep the ones whose
+  // Plant ID custom field equals the plant — or, without custom fields, whose
+  // name starts with it — and take the best document per kind: Signed first,
+  // then Pending/Overdue, then Draft, newest first within a tier.
+  async function ofSearchByPlantId(plantId) {
+    const pid = String(plantId || "").trim();
+    const out = { order: null, subscription: null, candidates: [] };
+    if (!pid) return out;
+    const json = await gmOneflowRequest("/agreements/?q=" + encodeURIComponent(pid) + "&limit=20");
+    const list = Array.isArray(json?.collection) ? json.collection : [];
+    const hydrated = await Promise.all(list.slice(0, 10).map(async (a) => {
+      if (!a?.id) return a;
+      try { return (await gmOneflowRequest("/agreements/" + encodeURIComponent(a.id))) || a; } catch (_) { return a; }
+    }));
+    const startsWithPid = new RegExp("^\\s*" + pid + "\\b");
+    const matches = hydrated.filter((a) => {
+      const df = ofPlantIdFromDataFields(a);
+      return df ? df === pid : startsWithPid.test(String(a?.name || ""));
+    });
+    out.candidates = matches;
+    const rank = (a) => (a?.state === 4 ? 3 : (a?.state === 1 || a?.state === 2) ? 2 : (a?.state === 0 ? 1 : 0));
+    const ts = (a) => Date.parse(a?.updated_time || a?.created_time || 0) || 0;
+    const best = (kind) => matches.filter((a) => ofKindByName(a?.name) === kind)
+      .sort((a, b) => (rank(b) - rank(a)) || (ts(b) - ts(a)))[0] || null;
+    out.order = best("order");
+    out.subscription = best("subscription");
+    return out;
+  }
+
+  // ── Verdict ──
+  // Map an Oneflow lifecycle state to a verdict colour + labels (tracker rules).
+  function ofStateVerdict(stateNum) {
+    switch (stateNum) {
+      case 4:  return { color: "green",  short: "Signed",    summary: "Signed — all parties have signed the document in Oneflow." };
+      case 1:  return { color: "yellow", short: "Pending",   summary: "Pending — the document was sent for signing but not all parties have signed yet." };
+      case 2:  return { color: "yellow", short: "Overdue",   summary: "Overdue — sent for signing, but the signing period has lapsed." };
+      case 0:  return { color: "red",    short: "Draft",     summary: "Draft — the document has not been sent for signing yet." };
+      case 3:  return { color: "red",    short: "Declined",  summary: "Declined — a party declined to sign the document." };
+      case 5:  return { color: "red",    short: "Cancelled", summary: "Cancelled — the document was cancelled." };
+      default: return { color: "gray",   short: (ONEFLOW_STATE_LABEL[stateNum] || ("state " + stateNum)), summary: "Unknown Oneflow document state." };
+    }
+  }
+  async function ofFetchAgreementByUrl(url) {
+    const id = ofExtractAgreementId(url);
+    if (!id) return { id: "", agreement: null, error: String(url || "").trim() ? "Couldn't read an Oneflow document id from the stored link." : "" };
+    try {
+      const agreement = await gmOneflowRequest("/agreements/" + encodeURIComponent(id));
+      return { id, agreement, error: "" };
+    } catch (e) {
+      return { id, agreement: null, error: "Couldn't fetch Oneflow document " + id + ": " + (e?.message ?? e) };
+    }
+  }
+  /**
+   * Compute the Oneflow signing verdict for the open project. Same shape and
+   * rules as the tracker's computeOneflowStatus:
+   *   { color, label, signed, problems[], lastCheckedAt, order:{id,agreement,error},
+   *     sub:{id,agreement,error}, documentUrl, subDocumentUrl, source, notConnected }
+   * The verdict follows the ORDER document; without one it falls back to the
+   * subscription agreement.
+   */
+  async function computeOneflowStatusForProject(rlProjectId, plantId) {
+    const dbg = (...a) => { try { if (window.__matchDebug !== false) console.log("[Oneflow status]", ...a); } catch (_) {} };
+    const empty = () => ({ id: "", agreement: null, error: "" });
+    const out = {
+      color: "gray", label: "Oneflow: Missing", signed: null, problems: [], lastCheckedAt: Date.now(),
+      order: empty(), sub: empty(), documentUrl: "", subDocumentUrl: "", source: "", notConnected: false,
+    };
+    dbg("compute for", { rlProjectId, plantId });
+    let links = null;
+    try {
+      links = await ofLinksFromRocketlaneProject(rlProjectId);
+      if (links.order || links.subscription) out.source = "Links stored on the Rocketlane project (" + links.sources.join(", ") + ")";
+      for (const amb of links.ambiguous) dbg("stored Oneflow link without an order/subscription label — slotted by position", amb);
+    } catch (e) {
+      out.problems.push("Couldn't read the Rocketlane project's link fields: " + (e?.message ?? e));
+    }
+    if (links && (links.order || links.subscription)) {
+      const [order, sub] = await Promise.all([
+        links.order ? ofFetchAgreementByUrl(links.order) : Promise.resolve(empty()),
+        links.subscription ? ofFetchAgreementByUrl(links.subscription) : Promise.resolve(empty()),
+      ]);
+      out.order = order;
+      out.sub = sub;
+    } else if (plantId) {
+      try {
+        const found = await ofSearchByPlantId(plantId);
+        if (found.order) out.order = { id: String(found.order.id), agreement: found.order, error: "" };
+        if (found.subscription) out.sub = { id: String(found.subscription.id), agreement: found.subscription, error: "" };
+        if (found.order || found.subscription) out.source = "Found by searching Oneflow for plant " + plantId + " — no link is stored on the Rocketlane project";
+      } catch (e) {
+        out.problems.push("Oneflow search for plant " + plantId + " failed: " + (e?.message ?? e));
+      }
+    }
+    if (out.order.error) out.problems.push(out.order.error);
+    if (out.sub.error) out.problems.push(out.sub.error);
+    out.notConnected = out.problems.some((p) => /Oneflow session expired|session missing|open https:\/\/app\.oneflow\.com/i.test(String(p)));
+
+    const primary = out.order.agreement || out.sub.agreement || null;
+    if (primary) {
+      const v = ofStateVerdict(primary.state);
+      out.color = v.color;
+      out.signed = primary.state === 4;
+      const glyph = v.color === "green" ? "✓ " : (v.color === "yellow" ? "⏳ " : (v.color === "red" ? "✗ " : ""));
+      out.label = "Oneflow: " + glyph + v.short;
+      if (v.color !== "green") out.problems.unshift(v.summary);
+    } else if (out.notConnected) {
+      out.label = "Oneflow: Not connected";
+    } else if (out.order.id || out.sub.id) {
+      out.label = "Oneflow: Error";
+    } else if (!out.problems.length) {
+      out.problems.push("No Oneflow document found — nothing is stored on the Rocketlane project" +
+        (plantId ? " and no Oneflow document carries plant ID " + plantId : "") + ".");
+    }
+    out.documentUrl = out.order.id ? ofDocumentUrl(out.order.id) : "";
+    out.subDocumentUrl = out.sub.id ? ofDocumentUrl(out.sub.id) : "";
+    dbg("verdict", { color: out.color, label: out.label, source: out.source });
+    return out;
+  }
+
+  // ── Chip state, session cache and modal (mirrors the Younium module) ──
+  const ofVerdictCache = new Map(); // Rocketlane project id -> verdict
+  const ofInflight = new Map();
+  let ofRenderGen = 0;
+  let ofSessionUnavailable = false;
+  let currentOneflowStatusProject = null;
+  let currentOneflowStatusVerdict = null;
+
+  function getOneflowContext() {
+    const m = location.pathname.match(/^\/projects\/(\d+)/);
+    const name = readProjectName();
+    return { rlProjectId: m ? m[1] : "", name, plantId: extractPlantIdFromProjectName(name) };
+  }
+  function setOneflowButtonState(color, label, loading, problems) {
+    const btn = document.getElementById("ofNavBtn");
+    if (!btn) return;
+    btn.classList.remove("yn-green", "yn-yellow", "yn-red", "yn-gray");
+    btn.classList.add("yn-" + (color || "gray"));
+    btn.classList.toggle("yn-loading", !!loading);
+    const el = btn.querySelector(".ynNavBtnLabel");
+    if (el) el.textContent = label || "Oneflow";
+    if (loading) { btn.title = "Fetching latest Oneflow signing status…"; return; }
+    const lines = [label && label !== "Oneflow" ? label : "Oneflow signing status"];
+    if (Array.isArray(problems) && problems.length) {
+      lines.push("");
+      for (const p of problems) lines.push("• " + p);
+    }
+    lines.push("", "Click for details.");
+    btn.title = lines.join("\n");
+  }
+  // A "not connected" verdict is never cached, so logging in to Oneflow and
+  // revisiting the project is enough to get a real answer.
+  function computeOneflowForProject(rlProjectId, plantId) {
+    if (ofVerdictCache.has(rlProjectId)) return Promise.resolve(ofVerdictCache.get(rlProjectId));
+    if (ofInflight.has(rlProjectId)) return ofInflight.get(rlProjectId);
+    const pr = computeOneflowStatusForProject(rlProjectId, plantId)
+      .then((v) => { if (!v.notConnected) ofVerdictCache.set(rlProjectId, v); ofInflight.delete(rlProjectId); return v; })
+      .catch((e) => { ofInflight.delete(rlProjectId); throw e; });
+    ofInflight.set(rlProjectId, pr);
+    return pr;
+  }
+  function applyOneflowVerdictToButton(rlProjectId, verdict) {
+    const btn = document.getElementById("ofNavBtn");
+    if (!btn || btn.dataset.rlProjectId !== rlProjectId) return;
+    setOneflowButtonState(verdict?.color || "gray", verdict?.label || "Oneflow", false, verdict?.problems);
+  }
+  function refreshOneflowButtonForCurrentProject() {
+    const btn = document.getElementById("ofNavBtn");
+    if (!btn) return;
+    const { rlProjectId, plantId } = getOneflowContext();
+    if (btn.dataset.rlProjectId === (rlProjectId || "")) return; // already reflecting this project
+    btn.dataset.rlProjectId = rlProjectId || "";
+
+    if (!rlProjectId) { setOneflowButtonState("gray", "Oneflow"); btn.title = "No Rocketlane project id in the URL"; return; }
+    if (ofVerdictCache.has(rlProjectId)) { applyOneflowVerdictToButton(rlProjectId, ofVerdictCache.get(rlProjectId)); return; }
+    if (ofSessionUnavailable) { setOneflowButtonState("gray", "Oneflow"); btn.title = "Oneflow not connected — open app.oneflow.com once while logged in, then reload"; return; }
+
+    setOneflowButtonState("gray", "Oneflow", true);
+    computeOneflowForProject(rlProjectId, plantId).then((v) => {
+      if (v.notConnected) ofSessionUnavailable = true;
+      applyOneflowVerdictToButton(rlProjectId, v);
+    }).catch((e) => {
+      const b = document.getElementById("ofNavBtn");
+      if (b && b.dataset.rlProjectId === rlProjectId) {
+        setOneflowButtonState("gray", "Oneflow");
+        b.title = "Oneflow status unavailable — " + (e?.message || e) + " (click to retry)";
+      }
+    });
+  }
+  function buildOneflowNavButton() {
+    const wrap = document.createElement("div");
+    wrap.className = "ynNavBtnCell";
+    const btn = document.createElement("button");
+    btn.id = "ofNavBtn";
+    btn.type = "button";
+    btn.className = "ynNavBtn yn-gray";
+    btn.title = "Oneflow signing status — click for details";
+    const logo = document.createElement("img");
+    logo.className = "ynNavBtnLogo";
+    logo.src = ONEFLOW_LOGO_URL;
+    logo.alt = "Oneflow";
+    logo.decoding = "async";
+    logo.addEventListener("error", () => { logo.style.display = "none"; });
+    const label = document.createElement("span");
+    label.className = "ynNavBtnLabel";
+    label.textContent = "Oneflow";
+    const spinner = document.createElement("span");
+    spinner.className = "ynNavBtnSpinner";
+    spinner.setAttribute("aria-hidden", "true");
+    btn.appendChild(logo);
+    btn.appendChild(label);
+    btn.appendChild(spinner);
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (els.dlgOneflowStatus?.open) forceCloseOneflowDialog();
+      else openOneflowStatusModal();
+    });
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  // The dialog reuses the Younium dialog's classes so both modals look identical;
+  // only the ids differ (same trick the tracker uses).
+  function ensureOneflowDialog() {
+    if (document.getElementById("dlgOneflowStatus")) return;
+    injectStyles();
+    const dlg = document.createElement("dialog");
+    dlg.id = "dlgOneflowStatus";
+    dlg.className = "dlgYouniumStatus";
+    dlg.setAttribute("aria-labelledby", "dlgOneflowStatusTitle");
+    dlg.innerHTML =
+      '<div class="dlgYouniumStatusHd">' +
+        '<strong id="dlgOneflowStatusTitle">Oneflow status details</strong>' +
+        '<span class="dlgYouniumStatusXBtn" id="closeOneflowHintTop" role="button" tabindex="0" aria-label="Close" title="Close">✕</span>' +
+      '</div>' +
+      '<div class="dlgYouniumStatusBody" id="dlgOneflowStatusBody"></div>' +
+      '<div class="dlgYouniumStatusFooter" id="dlgOneflowStatusFooter">' +
+        '<button class="ynBtn" type="button" id="btnOneflowStatusRefresh">Refresh status</button>' +
+        '<button class="ynBtn" type="button" id="btnOneflowStatusCopy">Copy summary</button>' +
+        '<a class="ynBtn" id="btnOneflowStatusOpenDoc" target="_blank" rel="noopener noreferrer" style="display:none;">Open Oneflow document</a>' +
+        '<a class="ynBtn" id="btnOneflowStatusOpenSub" target="_blank" rel="noopener noreferrer" style="display:none;">Open subscription agreement</a>' +
+      '</div>';
+    document.body.appendChild(dlg);
+
+    els.dlgOneflowStatus = dlg;
+    els.dlgOneflowStatusBody = dlg.querySelector("#dlgOneflowStatusBody");
+    els.dlgOneflowStatusTitle = dlg.querySelector("#dlgOneflowStatusTitle");
+    els.btnOneflowStatusRefresh = dlg.querySelector("#btnOneflowStatusRefresh");
+    els.btnOneflowStatusCopy = dlg.querySelector("#btnOneflowStatusCopy");
+    els.btnOneflowStatusOpenDoc = dlg.querySelector("#btnOneflowStatusOpenDoc");
+    els.btnOneflowStatusOpenSub = dlg.querySelector("#btnOneflowStatusOpenSub");
+
+    // ── Close handlers ──
+    dlg.querySelector("#closeOneflowHintTop").addEventListener("click", () => forceCloseOneflowDialog());
+    document.addEventListener("click", (ev) => {
+      const t = ev.target;
+      if (t && t.closest && t.closest("#closeOneflowHintTop") && dlg.open) forceCloseOneflowDialog();
+    }, true);
+    dlg.addEventListener("click", (ev) => { if (ev.target === dlg && dlg.open) forceCloseOneflowDialog(); });
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && dlg.open) forceCloseOneflowDialog(); }, true);
+
+    // ── Refresh ──
+    els.btnOneflowStatusRefresh.addEventListener("click", async () => {
+      const p = currentOneflowStatusProject;
+      if (!p || !p.rlProjectId) return;
+      ofVerdictCache.delete(p.rlProjectId);
+      ofInflight.delete(p.rlProjectId);
+      ofSessionUnavailable = false;
+      const gen = ++ofRenderGen;
+      setOneflowButtonState("gray", "Oneflow", true);
+      els.dlgOneflowStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Refreshing…</div>';
+      try {
+        const fresh = await computeOneflowForProject(p.rlProjectId, p.plantId);
+        if (gen !== ofRenderGen || !els.dlgOneflowStatus.open) return;
+        renderOneflowStatusModalBody(fresh, gen);
+      } catch (e) {
+        if (gen !== ofRenderGen) return;
+        els.dlgOneflowStatusBody.innerHTML = '<div class="youniumWarnings">Refresh failed: ' + escHtml(e?.message ?? e) + '</div>';
+        setOneflowButtonState("gray", "Oneflow");
+      }
+    });
+
+    // ── Copy summary (plain text for Slack / e-mail) ──
+    els.btnOneflowStatusCopy.addEventListener("click", async () => {
+      const p = currentOneflowStatusProject, v = currentOneflowStatusVerdict;
+      if (!p || !v) return;
+      const oa = v.order?.agreement, sa = v.sub?.agreement;
+      const line = (lbl, a) => a
+        ? (lbl + ": " + ofStateVerdict(a.state).short + " — " + (a.name || "") +
+           (a.sign_time ? " (signed " + new Date(a.sign_time).toLocaleDateString(UI_LOCALE) + ")" : ""))
+        : (lbl + ": (no document)");
+      const lines = [
+        "Oneflow status — " + p.name,
+        "Verdict: " + (v.label || "?"),
+        line("Order / offer", oa),
+        line("Subscription", sa),
+        "Oneflow URL: " + (v.documentUrl || v.subDocumentUrl || "(none)"),
+        v.source ? "Source: " + v.source : "",
+        (v.problems && v.problems.length ? "Issues:\n  - " + v.problems.join("\n  - ") : ""),
+      ].filter(Boolean);
+      try {
+        await navigator.clipboard.writeText(lines.join("\n"));
+        els.btnOneflowStatusCopy.textContent = "Copied ✓";
+        setTimeout(() => { els.btnOneflowStatusCopy.textContent = "Copy summary"; }, 1500);
+      } catch (_) {}
+    });
+
+    try {
+      window.closeOneflowModal = function closeOneflowModal() {
+        const d = document.getElementById("dlgOneflowStatus");
+        if (!d) return "Oneflow modal not found";
+        if (!d.open) return "Already closed";
+        d.close(); return "Closed";
+      };
+    } catch (_) {}
+  }
+  function forceCloseOneflowDialog() {
+    const dlg = els.dlgOneflowStatus || document.getElementById("dlgOneflowStatus");
+    if (!dlg) return;
+    try { dlg.close(); } catch (_) {}
+    try { dlg.removeAttribute("open"); } catch (_) {}
+  }
+
+  // Port of the tracker's renderOneflowStatusModalBody. Escape-by-default:
+  // every value is HTML-escaped unless wrapped in the local RAW() marker.
+  function renderOneflowStatusModalBody(verdict, gen) {
+    const p = currentOneflowStatusProject;
+    if (!p) return;
+    currentOneflowStatusVerdict = verdict;
+    if (p.rlProjectId) {
+      if (!verdict.notConnected) ofVerdictCache.set(p.rlProjectId, verdict);
+      applyOneflowVerdictToButton(p.rlProjectId, verdict);
+    }
+    if (typeof gen === "number") els.dlgOneflowStatusBody.dataset.gen = String(gen);
+
+    const RAW = (h) => ({ __html: String(h) });
+    const fmtDate = (iso) => iso ? new Date(iso).toLocaleString(UI_LOCALE) : "—";
+    const fmtDateOnly = (iso) => iso ? new Date(iso).toLocaleDateString(UI_LOCALE) : "—";
+    const renderKV = (rows) =>
+      '<dl class="youniumKV">' +
+      rows
+        .filter(([, v]) => v !== "" && v !== null && v !== undefined)
+        .map(([k, v]) => {
+          const cell = (v && typeof v === "object" && "__html" in v) ? v.__html : escHtml(String(v));
+          return '<dt>' + escHtml(k) + '</dt><dd>' + cell + '</dd>';
+        })
+        .join("") +
+      '</dl>';
+
+    // Party / participant list — ✓ green for signed (participant.state === 1),
+    // • amber for not yet signed. A Signed (state 4) document is complete, so
+    // every participant renders ✓ — a non-signing viewer keeps state 0 even on
+    // a fully signed document.
+    const renderParties = (agreement) => {
+      const parties = Array.isArray(agreement?.parties) ? agreement.parties : [];
+      if (!parties.length) return '<em style="color: var(--muted);">no parties</em>';
+      const docSigned = agreement?.state === 4;
+      return parties.map((pt) => {
+        const nm = escHtml(String(pt?.name || "Party"));
+        const parts = Array.isArray(pt?.participants) ? pt.participants : [];
+        const who = parts.length
+          ? parts.map((x) => {
+              const signed = docSigned || x?.state === 1;
+              const mark = signed
+                ? '<span style="color: var(--good);">✓</span>'
+                : '<span style="color: var(--warn);">•</span>';
+              return mark + ' ' + escHtml(String(x?.email || x?.name || x?.fullname || "—"));
+            }).join('<br>')
+          : '<span style="color: var(--muted);">—</span>';
+        return '<div style="margin-bottom: 4px;"><strong>' + nm + '</strong><br>' + who + '</div>';
+      }).join("");
+    };
+
+    const agreementKV = (res) => {
+      const a = res?.agreement;
+      if (!a) {
+        return renderKV([[res?.id ? "Error" : "Note",
+          res?.id ? (res.error || "Couldn't load this document.") : "No document found for this slot."]]);
+      }
+      const v = ofStateVerdict(a.state);
+      const statusColor = v.color === "green" ? "var(--good)"
+        : (v.color === "red" ? "var(--bad)" : (v.color === "yellow" ? "var(--warn)" : "var(--muted)"));
+      const link = a.id ? ofDocumentUrl(a.id) : "";
+      return renderKV([
+        ["Oneflow link",     RAW(link
+          ? '<a href="' + escHtml(toHttpUrl(link) || "#") + '" target="_blank" rel="noopener noreferrer">' + escHtml(link) + '</a>'
+          : '<em style="color: var(--muted);">none</em>')],
+        ["Document ID",      a.id || "—"],
+        ["Name",             a.name || "—"],
+        ["Kind",             ofKindByName(a.name) === "subscription" ? "Subscription agreement" : "Order / offer"],
+        ["Signed?",          RAW('<strong style="color: ' + statusColor + ';">' +
+                             (v.color === "green" ? "✓ " : (v.color === "red" ? "✗ " : "")) + escHtml(v.short) + '</strong>')],
+        ["Sent for signing", fmtDate(a.publish_time)],
+        ["Signed date",      a.sign_time ? fmtDate(a.sign_time) : null],
+        ["Declined date",    a.decline_time ? fmtDate(a.decline_time) : null],
+        ["Cancelled date",   a.cancel_time ? fmtDate(a.cancel_time) : null],
+        ["Expires",          a.expire_date ? fmtDateOnly(a.expire_date) : null],
+        ["Created",          fmtDate(a.created_time)],
+        ["Updated",          fmtDate(a.updated_time)],
+        ["Parties",          RAW(renderParties(a))],
+      ]);
+    };
+    const sectionFor = (title, res) => {
+      const a = res?.agreement;
+      let badge;
+      if (a) {
+        const v = ofStateVerdict(a.state);
+        const cls = v.color === "green" ? "youniumSubBadge-green"
+          : (v.color === "red" ? "youniumSubBadge-red" : (v.color === "yellow" ? "youniumSubBadge-yellow" : "youniumSubBadge-gray"));
+        badge = '<span class="youniumSubBadge ' + cls + '">' + escHtml(v.short) + '</span>';
+      } else {
+        badge = '<span class="youniumSubBadge youniumSubBadge-gray">' + (res?.id ? "error" : "none") + '</span>';
+      }
+      return '<div class="youniumSection">' +
+        '<div class="youniumSectionTitle">' + escHtml(title) + ' ' + badge + '</div>' +
+        agreementKV(res) +
+        '</div>';
+    };
+
+    let summaryText;
+    if (verdict.color === "green") summaryText = "Signed — the Oneflow document is fully signed by all parties.";
+    else if (verdict.color === "yellow") summaryText = (verdict.problems && verdict.problems[0]) || "Pending — waiting for signatures in Oneflow.";
+    else if (verdict.color === "red") summaryText = (verdict.problems && verdict.problems[0]) || "Not signed — the Oneflow document isn't signed.";
+    else summaryText = (verdict.problems && verdict.problems[0]) || "No Oneflow document found for this project.";
+
+    const warnings = verdict.problems || [];
+    els.dlgOneflowStatusBody.innerHTML =
+      '<div class="youniumSummary youniumStatus-' + verdict.color + '">' +
+        escHtml(summaryText) +
+        (verdict.source ? '<small>' + escHtml(verdict.source) + '</small>' : "") +
+      '</div>' +
+      (warnings.length
+        ? '<div class="youniumWarnings"><strong>Warnings</strong><ul>' +
+          warnings.map((w) => '<li>' + escHtml(w) + '</li>').join("") + '</ul></div>'
+        : "") +
+      sectionFor("Document / order", verdict.order) +
+      sectionFor("Subscription agreement", verdict.sub);
+
+    if (verdict.documentUrl) {
+      els.btnOneflowStatusOpenDoc.href = toHttpUrl(verdict.documentUrl) || "#";
+      els.btnOneflowStatusOpenDoc.style.display = "";
+    } else {
+      els.btnOneflowStatusOpenDoc.style.display = "none";
+    }
+    if (verdict.subDocumentUrl) {
+      els.btnOneflowStatusOpenSub.href = toHttpUrl(verdict.subDocumentUrl) || "#";
+      els.btnOneflowStatusOpenSub.style.display = "";
+    } else {
+      els.btnOneflowStatusOpenSub.style.display = "none";
+    }
+    if (els.dlgOneflowStatusTitle) els.dlgOneflowStatusTitle.textContent = "Oneflow status details · " + p.name;
+  }
+
+  async function openOneflowStatusModal() {
+    ensureOneflowDialog();
+    ofSessionUnavailable = false; // the user asked explicitly — retry even after a failed auto-check
+    const { rlProjectId, name, plantId } = getOneflowContext();
+    currentOneflowStatusProject = { rlProjectId, name: name || "(unknown project)", plantId };
+    currentOneflowStatusVerdict = null;
+    const gen = ++ofRenderGen;
+
+    els.btnOneflowStatusOpenDoc.style.display = "none";
+    els.btnOneflowStatusOpenSub.style.display = "none";
+    els.dlgOneflowStatusTitle.textContent = "Oneflow status details · " + currentOneflowStatusProject.name;
+    els.dlgOneflowStatus.showModal();
+
+    if (!rlProjectId) {
+      els.dlgOneflowStatusBody.innerHTML =
+        '<div class="youniumWarnings"><strong>Warnings</strong><ul><li>Couldn\'t read a Rocketlane project id from the URL (' +
+        escHtml(location.pathname) + '). Open a project page like /projects/12345/… and try again.</li></ul></div>';
+      return;
+    }
+    if (ofVerdictCache.has(rlProjectId)) { renderOneflowStatusModalBody(ofVerdictCache.get(rlProjectId), gen); return; }
+    els.dlgOneflowStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Checking Oneflow…</div>';
+    setOneflowButtonState("gray", "Oneflow", true);
+    try {
+      const verdict = await computeOneflowForProject(rlProjectId, plantId);
+      if (gen !== ofRenderGen || !els.dlgOneflowStatus.open) return; // superseded by a newer open/refresh
+      renderOneflowStatusModalBody(verdict, gen);
+    } catch (e) {
+      if (gen !== ofRenderGen) return;
+      els.dlgOneflowStatusBody.innerHTML = '<div class="youniumWarnings">Error checking Oneflow status: ' + escHtml(e?.message ?? e) + '</div>';
+      setOneflowButtonState("gray", "Oneflow");
+    }
+  }
 
   // Initial attempts (covers the case where the nav is already present). Waits
   // for the DOM: the script starts at document-start, but this section keeps

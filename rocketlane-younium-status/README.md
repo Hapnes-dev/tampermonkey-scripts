@@ -1,10 +1,11 @@
 # Rocketlane improvements
 
-One Tampermonkey userscript with three independent improvements for `kiona.rocketlane.com`:
+One Tampermonkey userscript with four independent improvements for `kiona.rocketlane.com`:
 
 1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
 2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
 3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0).
+4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
@@ -17,6 +18,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 - For the Younium status: **visit `https://eu.younium.com` once while logged in** (so the Frontegg session cookie is in the browser and the script can mint API tokens). Then open any Rocketlane project — the chip appears in the nav.
 - **If you had *Rocketlane Enhancer* or *Rocketlane Project Notes Column* installed, uninstall them in Tampermonkey** after installing this script. Their features live here now; the old scripts no longer receive updates.
 - Notes: the column width and a custom SQL API URL start from their defaults after the merge (the old script's settings are in its own Tampermonkey storage). The notes themselves are read back from the toolbox SQL table.
+- For the Oneflow status: be logged in to `https://app.oneflow.com` in the same browser — the script uses your Oneflow session cookie, read-only.
 
 ---
 
@@ -167,13 +169,58 @@ CREATE TABLE IF NOT EXISTS team_status.iw_project_notes (
 
 ---
 
+## 4. Oneflow signing status
+
+Ported from the Project Progress Tracker's Oneflow status checker in v1.3.0. A second chip, **immediately right of the Younium chip**, shows whether the project's Oneflow document is signed, and opens an **Oneflow status details** modal in the same style.
+
+### Where the documents come from
+
+1. **Links stored on the Rocketlane project.** The tracker writes a `Links:` block into the project's *Hubspot Deal Description* custom field (`Oneflow (Order): …`, `Oneflow (Subscription): …`); the *Delivery status update message* field and an *Oneflow agreement id* field are read as fallbacks. The script reads the project through the Rocketlane API with the api-key the Rocketlane page keeps in `localStorage` — nothing is written.
+2. **Oneflow search by plant ID** when no link is stored: `GET /api/agreements/?q=<plant id>`, the first candidates are hydrated so their *Plant ID* custom field can be checked (a document without custom fields counts when its name starts with the plant ID), and the best document per kind wins — Signed first, then Pending / Overdue, then Draft, newest first. Kind is decided by name: an *Abonnementsavtale* / *Subscription agreement* is the subscription, everything else the order / offer.
+
+The modal's summary says which of the two found the documents.
+
+### Verdict labels
+
+The verdict follows the order document and falls back to the subscription agreement.
+
+| Color | Label | Oneflow state |
+|---|---|---|
+| 🟢 Green | `✓ Signed` | 4 Signed |
+| 🟡 Yellow | `⏳ Pending` / `⏳ Overdue` | 1 Pending / 2 Overdue |
+| 🔴 Red | `✗ Draft` / `✗ Declined` / `✗ Cancelled` | 0 Draft / 3 Declined / 5 Cancelled |
+| ⚪ Gray | `Missing` / `Error` / `Not connected` | nothing found / fetch failed / no Oneflow session |
+
+### The modal
+
+- A colored **summary** line plus the source of the documents, and a **Warnings** panel when something needs attention.
+- **Document / order** and **Subscription agreement** sections: link, document id, name, kind, Signed?, sent-for-signing / signed / declined / cancelled dates, expiry, created / updated, and the **parties** with a ✓ per participant who has signed (every participant reads ✓ on a Signed document — a non-signing viewer keeps state 0 even then).
+- Footer: **Refresh status**, **Copy summary**, **Open Oneflow document**, **Open subscription agreement**.
+
+Verdicts are cached per Rocketlane project for the session; a "Not connected" verdict is never cached, so logging in to Oneflow and reopening the project is enough.
+
+### Security
+
+- The Rocketlane api-key is only ever sent to `https://kiona.api.rocketlane.com`; the Oneflow session cookie only travels to `https://app.oneflow.com` (both origins are pinned before the request is made).
+- Everything rendered in the modal is HTML-escaped by default; links pass through `toHttpUrl()`.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `Oneflow: Not connected` | Open `https://app.oneflow.com` once while logged in, then reopen the project. |
+| `Oneflow: Missing` | No Oneflow link is stored on the Rocketlane project and no Oneflow document carries the plant ID in its *Plant ID* custom field or name. Save the link via the tracker (Edit → 🔎 Find Oneflow). |
+| Warning about the Rocketlane link fields | The Rocketlane api-key was not in the page yet — reload once logged in. The plant-ID search still runs. |
+
+---
+
 ## Metadata
 
 | Field | Value |
 |---|---|
 | `@match` | `https://kiona.rocketlane.com/*`, `https://eu.younium.com/*`, `https://us.younium.com/*`, `https://app.younium.com/*` |
-| `@connect` | `auth.eu.younium.com`, `auth.us.younium.com`, `api.younium.com`, `toolbox.iwmac.local` |
+| `@connect` | `auth.eu.younium.com`, `auth.us.younium.com`, `api.younium.com`, `app.oneflow.com`, `kiona.api.rocketlane.com`, `toolbox.iwmac.local` |
 | `@grant` | `GM_xmlhttpRequest`, `GM_setValue`, `GM_getValue` |
 | `@run-at` | `document-start` — the Gantt module needs it; the Younium chip and the Notes column wait for the DOM |
 
-The three modules share nothing but the page: each keeps its own storage keys, styles and observers, exactly as in the scripts they came from.
+The four modules share nothing but the page: each keeps its own storage keys, styles and observers, exactly as in the scripts they came from.
