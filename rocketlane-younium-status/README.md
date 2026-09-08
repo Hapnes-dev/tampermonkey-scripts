@@ -1,10 +1,12 @@
-# Rocketlane Younium Status
+# Rocketlane improvements
+
+Formerly **Rocketlane Younium Status** — the folder, file and install link are unchanged, so an installed copy keeps auto-updating.
 
 Adds a **Younium** button (with the Younium logo) to the Rocketlane project navigation (right after **All files**). It **computes the plant's Younium status automatically when you open the project** and shows the colored verdict right on the button — no click needed. Clicking it opens the full **Younium order + subscription status** modal — the same verdict engine and look as the [Project Progress Tracker](https://github.com/Hapnes-dev/Project-Progress-Tracker).
 
 ## Install
 
-👉 [**Install Rocketlane Younium Status**](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js)
+👉 [**Install Rocketlane improvements**](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js)
 
 Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension. After installing, **visit `https://eu.younium.com` once while logged in** (so the Frontegg session cookie is in the browser and the bridge can mint API tokens). Then open any Rocketlane project — the button appears in the nav.
 

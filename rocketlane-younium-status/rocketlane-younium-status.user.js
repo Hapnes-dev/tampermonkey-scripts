@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Rocketlane Younium Status
+// @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  Adds a "☄️ Younium" button to the Rocketlane project nav (next to "All files") that opens a Younium order + subscription status modal for the plant — same verdict engine + styling as the Project Progress Tracker.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -21,8 +21,8 @@
 // ==/UserScript==
 
 /*
- * Rocketlane Younium Status
- * ─────────────────────────
+ * Rocketlane improvements (formerly "Rocketlane Younium Status")
+ * ─────────────────────────────────────────────────────────────
  * A standalone port of the Project Progress Tracker's Younium status feature.
  *
  *  • On younium.com pages: captures the hublet region (eu/us) into GM storage so
