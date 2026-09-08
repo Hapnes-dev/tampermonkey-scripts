@@ -16,7 +16,7 @@ The script auto-updates — when a new version is pushed here, Tampermonkey will
 
 ## What it is
 
-A Tampermonkey userscript (`AK3-Autoscan.user.js`, v7.9) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
+A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.0) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
 
 ## Key constants
 
@@ -33,13 +33,27 @@ A Tampermonkey userscript (`AK3-Autoscan.user.js`, v7.9) that automates the AK3 
 
 GM storage is shared across all tabs running this script. To allow scanning multiple plants in parallel without cross-talk, the workflow state, log buffer, and panel-closed flag are all namespaced by the plant id parsed from the tab's host (`<plantId>.plants.iwmac.local`). Each tab is bound to one plant via its URL, so per-plant keys give per-tab isolation — the debug panel only shows logs for the plant in that tab.
 
+## Run control (start / resume / abort)
+
+Nothing runs by itself on page load. The saved state (`{ plantId, step, ts, runId, resumes, pmaLogged }`)
+outlives a reload, and the page then shows the debug panel with **▶ Resume** and **■ Abort**; the menu
+button reads **▶ Resume Auto Scan** and asks whether to resume the paused run or start over.
+
+| Action | What happens |
+|---|---|
+| **Start** (`startRun`) | clears the log, saves `step: dbcheck`, sets ScannerMode, runs the loop |
+| **Resume** (`resumeRun`) | re-applies ScannerMode (a reload may have reset the packet settings), bumps `resumes`, runs the loop from the saved step. A step resumed more than 3 times without advancing stops the run and reverts to StandardMode instead of looping |
+| **Abort** (`abortRun`) | reverts to StandardMode, clears the saved run, makes every wait in a running loop bail out |
+
+Only one loop can run per tab (`_running`); clicking the menu button during a run offers Abort.
+
 ## Workflow steps (linear state machine)
 
-Each step is persisted in GM storage so it survives page reloads.
+Each step is persisted in GM storage so a reload pauses the run instead of losing it.
 
 ### 1. `dbcheck`
 - Opens the **DB Sjekk** tab (`li#databasetest`)
-- If both `iw_plant_server3 : OK` and `iw_ak3_scanner : OK` are present, skips to next step
+- If both `iw_plant_server3 : OK` and `iw_ak3_scanner : OK` are present, skips to next step (`OK` as a whole word, not `IKKE OK`)
 - If `button#create_scan_db` ("Lag database iw_ak3_scanner") exists, clicks it and waits for `"Database opprettet"` message
 - Proceeds to ipconfig
 
@@ -49,15 +63,16 @@ Each step is persisted in GM storage so it survives page reloads.
   - `Server config satt til <em>…</em>` → `localIp`
   - `AK-SM850 config satt til <em>…</em>` → `remoteIp` (IP is extracted even if wrapped in a URL)
 - Falls back to defaults (`localIp` = `192.168.10.10`, `remoteIp` = `192.168.10.20`) only if no IP is present in the hint
-- Enables HTTPS checkbox, clicks **"Test tilkobling til AK-SM850"**
+- Enables HTTPS checkbox (`setCheckbox`: one native click, verified), clicks **"Test tilkobling til AK-SM850"**
 - If test fails (no Save button), disables HTTPS and retries up to 5 times with increasing wait
 - Clicks **"Lagre ip-adresser i scanner database"**, waits for `"IPer oppdatert"`
-- If all retries fail, shows a yellow banner and waits indefinitely for user to fix manually
+- If all retries fail, shows a yellow banner and waits indefinitely for user to fix manually; declining the "Continue?" prompt afterwards reverts to StandardMode and stops
 
 ### 3. `scan`
 - Opens the **Scan** tab, clicks **"Scan anlegg"**
-- Polls an iframe for `#percent` reaching `100%` or `#done` containing `"Scan done"`
-- **Timeout: 2 hours** (7,200,000 ms) — line ~474
+- Polls an iframe for `#percent` reaching `100%` or `#done` containing `"Scan done"`; a finished result still shown from an earlier scan is ignored until the window resets
+- Logs progress every 10 %
+- **Timeout: 2 hours** (7,200,000 ms)
 
 ### 4. `default_links`
 - Opens **Default links** tab
@@ -66,28 +81,28 @@ Each step is persisted in GM storage so it survives page reloads.
 
 ### 5. `copyplant`
 - Opens **"Kopier til anlegg"** tab
-- Clicks **"Kopier og overskriv ALT"**, auto-confirms dialog if present
+- Clicks **"Kopier og overskriv ALT"**, auto-confirms the dialog if it appears within 3 s
 - Waits for `"Database kopiert"`
 
 ### 6. `activate`
 - Opens **"Aktiver anlegg"** tab, clicks **"Aktiver alle"**
 - Waits for `"Enheter aktivert"`
-- Sets AK3 mode back to **StandardMode**, clears state, shows completion alert
+- Sets AK3 mode back to **StandardMode** (a failed revert is reported in the completion alert), clears state, shows completion alert
 
 ## AK3 mode switching
 
 | Mode | packet_timeout | packet_interval |
 |---|---|---|
-| ScannerMode (before scan) | 100 | 400 |
-| StandardMode (after scan) | 10 | 4000 |
+| ScannerMode (start and resume) | 100 | 400 |
+| StandardMode (completion, failure, abort, user decline) | 10 | 4000 |
 
 Done via SQL UPDATE to `iw_plant_server3.iw_sys_plant_settings` through `http://toolbox.iwmac.local:8505/plant-sql/`.
 Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/actions.php`.
 
 ## UI elements
 
-- **"Auto Scan" button**: Green button injected at top of `#mainmenu` sidebar
-- **Debug panel**: Fixed top-right overlay with timestamped log. Has clear/minimize/close buttons. Only shown during active scan.
+- **"Auto Scan" button**: Green button injected at top of `#mainmenu` sidebar; label follows the state (`▶ Auto Scan`, `▶ Resume Auto Scan`, `⏳ Auto Scan running…`)
+- **Debug panel**: Fixed top-right overlay with timestamped log. Has Resume/Abort (shown while a run is saved), clear, minimize and close buttons. Shown during a run and again on every load while a run is saved.
 
 ## Helper functions
 
@@ -95,7 +110,11 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 |---|---|
 | `waitFor(selector, {timeout})` | Polls DOM for element, default 30s |
 | `waitForText(selector, text, {timeout})` | Polls DOM for element containing text, default 30s |
-| `clickEl(el)` | Clicks via `.click()`, `MouseEvent`, and jQuery `$.trigger()` |
+| `clickEl(el)` | Clicks via `.click()`, `MouseEvent`, and jQuery `$.trigger()` (buttons only — never checkboxes) |
+| `setCheckbox(el, want)` | One native click if the state differs, then verify and force-set |
+| `revertToStandardMode(plantId)` | Best-effort StandardMode revert, logs a WARNING instead of throwing |
+| `stopRun(msg)` | Clears state, logs, alerts — callers revert first |
+| `isOkStatus(txt)` | Whole-word `OK`, not negated |
 | `setInput(el, value)` | Sets value via property descriptor + fires input/change/keyup/blur |
 | `enableButton(el)` | Force-enables a disabled button |
 | `gmPost(url, body)` | `GM_xmlhttpRequest` POST wrapper returning parsed JSON |
@@ -111,8 +130,7 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 | File | Purpose |
 |---|---|
 | `AK3-Autoscan.user.js` | Main userscript (install in Tampermonkey) |
-| `Ak3.js.txt` | Backup/reference copy (may be outdated) |
 
 ## Failure handling
 
-`fail(msg)` shows alert, clears state, throws to abort. Non-critical errors (e.g. `pma_local` logging) are caught and logged but don't stop the workflow.
+Any error thrown inside the step loop reaches one catch: it reverts to StandardMode first, then `stopRun(msg)` clears state, logs and shows a single alert. Abort, a declined "Continue?" prompt and completion revert the same way. Non-critical errors (e.g. `pma_local` logging) are caught and logged but don't stop the workflow.

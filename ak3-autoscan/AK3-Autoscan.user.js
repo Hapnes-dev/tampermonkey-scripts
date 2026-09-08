@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      8.7
+// @version      9.0
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -28,6 +28,15 @@
     }
     let _runId = makeUuid();
     let _runIdPlant = null;
+    // In-tab run control. `_running` guards against a second loop in the same
+    // tab; `_abortRequested` makes every poll helper bail out, so an Abort takes
+    // effect mid-wait instead of at the next step boundary.
+    let _running = false;
+    let _abortRequested = false;
+    const ABORT_MSG = 'Auto Scan aborted by user';
+    // A step that is resumed this many times without advancing is assumed to be
+    // stuck in a reload loop; the run is stopped and AK3 reverted instead.
+    const MAX_RESUMES_PER_STEP = 3;
     function ensureRunIdForPlant(plantId) {
         const pid = String(plantId || '');
         if (pid && _runIdPlant !== pid) {
@@ -67,8 +76,18 @@
     } catch (e) {}
 
     const getState = () => GM_getValue(STATE_KEY, null);
-    const setState = (s) => GM_setValue(STATE_KEY, { ...s, ts: Date.now() });
-    const clearState = () => GM_deleteValue(STATE_KEY);
+    // Every save re-stamps `ts` (shown as the run's age on resume) and carries
+    // the trace id so a resumed run keeps its X-Run-Id. Steps save only
+    // { plantId, step }, which intentionally drops `resumes` on every advance.
+    function setState(s) {
+        if (_abortRequested) return; // an aborted loop must not resurrect the run
+        GM_setValue(STATE_KEY, { ...s, runId: _runId, ts: Date.now() });
+        refreshControls();
+    }
+    function clearState() {
+        GM_deleteValue(STATE_KEY);
+        refreshControls();
+    }
     function ts() {
         const d = new Date();
         const p = (n) => String(n).padStart(2, '0');
@@ -86,24 +105,13 @@
     }
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-    // Sleep that logs the total elapsed time once it finishes (no live ticker).
-    function sleepLogged(ms, label) {
-        return new Promise((resolve) => {
-            const start = Date.now();
-            setTimeout(() => {
-                const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-                log((label || 'waited') + ' — done in ' + elapsed + 's');
-                resolve();
-            }, ms);
-        });
-    }
-
     // waitForText that logs only the total elapsed time once the text appears.
     function waitForTextLogged(selector, text, opts, label) {
         const timeout = (opts && opts.timeout) || 30000;
         return new Promise((resolve, reject) => {
             const start = Date.now();
             const tick = () => {
+                if (_abortRequested) return reject(new Error(ABORT_MSG));
                 const el = document.querySelector(selector);
                 if (el && el.textContent.includes(text)) {
                     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
@@ -117,15 +125,12 @@
         });
     }
 
-    // Continuously poll for the "Lagre ip-adresser" button. The HTTPS test can
-    // take a while to render the Save button on slow plants, so we poll every
-    // 250ms up to `totalMs` and log a heartbeat every ~3s so the user can see
-    // we're still looking. Returns the element or null on timeout.
     // Click the visible #ipSave button repeatedly until either #message contains
     // "IPer oppdatert" or we run out of attempts. The button can re-render after
     // each test/click, so we re-query every iteration. Returns true on success.
     async function clickIpSaveUntilConfirmed(maxAttempts, label) {
         for (let i = 1; i <= maxAttempts; i++) {
+            if (_abortRequested) return false;
             const btn = findVisibleIpSave();
             if (!btn) {
                 log((label || 'ipSave click') + ' — attempt ' + i + '/' + maxAttempts + ': button not visible, polling 5s');
@@ -176,8 +181,8 @@
     function waitForSaveOrInvalid(totalMs, label) {
         return new Promise((resolve) => {
             const start = Date.now();
-            let lastBeat = 0;
             const tick = () => {
+                if (_abortRequested) return resolve({ kind: 'timeout' });
                 const el = findVisibleIpSave();
                 if (el) {
                     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
@@ -219,8 +224,8 @@
     function waitForIpSaveButton(totalMs, label) {
         return new Promise((resolve) => {
             const start = Date.now();
-            let lastBeat = 0;
             const tick = () => {
+                if (_abortRequested) return resolve(null);
                 const el = findVisibleIpSave();
                 if (el) {
                     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
@@ -259,6 +264,29 @@
             const jq = window.jQuery || window.$;
             if (jq && typeof jq === 'function') jq(el).trigger('click');
         } catch (e) {}
+    }
+    // Put a checkbox into a known state. clickEl() must not be used on
+    // checkboxes: each of its three click strategies toggles the box, so the
+    // end state would depend on how many of them fire. One native click (the
+    // page's handlers run once), then verify and force-set as a fallback.
+    function setCheckbox(el, want, label) {
+        if (!el) return false;
+        const name = label || describe(el);
+        if (el.checked !== want) {
+            log('Checkbox → ' + (want ? 'on' : 'off') + ': ' + name);
+            try { el.click(); } catch (e) {}
+        }
+        if (el.checked !== want) {
+            el.checked = want;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('click',  { bubbles: true }));
+            try {
+                const jq = window.jQuery || window.$;
+                if (jq && typeof jq === 'function') jq(el).trigger('change');
+            } catch (e) {}
+            log('Checkbox forced ' + (want ? 'on' : 'off') + ' (click did not stick): ' + name);
+        }
+        return el.checked === want;
     }
 
     // ---------- AK3 mode via direct SQL API (replaces pang.qxs round-trip) ----------
@@ -310,10 +338,31 @@
         catch (e) { log('pma_local log failed (non-fatal): ' + e.message); }
     }
 
+    // Best-effort revert used by every stop path (failure, abort, user decline,
+    // completion). Never throws: a failed revert is logged loudly instead, so
+    // the caller can still clear state and tell the user.
+    async function revertToStandardMode(plantId) {
+        try {
+            await setAk3Mode(plantId, 'StandardMode');
+            return true;
+        } catch (e) {
+            log('WARNING: failed to revert to StandardMode: ' + e.message +
+                ' — packet_timeout/packet_interval may still be at ScannerMode values!');
+            return false;
+        }
+    }
+
+    // pma_local is logged once per run: the in-memory set covers this page
+    // session, the `pmaLogged` flag in the saved state covers resumes after a
+    // reload (setAk3Mode runs again on every resume).
     const _pmaLocalLogged = new Set();
     async function logPmaLocal(plantId) {
         ensureRunIdForPlant(plantId);
-        if (_pmaLocalLogged.has(String(plantId))) { log('pma_local already logged this session, skipping'); return; }
+        const saved = getState();
+        if (_pmaLocalLogged.has(String(plantId)) || (saved && saved.pmaLogged)) {
+            log('pma_local already logged for this run, skipping');
+            return;
+        }
         _pmaLocalLogged.add(String(plantId));
         const payload = [{
             jsonrpc: '2.0', method: 'log',
@@ -334,7 +383,12 @@
                 onload: (r) => {
                     try {
                         const d = JSON.parse(r.responseText);
-                        if (d && d.jsonrpc === '2.0' && d.result === true) { log('pma_local logged'); resolve(); }
+                        if (d && d.jsonrpc === '2.0' && d.result === true) {
+                            log('pma_local logged');
+                            const cur = getState();
+                            if (cur) setState({ ...cur, pmaLogged: true });
+                            resolve();
+                        }
                         else reject(new Error('pma_local non-success: ' + r.responseText.slice(0, 200)));
                     } catch (e) { reject(new Error('pma_local bad JSON')); }
                 },
@@ -359,7 +413,14 @@
             '<div style="display:flex;align-items:center;justify-content:space-between;' +
             'padding:6px 8px;background:#1f2937;border-radius:6px 6px 0 0;">' +
             '<strong style="color:#10b981">AK3 Debug</strong>' +
-            '<span><button id="ak3-debug-clear" style="margin-right:4px;cursor:pointer;' +
+            '<span>' +
+            '<button id="ak3-debug-resume" title="Resume the saved run at its current step" ' +
+            'style="margin-right:4px;cursor:pointer;background:#16a34a;color:#fff;border:none;' +
+            'padding:2px 8px;border-radius:3px;font-weight:700;">▶ Resume</button>' +
+            '<button id="ak3-debug-abort" title="Stop the run: AK3 back to StandardMode, saved run cleared" ' +
+            'style="margin-right:4px;cursor:pointer;background:#b45309;color:#fff;border:none;' +
+            'padding:2px 8px;border-radius:3px;font-weight:700;">■ Abort</button>' +
+            '<button id="ak3-debug-clear" style="margin-right:4px;cursor:pointer;' +
             'background:#374151;color:#fff;border:none;padding:2px 6px;border-radius:3px;">clear</button>' +
             '<button id="ak3-debug-toggle" style="margin-right:4px;cursor:pointer;background:#374151;color:#fff;' +
             'border:none;padding:2px 6px;border-radius:3px;">−</button>' +
@@ -384,7 +445,27 @@
             GM_setValue(PANEL_CLOSED_KEY, true);
             panel.remove();
         };
+        panel.querySelector('#ak3-debug-resume').onclick = () => {
+            if (TAB_PLANT_ID) resumeRun(TAB_PLANT_ID);
+        };
+        panel.querySelector('#ak3-debug-abort').onclick = () => {
+            if (!TAB_PLANT_ID) return;
+            if (confirm('[AK3] Abort Auto Scan for plant ' + TAB_PLANT_ID + '?\n\n' +
+                        'AK3 goes back to StandardMode and the saved run is cleared.')) abortRun(TAB_PLANT_ID);
+        };
         renderDebugPanel();
+        refreshControls();
+    }
+    // Keep the menu button label and the panel's Resume / Abort buttons in step
+    // with the saved state and whether a loop is running in this tab.
+    function refreshControls() {
+        const s = getState();
+        const li = document.getElementById('ak3-autoscan');
+        if (li) li.textContent = _running ? '⏳ Auto Scan running…' : (s ? '▶ Resume Auto Scan' : '▶ Auto Scan');
+        const resume = document.getElementById('ak3-debug-resume');
+        const abort  = document.getElementById('ak3-debug-abort');
+        if (resume) resume.style.display = (s && !_running) ? '' : 'none';
+        if (abort)  abort.style.display  = s ? '' : 'none';
     }
     function renderDebugPanel() {
         const body = document.getElementById('ak3-debug-body');
@@ -398,6 +479,7 @@
         return new Promise((resolve, reject) => {
             const start = Date.now();
             const tick = () => {
+                if (_abortRequested) return reject(new Error(ABORT_MSG));
                 const el = document.querySelector(selector);
                 if (el) return resolve(el);
                 if (Date.now() - start > timeout) return reject(new Error('timeout: ' + selector));
@@ -410,6 +492,7 @@
         return new Promise((resolve, reject) => {
             const start = Date.now();
             const tick = () => {
+                if (_abortRequested) return reject(new Error(ABORT_MSG));
                 const el = document.querySelector(selector);
                 if (el && el.textContent.includes(text)) return resolve(el);
                 if (Date.now() - start > timeout) return reject(new Error('timeout text: ' + text));
@@ -418,10 +501,19 @@
             tick();
         });
     }
-    function fail(msg) {
-        alert('[AK3] STOPPED: ' + msg);
+    // Terminal stop: clear the saved run, then tell the user. Callers revert
+    // AK3 to StandardMode *before* calling this — alert() is modal and would
+    // hold the revert until the dialog is dismissed. Does not throw.
+    function stopRun(msg) {
         clearState();
-        throw new Error(msg);
+        log('STOPPED: ' + msg);
+        alert('[AK3] STOPPED: ' + msg);
+    }
+    // "OK" as a whole word and not negated — "IKKE OK" / "NOT OK" also contain
+    // the substring "OK", which is what a plain includes('OK') would match.
+    function isOkStatus(txt) {
+        const t = String(txt || '');
+        return /(^|[^A-Za-z])OK(?![A-Za-z])/.test(t) && !/\b(ikke|not)\s+OK\b/i.test(t);
     }
     function setInput(el, value) {
         const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
@@ -483,34 +575,106 @@
         li.onclick = async () => {
             const plantId = getPlantIdFromHost();
             if (!plantId) return alert('No plant id in host');
-            GM_setValue(LOG_KEY, []);
-            GM_deleteValue(PANEL_CLOSED_KEY);
-            injectDebugPanel();
-            log('Auto Scan started for plant ' + plantId);
-            try {
-                await setAk3Mode(plantId, 'ScannerMode');
-            } catch (e) {
-                return fail('Failed to set ScannerMode: ' + e.message);
+            if (_running) {
+                if (confirm('[AK3] Auto Scan is running for plant ' + plantId + '.\n\n' +
+                            'Abort it now? (AK3 goes back to StandardMode, the saved run is cleared)')) {
+                    await abortRun(plantId);
+                }
+                return;
             }
-            setState({ plantId, step: 'dbcheck' });
-            runAk3Setup(false);
+            const saved = getState();
+            if (saved && saved.plantId === plantId) {
+                const ageMin = Math.round((Date.now() - (saved.ts || 0)) / 60000);
+                if (confirm('[AK3] A saved Auto Scan for plant ' + plantId + ' is paused at step "' +
+                            saved.step + '" (' + ageMin + ' min ago).\n\n' +
+                            'OK = resume it\nCancel = start over from the beginning')) {
+                    return resumeRun(plantId);
+                }
+            }
+            await startRun(plantId);
         };
         menu.insertBefore(li, menu.firstChild);
+        refreshControls();
     }
 
-    // ---------- Main workflow on ak3_setup (step-driven, survives reloads) ----------
-    async function runAk3Setup(manual = false) {
+    // ---------- Run control: start / resume / abort ----------
+    async function startRun(plantId) {
+        _abortRequested = false;
+        GM_setValue(LOG_KEY, []);
+        GM_deleteValue(PANEL_CLOSED_KEY);
+        injectDebugPanel();
+        _runId = makeUuid();
+        _runIdPlant = String(plantId);
+        log('Auto Scan started for plant ' + plantId + ' (run ' + _runId + ')');
+        // State first, so the pma_local flag and the trace id are persisted by
+        // the ScannerMode call; on failure stopRun() clears it again.
+        setState({ plantId, step: 'dbcheck' });
+        try {
+            await setAk3Mode(plantId, 'ScannerMode');
+        } catch (e) {
+            stopRun('Failed to set ScannerMode: ' + e.message);
+            return;
+        }
+        runAk3Setup();
+    }
+
+    // Nothing resumes by itself on page load (a reload loop in an early
+    // version made that a deliberate choice). A saved run is offered for
+    // resumption via the panel / menu button, and each step may be resumed at
+    // most MAX_RESUMES_PER_STEP times before the run is stopped instead.
+    async function resumeRun(plantId) {
+        if (_running) return;
+        const saved = getState();
+        if (!saved || saved.plantId !== plantId) return alert('[AK3] No saved run to resume for plant ' + plantId);
+        _abortRequested = false;
+        GM_deleteValue(PANEL_CLOSED_KEY);
+        injectDebugPanel();
+        const resumes = (saved.resumes || 0) + 1;
+        if (resumes > MAX_RESUMES_PER_STEP) {
+            log('Step "' + saved.step + '" has been resumed ' + (resumes - 1) +
+                ' times without advancing — stopping to avoid a reload loop');
+            await revertToStandardMode(plantId);
+            stopRun('Step "' + saved.step + '" keeps restarting after page reloads. Check the plant manually.');
+            return;
+        }
+        if (saved.runId) { _runId = saved.runId; _runIdPlant = String(plantId); }
+        log('Resuming Auto Scan at step "' + saved.step + '" (resume ' + resumes + '/' + MAX_RESUMES_PER_STEP + ')');
+        setState({ ...saved, resumes });
+        try {
+            // Whatever caused the reload may also have reset the AK3 packet
+            // settings (creating iw_ak3_scanner does) — re-apply ScannerMode.
+            await setAk3Mode(plantId, 'ScannerMode');
+        } catch (e) {
+            await revertToStandardMode(plantId);
+            stopRun('Failed to re-apply ScannerMode on resume: ' + e.message);
+            return;
+        }
+        runAk3Setup();
+    }
+
+    async function abortRun(plantId) {
+        _abortRequested = true;
+        log('Abort requested — reverting AK3 to StandardMode and clearing the saved run');
+        await revertToStandardMode(plantId);
+        clearState();
+        const banner = document.getElementById('ak3-manual-banner');
+        if (banner) banner.remove();
+        log('Auto Scan aborted for plant ' + plantId);
+    }
+
+    // ---------- Main workflow on ak3_setup (step-driven, resumable) ----------
+    async function runAk3Setup() {
         const plantId = getPlantIdFromHost();
         if (!plantId) return;
+        if (_running) { log('Auto Scan is already running in this tab — ignoring second start'); return; }
         let state = getState();
-        if (manual) {
-            state = { plantId, step: 'dbcheck' };
-            setState(state);
-        }
         if (!state || state.plantId !== plantId) return;
+        _running = true;
+        refreshControls();
 
         try {
             while (true) {
+                if (_abortRequested) return;
                 state = getState();
                 if (!state) return;
                 log('=== Step: ' + state.step + ' ===');
@@ -529,8 +693,8 @@
                     let scannerOk = false;
                     testBoxes.forEach(p => {
                         const txt = p.textContent;
-                        if (txt.includes('iw_plant_server3') && txt.includes('OK')) server3Ok = true;
-                        if (txt.includes('iw_ak3_scanner') && txt.includes('OK')) scannerOk = true;
+                        if (txt.includes('iw_plant_server3') && isOkStatus(txt)) server3Ok = true;
+                        if (txt.includes('iw_ak3_scanner') && isOkStatus(txt)) scannerOk = true;
                     });
                     log('DB status — iw_plant_server3: ' + (server3Ok ? 'OK' : 'NOT OK') +
                         ', iw_ak3_scanner: ' + (scannerOk ? 'OK' : 'NOT OK'));
@@ -584,10 +748,7 @@
                     log('Waiting for HTTPS checkbox...');
                     const https = await waitFor('input#httpsForm');
                     log('HTTPS checkbox found — checked: ' + https.checked);
-                    if (!https.checked) {
-                        log('Enabling HTTPS checkbox');
-                        clickEl(https, 'HTTPS checkbox (on)');
-                    }
+                    setCheckbox(https, true, 'HTTPS checkbox');
 
                     log('Clicking "Test tilkobling til AK-SM850" (HTTPS on)');
                     {
@@ -595,7 +756,7 @@
                         enableButton(ipFormBtn0);
                         clickEl(ipFormBtn0, 'Test tilkobling til AK-SM850');
                     }
-                    // Poll continuously for up to 20s — slow plants can take a
+                    // Poll continuously for up to 60s — slow plants can take a
                     // while to render the Save button after the HTTPS test.
                     let saveBtn = null;
                     {
@@ -609,15 +770,8 @@
                     if (!saveBtn) {
                         log('Save button not visible after double-check — HTTPS test likely failed, disabling HTTPS');
                         const h = await waitFor('input#httpsForm');
-                        if (h.checked) {
-                            h.click();
-                            if (h.checked) {
-                                h.checked = false;
-                                h.dispatchEvent(new Event('change', { bubbles: true }));
-                                h.dispatchEvent(new Event('click',  { bubbles: true }));
-                            }
-                            log('HTTPS checkbox forced off (checked=' + h.checked + ')');
-                        }
+                        setCheckbox(h, false, 'HTTPS checkbox');
+                        log('HTTPS checkbox now checked=' + h.checked);
                         for (let attempt = 1; attempt <= 5 && !saveBtn; attempt++) {
                             // Short-circuit: maybe the button appeared between the
                             // last poll and now — don't re-submit Test if it's there.
@@ -639,7 +793,7 @@
                     }
                     if (!saveBtn) {
                         saveBtn = await waitForIpSaveButton(15000, 'ipSave final wait');
-                        if (!saveBtn) fail('Save button (ipSave) did not appear after test');
+                        if (!saveBtn) throw new Error('Save button (ipSave) did not appear after test');
                     }
                     log('Save button confirmed present — clicking up to 8 times until IPer oppdatert');
                     let ok = await clickIpSaveUntilConfirmed(8, 'Lagre ip-adresser i scanner database');
@@ -647,17 +801,23 @@
                     if (!ok) {
                         log('First save did not confirm — retrying with HTTPS off');
                         const https2 = await waitFor('input#httpsForm');
-                        if (https2.checked) clickEl(https2, 'HTTPS checkbox (off)');
+                        setCheckbox(https2, false, 'HTTPS checkbox');
                         await sleep(500);
                         {
                             const b = await waitFor('input#ipForm');
                             enableButton(b);
                             clickEl(b, 'Test tilkobling til AK-SM850 (retry)');
                         }
+                        // Always go through findVisibleIpSave (via waitForIpSaveButton):
+                        // a bare querySelector('#ipSave') can return a hidden template.
                         let saveBtn2 = await waitForIpSaveButton(25000, 'ipSave after save-retry test');
-                        if (!saveBtn2) saveBtn2 = await waitFor('button#ipSave', { timeout: 15000 });
-                        log('Save button confirmed present (retry) — clicking up to 8 times');
-                        ok = await clickIpSaveUntilConfirmed(8, 'Lagre ip-adresser (retry)');
+                        if (!saveBtn2) saveBtn2 = await waitForIpSaveButton(15000, 'ipSave after save-retry test (final)');
+                        if (saveBtn2) {
+                            log('Save button confirmed present (retry) — clicking up to 8 times');
+                            ok = await clickIpSaveUntilConfirmed(8, 'Lagre ip-adresser (retry)');
+                        } else {
+                            log('Save button (ipSave) still not visible — falling through to the manual fallback');
+                        }
                         if (!ok) {
                             try {
                                 await waitForTextLogged('#message', 'IPer oppdatert', { timeout: 30000 },
@@ -689,6 +849,8 @@
                         banner.remove();
                         const cont = confirm('IPer oppdatert ✓\n\nContinue Auto Scan?');
                         if (!cont) {
+                            log('User chose not to continue after the manual IP fix — reverting to StandardMode and stopping');
+                            await revertToStandardMode(plantId);
                             clearState();
                             return;
                         }
@@ -707,27 +869,50 @@
                     log('Opening Scan tab');
                     await clickTab('scan');
                     await sleep(500);
-                    const scanBtn = await waitFor('input#scanButton');
-                    clickEl(scanBtn, 'Scan anlegg');
-                    log('Scan started — waiting for completion (up to 2 hours)');
-                    log('scan triggered; polling iframe for completion');
 
                     const getIframeDoc = () => {
                         const f = document.querySelector('#scanWindow iframe, iframe[src*="iframe/scan"]');
                         try { return f && (f.contentDocument || f.contentWindow.document); }
                         catch { return null; }
                     };
+                    const readScan = (doc) => {
+                        const pct = doc.querySelector('#percent');
+                        const doneEl = doc.querySelector('#done');
+                        const m = pct && pct.textContent.match(/(\d{1,3})\s*%/);
+                        return {
+                            percent: m ? parseInt(m[1], 10) : null,
+                            done: !!((pct && pct.textContent.includes('100%')) ||
+                                     (doneEl && doneEl.offsetParent !== null &&
+                                      doneEl.textContent.includes('Scan done')))
+                        };
+                    };
+                    // A scan window left from an earlier scan can already read
+                    // "100% / Scan done". Remember it, so that old result is not
+                    // taken for this scan's completion: the window has to reset
+                    // (or be replaced) first.
+                    const preDoc = getIframeDoc();
+                    const staleDone = !!(preDoc && readScan(preDoc).done);
+                    if (staleDone) log('Scan window still shows a finished earlier scan — waiting for it to reset before trusting completion');
+
+                    const scanBtn = await waitFor('input#scanButton');
+                    clickEl(scanBtn, 'Scan anlegg');
+                    log('Scan started — waiting for completion (up to 2 hours)');
 
                     await new Promise((resolve, reject) => {
                         const start = Date.now();
+                        let sawReset = !staleDone;
+                        let lastLoggedPct = -10;
                         const tick = () => {
+                            if (_abortRequested) return reject(new Error(ABORT_MSG));
                             const doc = getIframeDoc();
                             if (doc) {
-                                const pct = doc.querySelector('#percent');
-                                const doneEl = doc.querySelector('#done');
-                                if (pct && pct.textContent.includes('100%')) return resolve();
-                                if (doneEl && doneEl.offsetParent !== null &&
-                                    doneEl.textContent.includes('Scan done')) return resolve();
+                                const r = readScan(doc);
+                                if (!sawReset && (doc !== preDoc || !r.done)) sawReset = true;
+                                if (sawReset && r.percent !== null && r.percent >= lastLoggedPct + 10) {
+                                    lastLoggedPct = r.percent;
+                                    log('Scan progress ' + r.percent + '% (' + ((Date.now() - start) / 60000).toFixed(1) + ' min)');
+                                }
+                                if (sawReset && r.done) return resolve();
                             }
                             if (Date.now() - start > 7200000) return reject(new Error('scan timeout'));
                             setTimeout(tick, 500);
@@ -754,6 +939,7 @@
                     await new Promise((resolve, reject) => {
                         const start = Date.now();
                         const tick = () => {
+                            if (_abortRequested) return reject(new Error(ABORT_MSG));
                             const content = document.querySelector('#content');
                             if (!content || !content.textContent.includes('Vennligst vent mens default links laster')) {
                                 return resolve();
@@ -773,8 +959,13 @@
                     log('Waiting for "Kopier og overskriv ALT" button');
                     clickEl(await waitFor('button#copy_db', { timeout: 600000 }),
                             'Kopier og overskriv ALT');
-                    const maybeOk = document.querySelector('button.pang-confirm-ok');
+                    // The confirm dialog may render a moment after the click; a
+                    // synchronous querySelector would miss it and the copy would
+                    // never be confirmed.
+                    let maybeOk = null;
+                    try { maybeOk = await waitFor('button.pang-confirm-ok', { timeout: 3000 }); } catch (e) {}
                     if (maybeOk) { clickEl(maybeOk, 'Confirm OK (copy db)'); await sleep(300); }
+                    else log('No confirm dialog within 3s — assuming the copy started directly');
                     log('Waiting for "Database kopiert" confirmation');
                     await waitForText('#message', 'Database kopiert', { timeout: 600000 });
                     log('Database copied');
@@ -791,39 +982,48 @@
                     await waitForText('#message', 'Enheter aktivert', { timeout: 600000 });
                     log('Devices activated');
                     await sleep(500);
-                    try {
-                        await setAk3Mode(plantId, 'StandardMode');
-                    } catch (e) {
-                        return fail('Failed to set StandardMode: ' + e.message);
-                    }
+                    const reverted = await revertToStandardMode(plantId);
                     clearState();
-                    log('AK3 Scan Completed for plant ' + plantId);
-                    alert('AK3 Scan Completed ✔\nPlant ' + plantId);
+                    log('AK3 Scan Completed for plant ' + plantId +
+                        (reverted ? '' : ' — WARNING: StandardMode revert failed, check packet settings manually'));
+                    alert('AK3 Scan Completed ✔\nPlant ' + plantId +
+                          (reverted ? '' : '\n\nWARNING: could not set StandardMode — check packet_timeout / packet_interval manually!'));
                     return;
                 }
                 else {
+                    log('Unknown step "' + state.step + '" — stopping');
+                    await revertToStandardMode(plantId);
+                    stopRun('Unknown step "' + state.step + '"');
                     return;
                 }
             }
         } catch (e) {
-            log('Workflow failed: ' + e.message + ' — attempting to revert AK3 to StandardMode');
-            try {
-                await setAk3Mode(plantId, 'StandardMode');
-                log('Revert to StandardMode OK after failure');
-            } catch (revertErr) {
-                log('WARNING: failed to revert to StandardMode: ' + revertErr.message +
-                    ' — packet_timeout/packet_interval may still be at ScannerMode values!');
-            }
-            fail(e.message);
+            if (_abortRequested) { log('Run loop stopped: ' + e.message); return; }
+            log('Workflow failed: ' + e.message + ' — reverting AK3 to StandardMode');
+            const reverted = await revertToStandardMode(plantId);
+            if (reverted) log('Revert to StandardMode OK after failure');
+            stopRun(e.message);
+        } finally {
+            _running = false;
+            refreshControls();
         }
     }
 
     // ---------- Router ----------
-    // Only show the debug panel when an Auto Scan is in progress AND
-    // the user hasn't manually closed it.
-    if (getState() && !GM_getValue(PANEL_CLOSED_KEY, false)) injectDebugPanel();
-
-    if (getPlantIdFromHost()) {
+    // Nothing runs by itself on page load. The scan iframe lives under the same
+    // @match path, so the script loads there too: the #mainmenu gate keeps the
+    // UI (and the per-load log line) out of that frame. If a saved run exists
+    // for this plant, the panel comes back with Resume / Abort even when it was
+    // dismissed on the previous load — a paused run must stay visible.
+    if (TAB_PLANT_ID && document.getElementById('mainmenu')) {
         injectMenuButton();
+        const saved = getState();
+        if (saved) {
+            GM_deleteValue(PANEL_CLOSED_KEY);
+            injectDebugPanel();
+            const ageMin = Math.round((Date.now() - (saved.ts || 0)) / 60000);
+            log('Page loaded with a saved run at step "' + saved.step + '" (' + ageMin +
+                ' min old) — not running. Use ▶ Resume or ■ Abort.');
+        }
     }
 })();
