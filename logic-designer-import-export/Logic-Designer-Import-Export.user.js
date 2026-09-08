@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.38.0
+// @version      1.39.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -855,12 +855,114 @@ function buildExportFilename(plantId, sketchName, mode) {
 }
 
 // Skip the browser-only body when loaded under Node for tests.
+// ─── Add-to-canvas merge (pure) ──────────────────────────────────────
+// Merge an imported sketch document INTO an existing one, both in the
+// paper.save() shape (HOST.md §8). Imported block ids are renumbered past
+// the existing maximum, wires and groups follow the renumbering, and the
+// imported tile is placed below the existing content so nothing overlaps.
+// Host ids are integers; group.blocks hold them as STRINGS (§8) — kept so.
+// Returns {sketch, idMap, offsetY, added:{blocks,connections,groups}}.
+// Throws on a mode mismatch: an add across modes is not a merge.
+function mergeSketchDocuments(existing, imported, options) {
+  var opts = options || {};
+  var gap = typeof opts.gap === 'number' ? opts.gap : 120;
+  var grid = typeof opts.grid === 'number' && opts.grid > 0 ? opts.grid : 10;
+  var base = JSON.parse(JSON.stringify(existing || {}));
+  var add = JSON.parse(JSON.stringify(imported || {}));
+  base.blocks = Array.isArray(base.blocks) ? base.blocks : [];
+  base.connections = Array.isArray(base.connections) ? base.connections : [];
+  base.groups = Array.isArray(base.groups) ? base.groups : [];
+  add.blocks = Array.isArray(add.blocks) ? add.blocks : [];
+  add.connections = Array.isArray(add.connections) ? add.connections : [];
+  add.groups = Array.isArray(add.groups) ? add.groups : [];
+  if (base.mode && add.mode && base.mode !== add.mode) {
+    throw new Error('mode mismatch: the canvas is ' + base.mode + ' mode, the file is ' + add.mode + ' mode');
+  }
+
+  var maxId = -1;
+  base.blocks.forEach(function (b) { var n = Number(b && b.id); if (isFinite(n) && n > maxId) maxId = n; });
+  var idMap = {};
+  var next = maxId + 1;
+  add.blocks.forEach(function (b) { idMap[String(b.id)] = next++; });
+
+  // Anchors are top-left and the document carries no block height, so the
+  // gap has to cover the lowest existing block's own height as well.
+  var offsetY = 0;
+  if (base.blocks.length > 0 && add.blocks.length > 0) {
+    var maxY = -Infinity, minY = Infinity;
+    base.blocks.forEach(function (b) { if (typeof b.y === 'number' && b.y > maxY) maxY = b.y; });
+    add.blocks.forEach(function (b) { if (typeof b.y === 'number' && b.y < minY) minY = b.y; });
+    if (isFinite(maxY) && isFinite(minY)) {
+      offsetY = Math.ceil(((maxY + gap) - minY) / grid) * grid;
+      if (offsetY < 0) offsetY = 0; // already below the existing content — leave it
+    }
+  }
+
+  var newBlocks = add.blocks.map(function (b) {
+    var c = JSON.parse(JSON.stringify(b));
+    c.id = idMap[String(b.id)];
+    if (typeof c.y === 'number') c.y = c.y + offsetY;
+    return c;
+  });
+  var newConns = add.connections.map(function (w) {
+    var c = JSON.parse(JSON.stringify(w));
+    if (c.source && c.source.id != null) c.source.id = idMap[String(c.source.id)];
+    if (c.target && c.target.id != null) c.target.id = idMap[String(c.target.id)];
+    return c;
+  });
+  var maxGid = -1;
+  base.groups.forEach(function (g) { var n = Number(g && g.id); if (isFinite(n) && n > maxGid) maxGid = n; });
+  var newGroups = add.groups.map(function (g, i) {
+    var c = JSON.parse(JSON.stringify(g));
+    c.id = maxGid + 1 + i;
+    if (Array.isArray(c.blocks)) {
+      c.blocks = c.blocks
+        .filter(function (id) { return idMap[String(id)] != null; })
+        .map(function (id) { return String(idMap[String(id)]); });
+    }
+    if (c.box && typeof c.box === 'object') {
+      if (typeof c.box.y1 === 'number') c.box.y1 += offsetY;
+      if (typeof c.box.y2 === 'number') c.box.y2 += offsetY;
+    }
+    return c;
+  });
+
+  base.blocks = base.blocks.concat(newBlocks);
+  base.connections = base.connections.concat(newConns);
+  base.groups = base.groups.concat(newGroups);
+  if (!base.mode && add.mode) base.mode = add.mode;
+  base.require_plant_revision = Math.max(Number(base.require_plant_revision) || 0, Number(add.require_plant_revision) || 0);
+  return {
+    sketch: base,
+    idMap: idMap,
+    offsetY: offsetY,
+    added: { blocks: newBlocks.length, connections: newConns.length, groups: newGroups.length },
+  };
+}
+
+// ─── Bounded undo stack (pure) ───────────────────────────────────────
+// LIFO of opaque entries; the OLDEST entry is dropped past `limit`.
+function createSnapshotStack(limit) {
+  var max = (typeof limit === 'number' && limit > 0) ? Math.floor(limit) : 20;
+  var stack = [];
+  return {
+    limit: max,
+    push: function (entry) { stack.push(entry); while (stack.length > max) stack.shift(); return stack.length; },
+    pop: function () { return stack.length ? stack.pop() : null; },
+    peek: function () { return stack.length ? stack[stack.length - 1] : null; },
+    size: function () { return stack.length; },
+    clear: function () { stack.length = 0; },
+  };
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.38.0';
+    var VERSION = '1.39.0';
+    var UNDO_LIMIT = 20;   // Ctrl+Z steps kept for the script's own canvas operations
+    var ADD_GAP = 120;     // px between the lowest existing block and an added tile
     var LOAD_FLAG = '__LDIO_LOADED';
     var W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : null) || window;
     if (W[LOAD_FLAG]) return;
@@ -960,6 +1062,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       .ldio-sim-result .ldio-sim-msg { color: #d9c07a; }\
       .ldio-sim-flow { font: 11px/1.5 Consolas, monospace; white-space: pre; color: #bfcbd6;\
         margin-top: 7px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 7px; }\
+      .ldio-choice-text { color: #cfcfcf; font-size: 12px; line-height: 1.55; margin: 0 0 4px 0; }\
+      .ldio-choice-text b { color: #fff; }\
     ';
     if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
     else { var st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st); }
@@ -2225,6 +2329,190 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       panelEls = { overlay: overlay, panel: panel, input: input, drop: drop, textarea: textarea };
     }
 
+    // ─── Undo (Ctrl+Z) over this script's own canvas operations ─────
+    // Each import (replace or add) pushes the canvas as it was BEFORE, plus
+    // a fingerprint of the canvas as the operation LEFT it. Ctrl+Z restores
+    // the newest entry only while the canvas still matches that fingerprint;
+    // if anything changed since — a block moved, a wire drawn — the key is
+    // left alone so the Copy/Paste script's finer-grained undo (which owns
+    // moves, wires, deletes and pastes) runs first. One timeline, no coupling.
+    var undoStack = createSnapshotStack(UNDO_LIMIT);
+
+    function countCanvasBlocks(paper) {
+      return Object.keys((paper && paper.elements) || {}).filter(function (k) { return /^\d+$/.test(k); }).length;
+    }
+
+    function isEditingText(target) {
+      if (!target) return false;
+      var tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      return !!target.isContentEditable;
+    }
+
+    function canvasFingerprint(paper) {
+      var fp = simCanvasFingerprint(paper);
+      return fp.logic + '\n' + fp.layout;
+    }
+
+    // The canvas and the host's idea of WHICH sketch is open, so an undo
+    // also puts Ctrl+S back onto the sketch it was pointing at.
+    function captureCanvasState(paper) {
+      var doc;
+      if (countCanvasBlocks(paper) === 0) {
+        doc = { mode: paper.mode, require_plant_revision: 0, blocks: [], connections: [], groups: [] };
+      } else {
+        var wasChanged = paper.changed;
+        doc = JSON.parse(JSON.stringify(paper.save()));
+        paper.changed = wasChanged;
+      }
+      var app = W.application || {};
+      return {
+        doc: doc,
+        mode: paper.mode,
+        changed: !!paper.changed,
+        sketchId: app.current_sketch,
+        sketchName: app.current_sketch_name,
+        processId: ('current_process' in app) ? app.current_process : undefined,
+      };
+    }
+
+    // paper.load() renders blocks at the ids the document carries; make sure
+    // the host's next-id counter is past them (HOST.md §15.4), whatever the
+    // host itself did.
+    function bumpElementPointer(paper, doc) {
+      var maxId = -1;
+      (doc.blocks || []).forEach(function (b) { var n = Number(b && b.id); if (isFinite(n) && n > maxId) maxId = n; });
+      if (typeof paper.element_pointer === 'number' && paper.element_pointer <= maxId) paper.element_pointer = maxId + 1;
+    }
+
+    function restoreCanvasState(state) {
+      var paper = W.logic_designer && W.logic_designer.paper;
+      if (!paper || !paper.initialized) { toast('Designer not ready — cannot undo.', 'error'); return false; }
+      if (state.mode && paper.mode && state.mode !== paper.mode) {
+        paper.set_mode(state.mode);
+        if (W.application && typeof W.application.reset === 'function') W.application.reset();
+      }
+      paper.reset();
+      if (state.doc.blocks.length > 0) paper.load(state.doc);
+      bumpElementPointer(paper, state.doc);
+      paper.changed = state.changed;
+      if (W.application) {
+        W.application.current_sketch = state.sketchId;
+        W.application.current_sketch_name = state.sketchName;
+        if (state.processId !== undefined && 'current_process' in W.application) W.application.current_process = state.processId;
+      }
+      return true;
+    }
+
+    function pushUndoPoint(before, label, paper) {
+      var afterFp;
+      try { afterFp = canvasFingerprint(paper); } catch (e) { afterFp = null; }
+      undoStack.push({ before: before, afterFp: afterFp, label: label, at: Date.now() });
+    }
+
+    // Undo the newest operation of ours if the canvas is still as it left it.
+    // Returns 'undone' | 'stale' | 'empty'.
+    function undoOnce() {
+      var top = undoStack.peek();
+      if (!top) return 'empty';
+      var paper = W.logic_designer && W.logic_designer.paper;
+      if (!paper || !paper.initialized) return 'empty';
+      var nowFp;
+      try { nowFp = canvasFingerprint(paper); } catch (e) { return 'stale'; }
+      if (top.afterFp !== null && nowFp !== top.afterFp) return 'stale';
+      if (!restoreCanvasState(top.before)) return 'stale';
+      undoStack.pop();
+      var left = undoStack.size();
+      toast('Undid ' + top.label + '.' + (left ? ' ' + left + ' more Ctrl+Z step' + (left === 1 ? '' : 's') + ' available.' : ''));
+      return 'undone';
+    }
+
+    function onUndoKeydown(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (String(event.key).toLowerCase() !== 'z' && event.keyCode !== 90) return;
+      if (isEditingText(event.target)) return;                 // typing: the field's own undo
+      if (document.querySelector('.ldio-overlay')) return;     // one of our dialogs is open
+      if (!undoStack.size()) return;                           // nothing of ours: host / sibling
+      var paper = W.logic_designer && W.logic_designer.paper;
+      if (!paper || !paper.initialized) return;
+      var nowFp;
+      try { nowFp = canvasFingerprint(paper); } catch (e) { return; }
+      var top = undoStack.peek();
+      if (top.afterFp !== null && nowFp !== top.afterFp) return; // canvas moved on — not our turn
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      undoOnce();
+    }
+
+    // ─── Replace or add? ─────────────────────────────────────────────
+    // Asked only when the canvas already holds blocks, after the file has
+    // validated and before anything is touched. Escape, the × and a click
+    // outside all cancel, and cancelling changes nothing.
+    function chooseImportMode(existingCount, sketch, unsaved, onChoice) {
+      var overlay = document.createElement('div');
+      overlay.className = 'ldio-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'ldio-panel';
+      var done = false;
+      function finish(mode) {
+        if (done) return;
+        done = true;
+        overlay.remove(); panel.remove();
+        document.removeEventListener('keydown', onKey, true);
+        onChoice(mode);
+      }
+      function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(null); } }
+      overlay.addEventListener('click', function () { finish(null); });
+
+      var h = document.createElement('h3');
+      h.textContent = 'The canvas already has ' + existingCount + ' block' + (existingCount === 1 ? '' : 's');
+      panel.appendChild(h);
+
+      var p1 = document.createElement('p');
+      p1.className = 'ldio-choice-text';
+      p1.innerHTML = '<b>Add to canvas</b> keeps everything that is here and places the file\u2019s ' +
+        sketch.blocks.length + ' block' + (sketch.blocks.length === 1 ? '' : 's') + ' / ' +
+        sketch.connections.length + ' wire' + (sketch.connections.length === 1 ? '' : 's') +
+        ' below it, renumbered so nothing collides. Ctrl+S still saves the open sketch.';
+      panel.appendChild(p1);
+      var p2 = document.createElement('p');
+      p2.className = 'ldio-choice-text';
+      p2.innerHTML = '<b>Replace canvas</b> clears it first' +
+        (unsaved ? ' \u2014 <b>the canvas has unsaved changes</b> that would be lost' : '') +
+        '. The next save is a Save-as.';
+      panel.appendChild(p2);
+      var p3 = document.createElement('p');
+      p3.className = 'ldio-choice-text';
+      p3.textContent = 'Either way, Ctrl+Z on the canvas undoes it.';
+      panel.appendChild(p3);
+
+      var btnRow = document.createElement('div');
+      btnRow.className = 'ldio-btn-row';
+      var ver = document.createElement('span');
+      ver.className = 'ldio-version';
+      ver.textContent = 'LDIO v' + VERSION;
+      var btns = document.createElement('span');
+      var cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button'; cancelBtn.className = 'ldio-btn'; cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.marginRight = '6px';
+      cancelBtn.addEventListener('click', function () { finish(null); });
+      var replaceBtn = document.createElement('button');
+      replaceBtn.type = 'button'; replaceBtn.className = 'ldio-btn'; replaceBtn.textContent = 'Replace canvas';
+      replaceBtn.style.marginRight = '6px';
+      replaceBtn.addEventListener('click', function () { finish('replace'); });
+      var addBtn = document.createElement('button');
+      addBtn.type = 'button'; addBtn.className = 'ldio-btn ldio-btn-primary'; addBtn.textContent = 'Add to canvas';
+      addBtn.addEventListener('click', function () { finish('add'); });
+      btns.appendChild(cancelBtn); btns.appendChild(replaceBtn); btns.appendChild(addBtn);
+      btnRow.appendChild(ver); btnRow.appendChild(btns);
+      panel.appendChild(btnRow);
+
+      document.body.appendChild(overlay);
+      document.body.appendChild(panel);
+      document.addEventListener('keydown', onKey, true);
+      try { addBtn.focus(); } catch (e) { /* ignore */ }
+    }
+
     function applyImport(parsed) {
       try {
         var paper = W.logic_designer && W.logic_designer.paper;
@@ -2238,10 +2526,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         var sketch = diag.sketch;
         var envelope = (parsed && parsed.format === 'vv-fbx-sketch') ? parsed : null;
+
+        // Snapshot the canvas now — before any mode switch or reset — so
+        // Ctrl+Z can bring back exactly what was here. Pushed only once the
+        // import actually lands; every confirmation below can still cancel.
+        var before = null;
+        try { before = captureCanvasState(paper); } catch (e) { before = null; }
+
         // Mode mismatch: a process definition must never load onto a
         // function-mode canvas (or vice versa). Offer to switch mode — the
         // host's set_mode clears the canvas (§9), so warn about unsaved work.
-        // There is deliberately no "import anyway into the wrong mode".
+        // There is deliberately no "import anyway into the wrong mode", and
+        // no "add" across modes: the switch empties the canvas first.
         if (sketch.mode && paper.mode && sketch.mode !== paper.mode) {
           var kindIn = sketch.mode === 'process' ? 'a PROCESS definition' : 'a FUNCTION sketch';
           var wantSwitch = confirm('This file is ' + kindIn + ', but the designer is in ' +
@@ -2301,28 +2597,67 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
         }
 
-        if (paper.changed) {
-          if (!confirm('The canvas has unsaved changes. Replace it with the imported sketch?')) return;
+        var finish = function (mode) {
+          try {
+            var docToLoad = sketch;
+            var added = null;
+            if (mode === 'add') {
+              var wasChanged = paper.changed;
+              var current = paper.save();
+              paper.changed = wasChanged;
+              var merged = mergeSketchDocuments(current, sketch, { gap: ADD_GAP, grid: 10 });
+              docToLoad = merged.sketch;
+              added = merged.added;
+            }
+
+            paper.reset();
+            paper.load(docToLoad);
+            bumpElementPointer(paper, docToLoad);
+            paper.changed = true; // imported content is unsaved by definition
+
+            if (mode !== 'add' && W.application) {
+              // Replaced content is NEW on this plant — make Ctrl+S open the
+              // save-as dialog instead of silently overwriting a previously
+              // open sketch (or, in process mode, a previously open process
+              // definition). An ADD is an edit of the open sketch: it keeps
+              // its identity, so Ctrl+S saves over it as the user expects.
+              W.application.current_sketch = null;
+              W.application.current_sketch_name = null;
+              if ('current_process' in W.application) W.application.current_process = null;
+            }
+
+            var importedKind = (sketch.mode === 'process') ? 'process definition' : 'sketch';
+            if (before) {
+              pushUndoPoint(before, (mode === 'add' ? 'adding ' : 'importing ') + sketch.blocks.length + ' block' + (sketch.blocks.length === 1 ? '' : 's'), paper);
+            }
+            if (mode === 'add') {
+              toast('Added ' + added.blocks + ' blocks / ' + added.connections + ' wires below the existing ' + (docToLoad.blocks.length - added.blocks) + rebindNote +
+                '. Ctrl+Z undoes it. Save with File → Save sketch as usual.');
+            } else {
+              toast('Imported ' + importedKind + ': ' + sketch.blocks.length + ' blocks / ' + sketch.connections.length + ' wires' + rebindNote +
+                '. Ctrl+Z undoes it.' +
+                (sketch.mode === 'process'
+                  ? ' Use File → Save process, then Publish process to make it a library block.'
+                  : ' Use File → Save sketch to store it on this plant.'));
+            }
+          } catch (err) {
+            console.error('[' + SCRIPT_NAME + '] import failed:', err);
+            toast('Import failed (see console).', 'error');
+          }
+        };
+
+        // Same mode and something already on the canvas: add or replace?
+        // (A mode switch above has already emptied it, so this only asks
+        // when there is genuinely something to keep.)
+        var existingNow = countCanvasBlocks(paper);
+        if (existingNow > 0) {
+          chooseImportMode(existingNow, sketch, !!paper.changed, function (mode) {
+            if (!mode) return; // cancelled — nothing was touched
+            finish(mode);
+          });
+        } else {
+          finish('replace');
         }
-
-        paper.reset();
-        paper.load(sketch);
-        paper.changed = true; // imported content is unsaved by definition
-
-        // This is NEW content on this plant — make Ctrl+S open the save-as
-        // dialog instead of silently overwriting a previously open sketch
-        // (or, in process mode, a previously open process definition).
-        if (W.application) {
-          W.application.current_sketch = null;
-          W.application.current_sketch_name = null;
-          if ('current_process' in W.application) W.application.current_process = null;
-        }
-
-        var importedKind = (sketch.mode === 'process') ? 'process definition' : 'sketch';
-        toast('Imported ' + importedKind + ': ' + sketch.blocks.length + ' blocks / ' + sketch.connections.length + ' wires' + rebindNote +
-          (sketch.mode === 'process'
-            ? '. Use File → Save process, then Publish process to make it a library block.'
-            : '. Use File → Save sketch to store it on this plant.'));
       } catch (err) {
         console.error('[' + SCRIPT_NAME + '] import failed:', err);
         toast('Import failed (see console).', 'error');
@@ -2437,7 +2772,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }, 300);
 
     // Expose internals for console debugging / live verification.
-    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, simReplay: simReplay, closeSimPanel: closeSimPanel, getSimLog: buildLastSimLog, _sim: simState };
+    // Ctrl+Z, bound once on window in the capture phase so it runs before
+    // the host's and the Copy/Paste script's document-level handlers and
+    // can stop them only when it actually undoes something of ours.
+    if (!W.__LDIO_UNDO_BOUND) {
+      W.__LDIO_UNDO_BOUND = true;
+      window.addEventListener('keydown', onUndoKeydown, true);
+    }
+
+    W.__LDIO = { version: VERSION, doExport: doExport, doCopyJson: doCopyJson, openImportPanel: openImportPanel, applyImport: applyImport, openSimPanel: openSimPanel, simRunOnce: simRunOnce, simReplay: simReplay, closeSimPanel: closeSimPanel, getSimLog: buildLastSimLog, undo: undoOnce, undoStack: undoStack, mergeSketchDocuments: mergeSketchDocuments, _sim: simState };
   })();
 }
 
@@ -2467,5 +2810,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildExportFilename: buildExportFilename,
     diagnoseImport: diagnoseImport,
     buildImportReport: buildImportReport,
+    mergeSketchDocuments: mergeSketchDocuments,
+    createSnapshotStack: createSnapshotStack,
   };
 }
