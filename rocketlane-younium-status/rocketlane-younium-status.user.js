@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.2
+// @version      1.4.3
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -834,12 +834,36 @@
       .ynNavBtn.yn-yellow { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
       .ynNavBtn.yn-red    { background: var(--bad-soft);  color: var(--bad);  border-color: transparent; }
       .ynNavBtn.yn-gray   { /* chip defaults above */ }
+      /* Action chip (Delivery to service). The verdict tints above all mean
+         "this is the status we found", and the gray default means "unknown" —
+         borrowing it for a button rendered 66%-opacity slate on near-white,
+         which sat at roughly 4:1 and looked disabled next to the saturated
+         status chips. This is a deliberate action colour instead: same indigo
+         as the button on the task card, so both entry points read as one thing,
+         and heavier text because it is clickable rather than informational. */
+      .ynNavBtn.yn-action {
+        background: rgba(99, 102, 241, 0.12); color: #3730a3;
+        border-color: rgba(99, 102, 241, 0.35); font-weight: 600;
+      }
+      .ynNavBtn.yn-action.yn-on-dark {
+        background: rgba(129, 140, 248, 0.18); color: #c7d2fe;
+        border-color: rgba(129, 140, 248, 0.40);
+      }
       /* Hover lifts the chip the way the tracker's does: a brightness bump and
          a neutral fill over the tint (declared after the tints on purpose). */
       .ynNavBtn:hover { filter: brightness(1.15); background: rgba(15, 23, 42, 0.09); }
       .ynNavBtn.yn-on-dark:hover { background: rgba(255, 255, 255, 0.10); }
       .ynNavBtn.yn-gray:hover { border-color: rgba(15, 23, 42, 0.12); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
       .ynNavBtn.yn-gray.yn-on-dark:hover { border-color: rgba(255, 255, 255, 0.10); }
+      /* Declared after the generic hover so the action chip keeps its own fill
+         instead of flattening to the neutral one. */
+      .ynNavBtn.yn-action:hover {
+        filter: none; background: rgba(99, 102, 241, 0.20);
+        border-color: rgba(99, 102, 241, 0.55); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
+      }
+      .ynNavBtn.yn-action.yn-on-dark:hover {
+        background: rgba(129, 140, 248, 0.28); border-color: rgba(129, 140, 248, 0.60);
+      }
       .ynNavBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
       /* ── Younium status modal (ported from the Project Progress Tracker) ── */
@@ -3077,10 +3101,13 @@
         b.type = "button";
         b.className = "dtsChoice" + (a[step.key] === opt ? " dtsChoiceOn" : "");
         b.textContent = (a[step.key] === opt ? "☑ " : "") + opt;
+        // Selecting an answer does NOT advance the step. Auto-advance made a
+        // mis-click cost a Back press to see what you had just answered, and it
+        // fought you on the questions where you want to change your mind after
+        // reading the hint. Click to choose, then Next.
         b.addEventListener("click", () => {
           a[step.key] = opt;
           dtsSaveAnswers();
-          dtsStepIdx += 1; // auto-advance on choice
           renderDeliveryWizardStep();
         });
         row.appendChild(b);
@@ -3402,7 +3429,8 @@
     const btn = document.createElement("button");
     btn.id = "dtsNavBtn";
     btn.type = "button";
-    btn.className = "ynNavBtn yn-gray";
+    // yn-action, not yn-gray: this chip is a button, not a status verdict.
+    btn.className = "ynNavBtn yn-action";
     btn.title = "Delivery to service — overleveringsveiviseren";
     const icon = document.createElement("span");
     icon.textContent = "📋";

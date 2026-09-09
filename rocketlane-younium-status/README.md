@@ -241,7 +241,7 @@ Walks the 16 questions of *Leveranseavdelingens Sjekkliste til Support*, pre-fil
 | 14. AM Counter hint | The project's Younium subscription link, else the order link |
 | 16. Leveransen internt / bestiller | Rocketlane's project owner and customer company |
 
-Answers are saved per project in `GM` storage as you go, so a half-finished checklist survives a reload.
+Answers are saved per project in `GM` storage as you go, so a half-finished checklist survives a reload. Picking an answer does **not** jump to the next question — click the option, then **Next →** — so a mis-click costs nothing and you can change your mind after reading the hint.
 
 The last step is an **editable rich preview** of exactly what will be sent. From there:
 
