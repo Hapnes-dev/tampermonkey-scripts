@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.6
+// @version      1.14.7
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4753,7 +4753,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.14.6";
+  const RL_HP_STYLE_READY = "1.14.7";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4769,7 +4769,7 @@
     style.textContent = [
       root + "{",
       /* Light Rocketlane home chrome — soft translucent panel, not PPT dark shell. */
-      "--rlhp-bg:rgba(255,255,255,0.55);--rlhp-border:rgba(15,23,42,0.10);--rlhp-muted:rgba(15,23,42,0.58);",
+      "--rlhp-bg:rgba(255,255,255,0.78);--rlhp-border:rgba(15,23,42,0.10);--rlhp-muted:rgba(15,23,42,0.74);",
       "--rlhp-text:rgba(15,23,42,0.90);--rlhp-good:#059669;--rlhp-warn:#b45309;--rlhp-bad:#e11d48;",
       "--rlhp-accent:#0369a1;--rlhp-surface-2:rgba(255,255,255,0.72);--rlhp-radius:12px;",
       "box-sizing:border-box;width:100%;margin:16px 0 20px;padding:14px 16px 16px;",
@@ -4779,13 +4779,13 @@
       "color:var(--rlhp-text);font-family:Segoe UI,system-ui,sans-serif;font-size:13px;line-height:1.35}",
       sel(" *") + "{box-sizing:border-box}",
       sel(" .rlhpHd") + "{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}",
-      sel(" .rlhpTitle") + "{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0}",
+      sel(" .rlhpTitle") + "{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(15,23,42,0.82);margin:0}",
       sel(" .rlhpActions") + "{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
       sel(" .rlhpBtn") + "{appearance:none;border:1px solid var(--rlhp-border);background:var(--rlhp-surface-2);color:var(--rlhp-text);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}",
       sel(" .rlhpBtn:hover") + "{background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.16)}",
       sel(" .rlhpBtn:disabled") + "{opacity:0.55;cursor:default}",
       sel(" .rlhpBtnPrimary") + "{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
-      sel(" .rlhpStatusLine") + "{color:var(--rlhp-muted);font-size:12px;margin:0 0 10px}",
+      sel(" .rlhpStatusLine") + "{color:rgba(15,23,42,0.76);font-size:12.5px;margin:0 0 10px}",
       sel(" .rlhpStatusLine.rlhpErr") + "{color:var(--rlhp-bad)}",
       sel(" .rlhpEmpty") + "{color:var(--rlhp-muted);font-size:12px;padding:4px 2px}",
       sel(" .rlhpList") + "{max-height:min(50vh,520px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
@@ -4793,7 +4793,7 @@
       sel(" .rlhpOwnerHd:hover") + "{background:rgba(15,23,42,0.04)}",
       sel(" .rlhpOwnerLeft") + "{display:flex;gap:8px;align-items:center;min-width:0}",
       sel(" .rlhpOwnerName") + "{font-weight:650;color:var(--rlhp-text)}",
-      sel(" .rlhpOwnerCount") + "{color:var(--rlhp-muted);font-size:12px}",
+      sel(" .rlhpOwnerCount") + "{color:rgba(15,23,42,0.70);font-size:12px}",
       sel(" .rlhpOwnerCollapse") + "{color:var(--rlhp-muted);width:1em;display:inline-block}",
       sel(" .rlhpPinBtn") + "," + sel(" .rlhpSortBtn") + "{appearance:none;border:1px solid transparent;background:transparent;color:var(--rlhp-muted);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer}",
       sel(" .rlhpPinBtn") + "{opacity:0.55;filter:grayscale(1)}",
