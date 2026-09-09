@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.2
+// @version      1.14.3
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4591,17 +4591,64 @@
     try { GM_setValue(RL_HP_GM_SORT, rlHpUi.sort); } catch (_) {}
   }
 
-  async function rlHpFetchLightPage(offset, limit) {
+  // Rocketlane's own Projects grid narrows lightV1 server-side with a `filter`
+  // body (nativeFields / customFields / match / nestedFilter — the same object
+  // the grid keeps in its `criteria` URL param). Verified live 2026-09-10:
+  // `teamMembers oneOf <me>` returned 66 of 872 projects in one 1.4 MB page
+  // (~1 s) where the unfiltered scan pages 5 × 3.7 MB. Owners are always team
+  // members here (the owner clause matched 36, all inside the 66), but the
+  // owner clause stays in as an "any" so an owner-only project is never lost.
+  // An unknown field name is ignored by the API (count stays 872), so a
+  // renamed field degrades to the slow full scan, not to an error.
+  function rlHpBuildMineFilter(userId) {
+    const me = String(userId || "").trim();
+    if (!me) return null;
+    return {
+      nativeFields: [
+        { name: "teamMembers", operation: "oneOf", value: me, sourceType: "project" },
+        { name: "projectOwner", operation: "oneOf", value: me, sourceType: "project" },
+      ],
+      customFields: [],
+      match: "any",
+      nestedFilter: [],
+    };
+  }
+
+  async function rlHpFetchLightPage(offset, limit, filter) {
+    const body = { sortModel: [], filterModel: {} };
+    if (filter) body.filter = filter;
     return gmRocketlaneRequest(
       "POST",
       "/projects/lightV1",
       { offset: String(offset), limit: String(limit) },
-      { sortModel: [], filterModel: {} },
+      body,
     );
   }
 
-  async function rlHpFetchAllLightProjects() {
-    const first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE);
+  async function rlHpFetchAllLightProjects(userId) {
+    const filter = rlHpBuildMineFilter(userId);
+    let first;
+    try {
+      first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE, filter);
+    } catch (e) {
+      if (!filter) throw e;
+      // The filtered call is the new path; if Rocketlane ever rejects it, fall
+      // back to the full scan the panels always worked with.
+      console.warn("[Rocketlane improvements] filtered lightV1 failed, falling back to the full scan:", e?.message || e);
+      return rlHpFetchAllLightProjectsUnfiltered();
+    }
+    if (filter && typeof first?.count === "number" && first.count > 400) {
+      console.warn("[Rocketlane improvements] lightV1 ignored the member filter (count " + first.count + ") — check the nativeFields names.");
+    }
+    return rlHpCollectLightPages(first, filter);
+  }
+
+  async function rlHpFetchAllLightProjectsUnfiltered() {
+    const first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE, null);
+    return rlHpCollectLightPages(first, null);
+  }
+
+  async function rlHpCollectLightPages(first, filter) {
     const all = Array.isArray(first?.data) ? first.data.slice() : [];
     const total = typeof first?.count === "number" ? first.count : undefined;
     if (all.length < RL_HP_PAGE_SIZE || (total != null && all.length >= total)) return all;
@@ -4622,7 +4669,7 @@
       const workers = Array.from({ length: Math.min(RL_HP_FETCH_CONCURRENCY, offsets.length) }, async () => {
         while (cursor < offsets.length) {
           const off = offsets[cursor++];
-          const json = await rlHpFetchLightPage(off, RL_HP_PAGE_SIZE);
+          const json = await rlHpFetchLightPage(off, RL_HP_PAGE_SIZE, filter);
           const batch = Array.isArray(json?.data) ? json.data : [];
           if (batch.length) all.push(...batch);
         }
@@ -4632,7 +4679,7 @@
     }
 
     while (page < RL_HP_MAX_PAGES) {
-      const json = await rlHpFetchLightPage(offset, RL_HP_PAGE_SIZE);
+      const json = await rlHpFetchLightPage(offset, RL_HP_PAGE_SIZE, filter);
       const batch = Array.isArray(json?.data) ? json.data : [];
       if (!batch.length) break;
       all.push(...batch);
@@ -4659,7 +4706,7 @@
 
     const gen = ++rlHpGen;
     const promise = (async () => {
-      const rows = await rlHpFetchAllLightProjects();
+      const rows = await rlHpFetchAllLightProjects(userId);
       if (gen !== rlHpGen) {
         return {
           ownerProjects: rlHpCache.ownerProjects || [],
@@ -4877,12 +4924,32 @@
     }
   }
 
+  // How long to wait for the Overdue card before parking the panels elsewhere.
+  // The card renders after its own data fetch; mounting at the top of MAIN in
+  // the meantime and then moving under Overdue made the panels visibly jump.
+  const RL_HP_ANCHOR_WAIT_MS = 10 * 1000;
+  let rlHpFirstPlaceAttemptAt = 0;
+  let rlHpRefreshKicked = false;
+
   function rlHpPlacePanels(ownerPanel, memberPanel) {
     // Prefer Overdue → Project Owner → In progress.
     const overdue = rlHpFindOverdueSection();
     if (overdue) {
       rlHpPlaceAfter(overdue, ownerPanel);
       rlHpPlaceAfter(ownerPanel, memberPanel);
+      return;
+    }
+    // Overdue not painted yet: stay detached and let the ensure loop retry
+    // (a detached panel counts as "needs remount"). Only after the wait —
+    // a home without an Overdue card — fall back to the greeting or MAIN.
+    if (!rlHpFirstPlaceAttemptAt) rlHpFirstPlaceAttemptAt = Date.now();
+    if (Date.now() - rlHpFirstPlaceAttemptAt < RL_HP_ANCHOR_WAIT_MS) {
+      if (!ownerPanel.isConnected && !memberPanel.isConnected) {
+        rlHpScheduleAnchorRetry();
+        return;
+      }
+      // Already parked by an earlier fallback: leave it, the remount check
+      // moves it under Overdue as soon as the card appears.
       return;
     }
     const greeting = rlHpFindGreetingAnchor();
@@ -4899,6 +4966,19 @@
     rlHpPlaceAfter(ownerPanel, memberPanel);
   }
 
+  // The mutation observer only fires on DOM changes; if the page goes quiet
+  // before Overdue paints (or never paints it), this timer still re-runs the
+  // placement so the wait can expire and the fallback park can happen.
+  let rlHpAnchorRetryTimer = null;
+  function rlHpScheduleAnchorRetry() {
+    if (rlHpAnchorRetryTimer) return;
+    rlHpAnchorRetryTimer = setTimeout(() => {
+      rlHpAnchorRetryTimer = null;
+      if (!rlHpIsHomePath(location.pathname)) return;
+      try { rlHpEnsureHomePanel(); } catch (_) {}
+    }, 500);
+  }
+
   function rlHpTeardownHomePanel() {
     const legacy = document.getElementById("rlHomeProjectsPanel");
     if (legacy) legacy.remove();
@@ -4906,6 +4986,9 @@
     if (owner) owner.remove();
     const member = rlHpGetMemberPanel();
     if (member) member.remove();
+    rlHpFirstPlaceAttemptAt = 0;
+    rlHpRefreshKicked = false;
+    if (rlHpAnchorRetryTimer) { clearTimeout(rlHpAnchorRetryTimer); rlHpAnchorRetryTimer = null; }
   }
 
   function rlHpOpenProject(href) {
@@ -5248,13 +5331,14 @@
       "Projects you were added to as a team member (not owner); all statuses except Completed",
       "member",
     );
-    const firstMount = !ownerPanel.isConnected || !memberPanel.isConnected;
     rlHpPlacePanels(ownerPanel, memberPanel);
-    if (firstMount) {
+    // Kick the data load once per home visit — the panels may still be
+    // detached (waiting for Overdue), which is fine: the result is rendered
+    // into the shells and shows the moment they are placed.
+    if (!rlHpRefreshKicked) {
+      rlHpRefreshKicked = true;
       rlHpRenderPanels();
       void rlHpRefresh({ force: false });
-    } else {
-      rlHpPlacePanels(ownerPanel, memberPanel);
     }
   }
 
