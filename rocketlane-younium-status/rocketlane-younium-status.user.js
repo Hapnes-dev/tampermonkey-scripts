@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.3.0
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links).
+// @version      1.4.0
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -11,11 +11,13 @@
 // @match        https://eu.younium.com/*
 // @match        https://us.younium.com/*
 // @match        https://app.younium.com/*
+// @match        https://iwmac.zendesk.com/*
 // @connect      auth.eu.younium.com
 // @connect      auth.us.younium.com
 // @connect      api.younium.com
 // @connect      app.oneflow.com
 // @connect      kiona.api.rocketlane.com
+// @connect      iwmac.zendesk.com
 // @connect      toolbox.iwmac.local
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -46,6 +48,15 @@
  *     Rocketlane SPA keeps in localStorage) or, failing that, from an Oneflow
  *     search for the plant ID. Oneflow is called with the browser's own
  *     session cookie through GM_xmlhttpRequest. Read-only.
+ *  1c. Delivery to service (section 8), ported from the tracker's handover
+ *     wizard. A "Delivery to service" button on the "Handover to service" task
+ *     card (right of the assignee avatar) plus a nav chip for projects that
+ *     don't have the task. It walks the 16 questions of the delivery
+ *     checklist, pre-filling from the project's Oneflow/Younium state, and
+ *     ends by copying the macro-shaped HTML or creating the Zendesk handover
+ *     ticket outright. On finish it can set the task to Completed through the
+ *     Rocketlane API. On iwmac.zendesk.com pages the script only captures the
+ *     CSRF token, mirroring the younium.com region capture.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -81,6 +92,31 @@
       }
     } catch (_) {}
     return; // never run the Rocketlane UI on Younium pages
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Side A2 — On Zendesk: capture the CSRF token from the meta tag.
+  // The session cookie rides along automatically, but state-changing requests
+  // (the handover ticket POST in section 8) also need the token in an
+  // X-CSRF-Token header. Same shape as the chat bridge's capture, and the same
+  // deal as the Younium region above: nothing else of this script runs here.
+  // ──────────────────────────────────────────────────────────────────────────
+  if (/(?:^|\.)iwmac\.zendesk\.com$/i.test(location.hostname)) {
+    const captureZendeskCsrf = () => {
+      try {
+        const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content");
+        if (token && token !== GM_getValue("zdCsrfToken", "")) {
+          GM_setValue("zdCsrfToken", token);
+          GM_setValue("zdCsrfCapturedAt", Date.now());
+        }
+      } catch (_) {}
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", captureZendeskCsrf, { once: true });
+    else captureZendeskCsrf();
+    // The token rotates when Zendesk renews the session; re-reading a meta tag
+    // once a minute is free.
+    setInterval(captureZendeskCsrf, 60 * 1000);
+    return; // never run the Rocketlane UI on Zendesk pages
   }
 
   // Everything below only runs on the Rocketlane tenant.
@@ -1542,7 +1578,7 @@
     return { r: 255, g: 255, b: 255, a: 1 }; // assume a light header
   }
   function applyButtonSurface() {
-    for (const id of ["ynNavBtn", "ofNavBtn"]) {
+    for (const id of ["ynNavBtn", "ofNavBtn", "dtsNavBtn"]) {
       const btn = document.getElementById(id);
       if (!btn) continue;
       const c = ynEffectiveBg(btn.parentElement || btn);
@@ -1624,19 +1660,34 @@
       const ynCell = document.getElementById("ynNavBtn")?.closest(".ynNavBtnCell");
       if (ynCell && ynCell.parentElement) ynCell.parentElement.insertBefore(buildOneflowNavButton(), ynCell.nextSibling);
     }
+    // Delivery to service sits right of the Oneflow chip (section 8).
+    if (!document.getElementById("dtsNavBtn")) {
+      const ofCell = document.getElementById("ofNavBtn")?.closest(".ynNavBtnCell");
+      if (ofCell && ofCell.parentElement) ofCell.parentElement.insertBefore(buildDeliveryNavButton(), ofCell.nextSibling);
+    }
     applyButtonSurface();
     refreshButtonForCurrentProject();
     refreshOneflowButtonForCurrentProject();
+    try { dtsEnsureCardButtons(); } catch (_) {}
   }
 
   let ensureTimer = null;
+  let dtsCardTimer = null;
   function scheduleEnsure() {
+    // The project-plan board is virtualised: cards are destroyed and rebuilt as
+    // you scroll, so the card button can't rely on the nav-chip early-out below
+    // and gets its own trailing debounce. Cheap — one attribute-selector query
+    // at most a few times a second while the board churns.
+    if (!dtsCardTimer) {
+      dtsCardTimer = setTimeout(() => { dtsCardTimer = null; try { dtsEnsureCardButtons(); } catch (_) {} }, 300);
+    }
     // Steady-state early-out: once the button is present + connected there's
     // nothing for the mutation observer to do (route changes are handled by the
     // history hooks below), so we never schedule work on the SPA's hot path.
     const btn = document.getElementById("ynNavBtn");
     const ofBtn = document.getElementById("ofNavBtn");
-    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected) return;
+    const dtsBtn = document.getElementById("dtsNavBtn");
+    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected) return;
     if (ensureTimer) return;
     ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 300);
   }
@@ -1749,7 +1800,10 @@
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v)) || "";
     } catch (_) { return ""; }
   }
-  function gmRocketlaneGet(path, query) {
+  // One transport for every Rocketlane call. GET is the only verb sections 5b
+  // and 8's lookups use; section 8's "tick the task complete" is the single
+  // writer (PUT /tasks/{id}), which is why `body` exists at all.
+  function gmRocketlaneRequest(method, path, query, body) {
     return new Promise((resolve, reject) => {
       const apiKey = rlReadApiKey();
       if (!apiKey) { reject(new Error("No Rocketlane api-key in this page yet — reload the page once you are logged in.")); return; }
@@ -1760,10 +1814,11 @@
       } catch (_) { reject(new Error("Bad Rocketlane API path: " + path)); return; }
       // SECURITY: the api-key only ever goes to the Rocketlane API origin.
       if (url.origin !== ROCKETLANE_API_ORIGIN) { reject(new Error("Refusing to send the Rocketlane api-key to " + url.origin)); return; }
-      GM_xmlhttpRequest({
-        method: "GET",
+      const headers = { "api-key": apiKey, accept: "application/json" };
+      const init = {
+        method: String(method || "GET").toUpperCase(),
         url: url.toString(),
-        headers: { "api-key": apiKey, accept: "application/json" },
+        headers,
         timeout: 20000,
         onload: (res) => {
           if (res.status < 200 || res.status >= 300) { reject(new Error("HTTP " + res.status + ": " + (res.responseText || "").slice(0, 300))); return; }
@@ -1772,9 +1827,15 @@
         },
         onerror: () => reject(new Error("Network error reaching Rocketlane API")),
         ontimeout: () => reject(new Error("Rocketlane API timed out")),
-      });
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
     });
   }
+  function gmRocketlaneGet(path, query) { return gmRocketlaneRequest("GET", path, query); }
 
   // ── Document discovery ──
   function ofExtractAgreementId(url) {
@@ -2386,6 +2447,953 @@
     let tries = 0;
     const boot = setInterval(() => { tries += 1; ensure(); if (document.getElementById("ynNavBtn") || tries > 40) clearInterval(boot); }, 500);
   });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 8. Delivery to service — the Project Progress Tracker's handover wizard.
+  //
+  //    The tracker owns the canonical checklist (its `deliveryWizardSteps` /
+  //    `buildOverleveringHtml`). The Norwegian question text and the emitted
+  //    markup below are copied from it VERBATIM, because their job is to
+  //    reproduce the Zendesk macro "Sjekkliste Overlevering IWMAC Kulde til
+  //    Service" (macro 1900005365194) when pasted into the composer. Reword
+  //    anything here without rewording it in the tracker and the two diverge.
+  //
+  //    Two entry points: a button on the "Handover to service" task card, right
+  //    of the assignee avatar, and a nav chip beside the Oneflow chip for the
+  //    projects that don't carry that task.
+  // ════════════════════════════════════════════════════════════════════════
+
+  const ZENDESK_HOST = "https://iwmac.zendesk.com";
+  const ZENDESK_API = ZENDESK_HOST + "/api/v2";
+  const ZENDESK_AGENT_TICKET_URL = ZENDESK_HOST + "/agent/tickets/";
+  // Re-read from the macro at call time so an edit in Zendesk carries over;
+  // these are the values as of 2026-09 and are only the fallback.
+  const ZENDESK_HANDOVER_MACRO_ID = "1900005365194";
+  const ZENDESK_HANDOVER_GROUP_ID = 24854481;   // IWMAC Support
+  const ZENDESK_HANDOVER_TAGS = ["aktivering_basic"];
+
+  function gmZendeskSendRaw(method, url, body, extraHeaders) {
+    return new Promise((resolve, reject) => {
+      const headers = Object.assign({ accept: "application/json" }, extraHeaders || {});
+      const init = {
+        method,
+        url,
+        headers,
+        timeout: 20000,
+        anonymous: false, // include the browser's Zendesk session cookie
+        onload: (res) => {
+          const text = res.responseText || "";
+          let json = null;
+          if (text) { try { json = JSON.parse(text); } catch (_) {} }
+          resolve({ status: res.status, json, text });
+        },
+        onerror: () => reject(new Error("Network error reaching Zendesk API")),
+        ontimeout: () => reject(new Error("Zendesk API timed out")),
+      };
+      if (body !== undefined && body !== null) {
+        headers["content-type"] = "application/json";
+        init.data = typeof body === "string" ? body : JSON.stringify(body);
+      }
+      GM_xmlhttpRequest(init);
+    });
+  }
+  // A 401 on a SAML session usually means the cookie lapsed while the identity
+  // behind it is still good — /users/me.json with the renew header refreshes it.
+  let zdRenewInFlight = null;
+  let zdLastRenewAt = 0;
+  function zendeskRenewSession() {
+    if (zdRenewInFlight) return zdRenewInFlight;
+    if (Date.now() - zdLastRenewAt < 5000) return Promise.resolve(false); // don't hammer
+    zdLastRenewAt = Date.now();
+    zdRenewInFlight = (async () => {
+      try {
+        const res = await gmZendeskSendRaw("GET", ZENDESK_API + "/users/me.json", null, { "X-Zendesk-Renew-Session": "true" });
+        return res.status >= 200 && res.status < 300;
+      } catch (_) { return false; }
+      finally { setTimeout(() => { zdRenewInFlight = null; }, 0); }
+    })();
+    return zdRenewInFlight;
+  }
+  async function zendeskApiRequest(method, path, body) {
+    const url = /^https?:/i.test(path) ? path : (ZENDESK_API + path);
+    // SECURITY: the session cookie + CSRF token only ever go to Zendesk. A
+    // caller-supplied absolute URL to another @connect host must not get them
+    // (same pin as the Rocketlane api-key and the Younium bearer).
+    let origin = "";
+    try { origin = new URL(url).origin; } catch (_) {}
+    if (origin !== ZENDESK_HOST) throw new Error("Refusing to send Zendesk credentials to " + (origin || url));
+    const upper = String(method || "GET").toUpperCase();
+    const extra = {};
+    if (upper !== "GET" && upper !== "HEAD") {
+      const csrf = GM_getValue("zdCsrfToken", "");
+      if (!csrf) throw new Error("Zendesk CSRF token not captured yet. Open " + ZENDESK_HOST + " once while logged in, then retry.");
+      extra["X-CSRF-Token"] = csrf;
+    }
+    let res = await gmZendeskSendRaw(upper, url, body, extra);
+    if (res.status === 401 && await zendeskRenewSession()) {
+      res = await gmZendeskSendRaw(upper, url, body, Object.assign({}, extra, { "X-Zendesk-Renew-Session": "true" }));
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("HTTP " + res.status + ": Zendesk session expired or missing. Open " + ZENDESK_HOST + " once while logged in, then try again.");
+    }
+    if (res.status < 200 || res.status >= 300) throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
+    return res.json;
+  }
+  async function zendeskCreateHandoverTicket(subject, html) {
+    let groupId = ZENDESK_HANDOVER_GROUP_ID;
+    let tags = ZENDESK_HANDOVER_TAGS.slice();
+    try {
+      const m = await zendeskApiRequest("GET", "/macros/" + ZENDESK_HANDOVER_MACRO_ID + ".json");
+      const actions = m?.macro?.actions ?? [];
+      const g = Number(actions.find((x) => x?.field === "group_id")?.value);
+      const t = String(actions.find((x) => x?.field === "current_tags")?.value ?? "").trim();
+      if (Number.isFinite(g) && g > 0) groupId = g;
+      if (t) tags = t.split(/[\s,]+/).filter(Boolean);
+    } catch (e) {
+      // Macro unreadable (logged out, macro moved) — the constants still route
+      // the ticket to the right group.
+      console.warn("[Delivery to service] handover macro lookup failed, using defaults:", e?.message ?? e);
+    }
+    // Public reply, per the delivery team's workflow — the checklist IS the
+    // handover, not a side note.
+    const res = await zendeskApiRequest("POST", "/tickets.json", {
+      ticket: {
+        subject: String(subject || "").trim() || "Avblokkering og Overlevering",
+        comment: { html_body: String(html || ""), public: true },
+        group_id: groupId,
+        tags,
+        status: "open",
+      },
+    });
+    return res?.ticket ?? null;
+  }
+
+  // ── The "Handover to service" task, and ticking it complete ──
+  // "Handover from sales to delivery" lives in the same tenant, so the match is
+  // anchored on the whole phrase rather than the word "handover".
+  function dtsIsHandoverTaskName(name) {
+    const s = String(name ?? "").trim();
+    return /^handover\s+to\s+service$/i.test(s) || /\bhandover\s+to\s+service\b/i.test(s);
+  }
+  async function dtsFindHandoverTask(rlProjectId) {
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId) + "/tasks");
+    const list = Array.isArray(json) ? json : (json?.data ?? []);
+    const exact = list.find((t) => /^handover\s+to\s+service$/i.test(String(t?.taskName ?? "").trim()));
+    return exact || list.find((t) => dtsIsHandoverTaskName(t?.taskName)) || null;
+  }
+  // Status is a SINGLE_SELECT custom field on the task: 1 To do, 2 In progress,
+  // 3 Completed, 4 Blocked. The field id is per-tenant (230397 here), so it's
+  // read off the task itself rather than hardcoded, and the write is verified by
+  // re-reading — a PUT that Rocketlane accepts but ignores would otherwise look
+  // like success.
+  const DTS_STATUS_COMPLETED = 3;
+  function dtsTaskStatusField(task) {
+    const fields = Array.isArray(task?.fields) ? task.fields : [];
+    return fields.find((f) => f?.fieldColumnName === "status" || (f?.fieldName === "Status" && f?.fieldId)) || null;
+  }
+  async function dtsCompleteTask(taskId) {
+    const id = String(taskId ?? "").trim();
+    if (!id) throw new Error("Missing Rocketlane taskId.");
+    const before = await gmRocketlaneGet("/tasks/" + encodeURIComponent(id));
+    const field = dtsTaskStatusField(before);
+    if (!field?.fieldId) throw new Error("Couldn't find the Status field on task " + id + ".");
+    if (Number(field.fieldValue) === DTS_STATUS_COMPLETED) return { alreadyDone: true };
+    await gmRocketlaneRequest("PUT", "/tasks/" + encodeURIComponent(id), null, {
+      fields: [{ fieldId: field.fieldId, fieldValue: DTS_STATUS_COMPLETED }],
+    });
+    const after = await gmRocketlaneGet("/tasks/" + encodeURIComponent(id));
+    const now = Number(dtsTaskStatusField(after)?.fieldValue);
+    if (now !== DTS_STATUS_COMPLETED) {
+      throw new Error("Rocketlane accepted the update but the task is still status " + now + ".");
+    }
+    return { alreadyDone: false };
+  }
+
+  // ── Project facts the wizard pre-fills from ──
+  // Everything here is already cached by the Younium and Oneflow chips, so
+  // opening the wizard on a project you've been looking at costs no requests.
+  function dtsPlantId(p) { return extractPlantIdFromProjectName(p?.name) || "XXXX"; }
+  function dtsPlantName(p) {
+    // "2581 - Meny Løren: MQTT aftermarked" → "Meny Løren"
+    let s = String(p?.name || "").trim();
+    s = s.replace(/^\s*\d{3,6}\s*[-–—]?\s*/, "");
+    s = s.replace(/\s*:\s*[^:]*$/, "");
+    return s.trim() || "Anleggsnavn";
+  }
+  // Q14 asks whether the number of systems on the order still matches the
+  // original sales order, which means checking AM Counter against the project's
+  // Younium subscription — so the hint carries both links rather than making you
+  // go find the subscription yourself.
+  function dtsYouniumHint(p) {
+    const base = "Bruk AM Counter: http://toolbox.iwmac.local/am_counter/ for å sjekke om det stemmer med posisjonene i Younium.";
+    const sub = String(p?.youniumSubscriptionUrl ?? "").trim();
+    const order = String(p?.youniumUrl ?? "").trim();
+    if (sub) return base + " Younium-abonnement: " + sub;
+    if (order) return base + " Ingen abonnementslenke funnet — Younium-ordre: " + order;
+    return base + " Ingen Younium-lenke funnet for dette anlegget.";
+  }
+  async function dtsBuildProject(ctx) {
+    const p = {
+      rlProjectId: ctx.rlProjectId,
+      name: ctx.name || "",
+      client: "",
+      ownerName: "",
+      oneflowSigned: null,
+      oneflowUrl: "",
+      oneflowSubscriptionUrl: "",
+      youniumUrl: "",
+      youniumSubscriptionUrl: "",
+    };
+    // Rocketlane project — partner (customer) and project owner seed step 16.
+    try {
+      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(ctx.rlProjectId), { includeAllFields: true });
+      const proj = json?.data ?? json;
+      if (proj?.projectName) p.name = proj.projectName;
+      p.client = String(proj?.customer?.companyName ?? "").trim();
+      const o = proj?.projectOwner;
+      p.ownerName = [o?.firstName, o?.lastName].filter(Boolean).join(" ").trim();
+    } catch (e) {
+      console.warn("[Delivery to service] project lookup failed:", e?.message ?? e);
+    }
+    // Oneflow — same verdict the chip shows.
+    try {
+      const v = await computeOneflowForProject(ctx.rlProjectId, ctx.plantId);
+      p.oneflowSigned = v?.signed ?? null;
+      p.oneflowUrl = String(v?.documentUrl ?? "");
+      p.oneflowSubscriptionUrl = String(v?.subDocumentUrl ?? "");
+    } catch (e) {
+      console.warn("[Delivery to service] Oneflow lookup failed:", e?.message ?? e);
+    }
+    // Younium — same verdict the chip shows.
+    if (ctx.plantId) {
+      try {
+        const v = await computeForPlant(ctx.plantId, p.name);
+        p.youniumUrl = String(v?.links?.saved ?? "");
+        const subId = v?.subscriptionOrder?.id;
+        if (subId) p.youniumSubscriptionUrl = ynOrderUrl(subId);
+      } catch (e) {
+        console.warn("[Delivery to service] Younium lookup failed:", e?.message ?? e);
+      }
+    }
+    return p;
+  }
+
+  const JA_NEI = ["Ja", "Nei"];
+  function dtsSteps(p, a) {
+    const whenNo5 = () => a.q5 === "Nei";
+    return [
+      { key: "title", type: "text", label: "Tittel på Zendesk-saken",
+        hint: "PlantID - Anleggsnavn - Avblokkering og Overlevering (rediger ved behov)",
+        def: dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering" },
+      { key: "q1", type: "choice", options: ["Ja", "Nei", "ANEO"],
+        label: "1. Er abonnementsavtalen signert?",
+        def: p.oneflowSigned === true ? "Ja" : undefined,
+        hint: p.oneflowSigned === true ? "Oneflow-sjekken sier dokumentet er signert — forhåndsvalgt Ja." : "" },
+      { key: "q2", type: "choice", options: JA_NEI, label: "2. Er det oppgitt anleggs administrator i abonnementsavtalen?" },
+      { key: "q3", type: "fields", label: "3. Legg ved linker til Oneflow",
+        fields: [
+          { k: "ordre", label: "Ordre tilbudet", def: String(p.oneflowUrl || "") },
+          { k: "abm",   label: "Abonnementsavtalen", def: String(p.oneflowSubscriptionUrl || "") },
+        ] },
+      { key: "q4", type: "choice", options: JA_NEI, label: "4. Er nøkkelinformasjon og link til Zendesk-overlevering lagt til i PANG-notater?" },
+      { key: "q5", type: "choice", options: JA_NEI, label: "5. Er leveransen komplett i henhold til ordren?" },
+      { key: "q6", type: "textarea", when: whenNo5, label: "6. Hva gjenstår etter overlevering?" },
+      { key: "q7", type: "textarea", when: whenNo5, label: "7. Hvem er ansvarlig for å løse disse manglene?" },
+      { key: "q8", type: "choice", options: JA_NEI, label: "8. Skal kuldefirma stå på vaktliste?" },
+      { key: "q9", type: "choice", options: ["Ja", "Nei", "ANEO alarm senter"], label: "9. Skal anlegget inn i Alarmsenteret vårt?" },
+      { key: "q9b", type: "choice", options: JA_NEI, when: () => a.q9 === "Ja", label: "9b. Har vi etterspurt ringeliste?" },
+      { key: "q10", type: "choice", options: JA_NEI, label: "10. Er det lagt inn IK-mat?" },
+      { key: "q11", type: "choice", options: JA_NEI, label: "11. Er remote access satt opp?",
+        hint: "Gjerne bekreft ved å sjekke om du får tilgang via remote access." },
+      { key: "q12", type: "choice", options: JA_NEI, label: "12. Integrert i energinett?" },
+      { key: "q13", type: "choice", options: JA_NEI, label: "13. Er det lagt inn tidsstyring på ventilasjonen?",
+        hint: "Hvis det er standard ventilasjon, skal dette alltid legges inn dersom ventilasjon er inkludert i ordren." },
+      { key: "q14", type: "choice", options: JA_NEI,
+        label: "14. Er det gjort endringer av antall systemer på ordre iht opprinnelig salgsordre — i så fall, er dette oppdatert i abm.ordre?",
+        hint: dtsYouniumHint(p) },
+      { key: "q15", type: "choice", options: JA_NEI, label: "15. Har du lagret all dokumentasjon i anleggsmappe: 99-underlag fra kunde?" },
+      { key: "q16", type: "fields", label: "16. Tilleggsinformasjon",
+        fields: [
+          { k: "internt",   label: "Hvem har gjort leveransen internt", def: String(p.ownerName || "") },
+          // Bestiller = the project's partner (Rocketlane's customer company).
+          { k: "bestiller", label: "Hvem er bestiller", def: String(p.client || "") },
+          { k: "g4",        label: "Er det brukt 4G", def: "" },
+          { k: "annet",     label: "Annen relevant informasjon", def: "" },
+        ] },
+      { key: "review", type: "review", label: "Ferdig — /overlevering-macroen er fylt ut" },
+    ].filter((s) => !s.when || s.when());
+  }
+
+  function dtsBuildText(p, a) {
+    const cb = (on) => (on ? "[x]" : "[ ]");
+    const c = (q, opt) => cb(a[q] === opt);
+    const t = (v) => String(v ?? "").trim();
+    // Zendesk's rich-text composer auto-converts lines starting with "N. " into
+    // an <ol>. A NO-BREAK space after the dot (and "•" instead of "* ") defeats
+    // the auto-list detection while looking identical when pasted.
+    const NB = " ";
+    const BULLET = "•" + NB;
+    const SUB = "   " + BULLET;
+    const L = [];
+    L.push(t(a.title) || (dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering"));
+    L.push("");
+    L.push("Leveranseavdelingens Sjekkliste til Support");
+    L.push("Vennligst besvar følgende spørsmål i forbindelse med leveranse:");
+    L.push("");
+    L.push("1." + NB + "Er abonnementsavtalen signert?");
+    L.push(c("q1", "Ja") + " Ja"); L.push(c("q1", "Nei") + " Nei"); L.push(c("q1", "ANEO") + " ANEO");
+    L.push("");
+    L.push("2." + NB + "Er det oppgitt anleggs administrator i abonnementsavtalen?");
+    L.push(c("q2", "Ja") + " Ja"); L.push(c("q2", "Nei") + " Nei");
+    L.push("");
+    L.push("3." + NB + "Legg ved linker til Oneflow:");
+    L.push("ordre tilbudet: " + t(a.q3_ordre));
+    L.push("abonnementsavtalen: " + t(a.q3_abm));
+    L.push("");
+    L.push("4." + NB + "Er nøkkelinformasjon og link til Zendesk-overlevering lagt til i PANG-notater?");
+    L.push(c("q4", "Ja") + " Ja"); L.push(c("q4", "Nei") + " Nei");
+    L.push("");
+    L.push("5." + NB + "Er leveransen komplett i henhold til ordren?");
+    L.push(c("q5", "Ja") + " Ja"); L.push(c("q5", "Nei") + " Nei");
+    L.push("");
+    L.push("6." + NB + "Hvis nei: Hva gjenstår etter overlevering?");
+    L.push("Svar: " + (a.q5 === "Nei" ? t(a.q6) : ""));
+    L.push("");
+    L.push("7." + NB + "Hvis nei: Hvem er ansvarlig for å løse disse manglene?");
+    L.push("Svar: " + (a.q5 === "Nei" ? t(a.q7) : ""));
+    L.push("");
+    L.push("8." + NB + "Skal kuldefirma stå på vaktliste");
+    L.push(c("q8", "Ja") + " Ja"); L.push(c("q8", "Nei") + " Nei");
+    L.push("");
+    L.push("9." + NB + "Skal anlegget inn i Alarmsenteret vårt?");
+    L.push(c("q9", "Ja") + " Ja"); L.push(c("q9", "Nei") + " Nei"); L.push(c("q9", "ANEO alarm senter") + " ANEO alarm senter");
+    L.push("Hvis ja:");
+    L.push(SUB + "Har vi etterspurt ringeliste?");
+    L.push(cb(a.q9 === "Ja" && a.q9b === "Ja") + " Ja");
+    L.push(cb(a.q9 === "Ja" && a.q9b === "Nei") + " Nei");
+    L.push("");
+    L.push("10." + NB + "Er det lagt inn IK-mat?");
+    L.push(c("q10", "Ja") + " Ja"); L.push(c("q10", "Nei") + " Nei");
+    L.push("");
+    L.push("11." + NB + "Er remote access satt opp? (Gjerne bekreft ved å sjekke om du får tilgang via remote access)");
+    L.push(c("q11", "Ja") + " Ja"); L.push(c("q11", "Nei") + " Nei");
+    L.push("");
+    L.push("12." + NB + "Integrert i energinett?");
+    L.push(c("q12", "Ja") + " Ja"); L.push(c("q12", "Nei") + " Nei");
+    L.push("");
+    L.push("13." + NB + "Er det lagt inn tidsstyring på ventilasjonen? (Hvis det er standard ventilasjon, skal dette alltid legges inn dersom ventilasjon er inkludert i ordren.)");
+    L.push(c("q13", "Ja") + " Ja"); L.push(c("q13", "Nei") + " Nei");
+    L.push("");
+    L.push("14." + NB + "Er det gjort endringer av antall systemer på ordre iht opprinnelig salgsordre, i såfall; er dette oppdatert i abm.ordre");
+    L.push(c("q14", "Ja") + " Ja"); L.push(c("q14", "Nei") + " Nei");
+    L.push("(Bruk AM Counter: http://toolbox.iwmac.local/am_counter/ for å sjekke om det stemmer med posisjonene i Younium)");
+    L.push("");
+    L.push("15." + NB + "Har du lagret all dokumentasjon i anleggs mappe : 99-underlag fra kunde?");
+    L.push(c("q15", "Ja") + " Ja"); L.push(c("q15", "Nei") + " Nei");
+    L.push("");
+    L.push("16." + NB + "Tilleggsinformasjon:");
+    L.push("");
+    L.push(BULLET + "Hvem har gjort leveransen internt: " + t(a.q16_internt));
+    L.push(BULLET + "Hvem er bestiller: " + t(a.q16_bestiller));
+    L.push(BULLET + "Er det brukt 4G: " + t(a.q16_g4));
+    L.push(BULLET + "Annen relevant informasjon: " + t(a.q16_annet));
+    L.push("");
+    L.push("");
+    L.push("DEL 2,");
+    L.push("Følges opp Service");
+    L.push("Sjekkliste for Service oppfølging");
+    L.push("Vennligst besvar og gjennomfør følgende ved oppfølging av sak:");
+    L.push("");
+    L.push(BULLET + "Avblokker anlegg");
+    L.push("[ ] Fullført");
+    L.push("");
+    L.push(BULLET + "Avklar med kunde:");
+    L.push(SUB + "Repetering og kopi av alarmer");
+    L.push("[ ] Ja");
+    L.push("[ ] Nei");
+    L.push(SUB + "Tilgangsliste / Brukerliste");
+    L.push("[ ] Bekreftet med kunde");
+    L.push(SUB + "[ ] Tildelt Firm_admin til korrekt bruker");
+    L.push(SUB + "[ ] Ta bort partner / installatør fra vaktliste med mindre kunde bekrefter at de skal stå der.");
+    L.push("");
+    L.push(BULLET + "Send lenke med opplæring til kunde");
+    L.push(SUB + "Lenke: Kom i gang med IWMAC — https://iwmac.zendesk.com/hc/no/articles/7301141845660-Kom-i-gang-med-IWMAC (bruk macro - opplæring IWMAC)");
+    L.push("[ ] Sendt");
+    L.push(SUB + "Avklar om mer opplæring trengs");
+    L.push("[ ] Kunde ønsker opplæring");
+    L.push("[ ] Ønsker ikke videre opplæring");
+    L.push("");
+    L.push(BULLET + "Sjekk om anlegg skal inn i Alarmsenter");
+    L.push("[ ] Ja");
+    L.push("[ ] Nei");
+    L.push("");
+    L.push(BULLET + "NB! Sjekk startdato om det er testperiode");
+    L.push("[ ] Bekreftet testperiode");
+    L.push("");
+    L.push(BULLET + "Aktiver abonnent ordre i Younium");
+    L.push("[ ] Fullført");
+    L.push(SUB + "NB! Sett riktig oppstartdato");
+    L.push("Oppstartdato:");
+    L.push(SUB + "Younium ordre: " + String(p.youniumUrl || ""));
+    L.push("");
+    L.push("Tilleggsinformasjon:");
+    L.push("");
+    L.push(BULLET + "NB! husk å legge til Kenneth Sjølstad - kenneth.sjolstad@bunnpris.no på alle nye bunnpris anlegg!");
+    L.push(BULLET + "NB! husk å legge til Øystein Eng (oystein.eng@kjopmannshuset.no) og Kristoffer Kjelsberg (kristoffer.kjelsberg@joker.no) om det er Joker eller SPAR-butikker");
+    L.push(BULLET + "NB! husk å legge til Erik Halstensen med firm_admin og service-tilgang på alle nye Meny butikker");
+    return L.join("\n");
+  }
+
+  // The macro is HTML: an <h3>, a real <ol> for the 16 questions, nested <ul>s
+  // for the sub-points. This reproduces that markup with the answers filled in
+  // and goes on the clipboard as text/html, so pasting into the Zendesk
+  // composer looks like the macro instead of hand-drawn "1." numbers.
+  // Bold/plain per question follows the macro (11, 13, 14 and 15 are plain).
+  function dtsBuildHtml(p, a) {
+    const e = (v) => escHtml(String(v ?? "").trim());
+    const box = (on) => (on ? "[x]" : "[]");
+    const c = (q, opt) => box(a[q] === opt);
+    // The macro ends every item with `<br>&nbsp;`, which CKEditor 5 strips from
+    // a list item on paste — verified by pasting the macro's OWN html, whose
+    // spacers vanish too. An empty <p> inside the <li> survives.
+    const SP = "<p>&nbsp;</p>";
+    const item = (inner) => "<li><p>" + inner + "</p>" + SP + "</li>";
+    // A saved link is emitted as a real anchor; Zendesk otherwise auto-links a
+    // bare URL and eats the text that follows it on the next line.
+    const link = (v) => {
+      const u = String(v ?? "").trim();
+      if (!/^https?:\/\//i.test(u)) return e(u);
+      return '<a href="' + escHtml(u) + '">' + escHtml(u) + "</a>";
+    };
+    const q = (text, bold) => (bold === false ? e(text) : "<strong>" + e(text) + "</strong>");
+    const opts = (key, list) => list.map((o) => "<br>" + c(key, o) + " " + e(o)).join("");
+    const JA = ["Ja", "Nei"];
+    const H = [];
+
+    H.push("<h3><strong>Leveranseavdelingens Sjekkliste til Support</strong></h3>");
+    H.push("<p>Vennligst besvar følgende spørsmål i forbindelse med leveranse:</p>");
+    H.push("<ol>");
+    H.push(item(q("Er abonnementsavtalen signert?") + opts("q1", ["Ja", "Nei", "ANEO"])));
+    H.push(item(q("Er det oppgitt anleggs administrator i abonnementsavtalen?") + opts("q2", JA)));
+    H.push(item(q("Legg ved linker til Oneflow:") +
+      "<br>ordre tilbudet: " + link(a.q3_ordre) +
+      "<br>abonnementsavtalen: " + link(a.q3_abm)));
+    H.push(item(q("Er nøkkelinformasjon og link til Zendesk-overlevering lagt til i PANG-notater?") + opts("q4", JA)));
+    H.push(item(q("Er leveransen komplett i henhold til ordren?") + opts("q5", JA)));
+    H.push(item(q("Hvis nei: Hva gjenstår etter overlevering?") +
+      "<br>Svar:&nbsp;" + (a.q5 === "Nei" ? e(a.q6) : "")));
+    H.push(item(q("Hvis nei: Hvem er ansvarlig for å løse disse manglene?") +
+      "<br>Svar:&nbsp;" + (a.q5 === "Nei" ? e(a.q7) : "")));
+    H.push(item(q("Skal kuldefirma stå på vaktliste") + opts("q8", JA)));
+    H.push("<li><p>" + q("Skal anlegget inn i Alarmsenteret vårt?") +
+      opts("q9", ["Ja", "Nei", "ANEO alarm senter"]) +
+      "<br><i>Hvis ja:</i></p><ul>" +
+      item(q("Har vi etterspurt ringeliste?") +
+        "<br>" + box(a.q9 === "Ja" && a.q9b === "Ja") + " Ja" +
+        "<br>" + box(a.q9 === "Ja" && a.q9b === "Nei") + " Nei") +
+      "</ul></li>");
+    H.push(item(q("Er det lagt inn IK-mat?") + opts("q10", JA)));
+    H.push(item(q("Er remote access satt opp? (Gjerne bekreft ved å sjekke om du får tilgang via remote access)", false) + opts("q11", JA)));
+    H.push(item(q("Integrert i energinett?") + opts("q12", JA)));
+    H.push(item(q("Er det lagt inn tidsstyring på ventilasjonen? (Hvis det er standard ventilasjon, skal dette alltid legges inn dersom ventilasjon er inkludert i ordren.)", false) + opts("q13", JA)));
+    H.push(item(q("Er det gjort endringer av antall systemer på ordre iht opprinnelig salgsordre, i såfall; er dette oppdatert i abm.ordre", false) +
+      opts("q14", JA) +
+      '<br>(Bruk AM Counter: <a href="http://toolbox.iwmac.local/am_counter/">http://toolbox.iwmac.local/am_counter/</a> for å sjekke om det stemmer med posisjonene i Younium)'));
+    H.push(item(q("Har du lagret all dokumentasjon i anleggs mappe : 99-underlag fra kunde?", false) + opts("q15", JA)));
+    H.push("<li><p>" + q("Tilleggsinformasjon:") + "</p></li>");
+    H.push("</ol>");
+    H.push("<ul>" +
+      "<li>Hvem har gjort leveransen internt: " + e(a.q16_internt) + "</li>" +
+      "<li>Hvem er bestiller: " + e(a.q16_bestiller) + "</li>" +
+      "<li>Er det brukt 4G: " + e(a.q16_g4) + "</li>" +
+      "<li>Annen relevant informasjon: " + e(a.q16_annet) + "</li>" +
+      "</ul>");
+
+    H.push("<hr><p>&nbsp;</p>");
+    H.push("<p>DEL 2,</p>");
+    H.push("<p><strong>Følges opp Service</strong></p>");
+    H.push("<h3><strong>Sjekkliste for Service oppfølging</strong></h3>");
+    H.push("<p>Vennligst besvar og gjennomfør følgende ved oppfølging av sak:</p>");
+    H.push("<ul>");
+    H.push(item("<strong>Avblokker anlegg</strong><br>[] Fullført"));
+    H.push("<li><p><strong>Avklar med kunde:</strong></p><ul>" +
+      "<li><p><strong>Repetering og kopi av alarmer</strong><br>[] Ja<br>[] Nei</p></li>" +
+      "<li><p><strong>Tilgangsliste / Brukerliste</strong><br>[] Bekreftet med kunde</p></li>" +
+      "<li><p>[] Tildelt Firm_admin til korrekt bruker</p></li>" +
+      item("[] Ta bort partner / installatør fra vaktliste med mindre kunde bekrefter at de skal stå der.") +
+      "</ul></li>");
+    H.push("<li><p><strong>Send lenke med opplæring til kunde</strong></p><ul>" +
+      '<li><p>Lenke: <a href="https://iwmac.zendesk.com/hc/no/articles/7301141845660-Kom-i-gang-med-IWMAC">Kom i gang med IWMAC</a> (bruk macro - opplæring IWMAC)<br>[] Sendt</p></li>' +
+      item("<strong>Avklar om mer opplæring trengs</strong><br>[] Kunde ønsker opplæring<br>[] Ønsker ikke videre opplæring") +
+      "</ul></li>");
+    H.push(item("<strong>Sjekk om anlegg skal inn i Alarmsenter</strong><br>[] Ja<br>[] Nei"));
+    H.push(item("<strong>NB! Sjekk startdato om det er testperiode</strong><br>[] Bekreftet testperiode"));
+    H.push("<li><p><strong>Aktiver abonnent ordre i Younium</strong><br>[] Fullført</p><ul>" +
+      "<li><p><strong>NB! Sett riktig oppstartdato</strong><br>Oppstartdato:</p></li>" +
+      "<li><p>Younium ordre: " + link(p.youniumUrl) + "</p></li>" +
+      "</ul></li>");
+    H.push("</ul>");
+    H.push("<p><strong>Tilleggsinformasjon:</strong></p>");
+    H.push("<ul>" +
+      '<li><strong>NB!</strong> husk å legge til Kenneth Sjølstad - <a href="mailto:kenneth.sjolstad@bunnpris.no">kenneth.sjolstad@bunnpris.no</a> på alle nye bunnpris anlegg!</li>' +
+      '<li><strong>NB!</strong> husk å legge til Øystein Eng (<a href="mailto:oystein.eng@kjopmannshuset.no">oystein.eng@kjopmannshuset.no</a>) og Kristoffer Kjelsberg (<a href="mailto:kristoffer.kjelsberg@joker.no">kristoffer.kjelsberg@joker.no</a>) om det er Joker eller SPAR-butikker</li>' +
+      "<li><strong>NB!</strong> husk å legge til Erik Halstensen med firm_admin og service-tilgang på alle nye Meny butikker</li>" +
+      "</ul>");
+    return H.join("");
+  }
+
+  // ── Wizard state, persisted per project ──
+  // The tracker keeps answers on the project object in localStorage; here they
+  // live in GM storage, so a half-finished checklist survives a reload and the
+  // SPA's route changes.
+  let dtsProject = null;
+  let dtsTaskId = "";
+  let dtsStepIdx = 0;
+  let dtsMarkComplete = true;
+  function dtsAnswersKey(pid) { return "dtsAnswers:" + String(pid || ""); }
+  function dtsLoadAnswers(pid) {
+    try { return JSON.parse(GM_getValue(dtsAnswersKey(pid), "") || "{}") || {}; } catch (_) { return {}; }
+  }
+  function dtsSaveAnswers() {
+    if (!dtsProject) return;
+    try { GM_setValue(dtsAnswersKey(dtsProject.rlProjectId), JSON.stringify(dtsProject.answers || {})); } catch (_) {}
+  }
+  function dtsToast(msg) {
+    let el = document.getElementById("dtsToast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "dtsToast";
+      el.className = "dtsToast";
+      document.body.appendChild(el);
+    }
+    el.textContent = String(msg || "");
+    el.classList.add("dtsToastOn");
+    clearTimeout(el.__t);
+    el.__t = setTimeout(() => el.classList.remove("dtsToastOn"), 6000);
+  }
+
+  function ensureDeliveryWizardDialog() {
+    if (document.getElementById("dlgDeliveryWizard")) return;
+    injectStyles();
+    dtsInjectStyles();
+    const dlg = document.createElement("dialog");
+    dlg.id = "dlgDeliveryWizard";
+    dlg.className = "dlgYouniumStatus";
+    dlg.setAttribute("aria-labelledby", "dlgDeliveryWizardTitle");
+    dlg.innerHTML =
+      '<div class="dlgYouniumStatusHd">' +
+        '<strong id="dlgDeliveryWizardTitle">Delivery to service</strong>' +
+        '<span class="dlgYouniumStatusXBtn" id="closeDeliveryWizardTop" role="button" tabindex="0" aria-label="Close" title="Close">✕</span>' +
+      '</div>' +
+      '<div class="dlgYouniumStatusBody" id="dlgDeliveryWizardBody"></div>' +
+      '<div class="dlgYouniumStatusFooter" id="dlgDeliveryWizardFooter">' +
+        '<span id="deliveryWizardProgress" style="align-self:center; color:var(--muted2); font-size:12px; margin-right:auto;"></span>' +
+        '<button class="ynBtn" type="button" id="btnDeliveryWizardBack">← Back</button>' +
+        '<button class="ynBtn" type="button" id="btnDeliveryWizardCreateTicket" style="display:none;">📨 Opprett Zendesk-sak</button>' +
+        '<button class="ynBtn" type="button" id="btnDeliveryWizardNext">Next →</button>' +
+      '</div>';
+    document.body.appendChild(dlg);
+
+    const close = () => closeDeliveryWizard();
+    dlg.querySelector("#closeDeliveryWizardTop").addEventListener("click", close);
+    // Capture phase as well — this environment swallows some in-dialog clicks.
+    document.addEventListener("click", (ev) => {
+      const t = ev.target;
+      if (t && t.closest && t.closest("#closeDeliveryWizardTop") && dlg.open) close();
+    }, true);
+    dlg.addEventListener("click", (ev) => { if (ev.target === dlg && dlg.open) close(); });
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && dlg.open) close(); }, true);
+
+    dlg.querySelector("#btnDeliveryWizardBack").addEventListener("click", () => {
+      if (dtsStepIdx > 0) { dtsStepIdx -= 1; renderDeliveryWizardStep(); }
+    });
+    dlg.querySelector("#btnDeliveryWizardNext").addEventListener("click", onDeliveryWizardNext);
+    dlg.querySelector("#btnDeliveryWizardCreateTicket").addEventListener("click", onDeliveryWizardCreateTicket);
+  }
+
+  function renderDeliveryWizardStep() {
+    const p = dtsProject;
+    if (!p) return;
+    const a = (p.answers = p.answers || {});
+    const steps = dtsSteps(p, a);
+    if (dtsStepIdx >= steps.length) dtsStepIdx = steps.length - 1;
+    const step = steps[dtsStepIdx];
+    const body = document.getElementById("dlgDeliveryWizardBody");
+    const progress = document.getElementById("deliveryWizardProgress");
+    const btnBack = document.getElementById("btnDeliveryWizardBack");
+    const btnNext = document.getElementById("btnDeliveryWizardNext");
+    const btnTicket = document.getElementById("btnDeliveryWizardCreateTicket");
+    if (!body || !step) return;
+    progress.textContent = "Steg " + (dtsStepIdx + 1) + " av " + steps.length;
+    btnBack.style.visibility = dtsStepIdx === 0 ? "hidden" : "visible";
+    btnNext.textContent = step.type === "review" ? "📋 Copy & close" : "Next →";
+    if (btnTicket) btnTicket.style.display = step.type === "review" ? "" : "none";
+    body.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "max-width:640px; margin:0 auto; padding:12px 4px; display:grid; gap:12px;";
+    const q = document.createElement("div");
+    q.style.cssText = "font-size:16px; font-weight:600;";
+    q.textContent = step.label;
+    wrap.appendChild(q);
+    if (step.hint) {
+      const h = document.createElement("div");
+      h.style.cssText = "color:var(--muted2); font-size:12px;";
+      // Linkify http(s) URLs in the hint (the AM Counter link on Q14) —
+      // DOM-built anchors, scheme fixed by the regex, so no injection.
+      for (const part of String(step.hint).split(/(https?:\/\/[^\s]+)/g)) {
+        if (/^https?:\/\//.test(part)) {
+          const link = document.createElement("a");
+          link.href = part;
+          link.textContent = part;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.style.color = "var(--accent)";
+          h.appendChild(link);
+        } else if (part) {
+          h.appendChild(document.createTextNode(part));
+        }
+      }
+      wrap.appendChild(h);
+    }
+    if (step.type === "choice") {
+      if (a[step.key] === undefined && step.def !== undefined) a[step.key] = step.def;
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex; gap:10px; flex-wrap:wrap;";
+      for (const opt of step.options) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "dtsChoice" + (a[step.key] === opt ? " dtsChoiceOn" : "");
+        b.textContent = (a[step.key] === opt ? "☑ " : "") + opt;
+        b.addEventListener("click", () => {
+          a[step.key] = opt;
+          dtsSaveAnswers();
+          dtsStepIdx += 1; // auto-advance on choice
+          renderDeliveryWizardStep();
+        });
+        row.appendChild(b);
+      }
+      wrap.appendChild(row);
+    } else if (step.type === "text") {
+      const inp = document.createElement("input");
+      inp.className = "dtsInput";
+      inp.value = a[step.key] !== undefined ? a[step.key] : (step.def || "");
+      if (a[step.key] === undefined && step.def) a[step.key] = step.def;
+      inp.addEventListener("input", () => { a[step.key] = inp.value; });
+      wrap.appendChild(inp);
+      setTimeout(() => inp.focus(), 50);
+    } else if (step.type === "textarea") {
+      const ta = document.createElement("textarea");
+      ta.className = "dtsInput";
+      ta.style.cssText = "min-height:110px; resize:vertical;";
+      ta.value = a[step.key] || "";
+      ta.addEventListener("input", () => { a[step.key] = ta.value; });
+      wrap.appendChild(ta);
+      setTimeout(() => ta.focus(), 50);
+    } else if (step.type === "fields") {
+      for (const f of step.fields) {
+        const lbl = document.createElement("label");
+        lbl.className = "dtsLabel";
+        lbl.textContent = f.label;
+        const inp = document.createElement("input");
+        inp.className = "dtsInput";
+        const ak = step.key + "_" + f.k;
+        inp.value = a[ak] !== undefined ? a[ak] : (f.def || "");
+        if (a[ak] === undefined && f.def) a[ak] = f.def;
+        inp.addEventListener("input", () => { a[ak] = inp.value; });
+        wrap.appendChild(lbl);
+        wrap.appendChild(inp);
+      }
+    } else if (step.type === "review") {
+      const info = document.createElement("div");
+      info.style.cssText = "color:var(--muted); font-size:12.5px;";
+      info.textContent = 'Sjekk teksten under (redigerbar). "Copy & close" kopierer den som formatert tekst — lim inn i Zendesk-saken, så ser den ut som macroen. DEL 2 følger med utfylt tomt til service.';
+      wrap.appendChild(info);
+      // Ticking the Rocketlane task is a write to the project, so it is shown
+      // as a checkbox rather than done silently — and it is only offered when
+      // the "Handover to service" task was actually found.
+      if (dtsTaskId) {
+        const lab = document.createElement("label");
+        lab.className = "dtsCheckRow";
+        const cbx = document.createElement("input");
+        cbx.type = "checkbox";
+        cbx.checked = dtsMarkComplete;
+        cbx.addEventListener("change", () => { dtsMarkComplete = cbx.checked; });
+        lab.appendChild(cbx);
+        lab.appendChild(document.createTextNode('Merk «Handover to service» som Completed i Rocketlane når jeg er ferdig'));
+        wrap.appendChild(lab);
+      } else {
+        const none = document.createElement("div");
+        none.style.cssText = "color:var(--muted2); font-size:12px;";
+        none.textContent = "Fant ingen «Handover to service»-oppgave i dette prosjektet — ingenting blir merket fullført.";
+        wrap.appendChild(none);
+      }
+      // Rich preview, not a textarea: the clipboard gets this element's HTML,
+      // so what you see is what lands in the Zendesk composer. Still editable.
+      const ed = document.createElement("div");
+      ed.id = "deliveryWizardReviewHtml";
+      ed.contentEditable = "true";
+      ed.className = "dtsInput dtsReview";
+      ed.innerHTML = dtsBuildHtml(p, a);
+      wrap.appendChild(ed);
+    }
+    body.appendChild(wrap);
+  }
+
+  // Set the task to Completed if the reviewer left the box ticked. Never throws
+  // — a failed tick must not lose the checklist the user just filled in.
+  async function dtsMaybeCompleteTask() {
+    if (!dtsMarkComplete || !dtsTaskId) return "";
+    try {
+      const r = await dtsCompleteTask(dtsTaskId);
+      return r.alreadyDone ? " Oppgaven var allerede Completed." : " «Handover to service» er merket Completed.";
+    } catch (e) {
+      return " MEN oppgaven ble ikke merket fullført: " + (e?.message ?? e);
+    }
+  }
+
+  async function onDeliveryWizardNext() {
+    const p = dtsProject;
+    if (!p) return;
+    const a = p.answers || {};
+    const steps = dtsSteps(p, a);
+    const step = steps[dtsStepIdx];
+    if (step?.type === "review") {
+      const ed = document.getElementById("deliveryWizardReviewHtml");
+      const html = ed ? ed.innerHTML : dtsBuildHtml(p, a);
+      // Plain-text flavour comes from the same element, so a target that can't
+      // take HTML still gets the edited content, not a stale copy.
+      const text = ed ? ed.innerText : dtsBuildText(p, a);
+      let copied = false;
+      try {
+        if (window.ClipboardItem && navigator.clipboard?.write) {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              "text/html": new Blob([html], { type: "text/html" }),
+              "text/plain": new Blob([text], { type: "text/plain" }),
+            }),
+          ]);
+          copied = true;
+        }
+      } catch (_) { /* fall through to the plain-text write below */ }
+      if (!copied) {
+        try { await navigator.clipboard.writeText(text); copied = true; } catch (_) {}
+      }
+      // Only tick the task once the checklist is actually out of the wizard —
+      // a failed copy leaves you with nothing to paste, so the handover isn't
+      // done and the dialog stays open with the text still selectable.
+      if (!copied) {
+        dtsToast("Kunne ikke kopiere til utklippstavlen — marker teksten under og kopier manuelt. Oppgaven er ikke merket fullført.");
+        return;
+      }
+      const tick = await dtsMaybeCompleteTask();
+      dtsToast("Overlevering-teksten er kopiert som formatert tekst — lim inn i Zendesk." + tick);
+      closeDeliveryWizard();
+      return;
+    }
+    dtsSaveAnswers();
+    dtsStepIdx += 1;
+    renderDeliveryWizardStep();
+  }
+
+  async function onDeliveryWizardCreateTicket(ev) {
+    const btn = ev.currentTarget;
+    const p = dtsProject;
+    if (!p) return;
+    const a = p.answers || {};
+    const ed = document.getElementById("deliveryWizardReviewHtml");
+    const html = ed ? ed.innerHTML : dtsBuildHtml(p, a);
+    const subject = String(a.title || "").trim() ||
+      (dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering");
+    // Creating a ticket is outward-facing and can't be undone from here, so it
+    // always asks first and names what it is about to do.
+    const already = String(a.zendeskTicketId ?? "").trim();
+    if (!confirm(
+      "Opprette Zendesk-sak?\n\n" + subject +
+      "\n\nGruppe: IWMAC Support · Status: Open\nSjekklisten legges inn som offentlig svar." +
+      (dtsMarkComplete && dtsTaskId ? "\n«Handover to service» merkes Completed i Rocketlane." : "") +
+      (already ? "\n\nOBS: denne overleveringen har allerede sak #" + already + " — dette blir en NY sak." : "")
+    )) return;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Oppretter…";
+    try {
+      const ticket = await zendeskCreateHandoverTicket(subject, html);
+      const id = String(ticket?.id ?? "").trim();
+      if (!id) throw new Error("Zendesk returnerte ingen sak-id.");
+      // Remember it on the project so the wizard doesn't silently create a
+      // second ticket for the same handover.
+      a.zendeskTicketId = id;
+      dtsSaveAnswers();
+      const tick = await dtsMaybeCompleteTask();
+      dtsToast("Zendesk-sak #" + id + " opprettet (IWMAC Support, open)." + tick);
+      try { window.open(ZENDESK_AGENT_TICKET_URL + encodeURIComponent(id), "_blank", "noopener"); } catch (_) {}
+      closeDeliveryWizard();
+    } catch (e) {
+      const msg = e instanceof TypeError ? "Nettverks-/CORS-feil." : String(e?.message ?? e);
+      dtsToast("Kunne ikke opprette Zendesk-sak: " + msg);
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  function closeDeliveryWizard() {
+    const dlg = document.getElementById("dlgDeliveryWizard");
+    if (!dlg) return;
+    dtsSaveAnswers();
+    try { dlg.close(); } catch (_) {}
+    try { dlg.removeAttribute("open"); } catch (_) {}
+  }
+
+  // `taskId` is passed by the card button; the nav chip resolves it itself so
+  // the tick still happens when the wizard is opened from the chip on a project
+  // that does have the task.
+  async function openDeliveryToServiceWizard(taskId) {
+    const ctx = getOneflowContext(); // { rlProjectId, name, plantId }
+    if (!ctx.rlProjectId) { dtsToast("Åpne et prosjekt først."); return; }
+    ensureDeliveryWizardDialog();
+    const dlg = document.getElementById("dlgDeliveryWizard");
+    const title = document.getElementById("dlgDeliveryWizardTitle");
+    const body = document.getElementById("dlgDeliveryWizardBody");
+    if (title) title.textContent = "Delivery to service · " + (ctx.name || "");
+    if (body) body.innerHTML = '<div style="padding:28px; text-align:center; color:var(--muted);">Henter prosjektdata fra Rocketlane, Oneflow og Younium…</div>';
+    try { dlg.showModal(); } catch (_) {}
+    dtsStepIdx = 0;
+    dtsMarkComplete = true;
+    dtsTaskId = String(taskId || "");
+    try {
+      const p = await dtsBuildProject(ctx);
+      p.answers = dtsLoadAnswers(ctx.rlProjectId);
+      dtsProject = p;
+      if (!dtsTaskId) {
+        try { dtsTaskId = String((await dtsFindHandoverTask(ctx.rlProjectId))?.taskId ?? ""); } catch (_) {}
+      }
+      if (!dlg.open) return; // closed while we were loading
+      renderDeliveryWizardStep();
+    } catch (e) {
+      if (body) body.innerHTML = '<div class="youniumWarnings">Kunne ikke åpne veiviseren: ' + escHtml(e?.message ?? e) + "</div>";
+    }
+  }
+
+  // ── Styles (own id, so section 5's injectStyles stays untouched) ──
+  function dtsInjectStyles() {
+    if (document.getElementById("dtsStyles")) return;
+    const style = document.createElement("style");
+    style.id = "dtsStyles";
+    style.textContent = `
+      .dtsCardBtn {
+        margin-right: auto; margin-left: 6px;
+        display: inline-flex; align-items: center; gap: 4px;
+        height: 24px; padding: 0 8px;
+        font-family: inherit; font-size: 11.5px; font-weight: 600; line-height: 1;
+        white-space: nowrap; cursor: pointer;
+        border-radius: 6px; border: 1px solid #c7d2fe;
+        background: #eef2ff; color: #3730a3;
+        transition: background 120ms ease, border-color 120ms ease;
+      }
+      .dtsCardBtn:hover { background: #e0e7ff; border-color: #a5b4fc; }
+      .dtsCardBtn:active { transform: translateY(0.5px); }
+      .dtsCardBtn:disabled { opacity: 0.6; cursor: default; }
+      dialog.dlgYouniumStatus .dtsInput {
+        width: 100%; box-sizing: border-box;
+        padding: 9px 11px; border-radius: 9px;
+        font-family: inherit; font-size: 13px; line-height: 1.45; text-align: left;
+        border: 1px solid var(--hairline-strong); background: var(--surface-1); color: var(--text);
+      }
+      dialog.dlgYouniumStatus .dtsInput:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent-stroke); }
+      dialog.dlgYouniumStatus .dtsReview { min-height: 380px; max-height: 55vh; overflow: auto; resize: vertical; }
+      dialog.dlgYouniumStatus .dtsLabel { font-size: 12px; color: var(--muted); }
+      dialog.dlgYouniumStatus .dtsCheckRow {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 12.5px; color: var(--text); cursor: pointer;
+      }
+      dialog.dlgYouniumStatus .dtsChoice {
+        min-width: 90px; padding: 10px 16px; border-radius: 10px;
+        font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+        border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text);
+      }
+      dialog.dlgYouniumStatus .dtsChoice:hover { background: var(--surface-3); }
+      dialog.dlgYouniumStatus .dtsChoiceOn {
+        background: var(--accent); color: #06251d; border-color: transparent; font-weight: 700;
+      }
+      .dtsToast {
+        position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px);
+        z-index: 2147483647; max-width: min(720px, 92vw);
+        padding: 11px 16px; border-radius: 10px;
+        font: 500 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #1e293b; color: #f8fafc; box-shadow: 0 12px 32px rgba(0,0,0,0.24);
+        opacity: 0; pointer-events: none; transition: opacity 160ms ease, transform 160ms ease;
+      }
+      .dtsToast.dtsToastOn { opacity: 1; transform: translate(-50%, 0); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // ── Entry point 1: the button on the "Handover to service" task card ──
+  // The project-plan board is virtualised and re-renders constantly, so the
+  // button is (re-)attached from the same observer pass that keeps the nav
+  // chips alive rather than being injected once.
+  const DTS_CARD_BTN_CLASS = "dtsCardBtn";
+  function dtsEnsureCardButtons() {
+    if (!/^\/projects\/\d+/.test(location.pathname)) return;
+    const cards = document.querySelectorAll('[data-cy][class*="task-cardstyles__Card"]');
+    for (const card of cards) {
+      if (!dtsIsHandoverTaskName(card.getAttribute("data-cy"))) continue;
+      const footer = card.querySelector('[class*="CardFooter"]');
+      if (!footer || footer.querySelector("." + DTS_CARD_BTN_CLASS)) continue;
+      const anchor = footer.querySelector(".assignee-picker");
+      if (!anchor) continue;
+      dtsInjectStyles();
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = DTS_CARD_BTN_CLASS;
+      btn.title = "Åpne overleveringsveiviseren for dette prosjektet";
+      btn.innerHTML = '<span aria-hidden="true">📋</span><span>Delivery to service</span>';
+      // The card is a click target for opening the task drawer, so the button
+      // has to keep its click to itself.
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        btn.disabled = true;
+        try {
+          const ctx = getOneflowContext();
+          let taskId = "";
+          try { taskId = String((await dtsFindHandoverTask(ctx.rlProjectId))?.taskId ?? ""); } catch (_) {}
+          await openDeliveryToServiceWizard(taskId);
+        } finally { btn.disabled = false; }
+      });
+      // margin-right:auto on this button makes the footer's space-between pack
+      // it next to the assignee avatar and leave the responsible avatar right.
+      anchor.insertAdjacentElement("afterend", btn);
+    }
+  }
+
+  // ── Entry point 2: the nav chip, for projects without the task ──
+  function buildDeliveryNavButton() {
+    const wrap = document.createElement("div");
+    wrap.className = "ynNavBtnCell";
+    const btn = document.createElement("button");
+    btn.id = "dtsNavBtn";
+    btn.type = "button";
+    btn.className = "ynNavBtn yn-gray";
+    btn.title = "Delivery to service — overleveringsveiviseren";
+    const icon = document.createElement("span");
+    icon.textContent = "📋";
+    icon.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "ynNavBtnLabel";
+    label.textContent = "Delivery to service";
+    btn.appendChild(icon);
+    btn.appendChild(label);
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const dlg = document.getElementById("dlgDeliveryWizard");
+      if (dlg?.open) closeDeliveryWizard();
+      else openDeliveryToServiceWizard("");
+    });
+    wrap.appendChild(btn);
+    return wrap;
+  }
 
   // ════════════════════════════════════════════════════════════════════════
   // 6. Gantt calendar + floating chat panel — formerly "Rocketlane Enhancer"

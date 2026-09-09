@@ -1,11 +1,12 @@
 # Rocketlane improvements
 
-One Tampermonkey userscript with four independent improvements for `kiona.rocketlane.com`:
+One Tampermonkey userscript with five independent improvements for `kiona.rocketlane.com`:
 
 1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
 2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
 3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0).
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
+5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
@@ -19,6 +20,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 - **If you had *Rocketlane Enhancer* or *Rocketlane Project Notes Column* installed, uninstall them in Tampermonkey** after installing this script. Their features live here now; the old scripts no longer receive updates.
 - Notes: the column width and a custom SQL API URL start from their defaults after the merge (the old script's settings are in its own Tampermonkey storage). The notes themselves are read back from the toolbox SQL table.
 - For the Oneflow status: be logged in to `https://app.oneflow.com` in the same browser — the script uses your Oneflow session cookie, read-only.
+- For Delivery to service: **open `https://iwmac.zendesk.com` once while logged in**, so the script can capture the CSRF token it needs to create the handover ticket. Copy-to-clipboard works without it.
 
 ---
 
@@ -214,13 +216,64 @@ Verdicts are cached per Rocketlane project for the session; a "Not connected" ve
 
 ---
 
+## 5. Delivery to service
+
+The Project Progress Tracker's handover wizard, on the Rocketlane page where the handover actually happens. Added in v1.4.0.
+
+### Where the button is
+
+- On the **Handover to service** task card in the project plan, immediately right of the assignee avatar. The board is virtualised, so the button is re-attached whenever a lane re-renders.
+- Also as a **Delivery to service** chip in the project nav, right of the Oneflow chip — the fallback for projects that don't carry the task.
+
+The card match is anchored on the whole phrase, so the unrelated *Handover from sales to delivery* task never gets a button.
+
+### What it does
+
+Walks the 16 questions of *Leveranseavdelingens Sjekkliste til Support*, pre-filling what the page already knows:
+
+| Step | Pre-filled from |
+|---|---|
+| Ticket title | `<plant ID> - <plant name> - Avblokkering og Overlevering` |
+| 1. Abonnementsavtalen signert | **Ja** when the Oneflow verdict says the document is signed |
+| 3. Oneflow-linker | The order + subscription documents the Oneflow module resolved |
+| 14. AM Counter hint | The project's Younium subscription link, else the order link |
+| 16. Leveransen internt / bestiller | Rocketlane's project owner and customer company |
+
+Answers are saved per project in `GM` storage as you go, so a half-finished checklist survives a reload.
+
+The last step is an **editable rich preview** of exactly what will be sent. From there:
+
+- **📋 Copy & close** puts it on the clipboard as `text/html` *and* `text/plain`, so pasting into the Zendesk composer reproduces the macro — numbered list, sub-bullets and links included.
+- **📨 Opprett Zendesk-sak** creates the ticket outright: group *IWMAC Support*, tag `aktivering_basic`, status open, checklist as a **public reply**. It always confirms first, and remembers the ticket id so a second run warns before creating a duplicate.
+
+Either finish can tick the **Handover to service** task to **Completed** in Rocketlane. That's a checkbox on the review step (on by default), and it only appears when the task was actually found. The write is verified by re-reading the task, so a PUT that Rocketlane accepts but ignores is reported as a failure rather than as success.
+
+The checklist wording and the emitted HTML are copied **verbatim** from the tracker, because they have to reproduce Zendesk macro `1900005365194`. Change them here without changing them in the tracker and the two diverge.
+
+### Security
+
+- The Rocketlane api-key only ever goes to `https://kiona.api.rocketlane.com`, the Zendesk session cookie + CSRF token only to `https://iwmac.zendesk.com` — both origins are pinned before the request is made.
+- On `iwmac.zendesk.com` the script does nothing but read the `csrf-token` meta tag into `GM` storage; none of the Rocketlane UI runs there.
+- The only write to Rocketlane is the task status; the only write to Zendesk is the ticket you confirm.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| "Zendesk CSRF token not captured yet" | Open `https://iwmac.zendesk.com` once while logged in, then retry. |
+| "Zendesk session expired or missing" | Same — the script retries a session renew once before saying this. |
+| No button on the card | The lane may not have hydrated yet; scroll it into view. Otherwise the task isn't named *Handover to service* — use the nav chip. |
+| "Fant ingen «Handover to service»-oppgave" | The project has no such task, so nothing is marked complete. The checklist still works. |
+
+---
+
 ## Metadata
 
 | Field | Value |
 |---|---|
-| `@match` | `https://kiona.rocketlane.com/*`, `https://eu.younium.com/*`, `https://us.younium.com/*`, `https://app.younium.com/*` |
-| `@connect` | `auth.eu.younium.com`, `auth.us.younium.com`, `api.younium.com`, `app.oneflow.com`, `kiona.api.rocketlane.com`, `toolbox.iwmac.local` |
+| `@match` | `https://kiona.rocketlane.com/*`, `https://eu.younium.com/*`, `https://us.younium.com/*`, `https://app.younium.com/*`, `https://iwmac.zendesk.com/*` |
+| `@connect` | `auth.eu.younium.com`, `auth.us.younium.com`, `api.younium.com`, `app.oneflow.com`, `kiona.api.rocketlane.com`, `iwmac.zendesk.com`, `toolbox.iwmac.local` |
 | `@grant` | `GM_xmlhttpRequest`, `GM_setValue`, `GM_getValue` |
 | `@run-at` | `document-start` — the Gantt module needs it; the Younium chip and the Notes column wait for the DOM |
 
-The four modules share nothing but the page: each keeps its own storage keys, styles and observers, exactly as in the scripts they came from.
+The five modules share nothing but the page: each keeps its own storage keys, styles and observers, exactly as in the scripts they came from.
