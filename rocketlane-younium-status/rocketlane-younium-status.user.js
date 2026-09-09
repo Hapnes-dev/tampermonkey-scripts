@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.10
-// @description  Rocketlane improvements in one script (v1.10.10: Delivery wizard choice contrast): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.11
+// @description  Rocketlane improvements in one script (v1.10.11: Delivery choice hover/active ink): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -8587,8 +8587,10 @@
       for (const opt of step.options) {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = "dtsChoice" + (a[step.key] === opt ? " dtsChoiceOn" : "");
-        b.textContent = (a[step.key] === opt ? "☑ " : "") + opt;
+        const on = a[step.key] === opt;
+        b.className = "dtsChoice" + (on ? " dtsChoiceOn" : "");
+        b.textContent = opt;
+        b.setAttribute("aria-pressed", on ? "true" : "false");
         // Selecting an answer does NOT advance the step. Auto-advance made a
         // mis-click cost a Back press to see what you had just answered, and it
         // fought you on the questions where you want to change your mind after
@@ -8819,7 +8821,7 @@
   // ── Styles (own id, so section 5's injectStyles stays untouched) ──
   function dtsInjectStyles() {
     let style = document.getElementById("dtsStyles");
-    if (style && style.dataset.rlDtsReady === "1.10.10") return;
+    if (style && style.dataset.rlDtsReady === "1.10.11") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "dtsStyles";
@@ -8839,12 +8841,8 @@
       .dtsCardBtn:hover { background: #e0e7ff; border-color: #a5b4fc; color: #312e81; }
       .dtsCardBtn:active { transform: translateY(0.5px); }
       .dtsCardBtn:disabled { opacity: 0.6; cursor: default; }
-      /* Handover ticked complete — same pill, green, so the card answers
-         "is this delivered?" without opening anything. */
       .dtsCardBtn.dtsDone { background: #dcfce7; border-color: #86efac; color: #166534; }
       .dtsCardBtn.dtsDone:hover { background: #bbf7d0; border-color: #4ade80; color: #14532d; }
-      /* Its own line on the collapsed completed card, indented to sit under the
-         task title rather than under the status check. */
       .dtsDoneRow { display: flex; padding: 0 12px 6px 38px; }
       dialog.dlgYouniumStatus .dtsInput {
         width: 100%; box-sizing: border-box;
@@ -8859,25 +8857,61 @@
         display: flex; align-items: center; gap: 8px;
         font-size: 12.5px; color: var(--text); cursor: pointer;
       }
-      /* Choice chips: keep ink from Rocketlane button:hover (black on dark). */
-      dialog.dlgYouniumStatus .dtsChoice {
+      /* Delivery wizard stays dark PPT shell — OS light scheme must not flip
+         choice ink to slate (that is the black-on-dark hover/click bug). */
+      #dlgDeliveryWizard.dlgYouniumStatus[open] {
+        background: #0f1424 !important;
+        color: rgba(255,255,255,0.94) !important;
+      }
+      /* Hardcoded ink — Rocketlane/OS button:hover|:active paint ButtonText (black)
+         and beat var(--text)/var(--accent) on the dark #0f1424 dialog. */
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice,
+      dialog#dlgDeliveryWizard button.dtsChoice {
+        appearance: none; -webkit-appearance: none;
         min-width: 90px; padding: 10px 16px; border-radius: 10px;
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
         font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
-        border: 1px solid var(--hairline-strong);
-        background: var(--surface-2);
-        color: var(--text) !important;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.045);
+        color: rgba(255,255,255,0.94) !important;
+        -webkit-text-fill-color: rgba(255,255,255,0.94) !important;
+        forced-color-adjust: none;
       }
-      dialog.dlgYouniumStatus .dtsChoice:hover {
-        background: var(--surface-3);
-        color: var(--text) !important;
-        border-color: var(--hairline-strong);
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice:hover,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice:focus,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice:focus-visible,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice:active,
+      dialog#dlgDeliveryWizard button.dtsChoice:hover,
+      dialog#dlgDeliveryWizard button.dtsChoice:focus,
+      dialog#dlgDeliveryWizard button.dtsChoice:focus-visible,
+      dialog#dlgDeliveryWizard button.dtsChoice:active {
+        background: rgba(255,255,255,0.09) !important;
+        color: rgba(255,255,255,0.96) !important;
+        -webkit-text-fill-color: rgba(255,255,255,0.96) !important;
+        border-color: rgba(255,255,255,0.22) !important;
       }
-      dialog.dlgYouniumStatus .dtsChoiceOn,
-      dialog.dlgYouniumStatus .dtsChoice.dtsChoiceOn:hover {
-        background: var(--accent-soft) !important;
-        color: var(--accent) !important;
-        border-color: var(--accent-stroke) !important;
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice.dtsChoiceOn,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice.dtsChoiceOn:hover,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice.dtsChoiceOn:focus,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice.dtsChoiceOn:focus-visible,
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice.dtsChoiceOn:active,
+      dialog#dlgDeliveryWizard button.dtsChoice.dtsChoiceOn,
+      dialog#dlgDeliveryWizard button.dtsChoice.dtsChoiceOn:hover,
+      dialog#dlgDeliveryWizard button.dtsChoice.dtsChoiceOn:focus,
+      dialog#dlgDeliveryWizard button.dtsChoice.dtsChoiceOn:focus-visible,
+      dialog#dlgDeliveryWizard button.dtsChoice.dtsChoiceOn:active {
+        background: rgba(125,211,252,0.18) !important;
+        color: #e0f2fe !important;
+        -webkit-text-fill-color: #e0f2fe !important;
+        border-color: rgba(125,211,252,0.45) !important;
         font-weight: 700;
+      }
+      #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice.dtsChoiceOn::before,
+      dialog#dlgDeliveryWizard button.dtsChoice.dtsChoiceOn::before {
+        content: "✓";
+        font-weight: 700;
+        color: #e0f2fe !important;
+        -webkit-text-fill-color: #e0f2fe !important;
       }
       .dtsToast {
         position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px);
@@ -8889,7 +8923,7 @@
       }
       .dtsToast.dtsToastOn { opacity: 1; transform: translate(-50%, 0); }
     `;
-    style.dataset.rlDtsReady = "1.10.10";
+    style.dataset.rlDtsReady = "1.10.11";
   }
 
   // ── Entry point 1: the button on the "Handover to service" task card ──
