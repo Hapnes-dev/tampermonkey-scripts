@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.1
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links).
+// @version      1.4.2
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -64,7 +64,9 @@
  *  3. Project Notes column (section 7; formerly "Rocketlane Project Notes
  *     Column" v1.10.0). A writable Note column on the Projects list, persisted
  *     to the toolbox SQL API with a local fallback. Starts once the DOM is
- *     ready, as it did under its old @run-at document-idle.
+ *     ready, as it did under its old @run-at document-idle. DISABLED since
+ *     v1.4.2 — RL_NOTES_COLUMN_ENABLED gates the call; the section itself and
+ *     the notes stored in the SQL table are untouched.
  *
  * The modules share nothing but the page: each keeps its own storage keys,
  * styles and observers, exactly as in the scripts they came from.
@@ -134,7 +136,14 @@
   // installs its hide-CSS before first paint and defers its own DOM work.
   try { rlEnhancerModule(); } catch (e) { console.warn("[Rocketlane improvements] enhancer module failed", e); }
   // Module 3 — Project Notes column (section 7). Needs document.body.
-  rlWhenDomReady(() => { try { rlProjectNotesModule(); } catch (e) { console.warn("[Rocketlane improvements] notes module failed", e); } });
+  // Turned off on 2026-09-09: the "Note" column on the Projects list isn't
+  // wanted. Only the invocation is gated — section 7 is left intact, and
+  // nothing is removed from the toolbox SQL table, so the notes already saved
+  // there are still on the server. Flip this to true to bring the column back.
+  const RL_NOTES_COLUMN_ENABLED = false;
+  if (RL_NOTES_COLUMN_ENABLED) {
+    rlWhenDomReady(() => { try { rlProjectNotesModule(); } catch (e) { console.warn("[Rocketlane improvements] notes module failed", e); } });
+  }
 
   const UI_LOCALE = "nb-NO";
   const YOUNIUM_API = "https://api.younium.com";

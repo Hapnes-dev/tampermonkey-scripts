@@ -4,7 +4,7 @@ One Tampermonkey userscript with five independent improvements for `kiona.rocket
 
 1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
 2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
-3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0).
+3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0). **Off by default since v1.4.2.**
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
 
@@ -125,6 +125,8 @@ The two conversation IDs are hardcoded near the top of the module (`CONVERSATION
 ---
 
 ## 3. Project Notes column
+
+> **Disabled since v1.4.2.** The `Note` column no longer appears on the Projects list. Only the module's invocation is gated — the code below is unchanged and **nothing was deleted from `team_status.iw_project_notes`**, so every note already saved is still on the server. To bring the column back, set `RL_NOTES_COLUMN_ENABLED = true` near the top of the userscript (search for "Module 3").
 
 Formerly *Rocketlane Project Notes Column* (v1.10.0). Adds a writable **Note** column after the project name on the Rocketlane Projects list (AG Grid). Notes persist to the Toolbox SQL API (`team_status.iw_project_notes`) with a local Tampermonkey-storage fallback; the header shows the live SQL save status and offers a `/health` connection test.
 
