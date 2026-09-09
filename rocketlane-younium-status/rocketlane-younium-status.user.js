@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.0
-// @description  Rocketlane improvements in one script (v1.12.0: PPT-style PROJECTS panel on Rocketlane home): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.12.1
+// @description  Rocketlane improvements in one script (v1.12.1: home In-progress projects under Overdue): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4198,6 +4198,11 @@
     return rlHpIsUserOnProject(raw, userId);
   }
 
+  /** Home panel shows In progress only (matches PPT default focus + overdue placement). */
+  function rlHpIsHomeListStatus(statusKey) {
+    return String(statusKey || "") === "in_progress";
+  }
+
   function rlHpStatusLabelFromFields(fields) {
     const list = Array.isArray(fields) ? fields : [];
     for (const f of list) {
@@ -4333,6 +4338,8 @@
       if (!rlHpShouldKeepProject(raw, userId)) continue;
       const p = rlHpNormalizeLightProject(raw);
       if (!p.id || seen.has(p.id)) continue;
+      // Home list = In progress projects only (Completed / Planning / Hold stay out).
+      if (!rlHpIsHomeListStatus(p.status)) continue;
       seen.add(p.id);
       out.push(p);
     }
@@ -4403,7 +4410,7 @@
   }
   // @@rlHomeProjectsHelpers:end
 
-  // ── Home PROJECTS panel (v1.12.0) — PPT-style list on pathname "/" ──
+  // ── Home PROJECTS panel (v1.12.1) — In progress only, under native Overdue ──
 
   const RL_HP_CACHE_MS = 5 * 60 * 1000;
   const RL_HP_PAGE_SIZE = 200;
@@ -4601,6 +4608,31 @@
     document.documentElement.appendChild(style);
   }
 
+  function rlHpFindOverdueSection() {
+    const nodes = document.querySelectorAll("p, h1, h2, h3, h4, h5, strong, span, div");
+    for (const el of nodes) {
+      if (!el || !el.isConnected) continue;
+      if (el.closest && el.closest("#rlHomeProjectsPanel")) continue;
+      const t = String(el.textContent || "").replace(/\s+/g, " ").trim();
+      if (t !== "Overdue") continue;
+      let node = el;
+      for (let i = 0; i < 10 && node; i++) {
+        if (node.querySelector && node.querySelector('[role="treegrid"], [role="grid"], .ag-root')) {
+          return node;
+        }
+        node = node.parentElement;
+      }
+      // Fallback: nearest sizable block around the Overdue label.
+      let block = el.parentElement;
+      for (let i = 0; i < 5 && block; i++) {
+        if ((block.children && block.children.length >= 2) || (block.offsetHeight || 0) > 80) return block;
+        block = block.parentElement;
+      }
+      return el.parentElement || el;
+    }
+    return null;
+  }
+
   function rlHpFindGreetingAnchor() {
     const re = /^\s*Good\s+(morning|afternoon|evening)\b/i;
     const candidates = document.querySelectorAll("h1,h2,h3,p,div,span");
@@ -4629,6 +4661,14 @@
   }
 
   function rlHpPlacePanel(panel) {
+    // Prefer under native Overdue task section (user request).
+    const overdue = rlHpFindOverdueSection();
+    if (overdue && overdue.parentElement) {
+      if (overdue.nextSibling !== panel) {
+        overdue.parentElement.insertBefore(panel, overdue.nextSibling);
+      }
+      return;
+    }
     const greeting = rlHpFindGreetingAnchor();
     if (greeting && greeting.parentElement) {
       if (greeting.nextSibling !== panel) {
@@ -4669,7 +4709,8 @@
       hd.className = "rlhpHd";
       const title = document.createElement("h2");
       title.className = "rlhpTitle";
-      title.textContent = "Projects";
+      title.textContent = "In progress";
+      title.title = "Rocketlane projects with Status = In progress";
       const actions = document.createElement("div");
       actions.className = "rlhpActions";
       const add = document.createElement("a");
@@ -4715,10 +4756,10 @@
     if (statusEl) {
       statusEl.classList.toggle("rlhpErr", !!rlHpUi.error);
       if (rlHpUi.error) statusEl.textContent = rlHpUi.error;
-      else if (rlHpUi.syncing && !rlHpUi.projects.length) statusEl.textContent = "Loading projects…";
+      else if (rlHpUi.syncing && !rlHpUi.projects.length) statusEl.textContent = "Loading in-progress projects…";
       else statusEl.textContent = rlHpUi.projects.length
-        ? (rlHpUi.projects.length + " project" + (rlHpUi.projects.length === 1 ? "" : "s"))
-        : "No projects for you yet.";
+        ? (rlHpUi.projects.length + " in progress")
+        : "No in-progress projects.";
     }
 
     const listEl = panel.querySelector("[data-rlhp-list]");
@@ -4907,7 +4948,7 @@
     if (!panel) {
       panel = document.createElement("section");
       panel.id = "rlHomeProjectsPanel";
-      panel.setAttribute("aria-label", "Projects");
+      panel.setAttribute("aria-label", "In progress projects");
     }
     rlHpPlacePanel(panel);
     if (firstMount) {
