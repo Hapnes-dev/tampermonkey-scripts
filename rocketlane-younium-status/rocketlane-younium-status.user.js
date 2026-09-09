@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.2
+// @version      1.6.3
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsible, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2710,28 +2710,29 @@
       #rlProjectActionBar .rlPabBtn {
         display: inline-flex; align-items: center; gap: 5px;
         height: 24px; padding: 3px 9px; border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: #1a1a1a; color: rgba(255, 255, 255, 0.92);
+        border: 1px solid rgba(15, 23, 42, 0.14);
+        background: transparent; color: rgba(15, 23, 42, 0.78);
         font: 600 11.5px/1.2 inherit; letter-spacing: 0.01em;
         white-space: nowrap; text-decoration: none !important;
         cursor: pointer; user-select: none; flex: 0 0 auto;
         box-sizing: border-box;
-        transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
       }
       #rlProjectActionBar .rlPabBtn:hover {
-        background: #2a2a2a; border-color: rgba(255, 255, 255, 0.20);
+        background: rgba(15, 23, 42, 0.05);
+        border-color: rgba(15, 23, 42, 0.22);
+        color: rgba(15, 23, 42, 0.92);
         transform: translateY(-1px);
       }
       #rlProjectActionBar .rlPabBtn:focus-visible {
-        outline: 2px solid #7dd3fc; outline-offset: 2px;
+        outline: 2px solid #0284c7; outline-offset: 2px;
       }
       #rlProjectActionBar .rlPabBtn[hidden] { display: none !important; }
       #rlProjectActionBar .rlPabIcon {
         width: 14px; height: 14px; display: block; object-fit: contain;
-        border-radius: 3px; background: #fff; padding: 1px; flex: 0 0 auto;
+        border-radius: 3px; background: transparent; padding: 0; flex: 0 0 auto;
         box-sizing: border-box;
       }
-      /* Colorful brand marks (Younium / PANG) — white pad looks like a sticker. */
       #rlProjectActionBar .rlPabIcon.rlPabIconBare {
         background: transparent; padding: 0; border-radius: 0;
       }
