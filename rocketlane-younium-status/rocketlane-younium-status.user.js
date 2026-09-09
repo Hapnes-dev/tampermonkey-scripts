@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.9
-// @description  Rocketlane improvements in one script (v1.10.9: Zendesk cases spacing + title contrast): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.10
+// @description  Rocketlane improvements in one script (v1.10.10: Delivery wizard choice contrast): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -880,9 +880,11 @@
       .ynNavBtn.yn-action:hover {
         filter: none; background: rgba(99, 102, 241, 0.20);
         border-color: rgba(99, 102, 241, 0.55); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
+        color: #3730a3;
       }
       .ynNavBtn.yn-action.yn-on-dark:hover {
         background: rgba(129, 140, 248, 0.28); border-color: rgba(129, 140, 248, 0.60);
+        color: #e0e7ff;
       }
       .ynNavBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -8816,9 +8818,13 @@
 
   // ── Styles (own id, so section 5's injectStyles stays untouched) ──
   function dtsInjectStyles() {
-    if (document.getElementById("dtsStyles")) return;
-    const style = document.createElement("style");
-    style.id = "dtsStyles";
+    let style = document.getElementById("dtsStyles");
+    if (style && style.dataset.rlDtsReady === "1.10.10") return;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "dtsStyles";
+      (document.head || document.documentElement).appendChild(style);
+    }
     style.textContent = `
       .dtsCardBtn {
         margin-right: auto; margin-left: 6px;
@@ -8828,15 +8834,15 @@
         white-space: nowrap; cursor: pointer;
         border-radius: 6px; border: 1px solid #c7d2fe;
         background: #eef2ff; color: #3730a3;
-        transition: background 120ms ease, border-color 120ms ease;
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
       }
-      .dtsCardBtn:hover { background: #e0e7ff; border-color: #a5b4fc; }
+      .dtsCardBtn:hover { background: #e0e7ff; border-color: #a5b4fc; color: #312e81; }
       .dtsCardBtn:active { transform: translateY(0.5px); }
       .dtsCardBtn:disabled { opacity: 0.6; cursor: default; }
       /* Handover ticked complete — same pill, green, so the card answers
          "is this delivered?" without opening anything. */
       .dtsCardBtn.dtsDone { background: #dcfce7; border-color: #86efac; color: #166534; }
-      .dtsCardBtn.dtsDone:hover { background: #bbf7d0; border-color: #4ade80; }
+      .dtsCardBtn.dtsDone:hover { background: #bbf7d0; border-color: #4ade80; color: #14532d; }
       /* Its own line on the collapsed completed card, indented to sit under the
          task title rather than under the status check. */
       .dtsDoneRow { display: flex; padding: 0 12px 6px 38px; }
@@ -8853,14 +8859,25 @@
         display: flex; align-items: center; gap: 8px;
         font-size: 12.5px; color: var(--text); cursor: pointer;
       }
+      /* Choice chips: keep ink from Rocketlane button:hover (black on dark). */
       dialog.dlgYouniumStatus .dtsChoice {
         min-width: 90px; padding: 10px 16px; border-radius: 10px;
         font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
-        border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text);
+        border: 1px solid var(--hairline-strong);
+        background: var(--surface-2);
+        color: var(--text) !important;
       }
-      dialog.dlgYouniumStatus .dtsChoice:hover { background: var(--surface-3); }
-      dialog.dlgYouniumStatus .dtsChoiceOn {
-        background: var(--accent); color: #06251d; border-color: transparent; font-weight: 700;
+      dialog.dlgYouniumStatus .dtsChoice:hover {
+        background: var(--surface-3);
+        color: var(--text) !important;
+        border-color: var(--hairline-strong);
+      }
+      dialog.dlgYouniumStatus .dtsChoiceOn,
+      dialog.dlgYouniumStatus .dtsChoice.dtsChoiceOn:hover {
+        background: var(--accent-soft) !important;
+        color: var(--accent) !important;
+        border-color: var(--accent-stroke) !important;
+        font-weight: 700;
       }
       .dtsToast {
         position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 16px);
@@ -8872,7 +8889,7 @@
       }
       .dtsToast.dtsToastOn { opacity: 1; transform: translate(-50%, 0); }
     `;
-    document.head.appendChild(style);
+    style.dataset.rlDtsReady = "1.10.10";
   }
 
   // ── Entry point 1: the button on the "Handover to service" task card ──
