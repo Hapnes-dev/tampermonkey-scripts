@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.1
+// @version      1.14.2
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4483,9 +4483,15 @@
   // ── Home PROJECTS twin panels (v1.14.0) — Project Owner + In progress under Overdue ──
 
   const RL_HP_CACHE_MS = 5 * 60 * 1000;
+  // The last result also lives in Tampermonkey storage so the panels paint at
+  // once on the next page load and only revalidate in the background.
+  const RL_HP_GM_CACHE = "rlHpProjectsCache";
+  const RL_HP_PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   const RL_HP_PAGE_SIZE = 200;
   const RL_HP_MAX_PAGES = 50;
-  const RL_HP_FETCH_CONCURRENCY = 3;
+  // The tenant has 1000+ projects, i.e. 5-6 pages after the first; once the
+  // first page reveals the count, the rest go out in a single parallel round.
+  const RL_HP_FETCH_CONCURRENCY = 6;
   const RL_HP_GM_PINNED = "rlHpPinnedOwner";
   const RL_HP_GM_COLLAPSED = "rlHpCollapsedOwners";
   const RL_HP_GM_SORT = "rlHpSortMode";
@@ -4493,6 +4499,7 @@
 
   let rlHpCache = { at: 0, userId: "", ownerProjects: null, memberProjects: null };
   let rlHpInflight = null;
+  let rlHpInflightUserId = "";
   let rlHpGen = 0;
   let rlHpUi = {
     sort: "due_asc",
@@ -4500,9 +4507,47 @@
     collapsed: new Set(),
     syncing: false,
     error: "",
+    cachedAt: 0,
     ownerProjects: [],
     memberProjects: [],
   };
+
+  function rlHpReadPersistedCache(userId) {
+    try {
+      const raw = GM_getValue(RL_HP_GM_CACHE, "");
+      if (!raw) return null;
+      const j = JSON.parse(raw);
+      if (!j || String(j.userId) !== String(userId)) return null;
+      if (!Array.isArray(j.ownerProjects) || !Array.isArray(j.memberProjects)) return null;
+      const at = Number(j.at || 0);
+      if (!(Date.now() - at < RL_HP_PERSIST_MAX_AGE_MS)) return null;
+      return { at, userId, ownerProjects: j.ownerProjects, memberProjects: j.memberProjects };
+    } catch (_) { return null; }
+  }
+  function rlHpWritePersistedCache(cache) {
+    try {
+      GM_setValue(RL_HP_GM_CACHE, JSON.stringify({
+        v: 1, at: cache.at, userId: cache.userId,
+        ownerProjects: cache.ownerProjects, memberProjects: cache.memberProjects,
+      }));
+    } catch (_) {}
+  }
+  // The best result we have without touching the network — this session's, or
+  // the persisted one from an earlier page load — whatever its age. Null when
+  // there is none for the current user.
+  function rlHpPeekCache() {
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) return null;
+    if (!rlHpCache.ownerProjects || rlHpCache.userId !== userId) {
+      const persisted = rlHpReadPersistedCache(userId);
+      if (persisted) rlHpCache = persisted;
+    }
+    return (rlHpCache.ownerProjects && rlHpCache.memberProjects && rlHpCache.userId === userId) ? rlHpCache : null;
+  }
+  function rlHpFmtClock(ts) {
+    try { return new Date(ts).toLocaleTimeString(UI_LOCALE, { hour: "2-digit", minute: "2-digit" }); }
+    catch (_) { return ""; }
+  }
 
   function rlHpIsHomePath(pathname) {
     const p = String(pathname == null ? location.pathname : pathname);
@@ -4604,16 +4649,13 @@
     if (!userId) throw new Error("No Rocketlane user id in __api_key yet — reload once logged in.");
 
     const now = Date.now();
-    if (
-      !force &&
-      rlHpCache.ownerProjects &&
-      rlHpCache.memberProjects &&
-      rlHpCache.userId === userId &&
-      (now - rlHpCache.at) < RL_HP_CACHE_MS
-    ) {
-      return { ownerProjects: rlHpCache.ownerProjects, memberProjects: rlHpCache.memberProjects };
+    const cached = rlHpPeekCache();
+    if (!force && cached && (now - cached.at) < RL_HP_CACHE_MS) {
+      return { ownerProjects: cached.ownerProjects, memberProjects: cached.memberProjects };
     }
-    if (!force && rlHpInflight && rlHpCache.userId === userId) return rlHpInflight;
+    // Join a fetch already running for this user (the document-start prefetch
+    // and the panel's own refresh must not page lightV1 twice).
+    if (!force && rlHpInflight && rlHpInflightUserId === userId) return rlHpInflight;
 
     const gen = ++rlHpGen;
     const promise = (async () => {
@@ -4631,14 +4673,16 @@
         ownerProjects: buckets.ownerProjects,
         memberProjects: buckets.memberProjects,
       };
+      rlHpWritePersistedCache(rlHpCache);
       return buckets;
     })();
 
     rlHpInflight = promise;
+    rlHpInflightUserId = userId;
     try {
       return await promise;
     } finally {
-      if (rlHpInflight === promise) rlHpInflight = null;
+      if (rlHpInflight === promise) { rlHpInflight = null; rlHpInflightUserId = ""; }
     }
   }
 
@@ -5114,7 +5158,12 @@
       if (rlHpUi.error) statusEl.textContent = rlHpUi.error;
       else if (rlHpUi.syncing && !count) statusEl.textContent = "Loading projects…";
       else if (!count) statusEl.textContent = emptyMsg;
-      else statusEl.textContent = count + " " + countLabel;
+      else {
+        let line = count + " " + countLabel;
+        if (rlHpUi.syncing) line += " · refreshing…";
+        else if (rlHpUi.cachedAt) line += " · updated " + rlHpFmtClock(rlHpUi.cachedAt);
+        statusEl.textContent = line;
+      }
     }
 
     const list = panel.querySelector('[data-rlhp-list="' + listKind + '"]');
@@ -5150,6 +5199,16 @@
   }
 
   async function rlHpRefresh(opts) {
+    // Stale-while-revalidate: paint the last result at once (this session's or
+    // the persisted one), then let rlHpLoadProjects decide whether the network
+    // is needed. A forced refresh keeps the list on screen too — only the
+    // status line changes until the fresh result lands.
+    const cached = rlHpPeekCache();
+    if (cached) {
+      rlHpUi.ownerProjects = cached.ownerProjects;
+      rlHpUi.memberProjects = cached.memberProjects;
+      rlHpUi.cachedAt = cached.at;
+    }
     rlHpUi.syncing = true;
     rlHpUi.error = "";
     rlHpRenderPanels();
@@ -5157,6 +5216,7 @@
       const buckets = await rlHpLoadProjects(opts);
       rlHpUi.ownerProjects = Array.isArray(buckets?.ownerProjects) ? buckets.ownerProjects : [];
       rlHpUi.memberProjects = Array.isArray(buckets?.memberProjects) ? buckets.memberProjects : [];
+      rlHpUi.cachedAt = rlHpCache.at || Date.now();
     } catch (e) {
       rlHpUi.error = String(e?.message || e || "Failed to load projects");
     } finally {
@@ -5196,6 +5256,15 @@
     } else {
       rlHpPlacePanels(ownerPanel, memberPanel);
     }
+  }
+
+  // Prefetch: on the home path start paging lightV1 at document-start, so the
+  // network round trips overlap the SPA's own load instead of starting when
+  // the panels mount under Overdue. The api-key is already in localStorage;
+  // a fresh persisted result short-circuits without a request, and the
+  // panel's later refresh joins this fetch through rlHpInflight.
+  if (rlHpIsHomePath(location.pathname)) {
+    try { void rlHpLoadProjects({ force: false }).catch(() => {}); } catch (_) {}
   }
 
 
