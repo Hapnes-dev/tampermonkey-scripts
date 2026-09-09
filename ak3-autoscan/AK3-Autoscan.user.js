@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.3.1
+// @version      9.3.2
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -500,24 +500,28 @@
             boxShadow: '0 4px 12px rgba(0,0,0,.4)', display: 'flex',
             flexDirection: 'column'
         });
+        // One style for every header button: same height, padding, font and
+        // baseline, so the row reads as one control strip. Only the colour
+        // differs. refreshControls() toggles display between '' and 'none',
+        // and '' falls back to the button default (inline-block), which is
+        // what the sizing below assumes.
+        const BTN = 'display:inline-block;vertical-align:middle;box-sizing:border-box;height:22px;' +
+            'line-height:22px;padding:0 10px;margin:0 0 0 4px;cursor:pointer;color:#fff;border:none;' +
+            'border-radius:4px;font:700 11px/22px monospace;white-space:nowrap;';
         panel.innerHTML =
             '<div style="display:flex;align-items:center;justify-content:space-between;' +
             'padding:6px 8px;background:#1f2937;border-radius:6px 6px 0 0;">' +
-            '<strong style="color:#10b981">AK3 Debug</strong>' +
-            '<span>' +
+            '<strong style="color:#10b981;white-space:nowrap;">AK3 Debug</strong>' +
+            '<span style="display:inline-flex;align-items:center;">' +
             '<button id="ak3-debug-resume" title="Resume the saved run at its current step" ' +
-            'style="margin-right:4px;cursor:pointer;background:#16a34a;color:#fff;border:none;' +
-            'padding:2px 8px;border-radius:3px;font-weight:700;">▶ Resume</button>' +
+            'style="' + BTN + 'background:#16a34a;">▶ Resume</button>' +
             '<button id="ak3-debug-abort" title="Stop the run: AK3 back to StandardMode, saved run cleared" ' +
-            'style="margin-right:4px;cursor:pointer;background:#b45309;color:#fff;border:none;' +
-            'padding:2px 8px;border-radius:3px;font-weight:700;">■ Abort</button>' +
-            '<button id="ak3-debug-clear" style="margin-right:4px;cursor:pointer;' +
-            'background:#374151;color:#fff;border:none;padding:2px 6px;border-radius:3px;">clear</button>' +
-            '<button id="ak3-debug-toggle" style="margin-right:4px;cursor:pointer;background:#374151;color:#fff;' +
-            'border:none;padding:2px 6px;border-radius:3px;">−</button>' +
+            'style="' + BTN + 'background:#b45309;">■ Abort</button>' +
+            '<button id="ak3-debug-clear" title="Clear the log" style="' + BTN + 'background:#374151;">Clear</button>' +
+            '<button id="ak3-debug-toggle" title="Minimise / expand" style="' + BTN +
+            'background:#374151;min-width:26px;padding:0;text-align:center;">−</button>' +
             '<button id="ak3-debug-close" title="Close debug window" ' +
-            'style="cursor:pointer;background:#dc2626;color:#fff;border:none;' +
-            'padding:4px 12px;border-radius:3px;font-weight:700;font-size:14px;">× Close</button>' +
+            'style="' + BTN + 'background:#dc2626;">× Close</button>' +
             '</span></div>' +
             '<pre id="ak3-debug-body" style="margin:0;padding:8px;overflow:auto;' +
             'flex:1;white-space:pre-wrap;word-break:break-word;"></pre>';
