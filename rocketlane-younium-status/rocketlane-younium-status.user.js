@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.3
+// @version      1.6.4
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsible, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1689,6 +1689,9 @@
   function ensure() {
     if (!/^\/projects\/\d+/.test(location.pathname)) return; // only on project pages
     injectStyles();
+    // Action bar only needs the plan/tasks Responsible row — do not wait for the
+    // tab chips / All-files row, or a slow nav paint blocks the pills for seconds.
+    try { rlEnsureProjectActionBar(); } catch (_) {}
     if (!document.getElementById("ynNavBtn")) {
       const row = getNavRow();
       if (!row) return;
@@ -1711,7 +1714,6 @@
     refreshOneflowButtonForCurrentProject();
     try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
     try { dtsEnsureCardButtons(); } catch (_) {}
-    try { rlEnsureProjectActionBar(); } catch (_) {}
   }
 
   let ensureTimer = null;
@@ -1726,10 +1728,12 @@
     const ofBtn = document.getElementById("ofNavBtn");
     const dtsBtn = document.getElementById("dtsNavBtn");
     const actionBar = document.getElementById("rlProjectActionBar");
-    const actionOk = (actionBar && actionBar.isConnected) || document.documentElement.dataset.rlPabNoMount === "1";
-    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected && actionOk) return;
+    // Never treat "mount not found yet" as done — Responsible row often hydrates
+    // after the nav chips, and a no-mount early-out stalled the pills for 1.5s+.
+    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected &&
+        actionBar && actionBar.isConnected) return;
     if (ensureTimer) return;
-    ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 300);
+    ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 120);
   }
 
   // Observe the DOM only to (re-)inject the button when it's missing — the
@@ -1744,7 +1748,12 @@
       rlProjectLinksCache.clear();
       delete document.documentElement.dataset.rlPabNoMount;
     } catch (_) {}
-    [60, 350, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d));
+    // Kick action bar + chips immediately; Responsible row often paints within ~100ms.
+    [0, 50, 150, 400, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d));
+    try {
+      const m = location.pathname.match(/^\/projects\/(\d+)/);
+      if (m) void rlLoadProjectLinks(m[1]);
+    } catch (_) {}
   }
   (function hookHistory() {
     for (const m of ["pushState", "replaceState"]) {
@@ -2494,13 +2503,14 @@
     const boot = setInterval(() => {
       tries += 1;
       ensure();
-      if ((document.getElementById("ynNavBtn") && document.getElementById("rlProjectActionBar")) || tries > 40) clearInterval(boot);
-    }, 500);
-    // Section 8's card button: scrolling a lane is what remounts a card footer,
-    // and it doesn't always arrive as a mutation the observer above sees in
-    // time. Scroll is captured (the board scrolls an inner container, not the
-    // window) and a 1s tick covers everything else, including the first paint
-    // of a lane that hydrated while the tab was in the background.
+      if ((document.getElementById("ynNavBtn") && document.getElementById("rlProjectActionBar")) || tries > 80) clearInterval(boot);
+    }, 150);
+    // Prefetch project links as soon as the URL has an id — pills patch in when
+    // the Responsible row appears instead of waiting on the API then.
+    try {
+      const m = location.pathname.match(/^\/projects\/(\d+)/);
+      if (m) void rlLoadProjectLinks(m[1]);
+    } catch (_) {}
     window.addEventListener("scroll", dtsScheduleCardPass, { passive: true, capture: true });
     setInterval(() => {
       if (/^\/projects\/\d+/.test(location.pathname)) dtsScheduleCardPass();
@@ -3033,23 +3043,11 @@
     const ctx = getOneflowContext();
     if (!ctx.rlProjectId) return;
 
+    // Warm the link cache in parallel with waiting for the toolbar.
+    void rlLoadProjectLinks(ctx.rlProjectId);
+
     const mount = rlFindResponsibilityMount();
-    if (!mount?.parent || !mount.before) {
-      try {
-        document.documentElement.dataset.rlPabNoMount = "1";
-        // Toolbar may hydrate late — clear the early-out flag and retry.
-        clearTimeout(rlEnsureProjectActionBar._missTimer);
-        rlEnsureProjectActionBar._missTimer = setTimeout(() => {
-          try { delete document.documentElement.dataset.rlPabNoMount; } catch (_) {}
-          try { scheduleEnsure(); } catch (_) {}
-        }, 1500);
-      } catch (_) {}
-      return;
-    }
-    try {
-      clearTimeout(rlEnsureProjectActionBar._missTimer);
-      delete document.documentElement.dataset.rlPabNoMount;
-    } catch (_) {}
+    if (!mount?.parent) return;
 
     let bar = document.getElementById("rlProjectActionBar");
     if (!bar) bar = rlBuildActionBarShell();
