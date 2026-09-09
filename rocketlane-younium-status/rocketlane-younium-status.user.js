@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.1
+// @version      1.9.2
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1756,6 +1756,8 @@
     try {
       rlProjectLinksCache.clear();
       delete document.documentElement.dataset.rlPabNoMount;
+      rlFilesClosePopover();
+      rlOrderInfoClosePopover();
     } catch (_) {}
     // Kick action bar + chips immediately; Responsible row often paints within ~100ms.
     [0, 50, 150, 400, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d));
@@ -4187,27 +4189,63 @@
         display: flex; justify-content: flex-end; gap: 8px;
         padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);
       }
-      dialog.rlOrderInfoDlg {
-        border: none; border-radius: 12px; padding: 0; max-width: min(560px, 92vw);
-        background: #111; color: rgba(255,255,255,0.92);
-        box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      /* ── Order info popover (Files-style shell) ── */
+      #rlOrderInfoPopover {
+        --rlOi-surface-1: #0f1424;
+        --rlOi-surface-2: rgba(255,255,255,0.045);
+        --rlOi-hairline: rgba(255,255,255,0.08);
+        --rlOi-text: rgba(255,255,255,0.92);
+        --rlOi-muted: rgba(255,255,255,0.62);
+        --rlOi-accent: #7dd3fc;
+        position: fixed; z-index: 10050;
+        width: min(820px, calc(100vw - 32px));
+        max-height: calc(100vh - 80px);
+        background: var(--rlOi-surface-1);
+        color: var(--rlOi-text);
+        border: 1px solid var(--rlOi-hairline);
+        border-radius: 12px;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+        overflow: hidden;
+        display: flex; flex-direction: column;
+        animation: rlOiIn 120ms ease-out;
       }
-      dialog.rlOrderInfoDlg::backdrop { background: rgba(0,0,0,0.45); }
-      dialog.rlOrderInfoDlg .rlOiHead {
+      @media (prefers-color-scheme: light) {
+        #rlOrderInfoPopover {
+          --rlOi-surface-1: #ffffff;
+          --rlOi-surface-2: rgba(15,23,42,0.04);
+          --rlOi-hairline: rgba(15,23,42,0.10);
+          --rlOi-text: rgba(15,23,42,0.92);
+          --rlOi-muted: rgba(15,23,42,0.62);
+          --rlOi-accent: #0284c7;
+        }
+      }
+      @keyframes rlOiIn {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      #rlOrderInfoPopover .rlOiHead {
         display: flex; align-items: center; justify-content: space-between;
-        gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);
-        font-weight: 600;
+        gap: 10px; padding: 12px 14px;
+        border-bottom: 1px solid var(--rlOi-hairline);
+        font-weight: 600; font-size: 13px; flex: 0 0 auto;
       }
-      dialog.rlOrderInfoDlg .rlOiBody {
-        padding: 14px 16px; max-height: 60vh; overflow: auto;
-        font-size: 13px; line-height: 1.45; color: rgba(255,255,255,0.86);
+      #rlOrderInfoPopover .rlOiClose {
+        appearance: none; border: 1px solid var(--rlOi-hairline);
+        background: var(--rlOi-surface-2); color: inherit;
+        width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+        font-size: 16px; line-height: 1;
       }
-      dialog.rlOrderInfoDlg .rlOiBody a { color: #7dd3fc; }
-      dialog.rlOrderInfoDlg .rlOiClose {
-        appearance: none; border: 1px solid rgba(255,255,255,0.16);
-        background: rgba(255,255,255,0.06); color: inherit;
-        border-radius: 8px; padding: 4px 10px; cursor: pointer;
+      #rlOrderInfoPopover .rlOiBody {
+        padding: 12px 14px; overflow: auto; flex: 1 1 auto; min-height: 0;
+        font-size: 13px; line-height: 1.55; color: var(--rlOi-muted);
+        max-height: min(70vh, 640px);
       }
+      #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent); }
+      #rlOrderInfoPopover .rlOiBody p { margin: 0 0 8px; }
+      #rlOrderInfoPopover .rlOiBody p:last-child { margin-bottom: 0; }
+      #rlOrderInfoPopover .rlOiEmpty,
+      #rlOrderInfoPopover .rlOiError { color: var(--rlOi-muted); padding: 8px 2px; }
+      #rlOrderInfoPopover .rlOiError { color: #fca5a5; }
 
       /* ── Files popover (rlFiles*) ── */
       #rlFilesPopover {
@@ -4470,21 +4508,6 @@
     return a;
   }
 
-  function rlEnsureOrderInfoDialog() {
-    let dlg = document.getElementById("rlOrderInfoDlg");
-    if (dlg) return dlg;
-    dlg = document.createElement("dialog");
-    dlg.id = "rlOrderInfoDlg";
-    dlg.className = "rlOrderInfoDlg";
-    dlg.innerHTML =
-      '<div class="rlOiHead"><span>\uD83D\uDCE6 Order info</span><button type="button" class="rlOiClose" id="rlOiClose">Close</button></div>' +
-      '<div class="rlOiBody" id="rlOiBody">Loading\u2026</div>';
-    document.documentElement.appendChild(dlg);
-    dlg.querySelector("#rlOiClose")?.addEventListener("click", () => { try { dlg.close(); } catch (_) {} });
-    dlg.addEventListener("click", (e) => { if (e.target === dlg) { try { dlg.close(); } catch (_) {} } });
-    return dlg;
-  }
-
   function rlSanitizeOrderHtml(html) {
     try {
       const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
@@ -4502,13 +4525,94 @@
     }
   }
 
-  async function rlOpenOrderInfo(rlProjectId) {
-    const dlg = rlEnsureOrderInfoDialog();
-    const body = dlg.querySelector("#rlOiBody");
-    if (body) body.textContent = "Loading\u2026";
-    try { dlg.showModal(); } catch (_) { dlg.setAttribute("open", ""); }
+  let rlOrderInfoPopoverEl = null;
+  let rlOrderInfoPopoverGen = 0;
+  let rlOrderInfoPopoverProjectId = "";
+
+  function rlOrderInfoClosePopover() {
+    if (rlOrderInfoPopoverEl && rlOrderInfoPopoverEl.parentNode) {
+      rlOrderInfoPopoverEl.parentNode.removeChild(rlOrderInfoPopoverEl);
+    }
+    rlOrderInfoPopoverEl = null;
+    rlOrderInfoPopoverProjectId = "";
+    document.removeEventListener("click", rlOrderInfoOutsideClick, true);
+    document.removeEventListener("keydown", rlOrderInfoEscKey, true);
+  }
+
+  function rlOrderInfoOutsideClick(e) {
+    if (!rlOrderInfoPopoverEl) return;
+    const t = e.target;
+    const btn = document.getElementById("rlPabOrderInfo");
+    if (rlOrderInfoPopoverEl.contains(t) || (btn && btn.contains(t))) return;
+    rlOrderInfoClosePopover();
+  }
+
+  function rlOrderInfoEscKey(e) {
+    if (e.key !== "Escape") return;
+    rlOrderInfoClosePopover();
+  }
+
+  function rlOrderInfoGuard(gen, projectId) {
+    if (gen !== rlOrderInfoPopoverGen) return false;
+    if (!rlOrderInfoPopoverEl) return false;
+    if (rlOrderInfoPopoverProjectId !== projectId) return false;
+    const ctx = getOneflowContext();
+    if (!ctx.rlProjectId || ctx.rlProjectId !== projectId) return false;
+    return true;
+  }
+
+  async function rlOrderInfoTogglePopover(anchorBtn) {
+    if (rlOrderInfoPopoverEl) { rlOrderInfoClosePopover(); return; }
+    const ctx = getOneflowContext();
+    const rlPid = String(ctx.rlProjectId || anchorBtn?.closest?.("#rlProjectActionBar")?.dataset?.rlProjectId || "").trim();
+    if (!rlPid || !anchorBtn) return;
+
+    try { rlFilesClosePopover(); } catch (_) {}
+    rlInjectActionBarStyles();
+    const gen = ++rlOrderInfoPopoverGen;
+    rlOrderInfoPopoverProjectId = rlPid;
+
+    rlOrderInfoPopoverEl = document.createElement("div");
+    rlOrderInfoPopoverEl.id = "rlOrderInfoPopover";
+    rlOrderInfoPopoverEl.setAttribute("role", "dialog");
+    rlOrderInfoPopoverEl.setAttribute("aria-label", "Order info");
+    const head = document.createElement("div");
+    head.className = "rlOiHead";
+    const title = document.createElement("span");
+    title.textContent = "\uD83D\uDCE6 Order info";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "rlOiClose";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "\u00D7";
+    closeBtn.addEventListener("click", rlOrderInfoClosePopover);
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    const body = document.createElement("div");
+    body.className = "rlOiBody";
+    body.textContent = "Loading\u2026";
+    rlOrderInfoPopoverEl.appendChild(head);
+    rlOrderInfoPopoverEl.appendChild(body);
+    document.body.appendChild(rlOrderInfoPopoverEl);
+
+    const rect = anchorBtn.getBoundingClientRect();
+    const popW = Math.min(820, window.innerWidth - 32);
+    const margin = 16;
+    let rightPx = window.innerWidth - rect.right;
+    rightPx = Math.min(Math.max(rightPx, margin), Math.max(margin, window.innerWidth - popW - margin));
+    rlOrderInfoPopoverEl.style.top = (rect.bottom + 8) + "px";
+    rlOrderInfoPopoverEl.style.right = rightPx + "px";
+    rlOrderInfoPopoverEl.style.width = popW + "px";
+
+    setTimeout(() => {
+      if (!rlOrderInfoPopoverEl || gen !== rlOrderInfoPopoverGen) return;
+      document.addEventListener("click", rlOrderInfoOutsideClick, true);
+      document.addEventListener("keydown", rlOrderInfoEscKey, true);
+    }, 0);
+
     try {
-      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId), { includeAllFields: true });
+      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlPid), { includeAllFields: true });
+      if (!rlOrderInfoGuard(gen, rlPid)) return;
       const project = json?.data ?? json;
       const fields = Array.isArray(project?.fields) ? project.fields : [];
       const match = fields.find((f) => {
@@ -4516,14 +4620,22 @@
         return n.startsWith("hubspotdeliverystatus") || n.startsWith("deliverystatus");
       });
       const html = match ? String(match.fieldValue ?? "") : "";
-      if (!body) return;
+      body.textContent = "";
       if (!html.trim()) {
-        body.textContent = "No HubSpot delivery / order status field found on this project.";
+        const empty = document.createElement("div");
+        empty.className = "rlOiEmpty";
+        empty.textContent = "No HubSpot delivery / order status field found on this project.";
+        body.appendChild(empty);
         return;
       }
       body.innerHTML = rlSanitizeOrderHtml(html);
     } catch (e) {
-      if (body) body.textContent = "Couldn't load order info: " + (e?.message ?? e);
+      if (!rlOrderInfoGuard(gen, rlPid)) return;
+      body.textContent = "";
+      const err = document.createElement("div");
+      err.className = "rlOiError";
+      err.textContent = "Couldn't load order info: " + (e?.message ?? e);
+      body.appendChild(err);
     }
   }
 
@@ -4563,8 +4675,7 @@
         btn.addEventListener("click", (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          const pid = bar.dataset.rlProjectId;
-          if (pid) void rlOpenOrderInfo(pid);
+          void rlOrderInfoTogglePopover(btn);
         });
       }
       if (d.always === "files") {
@@ -5311,6 +5422,7 @@
 
   async function rlFilesTogglePopover(anchorBtn) {
     if (rlFilesPopoverEl) { rlFilesClosePopover(); return; }
+    try { rlOrderInfoClosePopover(); } catch (_) {}
     const ctx = getOneflowContext();
     const rlPid = String(ctx.rlProjectId || "").trim();
     if (!rlPid || !anchorBtn) return;
@@ -5884,6 +5996,7 @@
     if (!/^\/projects\/\d+/.test(location.pathname)) {
       document.getElementById("rlProjectActionBar")?.remove();
       rlFilesClosePopover();
+      rlOrderInfoClosePopover();
       return;
     }
     rlInjectActionBarStyles();
@@ -5903,6 +6016,9 @@
     }
     if (rlFilesPopoverProjectId && rlFilesPopoverProjectId !== ctx.rlProjectId) {
       rlFilesClosePopover();
+    }
+    if (rlOrderInfoPopoverProjectId && rlOrderInfoPopoverProjectId !== ctx.rlProjectId) {
+      rlOrderInfoClosePopover();
     }
     bar.dataset.rlProjectId = ctx.rlProjectId;
 
