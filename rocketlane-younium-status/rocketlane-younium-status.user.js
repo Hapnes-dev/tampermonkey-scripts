@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.8.1
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.9.0
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -19,6 +19,11 @@
 // @connect      kiona.api.rocketlane.com
 // @connect      iwmac.zendesk.com
 // @connect      toolbox.iwmac.local
+// @connect      s3.us-east-1.amazonaws.com
+// @connect      s3.amazonaws.com
+// @connect      amazonaws.com
+// @connect      assets.rocketlane.com
+// @connect      d1vtr0p8bkmfca.cloudfront.net
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -51,7 +56,7 @@
  *  1c. Project action buttons (section 5c), ported from the tracker's project
  *     header link row. Dark/light pills left of Rocketlane's Responsible
  *     filter: Zendesk, Oneflow (Order/Subscription), Younium (Order/Subscription),
- *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Also a PPT Find-style
+ *     HubSpot, Rocketlane, Files (popover: list/preview/download/upload), Order info, PANG, BAF. Also a PPT Find-style
  *     "🔎 Fetch URLs" button left of Present that opens a PPT-style URL chooser
  *     (scored Find with signal chips + match %, then select/save), then saves
  *     clickable Attach-links anchors into the IQC task
@@ -1895,6 +1900,169 @@
   }
   function gmRocketlaneGet(path, query) { return gmRocketlaneRequest("GET", path, query); }
 
+  // ── Attachment transport (Files popover v1.9.0) — no window.RocketlaneBridge ──
+  async function gmRocketlaneFetchAttachment(attachmentId) {
+    const id = encodeURIComponent(attachmentId);
+    const candidates = [
+      "/attachments/" + id,
+      "/attachments/" + id + "/download",
+      "/attachments/" + id + "/url",
+    ];
+    let lastErr = null;
+    for (const path of candidates) {
+      try {
+        const data = await gmRocketlaneGet(path);
+        const att = data?.attachment ?? data?.data?.attachment ?? data;
+        if (att && (att.downloadUrl || att.location || att.url)) {
+          if (!att.downloadUrl && att.url) att.downloadUrl = att.url;
+          return att;
+        }
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error("No attachment endpoint returned a usable URL");
+  }
+
+  /** Blob download: fresh signed URL first, then GM GET without api-key. */
+  function gmRocketlaneDownloadAttachmentBlob(attachmentId) {
+    return (async () => {
+      const att = await gmRocketlaneFetchAttachment(attachmentId);
+      const url = String(att?.downloadUrl ?? att?.location ?? "").trim();
+      if (!url) throw new Error("Attachment has no downloadUrl/location.");
+      const fileName = String(att?.name ?? "download.bin");
+      const mimeType = String(att?.mimeType ?? att?.contentType ?? "application/octet-stream");
+      // SECURITY: never attach api-key to the signed CDN/S3 URL host.
+      return await new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: url,
+          responseType: "blob",
+          timeout: 120000,
+          onload: (res) => {
+            if (res.status < 200 || res.status >= 300) {
+              reject(new Error("Download failed HTTP " + res.status));
+              return;
+            }
+            resolve({ blob: res.response, fileName, mimeType });
+          },
+          onerror: () => reject(new Error("Network error while downloading attachment")),
+          ontimeout: () => reject(new Error("Attachment download timed out")),
+        });
+      });
+    })();
+  }
+
+  function gmRocketlaneUploadAttachment(projectId, file, opts) {
+    return new Promise((resolve, reject) => {
+      const apiKey = rlReadApiKey();
+      if (!apiKey) {
+        reject(new Error("No Rocketlane api-key in this page yet — reload once logged in."));
+        return;
+      }
+      const fileName = (file && (file.name || file.fileName)) || "upload.bin";
+      const folderId = opts && opts.folderId != null ? Number(opts.folderId) : null;
+      if (folderId == null || !Number.isFinite(folderId)) {
+        reject(new Error("Upload blocked: General Shared Files folder id missing (refusing orphan attachment)."));
+        return;
+      }
+      const publicVisibility = opts && typeof opts.publicVisibility === "boolean"
+        ? opts.publicVisibility
+        : false;
+      const attachmentReq = {
+        name: fileName,
+        publicVisibility: publicVisibility,
+        projectId: Number(projectId),
+        sourceType: "FOLDER",
+        sourceId: folderId,
+      };
+      const requestPayload = { attachment: attachmentReq };
+      const fd = new FormData();
+      fd.append("file", file, fileName);
+      fd.append("request", new Blob([JSON.stringify(requestPayload)], { type: "application/json" }));
+
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: ROCKETLANE_API + "/attachments",
+        // Do NOT set Content-Type — Tampermonkey sets multipart boundary.
+        headers: { "api-key": apiKey, accept: "application/json" },
+        data: fd,
+        timeout: 60000,
+        onload: (res) => {
+          if (res.status < 200 || res.status >= 300) {
+            reject(new Error("Upload failed HTTP " + res.status + ": " + (res.responseText || "").slice(0, 200)));
+            return;
+          }
+          let att;
+          try {
+            const j = JSON.parse(res.responseText || "{}");
+            att = j?.attachment ?? j?.data?.attachment ?? j;
+            if (!att?.attachmentId) {
+              reject(new Error("Upload succeeded but no attachmentId in response"));
+              return;
+            }
+          } catch (e) {
+            reject(new Error("Could not parse upload response: " + (e && e.message ? e.message : e)));
+            return;
+          }
+          GM_xmlhttpRequest({
+            method: "POST",
+            url: ROCKETLANE_API + "/projects/" + encodeURIComponent(projectId) +
+              "/folders/" + encodeURIComponent(folderId) + "/attachments/link",
+            headers: { "api-key": apiKey, accept: "application/json", "content-type": "application/json" },
+            data: JSON.stringify([att.attachmentId]),
+            timeout: 30000,
+            onload: (lres) => {
+              if (lres.status < 200 || lres.status >= 300) {
+                reject(new Error("Folder link failed HTTP " + lres.status + ": " + (lres.responseText || "").slice(0, 200)));
+                return;
+              }
+              resolve(att);
+            },
+            onerror: () => reject(new Error("Network error during folder link")),
+            ontimeout: () => reject(new Error("Folder link timed out")),
+          });
+        },
+        onerror: () => reject(new Error("Network error during attachment upload")),
+        ontimeout: () => reject(new Error("Attachment upload timed out")),
+      });
+    });
+  }
+
+  async function gmRocketlaneFetchProjectAttachments(projectId) {
+    const data = await gmRocketlaneGet("/attachments/project/" + encodeURIComponent(projectId));
+    const list = Array.isArray(data) ? data : Object.values(data || {}).filter((v) => v && typeof v === "object");
+    return list
+      .filter((entry) => entry && entry.attachment)
+      .map((entry) => ({
+        ...entry.attachment,
+        _source: entry.source ?? null,
+        _link: entry.link ?? null,
+      }));
+  }
+
+  async function gmRocketlaneFetchProjectFolders(projectId) {
+    const data = await gmRocketlaneGet("/projects/" + encodeURIComponent(projectId) + "/folders");
+    const folders = Array.isArray(data?.value) ? data.value
+      : Array.isArray(data) ? data
+      : [];
+    const out = [];
+    for (const f of folders) {
+      const folderName = String(f?.folderName ?? "Files").trim();
+      const isPrivate = !!f?.isPrivate;
+      const atts = Array.isArray(f?.attachments) ? f.attachments : [];
+      for (const a of atts) {
+        out.push({
+          ...a,
+          _folder: folderName,
+          _isPrivate: isPrivate,
+          _source: folderName,
+          _link: null,
+        });
+      }
+    }
+    return { folders, attachments: out };
+  }
+
+
   // ── Document discovery ──
   function ofExtractAgreementId(url) {
     const s = String(url ?? "").trim();
@@ -3121,6 +3289,92 @@
   }
 
   // @@rlUrlPickerHelpers:end
+
+  // @@rlFilesHelpers:start
+  // Pure Files-popover helpers (extracted by files-popover.test.js).
+  function rlFilesMergeAttachments(taskAtts, folderAtts) {
+    const seen = new Set();
+    const merged = [];
+    for (const a of [...(taskAtts || []), ...(folderAtts || [])]) {
+      const id = a?.attachmentId;
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      merged.push(a);
+    }
+    return merged;
+  }
+
+  function rlFilesPickGeneralSharedFolder(folders) {
+    const list = Array.isArray(folders) ? folders : [];
+    const gsf = list.find((f) => f && f.isDefault && !f.isPrivate)
+      || list.find((f) => /general shared/i.test(String(f?.folderName || "")));
+    if (!gsf) return null;
+    const id = gsf.folderId ?? gsf.id;
+    if (id == null || id === "") return null;
+    return { folderId: id, folderName: String(gsf.folderName || "General Shared Files") };
+  }
+
+  function rlFilesSanitizeFileName(raw) {
+    let s = String(raw || "").trim().replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/[. ]+$/, "");
+    if (s.length > 200) s = s.slice(0, 200);
+    return s || "download.bin";
+  }
+
+  function rlFilesSanitizeFolderName(raw) {
+    let s = String(raw || "").trim().replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/[. ]+$/, "");
+    if (s.length > 200) s = s.slice(0, 200);
+    return s || "Project Files";
+  }
+
+  function rlFilesIsTrustedAttachmentHost(hostname) {
+    const h = String(hostname || "").toLowerCase();
+    if (!h) return false;
+    if (h === "assets.rocketlane.com" || h.endsWith(".assets.rocketlane.com")) return true;
+    if (h === "d1vtr0p8bkmfca.cloudfront.net") return true;
+    if (h.endsWith(".cloudfront.net")) return true;
+    if (h === "s3.amazonaws.com") return true;
+    if (/\.s3[.-]/i.test(h)) return true;
+    if (h.endsWith(".amazonaws.com")) return true;
+    return false;
+  }
+
+  function rlFilesIsTrustedAttachmentUrl(raw) {
+    try {
+      const u = new URL(String(raw || "").trim());
+      if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+      return rlFilesIsTrustedAttachmentHost(u.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function rlFilesFormatSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (!n) return "";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let v = n;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
+  }
+
+  function rlFilesUniqueName(fileName, usedNames) {
+    let candidate = fileName;
+    let n = 1;
+    while (usedNames.has(candidate)) {
+      const dot = fileName.lastIndexOf(".");
+      if (dot > 0) {
+        candidate = fileName.slice(0, dot) + " (" + n + ")" + fileName.slice(dot);
+      } else {
+        candidate = fileName + " (" + n + ")";
+      }
+      n++;
+    }
+    usedNames.add(candidate);
+    return candidate;
+  }
+  // @@rlFilesHelpers:end
+
   // @@rlMatchRuntime:start
   // Match-field reader keeps MULTI_SELECT as string[] (rlReadField flattens arrays to a joined string).
   function rlReadMatchField(fields, prefix) {
@@ -3947,6 +4201,166 @@
         background: rgba(255,255,255,0.06); color: inherit;
         border-radius: 8px; padding: 4px 10px; cursor: pointer;
       }
+
+      /* ── Files popover (rlFiles*) ── */
+      #rlFilesPopover {
+        --rlFiles-surface-1: #0f1424;
+        --rlFiles-surface-2: rgba(255,255,255,0.045);
+        --rlFiles-surface-3: rgba(255,255,255,0.07);
+        --rlFiles-hairline: rgba(255,255,255,0.08);
+        --rlFiles-hairline-strong: rgba(255,255,255,0.14);
+        --rlFiles-text: rgba(255,255,255,0.92);
+        --rlFiles-muted: rgba(255,255,255,0.62);
+        --rlFiles-muted2: rgba(255,255,255,0.46);
+        --rlFiles-accent: #7dd3fc;
+        --rlFiles-accent-soft: rgba(125,211,252,0.12);
+        position: absolute; z-index: 10050;
+        width: min(960px, calc(100vw - 32px));
+        background: var(--rlFiles-surface-1);
+        color: var(--rlFiles-text);
+        border: 1px solid var(--rlFiles-hairline);
+        border-radius: 12px;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+        overflow: hidden;
+      }
+      @media (prefers-color-scheme: light) {
+        #rlFilesPopover {
+          --rlFiles-surface-1: #ffffff;
+          --rlFiles-surface-2: rgba(15,23,42,0.04);
+          --rlFiles-surface-3: rgba(15,23,42,0.06);
+          --rlFiles-hairline: rgba(15,23,42,0.10);
+          --rlFiles-hairline-strong: rgba(15,23,42,0.16);
+          --rlFiles-text: rgba(15,23,42,0.92);
+          --rlFiles-muted: rgba(15,23,42,0.62);
+          --rlFiles-muted2: rgba(15,23,42,0.44);
+          --rlFiles-accent: #0284c7;
+          --rlFiles-accent-soft: rgba(2,132,199,0.10);
+        }
+      }
+      #rlFilesPopover.rlFilesDropActive {
+        outline: 2px dashed var(--rlFiles-accent);
+        outline-offset: -6px;
+        background: var(--rlFiles-accent-soft);
+      }
+      #rlFilesPopover .rlFilesHead {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; padding: 12px 14px;
+        border-bottom: 1px solid var(--rlFiles-hairline);
+        font-weight: 600; font-size: 13px;
+      }
+      #rlFilesPopover .rlFilesActions {
+        display: flex; align-items: center; gap: 6px;
+      }
+      #rlFilesPopover .rlFilesBtn {
+        font-size: 11px; padding: 4px 10px;
+        background: var(--rlFiles-surface-3);
+        border: 1px solid var(--rlFiles-hairline);
+        color: var(--rlFiles-muted);
+        border-radius: 6px; cursor: pointer; white-space: nowrap;
+      }
+      #rlFilesPopover .rlFilesBtn:hover:not(:disabled) {
+        background: var(--rlFiles-surface-2);
+        color: var(--rlFiles-text);
+        border-color: var(--rlFiles-hairline-strong);
+      }
+      #rlFilesPopover .rlFilesBtn:disabled { opacity: 0.7; cursor: wait; }
+      #rlFilesPopover .rlFilesClose {
+        appearance: none; border: 1px solid var(--rlFiles-hairline);
+        background: var(--rlFiles-surface-3); color: inherit;
+        width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+        font-size: 16px; line-height: 1;
+      }
+      #rlFilesPopover .rlFilesBody {
+        padding: 12px 14px; max-height: min(70vh, 640px); overflow: auto;
+        font-size: 13px; color: var(--rlFiles-muted);
+      }
+      #rlFilesPopover .rlFilesError { color: #fca5a5; }
+      #rlFilesPopover .rlFilesEmpty { color: var(--rlFiles-muted2); padding: 8px 2px; }
+      #rlFilesPopover .rlFilesList {
+        display: flex; flex-direction: column; max-height: 65vh; overflow-y: auto;
+        border: 1px solid var(--rlFiles-hairline); border-radius: 8px;
+        background: var(--rlFiles-surface-2);
+      }
+      #rlFilesPopover .rlFilesListHead,
+      #rlFilesPopover .rlFilesListRow {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 2.5fr) minmax(0, 1.4fr) 80px minmax(0, 1.4fr);
+        gap: 12px; align-items: center; padding: 8px 12px; min-width: 0;
+      }
+      #rlFilesPopover .rlFilesListHead {
+        font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.06em; color: var(--rlFiles-muted);
+        background: var(--rlFiles-surface-3);
+        border-bottom: 1px solid var(--rlFiles-hairline);
+        position: sticky; top: 0; z-index: 1;
+      }
+      #rlFilesPopover .rlFilesSortBtn {
+        appearance: none; background: transparent; border: none; padding: 0; margin: 0;
+        font: inherit; color: inherit; text-align: left; cursor: pointer;
+        display: inline-flex; align-items: center; gap: 4px; width: 100%;
+        text-transform: inherit; letter-spacing: inherit; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
+      #rlFilesPopover .rlFilesSortBtn:hover { color: var(--rlFiles-text); }
+      #rlFilesPopover .rlFilesSortBtn.active { color: var(--rlFiles-accent); }
+      #rlFilesPopover .rlFilesSortArrow { font-size: 9px; opacity: 0.5; }
+      #rlFilesPopover .rlFilesSortBtn.active .rlFilesSortArrow { opacity: 1; }
+      #rlFilesPopover .rlFilesListHead > div:nth-child(4) .rlFilesSortBtn { justify-content: flex-end; }
+      #rlFilesPopover .rlFilesListRow {
+        border-bottom: 1px solid var(--rlFiles-hairline);
+        text-decoration: none !important; color: var(--rlFiles-text) !important;
+        transition: background 100ms ease;
+      }
+      #rlFilesPopover .rlFilesListRow:last-child { border-bottom: none; }
+      #rlFilesPopover .rlFilesListRow:hover { background: var(--rlFiles-surface-3); }
+      #rlFilesPopover .rlFilesListIcon {
+        width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+        background: var(--rlFiles-surface-3); border-radius: 6px; overflow: hidden; flex-shrink: 0;
+      }
+      #rlFilesPopover .rlFilesListIcon img {
+        width: 100%; height: 100%; object-fit: cover; cursor: zoom-in;
+      }
+      #rlFilesPopover .rlFilesListIcon .rlFilesSvg { width: 70%; height: 70%; }
+      #rlFilesPopover .rlFilesListName {
+        font-size: 13px; font-weight: 600; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
+      #rlFilesPopover .rlFilesListDate,
+      #rlFilesPopover .rlFilesListSize,
+      #rlFilesPopover .rlFilesListLoc {
+        font-size: 12px; color: var(--rlFiles-muted); white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
+      #rlFilesPopover .rlFilesListSize {
+        font-variant-numeric: tabular-nums; text-align: right;
+      }
+      #rlFilesPopover .rlFilesListLoc { color: var(--rlFiles-muted2); }
+      #rlFilesPopover .rlFilesLocBadge {
+        display: inline-block; padding: 1px 6px; font-size: 10.5px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.04em;
+        background: var(--rlFiles-surface-3); border: 1px solid var(--rlFiles-hairline);
+        border-radius: 999px; margin-right: 6px; color: var(--rlFiles-muted);
+      }
+      .rlFilesLightbox {
+        position: fixed; inset: 0; z-index: 10060;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,0.85); backdrop-filter: blur(4px); cursor: zoom-out;
+      }
+      .rlFilesLightbox img {
+        max-width: 92vw; max-height: 92vh; border-radius: 10px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5); object-fit: contain;
+      }
+      .rlFilesLightbox iframe {
+        width: 92vw; height: 92vh; border: none; border-radius: 10px;
+        background: #fff; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      }
+      .rlFilesLightboxClose {
+        position: absolute; top: 20px; right: 24px; appearance: none;
+        background: rgba(255,255,255,0.1); color: #fff;
+        border: 1px solid rgba(255,255,255,0.2);
+        width: 36px; height: 36px; border-radius: 999px; font-size: 20px;
+        cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+      }
     `;
   }
 
@@ -4134,7 +4548,7 @@
         iconBare: d.iconBare,
         emoji: d.emoji,
         title: d.label,
-        asButton: d.always === "orderInfo",
+        asButton: d.always === "orderInfo" || d.always === "files",
       });
       btn.hidden = !d.always;
       btn.dataset.rlSlot = d.key;
@@ -4144,6 +4558,13 @@
           ev.stopPropagation();
           const pid = bar.dataset.rlProjectId;
           if (pid) void rlOpenOrderInfo(pid);
+        });
+      }
+      if (d.always === "files") {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          void rlFilesTogglePopover(btn);
         });
       }
       bar.appendChild(btn);
@@ -4179,7 +4600,13 @@
 
     const rlUrl = "https://kiona.rocketlane.com/projects/" + encodeURIComponent(ctx.rlProjectId) + "/";
     setLink("rlPabRocketlane", rlUrl, "Open this project in Rocketlane");
-    setLink("rlPabFiles", "https://kiona.rocketlane.com/projects/" + encodeURIComponent(ctx.rlProjectId) + "/files", "Open project files");
+
+    const filesBtn = bar.querySelector("#rlPabFiles");
+    if (filesBtn) {
+      filesBtn.hidden = false;
+      filesBtn.title = "Project files — list, preview, download, upload";
+      if (filesBtn.tagName === "A") filesBtn.removeAttribute("href");
+    }
 
     const orderBtn = bar.querySelector("#rlPabOrderInfo");
     if (orderBtn) {
@@ -4680,6 +5107,719 @@
     await rlOpenUrlPickerDialog();
   }
 
+
+  // ── Files popover (PPT port) ──
+  let rlFilesPopoverEl = null;
+  let rlFilesPopoverGen = 0;
+  let rlFilesPopoverProjectId = "";
+
+  const RL_FILES_DL_IDB = "rl-files-fs-handles";
+  const RL_FILES_DL_STORE = "handles";
+  const RL_FILES_DL_KEY = "downloads-parent-dir";
+
+  function rlFilesIdbOpen() {
+    return new Promise((resolve, reject) => {
+      let req;
+      try { req = indexedDB.open(RL_FILES_DL_IDB, 1); }
+      catch (e) { reject(e); return; }
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(RL_FILES_DL_STORE)) db.createObjectStore(RL_FILES_DL_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function rlFilesIdbGetDir() {
+    try {
+      const db = await rlFilesIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(RL_FILES_DL_STORE, "readonly");
+        const r = tx.objectStore(RL_FILES_DL_STORE).get(RL_FILES_DL_KEY);
+        r.onsuccess = () => resolve(r.result || null);
+        r.onerror = () => reject(r.error);
+      });
+    } catch (_) { return null; }
+  }
+
+  async function rlFilesIdbSaveDir(handle) {
+    try {
+      const db = await rlFilesIdbOpen();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(RL_FILES_DL_STORE, "readwrite");
+        const r = tx.objectStore(RL_FILES_DL_STORE).put(handle, RL_FILES_DL_KEY);
+        r.onsuccess = () => resolve();
+        r.onerror = () => reject(r.error);
+      });
+    } catch (_) {}
+  }
+
+  /** Prompt every Download-all; cache handle only as next picker's startIn. */
+  async function rlFilesGetOrPickDownloadParentDir() {
+    if (typeof window.showDirectoryPicker !== "function") return null;
+    let startIn = "downloads";
+    try { const cached = await rlFilesIdbGetDir(); if (cached) startIn = cached; } catch (_) {}
+    const pick = (start) => window.showDirectoryPicker({ mode: "readwrite", startIn: start, id: "rl-files-downloads" });
+    try {
+      const picked = await pick(startIn);
+      void rlFilesIdbSaveDir(picked);
+      return picked;
+    } catch (e) {
+      if (e?.name === "AbortError") return null;
+      if (startIn !== "downloads") {
+        try {
+          const picked = await pick("downloads");
+          void rlFilesIdbSaveDir(picked);
+          return picked;
+        } catch (e2) {
+          if (e2?.name === "AbortError") return null;
+          throw e2;
+        }
+      }
+      throw e;
+    }
+  }
+
+  function rlFilesBuildTypeIcon(mimeType, fileName) {
+    const m = String(mimeType || "").toLowerCase();
+    const ext = (String(fileName || "").match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+    let color = "#64748b";
+    let label = (ext || "FILE").toUpperCase().slice(0, 4);
+    if (m === "application/pdf" || ext === "pdf") { color = "#dc2626"; label = "PDF"; }
+    else if (/^(docx?|odt|rtf|pages)$/.test(ext) || /word|officedocument\.word/.test(m)) { color = "#2563eb"; label = ext.toUpperCase(); }
+    else if (/^(xlsx?|csv|ods|numbers)$/.test(ext) || /excel|sheet|csv/.test(m)) { color = "#16a34a"; label = ext.toUpperCase(); }
+    else if (/^(pptx?|odp|key)$/.test(ext) || /powerpoint|presentation/.test(m)) { color = "#ea580c"; label = ext.toUpperCase(); }
+    else if (ext === "ai") { color = "#f59e0b"; label = "AI"; }
+    else if (ext === "psd") { color = "#0ea5e9"; label = "PSD"; }
+    else if (/^(zip|rar|7z|tar|gz|tgz)$/.test(ext) || /zip|compressed|archive|x-tar|gzip/.test(m)) { color = "#a16207"; label = ext.toUpperCase(); }
+    else if (/^(mp3|wav|ogg|m4a|flac|aac)$/.test(ext) || m.startsWith("audio/")) { color = "#0891b2"; label = ext.toUpperCase() || "AUDIO"; }
+    else if (/^(mp4|mov|avi|mkv|webm|wmv)$/.test(ext) || m.startsWith("video/")) { color = "#7c3aed"; label = ext.toUpperCase() || "VIDEO"; }
+    else if (/^(js|ts|jsx|tsx|json|xml|html|css|sql|py|rb|go|rs|java|c|cpp|cs|sh)$/.test(ext)) { color = "#0d9488"; label = ext.toUpperCase(); }
+    else if (/^(txt|md|log)$/.test(ext) || m === "text/plain" || m === "text/markdown") { color = "#475569"; label = ext.toUpperCase(); }
+    else if (m.startsWith("image/") || /^(png|jpe?g|gif|webp|bmp|svg)$/.test(ext)) { color = "#0ea5e9"; label = ext.toUpperCase(); }
+    const fontSize = label.length <= 3 ? 22 : label.length === 4 ? 18 : 14;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 80 96");
+    svg.setAttribute("class", "rlFilesSvg");
+    svg.setAttribute("aria-hidden", "true");
+    const doc = document.createElementNS(NS, "path");
+    doc.setAttribute("d", "M8 4 H56 L72 20 V88 a4 4 0 0 1 -4 4 H12 a4 4 0 0 1 -4 -4 V8 a4 4 0 0 1 4 -4 z");
+    doc.setAttribute("fill", "#ffffff");
+    doc.setAttribute("stroke", "#cbd5e1");
+    doc.setAttribute("stroke-width", "1.5");
+    svg.appendChild(doc);
+    const fold = document.createElementNS(NS, "path");
+    fold.setAttribute("d", "M56 4 V20 H72 z");
+    fold.setAttribute("fill", "#e2e8f0");
+    svg.appendChild(fold);
+    const ribbon = document.createElementNS(NS, "rect");
+    ribbon.setAttribute("x", "4"); ribbon.setAttribute("y", "54");
+    ribbon.setAttribute("width", "60"); ribbon.setAttribute("height", "22");
+    ribbon.setAttribute("rx", "3"); ribbon.setAttribute("fill", color);
+    svg.appendChild(ribbon);
+    const text = document.createElementNS(NS, "text");
+    text.setAttribute("x", "34"); text.setAttribute("y", "65");
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("dominant-baseline", "central");
+    text.setAttribute("fill", "#ffffff");
+    text.setAttribute("font-family", "ui-sans-serif, system-ui, sans-serif");
+    text.setAttribute("font-weight", "800");
+    text.setAttribute("font-size", String(fontSize));
+    text.setAttribute("letter-spacing", "0.5");
+    text.textContent = label;
+    svg.appendChild(text);
+    return svg;
+  }
+
+  function rlFilesClosePopover() {
+    if (rlFilesPopoverEl && rlFilesPopoverEl.parentNode) {
+      rlFilesPopoverEl.parentNode.removeChild(rlFilesPopoverEl);
+    }
+    rlFilesPopoverEl = null;
+    rlFilesPopoverProjectId = "";
+    document.removeEventListener("click", rlFilesOutsideClick, true);
+    document.removeEventListener("keydown", rlFilesEscKey, true);
+  }
+
+  function rlFilesOutsideClick(e) {
+    if (!rlFilesPopoverEl) return;
+    const t = e.target;
+    const btn = document.getElementById("rlPabFiles");
+    if (rlFilesPopoverEl.contains(t) || (btn && btn.contains(t))) return;
+    const lb = document.querySelector(".rlFilesLightbox");
+    if (lb && lb.contains(t)) return;
+    rlFilesClosePopover();
+  }
+
+  function rlFilesEscKey(e) {
+    if (e.key !== "Escape") return;
+    if (document.querySelector(".rlFilesLightbox")) return;
+    rlFilesClosePopover();
+  }
+
+  function rlFilesOpenMediaLightbox(fullSrc, kind) {
+    if (!fullSrc || !rlFilesIsTrustedAttachmentUrl(fullSrc)) return;
+    const overlay = document.createElement("div");
+    overlay.className = "rlFilesLightbox";
+    const inner = kind === "pdf" ? document.createElement("iframe") : document.createElement("img");
+    inner.src = fullSrc;
+    if (kind === "pdf") {
+      inner.setAttribute("title", "PDF preview");
+      inner.setAttribute("loading", "eager");
+    }
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "rlFilesLightboxClose";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "\u00D7";
+    overlay.appendChild(inner);
+    overlay.appendChild(closeBtn);
+    const dismiss = () => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey);
+    };
+    const onKey = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); dismiss(); } };
+    overlay.addEventListener("click", (ev) => {
+      if (ev.target === inner) return;
+      dismiss();
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+  }
+
+  function rlFilesGuardOrClose(gen, projectId) {
+    if (gen !== rlFilesPopoverGen) return false;
+    if (!rlFilesPopoverEl) return false;
+    if (rlFilesPopoverProjectId !== projectId) return false;
+    const ctx = getOneflowContext();
+    if (!ctx.rlProjectId || ctx.rlProjectId !== projectId) return false;
+    return true;
+  }
+
+  async function rlFilesTogglePopover(anchorBtn) {
+    if (rlFilesPopoverEl) { rlFilesClosePopover(); return; }
+    const ctx = getOneflowContext();
+    const rlPid = String(ctx.rlProjectId || "").trim();
+    if (!rlPid || !anchorBtn) return;
+
+    rlInjectActionBarStyles();
+    const gen = ++rlFilesPopoverGen;
+    rlFilesPopoverProjectId = rlPid;
+
+    rlFilesPopoverEl = document.createElement("div");
+    rlFilesPopoverEl.id = "rlFilesPopover";
+    rlFilesPopoverEl.setAttribute("role", "dialog");
+    rlFilesPopoverEl.setAttribute("aria-label", "Project files");
+    const head = document.createElement("div");
+    head.className = "rlFilesHead";
+    const title = document.createElement("span");
+    title.textContent = "\uD83D\uDCC1 Project files";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "rlFilesClose";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "\u00D7";
+    closeBtn.addEventListener("click", rlFilesClosePopover);
+    head.appendChild(title);
+    const body = document.createElement("div");
+    body.className = "rlFilesBody";
+    body.textContent = "Loading\u2026";
+    rlFilesPopoverEl.appendChild(head);
+    rlFilesPopoverEl.appendChild(body);
+    document.body.appendChild(rlFilesPopoverEl);
+
+    const rect = anchorBtn.getBoundingClientRect();
+    rlFilesPopoverEl.style.top = (window.scrollY + rect.bottom + 8) + "px";
+    requestAnimationFrame(() => {
+      if (!rlFilesPopoverEl) return;
+      const popW = rlFilesPopoverEl.offsetWidth || 880;
+      const margin = 16;
+      let rightPx = window.innerWidth - rect.right;
+      const minRight = margin;
+      const maxRight = Math.max(margin, window.innerWidth - popW - margin);
+      rightPx = Math.min(Math.max(rightPx, minRight), maxRight);
+      rlFilesPopoverEl.style.right = rightPx + "px";
+    });
+
+    document.addEventListener("click", rlFilesOutsideClick, true);
+    document.addEventListener("keydown", rlFilesEscKey, true);
+
+    const getFreshUrls = async (attachmentId) => {
+      if (!attachmentId) return { full: "", thumb: "" };
+      try {
+        const a = await gmRocketlaneFetchAttachment(attachmentId);
+        return {
+          full: String(a?.downloadUrl ?? a?.location ?? "").trim(),
+          thumb: String(a?.thumbLocation ?? "").trim(),
+        };
+      } catch (_) {}
+      try {
+        const [taskAtts, folderPack] = await Promise.all([
+          gmRocketlaneFetchProjectAttachments(rlPid),
+          gmRocketlaneFetchProjectFolders(rlPid).catch(() => ({ folders: [], attachments: [] })),
+        ]);
+        const fresh = rlFilesMergeAttachments(taskAtts, folderPack.attachments);
+        const a = fresh.find((x) => x.attachmentId === attachmentId);
+        return {
+          full: String(a?.downloadUrl ?? a?.location ?? "").trim(),
+          thumb: String(a?.thumbLocation ?? "").trim(),
+        };
+      } catch (_) {
+        return { full: "", thumb: "" };
+      }
+    };
+
+    let attsRef = [];
+
+    try {
+      const [taskAtts, folderPack] = await Promise.all([
+        gmRocketlaneFetchProjectAttachments(rlPid),
+        gmRocketlaneFetchProjectFolders(rlPid).catch((e) => {
+          console.warn("[rlFiles] folder fetch failed:", e);
+          return { folders: [], attachments: [] };
+        }),
+      ]);
+      if (!rlFilesGuardOrClose(gen, rlPid)) return;
+      const atts = rlFilesMergeAttachments(taskAtts, folderPack.attachments);
+      attsRef = atts;
+      body.textContent = "";
+
+      const uploadBtn = document.createElement("button");
+      uploadBtn.type = "button";
+      uploadBtn.className = "rlFilesBtn";
+      const uploadBtnIdleText = "\u2B06 Upload";
+      uploadBtn.textContent = uploadBtnIdleText;
+      uploadBtn.title = "Upload files to this project's General Shared Files — or drag & drop them on this popover";
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.multiple = true;
+      fileInput.style.display = "none";
+      rlFilesPopoverEl.appendChild(fileInput);
+
+      let uploading = false;
+      const uploadFiles = async (fileList) => {
+        const list = Array.from(fileList || []).filter((f) => f && typeof f.name === "string");
+        if (!list.length || uploading) return;
+        uploading = true;
+        uploadBtn.disabled = true;
+        let sharedFolderId = null;
+        try {
+          const pack = await gmRocketlaneFetchProjectFolders(rlPid);
+          const picked = rlFilesPickGeneralSharedFolder(pack.folders);
+          sharedFolderId = picked ? picked.folderId : null;
+        } catch (e) {
+          console.warn("[rlFiles] couldn't resolve General Shared Files folder:", e);
+        }
+        if (sharedFolderId == null) {
+          alert("Couldn't find this project's General Shared Files folder. Upload blocked — refusing to create an orphan attachment.");
+          uploading = false;
+          uploadBtn.disabled = false;
+          uploadBtn.textContent = uploadBtnIdleText;
+          return;
+        }
+        let done = 0, failed = 0;
+        for (const f of list) {
+          done++;
+          uploadBtn.textContent = "Uploading " + done + "/" + list.length + "\u2026";
+          try {
+            await gmRocketlaneUploadAttachment(rlPid, f, { folderId: sharedFolderId, publicVisibility: false });
+          } catch (e) {
+            failed++;
+            console.warn("[rlFiles] upload failed for " + (f && f.name) + ":", e);
+          }
+        }
+        uploadBtn.textContent = failed ? "Done — " + failed + " failed" : "Uploaded \u2713";
+        uploading = false;
+        setTimeout(() => {
+          if (!rlFilesPopoverEl || !rlFilesGuardOrClose(gen, rlPid)) return;
+          rlFilesClosePopover();
+          const btn = document.getElementById("rlPabFiles");
+          if (btn) void rlFilesTogglePopover(btn);
+        }, failed ? 1800 : 700);
+      };
+      uploadBtn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        fileInput.click();
+      });
+      fileInput.addEventListener("change", () => {
+        const fs = Array.from(fileInput.files || []);
+        fileInput.value = "";
+        void uploadFiles(fs);
+      });
+
+      let dragDepth = 0;
+      const hasFilesDrag = (e) => {
+        const types = e && e.dataTransfer && e.dataTransfer.types;
+        return !!types && Array.from(types).includes("Files");
+      };
+      rlFilesPopoverEl.addEventListener("dragenter", (e) => {
+        if (!hasFilesDrag(e)) return;
+        e.preventDefault();
+        dragDepth++;
+        rlFilesPopoverEl.classList.add("rlFilesDropActive");
+      });
+      rlFilesPopoverEl.addEventListener("dragover", (e) => {
+        if (!hasFilesDrag(e)) return;
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
+      });
+      rlFilesPopoverEl.addEventListener("dragleave", () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (!dragDepth) rlFilesPopoverEl.classList.remove("rlFilesDropActive");
+      });
+      rlFilesPopoverEl.addEventListener("drop", (e) => {
+        if (!hasFilesDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepth = 0;
+        rlFilesPopoverEl.classList.remove("rlFilesDropActive");
+        void uploadFiles(e.dataTransfer.files);
+      });
+
+      const filesActions = document.createElement("div");
+      filesActions.className = "rlFilesActions";
+      filesActions.appendChild(uploadBtn);
+      filesActions.appendChild(closeBtn);
+      head.appendChild(filesActions);
+
+      if (!atts.length) {
+        const empty = document.createElement("div");
+        empty.className = "rlFilesEmpty";
+        empty.textContent = "No files uploaded to this project yet. Drag & drop files here (or click \u2B06 Upload) to add them to General Shared Files.";
+        body.appendChild(empty);
+        return;
+      }
+
+      const downloadAllBtn = document.createElement("button");
+      downloadAllBtn.type = "button";
+      downloadAllBtn.className = "rlFilesBtn";
+      downloadAllBtn.title = "Download every file in this list to your computer";
+      const downloadAllBtnIdleText = "\u2B07 Download all (" + atts.length + ")";
+      downloadAllBtn.textContent = downloadAllBtnIdleText;
+      downloadAllBtn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!attsRef.length) return;
+        let dirHandle = null;
+        if (typeof window.showDirectoryPicker === "function") {
+          try {
+            const parentDir = await rlFilesGetOrPickDownloadParentDir();
+            if (!parentDir) return;
+            const dlStamp = (() => {
+              const d = new Date();
+              return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+            })();
+            const destFolderName = rlFilesSanitizeFolderName((readProjectName() || ("Project " + rlPid)) + " " + dlStamp);
+            try {
+              dirHandle = await parentDir.getDirectoryHandle(destFolderName, { create: true });
+            } catch (subErr) {
+              console.warn("[rlFiles] could not create subfolder, writing into picked parent:", subErr);
+              dirHandle = parentDir;
+            }
+          } catch (e) {
+            console.warn("[rlFiles] download dir setup failed:", e);
+          }
+        }
+        downloadAllBtn.disabled = true;
+        let current = 0;
+        let failed = 0;
+        const usedNames = new Set();
+        for (const att of attsRef) {
+          const attId = att?.attachmentId;
+          const fileName = rlFilesSanitizeFileName(String(att?.name ?? "Attachment").trim());
+          current++;
+          downloadAllBtn.textContent = "Downloading " + current + "/" + attsRef.length + "\u2026";
+          if (!attId) { failed++; continue; }
+          try {
+            const { blob } = await gmRocketlaneDownloadAttachmentBlob(attId);
+            if (dirHandle) {
+              const safeName = rlFilesUniqueName(fileName, usedNames);
+              const fileHandle = await dirHandle.getFileHandle(safeName, { create: true });
+              const writable = await fileHandle.createWritable();
+              await writable.write(blob);
+              await writable.close();
+            } else {
+              const objUrl = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = objUrl;
+              a.download = fileName;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+              await new Promise((r) => setTimeout(r, 250));
+            }
+          } catch (e) {
+            console.warn("[rlFiles] Download failed for " + fileName + ":", e);
+            failed++;
+          }
+        }
+        downloadAllBtn.textContent = failed ? "Done — " + failed + " failed" : "Done \u2713";
+        setTimeout(() => {
+          downloadAllBtn.textContent = downloadAllBtnIdleText;
+          downloadAllBtn.disabled = false;
+        }, 2500);
+      });
+      filesActions.insertBefore(downloadAllBtn, uploadBtn);
+
+      const describeLocation = (att) => {
+        const link = att?._link;
+        if (!link) return "";
+        if (typeof link === "string") return link;
+        if (typeof link === "object") {
+          return String(
+            link.title ?? link.name ?? link.label ??
+            link.taskTitle ?? link.spaceTitle ?? link.conversationName ?? ""
+          ).trim();
+        }
+        return "";
+      };
+      const fmtDate = (ms) => {
+        const n = Number(ms);
+        if (!n) return "";
+        const d = new Date(n);
+        if (isNaN(d.getTime())) return "";
+        return d.toLocaleString("nb-NO", {
+          year: "numeric", month: "short", day: "2-digit",
+          hour: "2-digit", minute: "2-digit",
+          hour12: false,
+          timeZone: "Europe/Oslo",
+        });
+      };
+      const sortState = { key: "date", dir: "desc" };
+      const comparators = {
+        name: (a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? ""), undefined, { sensitivity: "base", numeric: true }),
+        date: (a, b) => (Number(a?.createdAt ?? 0) - Number(b?.createdAt ?? 0)),
+        size: (a, b) => (Number(a?.sizeInBytes ?? 0) - Number(b?.sizeInBytes ?? 0)),
+        location: (a, b) => {
+          const al = (String(a?._source ?? "") + " " + describeLocation(a)).toLowerCase();
+          const bl = (String(b?._source ?? "") + " " + describeLocation(b)).toLowerCase();
+          return al.localeCompare(bl, undefined, { sensitivity: "base", numeric: true });
+        },
+      };
+
+      const list = document.createElement("div");
+      list.className = "rlFilesList";
+      const header = document.createElement("div");
+      header.className = "rlFilesListHead";
+      const COLUMNS = [
+        { label: "", key: null },
+        { label: "Name", key: "name", defaultDir: "asc" },
+        { label: "Modified", key: "date", defaultDir: "desc" },
+        { label: "Size", key: "size", defaultDir: "desc" },
+        { label: "Location", key: "location", defaultDir: "asc" },
+      ];
+      const sortButtons = new Map();
+      for (const col of COLUMNS) {
+        const cell = document.createElement("div");
+        if (col.key) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "rlFilesSortBtn";
+          const labelSpan = document.createElement("span");
+          labelSpan.textContent = col.label;
+          const arrow = document.createElement("span");
+          arrow.className = "rlFilesSortArrow";
+          btn.appendChild(labelSpan);
+          btn.appendChild(arrow);
+          btn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (sortState.key === col.key) {
+              sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+            } else {
+              sortState.key = col.key;
+              sortState.dir = col.defaultDir || "asc";
+            }
+            renderRows();
+          });
+          cell.appendChild(btn);
+          sortButtons.set(col.key, { btn, arrow });
+        }
+        header.appendChild(cell);
+      }
+      list.appendChild(header);
+      const rowsContainer = document.createElement("div");
+      list.appendChild(rowsContainer);
+
+      const renderRows = () => {
+        for (const [k, ui] of sortButtons) {
+          const isActive = k === sortState.key;
+          ui.btn.classList.toggle("active", isActive);
+          ui.arrow.textContent = isActive ? (sortState.dir === "asc" ? "\u25B2" : "\u25BC") : "";
+        }
+        const cmp = comparators[sortState.key] || comparators.date;
+        const dirMul = sortState.dir === "asc" ? 1 : -1;
+        const sorted = atts.slice().sort((a, b) => cmp(a, b) * dirMul);
+        rowsContainer.textContent = "";
+        for (const att of sorted) {
+          const fullUrl = String(att?.downloadUrl ?? att?.location ?? "").trim();
+          const thumbUrl = String(att?.thumbLocation ?? "").trim();
+          const fileName = String(att?.name ?? "Attachment").trim();
+          const mime = String(att?.mimeType ?? att?.contentType ?? "").toLowerCase();
+          const sizeBytes = Number(att?.sizeInBytes ?? 0) || 0;
+          const isImage =
+            /^image\//.test(mime) ||
+            /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(fileName);
+          const attId = att?.attachmentId;
+          const row = document.createElement("a");
+          row.className = "rlFilesListRow";
+          const safeHref = toHttpUrl(fullUrl || thumbUrl);
+          row.href = (safeHref && rlFilesIsTrustedAttachmentUrl(safeHref)) ? safeHref : "#";
+          row.target = "_blank";
+          row.rel = "noopener noreferrer";
+          row.title = fileName;
+
+          const ext = (fileName.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+          const isImageType =
+            /^image\//.test(mime) ||
+            /^(png|jpe?g|gif|webp|bmp|svg)$/.test(ext);
+          const isPdfType = mime === "application/pdf" || ext === "pdf";
+          const isLightboxType = isImageType || isPdfType;
+          const isNewTabType =
+            /^text\//.test(mime) ||
+            /^(txt|md|log|html|css|js|json|xml|csv)$/.test(ext) ||
+            /^audio\//.test(mime) ||
+            /^video\//.test(mime) ||
+            /^(mp3|wav|ogg|m4a|mp4|webm|mov)$/.test(ext);
+
+          row.addEventListener("click", async (ev) => {
+            if (!attId) return;
+            if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+
+            if (isLightboxType) {
+              let dest = "";
+              try {
+                const { full, thumb } = await getFreshUrls(attId);
+                dest = full || thumb;
+              } catch (e) {
+                console.warn("[rlFiles] URL refresh failed:", e);
+              }
+              if (!dest) dest = fullUrl || thumbUrl;
+              if (dest) rlFilesOpenMediaLightbox(dest, isPdfType ? "pdf" : "image");
+              return;
+            }
+
+            if (isNewTabType) {
+              const placeholder = window.open("about:blank", "_blank");
+              let dest = "";
+              try {
+                const { full, thumb } = await getFreshUrls(attId);
+                dest = full || thumb;
+              } catch (e) {
+                console.warn("[rlFiles] URL refresh failed:", e);
+              }
+              if (!dest) dest = fullUrl || thumbUrl;
+              const httpDest = toHttpUrl(dest);
+              if (placeholder && httpDest && rlFilesIsTrustedAttachmentUrl(httpDest)) {
+                try { placeholder.opener = null; } catch (_) {}
+                placeholder.location.href = httpDest;
+              } else if (placeholder) {
+                placeholder.document.body.innerText = "No trusted download URL available for this file.";
+              }
+              return;
+            }
+
+            const prevTitle = row.title;
+            row.title = "Downloading " + fileName + "\u2026";
+            row.style.opacity = "0.6";
+            try {
+              const { blob } = await gmRocketlaneDownloadAttachmentBlob(attId);
+              const objUrl = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = objUrl;
+              a.download = rlFilesSanitizeFileName(fileName);
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+            } catch (e) {
+              console.warn("[rlFiles] Download failed:", e);
+              alert("Download failed: " + (e && e.message ? e.message : e));
+            } finally {
+              row.title = prevTitle;
+              row.style.opacity = "";
+            }
+          });
+
+          const iconCell = document.createElement("div");
+          iconCell.className = "rlFilesListIcon";
+          const thumbCandidate = toHttpUrl(fullUrl || thumbUrl);
+          if (isImage && thumbCandidate && rlFilesIsTrustedAttachmentUrl(thumbCandidate)) {
+            const img = document.createElement("img");
+            img.src = thumbCandidate;
+            img.alt = fileName;
+            img.loading = "lazy";
+            img.addEventListener("error", () => {
+              iconCell.textContent = "";
+              iconCell.appendChild(rlFilesBuildTypeIcon(mime, fileName));
+            }, { once: true });
+            img.addEventListener("click", async (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              try {
+                const { full, thumb } = await getFreshUrls(attId);
+                rlFilesOpenMediaLightbox(full || thumb || fullUrl || thumbUrl, "image");
+              } catch (_) {
+                rlFilesOpenMediaLightbox(fullUrl || thumbUrl, "image");
+              }
+            });
+            iconCell.appendChild(img);
+          } else {
+            iconCell.appendChild(rlFilesBuildTypeIcon(mime, fileName));
+          }
+          row.appendChild(iconCell);
+
+          const nameCell = document.createElement("div");
+          nameCell.className = "rlFilesListName";
+          nameCell.textContent = fileName;
+          row.appendChild(nameCell);
+
+          const dateCell = document.createElement("div");
+          dateCell.className = "rlFilesListDate";
+          dateCell.textContent = fmtDate(att?.createdAt);
+          row.appendChild(dateCell);
+
+          const sizeCell = document.createElement("div");
+          sizeCell.className = "rlFilesListSize";
+          sizeCell.textContent = sizeBytes ? rlFilesFormatSize(sizeBytes) : "\u2014";
+          row.appendChild(sizeCell);
+
+          const locCell = document.createElement("div");
+          locCell.className = "rlFilesListLoc";
+          const sourceLabel = att?._source ? String(att._source).toLowerCase().replace(/_/g, " ") : "";
+          if (sourceLabel) {
+            const badge = document.createElement("span");
+            badge.className = "rlFilesLocBadge";
+            badge.textContent = sourceLabel;
+            locCell.appendChild(badge);
+          }
+          const linkText = describeLocation(att);
+          if (linkText) locCell.appendChild(document.createTextNode(linkText));
+          locCell.title = (sourceLabel ? sourceLabel + " — " : "") + linkText;
+          row.appendChild(locCell);
+
+          rowsContainer.appendChild(row);
+        }
+      };
+
+      renderRows();
+      body.appendChild(list);
+    } catch (err) {
+      if (!rlFilesGuardOrClose(gen, rlPid)) return;
+      body.textContent = "";
+      const errEl = document.createElement("div");
+      errEl.className = "rlFilesError";
+      errEl.textContent = "Couldn't load files: " + (err && err.message ? err.message : String(err));
+      body.appendChild(errEl);
+    }
+  }
+
   function rlEnsureAutoFetchButton() {
     if (!/^\/projects\/\d+/.test(location.pathname)) {
       document.getElementById("rlAutoFetchUrlsBtn")?.remove();
@@ -4721,6 +5861,7 @@
   function rlEnsureProjectActionBar() {
     if (!/^\/projects\/\d+/.test(location.pathname)) {
       document.getElementById("rlProjectActionBar")?.remove();
+      rlFilesClosePopover();
       return;
     }
     rlInjectActionBarStyles();
@@ -4737,6 +5878,9 @@
     if (!bar) bar = rlBuildActionBarShell();
     if (bar.parentElement !== mount.parent || bar.nextSibling !== mount.before) {
       mount.parent.insertBefore(bar, mount.before);
+    }
+    if (rlFilesPopoverProjectId && rlFilesPopoverProjectId !== ctx.rlProjectId) {
+      rlFilesClosePopover();
     }
     bar.dataset.rlProjectId = ctx.rlProjectId;
 
