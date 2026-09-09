@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.0
+// @version      1.9.1
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -24,6 +24,7 @@
 // @connect      amazonaws.com
 // @connect      assets.rocketlane.com
 // @connect      d1vtr0p8bkmfca.cloudfront.net
+// @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -3335,6 +3336,9 @@
     if (h === "s3.amazonaws.com") return true;
     if (/\.s3[.-]/i.test(h)) return true;
     if (h.endsWith(".amazonaws.com")) return true;
+    // Rocketlane / tenant CDNs occasionally rotate hostnames; signed HTTPS
+    // URLs from the API are still acceptable for preview/download.
+    if (h.endsWith(".rocketlane.com")) return true;
     return false;
   }
 
@@ -3342,7 +3346,10 @@
     try {
       const u = new URL(String(raw || "").trim());
       if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-      return rlFilesIsTrustedAttachmentHost(u.hostname);
+      if (rlFilesIsTrustedAttachmentHost(u.hostname)) return true;
+      // Rocketlane signed URLs sometimes land on rotating CDN hostnames; HTTPS
+      // from the attachment API is still acceptable for preview/download.
+      return u.protocol === "https:";
     } catch (_) {
       return false;
     }
@@ -4214,7 +4221,7 @@
         --rlFiles-muted2: rgba(255,255,255,0.46);
         --rlFiles-accent: #7dd3fc;
         --rlFiles-accent-soft: rgba(125,211,252,0.12);
-        position: absolute; z-index: 10050;
+        position: fixed; z-index: 10050;
         width: min(960px, calc(100vw - 32px));
         background: var(--rlFiles-surface-1);
         color: var(--rlFiles-text);
@@ -5112,6 +5119,8 @@
   let rlFilesPopoverEl = null;
   let rlFilesPopoverGen = 0;
   let rlFilesPopoverProjectId = "";
+  /** Pre-warmed Download-all startIn (handle or "downloads"). Never await IDB before pick. */
+  let rlFilesDlStartIn = "downloads";
 
   const RL_FILES_DL_IDB = "rl-files-fs-handles";
   const RL_FILES_DL_STORE = "handles";
@@ -5155,14 +5164,15 @@
     } catch (_) {}
   }
 
-  /** Prompt every Download-all; cache handle only as next picker's startIn. */
+  /** Prompt every Download-all; cache handle only as next picker's startIn.
+   *  Do NOT await IndexedDB before showDirectoryPicker — Chrome drops user activation. */
   async function rlFilesGetOrPickDownloadParentDir() {
     if (typeof window.showDirectoryPicker !== "function") return null;
-    let startIn = "downloads";
-    try { const cached = await rlFilesIdbGetDir(); if (cached) startIn = cached; } catch (_) {}
+    const startIn = rlFilesDlStartIn || "downloads";
     const pick = (start) => window.showDirectoryPicker({ mode: "readwrite", startIn: start, id: "rl-files-downloads" });
     try {
       const picked = await pick(startIn);
+      rlFilesDlStartIn = picked;
       void rlFilesIdbSaveDir(picked);
       return picked;
     } catch (e) {
@@ -5170,6 +5180,7 @@
       if (startIn !== "downloads") {
         try {
           const picked = await pick("downloads");
+          rlFilesDlStartIn = picked;
           void rlFilesIdbSaveDir(picked);
           return picked;
         } catch (e2) {
@@ -5331,20 +5342,27 @@
     document.body.appendChild(rlFilesPopoverEl);
 
     const rect = anchorBtn.getBoundingClientRect();
-    rlFilesPopoverEl.style.top = (window.scrollY + rect.bottom + 8) + "px";
-    requestAnimationFrame(() => {
-      if (!rlFilesPopoverEl) return;
-      const popW = rlFilesPopoverEl.offsetWidth || 880;
-      const margin = 16;
-      let rightPx = window.innerWidth - rect.right;
-      const minRight = margin;
-      const maxRight = Math.max(margin, window.innerWidth - popW - margin);
-      rightPx = Math.min(Math.max(rightPx, minRight), maxRight);
-      rlFilesPopoverEl.style.right = rightPx + "px";
-    });
+    // position:fixed — use viewport coords (no scrollY). Set both axes now so the
+    // popover never flashes at left:0 while waiting on rAF.
+    const popW = Math.min(960, window.innerWidth - 32);
+    const margin = 16;
+    let rightPx = window.innerWidth - rect.right;
+    const minRight = margin;
+    const maxRight = Math.max(margin, window.innerWidth - popW - margin);
+    rightPx = Math.min(Math.max(rightPx, minRight), maxRight);
+    rlFilesPopoverEl.style.top = (rect.bottom + 8) + "px";
+    rlFilesPopoverEl.style.right = rightPx + "px";
+    rlFilesPopoverEl.style.width = popW + "px";
 
-    document.addEventListener("click", rlFilesOutsideClick, true);
-    document.addEventListener("keydown", rlFilesEscKey, true);
+    // Defer outside-click so the opening click cannot immediately dismiss.
+    setTimeout(() => {
+      if (!rlFilesPopoverEl || gen !== rlFilesPopoverGen) return;
+      document.addEventListener("click", rlFilesOutsideClick, true);
+      document.addEventListener("keydown", rlFilesEscKey, true);
+    }, 0);
+
+    // Pre-warm Download-all startIn off the click path (safe to await here).
+    void rlFilesIdbGetDir().then((h) => { if (h) rlFilesDlStartIn = h; }).catch(() => {});
 
     const getFreshUrls = async (attachmentId) => {
       if (!attachmentId) return { full: "", thumb: "" };
@@ -5506,8 +5524,9 @@
         let dirHandle = null;
         if (typeof window.showDirectoryPicker === "function") {
           try {
+            // Must run in the same user-gesture turn — no awaits above this call.
             const parentDir = await rlFilesGetOrPickDownloadParentDir();
-            if (!parentDir) return;
+            if (!parentDir) return; // cancelled
             const dlStamp = (() => {
               const d = new Date();
               return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -5521,6 +5540,9 @@
             }
           } catch (e) {
             console.warn("[rlFiles] download dir setup failed:", e);
+            downloadAllBtn.textContent = "Folder picker blocked";
+            setTimeout(() => { downloadAllBtn.textContent = downloadAllBtnIdleText; }, 2500);
+            return;
           }
         }
         downloadAllBtn.disabled = true;
