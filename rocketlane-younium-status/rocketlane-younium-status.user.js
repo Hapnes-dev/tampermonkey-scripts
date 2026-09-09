@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.4
-// @description  Rocketlane improvements in one script (v1.12.4: home PROJECTS panel lists In-progress projects you own, not every auto-synced membership): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.13.0
+// @description  Rocketlane improvements in one script (v1.13.0: home PROJECTS panel — Project Owner + In progress member sections, all statuses except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4199,18 +4199,27 @@
     return name === RL_HP_WORKLOAD_SYNC_NAME;
   }
 
-  /** Home panel: owned In-progress only — membership auto-sync stays out. */
-  function rlHpShouldKeepProject(raw, userId) {
+  /** Home "Project Owner" section: crown owner only — membership auto-sync stays out. */
+  function rlHpShouldKeepOwnerProject(raw, userId) {
     if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
     return rlHpIsUserProjectOwner(raw, userId);
   }
 
-  /** Home panel shows In progress only (Completed / Cancelled / On Hold / etc never list). */
+  /** Home "In progress" section: on project as member, not owner. */
+  function rlHpShouldKeepMemberProject(raw, userId) {
+    if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
+    if (rlHpIsUserProjectOwner(raw, userId)) return false;
+    return rlHpIsUserOnProject(raw, userId);
+  }
+
+  /** @deprecated Prefer rlHpShouldKeepOwnerProject — kept as owner-bucket alias. */
+  function rlHpShouldKeepProject(raw, userId) {
+    return rlHpShouldKeepOwnerProject(raw, userId);
+  }
+
+  /** Home panel lists every status except Completed. */
   function rlHpIsHomeListStatus(statusKey) {
-    const k = String(statusKey || "");
-    // Defensive exclusions — allow-list is still In progress only.
-    if (k === "completed" || k === "cancelled") return false;
-    return k === "in_progress";
+    return String(statusKey || "") !== "completed";
   }
 
   function rlHpStatusLabelFromFields(fields) {
@@ -4351,20 +4360,29 @@
     };
   }
 
-  function rlHpFilterAndNormalizeProjects(rows, userId) {
+  function rlHpFilterNormalizeBucket(rows, userId, keepFn) {
     const list = Array.isArray(rows) ? rows : [];
     const out = [];
     const seen = new Set();
+    const keep = typeof keepFn === "function" ? keepFn : rlHpShouldKeepOwnerProject;
     for (const raw of list) {
-      if (!rlHpShouldKeepProject(raw, userId)) continue;
+      if (!keep(raw, userId)) continue;
       const p = rlHpNormalizeLightProject(raw);
       if (!p.id || seen.has(p.id)) continue;
-      // Home list = In progress projects only (Completed / Planning / Hold stay out).
+      // Home list = all statuses except Completed.
       if (!rlHpIsHomeListStatus(p.status)) continue;
       seen.add(p.id);
       out.push(p);
     }
     return out;
+  }
+
+  /** Split lightV1 rows into owner vs member-only buckets (both except Completed). */
+  function rlHpFilterAndNormalizeProjects(rows, userId) {
+    return {
+      ownerProjects: rlHpFilterNormalizeBucket(rows, userId, rlHpShouldKeepOwnerProject),
+      memberProjects: rlHpFilterNormalizeBucket(rows, userId, rlHpShouldKeepMemberProject),
+    };
   }
 
   function rlHpSortProjects(projects, mode) {
@@ -4431,7 +4449,7 @@
   }
   // @@rlHomeProjectsHelpers:end
 
-  // ── Home PROJECTS panel (v1.12.1) — In progress only, under native Overdue ──
+  // ── Home PROJECTS panel (v1.13.0) — Project Owner + In progress (member), except Completed ──
 
   const RL_HP_CACHE_MS = 5 * 60 * 1000;
   const RL_HP_PAGE_SIZE = 200;
@@ -4441,7 +4459,7 @@
   const RL_HP_GM_COLLAPSED = "rlHpCollapsedOwners";
   const RL_HP_GM_SORT = "rlHpSortMode";
 
-  let rlHpCache = { at: 0, userId: "", projects: null };
+  let rlHpCache = { at: 0, userId: "", ownerProjects: null, memberProjects: null };
   let rlHpInflight = null;
   let rlHpGen = 0;
   let rlHpUi = {
@@ -4450,7 +4468,8 @@
     collapsed: new Set(),
     syncing: false,
     error: "",
-    projects: [],
+    ownerProjects: [],
+    memberProjects: [],
   };
 
   function rlHpIsHomePath(pathname) {
@@ -4553,18 +4572,34 @@
     if (!userId) throw new Error("No Rocketlane user id in __api_key yet — reload once logged in.");
 
     const now = Date.now();
-    if (!force && rlHpCache.projects && rlHpCache.userId === userId && (now - rlHpCache.at) < RL_HP_CACHE_MS) {
-      return rlHpCache.projects;
+    if (
+      !force &&
+      rlHpCache.ownerProjects &&
+      rlHpCache.memberProjects &&
+      rlHpCache.userId === userId &&
+      (now - rlHpCache.at) < RL_HP_CACHE_MS
+    ) {
+      return { ownerProjects: rlHpCache.ownerProjects, memberProjects: rlHpCache.memberProjects };
     }
     if (!force && rlHpInflight && rlHpCache.userId === userId) return rlHpInflight;
 
     const gen = ++rlHpGen;
     const promise = (async () => {
       const rows = await rlHpFetchAllLightProjects();
-      if (gen !== rlHpGen) return rlHpCache.projects || [];
-      const projects = rlHpFilterAndNormalizeProjects(rows, userId);
-      rlHpCache = { at: Date.now(), userId, projects };
-      return projects;
+      if (gen !== rlHpGen) {
+        return {
+          ownerProjects: rlHpCache.ownerProjects || [],
+          memberProjects: rlHpCache.memberProjects || [],
+        };
+      }
+      const buckets = rlHpFilterAndNormalizeProjects(rows, userId);
+      rlHpCache = {
+        at: Date.now(),
+        userId,
+        ownerProjects: buckets.ownerProjects,
+        memberProjects: buckets.memberProjects,
+      };
+      return buckets;
     })();
 
     rlHpInflight = promise;
@@ -4575,7 +4610,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.12.2";
+  const RL_HP_STYLE_READY = "1.13.0";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4607,7 +4642,12 @@
       "#rlHomeProjectsPanel .rlhpBtnPrimary{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
       "#rlHomeProjectsPanel .rlhpStatusLine{color:var(--rlhp-muted);font-size:12px;margin:0 0 10px}",
       "#rlHomeProjectsPanel .rlhpStatusLine.rlhpErr{color:var(--rlhp-bad)}",
-      "#rlHomeProjectsPanel .rlhpList{max-height:min(60vh,640px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
+      "#rlHomeProjectsPanel .rlhpSection{display:grid;gap:8px;margin-top:4px}",
+      "#rlHomeProjectsPanel .rlhpSection+.rlhpSection{margin-top:18px;padding-top:14px;border-top:1px solid rgba(15,23,42,0.08)}",
+      "#rlHomeProjectsPanel .rlhpSectionTitle{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0 0 2px}",
+      "#rlHomeProjectsPanel .rlhpSectionHint{color:var(--rlhp-muted);font-size:11px;margin:0 0 6px}",
+      "#rlHomeProjectsPanel .rlhpEmpty{color:var(--rlhp-muted);font-size:12px;padding:4px 2px}",
+      "#rlHomeProjectsPanel .rlhpList{max-height:min(50vh,520px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
       "#rlHomeProjectsPanel .rlhpOwnerHd{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 4px;cursor:pointer;border-radius:8px;user-select:none}",
       "#rlHomeProjectsPanel .rlhpOwnerHd:hover{background:rgba(15,23,42,0.04)}",
       "#rlHomeProjectsPanel .rlhpOwnerLeft{display:flex;gap:8px;align-items:center;min-width:0}",
@@ -4781,78 +4821,69 @@
     }
   }
 
-  function rlHpRenderPanel() {
-    const panel = document.getElementById("rlHomeProjectsPanel");
-    if (!panel) return;
+  function rlHpRenderProjectCard(p) {
+    const card = document.createElement("div");
+    card.className = "rlhpCard";
+    card.tabIndex = 0;
+    card.setAttribute("role", "link");
+    card.setAttribute("aria-label", "Open project " + p.name);
 
-    let hd = panel.querySelector(".rlhpHd");
-    if (!hd) {
-      panel.textContent = "";
-      hd = document.createElement("div");
-      hd.className = "rlhpHd";
-      const title = document.createElement("h2");
-      title.className = "rlhpTitle";
-      title.textContent = "In progress";
-      title.title = "Rocketlane projects with Status = In progress";
-      const actions = document.createElement("div");
-      actions.className = "rlhpActions";
-      const add = document.createElement("a");
-      add.className = "rlhpBtn rlhpBtnPrimary";
-      add.href = "/projects";
-      add.textContent = "+ RL Project";
-      add.addEventListener("click", (e) => {
-        e.preventDefault();
-        rlHpOpenProject("/projects");
-      });
-      const sync = document.createElement("button");
-      sync.type = "button";
-      sync.className = "rlhpBtn rlhpSyncBtn";
-      sync.textContent = "Refresh";
-      sync.addEventListener("click", (e) => {
-        e.preventDefault();
-        void rlHpRefresh({ force: true });
-      });
-      actions.appendChild(add);
-      actions.appendChild(sync);
-      hd.appendChild(title);
-      hd.appendChild(actions);
-      panel.appendChild(hd);
+    const top = document.createElement("div");
+    top.className = "rlhpRow";
+    const nm = document.createElement("div");
+    nm.className = "rlhpName";
+    nm.textContent = p.name;
+    const pct = document.createElement("div");
+    pct.className = "rlhpPct";
+    pct.textContent = p.progress + "%";
+    top.appendChild(nm);
+    top.appendChild(pct);
 
-      const status = document.createElement("p");
-      status.className = "rlhpStatusLine";
-      status.setAttribute("data-rlhp-status", "1");
-      panel.appendChild(status);
-
-      const list = document.createElement("div");
-      list.className = "rlhpList";
-      list.setAttribute("data-rlhp-list", "1");
-      panel.appendChild(list);
+    const meta = document.createElement("div");
+    meta.className = "rlhpMeta";
+    const st = rlHpStatusTag(p.status);
+    const stEl = document.createElement("span");
+    stEl.className = "rlhpTag " + st.cls;
+    stEl.textContent = st.text;
+    meta.appendChild(stEl);
+    const due = rlHpDueTag(p.due);
+    if (due) {
+      const du = document.createElement("span");
+      du.className = "rlhpTag " + due.cls;
+      du.textContent = due.text;
+      meta.appendChild(du);
     }
 
-    const syncBtn = panel.querySelector(".rlhpSyncBtn");
-    if (syncBtn) {
-      syncBtn.disabled = !!rlHpUi.syncing;
-      syncBtn.textContent = rlHpUi.syncing ? "Syncing…" : "Refresh";
-    }
+    const prog = document.createElement("div");
+    prog.className = "rlhpProgress";
+    const bar = document.createElement("div");
+    bar.className = "rlhpBar";
+    bar.style.width = rlHpClamp(p.progress, 0, 100) + "%";
+    prog.appendChild(bar);
 
-    const statusEl = panel.querySelector("[data-rlhp-status]");
-    if (statusEl) {
-      statusEl.classList.toggle("rlhpErr", !!rlHpUi.error);
-      if (rlHpUi.error) statusEl.textContent = rlHpUi.error;
-      else if (rlHpUi.syncing && !rlHpUi.projects.length) statusEl.textContent = "Loading in-progress projects…";
-      else statusEl.textContent = rlHpUi.projects.length
-        ? (rlHpUi.projects.length + " in progress")
-        : "No in-progress projects.";
-    }
+    card.appendChild(top);
+    card.appendChild(meta);
+    card.appendChild(prog);
 
-    const listEl = panel.querySelector("[data-rlhp-list]");
-    if (!listEl) return;
-    listEl.textContent = "";
+    const open = () => rlHpOpenProject(p.href);
+    card.addEventListener("click", (e) => { e.preventDefault(); open(); });
+    card.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      open();
+    });
+    return card;
+  }
 
-    const sorted = rlHpSortProjects(rlHpUi.projects, rlHpUi.sort);
+  function rlHpCollapseKey(sectionId, ownerKey) {
+    return String(sectionId || "") + ":" + rlHpNormalizeOwnerKey(ownerKey);
+  }
+
+  function rlHpRenderOwnerGroups(listEl, projects, sectionId) {
+    const sorted = rlHpSortProjects(projects, rlHpUi.sort);
     const grouped = rlHpGroupProjectsByOwner(sorted);
 
-    if (!rlHpUi.pinnedOwner) {
+    if (!rlHpUi.pinnedOwner && sectionId === "owner") {
       let best = "";
       let bestCount = 0;
       for (const [k, arr] of Object.entries(grouped)) {
@@ -4865,9 +4896,10 @@
     const ownerKeys = rlHpOrderOwnerKeys(Object.keys(grouped), rlHpUi.pinnedOwner);
 
     for (const ownerKey of ownerKeys) {
-      const projects = grouped[ownerKey] || [];
+      const ownerProjects = grouped[ownerKey] || [];
       const ownerNorm = rlHpNormalizeOwnerKey(ownerKey);
-      const collapsed = rlHpUi.collapsed.has(ownerNorm);
+      const collapseKey = rlHpCollapseKey(sectionId, ownerKey);
+      const collapsed = rlHpUi.collapsed.has(collapseKey) || rlHpUi.collapsed.has(ownerNorm);
 
       const ownerHd = document.createElement("div");
       ownerHd.className = "rlhpOwnerHd";
@@ -4885,7 +4917,7 @@
       name.textContent = ownerKey;
       const count = document.createElement("span");
       count.className = "rlhpOwnerCount";
-      count.textContent = "(" + projects.length + ")";
+      count.textContent = "(" + ownerProjects.length + ")";
       const pin = document.createElement("button");
       pin.type = "button";
       pin.className = "rlhpPinBtn" + (ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner) ? " pinned" : "");
@@ -4930,8 +4962,10 @@
       ownerHd.appendChild(sortCluster);
 
       const toggle = () => {
-        if (rlHpUi.collapsed.has(ownerNorm)) rlHpUi.collapsed.delete(ownerNorm);
-        else rlHpUi.collapsed.add(ownerNorm);
+        if (rlHpUi.collapsed.has(collapseKey)) rlHpUi.collapsed.delete(collapseKey);
+        else rlHpUi.collapsed.add(collapseKey);
+        // Drop legacy unscoped key if present so both sections stay independent.
+        rlHpUi.collapsed.delete(ownerNorm);
         rlHpSaveCollapsed();
         rlHpRenderPanel();
       };
@@ -4948,58 +4982,167 @@
       listEl.appendChild(ownerHd);
       if (collapsed) continue;
 
-      for (const p of projects) {
-        const card = document.createElement("div");
-        card.className = "rlhpCard";
-        card.tabIndex = 0;
-        card.setAttribute("role", "link");
-        card.setAttribute("aria-label", "Open project " + p.name);
+      for (const p of ownerProjects) {
+        listEl.appendChild(rlHpRenderProjectCard(p));
+      }
+    }
+  }
 
-        const top = document.createElement("div");
-        top.className = "rlhpRow";
-        const nm = document.createElement("div");
-        nm.className = "rlhpName";
-        nm.textContent = p.name;
-        const pct = document.createElement("div");
-        pct.className = "rlhpPct";
-        pct.textContent = p.progress + "%";
-        top.appendChild(nm);
-        top.appendChild(pct);
+  function rlHpEnsureSection(panel, sectionId, titleText, titleHint) {
+    let section = panel.querySelector('[data-rlhp-section="' + sectionId + '"]');
+    if (section) return section;
+    section = document.createElement("section");
+    section.className = "rlhpSection";
+    section.setAttribute("data-rlhp-section", sectionId);
+    section.setAttribute("aria-label", titleText);
 
-        const meta = document.createElement("div");
-        meta.className = "rlhpMeta";
-        const st = rlHpStatusTag(p.status);
-        const stEl = document.createElement("span");
-        stEl.className = "rlhpTag " + st.cls;
-        stEl.textContent = st.text;
-        meta.appendChild(stEl);
-        const due = rlHpDueTag(p.due);
-        if (due) {
-          const du = document.createElement("span");
-          du.className = "rlhpTag " + due.cls;
-          du.textContent = due.text;
-          meta.appendChild(du);
-        }
+    const title = document.createElement("h3");
+    title.className = "rlhpSectionTitle";
+    title.textContent = titleText;
+    title.title = titleHint || titleText;
 
-        const prog = document.createElement("div");
-        prog.className = "rlhpProgress";
-        const bar = document.createElement("div");
-        bar.className = "rlhpBar";
-        bar.style.width = rlHpClamp(p.progress, 0, 100) + "%";
-        prog.appendChild(bar);
+    const hint = document.createElement("p");
+    hint.className = "rlhpSectionHint";
+    hint.setAttribute("data-rlhp-section-hint", sectionId);
 
-        card.appendChild(top);
-        card.appendChild(meta);
-        card.appendChild(prog);
+    const list = document.createElement("div");
+    list.className = "rlhpList";
+    list.setAttribute("data-rlhp-list", sectionId);
 
-        const open = () => rlHpOpenProject(p.href);
-        card.addEventListener("click", (e) => { e.preventDefault(); open(); });
-        card.addEventListener("keydown", (e) => {
-          if (e.key !== "Enter" && e.key !== " ") return;
-          e.preventDefault();
-          open();
-        });
-        listEl.appendChild(card);
+    section.appendChild(title);
+    section.appendChild(hint);
+    section.appendChild(list);
+    panel.appendChild(section);
+    return section;
+  }
+
+  function rlHpRenderPanel() {
+    const panel = document.getElementById("rlHomeProjectsPanel");
+    if (!panel) return;
+
+    let hd = panel.querySelector(".rlhpHd");
+    if (!hd) {
+      panel.textContent = "";
+      hd = document.createElement("div");
+      hd.className = "rlhpHd";
+      const title = document.createElement("h2");
+      title.className = "rlhpTitle";
+      title.textContent = "Projects";
+      title.title = "Owned projects and projects you joined (all statuses except Completed)";
+      const actions = document.createElement("div");
+      actions.className = "rlhpActions";
+      const add = document.createElement("a");
+      add.className = "rlhpBtn rlhpBtnPrimary";
+      add.href = "/projects";
+      add.textContent = "+ RL Project";
+      add.addEventListener("click", (e) => {
+        e.preventDefault();
+        rlHpOpenProject("/projects");
+      });
+      const sync = document.createElement("button");
+      sync.type = "button";
+      sync.className = "rlhpBtn rlhpSyncBtn";
+      sync.textContent = "Refresh";
+      sync.addEventListener("click", (e) => {
+        e.preventDefault();
+        void rlHpRefresh({ force: true });
+      });
+      actions.appendChild(add);
+      actions.appendChild(sync);
+      hd.appendChild(title);
+      hd.appendChild(actions);
+      panel.appendChild(hd);
+
+      const status = document.createElement("p");
+      status.className = "rlhpStatusLine";
+      status.setAttribute("data-rlhp-status", "1");
+      panel.appendChild(status);
+
+      rlHpEnsureSection(
+        panel,
+        "owner",
+        "Project Owner",
+        "Projects where you are the Rocketlane project owner (all statuses except Completed)",
+      );
+      rlHpEnsureSection(
+        panel,
+        "member",
+        "In progress",
+        "Projects you were added to as a team member (not owner); all statuses except Completed",
+      );
+    } else {
+      rlHpEnsureSection(
+        panel,
+        "owner",
+        "Project Owner",
+        "Projects where you are the Rocketlane project owner (all statuses except Completed)",
+      );
+      rlHpEnsureSection(
+        panel,
+        "member",
+        "In progress",
+        "Projects you were added to as a team member (not owner); all statuses except Completed",
+      );
+    }
+
+    const syncBtn = panel.querySelector(".rlhpSyncBtn");
+    if (syncBtn) {
+      syncBtn.disabled = !!rlHpUi.syncing;
+      syncBtn.textContent = rlHpUi.syncing ? "Syncing…" : "Refresh";
+    }
+
+    const ownerCount = Array.isArray(rlHpUi.ownerProjects) ? rlHpUi.ownerProjects.length : 0;
+    const memberCount = Array.isArray(rlHpUi.memberProjects) ? rlHpUi.memberProjects.length : 0;
+    const totalCount = ownerCount + memberCount;
+
+    const statusEl = panel.querySelector("[data-rlhp-status]");
+    if (statusEl) {
+      statusEl.classList.toggle("rlhpErr", !!rlHpUi.error);
+      if (rlHpUi.error) statusEl.textContent = rlHpUi.error;
+      else if (rlHpUi.syncing && !totalCount) statusEl.textContent = "Loading projects…";
+      else if (!totalCount) statusEl.textContent = "No projects (except Completed).";
+      else {
+        statusEl.textContent =
+          ownerCount + " Project Owner · " + memberCount + " In progress";
+      }
+    }
+
+    const ownerHint = panel.querySelector('[data-rlhp-section-hint="owner"]');
+    if (ownerHint) {
+      ownerHint.textContent = ownerCount
+        ? ownerCount + " project" + (ownerCount === 1 ? "" : "s") + " you own"
+        : "No owned projects (except Completed).";
+    }
+    const memberHint = panel.querySelector('[data-rlhp-section-hint="member"]');
+    if (memberHint) {
+      memberHint.textContent = memberCount
+        ? memberCount + " project" + (memberCount === 1 ? "" : "s") + " you joined"
+        : "No member projects (except Completed).";
+    }
+
+    const ownerList = panel.querySelector('[data-rlhp-list="owner"]');
+    if (ownerList) {
+      ownerList.textContent = "";
+      if (!ownerCount && !rlHpUi.syncing) {
+        const empty = document.createElement("div");
+        empty.className = "rlhpEmpty";
+        empty.textContent = "Nothing here.";
+        ownerList.appendChild(empty);
+      } else {
+        rlHpRenderOwnerGroups(ownerList, rlHpUi.ownerProjects, "owner");
+      }
+    }
+
+    const memberList = panel.querySelector('[data-rlhp-list="member"]');
+    if (memberList) {
+      memberList.textContent = "";
+      if (!memberCount && !rlHpUi.syncing) {
+        const empty = document.createElement("div");
+        empty.className = "rlhpEmpty";
+        empty.textContent = "Nothing here.";
+        memberList.appendChild(empty);
+      } else {
+        rlHpRenderOwnerGroups(memberList, rlHpUi.memberProjects, "member");
       }
     }
   }
@@ -5009,8 +5152,9 @@
     rlHpUi.error = "";
     rlHpRenderPanel();
     try {
-      const projects = await rlHpLoadProjects(opts);
-      rlHpUi.projects = Array.isArray(projects) ? projects : [];
+      const buckets = await rlHpLoadProjects(opts);
+      rlHpUi.ownerProjects = Array.isArray(buckets?.ownerProjects) ? buckets.ownerProjects : [];
+      rlHpUi.memberProjects = Array.isArray(buckets?.memberProjects) ? buckets.memberProjects : [];
     } catch (e) {
       rlHpUi.error = String(e?.message || e || "Failed to load projects");
     } finally {
@@ -5031,7 +5175,9 @@
     if (!panel) {
       panel = document.createElement("section");
       panel.id = "rlHomeProjectsPanel";
-      panel.setAttribute("aria-label", "In progress projects");
+      panel.setAttribute("aria-label", "Project Owner and In progress projects");
+    } else {
+      panel.setAttribute("aria-label", "Project Owner and In progress projects");
     }
     rlHpPlacePanel(panel);
     if (firstMount) {
