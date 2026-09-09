@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.3
+// @version      1.14.4
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4483,6 +4483,10 @@
   // ── Home PROJECTS twin panels (v1.14.0) — Project Owner + In progress under Overdue ──
 
   const RL_HP_CACHE_MS = 5 * 60 * 1000;
+  // A home visit always revalidates in the background — the cache is only the
+  // instant first paint. This guard stops the SPA's route bouncing (ensure runs
+  // at 60/350/900 ms after a navigation) from fetching several times in a row.
+  const RL_HP_REVALIDATE_MIN_MS = 15 * 1000;
   // The last result also lives in Tampermonkey storage so the panels paint at
   // once on the next page load and only revalidate in the background.
   const RL_HP_GM_CACHE = "rlHpProjectsCache";
@@ -4697,7 +4701,9 @@
 
     const now = Date.now();
     const cached = rlHpPeekCache();
-    if (!force && cached && (now - cached.at) < RL_HP_CACHE_MS) {
+    // revalidate: a page visit — refetch unless a fetch just completed.
+    const maxAge = (opts && opts.revalidate) ? RL_HP_REVALIDATE_MIN_MS : RL_HP_CACHE_MS;
+    if (!force && cached && (now - cached.at) < maxAge) {
       return { ownerProjects: cached.ownerProjects, memberProjects: cached.memberProjects };
     }
     // Join a fetch already running for this user (the document-start prefetch
@@ -5338,7 +5344,7 @@
     if (!rlHpRefreshKicked) {
       rlHpRefreshKicked = true;
       rlHpRenderPanels();
-      void rlHpRefresh({ force: false });
+      void rlHpRefresh({ force: false, revalidate: true });
     }
   }
 
@@ -5348,7 +5354,7 @@
   // a fresh persisted result short-circuits without a request, and the
   // panel's later refresh joins this fetch through rlHpInflight.
   if (rlHpIsHomePath(location.pathname)) {
-    try { void rlHpLoadProjects({ force: false }).catch(() => {}); } catch (_) {}
+    try { void rlHpLoadProjects({ force: false, revalidate: true }).catch(() => {}); } catch (_) {}
   }
 
 
