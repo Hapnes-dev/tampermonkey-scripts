@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.6
+// @version      1.7.0
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,8 +52,9 @@
  *     header link row. Dark/light pills left of Rocketlane's Responsible
  *     filter: Zendesk, Oneflow (Order/Subscription), Younium (Order/Subscription),
  *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Also a PPT Find-style
- *     "🔎 Fetch URLs" button left of Present that re-reads IQC / Deal Description
- *     / Delivery status (and Oneflow plant search when empty). Edit/Remove stay
+ *     "🔎 Fetch URLs" button left of Present that opens a PPT-style URL chooser
+ *     (Find + select), then saves clickable Attach-links anchors into the IQC task
+ *     description. Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
  *  1d. Delivery to service (section 8), ported from the tracker's handover
@@ -2650,15 +2651,106 @@
     return merged;
   }
 
-  async function rlFetchIqcTaskLinks(rlProjectId) {
-    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId) + "/tasks");
-    const list = Array.isArray(json) ? json : (json?.data || []);
-    const qc = list.find((t) => /\binternal\s+(?:quality\s+control|qc)\b/i.test(String(t?.taskName || t?.name || "").trim()));
-    if (!qc) return rlEmptyProjectLinks();
-    const detail = await gmRocketlaneGet("/tasks/" + encodeURIComponent(qc.taskId || qc.id));
-    return rlParseProjectLinksFromHtml(String(detail?.taskDescription || detail?.description || ""));
+  // @@rlUrlPickerHelpers:start
+  // Pure Attach-links helpers (also extracted by url-picker.test.js).
+  function rlEscapeHtmlAttr(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   }
 
+  function rlNormalizeHttpUrl(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    try {
+      const u = new URL(s);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+      return u.href;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function rlIqcAttachLinkSlots() {
+    return [
+      { key: "oneflowOrder", label: "Oneflow - Order / offer", find: true },
+      { key: "oneflowSubscription", label: "Oneflow - Subscription agreement", find: true },
+      { key: "hubspot", label: "Hubspot", find: true },
+      { key: "younium", label: "Younium link (Order / offer)", find: true },
+      { key: "youniumSubscription", label: "Younium link (Subscription)", find: true },
+      { key: "zendesk", label: "Zendesk", find: false },
+    ];
+  }
+
+  function rlBuildAttachLinksListHtml(links) {
+    const items = rlIqcAttachLinkSlots().map(({ key, label }) => {
+      const url = rlNormalizeHttpUrl(links?.[key]);
+      if (url) {
+        const esc = rlEscapeHtmlAttr(url);
+        return "<li>" + label + ': <a target="_blank" rel="noopener noreferrer" href="' + esc + '">' + esc + "</a></li>";
+      }
+      return "<li>" + label + ":</li>";
+    });
+    return "<ul>\n" + items.join("\n") + "\n</ul>";
+  }
+
+  function rlUpsertAttachLinksHtml(existingHtml, links) {
+    const html = String(existingHtml || "");
+    const listHtml = rlBuildAttachLinksListHtml(links);
+    const reP = /(<p[^>]*>\s*Attach\s+links:\s*<\/p>\s*)(<ul\b[\s\S]*?<\/ul>)/i;
+    if (reP.test(html)) return html.replace(reP, "$1" + listHtml);
+    const reBare = /(Attach\s+links:\s*)(<ul\b[\s\S]*?<\/ul>)/i;
+    if (reBare.test(html)) return html.replace(reBare, "$1" + listHtml);
+    const suffix = "<p>Attach links:</p>\n" + listHtml;
+    if (!html.trim()) return suffix;
+    return html.replace(/\s*$/, "") + "\n" + suffix;
+  }
+  // @@rlUrlPickerHelpers:end
+
+  async function rlFetchIqcTask(rlProjectId) {
+    const empty = {
+      found: false, taskId: "", taskName: "", descriptionHtml: "", links: rlEmptyProjectLinks(),
+    };
+    const pid = String(rlProjectId || "").trim();
+    if (!pid) return empty;
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/tasks");
+    const list = Array.isArray(json) ? json : (json?.data || []);
+    const qc = list.find((t) => /\binternal\s+(?:quality\s+control|qc)\b/i.test(String(t?.taskName || t?.name || "").trim()));
+    if (!qc) return empty;
+    const taskId = String(qc.taskId || qc.id || "").trim();
+    if (!taskId) return empty;
+    const detail = await gmRocketlaneGet("/tasks/" + encodeURIComponent(taskId));
+    const descriptionHtml = String(detail?.taskDescription || detail?.description || "");
+    return {
+      found: true,
+      taskId,
+      taskName: String(qc.taskName || qc.name || ""),
+      descriptionHtml,
+      links: rlParseProjectLinksFromHtml(descriptionHtml),
+    };
+  }
+
+  async function rlFetchIqcTaskLinks(rlProjectId) {
+    return (await rlFetchIqcTask(rlProjectId)).links;
+  }
+
+  async function rlSaveIqcAttachLinks(rlProjectId, links) {
+    const pid = String(rlProjectId || "").trim();
+    if (!pid) throw new Error("Missing Rocketlane project id.");
+    const fresh = await rlFetchIqcTask(pid);
+    if (!fresh.found || !fresh.taskId) throw new Error('No "Internal Quality control and notes" task on this project.');
+    const nextHtml = rlUpsertAttachLinksHtml(fresh.descriptionHtml, links);
+    await gmRocketlaneRequest("PUT", "/tasks/" + encodeURIComponent(fresh.taskId), null, {
+      taskDescription: nextHtml,
+    });
+    const verify = await rlFetchIqcTask(pid);
+    if (!verify.found) throw new Error("IQC task vanished after save.");
+    rlProjectLinksCache.delete(pid);
+    rlProjectLinksInflight.delete(pid);
+    return verify;
+  }
   async function rlLoadProjectLinks(rlProjectId, opts) {
     const pid = String(rlProjectId || "").trim();
     if (!pid) return rlEmptyProjectLinks();
@@ -2793,6 +2885,86 @@
         opacity: 0.65; cursor: wait;
       }
       #rlAutoFetchUrlsBtn .rlFetchIcon { font-size: 13px; line-height: 1; }
+
+      dialog.rlUrlPickerDlg {
+        border: none; border-radius: 12px; padding: 0; width: min(640px, 94vw);
+        background: #111; color: rgba(255,255,255,0.92);
+        box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      }
+      dialog.rlUrlPickerDlg::backdrop { background: rgba(0,0,0,0.45); }
+      dialog.rlUrlPickerDlg .rlUpHead {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);
+        font-weight: 600;
+      }
+      dialog.rlUrlPickerDlg .rlUpBody {
+        padding: 12px 16px 16px; max-height: min(70vh, 640px); overflow: auto;
+        font-size: 13px; line-height: 1.4; color: rgba(255,255,255,0.86);
+      }
+      dialog.rlUrlPickerDlg .rlUpMeta {
+        margin: 0 0 12px; font-size: 12px; color: rgba(255,255,255,0.62);
+      }
+      dialog.rlUrlPickerDlg .rlUpRow {
+        margin: 0 0 12px; padding: 10px 10px 8px;
+        border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
+        background: rgba(255,255,255,0.03);
+      }
+      dialog.rlUrlPickerDlg .rlUpLabel {
+        display: block; margin: 0 0 6px; font-size: 12px; font-weight: 600;
+        color: rgba(255,255,255,0.78);
+      }
+      dialog.rlUrlPickerDlg .rlUpFindRow {
+        display: flex; gap: 8px; align-items: stretch;
+      }
+      dialog.rlUrlPickerDlg .rlUpFindRow input {
+        flex: 1 1 auto; min-width: 0;
+        height: 32px; padding: 0 10px; border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.16);
+        background: rgba(0,0,0,0.35); color: inherit; font: inherit;
+      }
+      dialog.rlUrlPickerDlg .rlUpFindBtn,
+      dialog.rlUrlPickerDlg .rlUpClose,
+      dialog.rlUrlPickerDlg .rlUpCancel,
+      dialog.rlUrlPickerDlg .rlUpSave {
+        appearance: none; border: 1px solid rgba(255,255,255,0.16);
+        background: rgba(255,255,255,0.06); color: inherit;
+        border-radius: 8px; padding: 0 10px; cursor: pointer;
+        font: 500 12px/1 inherit; white-space: nowrap; height: 32px;
+      }
+      dialog.rlUrlPickerDlg .rlUpSave {
+        background: #0284c7; border-color: #0284c7; color: #fff; font-weight: 600;
+      }
+      dialog.rlUrlPickerDlg .rlUpSave:disabled,
+      dialog.rlUrlPickerDlg .rlUpFindBtn:disabled { opacity: 0.55; cursor: wait; }
+      dialog.rlUrlPickerDlg .rlUpStatus {
+        margin: 6px 0 0; min-height: 1.2em; font-size: 11.5px;
+        color: rgba(255,255,255,0.58);
+      }
+      dialog.rlUrlPickerDlg .rlUpStatus.good { color: #86efac; }
+      dialog.rlUrlPickerDlg .rlUpStatus.warn { color: #fde68a; }
+      dialog.rlUrlPickerDlg .rlUpStatus.error { color: #fca5a5; }
+      dialog.rlUrlPickerDlg .rlUpPicker {
+        margin-top: 8px; display: flex; flex-direction: column; gap: 6px;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickItem {
+        display: flex; justify-content: space-between; gap: 10px; align-items: flex-start;
+        text-align: left; width: 100%;
+        appearance: none; border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.04); color: inherit;
+        border-radius: 8px; padding: 8px 10px; cursor: pointer;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickItem:hover {
+        background: rgba(255,255,255,0.08); border-color: rgba(125,211,252,0.45);
+      }
+      dialog.rlUrlPickerDlg .rlUpPickName { font-weight: 600; font-size: 12.5px; }
+      dialog.rlUrlPickerDlg .rlUpPickMeta {
+        margin-top: 2px; font-size: 11px; color: rgba(255,255,255,0.55);
+        word-break: break-all;
+      }
+      dialog.rlUrlPickerDlg .rlUpFoot {
+        display: flex; justify-content: flex-end; gap: 8px;
+        padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);
+      }
       dialog.rlOrderInfoDlg {
         border: none; border-radius: 12px; padding: 0; max-width: min(560px, 92vw);
         background: #111; color: rgba(255,255,255,0.92);
@@ -3100,12 +3272,294 @@
     return { secondary, anchor };
   }
 
-  async function rlRunAutoFetchUrls() {
+  let rlUrlPickerGen = 0;
+
+  function rlUrlPickerCollectLinks(dlg) {
+    const out = rlEmptyProjectLinks();
+    if (!dlg) return out;
+    for (const { key } of rlIqcAttachLinkSlots()) {
+      const input = dlg.querySelector('input[data-rl-slot="' + key + '"]');
+      out[key] = rlNormalizeHttpUrl(input?.value);
+    }
+    // Keep rocketlane project URL if we already know it; not an Attach-links row.
+    return out;
+  }
+
+  function rlUrlPickerSetStatus(el, text, tone) {
+    if (!el) return;
+    el.textContent = text || "";
+    el.className = "rlUpStatus" + (tone ? (" " + tone) : "");
+  }
+
+  function rlUrlPickerClearPicker(row) {
+    row?.querySelector(".rlUpPicker")?.remove();
+  }
+
+  function rlUrlPickerShowCandidates(row, input, statusEl, candidates, gen, projectId) {
+    rlUrlPickerClearPicker(row);
+    if (!candidates.length) {
+      rlUrlPickerSetStatus(statusEl, "No candidates.", "warn");
+      return;
+    }
+    if (candidates.length === 1 && !rlNormalizeHttpUrl(input.value)) {
+      input.value = candidates[0].url;
+      rlUrlPickerSetStatus(statusEl, "Auto-filled unique match.", "good");
+      return;
+    }
+    if (candidates.length === 1 && rlNormalizeHttpUrl(input.value) === candidates[0].url) {
+      rlUrlPickerSetStatus(statusEl, "Already matches the only candidate.", "good");
+      return;
+    }
+    const host = document.createElement("div");
+    host.className = "rlUpPicker";
+    for (const c of candidates.slice(0, 8)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rlUpPickItem";
+      const left = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "rlUpPickName";
+      name.textContent = c.primaryText || "(no name)";
+      const meta = document.createElement("div");
+      meta.className = "rlUpPickMeta";
+      meta.textContent = c.secondaryText || c.url || "";
+      left.appendChild(name);
+      left.appendChild(meta);
+      btn.appendChild(left);
+      btn.addEventListener("click", () => {
+        if (gen !== rlUrlPickerGen) return;
+        if (String(dlgProjectId(row)) !== String(projectId)) return;
+        input.value = c.url;
+        rlUrlPickerClearPicker(row);
+        rlUrlPickerSetStatus(statusEl, "Selected.", "good");
+      });
+      host.appendChild(btn);
+    }
+    row.appendChild(host);
+    rlUrlPickerSetStatus(
+      statusEl,
+      candidates.length + " candidate(s) — pick one" +
+        (rlNormalizeHttpUrl(input.value) ? " (existing value kept until you choose)" : "") + ".",
+      "warn"
+    );
+  }
+
+  function dlgProjectId(fromEl) {
+    const dlg = fromEl?.closest?.("dialog.rlUrlPickerDlg") || document.getElementById("rlUrlPickerDlg");
+    return dlg?.dataset?.rlProjectId || "";
+  }
+
+  async function rlUrlPickerFindSlot(key, row, input, statusEl, projectId, plantId, gen) {
+    rlUrlPickerClearPicker(row);
+    rlUrlPickerSetStatus(statusEl, "Searching…", "");
+    try {
+      if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+      if (key === "oneflowOrder" || key === "oneflowSubscription") {
+        if (!plantId) {
+          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
+          return;
+        }
+        const found = await ofSearchByPlantId(plantId);
+        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+        const want = key === "oneflowOrder" ? "order" : "subscription";
+        const cands = (found.candidates || [])
+          .filter((a) => ofKindByName(a?.name) === want && a?.id)
+          .map((a) => ({
+            url: ofDocumentUrl(a.id),
+            primaryText: String(a.name || ("Oneflow " + a.id)),
+            secondaryText: (ONEFLOW_STATE_LABEL[a.state] || ("state " + a.state)) + " · id " + a.id,
+          }));
+        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        return;
+      }
+      if (key === "younium") {
+        if (!plantId) {
+          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
+          return;
+        }
+        const all = await youniumFindAllOrdersByPlantId(plantId);
+        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+        const cands = (all || [])
+          .filter((o) => String(o?.plant_id ?? "").trim() === String(plantId) && o?.id)
+          .filter((o) => ofKindByName(o?.description || o?.orderNumber || "") !== "subscription")
+          .map((o) => ({
+            url: ynOrderUrl(o.id),
+            primaryText: String(o.orderNumber || o.description || o.id),
+            secondaryText: [o.status, o.accountname, "id " + o.id].filter(Boolean).join(" · "),
+          }));
+        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        return;
+      }
+      if (key === "youniumSubscription") {
+        if (!plantId) {
+          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
+          return;
+        }
+        const found = await youniumFindSubscriptionByPlantId(plantId);
+        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+        if (!found?.order?.id) {
+          rlUrlPickerSetStatus(statusEl, "No IWMAC subscription order for plant " + plantId + ".", "warn");
+          return;
+        }
+        const url = ynOrderUrl(found.order.id);
+        const cands = [{
+          url,
+          primaryText: String(found.order.orderNumber || found.order.id),
+          secondaryText: found.productName || "IWMAC subscription",
+        }];
+        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        return;
+      }
+      if (key === "hubspot") {
+        // No HubSpotBridge on Rocketlane pages — refill from Deal Description / Delivery only.
+        const merged = await rlLoadProjectLinks(projectId, { force: true });
+        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+        const url = rlNormalizeHttpUrl(merged.hubspot);
+        if (!url) {
+          rlUrlPickerSetStatus(statusEl, "No HubSpot URL in Deal Description / Delivery / IQC. Paste manually.", "warn");
+          return;
+        }
+        const cands = [{ url, primaryText: "HubSpot (from project fields)", secondaryText: url }];
+        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        return;
+      }
+      rlUrlPickerSetStatus(statusEl, "No Find action for this slot.", "warn");
+    } catch (e) {
+      if (gen !== rlUrlPickerGen) return;
+      rlUrlPickerSetStatus(statusEl, "Find failed: " + (e?.message ?? e), "error");
+    }
+  }
+
+  function rlEnsureUrlPickerDialog() {
+    let dlg = document.getElementById("rlUrlPickerDlg");
+    if (dlg) return dlg;
+    dlg = document.createElement("dialog");
+    dlg.id = "rlUrlPickerDlg";
+    dlg.className = "rlUrlPickerDlg";
+    dlg.innerHTML =
+      '<form method="dialog" class="rlUpForm">' +
+        '<div class="rlUpHead"><span>Fetch / choose project URLs</span>' +
+          '<button type="button" class="rlUpClose" value="cancel" aria-label="Close">Close</button></div>' +
+        '<div class="rlUpBody">' +
+          '<p class="rlUpMeta" data-rl-up-meta></p>' +
+          '<div data-rl-up-rows></div>' +
+        '</div>' +
+        '<div class="rlUpFoot">' +
+          '<button type="button" class="rlUpCancel">Cancel</button>' +
+          '<button type="button" class="rlUpSave">Save URLs</button>' +
+        '</div>' +
+      '</form>';
+    const rowsHost = dlg.querySelector("[data-rl-up-rows]");
+    for (const slot of rlIqcAttachLinkSlots()) {
+      const row = document.createElement("div");
+      row.className = "rlUpRow";
+      row.dataset.rlSlot = slot.key;
+      const lab = document.createElement("label");
+      lab.className = "rlUpLabel";
+      lab.textContent = slot.label;
+      const findRow = document.createElement("div");
+      findRow.className = "rlUpFindRow";
+      const input = document.createElement("input");
+      input.type = "url";
+      input.inputMode = "url";
+      input.placeholder = "https://…";
+      input.dataset.rlSlot = slot.key;
+      findRow.appendChild(input);
+      if (slot.find) {
+        const findBtn = document.createElement("button");
+        findBtn.type = "button";
+        findBtn.className = "rlUpFindBtn";
+        findBtn.textContent = "\uD83D\uDD0E Find";
+        findBtn.dataset.rlFind = slot.key;
+        findRow.appendChild(findBtn);
+      }
+      const status = document.createElement("div");
+      status.className = "rlUpStatus";
+      status.dataset.rlStatus = slot.key;
+      row.appendChild(lab);
+      row.appendChild(findRow);
+      row.appendChild(status);
+      rowsHost.appendChild(row);
+    }
+    const close = () => {
+      try { dlg.close(); } catch (_) {}
+    };
+    dlg.querySelector(".rlUpClose").addEventListener("click", close);
+    dlg.querySelector(".rlUpCancel").addEventListener("click", close);
+    dlg.addEventListener("click", (ev) => {
+      const findBtn = ev.target.closest?.("[data-rl-find]");
+      if (!findBtn || !dlg.contains(findBtn)) return;
+      ev.preventDefault();
+      const key = findBtn.getAttribute("data-rl-find");
+      const row = dlg.querySelector('.rlUpRow[data-rl-slot="' + key + '"]');
+      const input = row?.querySelector("input");
+      const statusEl = row?.querySelector("[data-rl-status]");
+      const projectId = dlg.dataset.rlProjectId || "";
+      const plantId = dlg.dataset.rlPlantId || "";
+      const gen = Number(dlg.dataset.rlGen || "0");
+      if (!row || !input) return;
+      findBtn.disabled = true;
+      void rlUrlPickerFindSlot(key, row, input, statusEl, projectId, plantId, gen)
+        .finally(() => { findBtn.disabled = false; });
+    });
+    dlg.querySelector(".rlUpSave").addEventListener("click", () => {
+      void rlUrlPickerSave(dlg);
+    });
+    document.documentElement.appendChild(dlg);
+    return dlg;
+  }
+
+  async function rlUrlPickerSave(dlg) {
+    const saveBtn = dlg.querySelector(".rlUpSave");
+    const meta = dlg.querySelector("[data-rl-up-meta]");
+    const projectId = dlg.dataset.rlProjectId || "";
+    const gen = Number(dlg.dataset.rlGen || "0");
+    if (!projectId) return;
+    const links = rlUrlPickerCollectLinks(dlg);
+    if (saveBtn) saveBtn.disabled = true;
+    if (meta) meta.textContent = "Saving into Internal Quality control and notes…";
+    try {
+      const verify = await rlSaveIqcAttachLinks(projectId, links);
+      if (gen !== rlUrlPickerGen || dlg.dataset.rlProjectId !== projectId) return;
+      const refreshed = await rlLoadProjectLinks(projectId, { force: true });
+      const bar = document.getElementById("rlProjectActionBar");
+      const ctx = getOneflowContext();
+      if (bar && ctx.rlProjectId === projectId) {
+        bar.dataset.rlProjectId = projectId;
+        rlPatchActionBar(bar, refreshed, ctx);
+      }
+      if (meta) {
+        meta.textContent = "Saved on “" + (verify.taskName || "IQC") + "” · task " + verify.taskId + ".";
+      }
+      try { dlg.close(); } catch (_) {}
+    } catch (e) {
+      if (meta) meta.textContent = "Save failed: " + (e?.message ?? e);
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  async function rlOpenUrlPickerDialog() {
     const btn = document.getElementById("rlAutoFetchUrlsBtn");
     const ctx = getOneflowContext();
     if (!ctx.rlProjectId) {
       if (btn) btn.title = "No Rocketlane project id in this URL.";
       return;
+    }
+    rlInjectActionBarStyles();
+    const dlg = rlEnsureUrlPickerDialog();
+    const gen = ++rlUrlPickerGen;
+    dlg.dataset.rlGen = String(gen);
+    dlg.dataset.rlProjectId = ctx.rlProjectId;
+    dlg.dataset.rlPlantId = extractPlantIdFromProjectName(readProjectName()) || "";
+    const meta = dlg.querySelector("[data-rl-up-meta]");
+    if (meta) meta.textContent = "Loading links from IQC / Deal Description / Delivery…";
+    for (const row of dlg.querySelectorAll(".rlUpRow")) {
+      const input = row.querySelector("input");
+      const statusEl = row.querySelector("[data-rl-status]");
+      if (input) input.value = "";
+      rlUrlPickerClearPicker(row);
+      rlUrlPickerSetStatus(statusEl, "", "");
     }
     if (btn) {
       btn.disabled = true;
@@ -3114,22 +3568,41 @@
       if (label) label.textContent = "Fetching…";
     }
     try {
-      const links = await rlLoadProjectLinks(ctx.rlProjectId, { force: true });
+      if (!dlg.open) dlg.showModal();
+      const [merged, iqc] = await Promise.all([
+        rlLoadProjectLinks(ctx.rlProjectId, { force: true }),
+        rlFetchIqcTask(ctx.rlProjectId).catch(() => ({ found: false, taskId: "", taskName: "", links: rlEmptyProjectLinks() })),
+      ]);
+      if (gen !== rlUrlPickerGen || dlg.dataset.rlProjectId !== ctx.rlProjectId) return;
       const bar = document.getElementById("rlProjectActionBar");
       if (bar) {
         bar.dataset.rlProjectId = ctx.rlProjectId;
-        rlPatchActionBar(bar, links, ctx);
+        rlPatchActionBar(bar, merged, ctx);
       } else {
         try { rlEnsureProjectActionBar(); } catch (_) {}
       }
-      const n = rlCountFilledLinks(links);
+      for (const { key } of rlIqcAttachLinkSlots()) {
+        const input = dlg.querySelector('input[data-rl-slot="' + key + '"]');
+        if (!input) continue;
+        // Prefer currently saved IQC value; fill empty slots from discovery.
+        const saved = rlNormalizeHttpUrl(iqc.links?.[key]);
+        const discovered = rlNormalizeHttpUrl(merged[key]);
+        input.value = saved || discovered || "";
+      }
+      const n = rlCountFilledLinks(merged);
+      if (meta) {
+        meta.textContent = (iqc.found
+          ? ("IQC task “" + (iqc.taskName || "Internal QC") + "” · id " + iqc.taskId + ". ")
+          : "No IQC task found yet — Save will fail until it exists. ") +
+          "Prefill: " + n + " discovered link(s). Find never overwrites a filled slot unless you pick.";
+      }
       if (btn) {
         btn.title = n
-          ? ("Fetched " + n + " link(s) from IQC / Deal Description / Delivery status" +
-            (links.oneflowOrder || links.oneflowSubscription ? " (Oneflow filled)" : "") + ".")
-          : "No project links found in IQC notes, Deal Description, or Delivery status.";
+          ? ("Chooser open — " + n + " link(s) discovered. Save writes Attach links on the IQC task.")
+          : "Chooser open — no links discovered yet. Use Find or paste, then Save.";
       }
     } catch (e) {
+      if (meta) meta.textContent = "Load failed: " + (e?.message ?? e);
       if (btn) btn.title = "Fetch failed: " + (e?.message ?? e);
     } finally {
       if (btn) {
@@ -3139,6 +3612,10 @@
         if (label) label.textContent = "Fetch URLs";
       }
     }
+  }
+
+  async function rlRunAutoFetchUrls() {
+    await rlOpenUrlPickerDialog();
   }
 
   function rlEnsureAutoFetchButton() {
@@ -3156,7 +3633,7 @@
       btn = document.createElement("button");
       btn.id = "rlAutoFetchUrlsBtn";
       btn.type = "button";
-      btn.title = "Fetch project links from Internal Quality Control notes, HubSpot Deal Description, and Delivery status (same sources as Project Progress Tracker). Also searches Oneflow by plant ID when no stored Oneflow link.";
+      btn.title = "Open URL chooser: fetch IQC / Deal Description / Delivery links, Find candidates (Oneflow / Younium / HubSpot-from-fields), and Save clickable Attach links into Internal Quality control and notes.";
       const icon = document.createElement("span");
       icon.className = "rlFetchIcon";
       icon.setAttribute("aria-hidden", "true");
