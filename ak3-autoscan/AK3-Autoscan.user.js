@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.2
+// @version      9.3
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -12,6 +12,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @grant        GM_setClipboard
 // @connect      toolbox.iwmac.local
 // @connect      toolbox.iwmac.local:8505
 // @connect      tools.iwmac.local
@@ -123,6 +124,20 @@
         const el = document.querySelector('#message');
         return el ? el.textContent.replace(/\s+/g, ' ').trim().slice(0, 160) : '';
     }
+    // The Scan tab lists what the scanner has found so far, one <li> each:
+    //   <li>0_5 - <em>K 1 Meririrom</em> ( 084B4083_017X )</li>
+    // Read before and after a scan, the difference is the new regulators.
+    // Returns [] when the page has no such list.
+    function readScanDeviceList() {
+        const out = [];
+        document.querySelectorAll('#content li').forEach((li) => {
+            const txt = (li.textContent || '').replace(/\s+/g, ' ').trim();
+            const m = txt.match(/^(\S+)\s+-\s+(.+?)\s*\(\s*([^()]+?)\s*\)$/);
+            if (m) out.push({ key: m[1] + '|' + m[3], label: m[1] + ' ' + m[2] });
+            else if (/^\S+\s+-\s+\S/.test(txt)) out.push({ key: txt, label: txt });
+        });
+        return out;
+    }
     function ts() {
         const d = new Date();
         const p = (n) => String(n).padStart(2, '0');
@@ -134,7 +149,7 @@
         console.log('[AK3]', ...a);
         const arr = GM_getValue(LOG_KEY, []);
         arr.push(line);
-        while (arr.length > 300) arr.shift();
+        while (arr.length > 1500) arr.shift();
         GM_setValue(LOG_KEY, arr);
         renderDebugPanel();
     }
@@ -573,14 +588,26 @@
             if (st.localIp)  parts.push('server ' + st.localIp + (st.localSource === 'page' ? '' : ' (default)'));
             if (st.remoteIp) parts.push('AK-SM850 ' + st.remoteIp + (st.remoteSource === 'page' ? '' : ' (default)'));
             if (st.transport) parts.push(st.transport + (st.testAttempts > 1 ? ' after ' + st.testAttempts + ' tests' : ''));
-            if (st.saveClicks) parts.push(st.saveClicks + ' save click' + (st.saveClicks > 1 ? 's' : ''));
             if (st.manual) parts.push('fixed manually');
             if (!parts.length) parts.push(st.message || 'saved');
         } else if (step === 'scan') {
             if (st.scanStartedAt && st.scanEndedAt) parts.push('scanned in ' + fmtDur(st.scanEndedAt - st.scanStartedAt));
-            parts.push(st.report || (st.lastPercent != null ? st.lastPercent + '%' : 'done'));
+            if (typeof st.devicesAfter === 'number') {
+                parts.push(st.devicesAfter + ' regulator' + (st.devicesAfter === 1 ? '' : 's'));
+                if (st.newCount > 0) {
+                    const names = st.newDevices || [];
+                    parts.push(st.newCount + ' new: ' + names.join(', ') + (st.newCount > names.length ? ', …' : ''));
+                } else {
+                    parts.push('no new regulators added');
+                }
+                if (st.goneCount > 0) parts.push(st.goneCount + ' no longer listed');
+            } else {
+                parts.push(st.report || (st.lastPercent != null ? st.lastPercent + '%' : 'done'));
+            }
         } else if (step === 'copyplant') {
-            parts.push(st.message || 'copied');
+            // The page says "Database kopiert. Husk å restart pc!"; the reminder
+            // is shown on its own line as RESTART_REMINDER instead.
+            parts.push((st.message || 'copied').replace(/\s*Husk å restart pc!?\s*/i, '').trim() || 'copied');
             if (st.confirmed) parts.push('dialog confirmed');
         } else {
             parts.push(st.message || 'done');
@@ -596,6 +623,7 @@
             ? 'WARNING — StandardMode revert failed, check packet_timeout / packet_interval'
             : 'StandardMode restored'));
         lines.push('Run ' + (s.runId || '?') + (s.resumes ? ', resumed ' + s.resumes + '×' : ''));
+        lines.push('Next: ' + RESTART_REMINDER);
         for (const step of STEP_ORDER) {
             const st = (s.steps || {})[step];
             const dur = st && st.startedAt && st.endedAt ? fmtDur(st.endedAt - st.startedAt) : '?';
@@ -605,6 +633,32 @@
     }
     const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const RESTART_REMINDER = 'Remember to restart IWMAC Escape!';
+    // Clipboard on an http:// page: navigator.clipboard does not exist outside
+    // secure contexts, so prefer GM_setClipboard, then the legacy execCommand
+    // path (needs a user gesture, which the button click is), then the API.
+    function copyText(text) {
+        try {
+            if (typeof GM_setClipboard === 'function') { GM_setClipboard(text, 'text'); return Promise.resolve(true); }
+        } catch (e) {}
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            Object.assign(ta.style, { position: 'fixed', top: '0', left: '0', opacity: '0' });
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand('copy');
+            ta.remove();
+            if (ok) return Promise.resolve(true);
+        } catch (e) {}
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text).then(() => true, () => false);
+            }
+        } catch (e) {}
+        return Promise.resolve(false);
+    }
     function showCompletionCard(plantId, s) {
         const total = fmtDur(s.finishedAt - s.startedAt);
         const modeOk = s.reverted !== false;
@@ -641,13 +695,17 @@
                                 : 'WARNING — StandardMode revert failed, check packet_timeout / packet_interval manually') + '</span>' +
                       '<span style="color:#9ca3af;">Run</span><span style="font-family:monospace;">' + esc(String(s.runId || '?').slice(0, 8)) + '</span>' +
                       (s.resumes ? '<span style="color:#9ca3af;">Resumed</span><span>' + esc(s.resumes) + '×</span>' : '') +
+                      '<span style="color:#9ca3af;">Next</span><span style="color:#fbbf24;font-weight:700;">⚠ ' + esc(RESTART_REMINDER) + '</span>' +
                     '</div>' +
                     '<table style="width:100%;border-collapse:collapse;">' +
                       '<thead><tr style="color:#9ca3af;text-align:left;"><th style="padding:4px 8px;font-weight:600;">Step</th>' +
                       '<th style="padding:4px 8px;font-weight:600;">Time</th><th style="padding:4px 8px;font-weight:600;">Result</th></tr></thead>' +
                       '<tbody>' + rows + '</tbody></table>' +
+                    '<pre id="ak3-complete-logview" style="display:none;margin:12px 0 0;padding:8px;max-height:40vh;overflow:auto;' +
+                      'background:#0b1220;border:1px solid #374151;border-radius:6px;font:11px/1.4 monospace;white-space:pre-wrap;word-break:break-word;"></pre>' +
                   '</div>' +
                   '<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 20px 16px;">' +
+                    '<button id="ak3-complete-copylog" style="display:none;cursor:pointer;background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;">Copy log</button>' +
                     '<button id="ak3-complete-copy" style="cursor:pointer;background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;">Copy summary</button>' +
                     '<button id="ak3-complete-log" style="cursor:pointer;background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;">Show log</button>' +
                     '<button id="ak3-complete-close" style="cursor:pointer;background:#16a34a;color:#fff;border:none;padding:8px 18px;border-radius:6px;font-weight:700;">Close</button>' +
@@ -664,23 +722,27 @@
             };
             document.addEventListener('keydown', onKey);
             el.querySelector('#ak3-complete-close').onclick = close;
-            el.querySelector('#ak3-complete-log').onclick = () => {
-                GM_deleteValue(PANEL_CLOSED_KEY);
-                injectDebugPanel();
-                renderDebugPanel();
+            // The full run log, inside the card (the debug panel sits under the
+            // backdrop, so re-opening it there would look like nothing happened).
+            const logView = el.querySelector('#ak3-complete-logview');
+            const logBtn = el.querySelector('#ak3-complete-log');
+            const copyLogBtn = el.querySelector('#ak3-complete-copylog');
+            const fullLog = () => GM_getValue(LOG_KEY, []).join('\n');
+            logBtn.onclick = () => {
+                const show = logView.style.display === 'none';
+                if (show) { logView.textContent = fullLog(); logView.scrollTop = logView.scrollHeight; }
+                logView.style.display = show ? 'block' : 'none';
+                copyLogBtn.style.display = show ? '' : 'none';
+                logBtn.textContent = show ? 'Hide log' : 'Show log';
             };
-            el.querySelector('#ak3-complete-copy').onclick = (e) => {
-                const btn = e.target;
-                const done = (ok) => {
+            const copyWith = (btn, idle, text) => {
+                copyText(text).then((ok) => {
                     btn.textContent = ok ? 'Copied ✔' : 'Copy failed';
-                    setTimeout(() => { btn.textContent = 'Copy summary'; }, 2000);
-                };
-                try {
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(summaryText(plantId, s)).then(() => done(true), () => done(false));
-                    } else done(false);
-                } catch (err) { done(false); }
+                    setTimeout(() => { btn.textContent = idle; }, 2000);
+                });
             };
+            el.querySelector('#ak3-complete-copy').onclick = (e) => copyWith(e.target, 'Copy summary', summaryText(plantId, s));
+            copyLogBtn.onclick = (e) => copyWith(e.target, 'Copy log', 'AK3 Auto Scan log — plant ' + plantId + '\n' + fullLog());
             el.querySelector('#ak3-complete-close').focus();
         } catch (e) {
             log('Completion card failed to render (' + e.message + ') — falling back to alert');
@@ -691,7 +753,8 @@
             if (typeof GM_notification === 'function') {
                 GM_notification({
                     title: 'AK3 Scan Completed — plant ' + plantId,
-                    text: 'Finished in ' + total + '. ' + (modeOk ? 'AK3 is back in StandardMode.' : 'WARNING: StandardMode revert failed!'),
+                    text: 'Finished in ' + total + '. ' + (modeOk ? 'AK3 is back in StandardMode.' : 'WARNING: StandardMode revert failed!') +
+                          ' ' + RESTART_REMINDER,
                     timeout: 0
                 });
             }
@@ -1141,6 +1204,9 @@
                     log('Opening Scan tab');
                     await clickTab('scan');
                     await sleep(500);
+                    const devicesBefore = readScanDeviceList();
+                    log('Scan tab lists ' + devicesBefore.length + ' regulator(s) before this scan');
+                    noteStep('scan', { devicesBefore: devicesBefore.length });
 
                     // The page appends an iframe per "Scan anlegg" click and never
                     // removes old ones, so the newest (last) one is this scan.
@@ -1208,8 +1274,34 @@
                         tick();
                     });
                     log('Scan completed');
-                    stepDone('scan');
+                    {
+                        const rep = (getSummary().steps.scan || {}).report;
+                        if (rep) log('Scan window text: ' + rep);
+                    }
                     await sleep(1200);
+                    // Re-open the Scan tab: its "tidligere funnet" list now includes
+                    // what this scan found — the regulator count and the new ones
+                    // for the completion card.
+                    let devicesAfter = [];
+                    try {
+                        await clickTab('scan');
+                        await sleep(300);
+                        devicesAfter = readScanDeviceList();
+                    } catch (e) { log('Could not re-read the Scan tab device list: ' + e.message); }
+                    if (devicesAfter.length || devicesBefore.length) {
+                        const beforeKeys = new Set(devicesBefore.map((d) => d.key));
+                        const afterKeys = new Set(devicesAfter.map((d) => d.key));
+                        const added = devicesAfter.filter((d) => !beforeKeys.has(d.key));
+                        const gone = devicesBefore.filter((d) => !afterKeys.has(d.key));
+                        log('Scan result: ' + devicesAfter.length + ' regulator(s) listed, ' + added.length + ' new' +
+                            (added.length ? ' (' + added.map((d) => d.label).join(', ') + ')' : '') +
+                            (gone.length ? ', ' + gone.length + ' no longer listed' : ''));
+                        stepDone('scan', { devicesAfter: devicesAfter.length, newCount: added.length,
+                                           newDevices: added.slice(0, 12).map((d) => d.label), goneCount: gone.length });
+                    } else {
+                        log('No regulator list found on the Scan tab — the card shows the scan window text instead');
+                        stepDone('scan');
+                    }
                     setState({ plantId, step: 'default_links' });
                 }
                 else if (state.step === 'default_links') {

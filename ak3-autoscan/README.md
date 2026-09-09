@@ -16,7 +16,7 @@ The script auto-updates — when a new version is pushed here, Tampermonkey will
 
 ## What it is
 
-A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.2) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
+A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.3) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
 
 ## Key constants
 
@@ -25,7 +25,7 @@ A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.2) that automates the AK3 
 | `LOCAL_IP` | `192.168.10.10` |
 | `REMOTE_IP` | `192.168.10.20` |
 | `STATE_KEY` | `ak3_state_<plantId>` (GM storage, per-plant) |
-| `LOG_KEY` | `ak3_log_<plantId>` (GM storage, per-plant, max 300 lines) |
+| `LOG_KEY` | `ak3_log_<plantId>` (GM storage, per-plant, max 1500 lines) |
 | `PANEL_CLOSED_KEY` | `ak3_panel_closed_<plantId>` (GM storage, per-plant) |
 | `SUMMARY_KEY` | `ak3_summary_<plantId>` (GM storage, per-plant run summary behind the completion card) |
 | `X_CALLER` | `AK3-Autoscan` |
@@ -73,6 +73,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 - Opens the **Scan** tab, clicks **"Scan anlegg"**
 - Polls an iframe for `#percent` reaching `100%` or `#done` containing `"Scan done"`; a finished result still shown from an earlier scan is ignored until the window resets
 - Logs progress every 10 %
+- Afterwards re-opens the Scan tab and diffs its "tidligere funnet" regulator list against the one read before the scan: the card shows the count, the new regulators by name, and any no longer listed
 - **Timeout: 2 hours** (7,200,000 ms)
 
 ### 4. `default_links`
@@ -88,7 +89,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 ### 6. `activate`
 - Opens **"Aktiver anlegg"** tab, clicks **"Aktiver alle"**
 - Waits for `"Enheter aktivert"`
-- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, save clicks, scan time and the scan window's final text, the page's own confirmation lines), AK3 mode, run id, Copy summary / Show log buttons. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
+- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, regulators found and new, the page's own confirmation lines), AK3 mode, run id, an amber "Remember to restart IWMAC Escape!" line (the page's "Husk å restart pc!" is dropped from the Copy row), Copy summary (`GM_setClipboard`, since the clipboard API is unavailable on `http://`), Show log (the full run log inside the card, with Copy log) and Close. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
 
 ## AK3 mode switching
 
@@ -120,6 +121,8 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 | `isOkStatus(txt)` | Whole-word `OK`, not negated |
 | `stepStarted` / `noteStep` / `stepDone` / `msgText` | Record the run summary per step |
 | `showCompletionCard(plantId, summary)` | Render the completion card; falls back to `alert()` if rendering throws |
+| `readScanDeviceList()` | Parse the Scan tab's regulator list (`0_5 - K 1 … ( serial )`) |
+| `copyText(text)` | `GM_setClipboard`, then `execCommand('copy')`, then the clipboard API |
 | `setInput(el, value)` | Sets value via property descriptor + fires input/change/keyup/blur |
 | `enableButton(el)` | Force-enables a disabled button |
 | `gmPost(url, body)` | `GM_xmlhttpRequest` POST wrapper returning parsed JSON |
@@ -128,7 +131,7 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 
 ## GM grants
 
-`GM_setValue`, `GM_getValue`, `GM_deleteValue`, `GM_xmlhttpRequest`, `GM_notification`
+`GM_setValue`, `GM_getValue`, `GM_deleteValue`, `GM_xmlhttpRequest`, `GM_notification`, `GM_setClipboard`
 
 ## Files
 
