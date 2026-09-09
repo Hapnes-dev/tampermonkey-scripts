@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.3
+// @version      9.3.1
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -607,7 +607,7 @@
         } else if (step === 'copyplant') {
             // The page says "Database kopiert. Husk å restart pc!"; the reminder
             // is shown on its own line as RESTART_REMINDER instead.
-            parts.push((st.message || 'copied').replace(/\s*Husk å restart pc!?\s*/i, '').trim() || 'copied');
+            parts.push((st.message || 'copied').replace(/\s*Husk å restart pc!?\s*/i, '').replace(/[\s.]+$/, '').trim() || 'copied');
             if (st.confirmed) parts.push('dialog confirmed');
         } else {
             parts.push(st.message || 'done');
