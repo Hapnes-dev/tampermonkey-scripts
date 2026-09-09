@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.4
+// @version      1.14.5
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4876,12 +4876,17 @@
       overdue.nextElementSibling === panel);
   }
 
+  // The panel elements, also while they are detached (waiting for the Overdue
+  // card). Looking them up by id alone found nothing then, so the data render
+  // drew into nothing and the shells were placed empty until Refresh.
+  const rlHpPanelEls = {};
+
   function rlHpGetOwnerPanel() {
-    return document.getElementById(RL_HP_PANEL_OWNER_ID);
+    return document.getElementById(RL_HP_PANEL_OWNER_ID) || rlHpPanelEls[RL_HP_PANEL_OWNER_ID] || null;
   }
 
   function rlHpGetMemberPanel() {
-    return document.getElementById(RL_HP_PANEL_MEMBER_ID);
+    return document.getElementById(RL_HP_PANEL_MEMBER_ID) || rlHpPanelEls[RL_HP_PANEL_MEMBER_ID] || null;
   }
 
   function rlHpHomePanelNeedsRemount() {
@@ -4936,6 +4941,7 @@
   const RL_HP_ANCHOR_WAIT_MS = 10 * 1000;
   let rlHpFirstPlaceAttemptAt = 0;
   let rlHpRefreshKicked = false;
+  let rlHpRenderedAfterPlace = false;
 
   function rlHpPlacePanels(ownerPanel, memberPanel) {
     // Prefer Overdue → Project Owner → In progress.
@@ -4992,8 +4998,11 @@
     if (owner) owner.remove();
     const member = rlHpGetMemberPanel();
     if (member) member.remove();
+    rlHpPanelEls[RL_HP_PANEL_OWNER_ID] = null;
+    rlHpPanelEls[RL_HP_PANEL_MEMBER_ID] = null;
     rlHpFirstPlaceAttemptAt = 0;
     rlHpRefreshKicked = false;
+    rlHpRenderedAfterPlace = false;
     if (rlHpAnchorRetryTimer) { clearTimeout(rlHpAnchorRetryTimer); rlHpAnchorRetryTimer = null; }
   }
 
@@ -5175,11 +5184,12 @@
   }
 
   function rlHpEnsurePanelShell(panelId, titleText, titleHint, listKind) {
-    let panel = document.getElementById(panelId);
+    let panel = document.getElementById(panelId) || rlHpPanelEls[panelId] || null;
     if (!panel) {
       panel = document.createElement("section");
       panel.id = panelId;
     }
+    rlHpPanelEls[panelId] = panel;
     panel.setAttribute("aria-label", titleText);
     panel.setAttribute("data-rlhp-kind", listKind);
 
@@ -5345,6 +5355,16 @@
       rlHpRefreshKicked = true;
       rlHpRenderPanels();
       void rlHpRefresh({ force: false, revalidate: true });
+    }
+    // First time both shells are in the document: draw the current state into
+    // them (cached list, "Loading projects…", or the result that arrived while
+    // they were detached).
+    const placed = ownerPanel.isConnected && memberPanel.isConnected;
+    if (placed && !rlHpRenderedAfterPlace) {
+      rlHpRenderedAfterPlace = true;
+      rlHpRenderPanels();
+    } else if (!placed) {
+      rlHpRenderedAfterPlace = false;
     }
   }
 
