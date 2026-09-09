@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.2
-// @description  Rocketlane improvements in one script (v1.12.2: home PROJECTS light chrome + In-progress-only filter): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.12.3
+// @description  Rocketlane improvements in one script (v1.12.3: home PROJECTS panel mounts under native Overdue): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -1758,10 +1758,9 @@
     // The card button can't rely on the nav-chip early-out below — the board
     // keeps mounting and unmounting card footers long after the chips settle.
     dtsScheduleCardPass();
-    // Home panel: connected singleton = done (avoid observer loops).
+    // Home panel: keep ensuring until under Overdue (early MAIN park is not done).
     if (rlHpIsHomePath(location.pathname)) {
-      const homePanel = document.getElementById("rlHomeProjectsPanel");
-      if (homePanel && homePanel.isConnected) return;
+      if (!rlHpHomePanelNeedsRemount()) return;
       if (ensureTimer) return;
       ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 120);
       return;
@@ -2725,7 +2724,7 @@
       tries += 1;
       ensure();
       if ((document.getElementById("ynNavBtn") && document.getElementById("rlProjectActionBar")) ||
-          (rlHpIsHomePath(location.pathname) && document.getElementById("rlHomeProjectsPanel")) ||
+          (rlHpIsHomePath(location.pathname) && !rlHpHomePanelNeedsRemount()) ||
           tries > 80) clearInterval(boot);
     }, 150);
     // Prefetch project links as soon as the URL has an id — pills patch in when
@@ -4632,29 +4631,81 @@
     style.dataset.rlHpReady = RL_HP_STYLE_READY;
   }
 
+  function rlHpIsOverdueClimbStop(node) {
+    if (!node || node === document.body || node === document.documentElement) return true;
+    if (node.id === "root" || node.id === "page") return true;
+    if (node.tagName === "MAIN") return true;
+    const role = node.getAttribute && node.getAttribute("role");
+    if (role === "main") return true;
+    const cn = String(node.className || "");
+    if (/\bant-row\b/i.test(cn)) return true;
+    if (/router-shell__/i.test(cn)) return true;
+    return false;
+  }
+
+  function rlHpNodeHasTaskGrid(node) {
+    return !!(node && node.querySelector &&
+      node.querySelector('[role="treegrid"], [role="grid"], .ag-root, .ag-theme-balham'));
+  }
+
+  function rlHpIsExactOverdueLabel(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.closest && el.closest("#rlHomeProjectsPanel")) return false;
+    const t = String(el.textContent || "").replace(/\s+/g, " ").trim();
+    return t === "Overdue";
+  }
+
+  function rlHpClimbOverdueSectionRoot(labelEl) {
+    if (!labelEl) return null;
+    let node = labelEl;
+    for (let i = 0; i < 10 && node && !rlHpIsOverdueClimbStop(node); i++) {
+      // Tightest ancestor that wraps Overdue header + task grid (the white card).
+      if (node !== labelEl && rlHpNodeHasTaskGrid(node)) return node;
+      node = node.parentElement;
+    }
+    // Fallback: nearest sizable block under the climb-stop ceiling.
+    let block = labelEl.parentElement;
+    for (let i = 0; i < 5 && block && !rlHpIsOverdueClimbStop(block); i++) {
+      if ((block.children && block.children.length >= 2) || (block.offsetHeight || 0) > 80) return block;
+      block = block.parentElement;
+    }
+    const parent = labelEl.parentElement;
+    return parent && !rlHpIsOverdueClimbStop(parent) ? parent : labelEl;
+  }
+
   function rlHpFindOverdueSection() {
+    // Prefer Rocketlane panel header title (exact "Overdue" text).
+    const preferred = document.querySelectorAll(
+      '[class*="StyledPanelHeaderTitle"], [class*="PanelHeaderTitle"]'
+    );
+    for (const el of preferred) {
+      if (!rlHpIsExactOverdueLabel(el)) continue;
+      const root = rlHpClimbOverdueSectionRoot(el);
+      if (root) return root;
+    }
     const nodes = document.querySelectorAll("p, h1, h2, h3, h4, h5, strong, span, div");
     for (const el of nodes) {
-      if (!el || !el.isConnected) continue;
-      if (el.closest && el.closest("#rlHomeProjectsPanel")) continue;
-      const t = String(el.textContent || "").replace(/\s+/g, " ").trim();
-      if (t !== "Overdue") continue;
-      let node = el;
-      for (let i = 0; i < 10 && node; i++) {
-        if (node.querySelector && node.querySelector('[role="treegrid"], [role="grid"], .ag-root')) {
-          return node;
-        }
-        node = node.parentElement;
-      }
-      // Fallback: nearest sizable block around the Overdue label.
-      let block = el.parentElement;
-      for (let i = 0; i < 5 && block; i++) {
-        if ((block.children && block.children.length >= 2) || (block.offsetHeight || 0) > 80) return block;
-        block = block.parentElement;
-      }
-      return el.parentElement || el;
+      if (!rlHpIsExactOverdueLabel(el)) continue;
+      const root = rlHpClimbOverdueSectionRoot(el);
+      if (root) return root;
     }
     return null;
+  }
+
+  function rlHpPanelFollowsOverdue(panel, overdue) {
+    return !!(panel && overdue && overdue.isConnected && panel.isConnected &&
+      overdue.nextElementSibling === panel);
+  }
+
+  function rlHpHomePanelNeedsRemount() {
+    if (!rlHpIsHomePath(location.pathname)) return false;
+    const panel = document.getElementById("rlHomeProjectsPanel");
+    if (!panel || !panel.isConnected) return true;
+    const overdue = rlHpFindOverdueSection();
+    if (overdue) return !rlHpPanelFollowsOverdue(panel, overdue);
+    // Overdue not painted yet: keep retrying while parked on MAIN/host first child.
+    const host = rlHpFindMountHost();
+    return !!(host && panel.parentElement === host);
   }
 
   function rlHpFindGreetingAnchor() {
@@ -4685,18 +4736,18 @@
   }
 
   function rlHpPlacePanel(panel) {
-    // Prefer under native Overdue task section (user request).
+    // Prefer directly under native Overdue card (header + grid + "N tasks").
     const overdue = rlHpFindOverdueSection();
-    if (overdue && overdue.parentElement) {
-      if (overdue.nextSibling !== panel) {
-        overdue.parentElement.insertBefore(panel, overdue.nextSibling);
+    if (overdue) {
+      if (!rlHpPanelFollowsOverdue(panel, overdue)) {
+        overdue.insertAdjacentElement("afterend", panel);
       }
       return;
     }
     const greeting = rlHpFindGreetingAnchor();
     if (greeting && greeting.parentElement) {
-      if (greeting.nextSibling !== panel) {
-        greeting.parentElement.insertBefore(panel, greeting.nextSibling);
+      if (greeting.nextElementSibling !== panel) {
+        greeting.insertAdjacentElement("afterend", panel);
       }
       return;
     }
