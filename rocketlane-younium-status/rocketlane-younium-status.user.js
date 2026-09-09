@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.0
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsibility, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.6.1
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsible, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -54,7 +54,8 @@
  *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Links come from the
  *     Internal Quality Control task notes, Hubspot Deal Description, and
  *     Delivery status fields (same priority as the tracker). Edit/Remove stay
- *     tracker-only and are not ported.
+ *     tracker-only and are not ported. Mount target is the plan/tasks
+ *     action-bar Secondary row (label text is "Responsible").
  *  1d. Delivery to service (section 8), ported from the tracker's handover
  *     wizard. A "Delivery to service" button on the "Handover to service" task
  *     card (right of the assignee avatar) plus a nav chip for projects that
@@ -2751,37 +2752,68 @@
     document.documentElement.appendChild(style);
   }
 
+  function rlIsResponsibleLabel(s) {
+    return /^(Responsible|Responsibility|Ansvarlig|Ansvar)$/i.test(String(s || "").trim());
+  }
+
+  function rlIsEffectivelyHidden(el) {
+    let n = el;
+    while (n && n.nodeType === 1) {
+      try {
+        const st = getComputedStyle(n);
+        if (st.display === "none" || st.visibility === "hidden") return true;
+      } catch (_) {}
+      n = n.parentElement;
+    }
+    return false;
+  }
+
   function rlFindResponsibilityMount() {
-    const labels = ["Responsibility", "Ansvar"];
-    const candidates = Array.from(document.querySelectorAll("button, [role='button'], span, div, label, a"));
-    let best = null;
+    // Plan/tasks filter row: ActionBar > Primary ("View:…") + Secondary
+    // ("Responsible" is a bare text node inside Secondary — not its own element).
+    // Insert as the first child of Secondary so pills sit immediately left of
+    // "Responsible" (Secondary is margin-pushed to the right; inserting as a
+    // sibling before Secondary would leave the pills next to "View:" instead).
+    const actionBars = document.querySelectorAll(
+      '[class*="action-bar__ActionBar"], [class*="FilterBarComponent"], [class*="filter-bar__FilterBar"]'
+    );
+    for (const ab of actionBars) {
+      if (!ab || rlIsEffectivelyHidden(ab)) continue;
+      const secondary = Array.from(ab.children).find((el) => {
+        const cls = String(el.className || "");
+        if (!/Secondary/i.test(cls)) return false;
+        // No spaces between label and tags ("ResponsibleAAll…"), so avoid \b after the word.
+        return /Responsible|Responsibility|Ansvar(?:lig)?/i.test(el.textContent || "");
+      });
+      if (secondary) return { parent: secondary, before: secondary.firstChild };
+    }
+
+    // Fallback: walk text nodes (Responsible is often not wrapped in a tag).
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      if (!rlIsResponsibleLabel(textNode.nodeValue)) continue;
+      const el = textNode.parentElement;
+      if (!el || !el.isConnected || el.closest("#rlProjectActionBar")) continue;
+      if (rlIsEffectivelyHidden(el)) continue;
+      const secondary = el.closest('[class*="Secondary"]');
+      if (secondary) return { parent: secondary, before: secondary.firstChild };
+      return { parent: el, before: textNode };
+    }
+
+    // Last resort: labelled controls (other locales / older Rocketlane builds).
+    const candidates = Array.from(document.querySelectorAll("button, [role='button'], span, div, label, a, p"));
     for (const el of candidates) {
-      if (!el || !el.isConnected) continue;
+      if (!el || !el.isConnected || el.closest("#rlProjectActionBar")) continue;
       const aria = (el.getAttribute("aria-label") || "").trim();
       const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-      const hit = labels.some((l) => aria === l || text === l || text.startsWith(l + " ") || text.startsWith(l + ":"));
-      if (!hit) continue;
-      if (text.length > 40 && aria !== "Responsibility" && aria !== "Ansvar") continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 2 || rect.height < 2) continue;
-      if (el.closest("#rlProjectActionBar")) continue;
-      best = el;
-      const row = el.parentElement;
-      if (row && /View\s*:/i.test(row.textContent || "")) break;
+      if (!rlIsResponsibleLabel(text) && !rlIsResponsibleLabel(aria)) continue;
+      if (text.length > 24 && !rlIsResponsibleLabel(aria)) continue;
+      if (rlIsEffectivelyHidden(el)) continue;
+      if (!el.parentElement) continue;
+      return { parent: el.parentElement, before: el };
     }
-    if (!best) return null;
-    let node = best;
-    for (let i = 0; i < 5 && node.parentElement; i++) {
-      const p = node.parentElement;
-      const t = (p.textContent || "").replace(/\s+/g, " ");
-      if (p.children.length <= 4 && labels.some((l) => t.includes(l)) && t.length < 80) {
-        node = p;
-        continue;
-      }
-      break;
-    }
-    if (!node.parentElement) return null;
-    return { parent: node.parentElement, before: node };
+    return null;
   }
 
   function rlMakeLinkBtn({ id, href, label, iconSrc, iconBare, emoji, title, asButton }) {
