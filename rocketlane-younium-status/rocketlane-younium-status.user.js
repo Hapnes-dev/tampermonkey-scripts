@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.4
+// @version      1.5.0
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1701,6 +1701,7 @@
     applyButtonSurface();
     refreshButtonForCurrentProject();
     refreshOneflowButtonForCurrentProject();
+    try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
     try { dtsEnsureCardButtons(); } catch (_) {}
   }
 
@@ -2646,6 +2647,127 @@
     return { alreadyDone: false };
   }
 
+  // ── "Is this actually delivered?" ──
+  // The Rocketlane checkbox alone is a claim, not proof: it gets ticked by hand
+  // and it gets ticked early. The handover only really exists once support has a
+  // ticket, so the verdict below reports both and calls out the mismatch.
+  //
+  // Matching is anchored on the macro's own subject convention plus its tag —
+  // a bare plant-number search is far too loose (searching "3530" with the tag
+  // returns an unrelated pc_change ticket named "Anlegg 3530"). The phrase and
+  // tag do the narrowing; the plant id is then required as a standalone number
+  // in the subject so "3214" can't be satisfied by "13214".
+  const DTS_HANDOVER_SUBJECT = "Avblokkering og Overlevering";
+  async function dtsFindHandoverTicket(plantId) {
+    const pid = String(plantId ?? "").trim();
+    if (!/^\d+$/.test(pid)) return null;
+    const query = 'type:ticket tags:' + (ZENDESK_HANDOVER_TAGS[0] || "aktivering_basic") +
+      ' subject:"' + DTS_HANDOVER_SUBJECT + '" ' + pid;
+    const res = await zendeskApiRequest("GET", "/search.json?query=" + encodeURIComponent(query) + "&per_page=10");
+    const list = Array.isArray(res?.results) ? res.results : [];
+    const token = new RegExp("(?:^|\\D)" + pid + "(?!\\d)");
+    // Newest first, so a re-delivered plant reports its current ticket.
+    return list
+      .filter((t) => token.test(String(t?.subject ?? "")))
+      .sort((a, b) => (Date.parse(b?.created_at || 0) || 0) - (Date.parse(a?.created_at || 0) || 0))[0] || null;
+  }
+
+  const dtsVerdictCache = new Map(); // Rocketlane project id -> verdict
+  const dtsVerdictInflight = new Map();
+  async function computeDeliveryVerdict(ctx) {
+    const out = {
+      color: "action", label: "Delivery to service",
+      taskId: "", taskDone: null, ticket: null, problems: [],
+    };
+    try {
+      const task = await dtsFindHandoverTask(ctx.rlProjectId);
+      if (task) {
+        out.taskId = String(task.taskId ?? "");
+        const f = dtsTaskStatusField(task);
+        out.taskDone = f ? Number(f.fieldValue) === DTS_STATUS_COMPLETED : null;
+      } else {
+        out.problems.push("Ingen «Handover to service»-oppgave i dette prosjektet.");
+      }
+    } catch (e) {
+      out.problems.push("Rocketlane: " + (e?.message ?? e));
+    }
+    if (!ctx.plantId) {
+      out.problems.push("Fant ingen plant-ID i prosjektnavnet — kan ikke slå opp i Zendesk.");
+    } else {
+      try {
+        out.ticket = await dtsFindHandoverTicket(ctx.plantId);
+      } catch (e) {
+        // Logged out of Zendesk is the common case and shouldn't read as "no
+        // handover exists" — the verdict says "unknown" instead.
+        out.ticketUnknown = true;
+        out.problems.push("Zendesk: " + (e?.message ?? e));
+      }
+    }
+    const done = out.taskDone === true;
+    const tick = !!out.ticket;
+    if (done && tick) {
+      out.color = "green";
+      out.label = "Delivery: ✓ Delivered";
+    } else if (done && out.ticketUnknown) {
+      out.color = "green";
+      out.label = "Delivery: ✓ Delivered";
+      out.problems.push("Zendesk-saken er ikke bekreftet.");
+    } else if (done && !tick) {
+      out.color = "yellow";
+      out.label = "Delivery: fullført, ingen sak";
+      out.problems.push("Oppgaven er merket Completed, men det finnes ingen Zendesk-sak med «" + DTS_HANDOVER_SUBJECT + "» for plant " + ctx.plantId + ".");
+    } else if (!done && tick) {
+      out.color = "yellow";
+      out.label = "Delivery: sak #" + out.ticket.id + ", ikke fullført";
+      out.problems.push("Zendesk-saken finnes, men «Handover to service» er ikke merket Completed.");
+    }
+    return out;
+  }
+  function computeDeliveryForProject(ctx) {
+    const id = String(ctx.rlProjectId || "");
+    if (dtsVerdictCache.has(id)) return Promise.resolve(dtsVerdictCache.get(id));
+    if (dtsVerdictInflight.has(id)) return dtsVerdictInflight.get(id);
+    const pr = computeDeliveryVerdict(ctx)
+      .then((v) => { dtsVerdictCache.set(id, v); dtsVerdictInflight.delete(id); return v; })
+      .catch((e) => { dtsVerdictInflight.delete(id); throw e; });
+    dtsVerdictInflight.set(id, pr);
+    return pr;
+  }
+  function applyDeliveryVerdictToChip(rlProjectId, verdict) {
+    const btn = document.getElementById("dtsNavBtn");
+    if (!btn || btn.dataset.rlProjectId !== String(rlProjectId)) return; // stale project
+    btn.classList.remove("yn-green", "yn-yellow", "yn-red", "yn-gray", "yn-action");
+    btn.classList.add("yn-" + (verdict?.color || "action"));
+    const label = btn.querySelector(".ynNavBtnLabel");
+    if (label) label.textContent = verdict?.label || "Delivery to service";
+    const lines = [verdict?.label || "Delivery to service"];
+    if (verdict?.ticket) lines.push("Zendesk: #" + verdict.ticket.id + " · " + verdict.ticket.status + " · " + String(verdict.ticket.subject || "").slice(0, 80));
+    if (Array.isArray(verdict?.problems) && verdict.problems.length) {
+      lines.push("");
+      for (const p of verdict.problems) lines.push("• " + p);
+    }
+    lines.push("", "Klikk for å åpne veiviseren.");
+    btn.title = lines.join("\n");
+  }
+  function refreshDeliveryChipForCurrentProject() {
+    const btn = document.getElementById("dtsNavBtn");
+    if (!btn) return;
+    const ctx = getOneflowContext();
+    if (!ctx.rlProjectId) return;
+    if (btn.dataset.rlProjectId !== ctx.rlProjectId) {
+      // New project — reset to the neutral action state before recomputing so a
+      // stale "Delivered" never carries over from the previous one.
+      btn.dataset.rlProjectId = ctx.rlProjectId;
+      btn.classList.remove("yn-green", "yn-yellow", "yn-red", "yn-gray");
+      btn.classList.add("yn-action");
+      const label = btn.querySelector(".ynNavBtnLabel");
+      if (label) label.textContent = "Delivery to service";
+    }
+    computeDeliveryForProject(ctx)
+      .then((v) => applyDeliveryVerdictToChip(ctx.rlProjectId, v))
+      .catch((e) => console.warn("[Delivery to service] verdict failed:", e?.message ?? e));
+  }
+
   // ── Project facts the wizard pre-fills from ──
   // Everything here is already cached by the Younium and Oneflow chips, so
   // opening the wizard on a project you've been looking at costs no requests.
@@ -3190,6 +3312,10 @@
       if (dtsProject?.rlProjectId) {
         dtsCompletedProjects.add(String(dtsProject.rlProjectId));
         dtsScheduleCardPass();
+        // The cached verdict predates this write, and if a ticket was created
+        // in the same run it predates that too — recompute rather than patch.
+        dtsVerdictCache.delete(String(dtsProject.rlProjectId));
+        try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
       }
       return r.alreadyDone ? " Oppgaven var allerede Completed." : " «Handover to service» er merket Completed.";
     } catch (e) {
@@ -3270,7 +3396,11 @@
       // second ticket for the same handover.
       a.zendeskTicketId = id;
       dtsSaveAnswers();
+      // Drop the cached verdict before the tick: creating the ticket alone
+      // changes it, and the tick is optional.
+      if (p.rlProjectId) dtsVerdictCache.delete(String(p.rlProjectId));
       const tick = await dtsMaybeCompleteTask();
+      try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
       dtsToast("Zendesk-sak #" + id + " opprettet (IWMAC Support, open)." + tick);
       try { window.open(ZENDESK_AGENT_TICKET_URL + encodeURIComponent(id), "_blank", "noopener"); } catch (_) {}
       closeDeliveryWizard();

@@ -226,7 +226,22 @@ The Project Progress Tracker's handover wizard, on the Rocketlane page where the
 
 - On the **Handover to service** task card in the project plan, immediately right of the assignee avatar. The board is virtualised, so the button is re-attached whenever a lane re-renders.
 - Once the task is **Completed** the pill turns green and reads **✓ Delivered**, so the card answers "is this handed over?" without opening anything. Rocketlane collapses a completed card to a single row and drops the footer, so there the badge sits on its own line under the task name. It stays clickable — useful for re-copying the checklist or opening the ticket flow again. Ticking it from the wizard flips the pill immediately rather than waiting for Rocketlane to refetch.
-- Also as a **Delivery to service** chip in the project nav, right of the Oneflow chip — the fallback for projects that don't carry the task.
+- Also as a **Delivery to service** chip in the project nav, right of the Oneflow chip — the fallback for projects that don't carry the task, and the place the delivery verdict is reported.
+
+### Is it actually delivered?
+
+The Rocketlane checkbox on its own is a claim, not proof — it gets ticked by hand and it gets ticked early. So the nav chip checks **both** the task status and whether support actually has the handover ticket, and says so when they disagree:
+
+| Chip | Meaning |
+|---|---|
+| `Delivery to service` (indigo) | Not handed over yet — click to start the wizard. |
+| `Delivery: ✓ Delivered` (green) | Task is Completed **and** a Zendesk handover ticket exists. |
+| `Delivery: sak #NNN, ikke fullført` (amber) | The ticket exists but nobody ticked the task. |
+| `Delivery: fullført, ingen sak` (amber) | The task is ticked but no handover ticket was found. |
+
+The ticket lookup is anchored on the macro's own subject (`Avblokkering og Overlevering`) plus its `aktivering_basic` tag, and the plant ID is then required as a standalone number in the subject. A bare plant-number search is far too loose — searching `3530` with only the tag returns an unrelated `pc_change` ticket called "Anlegg 3530", and without the digit boundary `3214` would also match `13214`. The tooltip carries the ticket number, its status and its subject.
+
+Being logged out of Zendesk reads as *unverified*, never as "no handover exists": a Completed task still shows green, with the tooltip noting the ticket wasn't confirmed. The verdict is cached per project for the session and recomputed as soon as the wizard creates a ticket or ticks the task.
 
 The card match is anchored on the whole phrase, so the unrelated *Handover from sales to delivery* task never gets a button.
 
