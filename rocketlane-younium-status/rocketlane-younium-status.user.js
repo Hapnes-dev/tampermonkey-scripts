@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.3
+// @version      1.9.4
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4214,7 +4214,7 @@
         --rlOi-surface-2: rgba(15,23,42,0.04);
         --rlOi-hairline: rgba(15,23,42,0.10);
         --rlOi-text: rgba(15,23,42,0.92);
-        --rlOi-muted: rgba(15,23,42,0.68);
+        --rlOi-muted: rgba(15,23,42,0.78);
         --rlOi-accent: #0284c7;
         position: fixed; z-index: 10050;
         width: min(820px, calc(100vw - 32px));
@@ -4256,12 +4256,17 @@
       }
       #rlOrderInfoPopover .rlOiBody {
         padding: 12px 14px; overflow: auto; flex: 1 1 auto; min-height: 0;
-        font-size: 13px; line-height: 1.55; color: var(--rlOi-muted);
+        font-size: 13px; line-height: 1.55; color: var(--rlOi-text);
         max-height: min(70vh, 640px);
       }
       #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent); }
       #rlOrderInfoPopover .rlOiBody p { margin: 0 0 8px; }
       #rlOrderInfoPopover .rlOiBody p:last-child { margin-bottom: 0; }
+      /* HubSpot/field HTML often ships light-gray inline colors — force readable ink. */
+      #rlOrderInfoPopover .rlOiBody :where(p, li, span, div, td, th, strong, b, em, ul, ol, font) {
+        color: inherit;
+      }
+      #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent) !important; }
       #rlOrderInfoPopover .rlOiEmpty,
       #rlOrderInfoPopover .rlOiError { color: var(--rlOi-muted); padding: 8px 2px; }
       #rlOrderInfoPopover .rlOiError { color: #dc2626; }
@@ -4275,8 +4280,8 @@
         --rlFiles-hairline: rgba(15,23,42,0.10);
         --rlFiles-hairline-strong: rgba(15,23,42,0.16);
         --rlFiles-text: rgba(15,23,42,0.92);
-        --rlFiles-muted: rgba(15,23,42,0.62);
-        --rlFiles-muted2: rgba(15,23,42,0.44);
+        --rlFiles-muted: rgba(15,23,42,0.72);
+        --rlFiles-muted2: rgba(15,23,42,0.58);
         --rlFiles-accent: #0284c7;
         --rlFiles-accent-soft: rgba(2,132,199,0.10);
         position: fixed; z-index: 10050;
@@ -4537,6 +4542,19 @@
           const n = attr.name.toLowerCase();
           if (n.startsWith("on") || n === "srcdoc") el.removeAttribute(attr.name);
           if ((n === "href" || n === "src") && /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+        }
+        // Drop light-gray / low-contrast ink from HubSpot field HTML so text
+        // inherits the popover's readable color.
+        if (el.hasAttribute("color")) el.removeAttribute("color");
+        if (el.hasAttribute("style")) {
+          let s = el.getAttribute("style") || "";
+          s = s
+            .replace(/(?:^|;)\s*color\s*:[^;]*/gi, "")
+            .replace(/(?:^|;)\s*opacity\s*:[^;]*/gi, "")
+            .replace(/^;+|;+$/g, "")
+            .trim();
+          if (s) el.setAttribute("style", s);
+          else el.removeAttribute("style");
         }
       });
       return doc.body.innerHTML;
