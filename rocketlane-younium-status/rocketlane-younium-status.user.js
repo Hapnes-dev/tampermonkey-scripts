@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.6
-// @description  Rocketlane improvements in one script (v1.10.6: Order/Files inner cards match Younium section light-on-dark): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.8
+// @description  Rocketlane improvements in one script (v1.10.8: Zendesk cases PPT faded-white inners + Fetch URLs spacing): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4164,14 +4164,14 @@
       }
       /* PPT Find-style control — sibling of Present inside Secondary flex row */
       #rlAutoFetchUrlsBtn {
-        display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-        height: 28px; padding: 0 10px; margin: 0 6px 0 0;
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        height: 32px; min-height: 32px; padding: 6px 14px 6px 12px; margin: 0 8px 0 0;
         border-radius: 8px; border: 1px solid rgba(15, 23, 42, 0.14);
         background: rgba(15, 23, 42, 0.05); color: rgba(15, 23, 42, 0.86);
-        font: 500 12px/1 inherit; letter-spacing: 0.01em;
+        font: 500 12px/1.2 inherit; letter-spacing: 0.01em;
         white-space: nowrap; cursor: pointer; user-select: none;
         box-sizing: border-box; flex: 0 0 auto; align-self: center;
-        vertical-align: middle; line-height: 1;
+        vertical-align: middle;
         transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       #rlAutoFetchUrlsBtn:hover {
@@ -4185,7 +4185,14 @@
       #rlAutoFetchUrlsBtn:disabled {
         opacity: 0.65; cursor: wait;
       }
-      #rlAutoFetchUrlsBtn .rlFetchIcon { font-size: 13px; line-height: 1; }
+      #rlAutoFetchUrlsBtn .rlFetchIcon {
+        font-size: 14px; line-height: 1; flex: 0 0 auto;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 1.1em; margin: 0;
+      }
+      #rlAutoFetchUrlsBtn .rlFetchLabel {
+        flex: 0 0 auto; line-height: 1.2; padding: 0;
+      }
 
       dialog.rlUrlPickerDlg {
         border: none; border-radius: 12px; padding: 0; width: min(640px, 94vw);
@@ -6450,7 +6457,8 @@
 
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
-    if (style && style.dataset.rlZdReady === "1") return;
+    // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
+    if (style && style.dataset.rlZdReady === "1.10.8") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -6461,36 +6469,61 @@
       body.rlZdCasesActive #page > [class*="content__Content-"] > *:not(#rlZendeskCasesPanel) {
         display: none !important;
       }
+      /* PPT / Younium dark shell + faded white inners (same as Order info / Files). */
       #rlZendeskCasesPanel {
-        --rlZd-surface-1: #ffffff;
-        --rlZd-surface-2: rgba(15,23,42,0.035);
-        --rlZd-surface-3: rgba(15,23,42,0.055);
-        --rlZd-hairline: rgba(15,23,42,0.10);
-        --rlZd-hairline-strong: rgba(15,23,42,0.16);
-        --rlZd-border: rgba(15,23,42,0.12);
-        --rlZd-text: rgba(15,23,42,0.92);
-        --rlZd-muted: rgba(15,23,42,0.72);
-        --rlZd-muted2: rgba(15,23,42,0.58);
-        --rlZd-accent: #0284c7;
-        --rlZd-accent-soft: rgba(2,132,199,0.10);
-        --rlZd-accent-stroke: rgba(2,132,199,0.30);
+        --rlZd-shell: #0f1424;
+        --rlZd-surface-1: rgba(255,255,255,0.04);
+        --rlZd-surface-2: rgba(255,255,255,0.035);
+        --rlZd-surface-3: rgba(255,255,255,0.07);
+        --rlZd-hairline: rgba(255,255,255,0.08);
+        --rlZd-hairline-strong: rgba(255,255,255,0.14);
+        --rlZd-border: rgba(255,255,255,0.10);
+        --rlZd-text: rgba(255,255,255,0.94);
+        --rlZd-muted: rgba(255,255,255,0.66);
+        --rlZd-muted2: rgba(255,255,255,0.46);
+        --rlZd-accent: #7dd3fc;
+        --rlZd-accent-soft: rgba(125,211,252,0.12);
+        --rlZd-accent-stroke: rgba(125,211,252,0.36);
         box-sizing: border-box;
         width: 100%;
         max-width: 1100px;
         margin: 0 auto;
         padding: 16px 20px 28px;
         color: var(--rlZd-text);
-        font: 13px/1.45 inherit;
+        background: var(--rlZd-shell);
+        border: 1px solid var(--rlZd-hairline-strong);
+        border-radius: 14px;
+        font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.24);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) {
+          --rlZd-shell: #ffffff;
+          --rlZd-surface-1: rgba(15,23,42,0.03);
+          --rlZd-surface-2: rgba(15,23,42,0.035);
+          --rlZd-surface-3: rgba(15,23,42,0.055);
+          --rlZd-hairline: rgba(15,23,42,0.08);
+          --rlZd-hairline-strong: rgba(15,23,42,0.14);
+          --rlZd-border: rgba(15,23,42,0.10);
+          --rlZd-text: rgba(15,23,42,0.94);
+          --rlZd-muted: rgba(15,23,42,0.64);
+          --rlZd-muted2: rgba(15,23,42,0.44);
+          --rlZd-accent: #0284c7;
+          --rlZd-accent-soft: rgba(2,132,199,0.10);
+          --rlZd-accent-stroke: rgba(2,132,199,0.30);
+          box-shadow: 0 12px 32px rgba(15,23,42,0.12);
+        }
       }
       #rlZendeskCasesPanel.rlPopoverOnDark {
-        --rlZd-surface-1: #0f1424;
-        --rlZd-surface-2: rgba(255,255,255,0.045);
+        --rlZd-shell: #0f1424;
+        --rlZd-surface-1: rgba(255,255,255,0.04);
+        --rlZd-surface-2: rgba(255,255,255,0.035);
         --rlZd-surface-3: rgba(255,255,255,0.07);
         --rlZd-hairline: rgba(255,255,255,0.08);
         --rlZd-hairline-strong: rgba(255,255,255,0.14);
-        --rlZd-border: rgba(255,255,255,0.12);
-        --rlZd-text: rgba(255,255,255,0.92);
-        --rlZd-muted: rgba(255,255,255,0.62);
+        --rlZd-border: rgba(255,255,255,0.10);
+        --rlZd-text: rgba(255,255,255,0.94);
+        --rlZd-muted: rgba(255,255,255,0.66);
         --rlZd-muted2: rgba(255,255,255,0.46);
         --rlZd-accent: #7dd3fc;
         --rlZd-accent-soft: rgba(125,211,252,0.12);
@@ -6516,22 +6549,44 @@
       #rlZendeskCasesPanel .rlZdBody { min-height: 120px; }
       #rlZendeskCasesPanel .rlZdEmpty,
       #rlZendeskCasesPanel .rlZdLoading { color: var(--rlZd-muted2); padding: 16px 4px; font-style: italic; }
-      #rlZendeskCasesPanel .rlZdError { color: #dc2626; padding: 16px 4px; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdError { color: #fca5a5; }
+      #rlZendeskCasesPanel .rlZdError { color: #fb7185; padding: 16px 4px; }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdError { color: #e11d48; }
+      }
+      /* Outer list tray — PPT .zendeskTaskList (dark inset / light frosted). */
       #rlZendeskCasesPanel .rlZdTaskList {
         display: grid; gap: 6px; max-height: min(70vh, 720px); overflow-y: auto;
         padding: 8px; border-radius: 10px;
-        background: var(--rlZd-surface-2); border: 1px solid var(--rlZd-border);
+        background: rgba(0,0,0,0.18); border: 1px solid var(--rlZd-border);
       }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskList {
+          background: rgba(255,255,255,0.5);
+        }
+      }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskList {
+        background: rgba(0,0,0,0.18);
+      }
+      /* Rows / cards — faded white chips like PPT .zendeskTaskRow. */
       #rlZendeskCasesPanel .rlZdTaskRow {
         display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px;
         align-items: center; padding: 8px 10px; border-radius: 8px;
-        background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
+        background: rgba(255,255,255,0.04); border: 1px solid var(--rlZd-border);
         font-size: 12px; color: var(--rlZd-text); cursor: pointer;
         transition: background 120ms ease, border-color 120ms ease;
       }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskRow {
+          background: rgba(15,23,42,0.03);
+        }
+      }
       #rlZendeskCasesPanel .rlZdTaskRow:hover {
-        background: var(--rlZd-surface-3); border-color: var(--rlZd-hairline-strong);
+        background: rgba(255,255,255,0.07); border-color: var(--rlZd-hairline-strong);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskRow:hover {
+          background: rgba(15,23,42,0.055);
+        }
       }
       #rlZendeskCasesPanel .rlZdTaskStatus {
         display: inline-flex; align-items: center; justify-content: center;
@@ -6539,17 +6594,19 @@
         font-size: 10px; font-weight: 700; text-transform: uppercase;
         letter-spacing: 0.06em; border: 1px solid transparent; white-space: nowrap;
       }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-new { background: rgba(96,165,250,0.15); color: #2563eb; border-color: rgba(96,165,250,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-open { background: rgba(251,191,36,0.15); color: #d97706; border-color: rgba(251,191,36,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-pending { background: rgba(167,139,250,0.15); color: #7c3aed; border-color: rgba(167,139,250,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-hold { background: rgba(251,113,133,0.15); color: #e11d48; border-color: rgba(251,113,133,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-solved { background: rgba(52,211,153,0.15); color: #059669; border-color: rgba(52,211,153,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-new { background: rgba(96,165,250,0.15); color: #60a5fa; border-color: rgba(96,165,250,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-open { background: rgba(251,191,36,0.15); color: #fbbf24; border-color: rgba(251,191,36,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-pending { background: rgba(167,139,250,0.15); color: #a78bfa; border-color: rgba(167,139,250,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-hold { background: rgba(251,113,133,0.15); color: #fb7185; border-color: rgba(251,113,133,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-solved { background: rgba(52,211,153,0.15); color: #34d399; border-color: rgba(52,211,153,0.32); }
       #rlZendeskCasesPanel .rlZdTaskStatus.zd-closed { background: rgba(148,163,184,0.15); color: var(--rlZd-muted2); border-color: var(--rlZd-hairline); }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-new { color: #60a5fa; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-open { color: #fbbf24; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-pending { color: #a78bfa; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-hold { color: #fb7185; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-solved { color: #34d399; }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-new { color: #2563eb; }
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-open { color: #d97706; }
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-pending { color: #7c3aed; }
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-hold { color: #e11d48; }
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-solved { color: #059669; }
+      }
       #rlZendeskCasesPanel .rlZdTaskMiddle { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
       #rlZendeskCasesPanel .rlZdTaskSubject {
         font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
@@ -6567,19 +6624,34 @@
         background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong); color: var(--rlZd-text);
       }
       #rlZendeskCasesPanel .rlZdTaskCard {
-        display: grid; gap: 0; background: var(--rlZd-surface-1);
+        display: grid; gap: 0; background: rgba(255,255,255,0.04);
         border: 1px solid var(--rlZd-border); border-radius: 8px; overflow: hidden;
+      }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskCard {
+          background: rgba(15,23,42,0.03);
+        }
       }
       #rlZendeskCasesPanel .rlZdTaskCard > .rlZdTaskRow {
         background: transparent; border: none; border-radius: 0;
       }
       #rlZendeskCasesPanel .rlZdTaskCard.expanded {
-        background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong);
+        background: rgba(255,255,255,0.06); border-color: var(--rlZd-hairline-strong);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskCard.expanded {
+          background: rgba(15,23,42,0.05);
+        }
       }
       #rlZendeskCasesPanel .rlZdTaskDetail { padding: 0 12px 12px; display: grid; gap: 10px; }
       #rlZendeskCasesPanel .rlZdConvo {
         display: grid; gap: 8px; max-height: 220px; overflow-y: auto; padding: 10px;
-        border-radius: 8px; background: var(--rlZd-surface-2); border: 1px solid var(--rlZd-border);
+        border-radius: 8px; background: rgba(0,0,0,0.16); border: 1px solid var(--rlZd-border);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdConvo {
+          background: rgba(15,23,42,0.04);
+        }
       }
       #rlZendeskCasesPanel .rlZdConvoShowEarlier {
         align-self: stretch; background: transparent; color: var(--rlZd-accent);
@@ -6588,14 +6660,24 @@
       }
       #rlZendeskCasesPanel .rlZdConvoShowEarlier:hover { background: var(--rlZd-accent-soft); }
       #rlZendeskCasesPanel .rlZdCompose { display: grid; gap: 8px; padding: 10px; border-radius: 8px;
-        background: var(--rlZd-surface-2); border: 1px solid var(--rlZd-border); position: relative; }
+        background: rgba(255,255,255,0.035); border: 1px solid var(--rlZd-border); position: relative; }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdCompose {
+          background: rgba(15,23,42,0.035);
+        }
+      }
       #rlZendeskCasesPanel .rlZdComposeHd {
         font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
         color: var(--rlZd-muted); margin-bottom: 2px;
       }
       #rlZendeskCasesPanel .rlZdMsg {
-        padding: 8px 10px; border-radius: 8px; background: var(--rlZd-surface-1);
+        padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04);
         border: 1px solid var(--rlZd-border); font-size: 12px; line-height: 1.45;
+      }
+      @media (prefers-color-scheme: light) {
+        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdMsg {
+          background: rgba(15,23,42,0.03);
+        }
       }
       #rlZendeskCasesPanel .rlZdMsg.rlZdMsgInternal {
         background: rgba(251,191,36,0.06); border-color: rgba(251,191,36,0.28);
@@ -6737,32 +6819,55 @@
       .rlZdTaskCard.rlZdCardFullscreen > * { cursor: auto; }
       .rlZdTaskCard.rlZdCardFullscreen .rlZdTaskRow {
         order: 1; max-width: 1100px; width: 100%; align-self: center;
-        background: #ffffff; border: 1px solid rgba(15,23,42,0.12); border-radius: 12px; padding: 12px 14px;
+        background: #0f1424; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px;
+        padding: 12px 14px; color: rgba(255,255,255,0.92);
       }
-      #rlZendeskCasesPanel.rlPopoverOnDark ~ .rlZdTaskCard.rlZdCardFullscreen .rlZdTaskRow,
-      body.rlZdFullscreenOpen .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdTaskRow {
-        background: #0f1424; border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.92);
+      @media (prefers-color-scheme: light) {
+        .rlZdTaskCard.rlZdCardFullscreen:not(.rlZdFsDark) .rlZdTaskRow {
+          background: #ffffff; border-color: rgba(15,23,42,0.12); color: rgba(15,23,42,0.92);
+        }
       }
       .rlZdTaskCard.rlZdCardFullscreen .rlZdTaskDetail {
         order: 2; max-width: 1100px; width: 100%; align-self: center;
         display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; gap: 8px;
       }
       .rlZdTaskCard.rlZdCardFullscreen .rlZdConvo {
-        flex: 1; min-height: 0; max-height: none; background: #ffffff;
+        flex: 1; min-height: 0; max-height: none;
+        background: rgba(0,0,0,0.22); color: rgba(255,255,255,0.92);
+        border: 1px solid rgba(255,255,255,0.10);
       }
-      .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdConvo,
-      .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdCompose { background: #0f1424; color: rgba(255,255,255,0.92); }
-      .rlZdTaskCard.rlZdCardFullscreen .rlZdCompose { background: #ffffff; }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdCompose {
+        background: rgba(255,255,255,0.035); color: rgba(255,255,255,0.92);
+        border: 1px solid rgba(255,255,255,0.10);
+      }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdMsg {
+        background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.10);
+      }
+      @media (prefers-color-scheme: light) {
+        .rlZdTaskCard.rlZdCardFullscreen:not(.rlZdFsDark) .rlZdConvo {
+          background: rgba(15,23,42,0.04); color: rgba(15,23,42,0.92);
+          border-color: rgba(15,23,42,0.10);
+        }
+        .rlZdTaskCard.rlZdCardFullscreen:not(.rlZdFsDark) .rlZdCompose {
+          background: rgba(15,23,42,0.035); color: rgba(15,23,42,0.92);
+          border-color: rgba(15,23,42,0.10);
+        }
+        .rlZdTaskCard.rlZdCardFullscreen:not(.rlZdFsDark) .rlZdMsg {
+          background: rgba(15,23,42,0.03); border-color: rgba(15,23,42,0.10);
+        }
+      }
       .rlZdExpandBtn { display: none; }
       .rlZdTaskCard.rlZdCardFullscreen .rlZdExpandBtn {
         display: inline-flex; align-items: center; justify-content: center;
         position: fixed; top: 14px; right: 18px; z-index: 13000;
         width: 36px; height: 36px; font-size: 18px; line-height: 1; border-radius: 10px;
-        background: #ffffff; border: 1px solid rgba(15,23,42,0.16);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.2); cursor: pointer; color: rgba(15,23,42,0.9);
+        background: #1a2238; border: 1px solid rgba(255,255,255,0.14);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2); cursor: pointer; color: rgba(255,255,255,0.92);
       }
-      .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdExpandBtn {
-        background: #1a2238; border-color: rgba(255,255,255,0.14); color: rgba(255,255,255,0.92);
+      @media (prefers-color-scheme: light) {
+        .rlZdTaskCard.rlZdCardFullscreen:not(.rlZdFsDark) .rlZdExpandBtn {
+          background: #ffffff; border-color: rgba(15,23,42,0.16); color: rgba(15,23,42,0.9);
+        }
       }
       body.rlZdFullscreenOpen { overflow: hidden; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdMsg:not(:last-child) { display: none; }
@@ -6777,7 +6882,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1";
+    style.dataset.rlZdReady = "1.10.8";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
