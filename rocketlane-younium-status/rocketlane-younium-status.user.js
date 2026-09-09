@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.11.0
-// @description  Rocketlane improvements in one script (v1.11.0: Add category / order-info import + templates): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.11.1
+// @description  Rocketlane improvements in one script (v1.11.1: order-info first in Choose templates list): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4948,16 +4948,133 @@
     }
   }
 
+  function rlCatCloseChooseTemplatesDialog() {
+    const dlg = Array.from(document.querySelectorAll('[role="dialog"], dialog')).find((d) =>
+      /Choose templates/i.test(String(d.textContent || ""))
+    );
+    if (!dlg) return;
+    const close =
+      dlg.querySelector('button[aria-label="Close"], button[aria-label*="Close" i]') ||
+      Array.from(dlg.querySelectorAll("button")).find((b) =>
+        /^Cancel$/i.test(String(b.textContent || "").replace(/\s+/g, " ").trim())
+      );
+    try {
+      close?.click();
+    } catch (_) {}
+  }
+
+  function rlCatRunOrderInfoFromChooser(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+    }
+    rlCatCloseChooseTemplatesDialog();
+    const pid = String(getOneflowContext()?.rlProjectId || "").trim();
+    setTimeout(() => {
+      void rlCatImportFromOrderInfo(pid, {});
+    }, 120);
+  }
+
+  /**
+   * Native "Choose templates" → project-template ozone-select listbox.
+   * Put "From order info / HubSpot line items" as the first option.
+   */
+  function rlCatMaybeInjectTemplateListbox() {
+    const listboxes = document.querySelectorAll('[role="listbox"]');
+    for (const lb of listboxes) {
+      if (lb.querySelector('[data-rl-cat-orderinfo="1"]')) continue;
+      const looksLikeTemplates =
+        lb.classList.contains("ozone-select__menu-list") ||
+        !!lb.querySelector('[data-cy^="template.option."], [data-cy^="select-option-"]');
+      if (!looksLikeTemplates) continue;
+      const dlgOpen = Array.from(document.querySelectorAll('[role="dialog"], dialog')).some((d) =>
+        /Choose templates|Choose a project template/i.test(String(d.textContent || ""))
+      );
+      if (!dlgOpen && !lb.querySelector('[data-cy^="template.option."]')) continue;
+
+      const first = lb.querySelector('[role="option"]');
+      const row = document.createElement("div");
+      row.setAttribute("role", "option");
+      row.setAttribute("data-rl-cat-orderinfo", "1");
+      row.setAttribute("aria-selected", "false");
+      row.setAttribute("aria-disabled", "false");
+      row.setAttribute("tabindex", "-1");
+      row.setAttribute("id", "rl-cat-orderinfo-option");
+      row.setAttribute("data-cy", "select-option-From order info / HubSpot line items");
+      // Match ozone-select option chrome so it sits flush with RL templates.
+      row.className =
+        "!flex items-center !text-14 px-03 rounded-4 cursor-pointer body-short-01 text-text-primary shrink-0 break-words min-h-[var(--height-medium)] py-[6px] ozone-select__option";
+      row.style.cssText = "font-weight:600;gap:8px;color:#1d4ed8;order:-1;";
+      const span = document.createElement("span");
+      span.setAttribute("data-cy", "template.option.From order info / HubSpot line items");
+      span.textContent = "From order info / HubSpot line items";
+      row.appendChild(span);
+      // mousedown+capture: react-select otherwise steals the click.
+      row.addEventListener("mousedown", rlCatRunOrderInfoFromChooser, true);
+      row.addEventListener("click", rlCatRunOrderInfoFromChooser, true);
+      if (first) lb.insertBefore(row, first);
+      else lb.appendChild(row);
+      try {
+        lb.scrollTop = 0;
+      } catch (_) {}
+    }
+  }
+
+  /** Empty plan CTA: put order-info action above "Choose a template". */
+  function rlCatMaybeInjectEmptyPlanCta() {
+    if (document.querySelector('[data-rl-cat-empty-cta="1"]')) return;
+    const chooseBtn = Array.from(document.querySelectorAll("button")).find((b) =>
+      /^Choose a template$/i.test(String(b.textContent || "").replace(/\s+/g, " ").trim())
+    );
+    if (!chooseBtn || !chooseBtn.parentNode) return;
+    let section = chooseBtn.parentElement;
+    let found = false;
+    for (let i = 0; i < 8 && section; i++) {
+      if (/Create a plan from template/i.test(String(section.textContent || ""))) {
+        found = true;
+        break;
+      }
+      section = section.parentElement;
+    }
+    if (!found) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("data-rl-cat-empty-cta", "1");
+    btn.textContent = "From order info / HubSpot line items";
+    btn.title = "Create categories and tasks from HubSpot / order line items";
+    btn.style.cssText =
+      "display:inline-flex;align-items:center;justify-content:center;gap:6px;" +
+      "margin:0 0 10px;padding:8px 14px;border-radius:8px;border:1px solid #1d4ed8;" +
+      "background:#eff6ff;color:#1d4ed8;font:600 13px/1.3 system-ui,sans-serif;cursor:pointer;width:100%;box-sizing:border-box;";
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pid = String(getOneflowContext()?.rlProjectId || "").trim();
+      void rlCatImportFromOrderInfo(pid, {});
+    });
+    chooseBtn.parentNode.insertBefore(btn, chooseBtn);
+  }
+
   let rlCatMenuObserver = null;
+  let rlCatMenuHookPending = null;
   function rlCatEnsureMenuHook() {
     rlCatInjectStyles();
     if (rlCatMenuObserver) return;
-    rlCatMenuObserver = new MutationObserver(() => {
+    const run = () => {
+      rlCatMenuHookPending = null;
       try {
         rlCatMaybeInjectNativeMenu();
+        rlCatMaybeInjectTemplateListbox();
+        rlCatMaybeInjectEmptyPlanCta();
       } catch (_) {}
+    };
+    rlCatMenuObserver = new MutationObserver(() => {
+      if (rlCatMenuHookPending) return;
+      rlCatMenuHookPending = setTimeout(run, 40);
     });
     rlCatMenuObserver.observe(document.documentElement, { childList: true, subtree: true });
+    run();
   }
 
 
