@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.7
+// @version      1.14.8
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4753,7 +4753,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.14.7";
+  const RL_HP_STYLE_READY = "1.14.8";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4816,7 +4816,7 @@
       sel(" .rlhpTag.normal") + "{--rlhp-dot:var(--rlhp-accent)}",
       sel(" .rlhpTag.hold") + "{--rlhp-dot:rgba(148,163,184,0.95)}",
       sel(" .rlhpDate") + "{font-size:11px;color:var(--rlhp-muted);letter-spacing:0.01em;white-space:nowrap}",
-      sel(" .rlhpProgress") + "{height:4px;width:100%;border-radius:999px;background:rgba(15,23,42,0.07);overflow:hidden}",
+      sel(" .rlhpProgress") + "{height:5px;width:100%;border-radius:999px;background:rgba(15,23,42,0.16);overflow:hidden}",
       sel(" .rlhpBar") + "{height:100%;width:0%;border-radius:999px;background:rgba(3,105,161,0.80);transition:width 400ms ease}",
       "@media (max-width:720px){" + root + "{margin:12px 0 16px;padding:12px}" + sel(" .rlhpList") + "{max-height:min(70vh,560px)}}",
     ].join("");
