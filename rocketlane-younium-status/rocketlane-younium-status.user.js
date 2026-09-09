@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.0
+// @version      1.4.1
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1672,15 +1672,10 @@
   }
 
   let ensureTimer = null;
-  let dtsCardTimer = null;
   function scheduleEnsure() {
-    // The project-plan board is virtualised: cards are destroyed and rebuilt as
-    // you scroll, so the card button can't rely on the nav-chip early-out below
-    // and gets its own trailing debounce. Cheap — one attribute-selector query
-    // at most a few times a second while the board churns.
-    if (!dtsCardTimer) {
-      dtsCardTimer = setTimeout(() => { dtsCardTimer = null; try { dtsEnsureCardButtons(); } catch (_) {} }, 300);
-    }
+    // The card button can't rely on the nav-chip early-out below — the board
+    // keeps mounting and unmounting card footers long after the chips settle.
+    dtsScheduleCardPass();
     // Steady-state early-out: once the button is present + connected there's
     // nothing for the mutation observer to do (route changes are handled by the
     // history hooks below), so we never schedule work on the SPA's hot path.
@@ -2446,6 +2441,15 @@
     ensure();
     let tries = 0;
     const boot = setInterval(() => { tries += 1; ensure(); if (document.getElementById("ynNavBtn") || tries > 40) clearInterval(boot); }, 500);
+    // Section 8's card button: scrolling a lane is what remounts a card footer,
+    // and it doesn't always arrive as a mutation the observer above sees in
+    // time. Scroll is captured (the board scrolls an inner container, not the
+    // window) and a 1s tick covers everything else, including the first paint
+    // of a lane that hydrated while the tab was in the background.
+    window.addEventListener("scroll", dtsScheduleCardPass, { passive: true, capture: true });
+    setInterval(() => {
+      if (/^\/projects\/\d+/.test(location.pathname)) dtsScheduleCardPass();
+    }, 1000);
   });
 
   // ════════════════════════════════════════════════════════════════════════
@@ -3329,23 +3333,38 @@
   }
 
   // ── Entry point 1: the button on the "Handover to service" task card ──
-  // The project-plan board is virtualised and re-renders constantly, so the
-  // button is (re-)attached from the same observer pass that keeps the nav
-  // chips alive rather than being injected once.
-  const DTS_CARD_BTN_CLASS = "dtsCardBtn";
+  // The project-plan board is virtualised, and the failure mode that matters is
+  // subtler than "cards get rebuilt": an OFF-SCREEN card keeps its shell and its
+  // data-cy but drops the whole card footer, which is what the button anchors
+  // to. The footer is remounted when the card scrolls back into view. Driving
+  // the pass from DOM mutations alone loses that race often enough that the
+  // button looked like it needed a second page load, so the pass is also driven
+  // by scroll and by a slow interval (see the boot block below). Each run is one
+  // attribute-selector query, and re-attaching is idempotent.
+  // The pending-timer handle hangs off the function object rather than a `let`
+  // in this scope: `ensure()` runs synchronously when Tampermonkey injects into
+  // an already-parsed document, which would otherwise reach this pass while a
+  // block-scoped binding declared further down is still in its dead zone.
+  function dtsScheduleCardPass() {
+    if (dtsScheduleCardPass.pending) return;
+    dtsScheduleCardPass.pending = setTimeout(() => {
+      dtsScheduleCardPass.pending = null;
+      try { dtsEnsureCardButtons(); } catch (_) {}
+    }, 150);
+  }
   function dtsEnsureCardButtons() {
     if (!/^\/projects\/\d+/.test(location.pathname)) return;
     const cards = document.querySelectorAll('[data-cy][class*="task-cardstyles__Card"]');
     for (const card of cards) {
       if (!dtsIsHandoverTaskName(card.getAttribute("data-cy"))) continue;
       const footer = card.querySelector('[class*="CardFooter"]');
-      if (!footer || footer.querySelector("." + DTS_CARD_BTN_CLASS)) continue;
+      if (!footer || footer.querySelector(".dtsCardBtn")) continue;
       const anchor = footer.querySelector(".assignee-picker");
       if (!anchor) continue;
       dtsInjectStyles();
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = DTS_CARD_BTN_CLASS;
+      btn.className = "dtsCardBtn";
       btn.title = "Åpne overleveringsveiviseren for dette prosjektet";
       btn.innerHTML = '<span aria-hidden="true">📋</span><span>Delivery to service</span>';
       // The card is a click target for opening the task drawer, so the button
