@@ -1,12 +1,13 @@
 # Rocketlane improvements
 
-One Tampermonkey userscript with five independent improvements for `kiona.rocketlane.com`:
+One Tampermonkey userscript with six independent improvements for `kiona.rocketlane.com`:
 
 1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
 2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
 3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0). **Off by default since v1.4.2.**
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
+6. **Project action buttons** (v1.6.0) — PPT-style dark pills left of **Responsibility**: Zendesk, Oneflow, Younium, HubSpot, Rocketlane, Files, Order info, PANG, BAF. Links from IQC task notes + HubSpot Deal Description + Delivery status (same priority as the tracker). Edit/Remove stay tracker-only.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 

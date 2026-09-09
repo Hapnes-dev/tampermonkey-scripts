@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.5.0
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.6.0
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsibility, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -48,7 +48,14 @@
  *     Rocketlane SPA keeps in localStorage) or, failing that, from an Oneflow
  *     search for the plant ID. Oneflow is called with the browser's own
  *     session cookie through GM_xmlhttpRequest. Read-only.
- *  1c. Delivery to service (section 8), ported from the tracker's handover
+ *  1c. Project action buttons (section 5c), ported from the tracker's project
+ *     header link row. Dark pill buttons left of Rocketlane's Responsibility
+ *     filter: Zendesk, Oneflow (Order/Subscription), Younium (Order/Subscription),
+ *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Links come from the
+ *     Internal Quality Control task notes, Hubspot Deal Description, and
+ *     Delivery status fields (same priority as the tracker). Edit/Remove stay
+ *     tracker-only and are not ported.
+ *  1d. Delivery to service (section 8), ported from the tracker's handover
  *     wizard. A "Delivery to service" button on the "Handover to service" task
  *     card (right of the assignee avatar) plus a nav chip for projects that
  *     don't have the task. It walks the 16 questions of the delivery
@@ -1703,6 +1710,7 @@
     refreshOneflowButtonForCurrentProject();
     try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
     try { dtsEnsureCardButtons(); } catch (_) {}
+    try { rlEnsureProjectActionBar(); } catch (_) {}
   }
 
   let ensureTimer = null;
@@ -1716,7 +1724,9 @@
     const btn = document.getElementById("ynNavBtn");
     const ofBtn = document.getElementById("ofNavBtn");
     const dtsBtn = document.getElementById("dtsNavBtn");
-    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected) return;
+    const actionBar = document.getElementById("rlProjectActionBar");
+    const actionOk = (actionBar && actionBar.isConnected) || document.documentElement.dataset.rlPabNoMount === "1";
+    if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected && actionOk) return;
     if (ensureTimer) return;
     ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 300);
   }
@@ -1728,7 +1738,13 @@
 
   // Rocketlane is a client-routed SPA — re-evaluate on every navigation so the
   // button re-injects (if the nav was rebuilt) and re-points at the new project.
-  function onRouteChange() { [60, 350, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d)); }
+  function onRouteChange() {
+    try {
+      rlProjectLinksCache.clear();
+      delete document.documentElement.dataset.rlPabNoMount;
+    } catch (_) {}
+    [60, 350, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d));
+  }
   (function hookHistory() {
     for (const m of ["pushState", "replaceState"]) {
       const orig = history[m];
@@ -2474,7 +2490,11 @@
   rlWhenDomReady(() => {
     ensure();
     let tries = 0;
-    const boot = setInterval(() => { tries += 1; ensure(); if (document.getElementById("ynNavBtn") || tries > 40) clearInterval(boot); }, 500);
+    const boot = setInterval(() => {
+      tries += 1;
+      ensure();
+      if ((document.getElementById("ynNavBtn") && document.getElementById("rlProjectActionBar")) || tries > 40) clearInterval(boot);
+    }, 500);
     // Section 8's card button: scrolling a lane is what remounts a card footer,
     // and it doesn't always arrive as a mutation the observer above sees in
     // time. Scroll is captured (the board scrolls an inner container, not the
@@ -2485,6 +2505,523 @@
       if (/^\/projects\/\d+/.test(location.pathname)) dtsScheduleCardPass();
     }, 1000);
   });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5c. Project action buttons — PPT header link row, left of Responsibility.
+  //     Edit / Remove stay tracker-only and are intentionally not ported.
+  // ════════════════════════════════════════════════════════════════════════
+
+  const RL_PANG_ICON =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAYAAAByDd+UAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAATRSURBVEhLtc97bFNlGAZw1EDPOXQX2dZdupWuO73Tde0udK2wURwDZYMxicxFHEZGWLhm0RgzNg0xYiAocSASY0IMGNRoDBBjwlAkEjH8AwznDXo9Pd06WLe169adnscMssR9KDe3X9I0eZ/3e96cWbP+h77Guix+TdVKcj5jPOXGNzmbvpOczwjvvh1U0KwM+0rUB8lsRngcpm0oVMBbqjlMZtOO69hI+0xKf1yfA4+VPUbm085XptseM+RhUJ8Dr5U9Seb3xC23b7llM+wKVds1ZPZv+NZGxqNWBgYWpyOyWAaPge0id+4p4DCn81b24ohJgUCh8qe+hbq28Ap7Mbk3yV2ib42yeRjemYRYbTrcOvYiuXNf3Z+3z/YXqbpglCNqkKPXqIBfq+oOWPT7Q5UWp7hvBzW561Ur+bBdhvFOCiNr0uDWsFentj0gV3u7JGBhz0S1cnBWGSIr0xErzsFNjQI+Vun2GjWHfGb1kf78XAxuSobw4RxEG1LhUatcZNcET+3T2QA5JXAdHTRfxJ6L6uQYaErB2F4Kw1uTMLx6HmKOLAywueBKZYi/TyPxJYVoUzJcrJKfeNu3qDqLs5tqb5Wq94dKtZe4anvt/e7d1t3SMjdYyJ6PqOQIv5wC4eM5EI5LMLafQmSnFJGtUghfMMAFGsPNUtzIyYt5zapLXJl8KGbMBYqU8JbpWsjeewpt2CANmgrO908c3ZiCxCkK4mUa4vcUhM8oJH5mIF6gEHl1Lm41pkJslSJcmYZ+nWLAY7fUkH0PJPj2NllAUxDg5DkYbE6C8LUEYg8FsYeGeI1G4iKD+Cc0xt+TYKApGbwyGz616s9gkW0pzuIJsu8/8dUOQ6hEvS9gnH+9t1I2PrQ5GbG3aMQPUUj8wkC8QkO8zEDsZm7/C98wGPuIRrSDQeSlFIxUZSNoUfUEdYVtXv2yArL/LsHl5c4+q/orzpDHDy7OQeLFNAxtT8LoXgbCdzTEX5k7vysMhDMMEmdpiGcoJE5IIByWYPwDCbCbAZqfRL9TNh4sUZ7iFxqf969aOo+8NcUfpw/M6S222X060wGuIA/RbdI75b9PHGEg/jYX458yGNqUhP66VAjr0pBYlwFhbSZi9ZkI18nQWyVD0JKLgDl/MGQznORrK58h79zFVWqrjpTlYmwPDfEqjcRpGqPtDITjNMRzFIa3JMGtUAgeQ+GeG+oFzR596Vq3ptzpzrNZPAVLVHxdXQbf2sqI9fUU31jFkP13cWn1R4RlGRCOUUh00Yi8xiBcnIWx+nmIH5RgvFOCWEU23GZLI/n2kbgKVD1j61MhHJVgZDeNiDUTLpb91q1hfxCcWRDfoRBvSYa7QHGju719Nvn+ofhXr1B79fMTo29IMfoujTFHFvxq9sfJ3GcofD1UqojglWTESrLhtZlfmNrwkFwWS9OoIwexPTRGl2SC07BXPZsbUqfsFFdogxbNSVjk8Bcqr/0ze2geg/ZovCYDozVp4FmVz79qWS65MylgM6y/aVUNcYse8SuBE4+7FuT/FTNlotcwP3zdudBE7pDcNYuU3ApHA9raHiOz+3LXOvX9xjzcNCjiroriCjKfdt5i7RYU5cPzlOk5MpsRXqumy23V7CLnMyLc8Gwqv7R8AzmfDn8DSod92BfeIbEAAAAASUVORK5CYII=";
+
+  const rlProjectLinksCache = new Map(); // rlProjectId -> links object
+  const rlProjectLinksInflight = new Map();
+  let rlActionBarGen = 0;
+
+  function rlFavicon(domain) {
+    return "https://www.google.com/s2/favicons?domain=" + encodeURIComponent(domain) + "&sz=32";
+  }
+
+  function rlClassifyLinkUrl(raw) {
+    const s = String(raw || "").trim();
+    if (!s || !/^https?:\/\//i.test(s)) return null;
+    let u;
+    try { u = new URL(s); } catch (_) { return null; }
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname || "";
+    if (/(?:^|\.)oneflow\.com$/i.test(host)) {
+      let m = path.match(/\/(?:documents|agreements)\/(\d+)/i);
+      if (m) return { platform: "oneflow", url: s };
+      m = path.match(/\/(?:c\/\d+\/)?documents?\/(\d+)/i);
+      if (m) return { platform: "oneflow", url: s };
+      return { platform: "oneflow", url: s };
+    }
+    if (/(?:^|\.)hubspot\.com$/i.test(host)) return { platform: "hubspot", url: s };
+    if (/(?:^|\.)younium\.com$/i.test(host)) return { platform: "younium", url: s };
+    if (/(?:^|\.)zendesk\.com$/i.test(host)) return { platform: "zendesk", url: s };
+    if (/(?:^|\.)rocketlane\.com$/i.test(host)) return { platform: "rocketlane", url: s };
+    return { platform: "unknown", url: s };
+  }
+
+  function rlEmptyProjectLinks() {
+    return {
+      zendesk: "", oneflowOrder: "", oneflowSubscription: "",
+      younium: "", youniumSubscription: "", hubspot: "", rocketlane: "",
+    };
+  }
+
+  function rlParseProjectLinksFromHtml(html) {
+    const result = rlEmptyProjectLinks();
+    if (!html) return result;
+    try {
+      const doc = new DOMParser().parseFromString(String(html), "text/html");
+      for (const c of doc.body.querySelectorAll("li, p, div, tr")) {
+        const a = c.querySelector("a[href]");
+        if (!a) continue;
+        const href = (a.getAttribute("href") || "").trim();
+        if (!/^https?:/i.test(href)) continue;
+        const cls = rlClassifyLinkUrl(href);
+        if (!cls) continue;
+        const labelText = (c.textContent || "").replace(/\s+/g, " ").trim();
+        const kind = ofKindByLabel(labelText);
+        switch (cls.platform) {
+          case "zendesk":
+            if (!result.zendesk) result.zendesk = href;
+            break;
+          case "hubspot":
+            if (!result.hubspot) result.hubspot = href;
+            break;
+          case "rocketlane":
+            if (!result.rocketlane) result.rocketlane = href;
+            break;
+          case "younium":
+            if (kind === "subscription" && !result.youniumSubscription) result.youniumSubscription = href;
+            else if (kind === "order" && !result.younium) result.younium = href;
+            else if (kind === "unknown") {
+              if (!result.younium) result.younium = href;
+              else if (!result.youniumSubscription) result.youniumSubscription = href;
+            }
+            break;
+          case "oneflow":
+            if (kind === "subscription" && !result.oneflowSubscription) result.oneflowSubscription = href;
+            else if (kind === "order" && !result.oneflowOrder) result.oneflowOrder = href;
+            else if (kind === "unknown") {
+              if (!result.oneflowOrder) result.oneflowOrder = href;
+              else if (!result.oneflowSubscription) result.oneflowSubscription = href;
+            }
+            break;
+        }
+      }
+    } catch (_) {}
+    const re = /https?:\/\/[^\s<>"']+/gi;
+    let m;
+    const text = String(html || "");
+    while ((m = re.exec(text)) !== null) {
+      const href = m[0].replace(/[).,;]+$/, "");
+      const cls = rlClassifyLinkUrl(href);
+      if (!cls || cls.platform === "unknown") continue;
+      const ctx = text.slice(Math.max(0, m.index - 40), m.index);
+      const kind = ofKindByLabel(ctx);
+      if (cls.platform === "zendesk" && !result.zendesk) result.zendesk = href;
+      else if (cls.platform === "hubspot" && !result.hubspot) result.hubspot = href;
+      else if (cls.platform === "rocketlane" && !result.rocketlane) result.rocketlane = href;
+      else if (cls.platform === "younium") {
+        if (kind === "subscription" && !result.youniumSubscription) result.youniumSubscription = href;
+        else if (!result.younium) result.younium = href;
+        else if (!result.youniumSubscription) result.youniumSubscription = href;
+      } else if (cls.platform === "oneflow") {
+        if (kind === "subscription" && !result.oneflowSubscription) result.oneflowSubscription = href;
+        else if (!result.oneflowOrder) result.oneflowOrder = href;
+        else if (!result.oneflowSubscription) result.oneflowSubscription = href;
+      }
+    }
+    return result;
+  }
+
+  function rlMergeLinksByPriority(iqcLinks, dealDescLinks, deliveryStatusLinks) {
+    const slots = [
+      "zendesk", "oneflowOrder", "oneflowSubscription",
+      "younium", "youniumSubscription", "hubspot", "rocketlane",
+    ];
+    const ranked = [
+      { name: "iqc", links: iqcLinks },
+      { name: "dealDescription", links: dealDescLinks },
+      { name: "deliveryStatus", links: deliveryStatusLinks },
+    ];
+    const merged = rlEmptyProjectLinks();
+    for (const k of slots) {
+      for (const src of ranked) {
+        const v = String(src.links?.[k] || "").trim();
+        if (v) { merged[k] = v; break; }
+      }
+    }
+    return merged;
+  }
+
+  async function rlFetchIqcTaskLinks(rlProjectId) {
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId) + "/tasks");
+    const list = Array.isArray(json) ? json : (json?.data || []);
+    const qc = list.find((t) => /\binternal\s+(?:quality\s+control|qc)\b/i.test(String(t?.taskName || t?.name || "").trim()));
+    if (!qc) return rlEmptyProjectLinks();
+    const detail = await gmRocketlaneGet("/tasks/" + encodeURIComponent(qc.taskId || qc.id));
+    return rlParseProjectLinksFromHtml(String(detail?.taskDescription || detail?.description || ""));
+  }
+
+  async function rlLoadProjectLinks(rlProjectId) {
+    const pid = String(rlProjectId || "").trim();
+    if (!pid) return rlEmptyProjectLinks();
+    if (rlProjectLinksCache.has(pid)) return rlProjectLinksCache.get(pid);
+    if (rlProjectLinksInflight.has(pid)) return rlProjectLinksInflight.get(pid);
+    const pr = (async () => {
+      let iqc = rlEmptyProjectLinks();
+      let deal = rlEmptyProjectLinks();
+      let delivery = rlEmptyProjectLinks();
+      try {
+        const [iqcRes, projRes] = await Promise.allSettled([
+          rlFetchIqcTaskLinks(pid),
+          gmRocketlaneGet("/projects/" + encodeURIComponent(pid), { includeAllFields: true }),
+        ]);
+        if (iqcRes.status === "fulfilled") iqc = iqcRes.value;
+        if (projRes.status === "fulfilled") {
+          const project = projRes.value?.data ?? projRes.value;
+          const fields = Array.isArray(project?.fields) ? project.fields : [];
+          deal = rlParseProjectLinksFromHtml(
+            rlReadField(fields, "hubspotdealdescription") || rlReadField(fields, "dealdescription")
+          );
+          delivery = rlParseProjectLinksFromHtml(
+            rlReadField(fields, "hubspotdeliverystatusupdatemessage") ||
+            rlReadField(fields, "deliverystatusupdatemessage") ||
+            rlReadField(fields, "hubspotdeliverystatus")
+          );
+        }
+      } catch (_) {}
+      const merged = rlMergeLinksByPriority(iqc, deal, delivery);
+      try {
+        if (!merged.oneflowOrder && !merged.oneflowSubscription) {
+          const of = await ofLinksFromRocketlaneProject(pid);
+          if (of.order) merged.oneflowOrder = of.order;
+          if (of.subscription) merged.oneflowSubscription = of.subscription;
+        }
+      } catch (_) {}
+      rlProjectLinksCache.set(pid, merged);
+      return merged;
+    })();
+    rlProjectLinksInflight.set(pid, pr);
+    try { return await pr; }
+    finally { rlProjectLinksInflight.delete(pid); }
+  }
+
+  function rlInjectActionBarStyles() {
+    if (document.getElementById("rlProjectActionBarStyles")) return;
+    const style = document.createElement("style");
+    style.id = "rlProjectActionBarStyles";
+    style.textContent = `
+      #rlProjectActionBar {
+        display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 6px;
+        margin-right: 10px; max-width: min(72vw, 980px); overflow-x: auto;
+        scrollbar-width: thin; vertical-align: middle;
+      }
+      #rlProjectActionBar .rlPabBtn {
+        display: inline-flex; align-items: center; gap: 6px;
+        height: 28px; padding: 4px 10px; border-radius: 999px;
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        background: #1a1a1a; color: rgba(255, 255, 255, 0.92);
+        font: 500 12px/1.2 inherit; white-space: nowrap; text-decoration: none !important;
+        cursor: pointer; user-select: none; flex: 0 0 auto;
+        transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+      }
+      #rlProjectActionBar .rlPabBtn:hover {
+        background: #252525; border-color: rgba(255, 255, 255, 0.18);
+        transform: translateY(-1px);
+      }
+      #rlProjectActionBar .rlPabBtn:focus-visible {
+        outline: 2px solid #7dd3fc; outline-offset: 2px;
+      }
+      #rlProjectActionBar .rlPabBtn[hidden] { display: none !important; }
+      #rlProjectActionBar .rlPabIcon {
+        width: 14px; height: 14px; display: block; object-fit: contain;
+        border-radius: 3px; background: #fff; padding: 1px; flex: 0 0 auto;
+      }
+      #rlProjectActionBar .rlPabIcon.rlPabIconBare {
+        background: transparent; padding: 0; border-radius: 0;
+      }
+      #rlProjectActionBar .rlPabEmoji { font-size: 13px; line-height: 1; }
+      dialog.rlOrderInfoDlg {
+        border: none; border-radius: 12px; padding: 0; max-width: min(560px, 92vw);
+        background: #111; color: rgba(255,255,255,0.92);
+        box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      }
+      dialog.rlOrderInfoDlg::backdrop { background: rgba(0,0,0,0.45); }
+      dialog.rlOrderInfoDlg .rlOiHead {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);
+        font-weight: 600;
+      }
+      dialog.rlOrderInfoDlg .rlOiBody {
+        padding: 14px 16px; max-height: 60vh; overflow: auto;
+        font-size: 13px; line-height: 1.45; color: rgba(255,255,255,0.86);
+      }
+      dialog.rlOrderInfoDlg .rlOiBody a { color: #7dd3fc; }
+      dialog.rlOrderInfoDlg .rlOiClose {
+        appearance: none; border: 1px solid rgba(255,255,255,0.16);
+        background: rgba(255,255,255,0.06); color: inherit;
+        border-radius: 8px; padding: 4px 10px; cursor: pointer;
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  function rlFindResponsibilityMount() {
+    const labels = ["Responsibility", "Ansvar"];
+    const candidates = Array.from(document.querySelectorAll("button, [role='button'], span, div, label, a"));
+    let best = null;
+    for (const el of candidates) {
+      if (!el || !el.isConnected) continue;
+      const aria = (el.getAttribute("aria-label") || "").trim();
+      const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+      const hit = labels.some((l) => aria === l || text === l || text.startsWith(l + " ") || text.startsWith(l + ":"));
+      if (!hit) continue;
+      if (text.length > 40 && aria !== "Responsibility" && aria !== "Ansvar") continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) continue;
+      if (el.closest("#rlProjectActionBar")) continue;
+      best = el;
+      const row = el.parentElement;
+      if (row && /View\s*:/i.test(row.textContent || "")) break;
+    }
+    if (!best) return null;
+    let node = best;
+    for (let i = 0; i < 5 && node.parentElement; i++) {
+      const p = node.parentElement;
+      const t = (p.textContent || "").replace(/\s+/g, " ");
+      if (p.children.length <= 4 && labels.some((l) => t.includes(l)) && t.length < 80) {
+        node = p;
+        continue;
+      }
+      break;
+    }
+    if (!node.parentElement) return null;
+    return { parent: node.parentElement, before: node };
+  }
+
+  function rlMakeLinkBtn({ id, href, label, iconSrc, iconBare, emoji, title, asButton }) {
+    const a = document.createElement(asButton ? "button" : "a");
+    a.className = "rlPabBtn";
+    a.id = id;
+    if (asButton) {
+      a.type = "button";
+    } else {
+      if (href && href !== "#") a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    }
+    if (title) a.title = title;
+    if (iconSrc) {
+      const img = document.createElement("img");
+      img.className = "rlPabIcon" + (iconBare ? " rlPabIconBare" : "");
+      img.src = iconSrc;
+      img.alt = "";
+      img.width = 14;
+      img.height = 14;
+      img.decoding = "async";
+      img.addEventListener("error", () => { img.style.display = "none"; });
+      a.appendChild(img);
+    } else if (emoji) {
+      const span = document.createElement("span");
+      span.className = "rlPabEmoji";
+      span.setAttribute("aria-hidden", "true");
+      span.textContent = emoji;
+      a.appendChild(span);
+    }
+    const lbl = document.createElement("span");
+    lbl.textContent = label;
+    a.appendChild(lbl);
+    return a;
+  }
+
+  function rlEnsureOrderInfoDialog() {
+    let dlg = document.getElementById("rlOrderInfoDlg");
+    if (dlg) return dlg;
+    dlg = document.createElement("dialog");
+    dlg.id = "rlOrderInfoDlg";
+    dlg.className = "rlOrderInfoDlg";
+    dlg.innerHTML =
+      '<div class="rlOiHead"><span>\uD83D\uDCE6 Order info</span><button type="button" class="rlOiClose" id="rlOiClose">Close</button></div>' +
+      '<div class="rlOiBody" id="rlOiBody">Loading\u2026</div>';
+    document.documentElement.appendChild(dlg);
+    dlg.querySelector("#rlOiClose")?.addEventListener("click", () => { try { dlg.close(); } catch (_) {} });
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) { try { dlg.close(); } catch (_) {} } });
+    return dlg;
+  }
+
+  function rlSanitizeOrderHtml(html) {
+    try {
+      const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      doc.querySelectorAll("script, style, iframe, object, embed, link, meta").forEach((n) => n.remove());
+      doc.querySelectorAll("*").forEach((el) => {
+        for (const attr of Array.from(el.attributes)) {
+          const n = attr.name.toLowerCase();
+          if (n.startsWith("on") || n === "srcdoc") el.removeAttribute(attr.name);
+          if ((n === "href" || n === "src") && /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+        }
+      });
+      return doc.body.innerHTML;
+    } catch (_) {
+      return escHtml(html);
+    }
+  }
+
+  async function rlOpenOrderInfo(rlProjectId) {
+    const dlg = rlEnsureOrderInfoDialog();
+    const body = dlg.querySelector("#rlOiBody");
+    if (body) body.textContent = "Loading\u2026";
+    try { dlg.showModal(); } catch (_) { dlg.setAttribute("open", ""); }
+    try {
+      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId), { includeAllFields: true });
+      const project = json?.data ?? json;
+      const fields = Array.isArray(project?.fields) ? project.fields : [];
+      const match = fields.find((f) => {
+        const n = String(f?.fieldName ?? "").toLowerCase().replace(/\s+/g, "");
+        return n.startsWith("hubspotdeliverystatus") || n.startsWith("deliverystatus");
+      });
+      const html = match ? String(match.fieldValue ?? "") : "";
+      if (!body) return;
+      if (!html.trim()) {
+        body.textContent = "No HubSpot delivery / order status field found on this project.";
+        return;
+      }
+      body.innerHTML = rlSanitizeOrderHtml(html);
+    } catch (e) {
+      if (body) body.textContent = "Couldn't load order info: " + (e?.message ?? e);
+    }
+  }
+
+  function rlBuildActionBarShell() {
+    const bar = document.createElement("div");
+    bar.id = "rlProjectActionBar";
+    bar.setAttribute("role", "group");
+    bar.setAttribute("aria-label", "Project links");
+    const defs = [
+      { id: "rlPabZendesk", key: "zendesk", label: "Zendesk", icon: rlFavicon("zendesk.com") },
+      { id: "rlPabOneflowOrder", key: "oneflowOrder", label: "Oneflow (Order)", icon: rlFavicon("oneflow.com") },
+      { id: "rlPabOneflowSub", key: "oneflowSubscription", label: "Oneflow (Subscription)", icon: rlFavicon("oneflow.com") },
+      { id: "rlPabYouniumOrder", key: "younium", label: "Younium (Order / offer)", icon: rlFavicon("younium.com") },
+      { id: "rlPabYouniumSub", key: "youniumSubscription", label: "Younium (Subscription)", icon: rlFavicon("younium.com") },
+      { id: "rlPabHubspot", key: "hubspot", label: "HubSpot", icon: rlFavicon("hubspot.com") },
+      { id: "rlPabRocketlane", key: "rocketlane", label: "Rocketlane", emoji: "\uD83D\uDE80", always: "rocketlane" },
+      { id: "rlPabFiles", key: "files", label: "Files", emoji: "\uD83D\uDCC1", always: "files" },
+      { id: "rlPabOrderInfo", key: "orderInfo", label: "Order info", emoji: "\uD83D\uDCE6", always: "orderInfo" },
+      { id: "rlPabPang", key: "pang", label: "PANG", icon: RL_PANG_ICON, iconBare: true, always: "pang" },
+      { id: "rlPabBaf", key: "baf", label: "BAF", emoji: "\uD83D\uDC65", always: "baf" },
+    ];
+    for (const d of defs) {
+      const btn = rlMakeLinkBtn({
+        id: d.id,
+        href: "",
+        label: d.label,
+        iconSrc: d.icon,
+        iconBare: d.iconBare,
+        emoji: d.emoji,
+        title: d.label,
+        asButton: d.always === "orderInfo",
+      });
+      btn.hidden = !d.always;
+      btn.dataset.rlSlot = d.key;
+      if (d.always === "orderInfo") {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const pid = bar.dataset.rlProjectId;
+          if (pid) void rlOpenOrderInfo(pid);
+        });
+      }
+      bar.appendChild(btn);
+    }
+    return bar;
+  }
+
+  function rlPatchActionBar(bar, links, ctx) {
+    const setLink = (id, href, title) => {
+      const el = bar.querySelector("#" + id);
+      if (!el) return;
+      const url = toHttpUrl(href);
+      if (!url) {
+        el.hidden = true;
+        if (el.tagName === "A") el.removeAttribute("href");
+        return;
+      }
+      el.hidden = false;
+      if (el.tagName === "A") {
+        el.href = url;
+        el.target = "_blank";
+        el.rel = "noopener noreferrer";
+      }
+      el.title = title || url;
+    };
+
+    setLink("rlPabZendesk", links.zendesk, links.zendesk);
+    setLink("rlPabOneflowOrder", links.oneflowOrder, links.oneflowOrder);
+    setLink("rlPabOneflowSub", links.oneflowSubscription, links.oneflowSubscription);
+    setLink("rlPabYouniumOrder", links.younium, links.younium);
+    setLink("rlPabYouniumSub", links.youniumSubscription, links.youniumSubscription);
+    setLink("rlPabHubspot", links.hubspot, links.hubspot);
+
+    const rlUrl = "https://kiona.rocketlane.com/projects/" + encodeURIComponent(ctx.rlProjectId) + "/";
+    setLink("rlPabRocketlane", rlUrl, "Open this project in Rocketlane");
+    setLink("rlPabFiles", "https://kiona.rocketlane.com/projects/" + encodeURIComponent(ctx.rlProjectId) + "/files", "Open project files");
+
+    const orderBtn = bar.querySelector("#rlPabOrderInfo");
+    if (orderBtn) {
+      orderBtn.hidden = false;
+      orderBtn.title = "Show HubSpot order / delivery status";
+    }
+
+    const plantId = ctx.plantId || "";
+    const pang = bar.querySelector("#rlPabPang");
+    const baf = bar.querySelector("#rlPabBaf");
+    if (pang) {
+      if (plantId) {
+        pang.hidden = false;
+        pang.href = "http://pang.iwmac.local/pang.qxs?plant_id=" + encodeURIComponent(plantId);
+        pang.title = "Open plant " + plantId + " in Pang";
+      } else {
+        pang.hidden = true;
+      }
+    }
+    if (baf) {
+      if (plantId) {
+        baf.hidden = false;
+        baf.href = "http://internal.iwmac.local/baf.qxs?search=" + encodeURIComponent(plantId);
+        baf.title = "Search plant " + plantId + " in BAF";
+      } else {
+        baf.hidden = true;
+      }
+    }
+  }
+
+  function rlEnsureProjectActionBar() {
+    if (!/^\/projects\/\d+/.test(location.pathname)) {
+      document.getElementById("rlProjectActionBar")?.remove();
+      return;
+    }
+    rlInjectActionBarStyles();
+    const ctx = getOneflowContext();
+    if (!ctx.rlProjectId) return;
+
+    const mount = rlFindResponsibilityMount();
+    if (!mount?.parent || !mount.before) {
+      try {
+        document.documentElement.dataset.rlPabNoMount = "1";
+        // Toolbar may hydrate late — clear the early-out flag and retry.
+        clearTimeout(rlEnsureProjectActionBar._missTimer);
+        rlEnsureProjectActionBar._missTimer = setTimeout(() => {
+          try { delete document.documentElement.dataset.rlPabNoMount; } catch (_) {}
+          try { scheduleEnsure(); } catch (_) {}
+        }, 1500);
+      } catch (_) {}
+      return;
+    }
+    try {
+      clearTimeout(rlEnsureProjectActionBar._missTimer);
+      delete document.documentElement.dataset.rlPabNoMount;
+    } catch (_) {}
+
+    let bar = document.getElementById("rlProjectActionBar");
+    if (!bar) bar = rlBuildActionBarShell();
+    if (bar.parentElement !== mount.parent || bar.nextSibling !== mount.before) {
+      mount.parent.insertBefore(bar, mount.before);
+    }
+    bar.dataset.rlProjectId = ctx.rlProjectId;
+
+    const gen = ++rlActionBarGen;
+    rlPatchActionBar(bar, rlProjectLinksCache.get(ctx.rlProjectId) || rlEmptyProjectLinks(), ctx);
+    void rlLoadProjectLinks(ctx.rlProjectId).then((links) => {
+      if (gen !== rlActionBarGen) return;
+      const live = document.getElementById("rlProjectActionBar");
+      if (!live || live.dataset.rlProjectId !== ctx.rlProjectId) return;
+      rlPatchActionBar(live, links, ctx);
+    });
+  }
 
   // ════════════════════════════════════════════════════════════════════════
   // 8. Delivery to service — the Project Progress Tracker's handover wizard.
