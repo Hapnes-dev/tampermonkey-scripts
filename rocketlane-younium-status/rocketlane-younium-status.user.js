@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.4
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.0
+// @description  Rocketlane improvements in one script (v1.10.0: Project updates tab → Zendesk cases): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -64,6 +64,9 @@
  *     description. Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
+ *  1e. Zendesk cases (v1.10.0): renames native Project updates tab, mounts
+ *     #rlZendeskCasesPanel with full PPT Zendesk-tasks UI (search/hydrate/
+ *     thread/reply) via zendeskApiRequest — no window.ZendeskBridge.
  *  1d. Delivery to service (section 8), ported from the tracker's handover
  *     wizard. A "Delivery to service" button on the "Handover to service" task
  *     card (right of the assignee avatar) plus a nav chip for projects that
@@ -1717,6 +1720,7 @@
     // tab chips / All-files row, or a slow nav paint blocks the pills for seconds.
     try { rlEnsureProjectActionBar(); } catch (_) {}
     try { rlEnsureAutoFetchButton(); } catch (_) {}
+    try { rlZdEnsureTabAndPanel(); } catch (_) {}
     if (!document.getElementById("ynNavBtn")) {
       const row = getNavRow();
       if (!row) return;
@@ -1756,7 +1760,10 @@
     // Never treat "mount not found yet" as done — Responsible row often hydrates
     // after the nav chips, and a no-mount early-out stalled the pills for 1.5s+.
     if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected &&
-        actionBar && actionBar.isConnected) return;
+        actionBar && actionBar.isConnected) {
+      try { rlZdEnsureTabAndPanel(); } catch (_) {}
+      return;
+    }
     if (ensureTimer) return;
     ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 120);
   }
@@ -1774,6 +1781,7 @@
       delete document.documentElement.dataset.rlPabNoMount;
       rlFilesClosePopover();
       rlOrderInfoClosePopover();
+      rlZdTeardownPanel();
     } catch (_) {}
     // Kick action bar + chips immediately; Responsible row often paints within ~100ms.
     [0, 50, 150, 400, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d));
@@ -3399,6 +3407,114 @@
     return candidate;
   }
   // @@rlFilesHelpers:end
+
+  // @@rlZendeskCasesHelpers:start
+  /** Leading plant number from project title (PPT: /^\s*(\d+)\b/). */
+  function rlZdExtractPlantId(name) {
+    const m = String(name ?? "").match(/^\s*(\d+)\b/);
+    return m ? m[1] : "";
+  }
+
+  /** Store/plant descriptive name after plant id (PPT strip + split). */
+  function rlZdExtractPlantName(name) {
+    return String(name ?? "")
+      .replace(/^\s*\d+\s*[-–—]\s*/, "")
+      .split(/:|\s[-–—]\s/)[0]
+      .trim();
+  }
+
+  /** Zendesk search queries: plant id always; quoted plant name if length >= 4. */
+  function rlZdBuildSearchQueries(plantId, plantName) {
+    const pid = String(plantId ?? "").trim();
+    if (!pid) return [];
+    const queries = ["type:ticket " + pid];
+    const pname = String(plantName ?? "").trim();
+    if (pname && pname.length >= 4) {
+      queries.push('type:ticket "' + pname.replace(/"/g, "") + '"');
+    }
+    return queries;
+  }
+
+  /** Merge search result arrays; keep first ticket per id (dedupe). */
+  function rlZdMergeSearchResults(resultLists) {
+    const byId = new Map();
+    for (const list of resultLists || []) {
+      for (const r of Array.isArray(list) ? list : []) {
+        if (r?.result_type === "ticket" && r.id != null && !byId.has(r.id)) {
+          byId.set(r.id, r);
+        }
+      }
+    }
+    return Array.from(byId.values());
+  }
+
+  function rlZdStatusClass(status) {
+    const s = String(status ?? "").toLowerCase();
+    if (s === "new") return "zd-new";
+    if (s === "open") return "zd-open";
+    if (s === "pending") return "zd-pending";
+    if (s === "hold") return "zd-hold";
+    if (s === "solved") return "zd-solved";
+    if (s === "closed") return "zd-closed";
+    return "zd-open";
+  }
+
+  /** Newest public comment created_at, or null. */
+  function rlZdPickLastPublicReplyAt(comments) {
+    const list = Array.isArray(comments) ? comments : [];
+    const sorted = list.slice().sort((a, b) => {
+      const at = Date.parse(String(a?.created_at ?? "")) || 0;
+      const bt = Date.parse(String(b?.created_at ?? "")) || 0;
+      return bt - at;
+    });
+    for (const c of sorted) {
+      if (c?.public === true) {
+        const iso = String(c.created_at ?? "");
+        return iso || null;
+      }
+    }
+    return null;
+  }
+
+  function rlZdFormatRelativeTimeShort(isoText) {
+    const ts = Date.parse(String(isoText ?? ""));
+    if (!Number.isFinite(ts)) return "";
+    const deltaMs = Math.max(0, Date.now() - ts);
+    const s = Math.round(deltaMs / 1000);
+    if (s < 15) return "just now";
+    if (s < 60) return s + "s ago";
+    const m = Math.round(s / 60);
+    if (m < 60) return m + "m ago";
+    const h = Math.round(m / 60);
+    if (h < 24) return h + "h ago";
+    const d = Math.round(h / 24);
+    return d + "d ago";
+  }
+
+  function rlZdFormatBytes(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return "";
+    if (v < 1024) return v + " B";
+    if (v < 1024 * 1024) return Math.round(v / 1024) + " KB";
+    return (v / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  async function rlZdMapWithConcurrency(items, limit, fn) {
+    const arr = Array.isArray(items) ? items : [];
+    const out = new Array(arr.length);
+    let next = 0;
+    const workers = Array.from({ length: Math.min(limit, arr.length) || 0 }, async () => {
+      while (true) {
+        const i = next++;
+        if (i >= arr.length) return;
+        out[i] = await fn(arr[i], i);
+      }
+    });
+    await Promise.all(workers);
+    return out;
+  }
+  // @@rlZendeskCasesHelpers:end
+
 
   // @@rlMatchRuntime:start
   // Match-field reader keeps MULTI_SELECT as string[] (rlReadField flattens arrays to a joined string).
@@ -6163,6 +6279,1374 @@
     if (res.status < 200 || res.status >= 300) throw new Error("HTTP " + res.status + ": " + (res.text || "").slice(0, 300));
     return res.json;
   }
+
+  async function zendeskPostTicketReply(ticketId, body, isPublic) {
+    const id = String(ticketId ?? "").trim();
+    if (!id) throw new Error("Missing Zendesk ticket id.");
+    const textBody = String(body ?? "").trim();
+    if (!textBody) throw new Error("Reply cannot be empty.");
+    const res = await zendeskApiRequest("PUT", "/tickets/" + encodeURIComponent(id) + ".json", {
+      ticket: {
+        comment: {
+          body: textBody,
+          public: !!isPublic,
+        },
+      },
+    });
+    return res?.ticket ?? null;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5d. Zendesk cases — repurpose native "Project updates" tab (v1.10.0).
+  //     Full PPT Zendesk-tasks port: search merge, last-public-reply hydrate,
+  //     expand / sanitize / attachments / fullscreen / reply. Transport via
+  //     zendeskApiRequest + zendeskPostTicketReply (no window.ZendeskBridge).
+  // ════════════════════════════════════════════════════════════════════════
+
+  const RL_ZD_TAB_LABELS = [
+    "project updates",
+    "prosjektoppdateringer",
+    "prosjekt oppdateringer",
+    "oppdateringer",
+    "updates",
+  ];
+
+  const RL_ZD_IMG_HOST_RE = [
+    /(?:^|\.)zendesk\.com$/i,
+    /(?:^|\.)zdusercontent\.com$/i,
+    /(?:^|\.)zdassets\.com$/i,
+    /(?:^|\.)cloudfront\.net$/i,
+    /(?:^|\.)amazonaws\.com$/i,
+  ];
+
+  const RL_ZD_ICON_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">' +
+    '<path d="M8 0a2.15 2.15 0 0 1 1.52 3.67L8 5.19 6.48 3.67A2.15 2.15 0 0 1 8 0zm0 10.81l1.52 1.52a2.15 2.15 0 1 1-3.04 0L8 10.81zM0 8a2.15 2.15 0 0 1 3.67-1.52L5.19 8 3.67 9.52A2.15 2.15 0 0 1 0 8zm10.81 0l1.52-1.52a2.15 2.15 0 1 1 0 3.04L10.81 8z"/>' +
+    "</svg>";
+
+  let rlZdPanelGen = 0;
+  let rlZdPanelProjectId = "";
+  let rlZdPanelEl = null;
+  let rlZdHiddenNative = [];
+
+  function rlZdInjectStyles() {
+    let style = document.getElementById("rlZendeskCasesStyles");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "rlZendeskCasesStyles";
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.textContent = `
+      #rlZendeskCasesPanel {
+        --rlZd-surface-1: #ffffff;
+        --rlZd-surface-2: rgba(15,23,42,0.035);
+        --rlZd-surface-3: rgba(15,23,42,0.055);
+        --rlZd-hairline: rgba(15,23,42,0.10);
+        --rlZd-hairline-strong: rgba(15,23,42,0.16);
+        --rlZd-border: rgba(15,23,42,0.12);
+        --rlZd-text: rgba(15,23,42,0.92);
+        --rlZd-muted: rgba(15,23,42,0.72);
+        --rlZd-muted2: rgba(15,23,42,0.58);
+        --rlZd-accent: #0284c7;
+        --rlZd-accent-soft: rgba(2,132,199,0.10);
+        --rlZd-accent-stroke: rgba(2,132,199,0.30);
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 16px 20px 28px;
+        color: var(--rlZd-text);
+        font: 13px/1.45 inherit;
+      }
+      #rlZendeskCasesPanel.rlPopoverOnDark {
+        --rlZd-surface-1: #0f1424;
+        --rlZd-surface-2: rgba(255,255,255,0.045);
+        --rlZd-surface-3: rgba(255,255,255,0.07);
+        --rlZd-hairline: rgba(255,255,255,0.08);
+        --rlZd-hairline-strong: rgba(255,255,255,0.14);
+        --rlZd-border: rgba(255,255,255,0.12);
+        --rlZd-text: rgba(255,255,255,0.92);
+        --rlZd-muted: rgba(255,255,255,0.62);
+        --rlZd-muted2: rgba(255,255,255,0.46);
+        --rlZd-accent: #7dd3fc;
+        --rlZd-accent-soft: rgba(125,211,252,0.12);
+        --rlZd-accent-stroke: rgba(125,211,252,0.36);
+      }
+      [data-rl-zd-tab="1"] svg { width: 14px; height: 14px; }
+      #rlZendeskCasesPanel .rlZdHead {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin-bottom: 12px;
+      }
+      #rlZendeskCasesPanel .rlZdTitle {
+        margin: 0; font-size: 16px; font-weight: 700; color: var(--rlZd-text);
+      }
+      #rlZendeskCasesPanel .rlZdRefresh {
+        appearance: none; border: 1px solid var(--rlZd-hairline);
+        background: var(--rlZd-surface-3); color: var(--rlZd-muted);
+        border-radius: 8px; padding: 6px 12px; font: inherit; font-weight: 600;
+        cursor: pointer;
+      }
+      #rlZendeskCasesPanel .rlZdRefresh:hover {
+        color: var(--rlZd-text); border-color: var(--rlZd-hairline-strong);
+      }
+      #rlZendeskCasesPanel .rlZdBody { min-height: 120px; }
+      #rlZendeskCasesPanel .rlZdEmpty,
+      #rlZendeskCasesPanel .rlZdLoading { color: var(--rlZd-muted2); padding: 16px 4px; font-style: italic; }
+      #rlZendeskCasesPanel .rlZdError { color: #dc2626; padding: 16px 4px; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdError { color: #fca5a5; }
+      #rlZendeskCasesPanel .rlZdTaskList {
+        display: grid; gap: 6px; max-height: min(70vh, 720px); overflow-y: auto;
+        padding: 8px; border-radius: 10px;
+        background: var(--rlZd-surface-2); border: 1px solid var(--rlZd-border);
+      }
+      #rlZendeskCasesPanel .rlZdTaskRow {
+        display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px;
+        align-items: center; padding: 8px 10px; border-radius: 8px;
+        background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
+        font-size: 12px; color: var(--rlZd-text); cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease;
+      }
+      #rlZendeskCasesPanel .rlZdTaskRow:hover {
+        background: var(--rlZd-surface-3); border-color: var(--rlZd-hairline-strong);
+      }
+      #rlZendeskCasesPanel .rlZdTaskStatus {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 56px; padding: 2px 8px; border-radius: 999px;
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.06em; border: 1px solid transparent; white-space: nowrap;
+      }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-new { background: rgba(96,165,250,0.15); color: #2563eb; border-color: rgba(96,165,250,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-open { background: rgba(251,191,36,0.15); color: #d97706; border-color: rgba(251,191,36,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-pending { background: rgba(167,139,250,0.15); color: #7c3aed; border-color: rgba(167,139,250,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-hold { background: rgba(251,113,133,0.15); color: #e11d48; border-color: rgba(251,113,133,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-solved { background: rgba(52,211,153,0.15); color: #059669; border-color: rgba(52,211,153,0.32); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-closed { background: rgba(148,163,184,0.15); color: var(--rlZd-muted2); border-color: var(--rlZd-hairline); }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-new { color: #60a5fa; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-open { color: #fbbf24; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-pending { color: #a78bfa; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-hold { color: #fb7185; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskStatus.zd-solved { color: #34d399; }
+      #rlZendeskCasesPanel .rlZdTaskMiddle { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
+      #rlZendeskCasesPanel .rlZdTaskSubject {
+        font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+      }
+      #rlZendeskCasesPanel .rlZdTaskWhen {
+        color: var(--rlZd-muted2); font-size: 11px; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+      }
+      #rlZendeskCasesPanel .rlZdTaskMetaLink {
+        color: var(--rlZd-muted2); font-size: 11px; white-space: nowrap;
+        text-decoration: none; padding: 2px 6px; border-radius: 6px;
+        border: 1px solid transparent;
+      }
+      #rlZendeskCasesPanel .rlZdTaskMetaLink:hover {
+        background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong); color: var(--rlZd-text);
+      }
+      #rlZendeskCasesPanel .rlZdTaskCard {
+        display: grid; gap: 0; background: var(--rlZd-surface-1);
+        border: 1px solid var(--rlZd-border); border-radius: 8px; overflow: hidden;
+      }
+      #rlZendeskCasesPanel .rlZdTaskCard > .rlZdTaskRow {
+        background: transparent; border: none; border-radius: 0;
+      }
+      #rlZendeskCasesPanel .rlZdTaskCard.expanded {
+        background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong);
+      }
+      #rlZendeskCasesPanel .rlZdTaskDetail { padding: 0 12px 12px; display: grid; gap: 10px; }
+      #rlZendeskCasesPanel .rlZdConvo {
+        display: grid; gap: 8px; max-height: 220px; overflow-y: auto; padding: 10px;
+        border-radius: 8px; background: var(--rlZd-surface-2); border: 1px solid var(--rlZd-border);
+      }
+      #rlZendeskCasesPanel .rlZdConvoShowEarlier {
+        align-self: stretch; background: transparent; color: var(--rlZd-accent);
+        border: 1px dashed var(--rlZd-accent-stroke); border-radius: 6px;
+        padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; text-align: center;
+      }
+      #rlZendeskCasesPanel .rlZdConvoShowEarlier:hover { background: var(--rlZd-accent-soft); }
+      #rlZendeskCasesPanel .rlZdCompose { display: grid; gap: 8px; padding: 10px; border-radius: 8px;
+        background: var(--rlZd-surface-2); border: 1px solid var(--rlZd-border); position: relative; }
+      #rlZendeskCasesPanel .rlZdComposeHd {
+        font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+        color: var(--rlZd-muted); margin-bottom: 2px;
+      }
+      #rlZendeskCasesPanel .rlZdMsg {
+        padding: 8px 10px; border-radius: 8px; background: var(--rlZd-surface-1);
+        border: 1px solid var(--rlZd-border); font-size: 12px; line-height: 1.45;
+      }
+      #rlZendeskCasesPanel .rlZdMsg.rlZdMsgInternal {
+        background: rgba(251,191,36,0.06); border-color: rgba(251,191,36,0.28);
+      }
+      #rlZendeskCasesPanel .rlZdMsgHead {
+        display: flex; gap: 8px; align-items: baseline; font-size: 11px; margin-bottom: 4px; flex-wrap: wrap;
+      }
+      #rlZendeskCasesPanel .rlZdMsgAuthor { font-weight: 700; color: var(--rlZd-text); }
+      #rlZendeskCasesPanel .rlZdMsgWhen { color: var(--rlZd-muted2); }
+      #rlZendeskCasesPanel .rlZdMsgInternalTag {
+        color: #d97706; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+        font-size: 10px; padding: 1px 6px; border-radius: 999px;
+        border: 1px solid rgba(251,191,36,0.35); background: rgba(251,191,36,0.1);
+      }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdMsgInternalTag { color: #fbbf24; }
+      #rlZendeskCasesPanel .rlZdMsgBody { color: var(--rlZd-text); overflow-wrap: anywhere; }
+      #rlZendeskCasesPanel .rlZdMsgBody [style*="color"]:not(a),
+      #rlZendeskCasesPanel .rlZdMsgBody font { color: var(--rlZd-text) !important; }
+      #rlZendeskCasesPanel .rlZdMsgBody [style*="background"]:not(pre):not(code) { background: transparent !important; }
+      #rlZendeskCasesPanel .rlZdMsgBody p { margin: 0 0 6px; }
+      #rlZendeskCasesPanel .rlZdMsgBody p:last-child { margin-bottom: 0; }
+      #rlZendeskCasesPanel .rlZdMsgBody br + br { display: none; }
+      #rlZendeskCasesPanel .rlZdMsgBody ul, #rlZendeskCasesPanel .rlZdMsgBody ol { margin: 4px 0 6px; padding-left: 20px; }
+      #rlZendeskCasesPanel .rlZdMsgBody li { margin: 0 0 2px; }
+      #rlZendeskCasesPanel .rlZdMsgBody h1,
+      #rlZendeskCasesPanel .rlZdMsgBody h2,
+      #rlZendeskCasesPanel .rlZdMsgBody h3,
+      #rlZendeskCasesPanel .rlZdMsgBody h4 {
+        margin: 8px 0 4px; font-size: 13px; font-weight: 700;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody blockquote {
+        margin: 6px 0; padding: 0 0 0 12px; border-left: 2px solid var(--rlZd-hairline);
+        color: var(--rlZd-muted); background: none;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody blockquote blockquote {
+        margin: 4px 0; padding-left: 0; border-left: none; background: none;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody blockquote:empty { display: none; }
+      #rlZendeskCasesPanel .rlZdMsgBody blockquote + blockquote { margin-top: 0; }
+      #rlZendeskCasesPanel .rlZdMsgBody a { color: var(--rlZd-accent); text-decoration: underline; }
+      #rlZendeskCasesPanel .rlZdMsgBody code {
+        font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+        background: var(--rlZd-surface-3); border-radius: 4px; padding: 1px 4px;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody pre {
+        font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+        background: var(--rlZd-surface-3); border: 1px solid var(--rlZd-border);
+        border-radius: 6px; padding: 8px 10px; margin: 4px 0; overflow-x: auto;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody hr {
+        border: none; border-top: 1px dashed var(--rlZd-hairline); margin: 8px 0;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody table { border-collapse: collapse; margin: 4px 0; border: none; }
+      #rlZendeskCasesPanel .rlZdMsgBody th, #rlZendeskCasesPanel .rlZdMsgBody td {
+        border: none; padding: 2px 6px 2px 0; font-size: 12px; vertical-align: top;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody table:has(thead) { border: 1px solid var(--rlZd-border); }
+      #rlZendeskCasesPanel .rlZdMsgBody table:has(thead) th,
+      #rlZendeskCasesPanel .rlZdMsgBody table:has(thead) td {
+        border: 1px solid var(--rlZd-border); padding: 4px 8px; font-size: 11px;
+      }
+      #rlZendeskCasesPanel .rlZdMsgBody img.rlZdMsgInlineImg {
+        max-width: 100%; max-height: 280px; border-radius: 6px; display: block;
+        margin: 4px 0; border: 1px solid var(--rlZd-border);
+      }
+      #rlZendeskCasesPanel .rlZdMsgAttachments {
+        display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding-top: 8px;
+        border-top: 1px dashed var(--rlZd-hairline);
+      }
+      #rlZendeskCasesPanel .rlZdMsgImgThumb {
+        display: inline-block; line-height: 0; border-radius: 6px; overflow: hidden;
+        border: 1px solid var(--rlZd-border); background: var(--rlZd-surface-3);
+      }
+      #rlZendeskCasesPanel .rlZdMsgImgThumb:hover { border-color: var(--rlZd-accent-stroke); }
+      #rlZendeskCasesPanel .rlZdMsgImgThumb img { max-width: 200px; max-height: 140px; display: block; }
+      #rlZendeskCasesPanel .rlZdMsgFile {
+        display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
+        border-radius: 6px; background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
+        color: var(--rlZd-text); text-decoration: none; font-size: 11px; font-weight: 500;
+        max-width: 280px; overflow: hidden;
+      }
+      #rlZendeskCasesPanel .rlZdMsgFile:hover {
+        background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong);
+      }
+      #rlZendeskCasesPanel .rlZdMsgFileName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #rlZendeskCasesPanel .rlZdMsgFileSize { color: var(--rlZd-muted2); font-size: 10px; white-space: nowrap; }
+      #rlZendeskCasesPanel .rlZdComposeClosed {
+        padding: 12px 14px; border-radius: 8px; background: rgba(148,163,184,0.10);
+        border: 1px dashed var(--rlZd-hairline-strong); color: var(--rlZd-muted);
+        font-size: 12.5px; font-style: italic; text-align: center;
+      }
+      #rlZendeskCasesPanel .rlZdComposeToolbar { display: flex; gap: 12px; align-items: center; font-size: 12px; }
+      #rlZendeskCasesPanel .rlZdReplyKind {
+        position: relative; display: inline-grid; grid-template-columns: 1fr 1fr;
+        background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-hairline);
+        border-radius: 999px; padding: 3px; user-select: none;
+      }
+      #rlZendeskCasesPanel .rlZdReplyKindThumb {
+        position: absolute; top: 3px; left: 3px; width: calc(50% - 3px); height: calc(100% - 6px);
+        border-radius: 999px; background: var(--rlZd-accent-soft);
+        border: 1px solid var(--rlZd-accent-stroke);
+        transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1), background 200ms ease, border-color 200ms ease;
+        pointer-events: none;
+      }
+      #rlZendeskCasesPanel .rlZdReplyKind[data-active="internal"] .rlZdReplyKindThumb {
+        transform: translateX(100%);
+        background: rgba(251,191,36,0.18); border-color: rgba(251,191,36,0.4);
+      }
+      #rlZendeskCasesPanel .rlZdReplyKindBtn {
+        position: relative; z-index: 1; appearance: none; background: transparent; border: none;
+        color: var(--rlZd-muted); font-size: 12px; font-weight: 700; padding: 6px 16px;
+        border-radius: 999px; cursor: pointer; letter-spacing: 0.02em; white-space: nowrap; text-align: center;
+      }
+      #rlZendeskCasesPanel .rlZdReplyKindBtn:hover { color: var(--rlZd-text); }
+      #rlZendeskCasesPanel .rlZdReplyKind[data-active="public"] .rlZdReplyKindBtn.public { color: var(--rlZd-accent); }
+      #rlZendeskCasesPanel .rlZdReplyKind[data-active="internal"] .rlZdReplyKindBtn.internal { color: #d97706; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdReplyKind[data-active="internal"] .rlZdReplyKindBtn.internal { color: #fbbf24; }
+      #rlZendeskCasesPanel .rlZdComposeTextarea {
+        width: 100%; min-height: 80px; resize: vertical; font: inherit; font-size: 12px; line-height: 1.45;
+        color: var(--rlZd-text); background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
+        border-radius: 6px; padding: 8px 10px; box-sizing: border-box;
+      }
+      #rlZendeskCasesPanel .rlZdComposeRow { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+      #rlZendeskCasesPanel .rlZdComposeStatus { flex: 1; font-size: 11px; color: var(--rlZd-muted2); }
+      #rlZendeskCasesPanel .rlZdComposeStatus.error { color: #e11d48; }
+      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdComposeStatus.error { color: rgba(251,113,133,0.95); }
+      #rlZendeskCasesPanel .rlZdComposeBtn {
+        background: var(--rlZd-accent-soft); color: var(--rlZd-accent);
+        border: 1px solid var(--rlZd-accent-stroke); border-radius: 6px;
+        padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
+      }
+      #rlZendeskCasesPanel .rlZdComposeBtn:hover:not(:disabled) { filter: brightness(1.08); }
+      #rlZendeskCasesPanel .rlZdComposeBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .rlZdTaskCard.rlZdCardFullscreen {
+        display: flex; flex-direction: column; position: fixed; inset: 0; z-index: 12000;
+        background: rgba(0,0,0,0.45); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+        padding: 60px 20px 20px; gap: 8px; cursor: pointer; border-radius: 0; border: none;
+      }
+      .rlZdTaskCard.rlZdCardFullscreen > * { cursor: auto; }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdTaskRow {
+        order: 1; max-width: 1100px; width: 100%; align-self: center;
+        background: #ffffff; border: 1px solid rgba(15,23,42,0.12); border-radius: 12px; padding: 12px 14px;
+      }
+      #rlZendeskCasesPanel.rlPopoverOnDark ~ .rlZdTaskCard.rlZdCardFullscreen .rlZdTaskRow,
+      body.rlZdFullscreenOpen .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdTaskRow {
+        background: #0f1424; border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.92);
+      }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdTaskDetail {
+        order: 2; max-width: 1100px; width: 100%; align-self: center;
+        display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; gap: 8px;
+      }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdConvo {
+        flex: 1; min-height: 0; max-height: none; background: #ffffff;
+      }
+      .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdConvo,
+      .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdCompose { background: #0f1424; color: rgba(255,255,255,0.92); }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdCompose { background: #ffffff; }
+      .rlZdExpandBtn { display: none; }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdExpandBtn {
+        display: inline-flex; align-items: center; justify-content: center;
+        position: fixed; top: 14px; right: 18px; z-index: 13000;
+        width: 36px; height: 36px; font-size: 18px; line-height: 1; border-radius: 10px;
+        background: #ffffff; border: 1px solid rgba(15,23,42,0.16);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2); cursor: pointer; color: rgba(15,23,42,0.9);
+      }
+      .rlZdTaskCard.rlZdCardFullscreen.rlZdFsDark .rlZdExpandBtn {
+        background: #1a2238; border-color: rgba(255,255,255,0.14); color: rgba(255,255,255,0.92);
+      }
+      body.rlZdFullscreenOpen { overflow: hidden; }
+      .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdMsg:not(:last-child) { display: none; }
+      .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvoShowEarlier { display: none; }
+      .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdCompose { display: none; }
+      .rlZdInlineReplyHint {
+        display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+        font-size: 11px; color: var(--rlZd-muted); padding: 4px 10px; margin-bottom: 4px;
+        border: 1px dashed var(--rlZd-hairline); border-radius: 999px;
+        background: var(--rlZd-surface-2); font-style: italic; cursor: help;
+      }
+      .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
+      .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
+    `;
+  }
+
+  function rlZdSanitizeZendeskHtml(rawHtml) {
+    const ALLOWED_TAGS = new Set([
+      "p", "br", "div", "span",
+      "b", "strong", "i", "em", "u", "s", "strike", "del",
+      "ul", "ol", "li", "a", "img",
+      "code", "pre", "blockquote",
+      "h1", "h2", "h3", "h4", "h5", "h6",
+      "table", "thead", "tbody", "tr", "td", "th",
+      "hr",
+    ]);
+    const ALLOWED_ATTRS = new Set([
+      "href", "target", "rel", "src", "alt", "title",
+      "width", "height", "class", "style",
+      "colspan", "rowspan",
+    ]);
+    const STRIP_PRESENTATION_ATTRS = new Set([
+      "border", "cellpadding", "cellspacing", "bgcolor", "color",
+      "align", "valign",
+    ]);
+    const SAFE_URL = /^(?:https?:|mailto:|tel:)/i;
+    const isAllowedImg = (raw) => {
+      const s = String(raw || "").trim();
+      if (!s) return false;
+      if (s.startsWith("data:image/")) return true;
+      try {
+        const u = new URL(s, ZENDESK_HOST);
+        if (!/^https?:$/i.test(u.protocol)) return false;
+        return RL_ZD_IMG_HOST_RE.some((rx) => rx.test(u.host));
+      } catch { return false; }
+    };
+    const SAFE_STYLE_PROPS = new Set([
+      "font-weight", "font-style",
+      "text-align", "text-decoration",
+      "margin", "margin-left",
+      "padding-left",
+      "list-style-type",
+    ]);
+    const sanitizeStyle = (raw) => {
+      return String(raw || "")
+        .split(";")
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .filter((p) => {
+          const [k, v] = p.split(":").map((s) => s.trim().toLowerCase());
+          if (!SAFE_STYLE_PROPS.has(k)) return false;
+          if (/url\s*\(|expression\s*\(|javascript:/i.test(v)) return false;
+          return true;
+        })
+        .join("; ");
+    };
+    const doc = new DOMParser().parseFromString(String(rawHtml ?? ""), "text/html");
+    const clean = (node) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType !== 1) continue;
+        const tag = String(child.tagName || "").toLowerCase();
+        if (!ALLOWED_TAGS.has(tag)) {
+          const text = doc.createTextNode(child.textContent || "");
+          node.replaceChild(text, child);
+          continue;
+        }
+        if (tag === "img") {
+          const src = child.getAttribute("src") || "";
+          if (!isAllowedImg(src)) { node.removeChild(child); continue; }
+          child.classList.add("rlZdMsgInlineImg");
+          child.setAttribute("loading", "lazy");
+          child.setAttribute("referrerpolicy", "no-referrer");
+        }
+        for (const attr of Array.from(child.attributes)) {
+          const name = String(attr.name || "").toLowerCase();
+          if (STRIP_PRESENTATION_ATTRS.has(name)) { child.removeAttribute(attr.name); continue; }
+          if (!ALLOWED_ATTRS.has(name)) { child.removeAttribute(attr.name); continue; }
+          if (name === "href") {
+            const v = String(attr.value || "").trim();
+            if (!SAFE_URL.test(v)) child.removeAttribute("href");
+            else if (tag === "a") {
+              child.setAttribute("target", "_blank");
+              child.setAttribute("rel", "noopener noreferrer");
+            }
+          }
+          if (name === "style") {
+            const cleaned = sanitizeStyle(attr.value);
+            if (cleaned) child.setAttribute("style", cleaned);
+            else child.removeAttribute("style");
+          }
+        }
+        clean(child);
+      }
+    };
+    clean(doc.body);
+    return doc.body.innerHTML;
+  }
+
+  function rlZdNormTabText(s) {
+    return String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function rlZdFindUpdatesCell(row) {
+    if (!row) return null;
+    const cells = Array.from(row.querySelectorAll(':scope > [class*="TabWrapper-"]'));
+    const byHref = cells.find((c) => !!c.querySelector('a[href*="updates"]'));
+    if (byHref) return byHref;
+    return cells.find((c) => {
+      const t = rlZdNormTabText(c.textContent);
+      if (c.querySelector("#ynNavBtn, #ofNavBtn, #dtsNavBtn")) return false;
+      return RL_ZD_TAB_LABELS.some((lab) => t === lab || t.startsWith(lab + " "));
+    }) || null;
+  }
+
+  function rlZdCellLooksActive(cell) {
+    if (!cell) return false;
+    if (cell.getAttribute("aria-selected") === "true") return true;
+    const cls = String(cell.className || "");
+    if (/active|selected|current/i.test(cls)) return true;
+    const a = cell.querySelector("a");
+    if (a && /active|selected|current/i.test(String(a.className || ""))) return true;
+    return false;
+  }
+
+  function rlZdIsUpdatesRouteActive(row) {
+    const path = String(location.pathname || "");
+    if (/\/projects\/\d+\/(?:[^/]+\/)?(?:project-)?updates(?:\/|$)/i.test(path)) return true;
+    if (/\/projects\/\d+\/.*updates/i.test(path)) return true;
+    const cell = row ? rlZdFindUpdatesCell(row) : null;
+    if (cell && rlZdCellLooksActive(cell)) return true;
+    const link = cell && cell.querySelector("a[href]");
+    if (link) {
+      try {
+        const href = link.getAttribute("href") || "";
+        if (href && location.pathname.indexOf(new URL(href, location.origin).pathname) === 0) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  function rlZdPatchUpdatesTab(row) {
+    const cell = rlZdFindUpdatesCell(row);
+    if (!cell) return null;
+    if (cell.getAttribute("data-rl-zd-tab") === "1") {
+      // Re-assert label in case SPA rewrote text.
+      const labelEl =
+        cell.querySelector('[class*="TabLabel"], [class*="tab-label"], span, a') || cell;
+      const txt = rlZdNormTabText(labelEl.textContent);
+      if (txt !== "zendesk cases" && !/zendesk cases/i.test(labelEl.textContent || "")) {
+        rlZdSetTabLabel(cell, "Zendesk cases");
+      }
+      return cell;
+    }
+    rlZdSetTabLabel(cell, "Zendesk cases");
+    rlZdReplaceTabIcon(cell);
+    cell.setAttribute("data-rl-zd-tab", "1");
+    return cell;
+  }
+
+  function rlZdSetTabLabel(cell, label) {
+    const candidates = Array.from(cell.querySelectorAll("span, a, div, p")).filter((el) => {
+      const t = rlZdNormTabText(el.textContent);
+      if (!t || el.children.length > 2) return false;
+      return (
+        RL_ZD_TAB_LABELS.some((lab) => t === lab || t.startsWith(lab)) ||
+        t === "zendesk cases" ||
+        /project updates|prosjekt/i.test(t)
+      );
+    });
+    const target = candidates.sort((a, b) => a.textContent.length - b.textContent.length)[0];
+    if (target) {
+      // Prefer leaf text node rewrite so we keep structure.
+      const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+      let node;
+      let best = null;
+      while ((node = walker.nextNode())) {
+        const t = rlZdNormTabText(node.nodeValue);
+        if (!t) continue;
+        if (
+          RL_ZD_TAB_LABELS.some((lab) => t === lab || t.startsWith(lab)) ||
+          t === "zendesk cases" ||
+          /project updates|zendesk/i.test(t)
+        ) {
+          best = node;
+          break;
+        }
+      }
+      if (best) best.nodeValue = label;
+      else target.textContent = label;
+    } else {
+      const a = cell.querySelector("a");
+      if (a && !a.querySelector("svg, img")) a.textContent = label;
+    }
+  }
+
+  function rlZdReplaceTabIcon(cell) {
+    const svgs = Array.from(cell.querySelectorAll("svg"));
+    if (svgs.length) {
+      const host = document.createElement("span");
+      host.innerHTML = RL_ZD_ICON_SVG;
+      const neu = host.firstElementChild;
+      if (neu) {
+        const old = svgs[0];
+        // Copy size-ish attrs if present.
+        if (old.getAttribute("class")) neu.setAttribute("class", old.getAttribute("class"));
+        old.replaceWith(neu);
+      }
+      return;
+    }
+    const imgs = cell.querySelectorAll("img");
+    if (imgs.length) {
+      const host = document.createElement("span");
+      host.innerHTML = RL_ZD_ICON_SVG;
+      const neu = host.firstElementChild;
+      if (neu) imgs[0].replaceWith(neu);
+    }
+  }
+
+  function rlZdRestoreNativeContent() {
+    for (const el of rlZdHiddenNative) {
+      try {
+        if (el && el.isConnected) el.style.removeProperty("display");
+        if (el) el.removeAttribute("data-rl-zd-native-hidden");
+      } catch (_) {}
+    }
+    rlZdHiddenNative = [];
+  }
+
+  function rlZdTeardownPanel() {
+    rlZdPanelGen++;
+    rlZdRestoreNativeContent();
+    if (rlZdPanelEl && rlZdPanelEl.parentNode) {
+      try { rlZdPanelEl.parentNode.removeChild(rlZdPanelEl); } catch (_) {}
+    }
+    rlZdPanelEl = null;
+    rlZdPanelProjectId = "";
+    try {
+      document.querySelectorAll(".rlZdTaskCard.rlZdCardFullscreen").forEach((c) => {
+        c.classList.remove("rlZdCardFullscreen");
+        try { c.remove(); } catch (_) {}
+      });
+      document.body.classList.remove("rlZdFullscreenOpen");
+    } catch (_) {}
+  }
+
+  function rlZdFindMountContext(navRow) {
+    let el = navRow;
+    for (let depth = 0; depth < 10 && el; depth++) {
+      const parent = el.parentElement;
+      if (!parent) break;
+      const kids = Array.from(parent.children);
+      if (kids.length >= 2) {
+        const hideTargets = kids.filter((c) => c !== el && !c.contains(navRow) && c.id !== "rlZendeskCasesPanel");
+        // Prefer targets that look like content panes (not tiny chrome).
+        const contentish = hideTargets.filter((c) => {
+          const cls = String(c.className || "");
+          if (/TabWrapper|TabsWrapper|ynNavBtn/i.test(cls)) return false;
+          return true;
+        });
+        if (contentish.length) {
+          return { mountParent: parent, hideTargets: contentish, afterEl: el };
+        }
+      }
+      el = parent;
+    }
+    const main =
+      document.querySelector('[class*="PageContent"], [class*="ContentWrapper"], main, [role="main"]') ||
+      document.body;
+    return { mountParent: main.parentElement || document.body, hideTargets: main === document.body ? [] : [main], afterEl: null };
+  }
+
+  function rlZdAbsTime(iso) {
+    const ZD_TZ = "Europe/Oslo";
+    const ZD_LOCALE = "nb-NO";
+    const ts = Date.parse(String(iso ?? ""));
+    if (!Number.isFinite(ts)) return "";
+    const d = new Date(ts);
+    const now = new Date();
+    const zdDateKeyInTz = (x) =>
+      x.toLocaleDateString(ZD_LOCALE, { timeZone: ZD_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+    const todayKey = zdDateKeyInTz(now);
+    const dayKey = zdDateKeyInTz(d);
+    const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    const yesterdayKey = zdDateKeyInTz(yesterday);
+    const sameYear =
+      d.toLocaleDateString(ZD_LOCALE, { timeZone: ZD_TZ, year: "numeric" }) ===
+      now.toLocaleDateString(ZD_LOCALE, { timeZone: ZD_TZ, year: "numeric" });
+    const datePart = sameYear
+      ? d.toLocaleDateString(ZD_LOCALE, { timeZone: ZD_TZ, day: "2-digit", month: "2-digit" })
+      : d.toLocaleDateString(ZD_LOCALE, { timeZone: ZD_TZ, day: "2-digit", month: "2-digit", year: "numeric" });
+    const time = d.toLocaleTimeString(ZD_LOCALE, {
+      timeZone: ZD_TZ, hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+    let context = "";
+    if (dayKey === todayKey) context = " (i dag)";
+    else if (dayKey === yesterdayKey) context = " (i går)";
+    else if ((now.getTime() - ts) < 7 * 24 * 60 * 60 * 1000) {
+      const weekday = d.toLocaleDateString(ZD_LOCALE, { timeZone: ZD_TZ, weekday: "short" });
+      context = " (" + weekday + ")";
+    }
+    return datePart + " " + time + context;
+  }
+
+  function rlZdFullTime(iso) {
+    const ts = Date.parse(String(iso ?? ""));
+    if (!Number.isFinite(ts)) return "";
+    try {
+      return new Date(ts).toLocaleString("nb-NO", {
+        timeZone: "Europe/Oslo",
+        year: "numeric", month: "short", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+      }) + " (Oslo)";
+    } catch { return new Date(ts).toISOString(); }
+  }
+
+  function rlZdGuard(gen, projectId) {
+    if (gen !== rlZdPanelGen) return false;
+    if (!rlZdPanelEl || !rlZdPanelEl.isConnected) return false;
+    if (rlZdPanelProjectId !== projectId) return false;
+    const m = location.pathname.match(/^\/projects\/(\d+)/);
+    if (!m || m[1] !== projectId) return false;
+    return true;
+  }
+
+  async function rlZdFetchLastPublicReplyAt(ticketId) {
+    try {
+      const json = await zendeskApiRequest(
+        "GET",
+        "/tickets/" + encodeURIComponent(ticketId) + "/comments.json?sort_order=desc&per_page=20",
+      );
+      return rlZdPickLastPublicReplyAt(json?.comments);
+    } catch (e) {
+      console.debug("[rlZd] last-reply fetch failed for", ticketId, e?.message ?? e);
+      return null;
+    }
+  }
+
+  function rlZdBuildTicketCard(t, bodyEl, gen, projectId) {
+    const card = document.createElement("div");
+    card.className = "rlZdTaskCard";
+    card.dataset.ticketId = String(t.id);
+
+    const row = document.createElement("div");
+    row.className = "rlZdTaskRow";
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    row.title = "Click to preview / reply";
+
+    const statusEl = document.createElement("span");
+    statusEl.className = "rlZdTaskStatus " + rlZdStatusClass(t.status);
+    statusEl.textContent = String(t.status ?? "open");
+
+    const middle = document.createElement("div");
+    middle.className = "rlZdTaskMiddle";
+    const subject = document.createElement("span");
+    subject.className = "rlZdTaskSubject";
+    subject.textContent = String(t.subject ?? "(no subject)");
+    middle.appendChild(subject);
+    const stampIso = String(t?.lastReplyAt ?? t?.updated_at ?? "").trim();
+    if (stampIso) {
+      const usingReply = !!t?.lastReplyAt;
+      const when = document.createElement("span");
+      when.className = "rlZdTaskWhen";
+      const abs = rlZdAbsTime(stampIso);
+      const rel = rlZdFormatRelativeTimeShort(stampIso);
+      const label = usingReply ? "Last reply " : "Updated ";
+      when.textContent = label + abs + (rel ? " · " + rel : "");
+      when.title = (usingReply ? "Last public reply: " : "Last updated: ") + rlZdFullTime(stampIso);
+      middle.appendChild(when);
+    }
+
+    const idLink = document.createElement("a");
+    idLink.className = "rlZdTaskMetaLink";
+    idLink.textContent = "#" + t.id + " ↗";
+    idLink.href = ZENDESK_AGENT_TICKET_URL + encodeURIComponent(t.id);
+    idLink.target = "_blank";
+    idLink.rel = "noopener noreferrer";
+    idLink.title = "Open ticket in Zendesk (new tab)";
+    idLink.addEventListener("click", (e) => e.stopPropagation());
+
+    const expandBtn = document.createElement("button");
+    expandBtn.type = "button";
+    expandBtn.className = "rlZdExpandBtn";
+    expandBtn.textContent = "⤢";
+    expandBtn.title = "Expand to fullscreen (or right-click the card)";
+    expandBtn.setAttribute("aria-label", "Expand ticket to fullscreen");
+
+    row.appendChild(statusEl);
+    row.appendChild(middle);
+    row.appendChild(idLink);
+    row.appendChild(expandBtn);
+
+    const detail = document.createElement("div");
+    detail.className = "rlZdTaskDetail";
+    detail.style.display = "none";
+
+    let detailLoaded = false;
+    const toggle = async () => {
+      if (!rlZdGuard(gen, projectId)) return;
+      const willOpen = detail.style.display === "none";
+      detail.style.display = willOpen ? "" : "none";
+      card.classList.toggle("expanded", willOpen);
+      if (willOpen && !detailLoaded) {
+        detailLoaded = true;
+        await rlZdLoadTicketDetail(t.id, detail, t.status, gen, projectId);
+      }
+    };
+    row.addEventListener("click", (e) => {
+      if (e.target?.closest?.(".rlZdExpandBtn")) return;
+      toggle();
+    });
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+
+    let isFullscreen = false;
+    let portalOrigin = null;
+    const exitOnEsc = (ev) => {
+      if (ev.key === "Escape" && isFullscreen) {
+        ev.preventDefault();
+        toggleFullscreen();
+      }
+    };
+    const exitOnMouseBack = (ev) => {
+      if (!isFullscreen) return;
+      if (ev.button === 3) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleFullscreen();
+      }
+    };
+    const exitOnPopstate = () => {
+      if (isFullscreen) {
+        isFullscreen = false;
+        card.classList.remove("rlZdCardFullscreen", "rlZdFsDark");
+        document.body.classList.remove("rlZdFullscreenOpen");
+        expandBtn.textContent = "⤢";
+        expandBtn.title = "Expand to fullscreen (or right-click the card)";
+        if (portalOrigin && portalOrigin.parent) {
+          try { portalOrigin.parent.insertBefore(card, portalOrigin.nextSibling); }
+          catch (_) { try { card.remove(); } catch (_) {} }
+        }
+        portalOrigin = null;
+        document.removeEventListener("keydown", exitOnEsc);
+        document.removeEventListener("mousedown", exitOnMouseBack, true);
+        document.removeEventListener("auxclick", exitOnMouseBack, true);
+        card.removeEventListener("click", exitOnBackdropClick);
+        window.removeEventListener("popstate", exitOnPopstate);
+      }
+    };
+    const exitOnBackdropClick = (ev) => {
+      if (!isFullscreen) return;
+      if (ev.target === card) {
+        ev.preventDefault();
+        toggleFullscreen();
+      }
+    };
+    const scrollConvoToBottom = () => {
+      const convo = detail.querySelector(".rlZdConvo");
+      if (!convo) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { convo.scrollTop = convo.scrollHeight; });
+      });
+    };
+    const toggleFullscreen = () => {
+      isFullscreen = !isFullscreen;
+      document.body.classList.toggle("rlZdFullscreenOpen", isFullscreen);
+      expandBtn.textContent = isFullscreen ? "⤡" : "⤢";
+      expandBtn.title = isFullscreen ? "Exit fullscreen (or press Esc)" : "Expand to fullscreen (or right-click the card)";
+      if (isFullscreen) {
+        portalOrigin = { parent: card.parentNode, nextSibling: card.nextSibling };
+        document.body.appendChild(card);
+        card.classList.add("rlZdCardFullscreen");
+        if (rlZdPanelEl && rlZdPanelEl.classList.contains("rlPopoverOnDark")) {
+          card.classList.add("rlZdFsDark");
+        }
+        let pendingLoad = null;
+        if (!detailLoaded || detail.style.display === "none") {
+          detail.style.display = "";
+          card.classList.add("expanded");
+          if (!detailLoaded) {
+            detailLoaded = true;
+            pendingLoad = rlZdLoadTicketDetail(t.id, detail, t.status, gen, projectId);
+          }
+        }
+        scrollConvoToBottom();
+        if (pendingLoad && typeof pendingLoad.then === "function") {
+          pendingLoad.then(scrollConvoToBottom, scrollConvoToBottom)
+            .finally(() => setTimeout(scrollConvoToBottom, 250));
+        } else {
+          setTimeout(scrollConvoToBottom, 250);
+        }
+        document.addEventListener("keydown", exitOnEsc);
+        document.addEventListener("mousedown", exitOnMouseBack, true);
+        document.addEventListener("auxclick", exitOnMouseBack, true);
+        card.addEventListener("click", exitOnBackdropClick);
+        try { history.pushState({ rlZdFullscreen: true }, ""); } catch (_) {}
+        window.addEventListener("popstate", exitOnPopstate);
+      } else {
+        card.classList.remove("rlZdCardFullscreen", "rlZdFsDark");
+        if (portalOrigin && portalOrigin.parent) {
+          try { portalOrigin.parent.insertBefore(card, portalOrigin.nextSibling); }
+          catch (_) { try { card.remove(); } catch (_) {} }
+        }
+        portalOrigin = null;
+        document.removeEventListener("keydown", exitOnEsc);
+        document.removeEventListener("mousedown", exitOnMouseBack, true);
+        document.removeEventListener("auxclick", exitOnMouseBack, true);
+        card.removeEventListener("click", exitOnBackdropClick);
+        window.removeEventListener("popstate", exitOnPopstate);
+        try { if (history.state?.rlZdFullscreen) history.back(); } catch (_) {}
+      }
+    };
+    expandBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleFullscreen();
+    });
+    card.addEventListener("contextmenu", (e) => {
+      const tgt = e.target;
+      if (tgt?.closest?.("textarea, a, button, input, select, label")) return;
+      e.preventDefault();
+      toggleFullscreen();
+    });
+
+    card.appendChild(row);
+    card.appendChild(detail);
+    return card;
+  }
+
+  async function rlZdLoadTicketDetail(ticketId, container, ticketStatus, gen, projectId) {
+    if (!rlZdGuard(gen, projectId)) return;
+    container.innerHTML = "";
+    const loading = document.createElement("div");
+    loading.className = "rlZdLoading";
+    loading.textContent = "Loading conversation…";
+    container.appendChild(loading);
+
+    let payload;
+    try {
+      payload = await zendeskApiRequest(
+        "GET",
+        "/tickets/" + encodeURIComponent(ticketId) + "/comments.json?include=users&sort_order=asc",
+      );
+    } catch (e) {
+      if (!rlZdGuard(gen, projectId)) return;
+      container.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "rlZdError";
+      err.textContent = String(e?.message ?? e ?? "Failed to load conversation.");
+      container.appendChild(err);
+      return;
+    }
+    if (!rlZdGuard(gen, projectId)) return;
+
+    const comments = Array.isArray(payload?.comments) ? payload.comments : [];
+    const users = Array.isArray(payload?.users) ? payload.users : [];
+    const userById = {};
+    for (const u of users) userById[u.id] = u;
+
+    container.innerHTML = "";
+
+    const replyHintTop = document.createElement("div");
+    replyHintTop.className = "rlZdInlineReplyHint";
+    replyHintTop.textContent = "Right-click to open fullscreen — read full thread & reply";
+    replyHintTop.title = "Right-click anywhere on this card to enter fullscreen mode where you can read every comment and post a reply.";
+    container.appendChild(replyHintTop);
+
+    const SHOW_RECENT_COUNT = 3;
+
+    const renderCommentBodyPlain = (text) => {
+      const frag = document.createDocumentFragment();
+      const src = String(text ?? "");
+      const re = /!\[([^\]]*)\]\((https:\/\/[^)\s]+)\)/g;
+      let lastIdx = 0;
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        if (m.index > lastIdx) {
+          frag.appendChild(document.createTextNode(src.slice(lastIdx, m.index)));
+        }
+        const img = document.createElement("img");
+        img.className = "rlZdMsgInlineImg";
+        img.src = m[2];
+        img.alt = m[1] || "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        frag.appendChild(img);
+        lastIdx = m.index + m[0].length;
+      }
+      if (lastIdx < src.length) {
+        frag.appendChild(document.createTextNode(src.slice(lastIdx)));
+      }
+      return frag;
+    };
+
+    const renderAttachments = (attachments) => {
+      if (!Array.isArray(attachments) || attachments.length === 0) return null;
+      const row = document.createElement("div");
+      row.className = "rlZdMsgAttachments";
+      for (const a of attachments) {
+        const url = String(a?.content_url ?? "").trim();
+        if (!url) continue;
+        const mime = String(a?.content_type ?? "").toLowerCase();
+        const fname = String(a?.file_name ?? "attachment");
+        const isImage = mime.startsWith("image/");
+        if (isImage) {
+          const link = document.createElement("a");
+          link.href = toHttpUrl(url) || "#";
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.className = "rlZdMsgImgThumb";
+          link.title = fname + (a?.size ? " — " + rlZdFormatBytes(a.size) : "");
+          const thumbUrl =
+            (Array.isArray(a?.thumbnails) && a.thumbnails[0]?.content_url) || url;
+          const img = document.createElement("img");
+          img.src = thumbUrl;
+          img.alt = fname;
+          img.loading = "lazy";
+          img.referrerPolicy = "no-referrer";
+          link.appendChild(img);
+          row.appendChild(link);
+        } else {
+          const link = document.createElement("a");
+          link.href = toHttpUrl(url) || "#";
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.className = "rlZdMsgFile";
+          link.title = fname;
+          const icon = document.createElement("span");
+          icon.textContent = "📎";
+          icon.setAttribute("aria-hidden", "true");
+          const name = document.createElement("span");
+          name.className = "rlZdMsgFileName";
+          name.textContent = fname;
+          link.appendChild(icon);
+          link.appendChild(name);
+          if (a?.size) {
+            const sz = document.createElement("span");
+            sz.className = "rlZdMsgFileSize";
+            sz.textContent = rlZdFormatBytes(a.size);
+            link.appendChild(sz);
+          }
+          row.appendChild(link);
+        }
+      }
+      return row.childNodes.length ? row : null;
+    };
+
+    const renderComment = (c) => {
+      const author = userById[c?.author_id];
+      const authorName = (author?.name || ("User #" + (c?.author_id ?? "?"))).trim();
+      const isInternal = c?.public === false;
+      const msg = document.createElement("div");
+      msg.className = "rlZdMsg" + (isInternal ? " rlZdMsgInternal" : "");
+      const head = document.createElement("div");
+      head.className = "rlZdMsgHead";
+      const a = document.createElement("span");
+      a.className = "rlZdMsgAuthor";
+      a.textContent = authorName;
+      head.appendChild(a);
+      if (c?.created_at) {
+        const w = document.createElement("span");
+        w.className = "rlZdMsgWhen";
+        w.textContent = rlZdAbsTime(c.created_at);
+        w.title = rlZdFullTime(c.created_at);
+        head.appendChild(w);
+      }
+      if (isInternal) {
+        const tag = document.createElement("span");
+        tag.className = "rlZdMsgInternalTag";
+        tag.textContent = "Internal note";
+        head.appendChild(tag);
+      }
+      const body = document.createElement("div");
+      body.className = "rlZdMsgBody";
+      const htmlBody = String(c?.html_body ?? "").trim();
+      if (htmlBody) {
+        body.innerHTML = rlZdSanitizeZendeskHtml(htmlBody);
+        for (const img of body.querySelectorAll("img")) {
+          const hide = () => { img.style.display = "none"; };
+          img.addEventListener("error", hide, { once: true });
+          if (img.complete && img.naturalWidth === 0) hide();
+        }
+      } else {
+        body.appendChild(renderCommentBodyPlain(c?.body));
+      }
+      msg.appendChild(head);
+      msg.appendChild(body);
+      const attRow = renderAttachments(c?.attachments);
+      if (attRow) msg.appendChild(attRow);
+      return msg;
+    };
+
+    const convo = document.createElement("div");
+    convo.className = "rlZdConvo";
+    if (comments.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "rlZdEmpty";
+      empty.textContent = "No comments on this ticket yet.";
+      convo.appendChild(empty);
+    } else if (comments.length <= SHOW_RECENT_COUNT) {
+      for (const c of comments) convo.appendChild(renderComment(c));
+    } else {
+      const earlierCount = comments.length - SHOW_RECENT_COUNT;
+      const recent = comments.slice(-SHOW_RECENT_COUNT);
+      const earlier = comments.slice(0, earlierCount);
+      const showBtn = document.createElement("button");
+      showBtn.type = "button";
+      showBtn.className = "rlZdConvoShowEarlier";
+      showBtn.textContent = "Show " + earlierCount + " earlier " + (earlierCount === 1 ? "reply" : "replies") + " ↑";
+      showBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showBtn.remove();
+        const frag = document.createDocumentFragment();
+        for (const c of earlier) frag.appendChild(renderComment(c));
+        convo.insertBefore(frag, convo.firstChild);
+      });
+      convo.appendChild(showBtn);
+      for (const c of recent) convo.appendChild(renderComment(c));
+    }
+    requestAnimationFrame(() => { convo.scrollTop = convo.scrollHeight; });
+    container.appendChild(convo);
+
+    const isTicketClosed = String(ticketStatus ?? "").toLowerCase() === "closed";
+    if (isTicketClosed) {
+      const closedNotice = document.createElement("div");
+      closedNotice.className = "rlZdComposeClosed";
+      closedNotice.textContent =
+        "This ticket is closed and cannot receive new replies. Re-open it in Zendesk to reply.";
+      container.appendChild(closedNotice);
+      return;
+    }
+
+    const compose = document.createElement("div");
+    compose.className = "rlZdCompose";
+
+    const composeHd = document.createElement("div");
+    composeHd.className = "rlZdComposeHd";
+    composeHd.textContent = "Reply";
+    compose.appendChild(composeHd);
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "rlZdComposeToolbar";
+
+    const replyKind = document.createElement("div");
+    replyKind.className = "rlZdReplyKind";
+    replyKind.dataset.active = "public";
+    replyKind.setAttribute("role", "tablist");
+
+    const thumb = document.createElement("div");
+    thumb.className = "rlZdReplyKindThumb";
+    thumb.setAttribute("aria-hidden", "true");
+    replyKind.appendChild(thumb);
+
+    const btnPublic = document.createElement("button");
+    btnPublic.type = "button";
+    btnPublic.className = "rlZdReplyKindBtn public";
+    btnPublic.setAttribute("role", "tab");
+    btnPublic.setAttribute("aria-selected", "true");
+    btnPublic.title = "Customer-visible reply";
+    btnPublic.textContent = "Public reply";
+
+    const btnInternal = document.createElement("button");
+    btnInternal.type = "button";
+    btnInternal.className = "rlZdReplyKindBtn internal";
+    btnInternal.setAttribute("role", "tab");
+    btnInternal.setAttribute("aria-selected", "false");
+    btnInternal.title = "Agents only — customer won't see this";
+    btnInternal.textContent = "Internal note";
+
+    const publicCheck = { checked: true };
+    let updateSubmitLabel = () => {};
+    const setKind = (isPublic) => {
+      publicCheck.checked = isPublic;
+      replyKind.dataset.active = isPublic ? "public" : "internal";
+      btnPublic.setAttribute("aria-selected", isPublic ? "true" : "false");
+      btnInternal.setAttribute("aria-selected", isPublic ? "false" : "true");
+      updateSubmitLabel();
+    };
+    btnPublic.addEventListener("click", () => setKind(true));
+    btnInternal.addEventListener("click", () => setKind(false));
+    replyKind.appendChild(btnPublic);
+    replyKind.appendChild(btnInternal);
+    toolbar.appendChild(replyKind);
+
+    const ta = document.createElement("textarea");
+    ta.className = "rlZdComposeTextarea";
+    ta.placeholder = "Type your reply…";
+
+    const submitRow = document.createElement("div");
+    submitRow.className = "rlZdComposeRow";
+    const statusLine = document.createElement("span");
+    statusLine.className = "rlZdComposeStatus";
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "button";
+    submitBtn.className = "rlZdComposeBtn";
+    updateSubmitLabel = () => {
+      submitBtn.textContent = publicCheck.checked ? "Send public reply" : "Add internal note";
+    };
+    updateSubmitLabel();
+
+    const doSubmit = async () => {
+      const body = ta.value.trim();
+      if (!body) { statusLine.textContent = "Reply cannot be empty."; statusLine.classList.add("error"); return; }
+      submitBtn.disabled = true;
+      ta.disabled = true;
+      statusLine.classList.remove("error");
+      statusLine.textContent = "Sending…";
+      try {
+        await zendeskPostTicketReply(ticketId, body, publicCheck.checked);
+        ta.value = "";
+        statusLine.textContent = "Sent.";
+        await rlZdLoadTicketDetail(ticketId, container, ticketStatus, gen, projectId);
+      } catch (e) {
+        statusLine.textContent = "Failed: " + String(e?.message ?? e);
+        statusLine.classList.add("error");
+        submitBtn.disabled = false;
+        ta.disabled = false;
+      }
+    };
+    submitBtn.addEventListener("click", doSubmit);
+    ta.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        doSubmit();
+      }
+    });
+
+    submitRow.appendChild(statusLine);
+    submitRow.appendChild(submitBtn);
+    compose.appendChild(toolbar);
+    compose.appendChild(ta);
+    compose.appendChild(submitRow);
+    container.appendChild(compose);
+  }
+
+  async function rlZdLoadTickets(bodyEl, plantId, plantName, gen, projectId) {
+    if (!rlZdGuard(gen, projectId)) return;
+    bodyEl.innerHTML = "";
+    const loading = document.createElement("div");
+    loading.className = "rlZdLoading";
+    loading.textContent = "Loading Zendesk cases…";
+    bodyEl.appendChild(loading);
+
+    try {
+      const queries = rlZdBuildSearchQueries(plantId, plantName);
+      const resultLists = [];
+      for (const query of queries) {
+        const params = new URLSearchParams({
+          query,
+          sort_by: "updated_at",
+          sort_order: "desc",
+          per_page: "50",
+        });
+        try {
+          const json = await zendeskApiRequest("GET", "/search.json?" + params.toString());
+          resultLists.push(Array.isArray(json?.results) ? json.results : []);
+        } catch (e) {
+          console.debug("[rlZd] search failed:", query, e?.message ?? e);
+        }
+      }
+      if (!rlZdGuard(gen, projectId)) return;
+      const tickets = rlZdMergeSearchResults(resultLists);
+      if (tickets.length === 0) {
+        bodyEl.innerHTML = "";
+        const empty = document.createElement("div");
+        empty.className = "rlZdEmpty";
+        empty.textContent = "No Zendesk cases found for this project.";
+        bodyEl.appendChild(empty);
+        return;
+      }
+      await rlZdMapWithConcurrency(tickets, 8, async (t) => {
+        const replyAt = await rlZdFetchLastPublicReplyAt(t.id);
+        t.lastReplyAt = replyAt || t.updated_at || t.created_at || null;
+      });
+      if (!rlZdGuard(gen, projectId)) return;
+
+      const sorted = tickets.slice().sort((a, b) => {
+        const at = Date.parse(String(a?.lastReplyAt ?? a?.updated_at ?? "")) || 0;
+        const bt = Date.parse(String(b?.lastReplyAt ?? b?.updated_at ?? "")) || 0;
+        return bt - at;
+      });
+      bodyEl.innerHTML = "";
+      const list = document.createElement("div");
+      list.className = "rlZdTaskList";
+      for (const t of sorted) {
+        list.appendChild(rlZdBuildTicketCard(t, bodyEl, gen, projectId));
+      }
+      bodyEl.appendChild(list);
+    } catch (e) {
+      if (!rlZdGuard(gen, projectId)) return;
+      bodyEl.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "rlZdError";
+      err.textContent = String(e?.message ?? e ?? "Failed to load Zendesk cases.");
+      bodyEl.appendChild(err);
+    }
+  }
+
+  function rlZdMountPanel(mountCtx, projectId) {
+    rlZdTeardownPanel();
+    const gen = ++rlZdPanelGen;
+    rlZdPanelProjectId = projectId;
+
+    for (const el of mountCtx.hideTargets || []) {
+      try {
+        el.style.display = "none";
+        el.setAttribute("data-rl-zd-native-hidden", "1");
+        rlZdHiddenNative.push(el);
+      } catch (_) {}
+    }
+
+    const panel = document.createElement("div");
+    panel.id = "rlZendeskCasesPanel";
+    panel.setAttribute("role", "region");
+    panel.setAttribute("aria-label", "Zendesk cases");
+
+    const head = document.createElement("div");
+    head.className = "rlZdHead";
+    const title = document.createElement("h2");
+    title.className = "rlZdTitle";
+    title.textContent = "Zendesk cases";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "rlZdRefresh";
+    refreshBtn.textContent = "↻ Refresh";
+    refreshBtn.title = "Refresh Zendesk cases";
+    head.appendChild(title);
+    head.appendChild(refreshBtn);
+
+    const body = document.createElement("div");
+    body.className = "rlZdBody";
+
+    panel.appendChild(head);
+    panel.appendChild(body);
+
+    const parent = mountCtx.mountParent || document.body;
+    if (mountCtx.afterEl && mountCtx.afterEl.parentNode === parent) {
+      parent.insertBefore(panel, mountCtx.afterEl.nextSibling);
+    } else {
+      parent.appendChild(panel);
+    }
+    rlZdPanelEl = panel;
+    rlApplyPopoverSurface(panel);
+
+    const projectName = readProjectName() || "";
+    const plantId = rlZdExtractPlantId(projectName);
+    const plantName = rlZdExtractPlantName(projectName);
+
+    if (!plantId) {
+      body.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "rlZdError";
+      err.textContent =
+        'Need a leading plant number in the project name (e.g. "10112 - Store Name: …") to search Zendesk.';
+      body.appendChild(err);
+      return;
+    }
+
+    const reload = () => { void rlZdLoadTickets(body, plantId, plantName, gen, projectId); };
+    refreshBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      reload();
+    });
+    reload();
+  }
+
+  function rlZdEnsureTabAndPanel() {
+    if (!/^\/projects\/\d+/.test(location.pathname)) {
+      rlZdTeardownPanel();
+      return;
+    }
+    rlZdInjectStyles();
+    const row = getNavRow();
+    if (row) rlZdPatchUpdatesTab(row);
+
+    const m = location.pathname.match(/^\/projects\/(\d+)/);
+    const projectId = m ? m[1] : "";
+    const active = rlZdIsUpdatesRouteActive(row);
+
+    if (!active) {
+      if (rlZdPanelEl) rlZdTeardownPanel();
+      else rlZdRestoreNativeContent();
+      return;
+    }
+    if (!projectId) return;
+
+    if (rlZdPanelEl && rlZdPanelEl.isConnected && rlZdPanelProjectId === projectId) {
+      rlApplyPopoverSurface(rlZdPanelEl);
+      return;
+    }
+    const mountCtx = rlZdFindMountContext(row || document.body);
+    rlZdMountPanel(mountCtx, projectId);
+  }
+
   async function zendeskCreateHandoverTicket(subject, html) {
     let groupId = ZENDESK_HANDOVER_GROUP_ID;
     let tags = ZENDESK_HANDOVER_TAGS.slice();

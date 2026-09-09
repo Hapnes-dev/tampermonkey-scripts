@@ -1,6 +1,6 @@
 # Rocketlane improvements
 
-One Tampermonkey userscript with six independent improvements for `kiona.rocketlane.com`:
+One Tampermonkey userscript with seven independent improvements for `kiona.rocketlane.com`:
 
 1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
 2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
@@ -8,6 +8,7 @@ One Tampermonkey userscript with six independent improvements for `kiona.rocketl
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
 6. **Project action buttons** (v1.9.4) — light outline pills left of **Responsible**, plus **🔎 Fetch URLs** left of **Present** (Secondary flex row). **Files** and **Order info** open PPT-style anchored popovers that match **Rocketlane’s white UI** by default (OS dark mode no longer forces dark popovers). Order info body uses darker ink and strips pale HubSpot inline colors for readability. Files: list/preview/download/upload. Order info: read-only HubSpot delivery/order HTML. Fetch opens scored Find chooser; **Save URLs** upserts IQC Attach links. **Delivery to service** auto-fetches IQC / Deal / Delivery URLs on open.
+7. **Zendesk cases** (v1.10.0) — renames the native **Project updates** tab to **Zendesk cases** (Zendesk-like icon) and replaces that route’s body with the full Project Progress Tracker Zendesk-tasks UI (search merge, last-public-reply hydrate, expand/fullscreen, sanitize, attachments, public/internal reply). Needs a leading plant number in the project name and a logged-in Zendesk session (same CSRF capture as Delivery).
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
