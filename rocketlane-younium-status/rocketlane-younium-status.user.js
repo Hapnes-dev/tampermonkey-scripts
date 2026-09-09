@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.8.0
+// @version      1.8.1
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5067,6 +5067,23 @@
       youniumUrl: "",
       youniumSubscriptionUrl: "",
     };
+    // Same sources as Fetch URLs / PPT autoFetchProjectLinksOnce: IQC → Deal
+    // Description → Delivery status. Curated links win; chip lookups only fill gaps.
+    try {
+      const links = await rlLoadProjectLinks(ctx.rlProjectId, { force: true });
+      p.oneflowUrl = String(links.oneflowOrder || "").trim();
+      p.oneflowSubscriptionUrl = String(links.oneflowSubscription || "").trim();
+      p.youniumUrl = String(links.younium || "").trim();
+      p.youniumSubscriptionUrl = String(links.youniumSubscription || "").trim();
+      try {
+        const bar = document.getElementById("rlProjectActionBar");
+        if (bar && bar.dataset.rlProjectId === String(ctx.rlProjectId)) {
+          rlPatchActionBar(bar, links, ctx);
+        }
+      } catch (_) {}
+    } catch (e) {
+      console.warn("[Delivery to service] link auto-fetch failed:", e?.message ?? e);
+    }
     // Rocketlane project — partner (customer) and project owner seed step 16.
     try {
       const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(ctx.rlProjectId), { includeAllFields: true });
@@ -5078,22 +5095,24 @@
     } catch (e) {
       console.warn("[Delivery to service] project lookup failed:", e?.message ?? e);
     }
-    // Oneflow — same verdict the chip shows.
+    // Oneflow — signing verdict always; URLs only when still empty after auto-fetch.
     try {
       const v = await computeOneflowForProject(ctx.rlProjectId, ctx.plantId);
       p.oneflowSigned = v?.signed ?? null;
-      p.oneflowUrl = String(v?.documentUrl ?? "");
-      p.oneflowSubscriptionUrl = String(v?.subDocumentUrl ?? "");
+      if (!p.oneflowUrl) p.oneflowUrl = String(v?.documentUrl ?? "").trim();
+      if (!p.oneflowSubscriptionUrl) p.oneflowSubscriptionUrl = String(v?.subDocumentUrl ?? "").trim();
     } catch (e) {
       console.warn("[Delivery to service] Oneflow lookup failed:", e?.message ?? e);
     }
-    // Younium — same verdict the chip shows.
+    // Younium — fill gaps from the same plant verdict the chip uses.
     if (ctx.plantId) {
       try {
         const v = await computeForPlant(ctx.plantId, p.name);
-        p.youniumUrl = String(v?.links?.saved ?? "");
-        const subId = v?.subscriptionOrder?.id;
-        if (subId) p.youniumSubscriptionUrl = ynOrderUrl(subId);
+        if (!p.youniumUrl) p.youniumUrl = String(v?.links?.saved ?? "").trim();
+        if (!p.youniumSubscriptionUrl) {
+          const subId = v?.subscriptionOrder?.id;
+          if (subId) p.youniumSubscriptionUrl = ynOrderUrl(subId);
+        }
       } catch (e) {
         console.warn("[Delivery to service] Younium lookup failed:", e?.message ?? e);
       }
@@ -5695,7 +5714,7 @@
     const title = document.getElementById("dlgDeliveryWizardTitle");
     const body = document.getElementById("dlgDeliveryWizardBody");
     if (title) title.textContent = "Delivery to service · " + (ctx.name || "");
-    if (body) body.innerHTML = '<div style="padding:28px; text-align:center; color:var(--muted);">Henter prosjektdata fra Rocketlane, Oneflow og Younium…</div>';
+    if (body) body.innerHTML = '<div style="padding:28px; text-align:center; color:var(--muted);">Henter lenker (IQC / Deal / Delivery) og prosjektdata fra Rocketlane, Oneflow og Younium…</div>';
     try { dlg.showModal(); } catch (_) {}
     dtsStepIdx = 0;
     dtsMarkComplete = true;
