@@ -6805,7 +6805,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.10.12";
+    style.dataset.rlZdReady = "1.10.13";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
