@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.9.2
+// @version      1.9.3
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1634,6 +1634,22 @@
       const lum = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255;
       btn.classList.toggle("yn-on-dark", lum < 0.5);
     }
+  }
+
+  /** Rocketlane page luminance — independent of OS prefers-color-scheme. */
+  function rlPageLooksDark() {
+    try {
+      const c = ynEffectiveBg(document.body || document.documentElement);
+      const lum = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255;
+      return lum < 0.5;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function rlApplyPopoverSurface(el) {
+    if (!el) return;
+    el.classList.toggle("rlPopoverOnDark", rlPageLooksDark());
   }
 
   function getNavRow() {
@@ -4189,14 +4205,17 @@
         display: flex; justify-content: flex-end; gap: 8px;
         padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);
       }
-      /* ── Order info popover (Files-style shell) ── */
+      /* ── Order info popover (Files-style shell)
+         Colors FIXED to Rocketlane light UI by default — OS prefers-color-scheme
+         must not force dark popovers on Rocketlane's white surface. .rlPopoverOnDark
+         flips when page luminance is dark (same idea as .yn-on-dark). */
       #rlOrderInfoPopover {
-        --rlOi-surface-1: #0f1424;
-        --rlOi-surface-2: rgba(255,255,255,0.045);
-        --rlOi-hairline: rgba(255,255,255,0.08);
-        --rlOi-text: rgba(255,255,255,0.92);
-        --rlOi-muted: rgba(255,255,255,0.62);
-        --rlOi-accent: #7dd3fc;
+        --rlOi-surface-1: #ffffff;
+        --rlOi-surface-2: rgba(15,23,42,0.04);
+        --rlOi-hairline: rgba(15,23,42,0.10);
+        --rlOi-text: rgba(15,23,42,0.92);
+        --rlOi-muted: rgba(15,23,42,0.68);
+        --rlOi-accent: #0284c7;
         position: fixed; z-index: 10050;
         width: min(820px, calc(100vw - 32px));
         max-height: calc(100vh - 80px);
@@ -4204,20 +4223,19 @@
         color: var(--rlOi-text);
         border: 1px solid var(--rlOi-hairline);
         border-radius: 12px;
-        box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+        box-shadow: 0 16px 40px rgba(15,23,42,0.14);
         overflow: hidden;
         display: flex; flex-direction: column;
         animation: rlOiIn 120ms ease-out;
       }
-      @media (prefers-color-scheme: light) {
-        #rlOrderInfoPopover {
-          --rlOi-surface-1: #ffffff;
-          --rlOi-surface-2: rgba(15,23,42,0.04);
-          --rlOi-hairline: rgba(15,23,42,0.10);
-          --rlOi-text: rgba(15,23,42,0.92);
-          --rlOi-muted: rgba(15,23,42,0.62);
-          --rlOi-accent: #0284c7;
-        }
+      #rlOrderInfoPopover.rlPopoverOnDark {
+        --rlOi-surface-1: #0f1424;
+        --rlOi-surface-2: rgba(255,255,255,0.045);
+        --rlOi-hairline: rgba(255,255,255,0.08);
+        --rlOi-text: rgba(255,255,255,0.92);
+        --rlOi-muted: rgba(255,255,255,0.62);
+        --rlOi-accent: #7dd3fc;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.4);
       }
       @keyframes rlOiIn {
         from { opacity: 0; transform: translateY(-4px); }
@@ -4228,6 +4246,7 @@
         gap: 10px; padding: 12px 14px;
         border-bottom: 1px solid var(--rlOi-hairline);
         font-weight: 600; font-size: 13px; flex: 0 0 auto;
+        color: var(--rlOi-text);
       }
       #rlOrderInfoPopover .rlOiClose {
         appearance: none; border: 1px solid var(--rlOi-hairline);
@@ -4245,10 +4264,31 @@
       #rlOrderInfoPopover .rlOiBody p:last-child { margin-bottom: 0; }
       #rlOrderInfoPopover .rlOiEmpty,
       #rlOrderInfoPopover .rlOiError { color: var(--rlOi-muted); padding: 8px 2px; }
-      #rlOrderInfoPopover .rlOiError { color: #fca5a5; }
+      #rlOrderInfoPopover .rlOiError { color: #dc2626; }
+      #rlOrderInfoPopover.rlPopoverOnDark .rlOiError { color: #fca5a5; }
 
-      /* ── Files popover (rlFiles*) ── */
+      /* ── Files popover (rlFiles*) — same Rocketlane-light default ── */
       #rlFilesPopover {
+        --rlFiles-surface-1: #ffffff;
+        --rlFiles-surface-2: rgba(15,23,42,0.035);
+        --rlFiles-surface-3: rgba(15,23,42,0.055);
+        --rlFiles-hairline: rgba(15,23,42,0.10);
+        --rlFiles-hairline-strong: rgba(15,23,42,0.16);
+        --rlFiles-text: rgba(15,23,42,0.92);
+        --rlFiles-muted: rgba(15,23,42,0.62);
+        --rlFiles-muted2: rgba(15,23,42,0.44);
+        --rlFiles-accent: #0284c7;
+        --rlFiles-accent-soft: rgba(2,132,199,0.10);
+        position: fixed; z-index: 10050;
+        width: min(960px, calc(100vw - 32px));
+        background: var(--rlFiles-surface-1);
+        color: var(--rlFiles-text);
+        border: 1px solid var(--rlFiles-hairline);
+        border-radius: 12px;
+        box-shadow: 0 16px 40px rgba(15,23,42,0.14);
+        overflow: hidden;
+      }
+      #rlFilesPopover.rlPopoverOnDark {
         --rlFiles-surface-1: #0f1424;
         --rlFiles-surface-2: rgba(255,255,255,0.045);
         --rlFiles-surface-3: rgba(255,255,255,0.07);
@@ -4259,28 +4299,7 @@
         --rlFiles-muted2: rgba(255,255,255,0.46);
         --rlFiles-accent: #7dd3fc;
         --rlFiles-accent-soft: rgba(125,211,252,0.12);
-        position: fixed; z-index: 10050;
-        width: min(960px, calc(100vw - 32px));
-        background: var(--rlFiles-surface-1);
-        color: var(--rlFiles-text);
-        border: 1px solid var(--rlFiles-hairline);
-        border-radius: 12px;
         box-shadow: 0 16px 40px rgba(0,0,0,0.4);
-        overflow: hidden;
-      }
-      @media (prefers-color-scheme: light) {
-        #rlFilesPopover {
-          --rlFiles-surface-1: #ffffff;
-          --rlFiles-surface-2: rgba(15,23,42,0.04);
-          --rlFiles-surface-3: rgba(15,23,42,0.06);
-          --rlFiles-hairline: rgba(15,23,42,0.10);
-          --rlFiles-hairline-strong: rgba(15,23,42,0.16);
-          --rlFiles-text: rgba(15,23,42,0.92);
-          --rlFiles-muted: rgba(15,23,42,0.62);
-          --rlFiles-muted2: rgba(15,23,42,0.44);
-          --rlFiles-accent: #0284c7;
-          --rlFiles-accent-soft: rgba(2,132,199,0.10);
-        }
       }
       #rlFilesPopover.rlFilesDropActive {
         outline: 2px dashed var(--rlFiles-accent);
@@ -4319,7 +4338,8 @@
         padding: 12px 14px; max-height: min(70vh, 640px); overflow: auto;
         font-size: 13px; color: var(--rlFiles-muted);
       }
-      #rlFilesPopover .rlFilesError { color: #fca5a5; }
+      #rlFilesPopover .rlFilesError { color: #dc2626; }
+      #rlFilesPopover.rlPopoverOnDark .rlFilesError { color: #fca5a5; }
       #rlFilesPopover .rlFilesEmpty { color: var(--rlFiles-muted2); padding: 8px 2px; }
       #rlFilesPopover .rlFilesList {
         display: flex; flex-direction: column; max-height: 65vh; overflow-y: auto;
@@ -4594,6 +4614,7 @@
     rlOrderInfoPopoverEl.appendChild(head);
     rlOrderInfoPopoverEl.appendChild(body);
     document.body.appendChild(rlOrderInfoPopoverEl);
+    rlApplyPopoverSurface(rlOrderInfoPopoverEl);
 
     const rect = anchorBtn.getBoundingClientRect();
     const popW = Math.min(820, window.innerWidth - 32);
@@ -5452,6 +5473,7 @@
     rlFilesPopoverEl.appendChild(head);
     rlFilesPopoverEl.appendChild(body);
     document.body.appendChild(rlFilesPopoverEl);
+    rlApplyPopoverSurface(rlFilesPopoverEl);
 
     const rect = anchorBtn.getBoundingClientRect();
     // position:fixed — use viewport coords (no scrollY). Set both axes now so the
