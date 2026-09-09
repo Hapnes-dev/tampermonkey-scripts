@@ -16,7 +16,7 @@ The script auto-updates — when a new version is pushed here, Tampermonkey will
 
 ## What it is
 
-A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.3.2) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
+A Tampermonkey userscript (`AK3-Autoscan.user.js`, v9.4) that automates the AK3 scanner setup workflow on `*.plants.iwmac.local:8080/secure/ak3_setup/*`.
 
 ## Key constants
 
@@ -73,7 +73,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 - Opens the **Scan** tab, clicks **"Scan anlegg"**
 - Polls an iframe for `#percent` reaching `100%` or `#done` containing `"Scan done"`; a finished result still shown from an earlier scan is ignored until the window resets
 - Logs progress every 10 %
-- Afterwards re-opens the Scan tab and diffs its "tidligere funnet" regulator list against the one read before the scan: the card shows the count, the new regulators by name, and any no longer listed
+- Afterwards re-opens the Scan tab and diffs its "tidligere funnet" regulator list against the one read before the scan. Log: `Scan result: 27 regulators scanned, 2 new, 1 removed` plus `New:` / `Removed:` lines with names; the card's Scan row carries the same
 - **Timeout: 2 hours** (7,200,000 ms)
 
 ### 4. `default_links`
@@ -89,7 +89,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 ### 6. `activate`
 - Opens **"Aktiver anlegg"** tab, clicks **"Aktiver alle"**
 - Waits for `"Enheter aktivert"`
-- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, regulators found and new, the page's own confirmation lines), AK3 mode, run id, an amber "Remember to restart IWMAC Escape!" line (the page's "Husk å restart pc!" is dropped from the Copy row), Copy summary (`GM_setClipboard`, since the clipboard API is unavailable on `http://`), Show log (the full run log inside the card, with Copy log) and Close. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
+- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, makes sure the Aktiver anlegg tab is showing, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, regulators found and new, the page's own confirmation lines), AK3 mode, run id, an amber "Remember to restart IWMAC Escape!" line (the page's "Husk å restart pc!" is dropped from the Copy row), Copy summary (`GM_setClipboard`, since the clipboard API is unavailable on `http://`), Show log (the full run log inside the card, with Copy log) and Close. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
 
 ## AK3 mode switching
 
@@ -127,7 +127,7 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 | `enableButton(el)` | Force-enables a disabled button |
 | `gmPost(url, body)` | `GM_xmlhttpRequest` POST wrapper returning parsed JSON |
 | `sleep(ms)` | Promise-based delay |
-| `clickTab(id)` | Clicks `li#id` once and waits for `#content` to be replaced (hidden probe element), up to 6 s per strategy |
+| `clickTab(id)` | Clicks `li#id` once, waits up to 20 s for `#content` to be replaced *with that tab's own elements* (`TAB_READY`), settles 600 ms and re-checks so a reload queued by the previous action cannot leave another tab's content behind; re-clicks natively up to three times |
 
 ## GM grants
 

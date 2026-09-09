@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.3.2
+// @version      9.4
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -597,14 +597,10 @@
         } else if (step === 'scan') {
             if (st.scanStartedAt && st.scanEndedAt) parts.push('scanned in ' + fmtDur(st.scanEndedAt - st.scanStartedAt));
             if (typeof st.devicesAfter === 'number') {
-                parts.push(st.devicesAfter + ' regulator' + (st.devicesAfter === 1 ? '' : 's'));
-                if (st.newCount > 0) {
-                    const names = st.newDevices || [];
-                    parts.push(st.newCount + ' new: ' + names.join(', ') + (st.newCount > names.length ? ', …' : ''));
-                } else {
-                    parts.push('no new regulators added');
-                }
-                if (st.goneCount > 0) parts.push(st.goneCount + ' no longer listed');
+                const list = (n, arr) => (arr && arr.length ? ' (' + arr.join(', ') + (n > arr.length ? ', …' : '') + ')' : '');
+                parts.push(st.devicesAfter + ' regulator' + (st.devicesAfter === 1 ? '' : 's') + ' scanned');
+                parts.push(st.newCount > 0 ? st.newCount + ' new' + list(st.newCount, st.newDevices) : 'no new');
+                parts.push(st.goneCount > 0 ? st.goneCount + ' removed' + list(st.goneCount, st.removedDevices) : 'none removed');
             } else {
                 parts.push(st.report || (st.lastPercent != null ? st.lastPercent + '%' : 'done'));
             }
@@ -835,25 +831,55 @@
             el.style.opacity = '1';
         } catch (e) {}
     }
-    // Click a menu tab and wait for #content to be replaced by the tab's
-    // partial. A hidden probe appended to the old content disappears when the
-    // page's $('#content').load() swaps the HTML — even when the same tab is
-    // reloaded — which is the one reliable "the click registered" signal this
-    // page gives. Callers still waitFor() the elements they need.
+    // What each tab's partial contains once it has loaded. Every page action
+    // ends by re-clicking its own tab, and that reload can land *after* the
+    // script has clicked the next tab — replacing #content with the previous
+    // tab's HTML. Waiting for #content to change is therefore not enough: the
+    // change has to be the target tab's content, and it has to stay.
+    const TAB_READY = {
+        databasetest:  '.test-box',
+        ipconfig:      'input#remoteIp',
+        scan:          'input#scanButton',
+        default_links: 'button#selectTherm, button#save_default_links',
+        copyplant:     'button#copy_db',
+        activate:      '#activate_form, button#activateAllButton'
+    };
+    // Click a menu tab once, wait (up to 20 s) until #content has been
+    // replaced (a hidden probe appended to the old content disappears) *and*
+    // shows the tab's own elements, then re-check after a short settle so a
+    // late reload from the previous action cannot leave the wrong tab behind.
+    // Re-clicks natively up to three times; never escalates to the synthetic
+    // strategies, which would only queue more loads.
     async function clickTab(id) {
         const li = await waitFor('li#' + id);
-        const content = document.getElementById('content');
-        let probe = null;
-        if (content) {
-            probe = document.createElement('span');
-            probe.className = 'ak3-tab-probe';
-            probe.style.display = 'none';
-            content.appendChild(probe);
+        const ready = TAB_READY[id] || null;
+        const label = 'Tab: ' + (li.textContent || id).trim();
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            const content = document.getElementById('content');
+            let probe = null;
+            if (content) {
+                probe = document.createElement('span');
+                probe.className = 'ak3-tab-probe';
+                probe.style.display = 'none';
+                content.appendChild(probe);
+            }
+            const loaded = () => (!probe || !probe.isConnected) && (!ready || !!document.querySelector(ready));
+            clickEl(li, label + (attempt > 1 ? ' (try ' + attempt + ')' : ''));
+            const start = Date.now();
+            let ok = false;
+            while (Date.now() - start < 20000) {
+                if (_abortRequested) break;
+                if (loaded()) { ok = true; break; }
+                await sleep(100);
+            }
+            if (probe && probe.isConnected) probe.remove();
+            if (_abortRequested) return;
+            if (!ok) { log('Tab ' + id + ' did not show its content within 20s — clicking again'); continue; }
+            await sleep(600);
+            if (!ready || document.querySelector(ready)) return;
+            log('Tab ' + id + ' content was replaced by a late reload — clicking again');
         }
-        const loaded = () => !probe || !probe.isConnected;
-        await clickVerified(li, 'Tab: ' + (li.textContent || id).trim(), loaded, 6000);
-        if (probe && probe.isConnected) probe.remove();
-        await sleep(150);
+        log('WARNING: tab ' + id + ' content not confirmed after 3 clicks');
     }
 
     // Read an IPv4 out of the "<h2>... config satt til <em>...</em></h2>" hint,
@@ -1208,8 +1234,15 @@
                     log('Opening Scan tab');
                     await clickTab('scan');
                     await sleep(500);
-                    const devicesBefore = readScanDeviceList();
-                    log('Scan tab lists ' + devicesBefore.length + ' regulator(s) before this scan');
+                    // Read the list twice, 400 ms apart, until the count is stable.
+                    let devicesBefore = readScanDeviceList();
+                    for (let i = 0; i < 12; i++) {
+                        await sleep(400);
+                        const again = readScanDeviceList();
+                        if (again.length === devicesBefore.length) { devicesBefore = again; break; }
+                        devicesBefore = again;
+                    }
+                    log('Before this scan: ' + devicesBefore.length + ' regulator(s) listed on the Scan tab');
                     noteStep('scan', { devicesBefore: devicesBefore.length });
 
                     // The page appends an iframe per "Scan anlegg" click and never
@@ -1297,11 +1330,15 @@
                         const afterKeys = new Set(devicesAfter.map((d) => d.key));
                         const added = devicesAfter.filter((d) => !beforeKeys.has(d.key));
                         const gone = devicesBefore.filter((d) => !afterKeys.has(d.key));
-                        log('Scan result: ' + devicesAfter.length + ' regulator(s) listed, ' + added.length + ' new' +
-                            (added.length ? ' (' + added.map((d) => d.label).join(', ') + ')' : '') +
-                            (gone.length ? ', ' + gone.length + ' no longer listed' : ''));
+                        const names = (list) => list.slice(0, 20).map((d) => d.label).join(', ') +
+                                                (list.length > 20 ? ' … +' + (list.length - 20) + ' more' : '');
+                        log('Scan result: ' + devicesAfter.length + ' regulators scanned, ' + added.length + ' new, ' +
+                            gone.length + ' removed');
+                        if (added.length) log('New: ' + names(added));
+                        if (gone.length) log('Removed: ' + names(gone));
                         stepDone('scan', { devicesAfter: devicesAfter.length, newCount: added.length,
-                                           newDevices: added.slice(0, 12).map((d) => d.label), goneCount: gone.length });
+                                           newDevices: added.slice(0, 12).map((d) => d.label),
+                                           goneCount: gone.length, removedDevices: gone.slice(0, 12).map((d) => d.label) });
                     } else {
                         log('No regulator list found on the Scan tab — the card shows the scan window text instead');
                         stepDone('scan');
@@ -1376,6 +1413,15 @@
                     await sleep(500);
                     const reverted = await revertToStandardMode(plantId);
                     clearState();
+                    // The card belongs on the Aktiver anlegg tab. The page reloads
+                    // that tab itself after activation; wait for it, and open the
+                    // tab ourselves if it does not show.
+                    try {
+                        await waitFor(TAB_READY.activate, { timeout: 8000 });
+                    } catch (e) {
+                        log('Aktiver anlegg content not visible after activation — opening the tab for the card');
+                        try { await clickTab('activate'); } catch (e2) { log('Could not open Aktiver anlegg: ' + e2.message); }
+                    }
                     const summary = updateSummary((s) => { s.finishedAt = Date.now(); s.reverted = reverted; });
                     log('AK3 Scan Completed for plant ' + plantId + ' in ' + fmtDur(summary.finishedAt - summary.startedAt) +
                         (reverted ? '' : ' — WARNING: StandardMode revert failed, check packet settings manually'));
