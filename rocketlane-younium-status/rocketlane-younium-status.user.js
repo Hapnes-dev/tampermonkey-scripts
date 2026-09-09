@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.12
-// @description  Rocketlane improvements in one script (v1.10.12: Zendesk cases more top spacing): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.13
+// @description  Rocketlane improvements in one script (v1.10.13: Zendesk cases more top spacing): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -6460,7 +6460,7 @@
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
     // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
-    if (style && style.dataset.rlZdReady === "1.10.12") return;
+    if (style && style.dataset.rlZdReady === "1.10.13") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -6490,7 +6490,7 @@
         box-sizing: border-box;
         width: 100%;
         max-width: 1100px;
-        margin: 20px auto 12px;
+        margin: 48px auto 16px;
         padding: 16px 20px 28px;
         color: var(--rlZd-text) !important;
         background: var(--rlZd-shell);
@@ -6805,7 +6805,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.10.9";
+    style.dataset.rlZdReady = "1.10.12";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
