@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.13
-// @description  Rocketlane improvements in one script (v1.10.13: Zendesk cases more top spacing): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.11.0
+// @description  Rocketlane improvements in one script (v1.11.0: Add category / order-info import + templates): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -57,7 +57,7 @@
  *  1c. Project action buttons (section 5c), ported from the tracker's project
  *     header link row. Dark/light pills left of Rocketlane's Responsible
  *     filter: Zendesk, Oneflow (Order/Subscription), Younium (Order/Subscription),
- *     HubSpot, Rocketlane, Files (popover: list/preview/download/upload), Order info, PANG, BAF. Also a PPT Find-style
+ *     HubSpot, Rocketlane, Files, Order info, Add category (order-info / presets / native templates), PANG, BAF. Also a PPT Find-style
  *     "🔎 Fetch URLs" button left of Present that opens a PPT-style URL chooser
  *     (scored Find with signal chips + match %, then select/save), then saves
  *     clickable Attach-links anchors into the IQC task
@@ -3525,6 +3525,1443 @@
   }
   // @@rlZendeskCasesHelpers:end
 
+  // @@rlCategoryHelpers:start
+  // PPT category / order-info helpers (pure; extracted by category-import.test.js).
+
+  const RL_CATEGORY_PRESETS = [
+    { key: "refrigeration_freezing", label: "Refrigeration and freezing systems", integrationTask: "Integration: Refrigeration", designTask: "Design: Refrigeration" },
+    { key: "ventilation", label: "Ventilation", integrationTask: "Integration: Ventilation", designTask: "Design: Ventilation" },
+    { key: "heating_system", label: "Heating system / VGV", integrationTask: "Integration: Heat System / VGV", designTask: "Design: Heat System / VGV" },
+    { key: "energy", label: "Energy", integrationTask: "Integration: Energi", designTask: "Design: Energi" },
+    { key: "machine_room", label: "Machine Room", integrationTask: "Integration: Machine Room", designTask: "Design: Machine Room" },
+    { key: "wireless", label: "Wireless", integrationTask: "Integration: Wireless overview", designTask: "Design: Wireless overview" },
+    { key: "smart_function", label: "Smart Function" },
+  ];
+
+  const RL_ORDER_INFO_MODULE_MAP = [
+    { re: /IWMAC\s*Modul:\s*Refrigeration/i, key: "refrigeration_freezing" },
+    { re: /IWMAC\s*Modul:\s*Ventilation/i, key: "ventilation" },
+    { re: /IWMAC\s*Modul:\s*Energy/i, key: "energy" },
+    { re: /IWMAC\s*Modul:\s*Wireless/i, key: "wireless" },
+    { re: /IWMAC\s*Modul:\s*(Heating|VGV)/i, key: "heating_system" },
+    { re: /IWMAC\s*Modul:\s*Machine\s*Room/i, key: "machine_room" },
+    { re: /IWMAC\s*Modul:\s*Smart\s*Function/i, key: "smart_function" },
+  ];
+
+  const RL_ORDER_INFO_PROMOTE_RULES = [
+    { re: /maskin|machine/i, presetKey: "machine_room" },
+    { re: /integration gateway/i, presetKey: "refrigeration_freezing" },
+    { re: /aftermarket.*refrigeration/i, presetKey: "refrigeration_freezing" },
+  ];
+
+  const RL_ORDER_INFO_HEADER_PROMOTE_RULES = [
+    { re: /IWMAC\s*Modul:\s*Add[\s-]*on/i, presetKey: "machine_room" },
+    { re: /IWMAC\s*Product:\s*Images?\b/i, presetKey: "machine_room" },
+  ];
+
+  const RL_ORDER_INFO_SUB_PROMOTE_RULES = [
+    { re: /oversiktsbilde/i, presetKey: "refrigeration_freezing" },
+  ];
+
+  const RL_ORDER_INFO_FLAT_CLASSIFY = [
+    { re: /smart\s*function/i, key: "smart_function" },
+    { re: /maskin|machine|machinery/i, key: "machine_room" },
+    { re: /refrigerat|freez|kjøl|kjol|frys/i, key: "refrigeration_freezing" },
+    { re: /ventilat/i, key: "ventilation" },
+    { re: /energy|energi/i, key: "energy" },
+    { re: /heating|varme|\bvgv\b/i, key: "heating_system" },
+    { re: /wireless|trådløs|tradlos/i, key: "wireless" },
+  ];
+
+  /** Dialog choice order: order-info first, then template, custom, then presets. */
+  function rlCatDialogChoices() {
+    return [
+      { value: "__orderinfo__", label: "From order info / HubSpot line items", kind: "orderinfo" },
+      { value: "__template__", label: "Choose a project template…", kind: "template" },
+      { value: "", label: "— Custom —", kind: "custom" },
+      ...RL_CATEGORY_PRESETS.map((pr, i) => ({
+        value: String(i),
+        label: pr.label,
+        kind: "preset",
+        preset: pr,
+      })),
+    ];
+  }
+
+  function rlCatTaskDisplayText(text) {
+    return String(text ?? "")
+      .replace(/^(?:->|\u21B3)\s*/, "")
+      .replace(/^\[[^\]]*\]\s*/, "")
+      .trim();
+  }
+
+  function rlCatNormText(s) {
+    return rlCatTaskDisplayText(s)
+      .toLowerCase()
+      .replace(/[–—−]/g, "-")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function rlCatPromoteRuleFor(text) {
+    const t = String(text || "");
+    return RL_ORDER_INFO_PROMOTE_RULES.find((r) => r.re.test(t)) || null;
+  }
+
+  function rlCatHeaderPromoteFor(headerText) {
+    const t = String(headerText || "");
+    return RL_ORDER_INFO_HEADER_PROMOTE_RULES.find((r) => r.re.test(t)) || null;
+  }
+
+  function rlCatClassifyDiscipline(text) {
+    const t = String(text || "");
+    return (RL_ORDER_INFO_FLAT_CLASSIFY.find((r) => r.re.test(t)) || {}).key || null;
+  }
+
+  function rlCatIsLicenseItem(text) {
+    return /^\s*IWMAC\s*License\b/i.test(String(text || ""));
+  }
+
+  function rlCatSkipAsLicense(item) {
+    return rlCatIsLicenseItem(item?.text) && !((item?.subs || []).length);
+  }
+
+  function rlCatExtractSubPromotes(item, destKey, promotedByPreset) {
+    const subs = (item && item.subs) || [];
+    if (!subs.length) return;
+    const keep = [];
+    for (const s of subs) {
+      const rule = RL_ORDER_INFO_SUB_PROMOTE_RULES.find((r) => r.re.test(String(s || "")));
+      if (rule && rule.presetKey !== destKey) {
+        if (!promotedByPreset.has(rule.presetKey)) promotedByPreset.set(rule.presetKey, []);
+        promotedByPreset.get(rule.presetKey).push({ text: s, subs: [] });
+      } else {
+        keep.push(s);
+      }
+    }
+    item.subs = keep;
+  }
+
+  function rlCatPresetByKey(key) {
+    return RL_CATEGORY_PRESETS.find((pr) => pr.key === key) || null;
+  }
+
+  /** Collapse desired tasks by normalized text; merge unique subs. */
+  function rlCatDedupeDesired(rawDesired) {
+    const desired = [];
+    const desiredByNorm = new Map();
+    for (const d of rawDesired || []) {
+      const dk = rlCatNormText(d.text);
+      if (!dk) continue;
+      let agg = desiredByNorm.get(dk);
+      if (!agg) {
+        agg = { text: d.text, subs: [] };
+        desiredByNorm.set(dk, agg);
+        desired.push(agg);
+      }
+      const seenSub = new Set(agg.subs.map(rlCatNormText));
+      for (const s of d.subs || []) {
+        const sk = rlCatNormText(s);
+        if (sk && !seenSub.has(sk)) {
+          agg.subs.push(s);
+          seenSub.add(sk);
+        }
+      }
+    }
+    return desired;
+  }
+
+  /**
+   * From parsed modules → plan [{ preset, desired:[{text,subs}] }].
+   * Mutates module item lists the same way PPT createCategoriesFromOrderInfo does.
+   */
+  function rlCatBuildDesiredPlan(modulesIn) {
+    const modules = (modulesIn || []).map((m) => ({
+      headerText: m.headerText,
+      flat: !!m.flat,
+      items: (m.items || []).map((it) => ({
+        text: it.text,
+        subs: Array.isArray(it.subs) ? it.subs.slice() : [],
+      })),
+    }));
+    const promotedByPreset = new Map();
+
+    for (const pm of modules) {
+      if (pm.flat) {
+        for (const item of pm.items || []) {
+          if (rlCatSkipAsLicense(item)) continue;
+          const key = rlCatClassifyDiscipline(item.text);
+          rlCatExtractSubPromotes(item, key, promotedByPreset);
+          if (!key) continue;
+          if (!promotedByPreset.has(key)) promotedByPreset.set(key, []);
+          promotedByPreset.get(key).push(item);
+        }
+        pm.items = [];
+        continue;
+      }
+      const headerRule = rlCatHeaderPromoteFor(pm.headerText);
+      if (headerRule) {
+        for (const item of pm.items || []) {
+          if (rlCatSkipAsLicense(item)) continue;
+          const key = (rlCatPromoteRuleFor(item.text) || headerRule).presetKey;
+          rlCatExtractSubPromotes(item, key, promotedByPreset);
+          if (!promotedByPreset.has(key)) promotedByPreset.set(key, []);
+          promotedByPreset.get(key).push(item);
+        }
+        pm.items = [];
+        continue;
+      }
+      const moduleKey = (RL_ORDER_INFO_MODULE_MAP.find((m) => m.re.test(pm.headerText)) || {}).key || null;
+      const keep = [];
+      for (const item of pm.items || []) {
+        if (rlCatSkipAsLicense(item)) continue;
+        const rule = rlCatPromoteRuleFor(item.text);
+        rlCatExtractSubPromotes(item, rule ? rule.presetKey : moduleKey, promotedByPreset);
+        if (rule) {
+          if (!promotedByPreset.has(rule.presetKey)) promotedByPreset.set(rule.presetKey, []);
+          promotedByPreset.get(rule.presetKey).push(item);
+        } else {
+          keep.push(item);
+        }
+      }
+      pm.items = keep;
+    }
+
+    const plan = [];
+    const seen = new Set();
+    for (const pm of modules) {
+      const map = RL_ORDER_INFO_MODULE_MAP.find((m) => m.re.test(pm.headerText));
+      if (!map || seen.has(map.key)) continue;
+      const preset = rlCatPresetByKey(map.key);
+      if (!preset) continue;
+      seen.add(map.key);
+      plan.push({ preset, items: pm.items });
+    }
+    for (const presetKey of promotedByPreset.keys()) {
+      if (seen.has(presetKey)) continue;
+      const preset = rlCatPresetByKey(presetKey);
+      if (!preset) continue;
+      seen.add(presetKey);
+      plan.push({ preset, items: [] });
+    }
+
+    return plan.map((entry) => {
+      const rawDesired = [];
+      for (const gt of [entry.preset.integrationTask, entry.preset.designTask]) {
+        if (gt) rawDesired.push({ text: gt, subs: [] });
+      }
+      const lineItems = [...(entry.items || []), ...(promotedByPreset.get(entry.preset.key) || [])];
+      for (const item of lineItems) {
+        rawDesired.push({ text: item.text, subs: (item.subs || []).slice() });
+      }
+      return { preset: entry.preset, desired: rlCatDedupeDesired(rawDesired) };
+    });
+  }
+
+  /**
+   * Parse order-info HTML → modules. Uses DOMParser when available; otherwise a
+   * minimal HTML subset walker (Node helper tests).
+   */
+  function rlCatParseOrderInfoModules(html) {
+    const out = [];
+    const src = String(html || "");
+    if (!src.trim()) return out;
+
+    const stripDash = (s) => String(s || "").replace(/^[-–—]\s*/, "").trim();
+
+    if (typeof DOMParser !== "undefined") {
+      let doc;
+      try {
+        doc = new DOMParser().parseFromString(src, "text/html");
+      } catch (_) {
+        return out;
+      }
+      const liOwnText = (li) => {
+        let s = "";
+        for (const n of Array.from(li.childNodes)) {
+          if (n.nodeType === 1) {
+            const nt = String(n.tagName || "").toLowerCase();
+            if (nt === "ul" || nt === "ol") continue;
+            s += n.textContent || "";
+          } else if (n.nodeType === 3) {
+            s += n.nodeValue || "";
+          }
+        }
+        return s.replace(/\s+/g, " ").trim();
+      };
+      const parseListInto = (ulNode, mod) => {
+        let lastTop = null;
+        for (const li of Array.from(ulNode.children)) {
+          if (String(li.tagName || "").toLowerCase() !== "li") continue;
+          const own = liOwnText(li);
+          if (own && /^[-–—]\s*/.test(own)) {
+            const sub = stripDash(own);
+            if (sub) {
+              if (lastTop) lastTop.subs.push(sub);
+              else mod.items.push({ text: sub, subs: [] });
+            }
+            continue;
+          }
+          if (own) {
+            lastTop = { text: own, subs: [] };
+            mod.items.push(lastTop);
+          }
+          let nested = null;
+          for (const c of Array.from(li.children)) {
+            const ct = String(c.tagName || "").toLowerCase();
+            if (ct === "ul" || ct === "ol") {
+              nested = c;
+              break;
+            }
+          }
+          if (nested) {
+            const target = lastTop || (mod.items.length ? mod.items[mod.items.length - 1] : null);
+            for (const subLi of Array.from(nested.children)) {
+              if (String(subLi.tagName || "").toLowerCase() !== "li") continue;
+              const subText = stripDash(liOwnText(subLi));
+              if (!subText) continue;
+              if (target) target.subs.push(subText);
+              else mod.items.push({ text: subText, subs: [] });
+            }
+          }
+        }
+      };
+      let current = null;
+      for (const node of Array.from(doc.body.children)) {
+        const tag = String(node.tagName || "").toLowerCase();
+        const txt = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (tag === "p" && /IWMAC\s*(Modul|Product)\s*:/i.test(txt)) {
+          current = { headerText: txt, items: [] };
+          out.push(current);
+        } else if ((tag === "ul" || tag === "ol") && current) {
+          parseListInto(node, current);
+        }
+      }
+      if (out.length === 0) {
+        const flat = { headerText: "__FLAT_LINE_ITEMS__", items: [], flat: true };
+        for (const ul of Array.from(doc.querySelectorAll("ul, ol"))) {
+          if (ul.closest("li")) continue;
+          parseListInto(ul, flat);
+        }
+        if (flat.items.length) out.push(flat);
+      }
+      return out;
+    }
+
+    // Node fallback: lightweight tag walker for p/ul/ol/li only.
+    return rlCatParseOrderInfoModulesFallback(src);
+  }
+
+  function rlCatParseOrderInfoModulesFallback(html) {
+    const out = [];
+    const stripDash = (s) => String(s || "").replace(/^[-–—]\s*/, "").trim();
+    const decode = (s) =>
+      String(s || "")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'");
+
+    // Minimal HTML tree for p/ul/ol/li/#text — enough for order-info shapes in Node tests.
+    function parseFragment(src) {
+      const root = { tag: "#root", children: [], text: "" };
+      const stack = [root];
+      const re = /<\/?([a-zA-Z0-9]+)[^>]*>|([^<]+)/g;
+      let m;
+      while ((m = re.exec(src))) {
+        if (m[1]) {
+          const raw = m[0];
+          const tag = m[1].toLowerCase();
+          const closing = raw.startsWith("</");
+          if (closing) {
+            for (let i = stack.length - 1; i >= 1; i--) {
+              if (stack[i].tag === tag) {
+                stack.length = i;
+                break;
+              }
+            }
+            continue;
+          }
+          if (["br", "hr", "img", "meta", "link"].includes(tag)) continue;
+          const node = { tag, children: [], text: "" };
+          stack[stack.length - 1].children.push(node);
+          if (["p", "ul", "ol", "li", "strong", "b", "em", "span", "div"].includes(tag)) {
+            stack.push(node);
+          }
+        } else if (m[2]) {
+          stack[stack.length - 1].children.push({ tag: "#text", text: decode(m[2]), children: [] });
+        }
+      }
+      return root;
+    }
+
+    function directText(node) {
+      let s = "";
+      for (const c of node.children || []) {
+        if (c.tag === "#text") s += c.text || "";
+        else if (c.tag !== "ul" && c.tag !== "ol") s += directText(c);
+      }
+      return s.replace(/\s+/g, " ").trim();
+    }
+
+    function parseListInto(ulNode, mod) {
+      let lastTop = null;
+      for (const li of ulNode.children || []) {
+        if (li.tag !== "li") continue;
+        const own = directText(li);
+        if (own && /^[-–—]\s*/.test(own)) {
+          const sub = stripDash(own);
+          if (sub) {
+            if (lastTop) lastTop.subs.push(sub);
+            else mod.items.push({ text: sub, subs: [] });
+          }
+          continue;
+        }
+        if (own) {
+          lastTop = { text: own, subs: [] };
+          mod.items.push(lastTop);
+        }
+        const nested = (li.children || []).find((c) => c.tag === "ul" || c.tag === "ol");
+        if (nested) {
+          const target = lastTop || (mod.items.length ? mod.items[mod.items.length - 1] : null);
+          for (const subLi of nested.children || []) {
+            if (subLi.tag !== "li") continue;
+            const subText = stripDash(directText(subLi));
+            if (!subText) continue;
+            if (target) target.subs.push(subText);
+            else mod.items.push({ text: subText, subs: [] });
+          }
+        }
+      }
+    }
+
+    const tree = parseFragment(String(html || ""));
+    let current = null;
+    for (const node of tree.children) {
+      if (node.tag === "p") {
+        const txt = directText(node);
+        if (/IWMAC\s*(Modul|Product)\s*:/i.test(txt)) {
+          current = { headerText: txt, items: [] };
+          out.push(current);
+        }
+      } else if ((node.tag === "ul" || node.tag === "ol") && current) {
+        parseListInto(node, current);
+      }
+    }
+    if (out.length === 0) {
+      const flat = { headerText: "__FLAT_LINE_ITEMS__", items: [], flat: true };
+      for (const n of tree.children) {
+        if (n.tag === "ul" || n.tag === "ol") parseListInto(n, flat);
+      }
+      if (flat.items.length) out.push(flat);
+    }
+    return out;
+  }
+
+  // ── Rocketlane field accessors (pure) ──
+  function rlCatPhaseId(phase) {
+    const v =
+      phase?.projectPhaseId ??
+      phase?.phaseId ??
+      phase?.phaseID ??
+      phase?.id ??
+      phase?.phase_id ??
+      phase?.projectPhaseID ??
+      phase?.phaseId?.value ??
+      phase?.phaseID?.value ??
+      phase?.value ??
+      "";
+    return String(v ?? "").trim();
+  }
+
+  function rlCatPhaseName(phase) {
+    return String(
+      phase?.projectPhaseName ??
+        phase?.phaseName ??
+        phase?.name ??
+        phase?.phase_name ??
+        phase ??
+        ""
+    ).trim();
+  }
+
+  function rlCatCoerceId(v) {
+    const s = String(v ?? "").trim();
+    if (!s) return "";
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (Number.isFinite(n)) return n;
+    }
+    return s;
+  }
+
+  function rlCatTaskId(task) {
+    return String(task?.taskId ?? task?.id ?? "").trim();
+  }
+
+  function rlCatTaskName(task) {
+    return String(task?.taskName ?? task?.name ?? "").trim();
+  }
+
+  function rlCatTaskPhaseName(task) {
+    const raw =
+      task?.projectPhase?.projectPhaseName ??
+      task?.projectPhase?.phaseName ??
+      task?.projectPhase?.name ??
+      task?.projectPhaseName ??
+      task?.phase?.phaseName ??
+      task?.phase?.name ??
+      task?.phaseName ??
+      task?.phase_name ??
+      "";
+    if (raw && typeof raw === "object") return "";
+    return String(raw ?? "").trim();
+  }
+
+  function rlCatTaskParentTaskId(task) {
+    const pt = task?.parentTask;
+    const ptPrimitive = typeof pt === "number" || typeof pt === "string" ? pt : null;
+    return String(
+      task?.parentTaskId ??
+        ptPrimitive ??
+        task?.parentTask?.taskId ??
+        task?.parentTask?.id ??
+        task?.parentTaskObject?.taskId ??
+        task?.parentTaskObject?.id ??
+        task?.parent?.taskId ??
+        task?.parent?.id ??
+        ""
+    ).trim();
+  }
+
+  function rlCatUnwrapList(json) {
+    const data = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+    return { data, pagination: json?.pagination };
+  }
+
+  function rlCatPaginationNextToken(pagination) {
+    const tok = String(pagination?.nextPageToken ?? "").trim();
+    if (tok) return tok;
+    const next = String(pagination?.nextPage ?? "").trim();
+    if (!next) return "";
+    try {
+      const u = new URL(next);
+      return String(u.searchParams.get("pageToken") ?? "").trim();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * Given existing RL tasks for a phase + desired list, return jobItems that still
+   * need create (parents / missing subs). Idempotent backfill planner.
+   * existingTasks: full project task list (or phase-filtered).
+   */
+  function rlCatPlanBackfillJobs(phaseName, desired, existingTasks) {
+    const phaseNorm = rlCatNormText(phaseName);
+    const rlTopByName = new Map();
+    const rlSubByKey = new Map();
+    for (const rt of existingTasks || []) {
+      const rid = rlCatTaskId(rt);
+      if (!rid) continue;
+      const par = rlCatTaskParentTaskId(rt);
+      if (par) {
+        rlSubByKey.set(par + "\0" + rlCatNormText(rlCatTaskName(rt)), rid);
+      } else if (rlCatNormText(rlCatTaskPhaseName(rt)) === phaseNorm) {
+        rlTopByName.set(rlCatNormText(rlCatTaskName(rt)), rid);
+      }
+    }
+    const jobs = [];
+    for (const d of desired || []) {
+      const parentId = rlTopByName.get(rlCatNormText(d.text)) || "";
+      const missingSubs = [];
+      for (const subText of d.subs || []) {
+        if (!parentId) {
+          missingSubs.push(subText);
+          continue;
+        }
+        const sk = parentId + "\0" + rlCatNormText(subText);
+        if (!rlSubByKey.has(sk)) missingSubs.push(subText);
+      }
+      if (!parentId) {
+        jobs.push({ text: d.text, subs: (d.subs || []).slice(), parentExists: false, parentRlId: "" });
+      } else if (missingSubs.length) {
+        jobs.push({ text: d.text, subs: missingSubs, parentExists: true, parentRlId: parentId });
+      }
+    }
+    return jobs;
+  }
+
+  async function rlCatRunWithConcurrency(items, limit, worker) {
+    const list = Array.from(items || []);
+    if (!list.length) return;
+    let cursor = 0;
+    const runners = Array.from({ length: Math.min(Math.max(1, limit), list.length) }, async () => {
+      while (cursor < list.length) {
+        const i = cursor++;
+        await worker(list[i], i);
+      }
+    });
+    await Promise.all(runners);
+  }
+  // @@rlCategoryHelpers:end
+
+  // ── Category / order-info engine (v1.11.0) — uses @@rlCategoryHelpers + gmRocketlaneRequest ──
+
+  const rlCatPhaseByNameCache = new Map();
+  const rlCatTaskSampleCache = new Map();
+  const rlCatTaskSampleInFlight = new Map();
+  let rlCatOrderInfoImportBusy = false;
+
+  function rlCatClearCaches(projectId) {
+    const pid = String(projectId ?? "").trim();
+    if (!pid) {
+      rlCatPhaseByNameCache.clear();
+      rlCatTaskSampleCache.clear();
+      return;
+    }
+    rlCatTaskSampleCache.delete(pid);
+    const prefix = pid + "\0";
+    for (const k of [...rlCatPhaseByNameCache.keys()]) {
+      if (k.startsWith(prefix)) rlCatPhaseByNameCache.delete(k);
+    }
+  }
+
+  async function rlCatFetchPhases(projectId) {
+    const pid = String(projectId ?? "").trim();
+    if (!pid) return [];
+    try {
+      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/phases");
+      const items = Array.isArray(json) ? json : (json?.data ?? []);
+      const list = [];
+      const seen = new Set();
+      for (const ph of items) {
+        const id = rlCatPhaseId(ph);
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          list.push(ph);
+        }
+      }
+      return list;
+    } catch (e) {
+      console.warn("[rlCat] project phases failed, trying /phases", e?.message ?? e);
+    }
+    const filterKeys = ["projectId.eq", "projectID.eq", "project.eq", "projectId", "projectID", "project"];
+    let lastErr = null;
+    for (const key of filterKeys) {
+      try {
+        const list = [];
+        const seen = new Set();
+        let pageToken = "";
+        let pages = 0;
+        do {
+          const q = { pageSize: 100 };
+          q[key] = pid;
+          if (pageToken) q.pageToken = pageToken;
+          const json = await gmRocketlaneGet("/phases", q);
+          const { data, pagination } = rlCatUnwrapList(json);
+          for (const ph of data || []) {
+            const id = rlCatPhaseId(ph);
+            if (id && !seen.has(id)) {
+              seen.add(id);
+              list.push(ph);
+            }
+          }
+          pageToken = rlCatPaginationNextToken(pagination) || "";
+          pages += 1;
+          if (pages >= 20 || !pageToken) break;
+        } while (true);
+        return list;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (lastErr) throw lastErr;
+    return [];
+  }
+
+  async function rlCatCreatePhase(projectId, phaseName, opts) {
+    const pid = String(projectId ?? "").trim();
+    const name = String(phaseName ?? "").trim();
+    if (!pid || !name) throw new Error("Project id and phase name required.");
+    const today = new Date().toISOString().slice(0, 10);
+    const phaseStart = String((opts && opts.startDate) || "").slice(0, 10) || today;
+    let phaseDue = String((opts && opts.dueDate) || "").slice(0, 10) || phaseStart;
+    if (phaseDue < phaseStart) phaseDue = phaseStart;
+    const pidV = rlCatCoerceId(pid);
+    try {
+      const json = await gmRocketlaneRequest(
+        "POST",
+        "/projects/" + encodeURIComponent(pid) + "/phases",
+        null,
+        {
+          projectPhaseName: name,
+          startDate: phaseStart,
+          dueDate: phaseDue,
+          private: !!(opts && opts.private),
+          phaseDescription: String((opts && opts.description) || ""),
+        }
+      );
+      const phase = json?.data ?? json;
+      if (phase && rlCatPhaseId(phase)) return phase;
+    } catch (e) {
+      console.warn("[rlCat] project-scoped phase create failed", e?.message ?? e);
+    }
+    const nextYear = new Date(Date.now() + 366 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const bodies = [
+      { phaseName: name, project: { projectId: pidV }, startDate: today, dueDate: nextYear },
+      { phaseName: name, projectId: pidV, startDate: today, dueDate: nextYear },
+    ];
+    let lastErr = null;
+    for (const body of bodies) {
+      try {
+        const json = await gmRocketlaneRequest("POST", "/phases", null, body);
+        const phase = json?.data ?? json;
+        if (phase) return phase;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("Failed to create phase.");
+  }
+
+  async function rlCatGetOrCreatePhase(projectId, phaseName, opts) {
+    const name = String(phaseName ?? "").trim();
+    if (!name) throw new Error("Phase name required.");
+    const pid = String(projectId ?? "").trim();
+    const cacheKey = pid + "\0" + name.toLowerCase();
+    const cached = rlCatPhaseByNameCache.get(cacheKey);
+    if (cached) return cached;
+    const phases = await rlCatFetchPhases(pid);
+    const low = name.toLowerCase();
+    const found = phases.find((ph) => rlCatPhaseName(ph).toLowerCase() === low);
+    if (found) {
+      rlCatPhaseByNameCache.set(cacheKey, found);
+      return found;
+    }
+    const created = await rlCatCreatePhase(pid, name, opts);
+    if (created) rlCatPhaseByNameCache.set(cacheKey, created);
+    return created;
+  }
+
+  async function rlCatFetchTasks(projectId) {
+    const pid = String(projectId ?? "").trim();
+    if (!pid) return [];
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/tasks");
+    const { data } = rlCatUnwrapList(json);
+    return Array.isArray(data) ? data : [];
+  }
+
+  async function rlCatFetchTaskSample(projectId) {
+    const pid = String(projectId ?? "").trim();
+    if (!pid) return null;
+    if (rlCatTaskSampleCache.has(pid)) return rlCatTaskSampleCache.get(pid);
+    const pending = rlCatTaskSampleInFlight.get(pid);
+    if (pending) return pending;
+    const job = (async () => {
+      try {
+        const tasks = await rlCatFetchTasks(pid);
+        const sample = tasks.length ? tasks[0] : null;
+        rlCatTaskSampleCache.set(pid, sample);
+        return sample;
+      } catch (_) {
+        rlCatTaskSampleCache.set(pid, null);
+        return null;
+      } finally {
+        rlCatTaskSampleInFlight.delete(pid);
+      }
+    })();
+    rlCatTaskSampleInFlight.set(pid, job);
+    return job;
+  }
+
+  async function rlCatGetTaskById(taskId) {
+    const id = String(taskId ?? "").trim();
+    if (!id) throw new Error("Missing task id");
+    const json = await gmRocketlaneGet("/tasks/" + encodeURIComponent(id), { includeAllFields: true });
+    return json?.data ?? json;
+  }
+
+  function rlCatTaskAssignees(task) {
+    const raw = task?.assignees ?? task?.assignee ?? null;
+    if (Array.isArray(raw)) return raw;
+    if (raw && typeof raw === "object") return [raw];
+    return [];
+  }
+
+  async function rlCatCreateTask(projectId, phase, taskName, parentTaskId, opts) {
+    const pid = String(projectId ?? "").trim();
+    const name = String(taskName ?? "").trim();
+    if (!pid || !name) throw new Error("Project id and task name required.");
+    const parentTaskIdRaw = String(parentTaskId ?? "").trim();
+    const phaseIdRaw = rlCatPhaseId(phase);
+    if (!phaseIdRaw && !parentTaskIdRaw) throw new Error("Phase id required to create task.");
+
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const startDateRaw = String(phase?.startDate ?? "").trim();
+    const dueDateRaw = String(phase?.dueDate ?? "").trim();
+    const startDate = startDateRaw || today;
+    let dueDate = dueDateRaw || tomorrow;
+    if (dueDate < startDate) dueDate = startDate;
+    const pidV = rlCatCoerceId(pid);
+    const phaseIdV = rlCatCoerceId(phaseIdRaw);
+    const parentTaskIdV = parentTaskIdRaw ? rlCatCoerceId(parentTaskIdRaw) : "";
+
+    const sample = await rlCatFetchTaskSample(pid).catch(() => null);
+    const sampleAssignees = sample ? rlCatTaskAssignees(sample) : [];
+    const assigneesMin = sampleAssignees
+      .map((a) => {
+        const userId = String(a?.userId ?? a?.id ?? "").trim();
+        const emailId = String(a?.emailId ?? a?.email ?? "").trim();
+        if (userId) return { userId };
+        if (emailId) return { emailId };
+        return null;
+      })
+      .filter(Boolean);
+
+    let bodies = [];
+    if (parentTaskIdRaw) {
+      if (phaseIdRaw) {
+        bodies.push(
+          { taskName: name, project: { projectId: pidV }, projectPhase: { projectPhaseId: phaseIdV }, startDate, dueDate, type: "TASK", parentTask: parentTaskIdV },
+          { taskName: name, project: { projectId: pidV }, projectPhase: { projectPhaseId: phaseIdV }, startDate, dueDate, type: "Task", parentTask: parentTaskIdV }
+        );
+      } else {
+        bodies.push(
+          { taskName: name, project: { projectId: pidV }, type: "TASK", parentTask: parentTaskIdV },
+          { taskName: name, project: { projectId: pidV }, startDate, dueDate, type: "TASK", parentTask: parentTaskIdV }
+        );
+      }
+    } else {
+      bodies.push(
+        { taskName: name, project: { projectId: pidV }, projectPhase: { projectPhaseId: phaseIdV }, startDate, dueDate, type: "Task" },
+        { taskName: name, project: { projectId: pidV }, projectPhase: { projectPhaseId: phaseIdV }, startDate, dueDate }
+      );
+      if (assigneesMin.length) {
+        bodies.unshift({
+          taskName: name,
+          project: { projectId: pidV },
+          projectPhase: { projectPhaseId: phaseIdV },
+          startDate,
+          dueDate,
+          type: "Task",
+          assignees: assigneesMin,
+        });
+      }
+    }
+    if (opts && typeof opts.private === "boolean") {
+      bodies = bodies.map((b) => ({ ...b, private: opts.private }));
+    }
+
+    let lastErr = null;
+    for (const body of bodies) {
+      try {
+        const json = await gmRocketlaneRequest("POST", "/tasks", null, body);
+        const task = json?.data ?? json;
+        if (!task) continue;
+        if (parentTaskIdRaw) {
+          const createdTaskId = rlCatTaskId(task);
+          if (createdTaskId) {
+            let linkedParentId = String(rlCatTaskParentTaskId(task) ?? "").trim();
+            let parentLinked = linkedParentId === parentTaskIdRaw;
+            let verifyThrew = false;
+            for (let attempt = 0; attempt < 2 && !parentLinked; attempt++) {
+              try {
+                if (attempt > 0) await new Promise((r) => setTimeout(r, 700));
+                const full = await rlCatGetTaskById(createdTaskId);
+                linkedParentId = String(rlCatTaskParentTaskId(full) ?? "").trim();
+                parentLinked = linkedParentId === parentTaskIdRaw;
+              } catch (e) {
+                verifyThrew = true;
+                break;
+              }
+            }
+            if (!parentLinked && !verifyThrew && linkedParentId && linkedParentId !== parentTaskIdRaw) {
+              try {
+                await gmRocketlaneRequest("DELETE", "/tasks/" + encodeURIComponent(createdTaskId), null, null);
+              } catch (_) {}
+              lastErr = new Error("Created task linked to wrong parent (" + linkedParentId + ").");
+              continue;
+            }
+          }
+        }
+        return task;
+      } catch (e) {
+        lastErr = e;
+        const msg = String(e?.message ?? e);
+        if (!/HTTP (400|404|422)/.test(msg)) throw e;
+      }
+    }
+    throw lastErr || new Error("Failed to create task.");
+  }
+
+  async function rlCatFetchOrderHtml(projectId) {
+    const pid = String(projectId ?? "").trim();
+    if (!pid) throw new Error("Missing project id");
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid), { includeAllFields: true });
+    const project = json?.data ?? json;
+    const fields = Array.isArray(project?.fields) ? project.fields : [];
+    const match = fields.find((f) => {
+      const n = String(f?.fieldName ?? "").toLowerCase().replace(/\s+/g, "");
+      return n.startsWith("hubspotdeliverystatus") || n.startsWith("deliverystatus");
+    });
+    return match ? String(match.fieldValue ?? "") : "";
+  }
+
+  function rlCatToast(msg) {
+    try {
+      let el = document.getElementById("rlCatToast");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "rlCatToast";
+        el.setAttribute("role", "status");
+        document.body.appendChild(el);
+      }
+      el.textContent = String(msg || "");
+      el.classList.add("show");
+      clearTimeout(el._t);
+      el._t = setTimeout(() => el.classList.remove("show"), 4500);
+    } catch (_) {
+      console.log("[rlCat]", msg);
+    }
+  }
+
+  async function rlCatSyncCategoryJobs(projectId, label, jobs, opts, allTasks) {
+    const phase = await rlCatGetOrCreatePhase(projectId, label, opts);
+    const phaseName = rlCatPhaseName(phase);
+    const existing = Array.isArray(allTasks) ? allTasks : await rlCatFetchTasks(projectId);
+    const planned = jobs || rlCatPlanBackfillJobs(phaseName, [], existing);
+    // If caller passed explicit jobs from desired list, still dedupe against RL.
+    const nrm = rlCatNormText;
+    const phaseNorm = nrm(phaseName);
+    const rlTopByName = new Map();
+    const rlSubByKey = new Map();
+    for (const rt of existing) {
+      const rid = rlCatTaskId(rt);
+      if (!rid) continue;
+      const par = rlCatTaskParentTaskId(rt);
+      if (par) rlSubByKey.set(par + "\0" + nrm(rlCatTaskName(rt)), rid);
+      else if (nrm(rlCatTaskPhaseName(rt)) === phaseNorm) rlTopByName.set(nrm(rlCatTaskName(rt)), rid);
+    }
+
+    const taskOpts = { private: !!(opts && opts.private) };
+    let okTasks = 0;
+    let failTasks = 0;
+
+    await rlCatRunWithConcurrency(planned, 4, async (it) => {
+      let parentRlId = String(it.parentRlId || "").trim();
+      if (!it.parentExists) {
+        const dupe = rlTopByName.get(nrm(it.text));
+        if (dupe) {
+          parentRlId = dupe;
+        } else {
+          try {
+            const created = await rlCatCreateTask(projectId, phase, it.text, undefined, taskOpts);
+            parentRlId = rlCatTaskId(created);
+            if (parentRlId) {
+              rlTopByName.set(nrm(it.text), parentRlId);
+              okTasks++;
+            } else failTasks++;
+          } catch (e) {
+            failTasks++;
+            console.warn("[rlCat] task create failed:", it.text, e);
+          }
+        }
+      }
+      for (const subText of it.subs || []) {
+        const dupKey = parentRlId + "\0" + nrm(subText);
+        if (parentRlId && rlSubByKey.has(dupKey)) continue;
+        try {
+          const createdSub = await rlCatCreateTask(projectId, phase, subText, parentRlId || undefined, taskOpts);
+          const subRlId = rlCatTaskId(createdSub);
+          if (subRlId) {
+            if (parentRlId) rlSubByKey.set(dupKey, subRlId);
+            okTasks++;
+          } else failTasks++;
+        } catch (e) {
+          failTasks++;
+          console.warn("[rlCat] subtask create failed:", subText, e);
+        }
+      }
+    });
+    return { okTasks, failTasks, phase };
+  }
+
+  async function rlCatImportFromOrderInfo(projectId, opts) {
+    if (rlCatOrderInfoImportBusy) {
+      rlCatToast("Order-info import already running — wait a moment.");
+      return;
+    }
+    rlCatOrderInfoImportBusy = true;
+    try {
+      const pid = String(projectId ?? "").trim();
+      if (!pid) {
+        rlCatToast("No Rocketlane project id.");
+        return;
+      }
+      rlCatToast("Reading order info…");
+      let html = "";
+      try {
+        html = await rlCatFetchOrderHtml(pid);
+      } catch (e) {
+        rlCatToast("Couldn't read order info: " + (e?.message ?? e));
+        return;
+      }
+      if (!String(html || "").trim()) {
+        rlCatToast("No order info found on this project.");
+        return;
+      }
+      const modules = rlCatParseOrderInfoModules(html);
+      const plan = rlCatBuildDesiredPlan(modules);
+      if (!plan.length) {
+        rlCatToast("No IWMAC modules found in the order info.");
+        return;
+      }
+
+      let allTasks = [];
+      try {
+        allTasks = await rlCatFetchTasks(pid);
+      } catch (_) {
+        allTasks = [];
+      }
+      let phases = [];
+      try {
+        phases = await rlCatFetchPhases(pid);
+      } catch (_) {
+        phases = [];
+      }
+      const phaseNormSet = new Set(phases.map((ph) => rlCatNormText(rlCatPhaseName(ph))));
+
+      const syncBatch = [];
+      let created = 0;
+      let backfilled = 0;
+      for (const entry of plan) {
+        const phaseName = entry.preset.label;
+        const jobs = rlCatPlanBackfillJobs(phaseName, entry.desired, allTasks);
+        const phaseExists = phaseNormSet.has(rlCatNormText(phaseName));
+        if (!phaseExists) {
+          syncBatch.push({ label: phaseName, desired: entry.desired });
+          created++;
+        } else if (jobs.length) {
+          syncBatch.push({ label: phaseName, desired: entry.desired });
+          backfilled += jobs.reduce((n, j) => n + (j.parentExists ? 0 : 1) + (j.subs || []).length, 0);
+        }
+      }
+
+      if (!syncBatch.length) {
+        rlCatToast("Everything from the order info is already on this project.");
+        return;
+      }
+      const parts = [];
+      if (created) parts.push("creating " + created + " categor" + (created > 1 ? "ies" : "y"));
+      if (backfilled) parts.push("backfilling " + backfilled + " missing task(s)");
+      rlCatToast("Order info: " + parts.join("; ") + " — syncing…");
+
+      const phaseOpts = {
+        private: !!(opts && opts.private),
+        startDate: opts && opts.startDate,
+        dueDate: opts && opts.dueDate,
+      };
+      let okTasks = 0;
+      let failTasks = 0;
+      await rlCatRunWithConcurrency(syncBatch, 2, async (b) => {
+        let tasksNow = allTasks;
+        try {
+          tasksNow = await rlCatFetchTasks(pid);
+          allTasks = tasksNow;
+        } catch (_) {}
+        const jobs = rlCatPlanBackfillJobs(b.label, b.desired, tasksNow);
+        if (!jobs.length) {
+          await rlCatGetOrCreatePhase(pid, b.label, phaseOpts);
+          return;
+        }
+        const r = await rlCatSyncCategoryJobs(pid, b.label, jobs, phaseOpts, tasksNow);
+        if (r) {
+          okTasks += r.okTasks;
+          failTasks += r.failTasks;
+        }
+      });
+      rlCatToast(
+        failTasks > 0
+          ? "Rocketlane: " + okTasks + " task(s) synced, " + failTasks + " failed."
+          : "Rocketlane: all " + okTasks + " task(s) synced."
+      );
+      rlCatClearCaches(pid);
+    } finally {
+      rlCatOrderInfoImportBusy = false;
+    }
+  }
+
+  async function rlCatCreateCustomOrPreset(projectId, label, preset, opts) {
+    const pid = String(projectId ?? "").trim();
+    const name = String(label || "").trim();
+    if (!pid || !name) throw new Error("Project id and category name required.");
+    const desired = [];
+    if (preset) {
+      for (const gt of [preset.integrationTask, preset.designTask]) {
+        if (gt) desired.push({ text: gt, subs: [] });
+      }
+    }
+    let allTasks = [];
+    try {
+      allTasks = await rlCatFetchTasks(pid);
+    } catch (_) {}
+    const jobs = rlCatPlanBackfillJobs(name, desired, allTasks);
+    if (!jobs.length && !desired.length) {
+      await rlCatGetOrCreatePhase(pid, name, opts);
+      rlCatToast('Category "' + name + '" created in Rocketlane.');
+      return;
+    }
+    if (!jobs.length) {
+      rlCatToast('Category "' + name + '" already exists — nothing new to add.');
+      return;
+    }
+    rlCatToast('Creating "' + name + '"…');
+    const r = await rlCatSyncCategoryJobs(pid, name, jobs, opts, allTasks);
+    rlCatToast(
+      r.failTasks
+        ? 'Category "' + name + '": ' + r.okTasks + " ok, " + r.failTasks + " failed."
+        : 'Category "' + name + '": ' + r.okTasks + " task(s) synced."
+    );
+  }
+
+  /** Open Rocketlane native Import templates → Choose a project template flow. */
+  function rlCatOpenNativeTemplateChooser() {
+    const clickEl = (el) => {
+      if (!el) return false;
+      try {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        return true;
+      } catch (_) {
+        try {
+          el.click();
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+    };
+    const findByText = (root, re) => {
+      const nodes = root.querySelectorAll("button, a, [role='menuitem'], [role='option'], li, div, span");
+      for (const n of nodes) {
+        const t = String(n.textContent || "").replace(/\s+/g, " ").trim();
+        if (re.test(t) && t.length < 80) return n;
+      }
+      return null;
+    };
+    // Prefer visible + menu first.
+    let plus =
+      document.querySelector('[data-cy*="add"][data-cy*="phase"], [data-cy*="import"][data-cy*="template"]') ||
+      findByText(document, /^\+$/) ||
+      findByText(document, /^Add$/i);
+    // Common Rocketlane plan toolbar +
+    if (!plus) {
+      const candidates = Array.from(document.querySelectorAll("button, [role='button']"));
+      plus = candidates.find((b) => {
+        const t = String(b.textContent || "").trim();
+        const aria = String(b.getAttribute("aria-label") || "");
+        return t === "+" || /add|create/i.test(aria);
+      }) || null;
+    }
+    if (plus) clickEl(plus);
+    const tryImport = () => {
+      const importBtn = findByText(document, /Import templates?/i);
+      if (importBtn) {
+        clickEl(importBtn);
+        setTimeout(() => {
+          const choose = findByText(document, /Choose a project template/i) || findByText(document, /project template/i);
+          if (choose) clickEl(choose);
+        }, 200);
+        return true;
+      }
+      return false;
+    };
+    if (!tryImport()) {
+      setTimeout(() => {
+        if (!tryImport()) rlCatToast("Open the plan + menu → Import templates to pick a template.");
+      }, 250);
+    }
+  }
+
+  function rlCatInjectStyles() {
+    if (document.getElementById("rlCatStyles")) return;
+    const s = document.createElement("style");
+    s.id = "rlCatStyles";
+    s.textContent = `
+      #rlCatToast {
+        position: fixed; z-index: 2147483000; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+        background: #0f1424; color: #f3f5fb; padding: 10px 16px; border-radius: 8px; font: 13px/1.35 system-ui,sans-serif;
+        opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; max-width: min(520px, 92vw);
+        box-shadow: 0 8px 28px rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.08);
+      }
+      #rlCatToast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+      #rlCatOverlay {
+        position: fixed; inset: 0; z-index: 2147482900; background: rgba(15,20,36,.45);
+        display: flex; align-items: center; justify-content: center; padding: 16px;
+      }
+      #rlCatOverlay .rlCatCard {
+        background: #fff; color: #1a1f2e; width: min(440px, 96vw); border-radius: 12px; padding: 18px 18px 14px;
+        box-shadow: 0 16px 48px rgba(0,0,0,.28); font: 13px/1.4 system-ui,sans-serif;
+      }
+      #rlCatOverlay .rlCatTitle { font-size: 16px; font-weight: 650; margin: 0 0 12px; }
+      #rlCatOverlay .rlCatField { margin: 0 0 12px; }
+      #rlCatOverlay .rlCatLabel { display: block; font-size: 12px; font-weight: 600; color: #4b5568; margin-bottom: 4px; }
+      #rlCatOverlay .rlCatInput, #rlCatOverlay select.rlCatInput, #rlCatOverlay textarea.rlCatInput {
+        width: 100%; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px; font: inherit;
+      }
+      #rlCatOverlay .rlCatTypeRow { display: flex; gap: 8px; }
+      #rlCatOverlay .rlCatTypeBtn {
+        flex: 1; border: 1px solid #d1d5db; background: #f9fafb; border-radius: 8px; padding: 8px; cursor: pointer; font: inherit;
+      }
+      #rlCatOverlay .rlCatTypeBtn.active { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+      #rlCatOverlay .rlCatBtnRow { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+      #rlCatOverlay .rlCatBtn { border: 1px solid #d1d5db; background: #fff; border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; }
+      #rlCatOverlay .rlCatBtn.primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+      [data-rl-cat-menu="1"] { font-weight: 600; }
+    `;
+    document.documentElement.appendChild(s);
+  }
+
+  function rlCatCloseDialog() {
+    document.getElementById("rlCatOverlay")?.remove();
+    document.removeEventListener("keydown", rlCatDialogOnKey);
+  }
+
+  function rlCatDialogOnKey(e) {
+    if (e.key === "Escape") rlCatCloseDialog();
+  }
+
+  function rlCatOpenAddCategoryDialog(projectId) {
+    rlCatInjectStyles();
+    rlCatCloseDialog();
+    const pid = String(projectId || getOneflowContext()?.rlProjectId || "").trim();
+    if (!pid) {
+      rlCatToast("Open a Rocketlane project first.");
+      return;
+    }
+    const overlay = document.createElement("div");
+    overlay.id = "rlCatOverlay";
+    const card = document.createElement("div");
+    card.className = "rlCatCard";
+    card.addEventListener("click", (e) => e.stopPropagation());
+
+    const title = document.createElement("div");
+    title.className = "rlCatTitle";
+    title.textContent = "Add category";
+    card.appendChild(title);
+
+    const mkField = (labelText) => {
+      const wrap = document.createElement("div");
+      wrap.className = "rlCatField";
+      const lab = document.createElement("span");
+      lab.className = "rlCatLabel";
+      lab.textContent = labelText;
+      wrap.appendChild(lab);
+      return wrap;
+    };
+
+    const presetField = mkField("Preset (optional)");
+    const presetSel = document.createElement("select");
+    presetSel.className = "rlCatInput";
+    for (const c of rlCatDialogChoices()) {
+      const o = document.createElement("option");
+      o.value = c.value;
+      o.textContent = c.label;
+      presetSel.appendChild(o);
+    }
+    // Default: order info on top is first option — select it.
+    presetSel.value = "__orderinfo__";
+    presetField.appendChild(presetSel);
+    card.appendChild(presetField);
+
+    const nameField = mkField("Category name");
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "rlCatInput";
+    nameInput.placeholder = "Category name";
+    nameField.appendChild(nameInput);
+    card.appendChild(nameField);
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const dateField = mkField("Date (start → due)");
+    const dateRow = document.createElement("div");
+    dateRow.className = "rlCatTypeRow";
+    const startInput = document.createElement("input");
+    startInput.type = "date";
+    startInput.className = "rlCatInput";
+    startInput.value = todayStr;
+    const dueInput = document.createElement("input");
+    dueInput.type = "date";
+    dueInput.className = "rlCatInput";
+    dueInput.value = todayStr;
+    startInput.addEventListener("change", () => {
+      if (dueInput.value && dueInput.value < startInput.value) dueInput.value = startInput.value;
+    });
+    dateRow.appendChild(startInput);
+    dateRow.appendChild(dueInput);
+    dateField.appendChild(dateRow);
+    card.appendChild(dateField);
+
+    const typeField = mkField("Type");
+    const typeRow = document.createElement("div");
+    typeRow.className = "rlCatTypeRow";
+    let isPrivate = false;
+    const sharedBtn = document.createElement("button");
+    sharedBtn.type = "button";
+    sharedBtn.className = "rlCatTypeBtn active";
+    sharedBtn.textContent = "Shared";
+    const privateBtn = document.createElement("button");
+    privateBtn.type = "button";
+    privateBtn.className = "rlCatTypeBtn";
+    privateBtn.textContent = "Private";
+    const setType = (priv) => {
+      isPrivate = priv;
+      sharedBtn.classList.toggle("active", !priv);
+      privateBtn.classList.toggle("active", priv);
+    };
+    sharedBtn.addEventListener("click", () => setType(false));
+    privateBtn.addEventListener("click", () => setType(true));
+    typeRow.appendChild(sharedBtn);
+    typeRow.appendChild(privateBtn);
+    typeField.appendChild(typeRow);
+    card.appendChild(typeField);
+
+    const descField = mkField("Description (optional)");
+    const descTa = document.createElement("textarea");
+    descTa.className = "rlCatInput";
+    descTa.rows = 3;
+    descField.appendChild(descTa);
+    card.appendChild(descField);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "rlCatBtnRow";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "rlCatBtn";
+    cancelBtn.textContent = "Cancel";
+    const createBtn = document.createElement("button");
+    createBtn.type = "button";
+    createBtn.className = "rlCatBtn primary";
+    createBtn.textContent = "Create from order info";
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(createBtn);
+    card.appendChild(btnRow);
+
+    const updatePresetMode = () => {
+      const v = presetSel.value;
+      const orderMode = v === "__orderinfo__";
+      const templateMode = v === "__template__";
+      nameField.style.display = orderMode || templateMode ? "none" : "";
+      descField.style.display = orderMode || templateMode ? "none" : "";
+      dateField.style.display = templateMode ? "none" : "";
+      typeField.style.display = templateMode ? "none" : "";
+      if (orderMode) createBtn.textContent = "Create from order info";
+      else if (templateMode) createBtn.textContent = "Open template chooser";
+      else createBtn.textContent = "Create";
+      const i = parseInt(v, 10);
+      if (!orderMode && !templateMode && Number.isFinite(i) && RL_CATEGORY_PRESETS[i]) {
+        nameInput.value = RL_CATEGORY_PRESETS[i].label;
+      }
+    };
+    presetSel.addEventListener("change", updatePresetMode);
+    updatePresetMode();
+
+    cancelBtn.addEventListener("click", rlCatCloseDialog);
+    overlay.addEventListener("click", rlCatCloseDialog);
+    document.addEventListener("keydown", rlCatDialogOnKey);
+
+    const doCreate = () => {
+      const sd = startInput.value || todayStr;
+      const dd = dueInput.value && dueInput.value >= sd ? dueInput.value : sd;
+      const catOpts = {
+        private: isPrivate,
+        description: String(descTa.value || "").trim(),
+        startDate: sd,
+        dueDate: dd,
+      };
+      if (presetSel.value === "__orderinfo__") {
+        rlCatCloseDialog();
+        void rlCatImportFromOrderInfo(pid, catOpts);
+        return;
+      }
+      if (presetSel.value === "__template__") {
+        rlCatCloseDialog();
+        rlCatOpenNativeTemplateChooser();
+        return;
+      }
+      const label = String(nameInput.value || "").trim();
+      if (!label) {
+        nameInput.focus();
+        return;
+      }
+      const presetIdx = parseInt(presetSel.value, 10);
+      const preset = Number.isFinite(presetIdx) && RL_CATEGORY_PRESETS[presetIdx] ? RL_CATEGORY_PRESETS[presetIdx] : null;
+      rlCatCloseDialog();
+      void rlCatCreateCustomOrPreset(pid, label, preset, catOpts).catch((e) =>
+        rlCatToast("Create failed: " + (e?.message ?? e))
+      );
+    };
+    createBtn.addEventListener("click", doCreate);
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doCreate();
+      }
+    });
+
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    setTimeout(() => {
+      if (presetSel.value === "__orderinfo__") createBtn.focus();
+      else nameInput.focus();
+    }, 30);
+  }
+
+  /** Inject "Add category / order info" as first item above native Import templates. */
+  function rlCatMaybeInjectNativeMenu() {
+    const menus = document.querySelectorAll('[role="menu"], [class*="Menu"], [class*="Popover"], [class*="Dropdown"]');
+    for (const menu of menus) {
+      if (menu.querySelector('[data-rl-cat-menu="1"]')) continue;
+      const importItem = Array.from(menu.querySelectorAll("button, a, [role='menuitem'], li, div")).find((n) =>
+        /^Import templates?$/i.test(String(n.textContent || "").replace(/\s+/g, " ").trim())
+      );
+      if (!importItem) continue;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.setAttribute("data-rl-cat-menu", "1");
+      row.setAttribute("role", "menuitem");
+      row.textContent = "Add category / order info";
+      row.style.cssText =
+        "display:flex;width:100%;align-items:center;gap:8px;padding:8px 12px;border:0;background:transparent;cursor:pointer;font:inherit;text-align:left;";
+      row.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const pid = String(getOneflowContext()?.rlProjectId || "").trim();
+        rlCatOpenAddCategoryDialog(pid);
+      });
+      const host = importItem.closest("li, [role='menuitem'], button, a, div") || importItem;
+      if (host.parentNode) host.parentNode.insertBefore(row, host);
+      else menu.insertBefore(row, menu.firstChild);
+    }
+  }
+
+  let rlCatMenuObserver = null;
+  function rlCatEnsureMenuHook() {
+    rlCatInjectStyles();
+    if (rlCatMenuObserver) return;
+    rlCatMenuObserver = new MutationObserver(() => {
+      try {
+        rlCatMaybeInjectNativeMenu();
+      } catch (_) {}
+    });
+    rlCatMenuObserver.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+
+
 
   // @@rlMatchRuntime:start
   // Match-field reader keeps MULTI_SELECT as string[] (rlReadField flattens arrays to a joined string).
@@ -4938,6 +6375,7 @@
       { id: "rlPabRocketlane", key: "rocketlane", label: "Rocketlane", emoji: "\uD83D\uDE80", always: "rocketlane" },
       { id: "rlPabFiles", key: "files", label: "Files", emoji: "\uD83D\uDCC1", always: "files" },
       { id: "rlPabOrderInfo", key: "orderInfo", label: "Order info", emoji: "\uD83D\uDCE6", always: "orderInfo" },
+      { id: "rlPabAddCategory", key: "addCategory", label: "Add category", emoji: "\u2795", always: "addCategory" },
       { id: "rlPabPang", key: "pang", label: "PANG", icon: RL_PANG_ICON, iconBare: true, always: "pang" },
       { id: "rlPabBaf", key: "baf", label: "BAF", emoji: "\uD83D\uDC65", always: "baf" },
     ];
@@ -4950,7 +6388,7 @@
         iconBare: d.iconBare,
         emoji: d.emoji,
         title: d.label,
-        asButton: d.always === "orderInfo" || d.always === "files",
+        asButton: d.always === "orderInfo" || d.always === "files" || d.always === "addCategory",
       });
       btn.hidden = !d.always;
       btn.dataset.rlSlot = d.key;
@@ -4966,6 +6404,14 @@
           ev.preventDefault();
           ev.stopPropagation();
           void rlFilesTogglePopover(btn);
+        });
+      }
+      if (d.always === "addCategory") {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const pid = String(getOneflowContext()?.rlProjectId || bar.dataset.rlProjectId || "").trim();
+          rlCatOpenAddCategoryDialog(pid);
         });
       }
       bar.appendChild(btn);
@@ -5013,6 +6459,12 @@
     if (orderBtn) {
       orderBtn.hidden = false;
       orderBtn.title = "Show HubSpot order / delivery status";
+    }
+
+    const addCatBtn = bar.querySelector("#rlPabAddCategory");
+    if (addCatBtn) {
+      addCatBtn.hidden = false;
+      addCatBtn.title = "Add category / import from order info / open project templates";
     }
 
     const plantId = ctx.plantId || "";
@@ -6284,6 +7736,7 @@
       return;
     }
     rlInjectActionBarStyles();
+    rlCatEnsureMenuHook();
     const ctx = getOneflowContext();
     if (!ctx.rlProjectId) return;
 

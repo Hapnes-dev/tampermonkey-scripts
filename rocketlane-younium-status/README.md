@@ -7,7 +7,7 @@ One Tampermonkey userscript with seven independent improvements for `kiona.rocke
 3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0). **Off by default since v1.4.2.**
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
-6. **Project action buttons** (v1.10.6) — **Files** and **Order info** popovers match **Younium status details**: dark `#0f1424` shell, translucent white inner cards (`.youniumSection` / `.rlOiSection`), off-white body text. Fetch / Delivery unchanged.
+6. **Project action buttons** (v1.10.6) — **Files** and **Order info** popovers match **Younium status details**: dark `#0f1424` shell, translucent white inner cards (`.youniumSection` / `.rlOiSection`), off-white body text. Fetch / Delivery unchanged. **v1.11.0:** **Add category** pill + plan `+` menu entry (order-info import, presets, native Import templates).
 7. **Zendesk cases** (v1.10.9) — PPT dark `#0f1424` shell + faded-white rows; title forced light for contrast; panel sits ~20px below tabs. Renames **Project updates** → **Zendesk cases**. Needs leading plant number + logged-in Zendesk session.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
@@ -284,6 +284,17 @@ The checklist wording and the emitted HTML are copied **verbatim** from the trac
 | "Zendesk session expired or missing" | Same — the script retries a session renew once before saying this. |
 | No button on the card | The lane may not have hydrated yet; scroll it into view. Otherwise the task isn't named *Handover to service* — use the nav chip. |
 | "Fant ingen «Handover to service»-oppgave" | The project has no such task, so nothing is marked complete. The checklist still works. |
+
+---
+
+## 6. Add category / order info (v1.11.0)
+
+On a project **plan** page:
+
+1. Click **Add category** on the project action bar (right of Order info), **or** open the native plan **+** menu and pick **Add category / order info** (injected above **Import templates**).
+2. Dialog preset order: **From order info / HubSpot line items** (default) → **Choose a project template…** → Custom → PPT discipline presets.
+3. Order-info create reads the HubSpot delivery-status field, builds categories/tasks/subtasks (same promotion/license rules as the Project Progress Tracker), and writes phases/tasks through the Rocketlane API. Re-runs backfill only missing items (no duplicates).
+4. **Choose a project template…** opens Rocketlane’s native **Import templates** flow (no custom template-list API).
 
 ---
 
