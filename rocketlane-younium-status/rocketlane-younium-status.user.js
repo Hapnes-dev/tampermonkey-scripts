@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.3
-// @description  Rocketlane improvements in one script (v1.10.3: stop Zendesk ensure MutationObserver freeze): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.5
+// @description  Rocketlane improvements in one script (v1.10.5: Order info + Files match Younium status colours): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -64,8 +64,9 @@
  *     description. Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
- *  1e. Zendesk cases (v1.10.3): renames native Project updates tab, mounts
- *     #rlZendeskCasesPanel with full PPT Zendesk-tasks UI (search/hydrate/
+ *  1e. Zendesk cases (v1.10.4): renames native Project updates tab + settings
+ *     list labels, mounts #rlZendeskCasesPanel with full PPT Zendesk-tasks UI
+ *     (search/hydrate/
  *     thread/reply) via zendeskApiRequest — no window.ZendeskBridge.
  *  1d. Delivery to service (section 8), ported from the tracker's handover
  *     wizard. A "Delivery to service" button on the "Handover to service" task
@@ -4328,37 +4329,95 @@
         display: flex; justify-content: flex-end; gap: 8px;
         padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);
       }
-      /* ── Order info popover (Files-style shell)
-         Colors FIXED to Rocketlane light UI by default — OS prefers-color-scheme
-         must not force dark popovers on Rocketlane's white surface. .rlPopoverOnDark
-         flips when page luminance is dark (same idea as .yn-on-dark). */
+      /* ── Order info + Files popovers — same colour pattern as dlgYouniumStatus
+         (dark #0f1424 default, light via prefers-color-scheme; .rlPopoverOnDark
+         forces dark when the Rocketlane page itself is dark). */
+      #rlOrderInfoPopover, #rlFilesPopover {
+        --rlPop-surface-1: rgba(255,255,255,0.025);
+        --rlPop-surface-2: rgba(255,255,255,0.045);
+        --rlPop-surface-3: rgba(255,255,255,0.07);
+        --rlPop-hairline: rgba(255,255,255,0.06);
+        --rlPop-hairline-strong: rgba(255,255,255,0.10);
+        --rlPop-text: rgba(255,255,255,0.94);
+        --rlPop-muted: rgba(255,255,255,0.66);
+        --rlPop-muted2: rgba(255,255,255,0.46);
+        --rlPop-accent: #7dd3fc;
+        --rlPop-accent-soft: rgba(125,211,252,0.14);
+        --rlPop-accent-stroke: rgba(125,211,252,0.36);
+        --rlPop-shadow: 0 12px 32px rgba(0,0,0,0.24);
+        --rlOi-surface-1: #0f1424;
+        --rlOi-surface-2: var(--rlPop-surface-2);
+        --rlOi-hairline: var(--rlPop-hairline);
+        --rlOi-text: var(--rlPop-text);
+        --rlOi-muted: var(--rlPop-muted);
+        --rlOi-accent: var(--rlPop-accent);
+        --rlFiles-surface-1: #0f1424;
+        --rlFiles-surface-2: var(--rlPop-surface-2);
+        --rlFiles-surface-3: var(--rlPop-surface-3);
+        --rlFiles-hairline: var(--rlPop-hairline);
+        --rlFiles-hairline-strong: var(--rlPop-hairline-strong);
+        --rlFiles-text: var(--rlPop-text);
+        --rlFiles-muted: var(--rlPop-muted);
+        --rlFiles-muted2: var(--rlPop-muted2);
+        --rlFiles-accent: var(--rlPop-accent);
+        --rlFiles-accent-soft: var(--rlPop-accent-soft);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlOrderInfoPopover:not(.rlPopoverOnDark),
+        #rlFilesPopover:not(.rlPopoverOnDark) {
+          --rlPop-surface-1: rgba(255,255,255,0.92);
+          --rlPop-surface-2: rgba(255,255,255,1);
+          --rlPop-surface-3: rgba(15,23,42,0.04);
+          --rlPop-hairline: rgba(15,23,42,0.07);
+          --rlPop-hairline-strong: rgba(15,23,42,0.12);
+          --rlPop-text: rgba(15,23,42,0.94);
+          --rlPop-muted: rgba(15,23,42,0.64);
+          --rlPop-muted2: rgba(15,23,42,0.44);
+          --rlPop-accent: #0284c7;
+          --rlPop-accent-soft: rgba(2,132,199,0.10);
+          --rlPop-accent-stroke: rgba(2,132,199,0.30);
+          --rlPop-shadow: 0 12px 32px rgba(15,23,42,0.14);
+          --rlOi-surface-1: #ffffff;
+          --rlOi-surface-2: var(--rlPop-surface-3);
+          --rlOi-hairline: var(--rlPop-hairline);
+          --rlOi-text: var(--rlPop-text);
+          --rlOi-muted: var(--rlPop-muted);
+          --rlOi-accent: var(--rlPop-accent);
+          --rlFiles-surface-1: #ffffff;
+          --rlFiles-surface-2: var(--rlPop-surface-3);
+          --rlFiles-surface-3: rgba(15,23,42,0.055);
+          --rlFiles-hairline: var(--rlPop-hairline);
+          --rlFiles-hairline-strong: var(--rlPop-hairline-strong);
+          --rlFiles-text: var(--rlPop-text);
+          --rlFiles-muted: var(--rlPop-muted);
+          --rlFiles-muted2: var(--rlPop-muted2);
+          --rlFiles-accent: var(--rlPop-accent);
+          --rlFiles-accent-soft: var(--rlPop-accent-soft);
+        }
+      }
       #rlOrderInfoPopover {
-        --rlOi-surface-1: #ffffff;
-        --rlOi-surface-2: rgba(15,23,42,0.04);
-        --rlOi-hairline: rgba(15,23,42,0.10);
-        --rlOi-text: rgba(15,23,42,0.92);
-        --rlOi-muted: rgba(15,23,42,0.78);
-        --rlOi-accent: #0284c7;
         position: fixed; z-index: 10050;
         width: min(820px, calc(100vw - 32px));
         max-height: calc(100vh - 80px);
         background: var(--rlOi-surface-1);
         color: var(--rlOi-text);
-        border: 1px solid var(--rlOi-hairline);
-        border-radius: 12px;
-        box-shadow: 0 16px 40px rgba(15,23,42,0.14);
+        border: 1px solid var(--rlPop-hairline-strong);
+        border-radius: 14px;
+        box-shadow: var(--rlPop-shadow);
         overflow: hidden;
         display: flex; flex-direction: column;
         animation: rlOiIn 120ms ease-out;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
       }
       #rlOrderInfoPopover.rlPopoverOnDark {
         --rlOi-surface-1: #0f1424;
         --rlOi-surface-2: rgba(255,255,255,0.045);
-        --rlOi-hairline: rgba(255,255,255,0.08);
-        --rlOi-text: rgba(255,255,255,0.92);
-        --rlOi-muted: rgba(255,255,255,0.62);
+        --rlOi-hairline: rgba(255,255,255,0.06);
+        --rlOi-text: rgba(255,255,255,0.94);
+        --rlOi-muted: rgba(255,255,255,0.66);
         --rlOi-accent: #7dd3fc;
-        box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+        --rlPop-hairline-strong: rgba(255,255,255,0.10);
+        --rlPop-shadow: 0 12px 32px rgba(0,0,0,0.24);
       }
       @keyframes rlOiIn {
         from { opacity: 0; transform: translateY(-4px); }
@@ -4366,21 +4425,33 @@
       }
       #rlOrderInfoPopover .rlOiHead {
         display: flex; align-items: center; justify-content: space-between;
-        gap: 10px; padding: 12px 14px;
+        gap: 10px; padding: 16px 20px;
         border-bottom: 1px solid var(--rlOi-hairline);
-        font-weight: 600; font-size: 13px; flex: 0 0 auto;
+        font-weight: 600; font-size: 14px; flex: 0 0 auto;
         color: var(--rlOi-text);
       }
       #rlOrderInfoPopover .rlOiClose {
-        appearance: none; border: 1px solid var(--rlOi-hairline);
-        background: var(--rlOi-surface-2); color: inherit;
-        width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
-        font-size: 16px; line-height: 1;
+        display: inline-flex; align-items: center; justify-content: center;
+        appearance: none; border: 1px solid transparent;
+        background: transparent; color: var(--rlOi-muted);
+        width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+        font-size: 18px; line-height: 1;
+        transition: background .15s, color .15s, border-color .15s;
+      }
+      #rlOrderInfoPopover .rlOiClose:hover {
+        background: rgba(255,255,255,0.08); color: var(--rlOi-text);
+        border-color: var(--rlOi-hairline);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlOrderInfoPopover:not(.rlPopoverOnDark) .rlOiClose:hover {
+          background: rgba(15,23,42,0.06);
+        }
       }
       #rlOrderInfoPopover .rlOiBody {
-        padding: 12px 14px; overflow: auto; flex: 1 1 auto; min-height: 0;
+        padding: 16px 18px; overflow: auto; flex: 1 1 auto; min-height: 0;
         font-size: 13px; line-height: 1.55; color: var(--rlOi-text);
         max-height: min(70vh, 640px);
+        display: grid; gap: 14px;
       }
       #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent); }
       #rlOrderInfoPopover .rlOiBody p { margin: 0 0 8px; }
@@ -4392,42 +4463,35 @@
       #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent) !important; }
       #rlOrderInfoPopover .rlOiEmpty,
       #rlOrderInfoPopover .rlOiError { color: var(--rlOi-muted); padding: 8px 2px; }
-      #rlOrderInfoPopover .rlOiError { color: #dc2626; }
-      #rlOrderInfoPopover.rlPopoverOnDark .rlOiError { color: #fca5a5; }
+      #rlOrderInfoPopover .rlOiError { color: #fb7185; }
+      @media (prefers-color-scheme: light) {
+        #rlOrderInfoPopover:not(.rlPopoverOnDark) .rlOiError { color: #e11d48; }
+      }
 
-      /* ── Files popover (rlFiles*) — same Rocketlane-light default ── */
+      /* ── Files popover — shared Younium colour tokens above ── */
       #rlFilesPopover {
-        --rlFiles-surface-1: #ffffff;
-        --rlFiles-surface-2: rgba(15,23,42,0.035);
-        --rlFiles-surface-3: rgba(15,23,42,0.055);
-        --rlFiles-hairline: rgba(15,23,42,0.10);
-        --rlFiles-hairline-strong: rgba(15,23,42,0.16);
-        --rlFiles-text: rgba(15,23,42,0.92);
-        --rlFiles-muted: rgba(15,23,42,0.72);
-        --rlFiles-muted2: rgba(15,23,42,0.58);
-        --rlFiles-accent: #0284c7;
-        --rlFiles-accent-soft: rgba(2,132,199,0.10);
         position: fixed; z-index: 10050;
         width: min(960px, calc(100vw - 32px));
         background: var(--rlFiles-surface-1);
         color: var(--rlFiles-text);
-        border: 1px solid var(--rlFiles-hairline);
-        border-radius: 12px;
-        box-shadow: 0 16px 40px rgba(15,23,42,0.14);
+        border: 1px solid var(--rlFiles-hairline-strong);
+        border-radius: 14px;
+        box-shadow: var(--rlPop-shadow);
         overflow: hidden;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
       }
       #rlFilesPopover.rlPopoverOnDark {
         --rlFiles-surface-1: #0f1424;
         --rlFiles-surface-2: rgba(255,255,255,0.045);
         --rlFiles-surface-3: rgba(255,255,255,0.07);
-        --rlFiles-hairline: rgba(255,255,255,0.08);
-        --rlFiles-hairline-strong: rgba(255,255,255,0.14);
-        --rlFiles-text: rgba(255,255,255,0.92);
-        --rlFiles-muted: rgba(255,255,255,0.62);
+        --rlFiles-hairline: rgba(255,255,255,0.06);
+        --rlFiles-hairline-strong: rgba(255,255,255,0.10);
+        --rlFiles-text: rgba(255,255,255,0.94);
+        --rlFiles-muted: rgba(255,255,255,0.66);
         --rlFiles-muted2: rgba(255,255,255,0.46);
         --rlFiles-accent: #7dd3fc;
-        --rlFiles-accent-soft: rgba(125,211,252,0.12);
-        box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+        --rlFiles-accent-soft: rgba(125,211,252,0.14);
+        --rlPop-shadow: 0 12px 32px rgba(0,0,0,0.24);
       }
       #rlFilesPopover.rlFilesDropActive {
         outline: 2px dashed var(--rlFiles-accent);
@@ -4436,42 +4500,56 @@
       }
       #rlFilesPopover .rlFilesHead {
         display: flex; align-items: center; justify-content: space-between;
-        gap: 10px; padding: 12px 14px;
+        gap: 10px; padding: 16px 20px;
         border-bottom: 1px solid var(--rlFiles-hairline);
-        font-weight: 600; font-size: 13px;
+        font-weight: 600; font-size: 14px;
       }
       #rlFilesPopover .rlFilesActions {
         display: flex; align-items: center; gap: 6px;
       }
       #rlFilesPopover .rlFilesBtn {
-        font-size: 11px; padding: 4px 10px;
-        background: var(--rlFiles-surface-3);
-        border: 1px solid var(--rlFiles-hairline);
-        color: var(--rlFiles-muted);
-        border-radius: 6px; cursor: pointer; white-space: nowrap;
+        font-size: 12px; padding: 7px 12px;
+        background: var(--rlFiles-surface-2);
+        border: 1px solid var(--rlFiles-hairline-strong);
+        color: var(--rlFiles-text);
+        border-radius: 10px; cursor: pointer; white-space: nowrap;
+        font-weight: 500;
       }
       #rlFilesPopover .rlFilesBtn:hover:not(:disabled) {
-        background: var(--rlFiles-surface-2);
-        color: var(--rlFiles-text);
+        background: var(--rlFiles-surface-3);
         border-color: var(--rlFiles-hairline-strong);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
       }
       #rlFilesPopover .rlFilesBtn:disabled { opacity: 0.7; cursor: wait; }
       #rlFilesPopover .rlFilesClose {
-        appearance: none; border: 1px solid var(--rlFiles-hairline);
-        background: var(--rlFiles-surface-3); color: inherit;
-        width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
-        font-size: 16px; line-height: 1;
+        display: inline-flex; align-items: center; justify-content: center;
+        appearance: none; border: 1px solid transparent;
+        background: transparent; color: var(--rlFiles-muted);
+        width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+        font-size: 18px; line-height: 1;
+        transition: background .15s, color .15s, border-color .15s;
+      }
+      #rlFilesPopover .rlFilesClose:hover {
+        background: rgba(255,255,255,0.08); color: var(--rlFiles-text);
+        border-color: var(--rlFiles-hairline);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlFilesPopover:not(.rlPopoverOnDark) .rlFilesClose:hover {
+          background: rgba(15,23,42,0.06);
+        }
       }
       #rlFilesPopover .rlFilesBody {
-        padding: 12px 14px; max-height: min(70vh, 640px); overflow: auto;
+        padding: 16px 18px; max-height: min(70vh, 640px); overflow: auto;
         font-size: 13px; color: var(--rlFiles-muted);
       }
-      #rlFilesPopover .rlFilesError { color: #dc2626; }
-      #rlFilesPopover.rlPopoverOnDark .rlFilesError { color: #fca5a5; }
+      #rlFilesPopover .rlFilesError { color: #fb7185; }
+      @media (prefers-color-scheme: light) {
+        #rlFilesPopover:not(.rlPopoverOnDark) .rlFilesError { color: #e11d48; }
+      }
       #rlFilesPopover .rlFilesEmpty { color: var(--rlFiles-muted2); padding: 8px 2px; }
       #rlFilesPopover .rlFilesList {
         display: flex; flex-direction: column; max-height: 65vh; overflow-y: auto;
-        border: 1px solid var(--rlFiles-hairline); border-radius: 8px;
+        border: 1px solid var(--rlFiles-hairline); border-radius: 10px;
         background: var(--rlFiles-surface-2);
       }
       #rlFilesPopover .rlFilesListHead,
@@ -6862,6 +6940,7 @@
   }
 
   function rlZdReplaceTabIcon(cell) {
+    if (!cell) return;
     const svgs = Array.from(cell.querySelectorAll("svg"));
     if (svgs.length) {
       const host = document.createElement("span");
@@ -6883,6 +6962,66 @@
       if (neu) imgs[0].replaceWith(neu);
     }
   }
+
+  // Rename "Project updates" everywhere it still appears (nav tab + "Show tabs for
+  // this project" settings list). Debounced; bails when the phrase is gone so it
+  // cannot MutationObserver-loop the way style rewriting did in v1.10.2.
+  function rlZdRenameProjectUpdatesLabels(root) {
+    const scope = root && root.nodeType === 1 ? root : document.body;
+    if (!scope || !scope.isConnected) return;
+    let hay = "";
+    try { hay = scope.textContent || ""; } catch (_) { return; }
+    if (!/Project updates/i.test(hay)) return;
+
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+    let node;
+    const touchedParents = [];
+    while ((node = walker.nextNode())) {
+      const raw = node.nodeValue;
+      if (!raw || raw.length > 64 || !/Project updates/i.test(raw)) continue;
+      // Skip script/style text nodes.
+      const p = node.parentElement;
+      if (p && /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA)$/i.test(p.tagName)) continue;
+      node.nodeValue = raw.replace(/Project updates/gi, "Zendesk cases");
+      if (p) touchedParents.push(p);
+    }
+    for (const el of touchedParents) {
+      const row =
+        el.closest(
+          '[class*="TabWrapper"], [class*="TabLabel"], [role="listitem"], [role="menuitem"], li, button, [class*="MenuItem"], [class*="ListItem"]',
+        ) || el.parentElement;
+      if (!row || row.getAttribute("data-rl-zd-icon") === "1") continue;
+      rlZdReplaceTabIcon(row);
+      row.setAttribute("data-rl-zd-icon", "1");
+    }
+  }
+
+  let rlZdLabelRenameTimer = null;
+  function rlZdScheduleLabelRename() {
+    if (rlZdLabelRenameTimer) return;
+    rlZdLabelRenameTimer = setTimeout(() => {
+      rlZdLabelRenameTimer = null;
+      try { rlZdRenameProjectUpdatesLabels(document.body); } catch (_) {}
+    }, 180);
+  }
+
+  try {
+    new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === "childList" && m.addedNodes && m.addedNodes.length) {
+          rlZdScheduleLabelRename();
+          return;
+        }
+        if (m.type === "characterData") {
+          const v = m.target && m.target.nodeValue;
+          if (v && /Project updates/i.test(v)) {
+            rlZdScheduleLabelRename();
+            return;
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  } catch (_) {}
 
   function rlZdRestoreNativeContent() {
     for (const el of rlZdHiddenNative) {
@@ -7686,6 +7825,7 @@
     rlZdInjectStyles();
     const row = getNavRow();
     if (row) rlZdPatchUpdatesTab(row);
+    try { rlZdRenameProjectUpdatesLabels(document.body); } catch (_) {}
 
     const m = location.pathname.match(/^\/projects\/(\d+)/);
     const projectId = m ? m[1] : "";
