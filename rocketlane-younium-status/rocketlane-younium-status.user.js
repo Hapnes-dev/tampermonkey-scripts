@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.1
-// @description  Rocketlane improvements in one script (v1.12.1: home In-progress projects under Overdue): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.12.2
+// @description  Rocketlane improvements in one script (v1.12.2: home PROJECTS light chrome + In-progress-only filter): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4198,17 +4198,31 @@
     return rlHpIsUserOnProject(raw, userId);
   }
 
-  /** Home panel shows In progress only (matches PPT default focus + overdue placement). */
+  /** Home panel shows In progress only (Completed / Cancelled / On Hold / etc never list). */
   function rlHpIsHomeListStatus(statusKey) {
-    return String(statusKey || "") === "in_progress";
+    const k = String(statusKey || "");
+    // Defensive exclusions — allow-list is still In progress only.
+    if (k === "completed" || k === "cancelled") return false;
+    return k === "in_progress";
   }
 
   function rlHpStatusLabelFromFields(fields) {
     const list = Array.isArray(fields) ? fields : [];
     for (const f of list) {
-      if (String(f?.fieldName ?? "").toLowerCase() === "status") {
-        return String((f?.metaFieldValue || {}).label ?? f?.fieldValue ?? "").trim();
+      const name = String(f?.fieldName ?? "").trim().toLowerCase();
+      const col = String(f?.fieldColumnName ?? "").trim().toLowerCase();
+      if (name !== "status" && col !== "status") continue;
+      const meta = f?.metaFieldValue;
+      if (meta && typeof meta === "object") {
+        const fromMeta = String(meta.label ?? meta.value ?? "").trim();
+        if (fromMeta) return fromMeta;
       }
+      const fv = f?.fieldValue;
+      if (fv != null && typeof fv === "object") {
+        const fromObj = String(fv.label ?? fv.value ?? "").trim();
+        if (fromObj) return fromObj;
+      }
+      return String(fv ?? "").trim();
     }
     return "";
   }
@@ -4554,31 +4568,41 @@
     }
   }
 
+  const RL_HP_STYLE_READY = "1.12.2";
+
   function rlHpInjectStyles() {
-    if (document.getElementById("rlHomeProjectsStyles")) return;
-    const style = document.createElement("style");
-    style.id = "rlHomeProjectsStyles";
+    let style = document.getElementById("rlHomeProjectsStyles");
+    // Version pin so a TM bump refreshes CSS once (same pattern as rlZdReady).
+    if (style && style.dataset.rlHpReady === RL_HP_STYLE_READY) return;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "rlHomeProjectsStyles";
+      (document.head || document.documentElement).appendChild(style);
+    }
     style.textContent = [
       "#rlHomeProjectsPanel{",
-      "--rlhp-bg:#0b1220;--rlhp-border:rgba(255,255,255,0.10);--rlhp-muted:rgba(255,255,255,0.70);",
-      "--rlhp-text:rgba(255,255,255,0.92);--rlhp-good:#34d399;--rlhp-warn:#fbbf24;--rlhp-bad:#fb7185;",
-      "--rlhp-accent:#6ee7ff;--rlhp-surface-2:rgba(255,255,255,0.06);--rlhp-radius:12px;",
+      /* Light Rocketlane home chrome — soft translucent panel, not PPT dark shell. */
+      "--rlhp-bg:rgba(255,255,255,0.55);--rlhp-border:rgba(15,23,42,0.10);--rlhp-muted:rgba(15,23,42,0.58);",
+      "--rlhp-text:rgba(15,23,42,0.90);--rlhp-good:#059669;--rlhp-warn:#b45309;--rlhp-bad:#e11d48;",
+      "--rlhp-accent:#0369a1;--rlhp-surface-2:rgba(255,255,255,0.72);--rlhp-radius:12px;",
       "box-sizing:border-box;width:100%;margin:16px 0 20px;padding:14px 16px 16px;",
       "border:1px solid var(--rlhp-border);border-radius:16px;background:var(--rlhp-bg);",
+      "box-shadow:0 1px 2px rgba(15,23,42,0.04),0 8px 24px rgba(15,23,42,0.06);",
+      "backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);",
       "color:var(--rlhp-text);font-family:Segoe UI,system-ui,sans-serif;font-size:13px;line-height:1.35}",
       "#rlHomeProjectsPanel *{box-sizing:border-box}",
       "#rlHomeProjectsPanel .rlhpHd{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}",
       "#rlHomeProjectsPanel .rlhpTitle{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0}",
       "#rlHomeProjectsPanel .rlhpActions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
       "#rlHomeProjectsPanel .rlhpBtn{appearance:none;border:1px solid var(--rlhp-border);background:var(--rlhp-surface-2);color:var(--rlhp-text);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}",
-      "#rlHomeProjectsPanel .rlhpBtn:hover{background:rgba(255,255,255,0.10)}",
+      "#rlHomeProjectsPanel .rlhpBtn:hover{background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.16)}",
       "#rlHomeProjectsPanel .rlhpBtn:disabled{opacity:0.55;cursor:default}",
-      "#rlHomeProjectsPanel .rlhpBtnPrimary{border-color:rgba(110,231,255,0.35);background:linear-gradient(180deg,rgba(110,231,255,0.16),rgba(255,255,255,0.04));color:var(--rlhp-accent)}",
+      "#rlHomeProjectsPanel .rlhpBtnPrimary{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
       "#rlHomeProjectsPanel .rlhpStatusLine{color:var(--rlhp-muted);font-size:12px;margin:0 0 10px}",
       "#rlHomeProjectsPanel .rlhpStatusLine.rlhpErr{color:var(--rlhp-bad)}",
       "#rlHomeProjectsPanel .rlhpList{max-height:min(60vh,640px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
       "#rlHomeProjectsPanel .rlhpOwnerHd{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 4px;cursor:pointer;border-radius:8px;user-select:none}",
-      "#rlHomeProjectsPanel .rlhpOwnerHd:hover{background:rgba(255,255,255,0.04)}",
+      "#rlHomeProjectsPanel .rlhpOwnerHd:hover{background:rgba(15,23,42,0.04)}",
       "#rlHomeProjectsPanel .rlhpOwnerLeft{display:flex;gap:8px;align-items:center;min-width:0}",
       "#rlHomeProjectsPanel .rlhpOwnerName{font-weight:650;color:var(--rlhp-text)}",
       "#rlHomeProjectsPanel .rlhpOwnerCount{color:var(--rlhp-muted);font-size:12px}",
@@ -4587,25 +4611,25 @@
       "#rlHomeProjectsPanel .rlhpPinBtn{opacity:0.55;filter:grayscale(1)}",
       "#rlHomeProjectsPanel .rlhpPinBtn.pinned{opacity:1;filter:none}",
       "#rlHomeProjectsPanel .rlhpSortCluster{display:flex;gap:4px}",
-      "#rlHomeProjectsPanel .rlhpSortBtn.active{color:var(--rlhp-accent);border-color:rgba(110,231,255,0.28);background:rgba(110,231,255,0.08)}",
-      "#rlHomeProjectsPanel .rlhpCard{border:1px solid var(--rlhp-border);background:rgba(255,255,255,0.04);border-radius:var(--rlhp-radius);padding:12px 14px;display:grid;gap:8px;cursor:pointer;transition:transform 120ms ease,background 120ms ease,border-color 120ms ease}",
-      "#rlHomeProjectsPanel .rlhpCard:hover{transform:translateY(-1px);background:rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.18)}",
-      "#rlHomeProjectsPanel .rlhpCard:focus-visible{outline:2px solid rgba(110,231,255,0.55);outline-offset:2px}",
+      "#rlHomeProjectsPanel .rlhpSortBtn.active{color:var(--rlhp-accent);border-color:rgba(3,105,161,0.28);background:rgba(3,105,161,0.08)}",
+      "#rlHomeProjectsPanel .rlhpCard{border:1px solid rgba(15,23,42,0.08);background:rgba(255,255,255,0.78);border-radius:var(--rlhp-radius);padding:12px 14px;display:grid;gap:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.04);transition:transform 120ms ease,background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}",
+      "#rlHomeProjectsPanel .rlhpCard:hover{transform:translateY(-1px);background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.14);box-shadow:0 4px 12px rgba(15,23,42,0.08)}",
+      "#rlHomeProjectsPanel .rlhpCard:focus-visible{outline:2px solid rgba(3,105,161,0.45);outline-offset:2px}",
       "#rlHomeProjectsPanel .rlhpRow{display:flex;gap:10px;align-items:center;justify-content:space-between}",
       "#rlHomeProjectsPanel .rlhpName{font-weight:650;font-size:13px;line-height:1.2;word-break:break-word;color:var(--rlhp-text)}",
-      "#rlHomeProjectsPanel .rlhpPct{display:inline-flex;align-items:center;font-size:11px;border:1px solid transparent;padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:var(--rlhp-surface-2);font-weight:500;white-space:nowrap}",
+      "#rlHomeProjectsPanel .rlhpPct{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.08);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(255,255,255,0.85);font-weight:500;white-space:nowrap}",
       "#rlHomeProjectsPanel .rlhpMeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}",
-      "#rlHomeProjectsPanel .rlhpTag{display:inline-flex;align-items:center;font-size:11px;border:1px solid transparent;padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:var(--rlhp-surface-2);line-height:1.2;font-weight:500}",
-      "#rlHomeProjectsPanel .rlhpTag.good{color:var(--rlhp-good);background:rgba(52,211,153,0.12)}",
-      "#rlHomeProjectsPanel .rlhpTag.warn{color:var(--rlhp-warn);background:rgba(251,191,36,0.12)}",
-      "#rlHomeProjectsPanel .rlhpTag.bad{color:var(--rlhp-bad);background:rgba(251,113,133,0.12)}",
-      "#rlHomeProjectsPanel .rlhpTag.normal{color:var(--rlhp-accent);background:rgba(110,231,255,0.12)}",
-      "#rlHomeProjectsPanel .rlhpTag.hold{color:var(--rlhp-muted);background:rgba(148,163,184,0.16)}",
-      "#rlHomeProjectsPanel .rlhpProgress{height:6px;width:100%;border-radius:999px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.06);overflow:hidden}",
-      "#rlHomeProjectsPanel .rlhpBar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,rgba(110,231,255,0.95),rgba(52,211,153,0.90));transition:width 400ms ease}",
+      "#rlHomeProjectsPanel .rlhpTag{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.06);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(248,250,252,0.95);line-height:1.2;font-weight:500}",
+      "#rlHomeProjectsPanel .rlhpTag.good{color:var(--rlhp-good);background:rgba(5,150,105,0.10);border-color:rgba(5,150,105,0.18)}",
+      "#rlHomeProjectsPanel .rlhpTag.warn{color:var(--rlhp-warn);background:rgba(180,83,9,0.10);border-color:rgba(180,83,9,0.18)}",
+      "#rlHomeProjectsPanel .rlhpTag.bad{color:var(--rlhp-bad);background:rgba(225,29,72,0.10);border-color:rgba(225,29,72,0.18)}",
+      "#rlHomeProjectsPanel .rlhpTag.normal{color:var(--rlhp-accent);background:rgba(3,105,161,0.08);border-color:rgba(3,105,161,0.16)}",
+      "#rlHomeProjectsPanel .rlhpTag.hold{color:rgba(71,85,105,0.90);background:rgba(148,163,184,0.18);border-color:rgba(148,163,184,0.28)}",
+      "#rlHomeProjectsPanel .rlhpProgress{height:6px;width:100%;border-radius:999px;background:rgba(15,23,42,0.06);border:1px solid rgba(15,23,42,0.05);overflow:hidden}",
+      "#rlHomeProjectsPanel .rlhpBar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#10b981);transition:width 400ms ease}",
       "@media (max-width:720px){#rlHomeProjectsPanel{margin:12px 0 16px;padding:12px}#rlHomeProjectsPanel .rlhpList{max-height:min(70vh,560px)}}",
     ].join("");
-    document.documentElement.appendChild(style);
+    style.dataset.rlHpReady = RL_HP_STYLE_READY;
   }
 
   function rlHpFindOverdueSection() {
