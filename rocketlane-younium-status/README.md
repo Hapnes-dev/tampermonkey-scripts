@@ -225,6 +225,7 @@ The Project Progress Tracker's handover wizard, on the Rocketlane page where the
 ### Where the button is
 
 - On the **Handover to service** task card in the project plan, immediately right of the assignee avatar. The board is virtualised, so the button is re-attached whenever a lane re-renders.
+- Once the task is **Completed** the pill turns green and reads **✓ Delivered**, so the card answers "is this handed over?" without opening anything. Rocketlane collapses a completed card to a single row and drops the footer, so there the badge sits on its own line under the task name. It stays clickable — useful for re-copying the checklist or opening the ticket flow again. Ticking it from the wizard flips the pill immediately rather than waiting for Rocketlane to refetch.
 - Also as a **Delivery to service** chip in the project nav, right of the Oneflow chip — the fallback for projects that don't carry the task.
 
 The card match is anchored on the whole phrase, so the unrelated *Handover from sales to delivery* task never gets a button.

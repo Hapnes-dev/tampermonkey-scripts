@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.4.3
+// @version      1.4.4
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3185,6 +3185,12 @@
     if (!dtsMarkComplete || !dtsTaskId) return "";
     try {
       const r = await dtsCompleteTask(dtsTaskId);
+      // Flip the card to the green "Delivered" pill straight away instead of
+      // waiting for Rocketlane to refetch and collapse the card itself.
+      if (dtsProject?.rlProjectId) {
+        dtsCompletedProjects.add(String(dtsProject.rlProjectId));
+        dtsScheduleCardPass();
+      }
       return r.alreadyDone ? " Oppgaven var allerede Completed." : " «Handover to service» er merket Completed.";
     } catch (e) {
       return " MEN oppgaven ble ikke merket fullført: " + (e?.message ?? e);
@@ -3333,6 +3339,13 @@
       .dtsCardBtn:hover { background: #e0e7ff; border-color: #a5b4fc; }
       .dtsCardBtn:active { transform: translateY(0.5px); }
       .dtsCardBtn:disabled { opacity: 0.6; cursor: default; }
+      /* Handover ticked complete — same pill, green, so the card answers
+         "is this delivered?" without opening anything. */
+      .dtsCardBtn.dtsDone { background: #dcfce7; border-color: #86efac; color: #166534; }
+      .dtsCardBtn.dtsDone:hover { background: #bbf7d0; border-color: #4ade80; }
+      /* Its own line on the collapsed completed card, indented to sit under the
+         task title rather than under the status check. */
+      .dtsDoneRow { display: flex; padding: 0 12px 6px 38px; }
       dialog.dlgYouniumStatus .dtsInput {
         width: 100%; box-sizing: border-box;
         padding: 9px 11px; border-radius: 9px;
@@ -3388,37 +3401,83 @@
       try { dtsEnsureCardButtons(); } catch (_) {}
     }, 150);
   }
+  // Projects whose handover this session ticked complete. Rocketlane doesn't
+  // know about our out-of-band API write until it refetches, so the card keeps
+  // its full pre-completion layout for a while; without this the button would
+  // sit there still saying "Delivery to service" right after you finished the
+  // wizard. Cleared by a reload, by which point the card renders completed on
+  // its own.
+  const dtsCompletedProjects = new Set();
+
+  // Rocketlane collapses a completed task card to a single 44px row — green
+  // check, title, "…" menu — and drops the footer the action button anchors to.
+  // So "done" can't just restyle the button in place; it needs its own anchor.
+  function dtsCardIsCompleted(card) {
+    return /CompletedCard|completed-task-card/i.test(String(card.className || ""));
+  }
+  function dtsBuildCardButton(done) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = done ? "dtsCardBtn dtsDone" : "dtsCardBtn";
+    btn.title = done
+      ? "Overleveringen er merket fullført — klikk for å åpne veiviseren igjen"
+      : "Åpne overleveringsveiviseren for dette prosjektet";
+    btn.innerHTML = done
+      ? '<span aria-hidden="true">✓</span><span>Delivered</span>'
+      : '<span aria-hidden="true">📋</span><span>Delivery to service</span>';
+    // The card is a click target for opening the task drawer, so the button
+    // has to keep its click to itself.
+    btn.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      btn.disabled = true;
+      try {
+        const ctx = getOneflowContext();
+        let taskId = "";
+        try { taskId = String((await dtsFindHandoverTask(ctx.rlProjectId))?.taskId ?? ""); } catch (_) {}
+        await openDeliveryToServiceWizard(taskId);
+      } finally { btn.disabled = false; }
+    });
+    return btn;
+  }
   function dtsEnsureCardButtons() {
-    if (!/^\/projects\/\d+/.test(location.pathname)) return;
+    const m = location.pathname.match(/^\/projects\/(\d+)/);
+    if (!m) return;
+    const tickedHere = dtsCompletedProjects.has(m[1]);
     const cards = document.querySelectorAll('[data-cy][class*="task-cardstyles__Card"]');
     for (const card of cards) {
       if (!dtsIsHandoverTaskName(card.getAttribute("data-cy"))) continue;
-      const footer = card.querySelector('[class*="CardFooter"]');
-      if (!footer || footer.querySelector(".dtsCardBtn")) continue;
-      const anchor = footer.querySelector(".assignee-picker");
-      if (!anchor) continue;
+      const collapsed = dtsCardIsCompleted(card);
+      const done = collapsed || tickedHere;
+      const existing = card.querySelector(".dtsCardBtn");
+      // A card that flipped state keeps the wrong control until it's replaced.
+      if (existing && existing.classList.contains("dtsDone") !== done) {
+        existing.closest(".dtsDoneRow")?.remove();
+        existing.remove();
+      } else if (existing) {
+        continue;
+      }
       dtsInjectStyles();
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "dtsCardBtn";
-      btn.title = "Åpne overleveringsveiviseren for dette prosjektet";
-      btn.innerHTML = '<span aria-hidden="true">📋</span><span>Delivery to service</span>';
-      // The card is a click target for opening the task drawer, so the button
-      // has to keep its click to itself.
-      btn.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        btn.disabled = true;
-        try {
-          const ctx = getOneflowContext();
-          let taskId = "";
-          try { taskId = String((await dtsFindHandoverTask(ctx.rlProjectId))?.taskId ?? ""); } catch (_) {}
-          await openDeliveryToServiceWizard(taskId);
-        } finally { btn.disabled = false; }
-      });
-      // margin-right:auto on this button makes the footer's space-between pack
-      // it next to the assignee avatar and leave the responsible avatar right.
-      anchor.insertAdjacentElement("afterend", btn);
+      if (collapsed) {
+        // Compact layout: the title row has ~28px of slack next to the "…"
+        // menu, so the badge goes on its own line under it rather than
+        // squeezing the task name.
+        const row = card.querySelector('[class*="CardContentContainer"]');
+        const host = row?.parentElement;
+        if (!host) continue;
+        const line = document.createElement("div");
+        line.className = "dtsDoneRow";
+        line.appendChild(dtsBuildCardButton(true));
+        host.appendChild(line);
+      } else {
+        const footer = card.querySelector('[class*="CardFooter"]');
+        if (!footer) continue;
+        const anchor = footer.querySelector(".assignee-picker");
+        if (!anchor) continue;
+        // margin-right:auto on this button makes the footer's space-between pack
+        // it next to the assignee avatar and leave the responsible avatar right.
+        anchor.insertAdjacentElement("afterend", dtsBuildCardButton(done));
+      }
     }
   }
 
