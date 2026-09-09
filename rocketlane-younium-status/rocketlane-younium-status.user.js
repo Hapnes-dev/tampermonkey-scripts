@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.11.1
-// @description  Rocketlane improvements in one script (v1.11.1: order-info first in Choose templates list): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.12.0
+// @description  Rocketlane improvements in one script (v1.12.0: PPT-style PROJECTS panel on Rocketlane home): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -1717,6 +1717,11 @@
   }
   // Inject the button if missing, then sync it to the current project. Idempotent.
   function ensure() {
+    if (rlHpIsHomePath(location.pathname)) {
+      try { rlHpEnsureHomePanel(); } catch (_) {}
+      return;
+    }
+    try { rlHpTeardownHomePanel(); } catch (_) {}
     if (!/^\/projects\/\d+/.test(location.pathname)) return; // only on project pages
     injectStyles();
     // Action bar only needs the plan/tasks Responsible row — do not wait for the
@@ -1753,6 +1758,14 @@
     // The card button can't rely on the nav-chip early-out below — the board
     // keeps mounting and unmounting card footers long after the chips settle.
     dtsScheduleCardPass();
+    // Home panel: connected singleton = done (avoid observer loops).
+    if (rlHpIsHomePath(location.pathname)) {
+      const homePanel = document.getElementById("rlHomeProjectsPanel");
+      if (homePanel && homePanel.isConnected) return;
+      if (ensureTimer) return;
+      ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 120);
+      return;
+    }
     // Steady-state early-out: once the button is present + connected there's
     // nothing for the mutation observer to do (route changes are handled by the
     // history hooks below), so we never schedule work on the SPA's hot path.
@@ -2711,7 +2724,9 @@
     const boot = setInterval(() => {
       tries += 1;
       ensure();
-      if ((document.getElementById("ynNavBtn") && document.getElementById("rlProjectActionBar")) || tries > 80) clearInterval(boot);
+      if ((document.getElementById("ynNavBtn") && document.getElementById("rlProjectActionBar")) ||
+          (rlHpIsHomePath(location.pathname) && document.getElementById("rlHomeProjectsPanel")) ||
+          tries > 80) clearInterval(boot);
     }, 150);
     // Prefetch project links as soon as the URL has an id — pills patch in when
     // the Responsible row appears instead of waiting on the API then.
@@ -4107,6 +4122,803 @@
     await Promise.all(runners);
   }
   // @@rlCategoryHelpers:end
+
+  // @@rlHomeProjectsHelpers:start
+  // Pure home PROJECTS helpers (extracted by home-projects.test.js).
+  // Progress buckets from lightV1 progressStatus: 1=To do, 2=In progress, 3=Completed, 4=Blocked.
+
+  const RL_HP_WORKLOAD_SYNC_NAME = "[Tracker] Workload Sync";
+  const RL_HP_PROGRESS_TODO = 1;
+  const RL_HP_PROGRESS_IN_PROGRESS = 2;
+  const RL_HP_PROGRESS_COMPLETED = 3;
+  const RL_HP_PROGRESS_BLOCKED = 4;
+
+  function rlHpClamp(n, lo, hi) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return lo;
+    return Math.min(hi, Math.max(lo, x));
+  }
+
+  /** Parse Rocketlane `__api_key` localStorage JSON: ["api_key", uuid, userId, accountId]. */
+  function rlHpParseApiKeyBundle(raw) {
+    let parsed = raw;
+    if (typeof raw === "string") {
+      try { parsed = JSON.parse(raw); } catch (_) { return { key: "", userId: "", accountId: "" }; }
+    }
+    if (!Array.isArray(parsed)) return { key: "", userId: "", accountId: "" };
+    const key = parsed.find((v) => typeof v === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) || "";
+    const userId = parsed.find((v) => (typeof v === "number" && Number.isInteger(v) && v > 0) ||
+      (typeof v === "string" && /^\d+$/.test(v) && Number(v) > 0));
+    const ints = parsed.filter((v) => (typeof v === "number" && Number.isInteger(v) && v > 0) ||
+      (typeof v === "string" && /^\d+$/.test(v) && Number(v) > 0));
+    const accountId = ints.length >= 2 ? String(ints[1]) : "";
+    return {
+      key: String(key || ""),
+      userId: userId != null ? String(userId) : "",
+      accountId,
+    };
+  }
+
+  function rlHpPersonDisplayName(person) {
+    const first = String(person?.firstName ?? "").trim();
+    const last = String(person?.lastName ?? "").trim();
+    const full = (first + " " + last).trim();
+    if (full) return full;
+    const email = String(person?.emailId ?? person?.email ?? "").trim();
+    if (email) return email;
+    const uid = person?.userId ?? person?.id;
+    return uid != null && String(uid).trim() ? ("User #" + String(uid).trim()) : "";
+  }
+
+  function rlHpNormalizeOwnerKey(name) {
+    return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
+  function rlHpIsUserOnProject(raw, userId) {
+    const uid = String(userId ?? "").trim();
+    if (!uid) return false;
+    const ownerUid = String(raw?.projectOwner?.userId ?? raw?.projectOwner?.id ?? "").trim();
+    if (ownerUid && ownerUid === uid) return true;
+    const members = Array.isArray(raw?.teamMembers) ? raw.teamMembers : [];
+    for (const m of members) {
+      const mid = String(m?.userId ?? m?.id ?? m?.memberId ?? "").trim();
+      if (mid && mid === uid) return true;
+    }
+    return false;
+  }
+
+  function rlHpIsExcludedMetaProject(raw) {
+    const name = String(raw?.projectName ?? raw?.name ?? "").trim();
+    return name === RL_HP_WORKLOAD_SYNC_NAME;
+  }
+
+  function rlHpShouldKeepProject(raw, userId) {
+    if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
+    return rlHpIsUserOnProject(raw, userId);
+  }
+
+  function rlHpStatusLabelFromFields(fields) {
+    const list = Array.isArray(fields) ? fields : [];
+    for (const f of list) {
+      if (String(f?.fieldName ?? "").toLowerCase() === "status") {
+        return String((f?.metaFieldValue || {}).label ?? f?.fieldValue ?? "").trim();
+      }
+    }
+    return "";
+  }
+
+  function rlHpStatusKeyFromLabel(label) {
+    const n = String(label || "").trim().toLowerCase().replace(/\s+/g, "");
+    if (n === "proposed") return "proposed";
+    if (n === "inplanning") return "in_planning";
+    if (n === "tobestaffed") return "to_be_staffed";
+    if (n === "inprogress") return "in_progress";
+    if (n === "onhold") return "on_hold";
+    if (n === "blocked") return "blocked";
+    if (n === "completed") return "completed";
+    if (n === "cancelled" || n === "canceled") return "cancelled";
+    return "proposed";
+  }
+
+  function rlHpStatusTag(statusKey) {
+    const status = String(statusKey || "proposed");
+    if (status === "completed") return { cls: "good", text: "Completed" };
+    if (status === "cancelled") return { cls: "bad", text: "Cancelled" };
+    if (status === "blocked") return { cls: "bad", text: "Blocked" };
+    if (status === "on_hold") return { cls: "hold", text: "On Hold" };
+    if (status === "in_progress") return { cls: "warn", text: "In progress" };
+    if (status === "to_be_staffed") return { cls: "normal", text: "To be Staffed" };
+    if (status === "in_planning") return { cls: "normal", text: "In Planning" };
+    return { cls: "normal", text: "Proposed" };
+  }
+
+  function rlHpProgressBucketCount(progressStatus, group) {
+    const want = Number(group);
+    const rows = Array.isArray(progressStatus) ? progressStatus : [];
+    for (const row of rows) {
+      if (Number(row?.group) === want) {
+        const n = Number(row?.count);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      }
+    }
+    return 0;
+  }
+
+  /** completed / (todo + inprogress + completed + blocked); 0 when empty. */
+  function rlHpComputeProgressPercent(progressStatus) {
+    const todo = rlHpProgressBucketCount(progressStatus, RL_HP_PROGRESS_TODO);
+    const inProg = rlHpProgressBucketCount(progressStatus, RL_HP_PROGRESS_IN_PROGRESS);
+    const done = rlHpProgressBucketCount(progressStatus, RL_HP_PROGRESS_COMPLETED);
+    const blocked = rlHpProgressBucketCount(progressStatus, RL_HP_PROGRESS_BLOCKED);
+    const total = todo + inProg + done + blocked;
+    if (total <= 0) return 0;
+    return Math.round((done / total) * 100);
+  }
+
+  function rlHpNormalizeDueDate(dueDate) {
+    if (dueDate == null || dueDate === "") return "";
+    if (typeof dueDate === "number" && Number.isFinite(dueDate)) {
+      const d = new Date(dueDate);
+      if (Number.isNaN(d.getTime())) return "";
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + day;
+    }
+    const s = String(dueDate).trim();
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return y + "-" + mo + "-" + day;
+  }
+
+  function rlHpFmtDueDate(dateStr, locale) {
+    if (!dateStr) return "";
+    const d = new Date(dateStr + "T00:00:00");
+    if (Number.isNaN(d.getTime())) return dateStr;
+    try {
+      return d.toLocaleDateString(locale || "en-GB", { year: "numeric", month: "short", day: "2-digit" });
+    } catch (_) {
+      return dateStr;
+    }
+  }
+
+  /** @param {string} due YYYY-MM-DD @param {number|Date} [now] */
+  function rlHpDueTag(due, now) {
+    if (!due) return null;
+    const dueDate = new Date(due + "T00:00:00");
+    if (Number.isNaN(dueDate.getTime())) return { cls: "", text: "Due: " + due };
+    const today = now instanceof Date ? now : new Date(now == null ? Date.now() : now);
+    const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const d0 = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+    const diffDays = Math.round((d0.getTime() - t0.getTime()) / (1000 * 60 * 60 * 24));
+    const formatted = rlHpFmtDueDate(due);
+    if (diffDays < 0) return { cls: "bad", text: "Overdue (" + formatted + ")" };
+    if (diffDays === 0) return { cls: "warn", text: "Due today" };
+    if (diffDays <= 7) return { cls: "warn", text: "Due in " + diffDays + "d" };
+    return { cls: "", text: "Due: " + formatted };
+  }
+
+  function rlHpNormalizeLightProject(raw) {
+    const id = String(raw?.projectId ?? raw?.id ?? "").trim();
+    const name = String(raw?.projectName ?? raw?.name ?? "").trim() || ("Project " + id);
+    const owner = rlHpPersonDisplayName(raw?.projectOwner);
+    const statusLabel = rlHpStatusLabelFromFields(raw?.fields);
+    const status = rlHpStatusKeyFromLabel(statusLabel);
+    const due = rlHpNormalizeDueDate(raw?.dueDate ?? raw?.endDate ?? raw?.targetDate);
+    const progress = rlHpComputeProgressPercent(raw?.progressStatus);
+    return {
+      id,
+      name,
+      owner,
+      ownerKey: rlHpNormalizeOwnerKey(owner) || "no owner",
+      status,
+      statusLabel,
+      due,
+      progress,
+      href: id ? ("/projects/" + encodeURIComponent(id) + "/plan") : "/projects",
+    };
+  }
+
+  function rlHpFilterAndNormalizeProjects(rows, userId) {
+    const list = Array.isArray(rows) ? rows : [];
+    const out = [];
+    const seen = new Set();
+    for (const raw of list) {
+      if (!rlHpShouldKeepProject(raw, userId)) continue;
+      const p = rlHpNormalizeLightProject(raw);
+      if (!p.id || seen.has(p.id)) continue;
+      seen.add(p.id);
+      out.push(p);
+    }
+    return out;
+  }
+
+  function rlHpSortProjects(projects, mode) {
+    const list = Array.isArray(projects) ? projects.slice() : [];
+    const m = String(mode || "due_asc");
+    if (m === "name_asc") {
+      list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      return list;
+    }
+    if (m === "progress_desc") {
+      list.sort((a, b) => (b.progress - a.progress) || String(a.name).localeCompare(String(b.name)));
+      return list;
+    }
+    if (m === "progress_asc") {
+      list.sort((a, b) => (a.progress - b.progress) || String(a.name).localeCompare(String(b.name)));
+      return list;
+    }
+    if (m === "due_desc") {
+      list.sort((a, b) => {
+        const ad = a.due ? new Date(a.due + "T00:00:00").getTime() : Number.NEGATIVE_INFINITY;
+        const bd = b.due ? new Date(b.due + "T00:00:00").getTime() : Number.NEGATIVE_INFINITY;
+        return (bd - ad) || String(a.name).localeCompare(String(b.name));
+      });
+      return list;
+    }
+    // due_asc default — missing due last
+    list.sort((a, b) => {
+      const ad = a.due ? new Date(a.due + "T00:00:00").getTime() : Number.POSITIVE_INFINITY;
+      const bd = b.due ? new Date(b.due + "T00:00:00").getTime() : Number.POSITIVE_INFINITY;
+      return (ad - bd) || String(a.name).localeCompare(String(b.name));
+    });
+    return list;
+  }
+
+  function rlHpGroupProjectsByOwner(projects) {
+    const grouped = Object.create(null);
+    for (const p of Array.isArray(projects) ? projects : []) {
+      const key = p.owner || "No owner";
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(p);
+    }
+    return grouped;
+  }
+
+  function rlHpOrderOwnerKeys(ownerKeys, pinnedKey) {
+    const keys = Array.isArray(ownerKeys) ? ownerKeys.slice() : [];
+    const pin = rlHpNormalizeOwnerKey(pinnedKey);
+    keys.sort((a, b) => {
+      const aMine = !!pin && rlHpNormalizeOwnerKey(a) === pin;
+      const bMine = !!pin && rlHpNormalizeOwnerKey(b) === pin;
+      if (aMine !== bMine) return aMine ? -1 : 1;
+      if (a === "No owner") return 1;
+      if (b === "No owner") return -1;
+      return a.localeCompare(b);
+    });
+    return keys;
+  }
+
+  /** First click → desc, second → asc, third → desc. */
+  function rlHpNextSortMode(current, modeAsc, modeDesc) {
+    if (current === modeDesc) return modeAsc;
+    if (current === modeAsc) return modeDesc;
+    return modeDesc;
+  }
+  // @@rlHomeProjectsHelpers:end
+
+  // ── Home PROJECTS panel (v1.12.0) — PPT-style list on pathname "/" ──
+
+  const RL_HP_CACHE_MS = 5 * 60 * 1000;
+  const RL_HP_PAGE_SIZE = 200;
+  const RL_HP_MAX_PAGES = 50;
+  const RL_HP_FETCH_CONCURRENCY = 3;
+  const RL_HP_GM_PINNED = "rlHpPinnedOwner";
+  const RL_HP_GM_COLLAPSED = "rlHpCollapsedOwners";
+  const RL_HP_GM_SORT = "rlHpSortMode";
+
+  let rlHpCache = { at: 0, userId: "", projects: null };
+  let rlHpInflight = null;
+  let rlHpGen = 0;
+  let rlHpUi = {
+    sort: "due_asc",
+    pinnedOwner: "",
+    collapsed: new Set(),
+    syncing: false,
+    error: "",
+    projects: [],
+  };
+
+  function rlHpIsHomePath(pathname) {
+    const p = String(pathname == null ? location.pathname : pathname);
+    return p === "/" || p === "";
+  }
+
+  function rlHpReadCurrentUserId() {
+    try {
+      return rlHpParseApiKeyBundle(window.localStorage.getItem("__api_key")).userId;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function rlHpLoadUiPrefs() {
+    try {
+      rlHpUi.pinnedOwner = String(GM_getValue(RL_HP_GM_PINNED, "") || "");
+    } catch (_) { rlHpUi.pinnedOwner = ""; }
+    try {
+      const raw = GM_getValue(RL_HP_GM_COLLAPSED, "[]");
+      const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+      rlHpUi.collapsed = new Set(Array.isArray(arr) ? arr.map((s) => rlHpNormalizeOwnerKey(s)).filter(Boolean) : []);
+    } catch (_) { rlHpUi.collapsed = new Set(); }
+    try {
+      const sort = String(GM_getValue(RL_HP_GM_SORT, "due_asc") || "due_asc");
+      rlHpUi.sort = /^(due_asc|due_desc|progress_asc|progress_desc|name_asc)$/.test(sort) ? sort : "due_asc";
+    } catch (_) { rlHpUi.sort = "due_asc"; }
+  }
+
+  function rlHpSaveCollapsed() {
+    try { GM_setValue(RL_HP_GM_COLLAPSED, JSON.stringify([...rlHpUi.collapsed])); } catch (_) {}
+  }
+
+  function rlHpSavePinned(ownerKey) {
+    rlHpUi.pinnedOwner = String(ownerKey || "");
+    try { GM_setValue(RL_HP_GM_PINNED, rlHpUi.pinnedOwner); } catch (_) {}
+  }
+
+  function rlHpSaveSort(mode) {
+    rlHpUi.sort = String(mode || "due_asc");
+    try { GM_setValue(RL_HP_GM_SORT, rlHpUi.sort); } catch (_) {}
+  }
+
+  async function rlHpFetchLightPage(offset, limit) {
+    return gmRocketlaneRequest(
+      "POST",
+      "/projects/lightV1",
+      { offset: String(offset), limit: String(limit) },
+      { sortModel: [], filterModel: {} },
+    );
+  }
+
+  async function rlHpFetchAllLightProjects() {
+    const first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE);
+    const all = Array.isArray(first?.data) ? first.data.slice() : [];
+    const total = typeof first?.count === "number" ? first.count : undefined;
+    if (all.length < RL_HP_PAGE_SIZE || (total != null && all.length >= total)) return all;
+
+    const offsets = [];
+    let offset = RL_HP_PAGE_SIZE;
+    let page = 1;
+    while (page < RL_HP_MAX_PAGES) {
+      if (total != null && offset >= total) break;
+      offsets.push(offset);
+      offset += RL_HP_PAGE_SIZE;
+      page += 1;
+      if (total == null) break;
+    }
+
+    if (total != null && offsets.length) {
+      let cursor = 0;
+      const workers = Array.from({ length: Math.min(RL_HP_FETCH_CONCURRENCY, offsets.length) }, async () => {
+        while (cursor < offsets.length) {
+          const off = offsets[cursor++];
+          const json = await rlHpFetchLightPage(off, RL_HP_PAGE_SIZE);
+          const batch = Array.isArray(json?.data) ? json.data : [];
+          if (batch.length) all.push(...batch);
+        }
+      });
+      await Promise.all(workers);
+      return all;
+    }
+
+    while (page < RL_HP_MAX_PAGES) {
+      const json = await rlHpFetchLightPage(offset, RL_HP_PAGE_SIZE);
+      const batch = Array.isArray(json?.data) ? json.data : [];
+      if (!batch.length) break;
+      all.push(...batch);
+      if (batch.length < RL_HP_PAGE_SIZE) break;
+      offset += RL_HP_PAGE_SIZE;
+      page += 1;
+    }
+    return all;
+  }
+
+  async function rlHpLoadProjects(opts) {
+    const force = !!(opts && opts.force);
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) throw new Error("No Rocketlane user id in __api_key yet — reload once logged in.");
+
+    const now = Date.now();
+    if (!force && rlHpCache.projects && rlHpCache.userId === userId && (now - rlHpCache.at) < RL_HP_CACHE_MS) {
+      return rlHpCache.projects;
+    }
+    if (!force && rlHpInflight && rlHpCache.userId === userId) return rlHpInflight;
+
+    const gen = ++rlHpGen;
+    const promise = (async () => {
+      const rows = await rlHpFetchAllLightProjects();
+      if (gen !== rlHpGen) return rlHpCache.projects || [];
+      const projects = rlHpFilterAndNormalizeProjects(rows, userId);
+      rlHpCache = { at: Date.now(), userId, projects };
+      return projects;
+    })();
+
+    rlHpInflight = promise;
+    try {
+      return await promise;
+    } finally {
+      if (rlHpInflight === promise) rlHpInflight = null;
+    }
+  }
+
+  function rlHpInjectStyles() {
+    if (document.getElementById("rlHomeProjectsStyles")) return;
+    const style = document.createElement("style");
+    style.id = "rlHomeProjectsStyles";
+    style.textContent = [
+      "#rlHomeProjectsPanel{",
+      "--rlhp-bg:#0b1220;--rlhp-border:rgba(255,255,255,0.10);--rlhp-muted:rgba(255,255,255,0.70);",
+      "--rlhp-text:rgba(255,255,255,0.92);--rlhp-good:#34d399;--rlhp-warn:#fbbf24;--rlhp-bad:#fb7185;",
+      "--rlhp-accent:#6ee7ff;--rlhp-surface-2:rgba(255,255,255,0.06);--rlhp-radius:12px;",
+      "box-sizing:border-box;width:100%;margin:16px 0 20px;padding:14px 16px 16px;",
+      "border:1px solid var(--rlhp-border);border-radius:16px;background:var(--rlhp-bg);",
+      "color:var(--rlhp-text);font-family:Segoe UI,system-ui,sans-serif;font-size:13px;line-height:1.35}",
+      "#rlHomeProjectsPanel *{box-sizing:border-box}",
+      "#rlHomeProjectsPanel .rlhpHd{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}",
+      "#rlHomeProjectsPanel .rlhpTitle{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0}",
+      "#rlHomeProjectsPanel .rlhpActions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
+      "#rlHomeProjectsPanel .rlhpBtn{appearance:none;border:1px solid var(--rlhp-border);background:var(--rlhp-surface-2);color:var(--rlhp-text);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}",
+      "#rlHomeProjectsPanel .rlhpBtn:hover{background:rgba(255,255,255,0.10)}",
+      "#rlHomeProjectsPanel .rlhpBtn:disabled{opacity:0.55;cursor:default}",
+      "#rlHomeProjectsPanel .rlhpBtnPrimary{border-color:rgba(110,231,255,0.35);background:linear-gradient(180deg,rgba(110,231,255,0.16),rgba(255,255,255,0.04));color:var(--rlhp-accent)}",
+      "#rlHomeProjectsPanel .rlhpStatusLine{color:var(--rlhp-muted);font-size:12px;margin:0 0 10px}",
+      "#rlHomeProjectsPanel .rlhpStatusLine.rlhpErr{color:var(--rlhp-bad)}",
+      "#rlHomeProjectsPanel .rlhpList{max-height:min(60vh,640px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
+      "#rlHomeProjectsPanel .rlhpOwnerHd{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 4px;cursor:pointer;border-radius:8px;user-select:none}",
+      "#rlHomeProjectsPanel .rlhpOwnerHd:hover{background:rgba(255,255,255,0.04)}",
+      "#rlHomeProjectsPanel .rlhpOwnerLeft{display:flex;gap:8px;align-items:center;min-width:0}",
+      "#rlHomeProjectsPanel .rlhpOwnerName{font-weight:650;color:var(--rlhp-text)}",
+      "#rlHomeProjectsPanel .rlhpOwnerCount{color:var(--rlhp-muted);font-size:12px}",
+      "#rlHomeProjectsPanel .rlhpOwnerCollapse{color:var(--rlhp-muted);width:1em;display:inline-block}",
+      "#rlHomeProjectsPanel .rlhpPinBtn,#rlHomeProjectsPanel .rlhpSortBtn{appearance:none;border:1px solid transparent;background:transparent;color:var(--rlhp-muted);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer}",
+      "#rlHomeProjectsPanel .rlhpPinBtn{opacity:0.55;filter:grayscale(1)}",
+      "#rlHomeProjectsPanel .rlhpPinBtn.pinned{opacity:1;filter:none}",
+      "#rlHomeProjectsPanel .rlhpSortCluster{display:flex;gap:4px}",
+      "#rlHomeProjectsPanel .rlhpSortBtn.active{color:var(--rlhp-accent);border-color:rgba(110,231,255,0.28);background:rgba(110,231,255,0.08)}",
+      "#rlHomeProjectsPanel .rlhpCard{border:1px solid var(--rlhp-border);background:rgba(255,255,255,0.04);border-radius:var(--rlhp-radius);padding:12px 14px;display:grid;gap:8px;cursor:pointer;transition:transform 120ms ease,background 120ms ease,border-color 120ms ease}",
+      "#rlHomeProjectsPanel .rlhpCard:hover{transform:translateY(-1px);background:rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.18)}",
+      "#rlHomeProjectsPanel .rlhpCard:focus-visible{outline:2px solid rgba(110,231,255,0.55);outline-offset:2px}",
+      "#rlHomeProjectsPanel .rlhpRow{display:flex;gap:10px;align-items:center;justify-content:space-between}",
+      "#rlHomeProjectsPanel .rlhpName{font-weight:650;font-size:13px;line-height:1.2;word-break:break-word;color:var(--rlhp-text)}",
+      "#rlHomeProjectsPanel .rlhpPct{display:inline-flex;align-items:center;font-size:11px;border:1px solid transparent;padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:var(--rlhp-surface-2);font-weight:500;white-space:nowrap}",
+      "#rlHomeProjectsPanel .rlhpMeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}",
+      "#rlHomeProjectsPanel .rlhpTag{display:inline-flex;align-items:center;font-size:11px;border:1px solid transparent;padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:var(--rlhp-surface-2);line-height:1.2;font-weight:500}",
+      "#rlHomeProjectsPanel .rlhpTag.good{color:var(--rlhp-good);background:rgba(52,211,153,0.12)}",
+      "#rlHomeProjectsPanel .rlhpTag.warn{color:var(--rlhp-warn);background:rgba(251,191,36,0.12)}",
+      "#rlHomeProjectsPanel .rlhpTag.bad{color:var(--rlhp-bad);background:rgba(251,113,133,0.12)}",
+      "#rlHomeProjectsPanel .rlhpTag.normal{color:var(--rlhp-accent);background:rgba(110,231,255,0.12)}",
+      "#rlHomeProjectsPanel .rlhpTag.hold{color:var(--rlhp-muted);background:rgba(148,163,184,0.16)}",
+      "#rlHomeProjectsPanel .rlhpProgress{height:6px;width:100%;border-radius:999px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.06);overflow:hidden}",
+      "#rlHomeProjectsPanel .rlhpBar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,rgba(110,231,255,0.95),rgba(52,211,153,0.90));transition:width 400ms ease}",
+      "@media (max-width:720px){#rlHomeProjectsPanel{margin:12px 0 16px;padding:12px}#rlHomeProjectsPanel .rlhpList{max-height:min(70vh,560px)}}",
+    ].join("");
+    document.documentElement.appendChild(style);
+  }
+
+  function rlHpFindGreetingAnchor() {
+    const re = /^\s*Good\s+(morning|afternoon|evening)\b/i;
+    const candidates = document.querySelectorAll("h1,h2,h3,p,div,span");
+    for (const el of candidates) {
+      if (!el || !el.isConnected) continue;
+      if (el.closest && el.closest("#rlHomeProjectsPanel")) continue;
+      const text = (el.childNodes && el.childNodes.length === 1 && el.childNodes[0].nodeType === 3)
+        ? String(el.textContent || "")
+        : (el.childElementCount === 0 ? String(el.textContent || "") : "");
+      if (!re.test(text)) continue;
+      let node = el;
+      for (let i = 0; i < 4 && node.parentElement; i++) {
+        const parent = node.parentElement;
+        if (parent === document.body || parent === document.documentElement) break;
+        const kids = parent.children ? parent.children.length : 0;
+        if (kids >= 2 && kids <= 12) return parent;
+        node = parent;
+      }
+      return el;
+    }
+    return null;
+  }
+
+  function rlHpFindMountHost() {
+    return document.querySelector("[role='main']") || document.querySelector("main") || document.body;
+  }
+
+  function rlHpPlacePanel(panel) {
+    const greeting = rlHpFindGreetingAnchor();
+    if (greeting && greeting.parentElement) {
+      if (greeting.nextSibling !== panel) {
+        greeting.parentElement.insertBefore(panel, greeting.nextSibling);
+      }
+      return;
+    }
+    const host = rlHpFindMountHost();
+    if (!host) return;
+    if (panel.parentElement !== host) {
+      host.insertBefore(panel, host.firstChild);
+    }
+  }
+
+  function rlHpTeardownHomePanel() {
+    const panel = document.getElementById("rlHomeProjectsPanel");
+    if (panel) panel.remove();
+  }
+
+  function rlHpOpenProject(href) {
+    const url = String(href || "/projects");
+    try {
+      history.pushState({}, "", url);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch (_) {
+      location.assign(url);
+    }
+  }
+
+  function rlHpRenderPanel() {
+    const panel = document.getElementById("rlHomeProjectsPanel");
+    if (!panel) return;
+
+    let hd = panel.querySelector(".rlhpHd");
+    if (!hd) {
+      panel.textContent = "";
+      hd = document.createElement("div");
+      hd.className = "rlhpHd";
+      const title = document.createElement("h2");
+      title.className = "rlhpTitle";
+      title.textContent = "Projects";
+      const actions = document.createElement("div");
+      actions.className = "rlhpActions";
+      const add = document.createElement("a");
+      add.className = "rlhpBtn rlhpBtnPrimary";
+      add.href = "/projects";
+      add.textContent = "+ RL Project";
+      add.addEventListener("click", (e) => {
+        e.preventDefault();
+        rlHpOpenProject("/projects");
+      });
+      const sync = document.createElement("button");
+      sync.type = "button";
+      sync.className = "rlhpBtn rlhpSyncBtn";
+      sync.textContent = "Refresh";
+      sync.addEventListener("click", (e) => {
+        e.preventDefault();
+        void rlHpRefresh({ force: true });
+      });
+      actions.appendChild(add);
+      actions.appendChild(sync);
+      hd.appendChild(title);
+      hd.appendChild(actions);
+      panel.appendChild(hd);
+
+      const status = document.createElement("p");
+      status.className = "rlhpStatusLine";
+      status.setAttribute("data-rlhp-status", "1");
+      panel.appendChild(status);
+
+      const list = document.createElement("div");
+      list.className = "rlhpList";
+      list.setAttribute("data-rlhp-list", "1");
+      panel.appendChild(list);
+    }
+
+    const syncBtn = panel.querySelector(".rlhpSyncBtn");
+    if (syncBtn) {
+      syncBtn.disabled = !!rlHpUi.syncing;
+      syncBtn.textContent = rlHpUi.syncing ? "Syncing…" : "Refresh";
+    }
+
+    const statusEl = panel.querySelector("[data-rlhp-status]");
+    if (statusEl) {
+      statusEl.classList.toggle("rlhpErr", !!rlHpUi.error);
+      if (rlHpUi.error) statusEl.textContent = rlHpUi.error;
+      else if (rlHpUi.syncing && !rlHpUi.projects.length) statusEl.textContent = "Loading projects…";
+      else statusEl.textContent = rlHpUi.projects.length
+        ? (rlHpUi.projects.length + " project" + (rlHpUi.projects.length === 1 ? "" : "s"))
+        : "No projects for you yet.";
+    }
+
+    const listEl = panel.querySelector("[data-rlhp-list]");
+    if (!listEl) return;
+    listEl.textContent = "";
+
+    const sorted = rlHpSortProjects(rlHpUi.projects, rlHpUi.sort);
+    const grouped = rlHpGroupProjectsByOwner(sorted);
+
+    if (!rlHpUi.pinnedOwner) {
+      let best = "";
+      let bestCount = 0;
+      for (const [k, arr] of Object.entries(grouped)) {
+        if (k === "No owner") continue;
+        if (arr.length > bestCount) { best = k; bestCount = arr.length; }
+      }
+      if (best) rlHpSavePinned(rlHpNormalizeOwnerKey(best));
+    }
+
+    const ownerKeys = rlHpOrderOwnerKeys(Object.keys(grouped), rlHpUi.pinnedOwner);
+
+    for (const ownerKey of ownerKeys) {
+      const projects = grouped[ownerKey] || [];
+      const ownerNorm = rlHpNormalizeOwnerKey(ownerKey);
+      const collapsed = rlHpUi.collapsed.has(ownerNorm);
+
+      const ownerHd = document.createElement("div");
+      ownerHd.className = "rlhpOwnerHd";
+      ownerHd.setAttribute("role", "button");
+      ownerHd.tabIndex = 0;
+      ownerHd.setAttribute("aria-expanded", collapsed ? "false" : "true");
+
+      const left = document.createElement("div");
+      left.className = "rlhpOwnerLeft";
+      const chev = document.createElement("span");
+      chev.className = "rlhpOwnerCollapse";
+      chev.textContent = collapsed ? ">" : "v";
+      const name = document.createElement("span");
+      name.className = "rlhpOwnerName";
+      name.textContent = ownerKey;
+      const count = document.createElement("span");
+      count.className = "rlhpOwnerCount";
+      count.textContent = "(" + projects.length + ")";
+      const pin = document.createElement("button");
+      pin.type = "button";
+      pin.className = "rlhpPinBtn" + (ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner) ? " pinned" : "");
+      pin.textContent = "📌";
+      pin.title = ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner)
+        ? "Your group — listed first. Click to unpin."
+        : 'List "' + ownerKey + '" first';
+      pin.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isMine = ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner);
+        rlHpSavePinned(isMine ? "" : ownerNorm);
+        rlHpRenderPanel();
+      });
+      left.appendChild(chev);
+      left.appendChild(name);
+      left.appendChild(count);
+      left.appendChild(pin);
+
+      const sortCluster = document.createElement("div");
+      sortCluster.className = "rlhpSortCluster";
+      const makeSortBtn = (modeAsc, modeDesc, label) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "rlhpSortBtn";
+        const isAsc = rlHpUi.sort === modeAsc;
+        const isDesc = rlHpUi.sort === modeDesc;
+        if (isAsc || isDesc) btn.classList.add("active");
+        btn.textContent = label + (isAsc ? " ▲" : isDesc ? " ▼" : "");
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          rlHpSaveSort(rlHpNextSortMode(rlHpUi.sort, modeAsc, modeDesc));
+          rlHpRenderPanel();
+        });
+        return btn;
+      };
+      sortCluster.appendChild(makeSortBtn("due_asc", "due_desc", "Due"));
+      sortCluster.appendChild(makeSortBtn("progress_asc", "progress_desc", "Progress"));
+
+      ownerHd.appendChild(left);
+      ownerHd.appendChild(sortCluster);
+
+      const toggle = () => {
+        if (rlHpUi.collapsed.has(ownerNorm)) rlHpUi.collapsed.delete(ownerNorm);
+        else rlHpUi.collapsed.add(ownerNorm);
+        rlHpSaveCollapsed();
+        rlHpRenderPanel();
+      };
+      ownerHd.addEventListener("click", (e) => {
+        if (e.target && e.target.closest && e.target.closest("button")) return;
+        toggle();
+      });
+      ownerHd.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        toggle();
+      });
+
+      listEl.appendChild(ownerHd);
+      if (collapsed) continue;
+
+      for (const p of projects) {
+        const card = document.createElement("div");
+        card.className = "rlhpCard";
+        card.tabIndex = 0;
+        card.setAttribute("role", "link");
+        card.setAttribute("aria-label", "Open project " + p.name);
+
+        const top = document.createElement("div");
+        top.className = "rlhpRow";
+        const nm = document.createElement("div");
+        nm.className = "rlhpName";
+        nm.textContent = p.name;
+        const pct = document.createElement("div");
+        pct.className = "rlhpPct";
+        pct.textContent = p.progress + "%";
+        top.appendChild(nm);
+        top.appendChild(pct);
+
+        const meta = document.createElement("div");
+        meta.className = "rlhpMeta";
+        const st = rlHpStatusTag(p.status);
+        const stEl = document.createElement("span");
+        stEl.className = "rlhpTag " + st.cls;
+        stEl.textContent = st.text;
+        meta.appendChild(stEl);
+        const due = rlHpDueTag(p.due);
+        if (due) {
+          const du = document.createElement("span");
+          du.className = "rlhpTag " + due.cls;
+          du.textContent = due.text;
+          meta.appendChild(du);
+        }
+
+        const prog = document.createElement("div");
+        prog.className = "rlhpProgress";
+        const bar = document.createElement("div");
+        bar.className = "rlhpBar";
+        bar.style.width = rlHpClamp(p.progress, 0, 100) + "%";
+        prog.appendChild(bar);
+
+        card.appendChild(top);
+        card.appendChild(meta);
+        card.appendChild(prog);
+
+        const open = () => rlHpOpenProject(p.href);
+        card.addEventListener("click", (e) => { e.preventDefault(); open(); });
+        card.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          open();
+        });
+        listEl.appendChild(card);
+      }
+    }
+  }
+
+  async function rlHpRefresh(opts) {
+    rlHpUi.syncing = true;
+    rlHpUi.error = "";
+    rlHpRenderPanel();
+    try {
+      const projects = await rlHpLoadProjects(opts);
+      rlHpUi.projects = Array.isArray(projects) ? projects : [];
+    } catch (e) {
+      rlHpUi.error = String(e?.message || e || "Failed to load projects");
+    } finally {
+      rlHpUi.syncing = false;
+      rlHpRenderPanel();
+    }
+  }
+
+  function rlHpEnsureHomePanel() {
+    if (!rlHpIsHomePath()) {
+      rlHpTeardownHomePanel();
+      return;
+    }
+    rlHpInjectStyles();
+    rlHpLoadUiPrefs();
+    let panel = document.getElementById("rlHomeProjectsPanel");
+    const firstMount = !panel;
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = "rlHomeProjectsPanel";
+      panel.setAttribute("aria-label", "Projects");
+    }
+    rlHpPlacePanel(panel);
+    if (firstMount) {
+      rlHpRenderPanel();
+      void rlHpRefresh({ force: false });
+    } else {
+      rlHpPlacePanel(panel);
+    }
+  }
+
+
 
   // ── Category / order-info engine (v1.11.0) — uses @@rlCategoryHelpers + gmRocketlaneRequest ──
 

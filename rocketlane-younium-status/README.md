@@ -1,6 +1,6 @@
 # Rocketlane improvements
 
-One Tampermonkey userscript with seven independent improvements for `kiona.rocketlane.com`:
+One Tampermonkey userscript with eight independent improvements for `kiona.rocketlane.com`:
 
 1. **Younium status** — a status chip in the project nav plus a full **Younium status details** modal (formerly *Rocketlane Younium Status*).
 2. **Gantt calendar + floating chat panel** — hide the timeline half of project-plan pages behind a toggle, and chat from the timeline (formerly *Rocketlane Enhancer* v2.0, merged in v1.2.0).
@@ -9,6 +9,7 @@ One Tampermonkey userscript with seven independent improvements for `kiona.rocke
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
 6. **Project action buttons** (v1.10.6) — **Files** and **Order info** popovers match **Younium status details**: dark `#0f1424` shell, translucent white inner cards (`.youniumSection` / `.rlOiSection`), off-white body text. Fetch / Delivery unchanged. **v1.11.1:** **Add category** pill + plan `+` menu entry; **From order info / HubSpot line items** is first in the native **Choose templates** dropdown (and above **Choose a template** on empty plans).
 7. **Zendesk cases** (v1.10.9) — PPT dark `#0f1424` shell + faded-white rows; title forced light for contrast; panel sits ~20px below tabs. Renames **Project updates** → **Zendesk cases**. Needs leading plant number + logged-in Zendesk session.
+8. **Home PROJECTS panel** (v1.12.0) — on `https://kiona.rocketlane.com/` (`pathname === "/"`), a PPT-style dark **PROJECTS** panel below the greeting (native Incomplete/Overdue widgets stay). Cards show %, status/due pills, cyan progress bar; owner groups with pin + Due/Progress sort. Data from `POST /projects/lightV1` (owner/member filter, exclude `[Tracker] Workload Sync`); progress = completed / (todo+inprogress+completed+blocked). `+ RL Project` → `/projects`.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
