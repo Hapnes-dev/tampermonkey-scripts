@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.4
-// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsible, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.6.5
+// @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -49,11 +49,11 @@
  *     search for the plant ID. Oneflow is called with the browser's own
  *     session cookie through GM_xmlhttpRequest. Read-only.
  *  1c. Project action buttons (section 5c), ported from the tracker's project
- *     header link row. Dark pill buttons left of Rocketlane's Responsibility
+ *     header link row. Dark/light pills left of Rocketlane's Responsible
  *     filter: Zendesk, Oneflow (Order/Subscription), Younium (Order/Subscription),
- *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Links come from the
- *     Internal Quality Control task notes, Hubspot Deal Description, and
- *     Delivery status fields (same priority as the tracker). Edit/Remove stay
+ *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Also a PPT Find-style
+ *     "🔎 Fetch URLs" button left of Present that re-reads IQC / Deal Description
+ *     / Delivery status (and Oneflow plant search when empty). Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
  *  1d. Delivery to service (section 8), ported from the tracker's handover
@@ -1692,6 +1692,7 @@
     // Action bar only needs the plan/tasks Responsible row — do not wait for the
     // tab chips / All-files row, or a slow nav paint blocks the pills for seconds.
     try { rlEnsureProjectActionBar(); } catch (_) {}
+    try { rlEnsureAutoFetchButton(); } catch (_) {}
     if (!document.getElementById("ynNavBtn")) {
       const row = getNavRow();
       if (!row) return;
@@ -2658,11 +2659,18 @@
     return rlParseProjectLinksFromHtml(String(detail?.taskDescription || detail?.description || ""));
   }
 
-  async function rlLoadProjectLinks(rlProjectId) {
+  async function rlLoadProjectLinks(rlProjectId, opts) {
     const pid = String(rlProjectId || "").trim();
     if (!pid) return rlEmptyProjectLinks();
-    if (rlProjectLinksCache.has(pid)) return rlProjectLinksCache.get(pid);
-    if (rlProjectLinksInflight.has(pid)) return rlProjectLinksInflight.get(pid);
+    const force = !!(opts && opts.force);
+    if (force) {
+      rlProjectLinksCache.delete(pid);
+      // Drop a stale in-flight result so a manual Fetch always hits the API.
+      rlProjectLinksInflight.delete(pid);
+    } else {
+      if (rlProjectLinksCache.has(pid)) return rlProjectLinksCache.get(pid);
+      if (rlProjectLinksInflight.has(pid)) return rlProjectLinksInflight.get(pid);
+    }
     const pr = (async () => {
       let iqc = rlEmptyProjectLinks();
       let deal = rlEmptyProjectLinks();
@@ -2694,6 +2702,17 @@
           if (of.subscription) merged.oneflowSubscription = of.subscription;
         }
       } catch (_) {}
+      // Manual Fetch: if Oneflow still empty, search by plant ID (PPT Find behaviour).
+      if (force && !merged.oneflowOrder && !merged.oneflowSubscription) {
+        try {
+          const plantId = extractPlantIdFromProjectName(readProjectName());
+          if (plantId) {
+            const found = await ofSearchByPlantId(plantId);
+            if (found.order?.id) merged.oneflowOrder = ofDocumentUrl(found.order.id);
+            if (found.subscription?.id) merged.oneflowSubscription = ofDocumentUrl(found.subscription.id);
+          }
+        } catch (_) {}
+      }
       rlProjectLinksCache.set(pid, merged);
       return merged;
     })();
@@ -2750,6 +2769,29 @@
         font-size: 12px; line-height: 1; width: 14px; text-align: center;
         flex: 0 0 auto;
       }
+      /* PPT-style Find button, left of Rocketlane Present */
+      #rlAutoFetchUrlsBtn {
+        display: inline-flex; align-items: center; gap: 6px;
+        height: 32px; padding: 1px 12px; margin-right: 8px;
+        border-radius: 8px; border: 1px solid rgba(15, 23, 42, 0.14);
+        background: rgba(15, 23, 42, 0.06); color: rgba(15, 23, 42, 0.86);
+        font: 500 13px/1.2 inherit; letter-spacing: 0.01em;
+        white-space: nowrap; cursor: pointer; user-select: none;
+        box-sizing: border-box; flex: 0 0 auto;
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+      #rlAutoFetchUrlsBtn:hover {
+        background: rgba(15, 23, 42, 0.10);
+        border-color: rgba(15, 23, 42, 0.22);
+        color: rgba(15, 23, 42, 0.96);
+      }
+      #rlAutoFetchUrlsBtn:focus-visible {
+        outline: 2px solid #0284c7; outline-offset: 2px;
+      }
+      #rlAutoFetchUrlsBtn:disabled {
+        opacity: 0.65; cursor: wait;
+      }
+      #rlAutoFetchUrlsBtn .rlFetchIcon { font-size: 14px; line-height: 1; }
       dialog.rlOrderInfoDlg {
         border: none; border-radius: 12px; padding: 0; max-width: min(560px, 92vw);
         background: #111; color: rgba(255,255,255,0.92);
@@ -3031,6 +3073,94 @@
       } else {
         baf.hidden = true;
       }
+    }
+  }
+
+  function rlCountFilledLinks(links) {
+    if (!links) return 0;
+    return ["zendesk", "oneflowOrder", "oneflowSubscription", "younium", "youniumSubscription", "hubspot"]
+      .filter((k) => String(links[k] || "").trim()).length;
+  }
+
+  function rlFindPresentButton() {
+    return document.querySelector('[data-cy="present_phase.enter"], [data-cy="present_phase.exit"]');
+  }
+
+  async function rlRunAutoFetchUrls() {
+    const btn = document.getElementById("rlAutoFetchUrlsBtn");
+    const ctx = getOneflowContext();
+    if (!ctx.rlProjectId) {
+      if (btn) btn.title = "No Rocketlane project id in this URL.";
+      return;
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.dataset.rlBusy = "1";
+      const label = btn.querySelector(".rlFetchLabel");
+      if (label) label.textContent = "Fetching…";
+    }
+    try {
+      const links = await rlLoadProjectLinks(ctx.rlProjectId, { force: true });
+      const bar = document.getElementById("rlProjectActionBar");
+      if (bar) {
+        bar.dataset.rlProjectId = ctx.rlProjectId;
+        rlPatchActionBar(bar, links, ctx);
+      } else {
+        try { rlEnsureProjectActionBar(); } catch (_) {}
+      }
+      const n = rlCountFilledLinks(links);
+      if (btn) {
+        btn.title = n
+          ? ("Fetched " + n + " link(s) from IQC / Deal Description / Delivery status" +
+            (links.oneflowOrder || links.oneflowSubscription ? " (Oneflow filled)" : "") + ".")
+          : "No project links found in IQC notes, Deal Description, or Delivery status.";
+      }
+    } catch (e) {
+      if (btn) btn.title = "Fetch failed: " + (e?.message ?? e);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        delete btn.dataset.rlBusy;
+        const label = btn.querySelector(".rlFetchLabel");
+        if (label) label.textContent = "Fetch URLs";
+      }
+    }
+  }
+
+  function rlEnsureAutoFetchButton() {
+    if (!/^\/projects\/\d+/.test(location.pathname)) {
+      document.getElementById("rlAutoFetchUrlsBtn")?.remove();
+      return;
+    }
+    rlInjectActionBarStyles();
+    const presentBtn = rlFindPresentButton();
+    if (!presentBtn || !presentBtn.parentElement) return;
+    const container = presentBtn.parentElement;
+
+    let btn = document.getElementById("rlAutoFetchUrlsBtn");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "rlAutoFetchUrlsBtn";
+      btn.type = "button";
+      btn.title = "Fetch project links from Internal Quality Control notes, HubSpot Deal Description, and Delivery status (same sources as Project Progress Tracker). Also searches Oneflow by plant ID when no stored Oneflow link.";
+      const icon = document.createElement("span");
+      icon.className = "rlFetchIcon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "\uD83D\uDD0E"; // 🔎
+      const label = document.createElement("span");
+      label.className = "rlFetchLabel";
+      label.textContent = "Fetch URLs";
+      btn.appendChild(icon);
+      btn.appendChild(label);
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (btn.dataset.rlBusy) return;
+        void rlRunAutoFetchUrls();
+      });
+    }
+    if (btn.parentElement !== container || btn.nextSibling !== presentBtn) {
+      container.insertBefore(btn, presentBtn);
     }
   }
 
@@ -4324,7 +4454,7 @@
     function injectToggleButton() {
         if (document.getElementById(TOGGLE_BTN_ID)) { updateToggleButton(); return; }
 
-        const presentBtn = document.querySelector('[data-cy="present_phase.exit"]');
+        const presentBtn = document.querySelector('[data-cy="present_phase.enter"], [data-cy="present_phase.exit"]');
         const container = presentBtn
             ? presentBtn.closest('.fullscreen__Action-fhhebC') || presentBtn.parentElement
             : null;
@@ -4346,7 +4476,9 @@
             updateToggleButton();
         });
 
-        container.appendChild(btn);
+        // Keep calendar toggle to the right of Present (Fetch URLs sits to the left).
+        if (presentBtn.nextSibling) container.insertBefore(btn, presentBtn.nextSibling);
+        else container.appendChild(btn);
         updateToggleButton();
     }
 
