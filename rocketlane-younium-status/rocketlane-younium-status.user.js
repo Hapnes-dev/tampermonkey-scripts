@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.0
-// @description  Rocketlane improvements in one script (v1.10.0: Project updates tab → Zendesk cases): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.2
+// @description  Rocketlane improvements in one script (v1.10.2: Zendesk cases keeps project header, mounts on first click): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -64,7 +64,7 @@
  *     description. Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
- *  1e. Zendesk cases (v1.10.0): renames native Project updates tab, mounts
+ *  1e. Zendesk cases (v1.10.2): renames native Project updates tab, mounts
  *     #rlZendeskCasesPanel with full PPT Zendesk-tasks UI (search/hydrate/
  *     thread/reply) via zendeskApiRequest — no window.ZendeskBridge.
  *  1d. Delivery to service (section 8), ported from the tracker's handover
@@ -1781,7 +1781,12 @@
       delete document.documentElement.dataset.rlPabNoMount;
       rlFilesClosePopover();
       rlOrderInfoClosePopover();
-      rlZdTeardownPanel();
+      // Only tear down Zendesk panel when leaving status-updates. Tearing down on
+      // the way *in* raced the SPA paint and forced a second tab click.
+      if (!/\/projects\/\d+\/(?:[^/]+\/)?(?:status-)?(?:project-)?updates(?:\/|$)/i.test(location.pathname) &&
+          !/\/projects\/\d+\/.*updates/i.test(location.pathname)) {
+        rlZdTeardownPanel();
+      }
     } catch (_) {}
     // Kick action bar + chips immediately; Responsible row often paints within ~100ms.
     [0, 50, 150, 400, 900].forEach((d) => setTimeout(() => { try { ensure(); } catch (_) {} }, d));
@@ -6775,6 +6780,8 @@
 
   function rlZdIsUpdatesRouteActive(row) {
     const path = String(location.pathname || "");
+    // Live tenant uses /projects/{id}/status-updates (not bare "updates").
+    if (/\/projects\/\d+\/status-updates(?:\/|$)/i.test(path)) return true;
     if (/\/projects\/\d+\/(?:[^/]+\/)?(?:project-)?updates(?:\/|$)/i.test(path)) return true;
     if (/\/projects\/\d+\/.*updates/i.test(path)) return true;
     const cell = row ? rlZdFindUpdatesCell(row) : null;
@@ -6800,11 +6807,13 @@
       if (txt !== "zendesk cases" && !/zendesk cases/i.test(labelEl.textContent || "")) {
         rlZdSetTabLabel(cell, "Zendesk cases");
       }
+      rlZdBindTabClick(cell);
       return cell;
     }
     rlZdSetTabLabel(cell, "Zendesk cases");
     rlZdReplaceTabIcon(cell);
     cell.setAttribute("data-rl-zd-tab", "1");
+    rlZdBindTabClick(cell);
     return cell;
   }
 
@@ -6894,30 +6903,68 @@
     } catch (_) {}
   }
 
-  function rlZdFindMountContext(navRow) {
-    let el = navRow;
-    for (let depth = 0; depth < 10 && el; depth++) {
-      const parent = el.parentElement;
-      if (!parent) break;
-      const kids = Array.from(parent.children);
-      if (kids.length >= 2) {
-        const hideTargets = kids.filter((c) => c !== el && !c.contains(navRow) && c.id !== "rlZendeskCasesPanel");
-        // Prefer targets that look like content panes (not tiny chrome).
-        const contentish = hideTargets.filter((c) => {
-          const cls = String(c.className || "");
-          if (/TabWrapper|TabsWrapper|ynNavBtn/i.test(cls)) return false;
-          return true;
-        });
-        if (contentish.length) {
-          return { mountParent: parent, hideTargets: contentish, afterEl: el };
-        }
-      }
-      el = parent;
+  function rlZdFindContentPane() {
+    const pageEl = document.getElementById("page");
+    if (!pageEl) return null;
+    // Never use #page_header — that is the project top bar (account + title).
+    return (
+      pageEl.querySelector(':scope > [class*="content__Content-"]') ||
+      Array.from(pageEl.children).find((c) => c && c.id !== "page_header" && c.id !== "rlZendeskCasesPanel") ||
+      null
+    );
+  }
+
+  function rlZdCollectNativeStatusTargets() {
+    // Hide only native status-updates body inside the content pane. Never touch
+    // #page_header (logo / account / project title).
+    const content = rlZdFindContentPane();
+    if (!content) return [];
+    const hideTargets = [];
+    for (const c of Array.from(content.children)) {
+      if (!c || c.id === "rlZendeskCasesPanel") continue;
+      hideTargets.push(c);
     }
-    const main =
-      document.querySelector('[class*="PageContent"], [class*="ContentWrapper"], main, [role="main"]') ||
-      document.body;
-    return { mountParent: main.parentElement || document.body, hideTargets: main === document.body ? [] : [main], afterEl: null };
+    return hideTargets;
+  }
+
+  function rlZdHideNativeStatusContent() {
+    const targets = rlZdCollectNativeStatusTargets();
+    for (const el of targets) {
+      try {
+        if (!el || !el.isConnected) continue;
+        if (el.getAttribute("data-rl-zd-native-hidden") === "1") continue;
+        el.style.display = "none";
+        el.setAttribute("data-rl-zd-native-hidden", "1");
+        rlZdHiddenNative.push(el);
+      } catch (_) {}
+    }
+  }
+
+  function rlZdFindMountContext(_navRow) {
+    const content = rlZdFindContentPane();
+    if (content) {
+      return {
+        mountParent: content,
+        hideTargets: rlZdCollectNativeStatusTargets(),
+        afterEl: null,
+      };
+    }
+    // Content pane not painted yet — caller retries via ensure timers.
+    return null;
+  }
+
+  function rlZdBindTabClick(cell) {
+    if (!cell || cell.getAttribute("data-rl-zd-click") === "1") return;
+    cell.setAttribute("data-rl-zd-click", "1");
+    const kick = () => {
+      // Native SPA may update history slightly after the click; retry quickly.
+      [0, 30, 80, 160, 320, 600].forEach((d) => {
+        setTimeout(() => { try { rlZdEnsureTabAndPanel(); } catch (_) {} }, d);
+      });
+    };
+    cell.addEventListener("click", kick, true);
+    const a = cell.querySelector("a");
+    if (a) a.addEventListener("click", kick, true);
   }
 
   function rlZdAbsTime(iso) {
@@ -7552,6 +7599,7 @@
   }
 
   function rlZdMountPanel(mountCtx, projectId) {
+    if (!mountCtx || !mountCtx.mountParent) return false;
     rlZdTeardownPanel();
     const gen = ++rlZdPanelGen;
     rlZdPanelProjectId = projectId;
@@ -7588,14 +7636,11 @@
     panel.appendChild(head);
     panel.appendChild(body);
 
-    const parent = mountCtx.mountParent || document.body;
-    if (mountCtx.afterEl && mountCtx.afterEl.parentNode === parent) {
-      parent.insertBefore(panel, mountCtx.afterEl.nextSibling);
-    } else {
-      parent.appendChild(panel);
-    }
+    const parent = mountCtx.mountParent;
+    parent.appendChild(panel);
     rlZdPanelEl = panel;
     rlApplyPopoverSurface(panel);
+    rlZdHideNativeStatusContent();
 
     const projectName = readProjectName() || "";
     const plantId = rlZdExtractPlantId(projectName);
@@ -7608,7 +7653,7 @@
       err.textContent =
         'Need a leading plant number in the project name (e.g. "10112 - Store Name: …") to search Zendesk.';
       body.appendChild(err);
-      return;
+      return true;
     }
 
     const reload = () => { void rlZdLoadTickets(body, plantId, plantName, gen, projectId); };
@@ -7617,6 +7662,7 @@
       reload();
     });
     reload();
+    return true;
   }
 
   function rlZdEnsureTabAndPanel() {
@@ -7639,11 +7685,24 @@
     }
     if (!projectId) return;
 
-    if (rlZdPanelEl && rlZdPanelEl.isConnected && rlZdPanelProjectId === projectId) {
+    const content = rlZdFindContentPane();
+    const mountedOk =
+      rlZdPanelEl &&
+      rlZdPanelEl.isConnected &&
+      rlZdPanelProjectId === projectId &&
+      content &&
+      content.contains(rlZdPanelEl);
+
+    if (mountedOk) {
+      // React often remounts the empty state after our first hide — re-hide only
+      // inside the content pane (never #page_header).
+      rlZdHideNativeStatusContent();
       rlApplyPopoverSurface(rlZdPanelEl);
       return;
     }
+
     const mountCtx = rlZdFindMountContext(row || document.body);
+    if (!mountCtx) return; // content pane not ready; ensure timers / tab click retries
     rlZdMountPanel(mountCtx, projectId);
   }
 
