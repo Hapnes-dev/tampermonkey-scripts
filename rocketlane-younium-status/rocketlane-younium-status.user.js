@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.5
-// @description  Rocketlane improvements in one script (v1.10.5: Order info + Files match Younium status colours): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.6
+// @description  Rocketlane improvements in one script (v1.10.6: Order/Files inner cards match Younium section light-on-dark): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4452,6 +4452,23 @@
         font-size: 13px; line-height: 1.55; color: var(--rlOi-text);
         max-height: min(70vh, 640px);
         display: grid; gap: 14px;
+        background: transparent;
+      }
+      /* Same “light white inside” card as .youniumSection on dark #0f1424. */
+      #rlOrderInfoPopover .rlOiSection {
+        border: 1px solid var(--rlOi-hairline);
+        border-radius: 10px;
+        padding: 12px 14px;
+        background: rgba(255,255,255,0.035);
+        color: var(--rlOi-text);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlOrderInfoPopover:not(.rlPopoverOnDark) .rlOiSection {
+          background: rgba(15,23,42,0.035);
+        }
+      }
+      #rlOrderInfoPopover.rlPopoverOnDark .rlOiSection {
+        background: rgba(255,255,255,0.035);
       }
       #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent); }
       #rlOrderInfoPopover .rlOiBody p { margin: 0 0 8px; }
@@ -4459,6 +4476,9 @@
       /* HubSpot/field HTML often ships light-gray inline colors — force readable ink. */
       #rlOrderInfoPopover .rlOiBody :where(p, li, span, div, td, th, strong, b, em, ul, ol, font) {
         color: inherit;
+      }
+      #rlOrderInfoPopover .rlOiSection :where(p, li, span, div, td, th, strong, b, em, ul, ol, font) {
+        color: var(--rlOi-text);
       }
       #rlOrderInfoPopover .rlOiBody a { color: var(--rlOi-accent) !important; }
       #rlOrderInfoPopover .rlOiEmpty,
@@ -4540,17 +4560,28 @@
       }
       #rlFilesPopover .rlFilesBody {
         padding: 16px 18px; max-height: min(70vh, 640px); overflow: auto;
-        font-size: 13px; color: var(--rlFiles-muted);
+        font-size: 13px; color: var(--rlFiles-text);
+        display: grid; gap: 14px;
       }
       #rlFilesPopover .rlFilesError { color: #fb7185; }
       @media (prefers-color-scheme: light) {
         #rlFilesPopover:not(.rlPopoverOnDark) .rlFilesError { color: #e11d48; }
       }
       #rlFilesPopover .rlFilesEmpty { color: var(--rlFiles-muted2); padding: 8px 2px; }
+      /* Inner panel = same translucent white card as Younium .youniumSection. */
       #rlFilesPopover .rlFilesList {
         display: flex; flex-direction: column; max-height: 65vh; overflow-y: auto;
         border: 1px solid var(--rlFiles-hairline); border-radius: 10px;
-        background: var(--rlFiles-surface-2);
+        background: rgba(255,255,255,0.035);
+        color: var(--rlFiles-text);
+      }
+      @media (prefers-color-scheme: light) {
+        #rlFilesPopover:not(.rlPopoverOnDark) .rlFilesList {
+          background: rgba(15,23,42,0.035);
+        }
+      }
+      #rlFilesPopover.rlPopoverOnDark .rlFilesList {
+        background: rgba(255,255,255,0.035);
       }
       #rlFilesPopover .rlFilesListHead,
       #rlFilesPopover .rlFilesListRow {
@@ -4829,7 +4860,7 @@
     head.appendChild(closeBtn);
     const body = document.createElement("div");
     body.className = "rlOiBody";
-    body.textContent = "Loading\u2026";
+    body.innerHTML = '<div class="rlOiSection rlOiEmpty">Loading\u2026</div>';
     rlOrderInfoPopoverEl.appendChild(head);
     rlOrderInfoPopoverEl.appendChild(body);
     document.body.appendChild(rlOrderInfoPopoverEl);
@@ -4863,17 +4894,20 @@
       body.textContent = "";
       if (!html.trim()) {
         const empty = document.createElement("div");
-        empty.className = "rlOiEmpty";
+        empty.className = "rlOiSection rlOiEmpty";
         empty.textContent = "No HubSpot delivery / order status field found on this project.";
         body.appendChild(empty);
         return;
       }
-      body.innerHTML = rlSanitizeOrderHtml(html);
+      const section = document.createElement("div");
+      section.className = "rlOiSection";
+      section.innerHTML = rlSanitizeOrderHtml(html);
+      body.appendChild(section);
     } catch (e) {
       if (!rlOrderInfoGuard(gen, rlPid)) return;
       body.textContent = "";
       const err = document.createElement("div");
-      err.className = "rlOiError";
+      err.className = "rlOiSection rlOiError";
       err.textContent = "Couldn't load order info: " + (e?.message ?? e);
       body.appendChild(err);
     }
