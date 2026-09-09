@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.1
+// @version      1.6.2
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Zendesk / Oneflow / Younium / HubSpot / Rocketlane / Files / Order info / PANG / BAF) left of Responsible, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2693,26 +2693,33 @@
   }
 
   function rlInjectActionBarStyles() {
-    if (document.getElementById("rlProjectActionBarStyles")) return;
-    const style = document.createElement("style");
-    style.id = "rlProjectActionBarStyles";
+    let style = document.getElementById("rlProjectActionBarStyles");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "rlProjectActionBarStyles";
+      document.documentElement.appendChild(style);
+    }
+    // Always refresh CSS so a Tampermonkey version bump picks up style tweaks
+    // without requiring a full extension reload of a sticky <style> node.
     style.textContent = `
       #rlProjectActionBar {
-        display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 6px;
-        margin-right: 10px; max-width: min(72vw, 980px); overflow-x: auto;
-        scrollbar-width: thin; vertical-align: middle;
+        display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 4px;
+        margin-right: 8px; vertical-align: middle; flex: 0 0 auto;
+        max-width: none; overflow: visible;
       }
       #rlProjectActionBar .rlPabBtn {
-        display: inline-flex; align-items: center; gap: 6px;
-        height: 28px; padding: 4px 10px; border-radius: 999px;
-        border: 1px solid rgba(15, 23, 42, 0.12);
+        display: inline-flex; align-items: center; gap: 5px;
+        height: 24px; padding: 3px 9px; border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
         background: #1a1a1a; color: rgba(255, 255, 255, 0.92);
-        font: 500 12px/1.2 inherit; white-space: nowrap; text-decoration: none !important;
+        font: 600 11.5px/1.2 inherit; letter-spacing: 0.01em;
+        white-space: nowrap; text-decoration: none !important;
         cursor: pointer; user-select: none; flex: 0 0 auto;
+        box-sizing: border-box;
         transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
       }
       #rlProjectActionBar .rlPabBtn:hover {
-        background: #252525; border-color: rgba(255, 255, 255, 0.18);
+        background: #2a2a2a; border-color: rgba(255, 255, 255, 0.20);
         transform: translateY(-1px);
       }
       #rlProjectActionBar .rlPabBtn:focus-visible {
@@ -2722,11 +2729,16 @@
       #rlProjectActionBar .rlPabIcon {
         width: 14px; height: 14px; display: block; object-fit: contain;
         border-radius: 3px; background: #fff; padding: 1px; flex: 0 0 auto;
+        box-sizing: border-box;
       }
+      /* Colorful brand marks (Younium / PANG) — white pad looks like a sticker. */
       #rlProjectActionBar .rlPabIcon.rlPabIconBare {
         background: transparent; padding: 0; border-radius: 0;
       }
-      #rlProjectActionBar .rlPabEmoji { font-size: 13px; line-height: 1; }
+      #rlProjectActionBar .rlPabEmoji {
+        font-size: 12px; line-height: 1; width: 14px; text-align: center;
+        flex: 0 0 auto;
+      }
       dialog.rlOrderInfoDlg {
         border: none; border-radius: 12px; padding: 0; max-width: min(560px, 92vw);
         background: #111; color: rgba(255,255,255,0.92);
@@ -2749,7 +2761,6 @@
         border-radius: 8px; padding: 4px 10px; cursor: pointer;
       }
     `;
-    document.documentElement.appendChild(style);
   }
 
   function rlIsResponsibleLabel(s) {
@@ -2917,8 +2928,9 @@
       { id: "rlPabZendesk", key: "zendesk", label: "Zendesk", icon: rlFavicon("zendesk.com") },
       { id: "rlPabOneflowOrder", key: "oneflowOrder", label: "Oneflow (Order)", icon: rlFavicon("oneflow.com") },
       { id: "rlPabOneflowSub", key: "oneflowSubscription", label: "Oneflow (Subscription)", icon: rlFavicon("oneflow.com") },
-      { id: "rlPabYouniumOrder", key: "younium", label: "Younium (Order / offer)", icon: rlFavicon("younium.com") },
-      { id: "rlPabYouniumSub", key: "youniumSubscription", label: "Younium (Subscription)", icon: rlFavicon("younium.com") },
+      // Official Younium mark (same as nav chip) — bare, no white pad (matches PANG).
+      { id: "rlPabYouniumOrder", key: "younium", label: "Younium (Order)", icon: YOUNIUM_LOGO_URL, iconBare: true },
+      { id: "rlPabYouniumSub", key: "youniumSubscription", label: "Younium (Subscription)", icon: YOUNIUM_LOGO_URL, iconBare: true },
       { id: "rlPabHubspot", key: "hubspot", label: "HubSpot", icon: rlFavicon("hubspot.com") },
       { id: "rlPabRocketlane", key: "rocketlane", label: "Rocketlane", emoji: "\uD83D\uDE80", always: "rocketlane" },
       { id: "rlPabFiles", key: "files", label: "Files", emoji: "\uD83D\uDCC1", always: "files" },

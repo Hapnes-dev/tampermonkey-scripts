@@ -7,7 +7,7 @@ One Tampermonkey userscript with six independent improvements for `kiona.rocketl
 3. **Project Notes column** — a writable Note column on the Projects list with toolbox SQL persistence (formerly *Rocketlane Project Notes Column* v1.10.0, merged in v1.2.0). **Off by default since v1.4.2.**
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
-6. **Project action buttons** (v1.6.1) — PPT-style dark pills left of **Responsible**: Zendesk, Oneflow, Younium, HubSpot, Rocketlane, Files, Order info, PANG, BAF. Links from IQC task notes + HubSpot Deal Description + Delivery status (same priority as the tracker). Edit/Remove stay tracker-only.
+6. **Project action buttons** (v1.6.2) — PPT-style dark pills left of **Responsible**: Zendesk, Oneflow, Younium, HubSpot, Rocketlane, Files, Order info, PANG, BAF. Compact row (no horizontal scroll). Links from IQC task notes + HubSpot Deal Description + Delivery status. Edit/Remove stay tracker-only.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
