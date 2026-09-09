@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.5
+// @version      1.14.6
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4355,6 +4355,18 @@
   }
 
   /** @param {string} due YYYY-MM-DD @param {number|Date} [now] */
+  // The card shows the START date (requested over the due/overdue pill); the
+  // due date stays available in the card tooltip. "Starts" for a future date,
+  // "Started" for a past one.
+  function rlHpStartText(start, now) {
+    if (!start) return "";
+    const d = new Date(start + "T00:00:00");
+    if (Number.isNaN(d.getTime())) return "Start " + start;
+    const today = now instanceof Date ? now : new Date(now == null ? Date.now() : now);
+    const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const future = d.getTime() > t0.getTime();
+    return (future ? "Starts " : "Started ") + rlHpFmtDueDate(start);
+  }
   function rlHpDueTag(due, now) {
     if (!due) return null;
     const dueDate = new Date(due + "T00:00:00");
@@ -4377,6 +4389,7 @@
     const statusLabel = rlHpStatusLabelFromFields(raw?.fields);
     const status = rlHpStatusKeyFromLabel(statusLabel);
     const due = rlHpNormalizeDueDate(raw?.dueDate ?? raw?.endDate ?? raw?.targetDate);
+    const start = rlHpNormalizeDueDate(raw?.startDate ?? raw?.startDateActual);
     const progress = rlHpComputeProgressPercent(raw?.progressStatus);
     return {
       id,
@@ -4386,6 +4399,7 @@
       status,
       statusLabel,
       due,
+      start,
       progress,
       href: id ? ("/projects/" + encodeURIComponent(id) + "/plan") : "/projects",
     };
@@ -4739,7 +4753,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.14.1";
+  const RL_HP_STYLE_READY = "1.14.6";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4791,16 +4805,19 @@
       sel(" .rlhpCard:focus-visible") + "{outline:2px solid rgba(3,105,161,0.45);outline-offset:2px}",
       sel(" .rlhpRow") + "{display:flex;gap:10px;align-items:center;justify-content:space-between}",
       sel(" .rlhpName") + "{font-weight:650;font-size:13px;line-height:1.2;word-break:break-word;color:var(--rlhp-text)}",
-      sel(" .rlhpPct") + "{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.08);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(255,255,255,0.85);font-weight:500;white-space:nowrap}",
-      sel(" .rlhpMeta") + "{display:flex;flex-wrap:wrap;gap:6px;align-items:center}",
-      sel(" .rlhpTag") + "{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.06);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(248,250,252,0.95);line-height:1.2;font-weight:500}",
-      sel(" .rlhpTag.good") + "{color:var(--rlhp-good);background:rgba(5,150,105,0.10);border-color:rgba(5,150,105,0.18)}",
-      sel(" .rlhpTag.warn") + "{color:var(--rlhp-warn);background:rgba(180,83,9,0.10);border-color:rgba(180,83,9,0.18)}",
-      sel(" .rlhpTag.bad") + "{color:var(--rlhp-bad);background:rgba(225,29,72,0.10);border-color:rgba(225,29,72,0.18)}",
-      sel(" .rlhpTag.normal") + "{color:var(--rlhp-accent);background:rgba(3,105,161,0.08);border-color:rgba(3,105,161,0.16)}",
-      sel(" .rlhpTag.hold") + "{color:rgba(71,85,105,0.90);background:rgba(148,163,184,0.18);border-color:rgba(148,163,184,0.28)}",
-      sel(" .rlhpProgress") + "{height:6px;width:100%;border-radius:999px;background:rgba(15,23,42,0.06);border:1px solid rgba(15,23,42,0.05);overflow:hidden}",
-      sel(" .rlhpBar") + "{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#10b981);transition:width 400ms ease}",
+      sel(" .rlhpPct") + "{display:inline-flex;align-items:center;font-size:11px;font-variant-numeric:tabular-nums;color:var(--rlhp-muted);font-weight:500;white-space:nowrap;padding:2px 0}",
+      sel(" .rlhpMeta") + "{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}",
+      /* Status chip: hairline outline, neutral text, a small coloured dot carries the state — no tinted button look. */
+      sel(" .rlhpTag") + "{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;line-height:1.2;color:var(--rlhp-muted);background:transparent;border:1px solid rgba(15,23,42,0.12);border-radius:999px;padding:3px 9px 3px 8px;--rlhp-dot:rgba(100,116,139,0.9)}",
+      sel(" .rlhpTag::before") + "{content:'';width:6px;height:6px;border-radius:50%;background:var(--rlhp-dot);flex:0 0 auto}",
+      sel(" .rlhpTag.good") + "{--rlhp-dot:var(--rlhp-good)}",
+      sel(" .rlhpTag.warn") + "{--rlhp-dot:var(--rlhp-warn)}",
+      sel(" .rlhpTag.bad") + "{--rlhp-dot:var(--rlhp-bad)}",
+      sel(" .rlhpTag.normal") + "{--rlhp-dot:var(--rlhp-accent)}",
+      sel(" .rlhpTag.hold") + "{--rlhp-dot:rgba(148,163,184,0.95)}",
+      sel(" .rlhpDate") + "{font-size:11px;color:var(--rlhp-muted);letter-spacing:0.01em;white-space:nowrap}",
+      sel(" .rlhpProgress") + "{height:4px;width:100%;border-radius:999px;background:rgba(15,23,42,0.07);overflow:hidden}",
+      sel(" .rlhpBar") + "{height:100%;width:0%;border-radius:999px;background:rgba(3,105,161,0.80);transition:width 400ms ease}",
       "@media (max-width:720px){" + root + "{margin:12px 0 16px;padding:12px}" + sel(" .rlhpList") + "{max-height:min(70vh,560px)}}",
     ].join("");
     style.dataset.rlHpReady = RL_HP_STYLE_READY;
@@ -5041,13 +5058,16 @@
     stEl.className = "rlhpTag " + st.cls;
     stEl.textContent = st.text;
     meta.appendChild(stEl);
-    const due = rlHpDueTag(p.due);
-    if (due) {
-      const du = document.createElement("span");
-      du.className = "rlhpTag " + due.cls;
-      du.textContent = due.text;
-      meta.appendChild(du);
+    const startText = rlHpStartText(p.start);
+    if (startText) {
+      const sd = document.createElement("span");
+      sd.className = "rlhpDate";
+      sd.textContent = startText;
+      meta.appendChild(sd);
     }
+    const due = rlHpDueTag(p.due);
+    const tip = [p.statusLabel || st.text, startText, due ? due.text.replace(/^Due: /, "Due ") : ""].filter(Boolean).join(" · ");
+    card.title = tip;
 
     const prog = document.createElement("div");
     prog.className = "rlhpProgress";
