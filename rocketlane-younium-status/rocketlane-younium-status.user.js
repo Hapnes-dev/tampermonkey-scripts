@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.6.5
+// @version      1.6.6
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2769,19 +2769,20 @@
         font-size: 12px; line-height: 1; width: 14px; text-align: center;
         flex: 0 0 auto;
       }
-      /* PPT-style Find button, left of Rocketlane Present */
+      /* PPT Find-style control — sibling of Present inside Secondary flex row */
       #rlAutoFetchUrlsBtn {
-        display: inline-flex; align-items: center; gap: 6px;
-        height: 32px; padding: 1px 12px; margin-right: 8px;
+        display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+        height: 28px; padding: 0 10px; margin: 0 6px 0 0;
         border-radius: 8px; border: 1px solid rgba(15, 23, 42, 0.14);
-        background: rgba(15, 23, 42, 0.06); color: rgba(15, 23, 42, 0.86);
-        font: 500 13px/1.2 inherit; letter-spacing: 0.01em;
+        background: rgba(15, 23, 42, 0.05); color: rgba(15, 23, 42, 0.86);
+        font: 500 12px/1 inherit; letter-spacing: 0.01em;
         white-space: nowrap; cursor: pointer; user-select: none;
-        box-sizing: border-box; flex: 0 0 auto;
+        box-sizing: border-box; flex: 0 0 auto; align-self: center;
+        vertical-align: middle; line-height: 1;
         transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       #rlAutoFetchUrlsBtn:hover {
-        background: rgba(15, 23, 42, 0.10);
+        background: rgba(15, 23, 42, 0.09);
         border-color: rgba(15, 23, 42, 0.22);
         color: rgba(15, 23, 42, 0.96);
       }
@@ -2791,7 +2792,7 @@
       #rlAutoFetchUrlsBtn:disabled {
         opacity: 0.65; cursor: wait;
       }
-      #rlAutoFetchUrlsBtn .rlFetchIcon { font-size: 14px; line-height: 1; }
+      #rlAutoFetchUrlsBtn .rlFetchIcon { font-size: 13px; line-height: 1; }
       dialog.rlOrderInfoDlg {
         border: none; border-radius: 12px; padding: 0; max-width: min(560px, 92vw);
         background: #111; color: rgba(255,255,255,0.92);
@@ -3086,6 +3087,19 @@
     return document.querySelector('[data-cy="present_phase.enter"], [data-cy="present_phase.exit"]');
   }
 
+  /** Present lives inside a 32px display:block wrapper — never mount siblings there. */
+  function rlPresentSecondaryAnchor(presentBtn) {
+    if (!presentBtn) return null;
+    const secondary = presentBtn.closest('[class*="action-bar__Secondary"]');
+    if (!secondary) return null;
+    let anchor = presentBtn;
+    while (anchor.parentElement && anchor.parentElement !== secondary) {
+      anchor = anchor.parentElement;
+    }
+    if (anchor.parentElement !== secondary) return null;
+    return { secondary, anchor };
+  }
+
   async function rlRunAutoFetchUrls() {
     const btn = document.getElementById("rlAutoFetchUrlsBtn");
     const ctx = getOneflowContext();
@@ -3134,8 +3148,8 @@
     }
     rlInjectActionBarStyles();
     const presentBtn = rlFindPresentButton();
-    if (!presentBtn || !presentBtn.parentElement) return;
-    const container = presentBtn.parentElement;
+    const mount = rlPresentSecondaryAnchor(presentBtn);
+    if (!mount) return;
 
     let btn = document.getElementById("rlAutoFetchUrlsBtn");
     if (!btn) {
@@ -3159,8 +3173,9 @@
         void rlRunAutoFetchUrls();
       });
     }
-    if (btn.parentElement !== container || btn.nextSibling !== presentBtn) {
-      container.insertBefore(btn, presentBtn);
+    // Left of Present's top-level Secondary sibling (not inside the 32px Action wrapper).
+    if (btn.parentElement !== mount.secondary || btn.nextSibling !== mount.anchor) {
+      mount.secondary.insertBefore(btn, mount.anchor);
     }
   }
 
@@ -4455,9 +4470,20 @@
         if (document.getElementById(TOGGLE_BTN_ID)) { updateToggleButton(); return; }
 
         const presentBtn = document.querySelector('[data-cy="present_phase.enter"], [data-cy="present_phase.exit"]');
-        const container = presentBtn
-            ? presentBtn.closest('.fullscreen__Action-fhhebC') || presentBtn.parentElement
-            : null;
+        if (!presentBtn) {
+            setTimeout(injectToggleButton, 500);
+            return;
+        }
+        // Same Secondary flex row as Present — never nest inside fullscreen__Action
+        // (that wrapper is display:block; height:32px and only fits the Present icon).
+        const secondary = presentBtn.closest('[class*="action-bar__Secondary"]');
+        let anchor = presentBtn;
+        if (secondary) {
+            while (anchor.parentElement && anchor.parentElement !== secondary) {
+                anchor = anchor.parentElement;
+            }
+        }
+        const container = secondary || presentBtn.closest('.fullscreen__Action-fhhebC') || presentBtn.parentElement;
         if (!container) {
             setTimeout(injectToggleButton, 500);
             return;
@@ -4467,6 +4493,7 @@
         btn.id = TOGGLE_BTN_ID;
         btn.type = 'button';
         btn.className = presentBtn.className;
+        btn.style.cssText = 'height:28px;width:28px;align-self:center;flex:0 0 auto;';
         btn.innerHTML = `<span class="flex items-center rl-left-icon"><svg focusable="false" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" fill="currentColor" width="16" height="16" viewBox="0 0 32 32" aria-hidden="true"><path d="M26,4h-4V2h-2v2h-8V2h-2v2H6C4.9,4,4,4.9,4,6v20c0,1.1,0.9,2,2,2h20c1.1,0,2-0.9,2-2V6C28,4.9,27.1,4,26,4z M26,26H6V12h20V26z M26,10H6V6h4v2h2V6h8v2h2V6h4V10z"/></svg></span>`;
 
         btn.addEventListener('click', () => {
@@ -4476,9 +4503,14 @@
             updateToggleButton();
         });
 
-        // Keep calendar toggle to the right of Present (Fetch URLs sits to the left).
-        if (presentBtn.nextSibling) container.insertBefore(btn, presentBtn.nextSibling);
-        else container.appendChild(btn);
+        if (secondary && anchor.parentElement === secondary) {
+            if (anchor.nextSibling) secondary.insertBefore(btn, anchor.nextSibling);
+            else secondary.appendChild(btn);
+        } else if (presentBtn.nextSibling) {
+            container.insertBefore(btn, presentBtn.nextSibling);
+        } else {
+            container.appendChild(btn);
+        }
         updateToggleButton();
     }
 
