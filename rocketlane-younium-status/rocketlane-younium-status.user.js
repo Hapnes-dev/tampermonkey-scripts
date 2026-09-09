@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.13.0
-// @description  Rocketlane improvements in one script (v1.13.0: home PROJECTS panel — Project Owner + In progress member sections, all statuses except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.14.0
+// @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4199,22 +4199,38 @@
     return name === RL_HP_WORKLOAD_SYNC_NAME;
   }
 
-  /** Home "Project Owner" section: crown owner only — membership auto-sync stays out. */
+  /**
+   * Home "Project Owner" panel: any project current user is on (owner or member)
+   * so multi-owner headers list every project-owner person you work with.
+   */
   function rlHpShouldKeepOwnerProject(raw, userId) {
     if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
-    return rlHpIsUserProjectOwner(raw, userId);
+    return rlHpIsUserOnProject(raw, userId);
   }
 
-  /** Home "In progress" section: on project as member, not owner. */
+  /** Home "In progress" panel: on project as member, not crown owner. */
   function rlHpShouldKeepMemberProject(raw, userId) {
     if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
     if (rlHpIsUserProjectOwner(raw, userId)) return false;
     return rlHpIsUserOnProject(raw, userId);
   }
 
-  /** @deprecated Prefer rlHpShouldKeepOwnerProject — kept as owner-bucket alias. */
+  /** @deprecated Prefer rlHpShouldKeepOwnerProject — on-project alias for owner panel. */
   function rlHpShouldKeepProject(raw, userId) {
     return rlHpShouldKeepOwnerProject(raw, userId);
+  }
+
+  /** True when overdue → first → second are consecutive siblings (twin-panel remount gate). */
+  function rlHpTwinPanelsFollowAnchor(anchor, first, second) {
+    return !!(anchor && first && second &&
+      anchor.isConnected && first.isConnected && second.isConnected &&
+      anchor.nextElementSibling === first &&
+      first.nextElementSibling === second);
+  }
+
+  /** Early MAIN/host park: panel is direct child of host (not yet under Overdue). */
+  function rlHpPanelParkedOnHost(panel, host) {
+    return !!(host && panel && panel.parentElement === host);
   }
 
   /** Home panel lists every status except Completed. */
@@ -4377,7 +4393,7 @@
     return out;
   }
 
-  /** Split lightV1 rows into owner vs member-only buckets (both except Completed). */
+  /** Split lightV1 rows into owner-panel (on-project) vs member-not-owner (both except Completed). */
   function rlHpFilterAndNormalizeProjects(rows, userId) {
     return {
       ownerProjects: rlHpFilterNormalizeBucket(rows, userId, rlHpShouldKeepOwnerProject),
@@ -4449,7 +4465,7 @@
   }
   // @@rlHomeProjectsHelpers:end
 
-  // ── Home PROJECTS panel (v1.13.0) — Project Owner + In progress (member), except Completed ──
+  // ── Home PROJECTS twin panels (v1.14.0) — Project Owner + In progress under Overdue ──
 
   const RL_HP_CACHE_MS = 5 * 60 * 1000;
   const RL_HP_PAGE_SIZE = 200;
@@ -4458,6 +4474,9 @@
   const RL_HP_GM_PINNED = "rlHpPinnedOwner";
   const RL_HP_GM_COLLAPSED = "rlHpCollapsedOwners";
   const RL_HP_GM_SORT = "rlHpSortMode";
+  const RL_HP_PANEL_OWNER_ID = "rlHomeProjectsPanelOwner";
+  const RL_HP_PANEL_MEMBER_ID = "rlHomeProjectsPanelMember";
+  const RL_HP_PANEL_SEL = "#" + RL_HP_PANEL_OWNER_ID + ",#" + RL_HP_PANEL_MEMBER_ID;
 
   let rlHpCache = { at: 0, userId: "", ownerProjects: null, memberProjects: null };
   let rlHpInflight = null;
@@ -4610,7 +4629,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.13.0";
+  const RL_HP_STYLE_READY = "1.14.0";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4621,8 +4640,9 @@
       style.id = "rlHomeProjectsStyles";
       (document.head || document.documentElement).appendChild(style);
     }
+    const root = "#rlHomeProjectsPanelOwner,#rlHomeProjectsPanelMember";
     style.textContent = [
-      "#rlHomeProjectsPanel{",
+      root + "{",
       /* Light Rocketlane home chrome — soft translucent panel, not PPT dark shell. */
       "--rlhp-bg:rgba(255,255,255,0.55);--rlhp-border:rgba(15,23,42,0.10);--rlhp-muted:rgba(15,23,42,0.58);",
       "--rlhp-text:rgba(15,23,42,0.90);--rlhp-good:#059669;--rlhp-warn:#b45309;--rlhp-bad:#e11d48;",
@@ -4632,49 +4652,45 @@
       "box-shadow:0 1px 2px rgba(15,23,42,0.04),0 8px 24px rgba(15,23,42,0.06);",
       "backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);",
       "color:var(--rlhp-text);font-family:Segoe UI,system-ui,sans-serif;font-size:13px;line-height:1.35}",
-      "#rlHomeProjectsPanel *{box-sizing:border-box}",
-      "#rlHomeProjectsPanel .rlhpHd{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}",
-      "#rlHomeProjectsPanel .rlhpTitle{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0}",
-      "#rlHomeProjectsPanel .rlhpActions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
-      "#rlHomeProjectsPanel .rlhpBtn{appearance:none;border:1px solid var(--rlhp-border);background:var(--rlhp-surface-2);color:var(--rlhp-text);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}",
-      "#rlHomeProjectsPanel .rlhpBtn:hover{background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.16)}",
-      "#rlHomeProjectsPanel .rlhpBtn:disabled{opacity:0.55;cursor:default}",
-      "#rlHomeProjectsPanel .rlhpBtnPrimary{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
-      "#rlHomeProjectsPanel .rlhpStatusLine{color:var(--rlhp-muted);font-size:12px;margin:0 0 10px}",
-      "#rlHomeProjectsPanel .rlhpStatusLine.rlhpErr{color:var(--rlhp-bad)}",
-      "#rlHomeProjectsPanel .rlhpSection{display:grid;gap:8px;margin-top:4px}",
-      "#rlHomeProjectsPanel .rlhpSection+.rlhpSection{margin-top:18px;padding-top:14px;border-top:1px solid rgba(15,23,42,0.08)}",
-      "#rlHomeProjectsPanel .rlhpSectionTitle{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0 0 2px}",
-      "#rlHomeProjectsPanel .rlhpSectionHint{color:var(--rlhp-muted);font-size:11px;margin:0 0 6px}",
-      "#rlHomeProjectsPanel .rlhpEmpty{color:var(--rlhp-muted);font-size:12px;padding:4px 2px}",
-      "#rlHomeProjectsPanel .rlhpList{max-height:min(50vh,520px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
-      "#rlHomeProjectsPanel .rlhpOwnerHd{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 4px;cursor:pointer;border-radius:8px;user-select:none}",
-      "#rlHomeProjectsPanel .rlhpOwnerHd:hover{background:rgba(15,23,42,0.04)}",
-      "#rlHomeProjectsPanel .rlhpOwnerLeft{display:flex;gap:8px;align-items:center;min-width:0}",
-      "#rlHomeProjectsPanel .rlhpOwnerName{font-weight:650;color:var(--rlhp-text)}",
-      "#rlHomeProjectsPanel .rlhpOwnerCount{color:var(--rlhp-muted);font-size:12px}",
-      "#rlHomeProjectsPanel .rlhpOwnerCollapse{color:var(--rlhp-muted);width:1em;display:inline-block}",
-      "#rlHomeProjectsPanel .rlhpPinBtn,#rlHomeProjectsPanel .rlhpSortBtn{appearance:none;border:1px solid transparent;background:transparent;color:var(--rlhp-muted);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer}",
-      "#rlHomeProjectsPanel .rlhpPinBtn{opacity:0.55;filter:grayscale(1)}",
-      "#rlHomeProjectsPanel .rlhpPinBtn.pinned{opacity:1;filter:none}",
-      "#rlHomeProjectsPanel .rlhpSortCluster{display:flex;gap:4px}",
-      "#rlHomeProjectsPanel .rlhpSortBtn.active{color:var(--rlhp-accent);border-color:rgba(3,105,161,0.28);background:rgba(3,105,161,0.08)}",
-      "#rlHomeProjectsPanel .rlhpCard{border:1px solid rgba(15,23,42,0.08);background:rgba(255,255,255,0.78);border-radius:var(--rlhp-radius);padding:12px 14px;display:grid;gap:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.04);transition:transform 120ms ease,background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}",
-      "#rlHomeProjectsPanel .rlhpCard:hover{transform:translateY(-1px);background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.14);box-shadow:0 4px 12px rgba(15,23,42,0.08)}",
-      "#rlHomeProjectsPanel .rlhpCard:focus-visible{outline:2px solid rgba(3,105,161,0.45);outline-offset:2px}",
-      "#rlHomeProjectsPanel .rlhpRow{display:flex;gap:10px;align-items:center;justify-content:space-between}",
-      "#rlHomeProjectsPanel .rlhpName{font-weight:650;font-size:13px;line-height:1.2;word-break:break-word;color:var(--rlhp-text)}",
-      "#rlHomeProjectsPanel .rlhpPct{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.08);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(255,255,255,0.85);font-weight:500;white-space:nowrap}",
-      "#rlHomeProjectsPanel .rlhpMeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}",
-      "#rlHomeProjectsPanel .rlhpTag{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.06);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(248,250,252,0.95);line-height:1.2;font-weight:500}",
-      "#rlHomeProjectsPanel .rlhpTag.good{color:var(--rlhp-good);background:rgba(5,150,105,0.10);border-color:rgba(5,150,105,0.18)}",
-      "#rlHomeProjectsPanel .rlhpTag.warn{color:var(--rlhp-warn);background:rgba(180,83,9,0.10);border-color:rgba(180,83,9,0.18)}",
-      "#rlHomeProjectsPanel .rlhpTag.bad{color:var(--rlhp-bad);background:rgba(225,29,72,0.10);border-color:rgba(225,29,72,0.18)}",
-      "#rlHomeProjectsPanel .rlhpTag.normal{color:var(--rlhp-accent);background:rgba(3,105,161,0.08);border-color:rgba(3,105,161,0.16)}",
-      "#rlHomeProjectsPanel .rlhpTag.hold{color:rgba(71,85,105,0.90);background:rgba(148,163,184,0.18);border-color:rgba(148,163,184,0.28)}",
-      "#rlHomeProjectsPanel .rlhpProgress{height:6px;width:100%;border-radius:999px;background:rgba(15,23,42,0.06);border:1px solid rgba(15,23,42,0.05);overflow:hidden}",
-      "#rlHomeProjectsPanel .rlhpBar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#10b981);transition:width 400ms ease}",
-      "@media (max-width:720px){#rlHomeProjectsPanel{margin:12px 0 16px;padding:12px}#rlHomeProjectsPanel .rlhpList{max-height:min(70vh,560px)}}",
+      root + " *{box-sizing:border-box}",
+      root + " .rlhpHd{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}",
+      root + " .rlhpTitle{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--rlhp-muted);margin:0}",
+      root + " .rlhpActions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}",
+      root + " .rlhpBtn{appearance:none;border:1px solid var(--rlhp-border);background:var(--rlhp-surface-2);color:var(--rlhp-text);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}",
+      root + " .rlhpBtn:hover{background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.16)}",
+      root + " .rlhpBtn:disabled{opacity:0.55;cursor:default}",
+      root + " .rlhpBtnPrimary{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
+      root + " .rlhpStatusLine{color:var(--rlhp-muted);font-size:12px;margin:0 0 10px}",
+      root + " .rlhpStatusLine.rlhpErr{color:var(--rlhp-bad)}",
+      root + " .rlhpEmpty{color:var(--rlhp-muted);font-size:12px;padding:4px 2px}",
+      root + " .rlhpList{max-height:min(50vh,520px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
+      root + " .rlhpOwnerHd{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 4px;cursor:pointer;border-radius:8px;user-select:none}",
+      root + " .rlhpOwnerHd:hover{background:rgba(15,23,42,0.04)}",
+      root + " .rlhpOwnerLeft{display:flex;gap:8px;align-items:center;min-width:0}",
+      root + " .rlhpOwnerName{font-weight:650;color:var(--rlhp-text)}",
+      root + " .rlhpOwnerCount{color:var(--rlhp-muted);font-size:12px}",
+      root + " .rlhpOwnerCollapse{color:var(--rlhp-muted);width:1em;display:inline-block}",
+      root + " .rlhpPinBtn," + root + " .rlhpSortBtn{appearance:none;border:1px solid transparent;background:transparent;color:var(--rlhp-muted);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer}",
+      root + " .rlhpPinBtn{opacity:0.55;filter:grayscale(1)}",
+      root + " .rlhpPinBtn.pinned{opacity:1;filter:none}",
+      root + " .rlhpSortCluster{display:flex;gap:4px}",
+      root + " .rlhpSortBtn.active{color:var(--rlhp-accent);border-color:rgba(3,105,161,0.28);background:rgba(3,105,161,0.08)}",
+      root + " .rlhpCard{border:1px solid rgba(15,23,42,0.08);background:rgba(255,255,255,0.78);border-radius:var(--rlhp-radius);padding:12px 14px;display:grid;gap:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.04);transition:transform 120ms ease,background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}",
+      root + " .rlhpCard:hover{transform:translateY(-1px);background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.14);box-shadow:0 4px 12px rgba(15,23,42,0.08)}",
+      root + " .rlhpCard:focus-visible{outline:2px solid rgba(3,105,161,0.45);outline-offset:2px}",
+      root + " .rlhpRow{display:flex;gap:10px;align-items:center;justify-content:space-between}",
+      root + " .rlhpName{font-weight:650;font-size:13px;line-height:1.2;word-break:break-word;color:var(--rlhp-text)}",
+      root + " .rlhpPct{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.08);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(255,255,255,0.85);font-weight:500;white-space:nowrap}",
+      root + " .rlhpMeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}",
+      root + " .rlhpTag{display:inline-flex;align-items:center;font-size:11px;border:1px solid rgba(15,23,42,0.06);padding:4px 10px;border-radius:999px;color:var(--rlhp-muted);background:rgba(248,250,252,0.95);line-height:1.2;font-weight:500}",
+      root + " .rlhpTag.good{color:var(--rlhp-good);background:rgba(5,150,105,0.10);border-color:rgba(5,150,105,0.18)}",
+      root + " .rlhpTag.warn{color:var(--rlhp-warn);background:rgba(180,83,9,0.10);border-color:rgba(180,83,9,0.18)}",
+      root + " .rlhpTag.bad{color:var(--rlhp-bad);background:rgba(225,29,72,0.10);border-color:rgba(225,29,72,0.18)}",
+      root + " .rlhpTag.normal{color:var(--rlhp-accent);background:rgba(3,105,161,0.08);border-color:rgba(3,105,161,0.16)}",
+      root + " .rlhpTag.hold{color:rgba(71,85,105,0.90);background:rgba(148,163,184,0.18);border-color:rgba(148,163,184,0.28)}",
+      root + " .rlhpProgress{height:6px;width:100%;border-radius:999px;background:rgba(15,23,42,0.06);border:1px solid rgba(15,23,42,0.05);overflow:hidden}",
+      root + " .rlhpBar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#10b981);transition:width 400ms ease}",
+      "@media (max-width:720px){" + root + "{margin:12px 0 16px;padding:12px}" + root + " .rlhpList{max-height:min(70vh,560px)}}",
     ].join("");
     style.dataset.rlHpReady = RL_HP_STYLE_READY;
   }
@@ -4696,9 +4712,13 @@
       node.querySelector('[role="treegrid"], [role="grid"], .ag-root, .ag-theme-balham'));
   }
 
+  function rlHpIsInsideHomeProjectsPanel(el) {
+    return !!(el && el.closest && el.closest(RL_HP_PANEL_SEL));
+  }
+
   function rlHpIsExactOverdueLabel(el) {
     if (!el || !el.isConnected) return false;
-    if (el.closest && el.closest("#rlHomeProjectsPanel")) return false;
+    if (rlHpIsInsideHomeProjectsPanel(el)) return false;
     const t = String(el.textContent || "").replace(/\s+/g, " ").trim();
     return t === "Overdue";
   }
@@ -4745,15 +4765,24 @@
       overdue.nextElementSibling === panel);
   }
 
+  function rlHpGetOwnerPanel() {
+    return document.getElementById(RL_HP_PANEL_OWNER_ID);
+  }
+
+  function rlHpGetMemberPanel() {
+    return document.getElementById(RL_HP_PANEL_MEMBER_ID);
+  }
+
   function rlHpHomePanelNeedsRemount() {
     if (!rlHpIsHomePath(location.pathname)) return false;
-    const panel = document.getElementById("rlHomeProjectsPanel");
-    if (!panel || !panel.isConnected) return true;
+    const owner = rlHpGetOwnerPanel();
+    const member = rlHpGetMemberPanel();
+    if (!owner || !member || !owner.isConnected || !member.isConnected) return true;
     const overdue = rlHpFindOverdueSection();
-    if (overdue) return !rlHpPanelFollowsOverdue(panel, overdue);
-    // Overdue not painted yet: keep retrying while parked on MAIN/host first child.
+    if (overdue) return !rlHpTwinPanelsFollowAnchor(overdue, owner, member);
+    // Overdue not painted yet: keep retrying while either panel parked on MAIN/host.
     const host = rlHpFindMountHost();
-    return !!(host && panel.parentElement === host);
+    return rlHpPanelParkedOnHost(owner, host) || rlHpPanelParkedOnHost(member, host);
   }
 
   function rlHpFindGreetingAnchor() {
@@ -4761,7 +4790,7 @@
     const candidates = document.querySelectorAll("h1,h2,h3,p,div,span");
     for (const el of candidates) {
       if (!el || !el.isConnected) continue;
-      if (el.closest && el.closest("#rlHomeProjectsPanel")) continue;
+      if (rlHpIsInsideHomeProjectsPanel(el)) continue;
       const text = (el.childNodes && el.childNodes.length === 1 && el.childNodes[0].nodeType === 3)
         ? String(el.textContent || "")
         : (el.childElementCount === 0 ? String(el.textContent || "") : "");
@@ -4783,32 +4812,42 @@
     return document.querySelector("[role='main']") || document.querySelector("main") || document.body;
   }
 
-  function rlHpPlacePanel(panel) {
-    // Prefer directly under native Overdue card (header + grid + "N tasks").
+  function rlHpPlaceAfter(anchor, panel) {
+    if (!anchor || !panel) return;
+    if (anchor.nextElementSibling !== panel) {
+      anchor.insertAdjacentElement("afterend", panel);
+    }
+  }
+
+  function rlHpPlacePanels(ownerPanel, memberPanel) {
+    // Prefer Overdue → Project Owner → In progress.
     const overdue = rlHpFindOverdueSection();
     if (overdue) {
-      if (!rlHpPanelFollowsOverdue(panel, overdue)) {
-        overdue.insertAdjacentElement("afterend", panel);
-      }
+      rlHpPlaceAfter(overdue, ownerPanel);
+      rlHpPlaceAfter(ownerPanel, memberPanel);
       return;
     }
     const greeting = rlHpFindGreetingAnchor();
     if (greeting && greeting.parentElement) {
-      if (greeting.nextElementSibling !== panel) {
-        greeting.insertAdjacentElement("afterend", panel);
-      }
+      rlHpPlaceAfter(greeting, ownerPanel);
+      rlHpPlaceAfter(ownerPanel, memberPanel);
       return;
     }
     const host = rlHpFindMountHost();
     if (!host) return;
-    if (panel.parentElement !== host) {
-      host.insertBefore(panel, host.firstChild);
+    if (ownerPanel.parentElement !== host) {
+      host.insertBefore(ownerPanel, host.firstChild);
     }
+    rlHpPlaceAfter(ownerPanel, memberPanel);
   }
 
   function rlHpTeardownHomePanel() {
-    const panel = document.getElementById("rlHomeProjectsPanel");
-    if (panel) panel.remove();
+    const legacy = document.getElementById("rlHomeProjectsPanel");
+    if (legacy) legacy.remove();
+    const owner = rlHpGetOwnerPanel();
+    if (owner) owner.remove();
+    const member = rlHpGetMemberPanel();
+    if (member) member.remove();
   }
 
   function rlHpOpenProject(href) {
@@ -4930,7 +4969,7 @@
         e.stopPropagation();
         const isMine = ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner);
         rlHpSavePinned(isMine ? "" : ownerNorm);
-        rlHpRenderPanel();
+        rlHpRenderPanels();
       });
       left.appendChild(chev);
       left.appendChild(name);
@@ -4951,7 +4990,7 @@
           e.preventDefault();
           e.stopPropagation();
           rlHpSaveSort(rlHpNextSortMode(rlHpUi.sort, modeAsc, modeDesc));
-          rlHpRenderPanel();
+          rlHpRenderPanels();
         });
         return btn;
       };
@@ -4964,10 +5003,10 @@
       const toggle = () => {
         if (rlHpUi.collapsed.has(collapseKey)) rlHpUi.collapsed.delete(collapseKey);
         else rlHpUi.collapsed.add(collapseKey);
-        // Drop legacy unscoped key if present so both sections stay independent.
+        // Drop legacy unscoped key if present so both panels stay independent.
         rlHpUi.collapsed.delete(ownerNorm);
         rlHpSaveCollapsed();
-        rlHpRenderPanel();
+        rlHpRenderPanels();
       };
       ownerHd.addEventListener("click", (e) => {
         if (e.target && e.target.closest && e.target.closest("button")) return;
@@ -4988,37 +5027,14 @@
     }
   }
 
-  function rlHpEnsureSection(panel, sectionId, titleText, titleHint) {
-    let section = panel.querySelector('[data-rlhp-section="' + sectionId + '"]');
-    if (section) return section;
-    section = document.createElement("section");
-    section.className = "rlhpSection";
-    section.setAttribute("data-rlhp-section", sectionId);
-    section.setAttribute("aria-label", titleText);
-
-    const title = document.createElement("h3");
-    title.className = "rlhpSectionTitle";
-    title.textContent = titleText;
-    title.title = titleHint || titleText;
-
-    const hint = document.createElement("p");
-    hint.className = "rlhpSectionHint";
-    hint.setAttribute("data-rlhp-section-hint", sectionId);
-
-    const list = document.createElement("div");
-    list.className = "rlhpList";
-    list.setAttribute("data-rlhp-list", sectionId);
-
-    section.appendChild(title);
-    section.appendChild(hint);
-    section.appendChild(list);
-    panel.appendChild(section);
-    return section;
-  }
-
-  function rlHpRenderPanel() {
-    const panel = document.getElementById("rlHomeProjectsPanel");
-    if (!panel) return;
+  function rlHpEnsurePanelShell(panelId, titleText, titleHint, listKind) {
+    let panel = document.getElementById(panelId);
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = panelId;
+    }
+    panel.setAttribute("aria-label", titleText);
+    panel.setAttribute("data-rlhp-kind", listKind);
 
     let hd = panel.querySelector(".rlhpHd");
     if (!hd) {
@@ -5027,18 +5043,21 @@
       hd.className = "rlhpHd";
       const title = document.createElement("h2");
       title.className = "rlhpTitle";
-      title.textContent = "Projects";
-      title.title = "Owned projects and projects you joined (all statuses except Completed)";
+      title.textContent = titleText;
+      title.title = titleHint || titleText;
       const actions = document.createElement("div");
       actions.className = "rlhpActions";
-      const add = document.createElement("a");
-      add.className = "rlhpBtn rlhpBtnPrimary";
-      add.href = "/projects";
-      add.textContent = "+ RL Project";
-      add.addEventListener("click", (e) => {
-        e.preventDefault();
-        rlHpOpenProject("/projects");
-      });
+      if (listKind === "owner") {
+        const add = document.createElement("a");
+        add.className = "rlhpBtn rlhpBtnPrimary";
+        add.href = "/projects";
+        add.textContent = "+ RL Project";
+        add.addEventListener("click", (e) => {
+          e.preventDefault();
+          rlHpOpenProject("/projects");
+        });
+        actions.appendChild(add);
+      }
       const sync = document.createElement("button");
       sync.type = "button";
       sync.className = "rlhpBtn rlhpSyncBtn";
@@ -5047,7 +5066,6 @@
         e.preventDefault();
         void rlHpRefresh({ force: true });
       });
-      actions.appendChild(add);
       actions.appendChild(sync);
       hd.appendChild(title);
       hd.appendChild(actions);
@@ -5055,35 +5073,20 @@
 
       const status = document.createElement("p");
       status.className = "rlhpStatusLine";
-      status.setAttribute("data-rlhp-status", "1");
+      status.setAttribute("data-rlhp-status", listKind);
       panel.appendChild(status);
 
-      rlHpEnsureSection(
-        panel,
-        "owner",
-        "Project Owner",
-        "Projects where you are the Rocketlane project owner (all statuses except Completed)",
-      );
-      rlHpEnsureSection(
-        panel,
-        "member",
-        "In progress",
-        "Projects you were added to as a team member (not owner); all statuses except Completed",
-      );
-    } else {
-      rlHpEnsureSection(
-        panel,
-        "owner",
-        "Project Owner",
-        "Projects where you are the Rocketlane project owner (all statuses except Completed)",
-      );
-      rlHpEnsureSection(
-        panel,
-        "member",
-        "In progress",
-        "Projects you were added to as a team member (not owner); all statuses except Completed",
-      );
+      const list = document.createElement("div");
+      list.className = "rlhpList";
+      list.setAttribute("data-rlhp-list", listKind);
+      panel.appendChild(list);
     }
+    return panel;
+  }
+
+  function rlHpRenderOnePanel(panel, projects, listKind, emptyMsg, countLabel) {
+    if (!panel) return;
+    const count = Array.isArray(projects) ? projects.length : 0;
 
     const syncBtn = panel.querySelector(".rlhpSyncBtn");
     if (syncBtn) {
@@ -5091,66 +5094,51 @@
       syncBtn.textContent = rlHpUi.syncing ? "Syncing…" : "Refresh";
     }
 
-    const ownerCount = Array.isArray(rlHpUi.ownerProjects) ? rlHpUi.ownerProjects.length : 0;
-    const memberCount = Array.isArray(rlHpUi.memberProjects) ? rlHpUi.memberProjects.length : 0;
-    const totalCount = ownerCount + memberCount;
-
     const statusEl = panel.querySelector("[data-rlhp-status]");
     if (statusEl) {
       statusEl.classList.toggle("rlhpErr", !!rlHpUi.error);
       if (rlHpUi.error) statusEl.textContent = rlHpUi.error;
-      else if (rlHpUi.syncing && !totalCount) statusEl.textContent = "Loading projects…";
-      else if (!totalCount) statusEl.textContent = "No projects (except Completed).";
-      else {
-        statusEl.textContent =
-          ownerCount + " Project Owner · " + memberCount + " In progress";
-      }
+      else if (rlHpUi.syncing && !count) statusEl.textContent = "Loading projects…";
+      else if (!count) statusEl.textContent = emptyMsg;
+      else statusEl.textContent = count + " " + countLabel;
     }
 
-    const ownerHint = panel.querySelector('[data-rlhp-section-hint="owner"]');
-    if (ownerHint) {
-      ownerHint.textContent = ownerCount
-        ? ownerCount + " project" + (ownerCount === 1 ? "" : "s") + " you own"
-        : "No owned projects (except Completed).";
+    const list = panel.querySelector('[data-rlhp-list="' + listKind + '"]');
+    if (!list) return;
+    list.textContent = "";
+    if (!count && !rlHpUi.syncing) {
+      const empty = document.createElement("div");
+      empty.className = "rlhpEmpty";
+      empty.textContent = "Nothing here.";
+      list.appendChild(empty);
+      return;
     }
-    const memberHint = panel.querySelector('[data-rlhp-section-hint="member"]');
-    if (memberHint) {
-      memberHint.textContent = memberCount
-        ? memberCount + " project" + (memberCount === 1 ? "" : "s") + " you joined"
-        : "No member projects (except Completed).";
-    }
+    rlHpRenderOwnerGroups(list, projects, listKind);
+  }
 
-    const ownerList = panel.querySelector('[data-rlhp-list="owner"]');
-    if (ownerList) {
-      ownerList.textContent = "";
-      if (!ownerCount && !rlHpUi.syncing) {
-        const empty = document.createElement("div");
-        empty.className = "rlhpEmpty";
-        empty.textContent = "Nothing here.";
-        ownerList.appendChild(empty);
-      } else {
-        rlHpRenderOwnerGroups(ownerList, rlHpUi.ownerProjects, "owner");
-      }
-    }
-
-    const memberList = panel.querySelector('[data-rlhp-list="member"]');
-    if (memberList) {
-      memberList.textContent = "";
-      if (!memberCount && !rlHpUi.syncing) {
-        const empty = document.createElement("div");
-        empty.className = "rlhpEmpty";
-        empty.textContent = "Nothing here.";
-        memberList.appendChild(empty);
-      } else {
-        rlHpRenderOwnerGroups(memberList, rlHpUi.memberProjects, "member");
-      }
-    }
+  function rlHpRenderPanels() {
+    const owner = rlHpGetOwnerPanel();
+    const member = rlHpGetMemberPanel();
+    rlHpRenderOnePanel(
+      owner,
+      rlHpUi.ownerProjects,
+      "owner",
+      "No projects you are on (except Completed).",
+      "project" + ((rlHpUi.ownerProjects || []).length === 1 ? "" : "s") + " · by owner",
+    );
+    rlHpRenderOnePanel(
+      member,
+      rlHpUi.memberProjects,
+      "member",
+      "No member projects (except Completed).",
+      "project" + ((rlHpUi.memberProjects || []).length === 1 ? "" : "s") + " you joined",
+    );
   }
 
   async function rlHpRefresh(opts) {
     rlHpUi.syncing = true;
     rlHpUi.error = "";
-    rlHpRenderPanel();
+    rlHpRenderPanels();
     try {
       const buckets = await rlHpLoadProjects(opts);
       rlHpUi.ownerProjects = Array.isArray(buckets?.ownerProjects) ? buckets.ownerProjects : [];
@@ -5159,7 +5147,7 @@
       rlHpUi.error = String(e?.message || e || "Failed to load projects");
     } finally {
       rlHpUi.syncing = false;
-      rlHpRenderPanel();
+      rlHpRenderPanels();
     }
   }
 
@@ -5170,21 +5158,29 @@
     }
     rlHpInjectStyles();
     rlHpLoadUiPrefs();
-    let panel = document.getElementById("rlHomeProjectsPanel");
-    const firstMount = !panel;
-    if (!panel) {
-      panel = document.createElement("section");
-      panel.id = "rlHomeProjectsPanel";
-      panel.setAttribute("aria-label", "Project Owner and In progress projects");
-    } else {
-      panel.setAttribute("aria-label", "Project Owner and In progress projects");
-    }
-    rlHpPlacePanel(panel);
+    // Drop legacy single-shell panel from ≤1.13.x.
+    const legacy = document.getElementById("rlHomeProjectsPanel");
+    if (legacy) legacy.remove();
+
+    const ownerPanel = rlHpEnsurePanelShell(
+      RL_HP_PANEL_OWNER_ID,
+      "Project Owner",
+      "People who own projects you are on (all statuses except Completed)",
+      "owner",
+    );
+    const memberPanel = rlHpEnsurePanelShell(
+      RL_HP_PANEL_MEMBER_ID,
+      "In progress",
+      "Projects you were added to as a team member (not owner); all statuses except Completed",
+      "member",
+    );
+    const firstMount = !ownerPanel.isConnected || !memberPanel.isConnected;
+    rlHpPlacePanels(ownerPanel, memberPanel);
     if (firstMount) {
-      rlHpRenderPanel();
+      rlHpRenderPanels();
       void rlHpRefresh({ force: false });
     } else {
-      rlHpPlacePanel(panel);
+      rlHpPlacePanels(ownerPanel, memberPanel);
     }
   }
 
