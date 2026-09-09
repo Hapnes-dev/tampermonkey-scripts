@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.12.3
-// @description  Rocketlane improvements in one script (v1.12.3: home PROJECTS panel mounts under native Overdue): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.12.4
+// @description  Rocketlane improvements in one script (v1.12.4: home PROJECTS panel lists In-progress projects you own, not every auto-synced membership): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -4177,8 +4177,7 @@
   function rlHpIsUserOnProject(raw, userId) {
     const uid = String(userId ?? "").trim();
     if (!uid) return false;
-    const ownerUid = String(raw?.projectOwner?.userId ?? raw?.projectOwner?.id ?? "").trim();
-    if (ownerUid && ownerUid === uid) return true;
+    if (rlHpIsUserProjectOwner(raw, uid)) return true;
     const members = Array.isArray(raw?.teamMembers) ? raw.teamMembers : [];
     for (const m of members) {
       const mid = String(m?.userId ?? m?.id ?? m?.memberId ?? "").trim();
@@ -4187,14 +4186,23 @@
     return false;
   }
 
+  /** True when current user is the Rocketlane projectOwner (crown), not mere team member. */
+  function rlHpIsUserProjectOwner(raw, userId) {
+    const uid = String(userId ?? "").trim();
+    if (!uid) return false;
+    const ownerUid = String(raw?.projectOwner?.userId ?? raw?.projectOwner?.id ?? "").trim();
+    return !!(ownerUid && ownerUid === uid);
+  }
+
   function rlHpIsExcludedMetaProject(raw) {
     const name = String(raw?.projectName ?? raw?.name ?? "").trim();
     return name === RL_HP_WORKLOAD_SYNC_NAME;
   }
 
+  /** Home panel: owned In-progress only — membership auto-sync stays out. */
   function rlHpShouldKeepProject(raw, userId) {
     if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
-    return rlHpIsUserOnProject(raw, userId);
+    return rlHpIsUserProjectOwner(raw, userId);
   }
 
   /** Home panel shows In progress only (Completed / Cancelled / On Hold / etc never list). */
