@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.7.0
+// @version      1.8.0
 // @description  Rocketlane improvements in one script: Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -53,7 +53,8 @@
  *     filter: Zendesk, Oneflow (Order/Subscription), Younium (Order/Subscription),
  *     HubSpot, Rocketlane, Files, Order info, PANG, BAF. Also a PPT Find-style
  *     "🔎 Fetch URLs" button left of Present that opens a PPT-style URL chooser
- *     (Find + select), then saves clickable Attach-links anchors into the IQC task
+ *     (scored Find with signal chips + match %, then select/save), then saves
+ *     clickable Attach-links anchors into the IQC task
  *     description. Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
@@ -2544,16 +2545,36 @@
     const path = u.pathname || "";
     if (/(?:^|\.)oneflow\.com$/i.test(host)) {
       let m = path.match(/\/(?:documents|agreements)\/(\d+)/i);
-      if (m) return { platform: "oneflow", url: s };
+      if (m) return { platform: "oneflow", recordId: m[1], recordType: "agreement", url: s };
       m = path.match(/\/(?:c\/\d+\/)?documents?\/(\d+)/i);
-      if (m) return { platform: "oneflow", url: s };
-      return { platform: "oneflow", url: s };
+      if (m) return { platform: "oneflow", recordId: m[1], recordType: "agreement", url: s };
+      return { platform: "oneflow", recordId: "", recordType: "unknown", url: s };
     }
-    if (/(?:^|\.)hubspot\.com$/i.test(host)) return { platform: "hubspot", url: s };
-    if (/(?:^|\.)younium\.com$/i.test(host)) return { platform: "younium", url: s };
-    if (/(?:^|\.)zendesk\.com$/i.test(host)) return { platform: "zendesk", url: s };
-    if (/(?:^|\.)rocketlane\.com$/i.test(host)) return { platform: "rocketlane", url: s };
-    return { platform: "unknown", url: s };
+    if (/(?:^|\.)hubspot\.com$/i.test(host)) {
+      let m = path.match(/\/record\/0-3\/(\d+)/i);
+      if (m) return { platform: "hubspot", recordId: m[1], recordType: "deal", url: s };
+      m = path.match(/\/deal\/(\d+)/i);
+      if (m) return { platform: "hubspot", recordId: m[1], recordType: "deal", url: s };
+      return { platform: "hubspot", recordId: "", recordType: "unknown", url: s };
+    }
+    if (/(?:^|\.)younium\.com$/i.test(host)) {
+      let m = path.match(/\/orders\/([\w-]+)/i);
+      if (m) return { platform: "younium", recordId: m[1], recordType: "order", url: s };
+      m = path.match(/\/quotes\/([\w-]+)/i);
+      if (m) return { platform: "younium", recordId: m[1], recordType: "quote", url: s };
+      return { platform: "younium", recordId: "", recordType: "unknown", url: s };
+    }
+    if (/(?:^|\.)zendesk\.com$/i.test(host)) {
+      const m = path.match(/\/(?:agent\/)?tickets\/(\d+)/i);
+      if (m) return { platform: "zendesk", recordId: m[1], recordType: "ticket", url: s };
+      return { platform: "zendesk", recordId: "", recordType: "unknown", url: s };
+    }
+    if (/(?:^|\.)rocketlane\.com$/i.test(host)) {
+      const m = path.match(/\/projects\/(\d+)/i);
+      if (m) return { platform: "rocketlane", recordId: m[1], recordType: "project", url: s };
+      return { platform: "rocketlane", recordId: "", recordType: "unknown", url: s };
+    }
+    return { platform: "unknown", recordId: "", recordType: "unknown", url: s };
   }
 
   function rlEmptyProjectLinks() {
@@ -2652,7 +2673,7 @@
   }
 
   // @@rlUrlPickerHelpers:start
-  // Pure Attach-links helpers (also extracted by url-picker.test.js).
+  // Pure Attach-links helpers + PPT match scorer (extracted by url-picker.test.js).
   function rlEscapeHtmlAttr(s) {
     return String(s ?? "")
       .replace(/&/g, "&amp;")
@@ -2707,7 +2728,895 @@
     if (!html.trim()) return suffix;
     return html.replace(/\s*$/, "") + "\n" + suffix;
   }
+
+  // ── PPT match helpers (pure; Node-testable) ──
+  function matchNormalize(s) {
+    return String(s ?? "")
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /** Leading plant ID — userscript contract is 2–7 digits (not PPT's 2–6). */
+  function matchExtractPlantId(text) {
+    const m = String(text ?? "").match(/^\s*(\d{2,7})\b/);
+    return m ? m[1] : "";
+  }
+
+  function matchExtractOrgNumber(text) {
+    const s = String(text ?? "").replace(/[ .–-]/g, "");
+    const m = s.match(/\b(\d{9})\b/);
+    return m ? m[1] : "";
+  }
+
+  function matchExtractMoneyAmount(input) {
+    if (typeof input === "number" && Number.isFinite(input)) return input;
+    const s = String(input ?? "").trim();
+    if (!s) return NaN;
+    const cleaned = s
+      .replace(/[A-Za-zÀ-ÿ\s]+$/g, "")
+      .replace(/\s+/g, "")
+      .replace(/(\d)\.(\d{3}\b)/g, "$1$2")
+      .replace(/,/g, ".");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function matchMoneyCloseness(a, b) {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return 0;
+    const pctDiff = Math.abs(a - b) / Math.max(a, b);
+    if (pctDiff >= 0.5) return 0;
+    return 1 - pctDiff * 2;
+  }
+
+  function matchExtractEmailDomain(text) {
+    const s = String(text ?? "");
+    const m = s.match(/[\w.+-]+@([a-z0-9.-]+\.[a-z]{2,})/i);
+    return m ? m[1].toLowerCase() : "";
+  }
+
+  function matchTokenize(s) {
+    return new Set(
+      matchNormalize(s)
+        .replace(/^\s*\d+\s*[-–:]?\s*/, "")
+        .replace(/[^a-z0-9æøå\s]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t && t.length > 1),
+    );
+  }
+
+  function matchTokenOverlap(setA, setB) {
+    if (!setA?.size || !setB?.size) return 0;
+    let intersect = 0;
+    for (const t of setA) if (setB.has(t)) intersect += 1;
+    return intersect / Math.max(setA.size, setB.size);
+  }
+
+  const MATCH_DEAD_STATUSES = new Set([
+    "cancelled", "canceled", "declined", "closed", "lost",
+    "void", "voided", "expired", "rejected", "overdue",
+  ]);
+
+  /**
+   * Score one candidate against project match context.
+   * Returns { score, percent, signals }. Percent is clamped 0..100.
+   */
+  function scoreMatchCandidate(candidate, ctx, opts) {
+    const signals = [];
+    let raw = 0;
+    const platform = String(candidate.platform || "").toLowerCase();
+    const fkKey =
+      platform === "hubspot"  ? "hubspotDealId" :
+      platform === "oneflow"  ? "oneflowAgreementId" :
+      platform === "younium"  ? "youniumOrderId" : null;
+    const fkExpected = fkKey ? String(ctx.foreignKeys?.[fkKey] || "").trim() : "";
+    if (fkExpected && String(candidate.id) === fkExpected) {
+      signals.push({ label: "Foreign-key ID match (" + fkExpected + ")", points: 35 });
+      raw += 35;
+    }
+
+    const projHsDeal = String(ctx.foreignKeys?.hubspotDealId || "").trim();
+    if (projHsDeal && candidate.hubspotDealId &&
+        String(candidate.hubspotDealId).trim() === projHsDeal) {
+      signals.push({ label: "HubSpot Deal ID cross-link (" + projHsDeal + ")", points: 35 });
+      raw += 35;
+    }
+    if (candidate.zendeskTicketId && Array.isArray(ctx.zendeskTicketIds) &&
+        ctx.zendeskTicketIds.includes(String(candidate.zendeskTicketId).trim())) {
+      signals.push({ label: "Zendesk ticket cross-link (" + candidate.zendeskTicketId + ")", points: 20 });
+      raw += 20;
+    }
+
+    if (ctx.plantId) {
+      const candidatePlantExact = candidate.plantId &&
+        String(candidate.plantId).trim() === ctx.plantId;
+      const primaryStartsWithPlant = !candidatePlantExact &&
+        matchExtractPlantId(candidate.primaryText) === ctx.plantId;
+      if (candidatePlantExact) {
+        signals.push({ label: "Plant ID exact native (" + ctx.plantId + ")", points: 35 });
+        raw += 35;
+      } else if (primaryStartsWithPlant) {
+        signals.push({ label: "Plant ID at start of name (" + ctx.plantId + ")", points: 30 });
+        raw += 30;
+      } else {
+        const re = new RegExp("\\b" + ctx.plantId + "\\b");
+        const anywhere = (candidate.matchableTexts || []).some((t) => re.test(String(t ?? "")));
+        if (anywhere) {
+          signals.push({ label: "Plant ID in text (" + ctx.plantId + ")", points: 18 });
+          raw += 18;
+        }
+      }
+    }
+
+    if ((ctx.customerOrgNumber || ctx.partnerOrgNumber) && Array.isArray(candidate.orgNumbers)) {
+      const want = new Set([ctx.customerOrgNumber, ctx.partnerOrgNumber].filter(Boolean));
+      const hit = candidate.orgNumbers.find((n) => want.has(matchExtractOrgNumber(n)));
+      if (hit) {
+        signals.push({ label: "Org number exact (" + matchExtractOrgNumber(hit) + ")", points: 20 });
+        raw += 20;
+      }
+    }
+
+    if (ctx.nameTokens && ctx.nameTokens.size) {
+      const candTokens = new Set();
+      for (const t of candidate.matchableTexts || []) {
+        for (const tok of matchTokenize(t)) candTokens.add(tok);
+      }
+      const ratio = matchTokenOverlap(candTokens, ctx.nameTokens);
+      const pts = Math.round(ratio * 15);
+      if (pts > 0) {
+        signals.push({
+          label: "Name similarity " + Math.round(ratio * 100) + "%",
+          points: pts,
+        });
+        raw += pts;
+      }
+    }
+
+    if (ctx.partner && Array.isArray(candidate.partyNames) && candidate.partyNames.length) {
+      const wantNorm = ctx.partnerNormalized;
+      let bestRatio = 0;
+      let bestParty = "";
+      for (const party of candidate.partyNames) {
+        const partyNorm = matchNormalize(party);
+        if (!partyNorm) continue;
+        if (partyNorm === wantNorm) { bestRatio = 1; bestParty = party; break; }
+        if (partyNorm.includes(wantNorm) || wantNorm.includes(partyNorm)) {
+          if (bestRatio < 0.85) { bestRatio = 0.85; bestParty = party; }
+          continue;
+        }
+        const r = matchTokenOverlap(matchTokenize(party), ctx.partnerTokens);
+        if (r > bestRatio) { bestRatio = r; bestParty = party; }
+      }
+      const pts = Math.round(bestRatio * 10);
+      if (pts > 0) {
+        signals.push({ label: "Partner match (" + bestParty + ")", points: pts });
+        raw += pts;
+      }
+    }
+
+    if (platform === "hubspot" && ctx.hubspotMirror && candidate.hsFields) {
+      const m = ctx.hubspotMirror;
+      const h = candidate.hsFields;
+      const same = (a, b) => {
+        const an = matchNormalize(a);
+        const bn = matchNormalize(b);
+        return an && bn && an === bn;
+      };
+      if (m.dealName && same(m.dealName, h.dealName)) {
+        signals.push({ label: "Deal name matches RL mirror", points: 8 });
+        raw += 8;
+      }
+      if (m.plantName && same(m.plantName, h.plantName)) {
+        signals.push({ label: "Plant name matches", points: 5 });
+        raw += 5;
+      }
+      if (m.department && same(m.department, h.department)) {
+        signals.push({ label: "Department: " + h.department, points: 3 });
+        raw += 3;
+      }
+      if (m.dealType && same(m.dealType, h.dealType)) {
+        signals.push({ label: "Deal type: " + h.dealType, points: 3 });
+        raw += 3;
+      }
+      if (m.orderType && same(m.orderType, h.orderType)) {
+        signals.push({ label: "Order type: " + h.orderType, points: 3 });
+        raw += 3;
+      }
+      if (m.dealStage && same(m.dealStage, h.dealStage)) {
+        signals.push({ label: "Deal stage: " + h.dealStage, points: 2 });
+        raw += 2;
+      }
+      if (m.productTypeSet && m.productTypeSet.size && h.productTypes) {
+        const candTypes = String(h.productTypes).split(/[,;|]/).map(matchNormalize).filter(Boolean);
+        const overlap = candTypes.filter((t) => m.productTypeSet.has(t));
+        if (overlap.length) {
+          signals.push({ label: "Product type: " + overlap.join(", "), points: 4 });
+          raw += 4;
+        }
+      }
+    }
+
+    if (ctx.contactEmail && Array.isArray(candidate.contactEmails)) {
+      const lc = ctx.contactEmail;
+      const hit = candidate.contactEmails.find((e) => String(e).toLowerCase() === lc);
+      if (hit) {
+        signals.push({ label: "Contact email exact (" + hit + ")", points: 8 });
+        raw += 8;
+      } else if (ctx.contactEmailDomain) {
+        const dom = ctx.contactEmailDomain;
+        const dh = candidate.contactEmails.find((e) => matchExtractEmailDomain(e) === dom);
+        if (dh) {
+          signals.push({ label: "Contact domain (" + dom + ")", points: 2 });
+          raw += 2;
+        }
+      }
+    }
+    if (ctx.contactPhone && Array.isArray(candidate.contactPhones)) {
+      const wantDigits = ctx.contactPhone.replace(/\D+/g, "");
+      const suffix = wantDigits.slice(-8);
+      const hit = candidate.contactPhones.find((p) => {
+        const d = String(p).replace(/\D+/g, "");
+        return d === wantDigits || (suffix && d.endsWith(suffix));
+      });
+      if (hit) {
+        signals.push({ label: "Contact phone match (" + hit + ")", points: 6 });
+        raw += 6;
+      }
+    }
+
+    if (Array.isArray(ctx.embeddedLinks) && ctx.embeddedLinks.length) {
+      const matchingLink = ctx.embeddedLinks.find((l) =>
+        l && l.platform === platform &&
+        l.recordId && String(l.recordId) === String(candidate.id)
+      );
+      if (matchingLink) {
+        const preferKind = opts && opts.preferLinkKind;
+        if (preferKind && matchingLink.linkKind && matchingLink.linkKind !== preferKind) {
+          signals.push({
+            label: "Curated link is the " + matchingLink.linkKind + " one — skipped here",
+            points: 0,
+          });
+        } else {
+          signals.push({
+            label: "Linked from RL description (" + String(matchingLink.url).slice(0, 40) + "…)",
+            points: 25,
+          });
+          raw += 25;
+        }
+      }
+    }
+
+    if (platform === "younium" && ctx.youniumOrderNumber && candidate.orderNumber) {
+      if (String(candidate.orderNumber).trim() === String(ctx.youniumOrderNumber).trim()) {
+        signals.push({ label: "Younium order # matches RL (" + ctx.youniumOrderNumber + ")", points: 30 });
+        raw += 30;
+      }
+    }
+
+    if (Number.isFinite(ctx.projectFee) && Number.isFinite(candidate.amount)) {
+      const ratio = matchMoneyCloseness(ctx.projectFee, candidate.amount);
+      const pts = Math.round(ratio * 8);
+      if (pts > 0) {
+        const cur = candidate.currency || "";
+        const diffPct = Math.round(Math.abs(ctx.projectFee - candidate.amount) / Math.max(ctx.projectFee, candidate.amount) * 100);
+        signals.push({
+          label: "Money within " + diffPct + "% (" +
+            Math.round(candidate.amount).toLocaleString() + (cur ? " " + cur : "") + ")",
+          points: pts,
+        });
+        raw += pts;
+      }
+    }
+
+    if (ctx.ownerEmail && Array.isArray(candidate.contactEmails) && candidate.contactEmails.length) {
+      const wantFull = ctx.ownerEmail;
+      const wantDomain = ctx.ownerEmailDomain;
+      let exactHit = "";
+      let domainHit = "";
+      for (const e of candidate.contactEmails) {
+        const en = String(e).toLowerCase().trim();
+        if (!en) continue;
+        if (en === wantFull) { exactHit = en; break; }
+        if (wantDomain && matchExtractEmailDomain(en) === wantDomain) {
+          if (!domainHit) domainHit = en;
+        }
+      }
+      if (exactHit) {
+        signals.push({ label: "Owner email exact (" + exactHit + ")", points: 5 });
+        raw += 5;
+      } else if (domainHit) {
+        signals.push({ label: "Same domain (" + matchExtractEmailDomain(domainHit) + ")", points: 3 });
+        raw += 3;
+      }
+    }
+
+    if (ctx.owner && Array.isArray(candidate.contactNames) && candidate.contactNames.length) {
+      const wantNorm = ctx.ownerNormalized;
+      let hit = "";
+      for (const c of candidate.contactNames) {
+        const cn = matchNormalize(c);
+        if (!cn) continue;
+        if (cn === wantNorm || cn.includes(wantNorm) || wantNorm.includes(cn)) {
+          hit = c; break;
+        }
+      }
+      if (hit) {
+        signals.push({ label: "Owner name match (" + hit + ")", points: 4 });
+        raw += 4;
+      }
+    }
+
+    if (candidate.date) {
+      const candTs = Date.parse(String(candidate.date));
+      if (Number.isFinite(candTs)) {
+        const targets = [ctx.dueTimestamp, ctx.startTimestamp].filter(Number.isFinite);
+        if (targets.length) {
+          const minDays = Math.min(
+            ...targets.map((t) => Math.abs(candTs - t) / (1000 * 60 * 60 * 24))
+          );
+          let pts = 0;
+          if (minDays <= 7) pts = 4;
+          else if (minDays <= 14) pts = 3;
+          else if (minDays <= 30) pts = 2;
+          if (pts > 0) {
+            signals.push({
+              label: "Date within " + Math.round(minDays) + " days",
+              points: pts,
+            });
+            raw += pts;
+          }
+        }
+      }
+    }
+
+    if (candidate.status) {
+      const sNorm = matchNormalize(candidate.status);
+      if (!MATCH_DEAD_STATUSES.has(sNorm)) {
+        signals.push({ label: "Active status (" + candidate.status + ")", points: 3 });
+        raw += 3;
+      } else {
+        signals.push({ label: "Dead status (" + candidate.status + ")", points: -20 });
+        raw -= 20;
+      }
+    }
+
+    const percent = Math.min(100, Math.max(0, Math.round(raw)));
+    return { score: raw, percent, signals };
+  }
+
+  /**
+   * Auto-fill when best percent ≥ minPct (default 85) AND raw lead ≥ minLead
+   * (default 15). Sole candidate still needs ≥ minPct. Lead uses raw score,
+   * not clamped percent.
+   */
+  function decideMatchOutcome(scored, options) {
+    const minPct = options?.autoFillMinPercent ?? 85;
+    const minLead = options?.autoFillMinLeadPercent ?? 15;
+    const best = scored[0];
+    const second = scored[1];
+    if (!best) return { kind: "none" };
+    const lead = second ? (best.score - second.score) : Infinity;
+    const beats = lead >= minLead;
+    if (best.percent >= minPct && beats) {
+      return {
+        kind: "auto",
+        entry: best,
+        reason: second
+          ? "best " + best.percent + "% (raw " + Math.round(best.score) + ") beats #2 raw " + Math.round(second.score) + " by ≥" + minLead
+          : "best " + best.percent + "% (only candidate ≥" + minPct + "%)",
+      };
+    }
+    if (!best || best.percent === 0) return { kind: "none" };
+    return {
+      kind: "picker",
+      entries: scored,
+      reason:
+        best.percent < minPct
+          ? "best " + best.percent + "% < " + minPct + "% auto-fill threshold"
+          : "best raw " + Math.round(best.score) + " only " + Math.round(lead) + " ahead of #2 — too close to call",
+    };
+  }
+
   // @@rlUrlPickerHelpers:end
+  // @@rlMatchRuntime:start
+  // Match-field reader keeps MULTI_SELECT as string[] (rlReadField flattens arrays to a joined string).
+  function rlReadMatchField(fields, prefix) {
+    const want = String(prefix).toLowerCase().replace(/\s+/g, "");
+    const f = (fields || []).find((x) =>
+      String(x?.fieldName ?? "").toLowerCase().replace(/\s+/g, "").startsWith(want)
+    );
+    if (!f) return "";
+    const v = (f.fieldValue !== undefined && f.fieldValue !== null) ? f.fieldValue : f.value;
+    if (v == null) return "";
+    if (Array.isArray(v)) {
+      return v
+        .map((x) => (typeof x === "object" ? x?.label || x?.value : x))
+        .filter((x) => x != null && x !== "")
+        .map(String);
+    }
+    if (typeof v === "string") return v.trim();
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    if (typeof v === "object" && v.value != null) return String(v.value).trim();
+    return "";
+  }
+
+  function rlExtractRocketlaneCustomFields(projectObject) {
+    const fields = Array.isArray(projectObject?.fields) ? projectObject.fields : [];
+    const read = (prefix) => rlReadMatchField(fields, prefix);
+    const productRaw = read("hubspotproducttypes");
+    return {
+      hubspotDealId:           String(read("hubspotdealid") || ""),
+      youniumOrderNumber:      String(read("youniumordernumber") || ""),
+      oneflowAgreementId:      String(read("oneflowagreementid") || read("oneflowid") || ""),
+      newExistingPlantId:      String(read("newexistingplantid") || ""),
+      hubspotPlantId:          String(read("hubspotplantid") || ""),
+      hubspotPlantName:        String(read("hubspotplantname") || ""),
+      hubspotDealName:         String(read("hubspotdealname") || ""),
+      hubspotDealOwner:        String(read("hubspotdealowner") || ""),
+      hubspotDealContact:      String(read("hubspotdealcontact") || ""),
+      hubspotDealContactEmail: String(read("hubspotdealcontactemail") || ""),
+      hubspotDealContactPhone: String(read("hubspotdealcontactphone") || ""),
+      hubspotDealPartner:      String(read("hubspotdealpartner") || ""),
+      hubspotCertifiedPartner: String(read("hubspotcertifiedpartner") || ""),
+      hubspotDealStage:        String(read("hubspotdealstage") || ""),
+      hubspotDepartment:       String(read("hubspotdepartment") || ""),
+      hubspotDealType:         String(read("hubspotdealtype") || read("hubspotdealtypechoice") || ""),
+      hubspotOrderType:        String(read("hubspotordertype") || ""),
+      hubspotProductTypes:     Array.isArray(productRaw)
+        ? productRaw
+        : (productRaw ? [String(productRaw)] : []),
+      hubspotBuildingType:     String(read("hubspotbuildingtype") || ""),
+      hubspotPlantStreetAddr:  String(read("hubspotplantstreetaddress") || ""),
+      hubspotFrameAgreementCo: String(read("hubspotframeagreementcompanyname") || ""),
+      hubspotCreateDate:       String(read("hubspotcreatedate") || ""),
+      hubspotDateSigned:       String(read("hubspotdatesigned") || ""),
+      hubspotEstHWDelivery:    String(read("hubspotestimatedhwdelivery") || ""),
+      hubspotMonthlyRevenue:   String(read("hubspotmonthlyreccuringrevenue") || ""),
+      hubspotDealDescription:  String(read("hubspotdealdescription") || ""),
+      hubspotDeliveryStatus:   String(
+        read("hubspotdeliverystatusupdatemessage") ||
+        read("deliverystatusupdatemessage") ||
+        read("hubspotdeliverystatus") || ""
+      ),
+      hubspotLegalEntity:      String(read("hubspotlegalentity") || ""),
+    };
+  }
+
+  function rlExtractLinksFromHtml(html) {
+    const text = String(html || "");
+    if (!text) return [];
+    const out = [];
+    const seen = new Set();
+    const patterns = [
+      /href\s*=\s*["']([^"']+)["']/gi,
+      /https?:\/\/[^\s<>"']+/gi,
+    ];
+    for (const re of patterns) {
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const url = (m[1] || m[0]).replace(/[).,;]+$/, "");
+        if (seen.has(url)) continue;
+        seen.add(url);
+        const classified = rlClassifyLinkUrl(url);
+        if (!classified) continue;
+        const ctxStart = Math.max(0, m.index - 30);
+        const ctxSlice = text.slice(ctxStart, m.index);
+        const labelMatch = ctxSlice.match(/\b(Oneflow|Younium|HubSpot|Zendesk)\s*:?\s*$/i);
+        if (labelMatch) classified.label = labelMatch[1];
+        out.push(classified);
+      }
+    }
+    return out;
+  }
+
+  function rlBuildProjectMatchContext(sourceObject) {
+    const name = String(sourceObject?.name ?? "").trim();
+    const partner = String(sourceObject?.client ?? "").trim();
+    const owner = String(sourceObject?.owner ?? "").trim();
+    const due = String(sourceObject?.due ?? sourceObject?.dueDate ?? "").trim();
+    const start = String(sourceObject?.startDate ?? "").trim();
+    const ofUrl = String(sourceObject?.oneflowUrl ?? "").trim();
+    const hsUrl = String(sourceObject?.hubspotUrl ?? "").trim();
+    const ynUrl = String(sourceObject?.youniumUrl ?? "").trim();
+    const plantIdFromName = matchExtractPlantId(name) ||
+      (extractPlantIdFromProjectName(name) || "");
+
+    const fee = Number(sourceObject?.projectFee);
+    const ownerEmail = String(sourceObject?.projectOwner?.emailId ?? "").toLowerCase().trim();
+    const customerOrg = matchExtractOrgNumber(sourceObject?.customer?.organisationNumber || "");
+    const partnerOrg = matchExtractOrgNumber(sourceObject?.partner?.organisationNumber || "");
+    const cf = sourceObject?.fields ? rlExtractRocketlaneCustomFields(sourceObject) : {};
+    const fks = {
+      hubspotDealId: cf.hubspotDealId || "",
+      oneflowAgreementId: cf.oneflowAgreementId || "",
+      youniumOrderId: cf.youniumOrderNumber || "",
+    };
+    const finalPlantId =
+      plantIdFromName ||
+      matchExtractPlantId(cf.newExistingPlantId || "") ||
+      matchExtractPlantId(cf.hubspotPlantId || "") ||
+      String(cf.newExistingPlantId || cf.hubspotPlantId || "").replace(/\D+/g, "");
+
+    const contactEmail = String(cf.hubspotDealContactEmail || "").toLowerCase().trim();
+    const contactPhone = String(cf.hubspotDealContactPhone || "").replace(/[^\d+]/g, "");
+    const embeddedLinks = [
+      ...rlExtractLinksFromHtml(cf.hubspotDealDescription || ""),
+      ...rlExtractLinksFromHtml(cf.hubspotDeliveryStatus || ""),
+    ];
+    const dedupeByUrl = (arr) => {
+      const seen = new Set();
+      const out = [];
+      for (const x of arr) {
+        const k = x?.url || "";
+        if (k && !seen.has(k)) { seen.add(k); out.push(x); }
+      }
+      return out;
+    };
+    const allEmbedded = dedupeByUrl(embeddedLinks);
+    try {
+      const slotHtml = (cf.hubspotDealDescription || "") + "\n" + (cf.hubspotDeliveryStatus || "");
+      if (slotHtml.trim()) {
+        const slots = rlParseProjectLinksFromHtml(slotHtml);
+        const kindByKey = {};
+        const tagSlot = (url, kind) => {
+          const c = url ? rlClassifyLinkUrl(url) : null;
+          if (c && c.recordId) kindByKey[c.platform + ":" + String(c.recordId)] = kind;
+        };
+        tagSlot(slots.oneflowOrder, "order");
+        tagSlot(slots.oneflowSubscription, "subscription");
+        tagSlot(slots.younium, "order");
+        tagSlot(slots.youniumSubscription, "subscription");
+        for (const l of allEmbedded) {
+          const k = kindByKey[l.platform + ":" + String(l.recordId)];
+          if (k) l.linkKind = k;
+        }
+      }
+    } catch (_) {}
+
+    const zendeskTicketIds = allEmbedded
+      .filter((l) => l && l.platform === "zendesk" && l.recordId)
+      .map((l) => String(l.recordId));
+    const productTypes = Array.isArray(cf.hubspotProductTypes) ? cf.hubspotProductTypes : [];
+    const productTypeSet = new Set(productTypes.map(matchNormalize));
+
+    return Object.freeze({
+      name,
+      nameNormalized: matchNormalize(name),
+      nameTokens: matchTokenize(name),
+      plantId: finalPlantId,
+      partner,
+      partnerNormalized: matchNormalize(partner),
+      partnerTokens: matchTokenize(partner),
+      owner,
+      ownerNormalized: matchNormalize(owner),
+      ownerTokens: matchTokenize(owner),
+      ownerEmail,
+      ownerEmailDomain: matchExtractEmailDomain(ownerEmail),
+      due,
+      dueTimestamp: due ? Date.parse(due) : NaN,
+      startDate: start,
+      startTimestamp: start ? Date.parse(start) : NaN,
+      projectFee: Number.isFinite(fee) && fee > 0 ? fee : NaN,
+      customerOrgNumber: customerOrg,
+      partnerOrgNumber: partnerOrg,
+      foreignKeys: fks,
+      hubspotMirror: {
+        dealId: cf.hubspotDealId || "",
+        dealName: cf.hubspotDealName || "",
+        plantName: cf.hubspotPlantName || "",
+        dealOwner: cf.hubspotDealOwner || "",
+        dealContact: cf.hubspotDealContact || "",
+        dealPartner: cf.hubspotDealPartner || "",
+        certifiedPartner: cf.hubspotCertifiedPartner || "",
+        dealStage: cf.hubspotDealStage || "",
+        department: cf.hubspotDepartment || "",
+        dealType: cf.hubspotDealType || "",
+        orderType: cf.hubspotOrderType || "",
+        productTypes,
+        productTypeSet,
+        buildingType: cf.hubspotBuildingType || "",
+        plantStreetAddr: cf.hubspotPlantStreetAddr || "",
+        frameAgreementCo: cf.hubspotFrameAgreementCo || "",
+        createDate: cf.hubspotCreateDate || "",
+        dateSigned: cf.hubspotDateSigned || "",
+        estHWDelivery: cf.hubspotEstHWDelivery || "",
+        monthlyRevenue: cf.hubspotMonthlyRevenue || "",
+        dealDescription: cf.hubspotDealDescription || "",
+        deliveryStatus: cf.hubspotDeliveryStatus || "",
+        legalEntity: cf.hubspotLegalEntity || "",
+      },
+      contactEmail,
+      contactEmailDomain: matchExtractEmailDomain(contactEmail),
+      contactPhone,
+      youniumOrderNumber: cf.youniumOrderNumber || "",
+      embeddedLinks: allEmbedded,
+      zendeskTicketIds,
+      existingLinks: { oneflow: ofUrl, hubspot: hsUrl, younium: ynUrl },
+      existingLinksClassified: {
+        oneflow: ofUrl ? rlClassifyLinkUrl(ofUrl) : null,
+        hubspot: hsUrl ? rlClassifyLinkUrl(hsUrl) : null,
+        younium: ynUrl ? rlClassifyLinkUrl(ynUrl) : null,
+      },
+    });
+  }
+
+  const rlMatchCtxCache = new Map();
+
+  async function rlBuildEnrichedProjectMatchContext(rlProjectId) {
+    const pid = String(rlProjectId || "").trim();
+    const pageName = readProjectName() || "";
+    if (!/^\d+$/.test(pid)) {
+      return rlBuildProjectMatchContext({ name: pageName });
+    }
+    try {
+      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid), { includeAllFields: true });
+      const proj = json?.data ?? json;
+      const ownerFirst = proj?.projectOwner?.firstName || "";
+      const ownerLast = proj?.projectOwner?.lastName || "";
+      const sourceObject = {
+        ...proj,
+        name: pageName || proj?.projectName || "",
+        client: proj?.customer?.companyName || "",
+        owner: (ownerFirst + " " + ownerLast).trim(),
+        due: proj?.dueDate,
+        startDate: proj?.startDate,
+        customer: proj?.customer,
+        partner: Array.isArray(proj?.partners) ? proj.partners[0] : null,
+        projectOwner: proj?.projectOwner,
+        projectFee: proj?.projectFee,
+        fields: proj?.fields,
+      };
+      return rlBuildProjectMatchContext(sourceObject);
+    } catch (_) {
+      return rlBuildProjectMatchContext({ name: pageName });
+    }
+  }
+
+  function rlGetMatchContextCached(rlProjectId, gen) {
+    const key = String(rlProjectId || "") + ":" + String(gen || 0);
+    if (rlMatchCtxCache.has(key)) return rlMatchCtxCache.get(key);
+    const pr = rlBuildEnrichedProjectMatchContext(rlProjectId);
+    rlMatchCtxCache.set(key, pr);
+    return pr;
+  }
+
+  function rlExtractOneflowDataFields(a) {
+    const out = {
+      plantId: "", plantName: "", hubspotDealId: "", zendeskTicketId: "",
+      dealPartner: "", customerContact: "", dealContactEmail: "",
+      dealContactPhone: "", yourReference: "", description: "",
+    };
+    const fields = Array.isArray(a?.data_fields) ? a.data_fields
+                 : Array.isArray(a?.dataFields) ? a.dataFields : [];
+    const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    for (const f of fields) {
+      const value = String(f?.value ?? "").trim();
+      if (!value) continue;
+      const key = norm(f?.name);
+      const cid = norm(f?.custom_id ?? f?.customId);
+      const has = (n) => key.includes(n) || cid.includes(n);
+      const eq = (n) => key === n || cid === n;
+      if (!out.hubspotDealId && has("hubspotdealid")) {
+        const d = value.replace(/\D+/g, "");
+        if (d) out.hubspotDealId = d;
+      } else if (!out.plantId && (eq("plantid") || cid === "plantid")) {
+        out.plantId = value.replace(/\D+/g, "") || value;
+      } else if (!out.plantName && has("plantname")) {
+        out.plantName = value;
+      } else if (has("zendeskticket")) {
+        const d = value.replace(/\D+/g, "");
+        if (d && !out.zendeskTicketId) out.zendeskTicketId = d;
+      } else if (!out.dealPartner && has("dealpartner")) {
+        out.dealPartner = value;
+      } else if (!out.customerContact && has("customercontact")) {
+        out.customerContact = value;
+      } else if (!out.dealContactEmail && has("dealcontactemail")) {
+        out.dealContactEmail = value.toLowerCase();
+      } else if (!out.dealContactPhone && has("dealcontactphone")) {
+        out.dealContactPhone = value;
+      } else if (!out.yourReference && has("yourreference")) {
+        out.yourReference = value;
+      }
+    }
+    if (!out.description) out.description = String(a?.description ?? "").trim();
+    return out;
+  }
+
+  const RL_YOUNIUM_MATCH_STATUS = {
+    0: "Draft", 1: "Created", 5: "Draft", 7: "Partially delivered",
+    8: "Delivered", 9: "Active", 10: "Partially paid", 11: "Paid",
+  };
+
+  function rlOneflowToMatchCandidate(a) {
+    const stateLabel = ONEFLOW_STATE_LABEL[a?.state] ?? ("state " + a?.state);
+    const parties = Array.isArray(a?.parties) ? a.parties : [];
+    const partyNames = parties.map((p) => String(p?.name ?? "").trim()).filter(Boolean);
+    const contactEmails = [];
+    const contactNames = [];
+    const orgNumbers = [];
+    const contactPhones = [];
+    for (const p of parties) {
+      if (p?.email) contactEmails.push(String(p.email).toLowerCase());
+      if (p?.phone_number) contactPhones.push(String(p.phone_number));
+      const onr = p?.orgnr ?? p?.identification_number?.value ?? "";
+      if (onr) orgNumbers.push(String(onr));
+      if (Array.isArray(p?.participants)) {
+        for (const part of p.participants) {
+          if (part?.email) contactEmails.push(String(part.email).toLowerCase());
+          if (part?.name) contactNames.push(String(part.name));
+          if (part?.phone_number) contactPhones.push(String(part.phone_number));
+        }
+      }
+    }
+    const df = rlExtractOneflowDataFields(a);
+    if (df.dealContactEmail) contactEmails.push(df.dealContactEmail);
+    if (df.customerContact) contactNames.push(df.customerContact);
+    if (df.dealContactPhone) contactPhones.push(df.dealContactPhone);
+    if (df.dealPartner && !partyNames.some((n) => matchNormalize(n) === matchNormalize(df.dealPartner))) {
+      partyNames.push(df.dealPartner);
+    }
+    const amount = Number(a?.agreement_value?.amount);
+    const currency = String(a?.agreement_value?.currency ?? "");
+    const date = a?.sign_time ?? a?.start_time ?? a?.created_time ?? a?.updated_time ?? null;
+    const kind = ofKindByName(a?.name);
+    const kindBadge = kind === "subscription" ? "Subscription · " : "Order · ";
+    return {
+      id: a?.id,
+      platform: "oneflow",
+      url: ofDocumentUrl(a?.id),
+      primaryText: kindBadge + (String(a?.name ?? "").trim() || "(no name)"),
+      secondaryText: stateLabel + (partyNames.length ? " · " + partyNames.join(", ") : ""),
+      matchableTexts: [a?.name, ...partyNames, df.plantName, df.yourReference, df.description].filter(Boolean),
+      partyNames,
+      contactNames,
+      contactEmails,
+      contactPhones,
+      orgNumbers,
+      plantId: matchExtractPlantId(a?.name ?? "") || df.plantId || "",
+      hubspotDealId: df.hubspotDealId || "",
+      zendeskTicketId: df.zendeskTicketId || "",
+      status: stateLabel,
+      date,
+      amount: Number.isFinite(amount) && amount > 0 ? amount : null,
+      currency,
+      oneflowKind: kind,
+      raw: a,
+    };
+  }
+
+  function rlYouniumToMatchCandidate(o, productName) {
+    const statusLabel = RL_YOUNIUM_MATCH_STATUS[o?.status] ?? ("status " + o?.status);
+    const cf = {};
+    for (const c of (Array.isArray(o?.customFields) ? o.customFields : [])) {
+      if (c && c.name != null && c.value != null && c.value !== "") cf[String(c.name)] = String(c.value);
+    }
+    const description = String(o?.description ?? "").trim();
+    let plantId = String(o?.plant_id ?? cf.plant_id ?? "").trim();
+    if (!plantId && description) plantId = String(matchExtractPlantId(description) || "");
+    const plantName = String(o?.plant_name ?? cf.plant_name ?? "").trim();
+    const accountName = String(o?.accountname ?? o?._account?.name ?? "").trim();
+    const partyNames = [accountName].filter(Boolean);
+    const dateRaw = o?.effectiveStartDate ?? o?.effectiveEndDate ?? o?.orderDate ?? null;
+    const dateDisplay = dateRaw ? String(dateRaw).slice(0, 10) : "";
+    const moneyOf = (m) => matchExtractMoneyAmount(m && typeof m === "object" ? m.amount : m);
+    const tcv = moneyOf(o?.tcv ?? o?.totalContractValue);
+    const acv = moneyOf(o?.acv ?? o?.annualContractValue ?? o?.arr);
+    const cmrr = moneyOf(o?.cmrr ?? o?.mrr);
+    const bestAmount =
+      Number.isFinite(tcv) && tcv > 0 ? tcv :
+      Number.isFinite(acv) && acv > 0 ? acv :
+      Number.isFinite(cmrr) && cmrr > 0 ? cmrr : null;
+    const currency = String(o?.currency?.code ?? o?.currency ?? o?.currencyCode ?? "").trim();
+    const dealContact = String(cf.deal_contact ?? "").trim();
+    const hubspotDealId = String(cf.integrationHubspotHubspotDealId ?? "").trim();
+    const orgNumbers = [o?._account?.organizationNumber, o?._account?.organisationNumber]
+      .filter(Boolean).map(String);
+    const primaryExtra = productName || plantName;
+    return {
+      id: o?.id,
+      platform: "younium",
+      url: ynOrderUrl(o?.id),
+      primaryText: (o?.orderNumber ?? "(no number)") + (primaryExtra ? " — " + primaryExtra : ""),
+      secondaryText:
+        statusLabel +
+        (accountName ? " · " + accountName : "") +
+        (dateDisplay ? " · " + dateDisplay : ""),
+      matchableTexts: [
+        o?.orderNumber, plantName, accountName, description, productName,
+        cf.iwmac_deal_invoice_reference_project,
+      ].filter(Boolean).map(String),
+      partyNames,
+      contactNames: dealContact ? [dealContact] : [],
+      contactEmails: o?._account?.domain ? ["x@" + String(o._account.domain).trim().toLowerCase()] : [],
+      contactPhones: [],
+      orgNumbers,
+      plantId,
+      hubspotDealId: hubspotDealId || undefined,
+      status: statusLabel,
+      date: dateRaw,
+      amount: bestAmount,
+      currency,
+      orderNumber: String(o?.orderNumber || "").trim(),
+      recordType: "order",
+      raw: o,
+    };
+  }
+
+  function rlHubspotUrlToMatchCandidate(url) {
+    const cls = rlClassifyLinkUrl(url) || { platform: "hubspot", recordId: "", url };
+    return {
+      id: cls.recordId || url,
+      platform: "hubspot",
+      url: rlNormalizeHttpUrl(url) || url,
+      primaryText: cls.recordId
+        ? ("HubSpot deal " + cls.recordId)
+        : "HubSpot (from project fields)",
+      secondaryText: url,
+      matchableTexts: [url, cls.recordId].filter(Boolean),
+      partyNames: [],
+      contactNames: [],
+      contactEmails: [],
+      contactPhones: [],
+      orgNumbers: [],
+      plantId: "",
+      status: "",
+      date: null,
+      amount: null,
+      currency: "",
+      raw: { url },
+    };
+  }
+
+  function rlScoreWithKindBonus(candidate, ctx, wantKind) {
+    const prefer = wantKind === "subscription" ? "subscription" : "order";
+    const { score, percent, signals } = scoreMatchCandidate(candidate, ctx, { preferLinkKind: prefer });
+    if (!wantKind || candidate.platform !== "oneflow") {
+      return { candidate, score, percent, signals };
+    }
+    const kindMatch = candidate.oneflowKind === prefer;
+    const adjustedSignals = signals.slice();
+    let adjustedScore = score;
+    if (kindMatch) {
+      adjustedSignals.push({ label: "Matches requested kind (" + prefer + ")", points: 6 });
+      adjustedScore += 6;
+    } else {
+      adjustedSignals.push({
+        label: "Wrong document kind (got " + candidate.oneflowKind + ", want " + prefer + ")",
+        points: -25,
+      });
+      adjustedScore -= 25;
+    }
+    return {
+      candidate,
+      score: adjustedScore,
+      percent: Math.min(100, Math.max(0, Math.round(adjustedScore))),
+      signals: adjustedSignals,
+    };
+  }
+
+  async function youniumFindAllSubscriptionsByPlantId(plantId) {
+    const pid = String(plantId || "").trim();
+    if (!pid) return [];
+    const summaries = await youniumFindAllOrdersByPlantId(pid);
+    const out = [];
+    for (const summary of summaries) {
+      if (!summary?.id) continue;
+      try {
+        const full = await ynGetOrderById(summary.id);
+        const merged = { ...full, ...summary };
+        const match = findIwmacSubscriptionItem(merged);
+        if (match) out.push({ order: merged, productName: match.productName });
+      } catch (e) {
+        console.warn("[Younium status] failed to hydrate order " + summary.id, e);
+      }
+    }
+    return out;
+  }
+  // @@rlMatchRuntime:end
+
 
   async function rlFetchIqcTask(rlProjectId) {
     const empty = {
@@ -2794,17 +3703,6 @@
           if (of.subscription) merged.oneflowSubscription = of.subscription;
         }
       } catch (_) {}
-      // Manual Fetch: if Oneflow still empty, search by plant ID (PPT Find behaviour).
-      if (force && !merged.oneflowOrder && !merged.oneflowSubscription) {
-        try {
-          const plantId = extractPlantIdFromProjectName(readProjectName());
-          if (plantId) {
-            const found = await ofSearchByPlantId(plantId);
-            if (found.order?.id) merged.oneflowOrder = ofDocumentUrl(found.order.id);
-            if (found.subscription?.id) merged.oneflowSubscription = ofDocumentUrl(found.subscription.id);
-          }
-        } catch (_) {}
-      }
       rlProjectLinksCache.set(pid, merged);
       return merged;
     })();
@@ -2944,22 +3842,85 @@
       dialog.rlUrlPickerDlg .rlUpStatus.warn { color: #fde68a; }
       dialog.rlUrlPickerDlg .rlUpStatus.error { color: #fca5a5; }
       dialog.rlUrlPickerDlg .rlUpPicker {
-        margin-top: 8px; display: flex; flex-direction: column; gap: 6px;
+        margin-top: 8px;
+        max-height: 240px;
+        overflow-y: auto;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 8px;
+        background: rgba(0,0,0,0.18);
+        display: grid;
+        gap: 4px;
+        padding: 4px;
       }
       dialog.rlUrlPickerDlg .rlUpPickItem {
-        display: flex; justify-content: space-between; gap: 10px; align-items: flex-start;
-        text-align: left; width: 100%;
-        appearance: none; border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.04); color: inherit;
-        border-radius: 8px; padding: 8px 10px; cursor: pointer;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: start;
+        text-align: left;
+        width: 100%;
+        appearance: none;
+        border: 1px solid transparent;
+        background: rgba(255,255,255,0.04);
+        color: inherit;
+        border-radius: 6px;
+        padding: 8px 10px;
+        cursor: pointer;
+        font-size: 12px;
       }
       dialog.rlUrlPickerDlg .rlUpPickItem:hover {
-        background: rgba(255,255,255,0.08); border-color: rgba(125,211,252,0.45);
+        background: rgba(255,255,255,0.08);
+        border-color: rgba(255,255,255,0.18);
       }
-      dialog.rlUrlPickerDlg .rlUpPickName { font-weight: 600; font-size: 12.5px; }
+      dialog.rlUrlPickerDlg .rlUpPickName {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-weight: 600; font-size: 12.5px;
+      }
       dialog.rlUrlPickerDlg .rlUpPickMeta {
-        margin-top: 2px; font-size: 11px; color: rgba(255,255,255,0.55);
-        word-break: break-all;
+        margin-top: 2px; font-size: 10.5px; color: rgba(255,255,255,0.55);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickSignals {
+        margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 5px;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickSignal {
+        display: inline-flex; align-items: baseline; gap: 5px;
+        font-size: 10.5px; line-height: 1.5; padding: 1px 8px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.10);
+        color: rgba(255,255,255,0.62);
+        white-space: nowrap;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickSignal .sigPts {
+        font-weight: 700; font-variant-numeric: tabular-nums; color: #34d399;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickSignal.neg {
+        background: rgba(248,113,113,0.10);
+        border-color: rgba(248,113,113,0.30);
+      }
+      dialog.rlUrlPickerDlg .rlUpPickSignal.neg .sigPts { color: #f87171; }
+      dialog.rlUrlPickerDlg .rlUpPickScore {
+        font-size: 11px; font-weight: 600; white-space: nowrap;
+        padding: 3px 8px; border-radius: 999px;
+        background: rgba(148,163,184,0.16);
+        color: rgba(148,163,184,0.95);
+        border: 1px solid transparent;
+      }
+      dialog.rlUrlPickerDlg .rlUpPickScore.highConfidence {
+        background: rgba(52,211,153,0.16);
+        color: rgba(52,211,153,0.95);
+        border-color: rgba(52,211,153,0.32);
+      }
+      dialog.rlUrlPickerDlg .rlUpPickScore.medConfidence {
+        background: rgba(251,191,36,0.16);
+        color: rgba(251,191,36,0.95);
+        border-color: rgba(251,191,36,0.32);
+      }
+      dialog.rlUrlPickerDlg .rlUpPickScore.lowConfidence {
+        background: rgba(148,163,184,0.12);
+        color: rgba(148,163,184,0.85);
+        border-color: rgba(148,163,184,0.24);
       }
       dialog.rlUrlPickerDlg .rlUpFoot {
         display: flex; justify-content: flex-end; gap: 8px;
@@ -3295,53 +4256,120 @@
     row?.querySelector(".rlUpPicker")?.remove();
   }
 
-  function rlUrlPickerShowCandidates(row, input, statusEl, candidates, gen, projectId) {
+  function rlUrlPickerCandidateUrl(entry) {
+    return rlNormalizeHttpUrl(entry?.candidate?.url) ||
+      rlNormalizeHttpUrl(entry?.url) ||
+      "";
+  }
+
+  function rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId) {
     rlUrlPickerClearPicker(row);
-    if (!candidates.length) {
+    if (!scored.length) {
       rlUrlPickerSetStatus(statusEl, "No candidates.", "warn");
       return;
     }
-    if (candidates.length === 1 && !rlNormalizeHttpUrl(input.value)) {
-      input.value = candidates[0].url;
-      rlUrlPickerSetStatus(statusEl, "Auto-filled unique match.", "good");
-      return;
+    const decision = decideMatchOutcome(scored);
+    const existing = rlNormalizeHttpUrl(input.value);
+    if (decision.kind === "auto") {
+      const url = rlUrlPickerCandidateUrl(decision.entry);
+      if (!url) {
+        rlUrlPickerSetStatus(statusEl, "Best match has no URL.", "warn");
+        return;
+      }
+      if (!existing) {
+        input.value = url;
+        rlUrlPickerSetStatus(
+          statusEl,
+          "Auto-filled (" + decision.entry.percent + "%): " + (decision.entry.candidate.primaryText || url),
+          "good"
+        );
+        return;
+      }
+      if (existing === url) {
+        rlUrlPickerSetStatus(statusEl, "Already matches best candidate (" + decision.entry.percent + "%).", "good");
+        return;
+      }
+      // Never overwrite a nonempty input — fall through to picker.
     }
-    if (candidates.length === 1 && rlNormalizeHttpUrl(input.value) === candidates[0].url) {
-      rlUrlPickerSetStatus(statusEl, "Already matches the only candidate.", "good");
+    if (decision.kind === "none") {
+      rlUrlPickerSetStatus(statusEl, "No usable match signals.", "warn");
       return;
     }
     const host = document.createElement("div");
     host.className = "rlUpPicker";
-    for (const c of candidates.slice(0, 8)) {
+    for (const entry of scored.slice(0, 8)) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "rlUpPickItem";
       const left = document.createElement("div");
       const name = document.createElement("div");
       name.className = "rlUpPickName";
-      name.textContent = c.primaryText || "(no name)";
+      name.textContent = entry.candidate.primaryText || "(no name)";
       const meta = document.createElement("div");
       meta.className = "rlUpPickMeta";
-      meta.textContent = c.secondaryText || c.url || "";
+      meta.textContent = entry.candidate.secondaryText || entry.candidate.url || "";
       left.appendChild(name);
       left.appendChild(meta);
+      if (entry.signals && entry.signals.length) {
+        const breakdown = document.createElement("div");
+        breakdown.className = "rlUpPickSignals";
+        for (const s of entry.signals) {
+          const chip = document.createElement("span");
+          chip.className = "rlUpPickSignal" + (s.points < 0 ? " neg" : "");
+          const pts = document.createElement("span");
+          pts.className = "sigPts";
+          pts.textContent = (s.points < 0 ? "\u2212" : "+") + Math.abs(s.points);
+          const lbl = document.createElement("span");
+          lbl.textContent = s.label;
+          chip.appendChild(pts);
+          chip.appendChild(lbl);
+          breakdown.appendChild(chip);
+        }
+        left.appendChild(breakdown);
+      }
+      const right = document.createElement("div");
+      right.className = "rlUpPickScore";
+      if (entry.percent >= 80) right.classList.add("highConfidence");
+      else if (entry.percent >= 60) right.classList.add("medConfidence");
+      else right.classList.add("lowConfidence");
+      right.textContent = entry.percent + "% match";
+      const tooltipLines = entry.signals && entry.signals.length
+        ? entry.signals.map((s) => (s.points < 0 ? "\u2212" : "+") + Math.abs(s.points) + "  " + s.label)
+        : ["(no matching signals)"];
+      btn.title = tooltipLines.join("\n");
       btn.appendChild(left);
+      btn.appendChild(right);
       btn.addEventListener("click", () => {
         if (gen !== rlUrlPickerGen) return;
         if (String(dlgProjectId(row)) !== String(projectId)) return;
-        input.value = c.url;
+        const url = rlUrlPickerCandidateUrl(entry);
+        if (!url) return;
+        input.value = url;
         rlUrlPickerClearPicker(row);
-        rlUrlPickerSetStatus(statusEl, "Selected.", "good");
+        rlUrlPickerSetStatus(statusEl, "Selected (" + entry.percent + "%).", "good");
       });
       host.appendChild(btn);
     }
     row.appendChild(host);
+    const reason = decision.reason || "";
     rlUrlPickerSetStatus(
       statusEl,
-      candidates.length + " candidate(s) — pick one" +
-        (rlNormalizeHttpUrl(input.value) ? " (existing value kept until you choose)" : "") + ".",
+      (existing ? "Existing value kept — " : "") +
+        scored.length + " candidate(s) — pick one" +
+        (reason ? " (" + reason + ")" : "") + ".",
       "warn"
     );
+  }
+
+  function rlUrlPickerShowCandidates(row, input, statusEl, candidates, gen, projectId) {
+    const scored = (candidates || []).map((c) => ({
+      candidate: c,
+      score: c.percent ?? c.score ?? 0,
+      percent: c.percent ?? Math.min(100, Math.max(0, Math.round(c.score || 0))),
+      signals: c.signals || [],
+      url: c.url,
+    }));
+    rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
   }
 
   function dlgProjectId(fromEl) {
@@ -3354,73 +4382,103 @@
     rlUrlPickerSetStatus(statusEl, "Searching…", "");
     try {
       if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+      const matchCtx = await rlGetMatchContextCached(projectId, gen);
+      if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+      const effectivePlantId = plantId || matchCtx.plantId || "";
+
       if (key === "oneflowOrder" || key === "oneflowSubscription") {
-        if (!plantId) {
+        if (!effectivePlantId) {
           rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
           return;
         }
-        const found = await ofSearchByPlantId(plantId);
+        const found = await ofSearchByPlantId(effectivePlantId);
         if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
         const want = key === "oneflowOrder" ? "order" : "subscription";
-        const cands = (found.candidates || [])
-          .filter((a) => ofKindByName(a?.name) === want && a?.id)
-          .map((a) => ({
-            url: ofDocumentUrl(a.id),
-            primaryText: String(a.name || ("Oneflow " + a.id)),
-            secondaryText: (ONEFLOW_STATE_LABEL[a.state] || ("state " + a.state)) + " · id " + a.id,
-          }));
-        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        const scored = (found.candidates || [])
+          .filter((a) => a?.id)
+          .map((a) => rlScoreWithKindBonus(rlOneflowToMatchCandidate(a), matchCtx, want))
+          .sort((x, y) => y.percent - x.percent || y.score - x.score);
+        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
         return;
       }
       if (key === "younium") {
-        if (!plantId) {
+        if (!effectivePlantId) {
           rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
           return;
         }
-        const all = await youniumFindAllOrdersByPlantId(plantId);
+        const all = await youniumFindAllOrdersByPlantId(effectivePlantId);
         if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        const cands = (all || [])
-          .filter((o) => String(o?.plant_id ?? "").trim() === String(plantId) && o?.id)
-          .filter((o) => ofKindByName(o?.description || o?.orderNumber || "") !== "subscription")
-          .map((o) => ({
-            url: ynOrderUrl(o.id),
-            primaryText: String(o.orderNumber || o.description || o.id),
-            secondaryText: [o.status, o.accountname, "id " + o.id].filter(Boolean).join(" · "),
-          }));
-        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        const orders = (all || [])
+          .filter((o) => String(o?.plant_id ?? "").trim() === String(effectivePlantId) && o?.id)
+          .filter((o) => ofKindByName(o?.description || o?.orderNumber || "") !== "subscription");
+        const hydrated = await Promise.all(orders.map(async (o) => {
+          try {
+            const full = await ynGetOrderById(o.id);
+            return full?.id ? { ...full, ...o } : o;
+          } catch (_) { return o; }
+        }));
+        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+        const scored = hydrated
+          .map((o) => {
+            const candidate = rlYouniumToMatchCandidate(o);
+            const { score, percent, signals } = scoreMatchCandidate(candidate, matchCtx, { preferLinkKind: "order" });
+            return { candidate, score, percent, signals };
+          })
+          .sort((x, y) => y.percent - x.percent || y.score - x.score);
+        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
         return;
       }
       if (key === "youniumSubscription") {
-        if (!plantId) {
+        if (!effectivePlantId) {
           rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
           return;
         }
-        const found = await youniumFindSubscriptionByPlantId(plantId);
+        const foundList = await youniumFindAllSubscriptionsByPlantId(effectivePlantId);
         if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        if (!found?.order?.id) {
-          rlUrlPickerSetStatus(statusEl, "No IWMAC subscription order for plant " + plantId + ".", "warn");
+        if (!foundList.length) {
+          rlUrlPickerSetStatus(statusEl, "No IWMAC subscription order for plant " + effectivePlantId + ".", "warn");
           return;
         }
-        const url = ynOrderUrl(found.order.id);
-        const cands = [{
-          url,
-          primaryText: String(found.order.orderNumber || found.order.id),
-          secondaryText: found.productName || "IWMAC subscription",
-        }];
-        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        const scored = foundList
+          .map(({ order, productName }) => {
+            const candidate = rlYouniumToMatchCandidate(order, productName);
+            const { score, percent, signals } = scoreMatchCandidate(candidate, matchCtx, { preferLinkKind: "subscription" });
+            return { candidate, score, percent, signals };
+          })
+          .sort((x, y) => y.percent - x.percent || y.score - x.score);
+        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
         return;
       }
       if (key === "hubspot") {
-        // No HubSpotBridge on Rocketlane pages — refill from Deal Description / Delivery only.
+        // Fields-only: score URLs recovered from IQC / Deal / Delivery. No HubSpot API.
         const merged = await rlLoadProjectLinks(projectId, { force: true });
         if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        const url = rlNormalizeHttpUrl(merged.hubspot);
-        if (!url) {
+        const urls = [];
+        const seen = new Set();
+        const pushUrl = (u) => {
+          const n = rlNormalizeHttpUrl(u);
+          if (!n || seen.has(n)) return;
+          const cls = rlClassifyLinkUrl(n);
+          if (!cls || cls.platform !== "hubspot") return;
+          seen.add(n);
+          urls.push(n);
+        };
+        pushUrl(merged.hubspot);
+        for (const l of matchCtx.embeddedLinks || []) {
+          if (l?.platform === "hubspot" && l.url) pushUrl(l.url);
+        }
+        if (!urls.length) {
           rlUrlPickerSetStatus(statusEl, "No HubSpot URL in Deal Description / Delivery / IQC. Paste manually.", "warn");
           return;
         }
-        const cands = [{ url, primaryText: "HubSpot (from project fields)", secondaryText: url }];
-        rlUrlPickerShowCandidates(row, input, statusEl, cands, gen, projectId);
+        const scored = urls
+          .map((u) => {
+            const candidate = rlHubspotUrlToMatchCandidate(u);
+            const { score, percent, signals } = scoreMatchCandidate(candidate, matchCtx);
+            return { candidate, score, percent, signals };
+          })
+          .sort((x, y) => y.percent - x.percent || y.score - x.score);
+        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
         return;
       }
       rlUrlPickerSetStatus(statusEl, "No Find action for this slot.", "warn");
@@ -3552,6 +4610,10 @@
     dlg.dataset.rlGen = String(gen);
     dlg.dataset.rlProjectId = ctx.rlProjectId;
     dlg.dataset.rlPlantId = extractPlantIdFromProjectName(readProjectName()) || "";
+    for (const k of [...rlMatchCtxCache.keys()]) {
+      if (!k.endsWith(":" + gen)) rlMatchCtxCache.delete(k);
+    }
+    void rlGetMatchContextCached(ctx.rlProjectId, gen);
     const meta = dlg.querySelector("[data-rl-up-meta]");
     if (meta) meta.textContent = "Loading links from IQC / Deal Description / Delivery…";
     for (const row of dlg.querySelectorAll(".rlUpRow")) {
