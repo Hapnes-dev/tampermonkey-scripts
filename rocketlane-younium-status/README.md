@@ -8,7 +8,7 @@ One Tampermonkey userscript with seven independent improvements for `kiona.rocke
 4. **Oneflow signing status** — an "Oneflow: …" chip right of the Younium chip plus an **Oneflow status details** modal (ported from the tracker's Oneflow checker in v1.3.0).
 5. **Delivery to service** — the tracker's handover wizard on the **Handover to service** task card, which can create the Zendesk handover ticket and tick the task complete (ported in v1.4.0).
 6. **Project action buttons** (v1.10.6) — **Files** and **Order info** popovers match **Younium status details**: dark `#0f1424` shell, translucent white inner cards (`.youniumSection` / `.rlOiSection`), off-white body text. Fetch / Delivery unchanged.
-7. **Zendesk cases** (v1.10.8) — same PPT colour pattern as Order/Files: dark `#0f1424` shell, faded-white rows/cards/msgs, inset list tray. Renames **Project updates** → **Zendesk cases** on the tab and in “Show tabs…” (freeze-safe). Needs leading plant number + logged-in Zendesk session.
+7. **Zendesk cases** (v1.10.9) — PPT dark `#0f1424` shell + faded-white rows; title forced light for contrast; panel sits ~20px below tabs. Renames **Project updates** → **Zendesk cases**. Needs leading plant number + logged-in Zendesk session.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 

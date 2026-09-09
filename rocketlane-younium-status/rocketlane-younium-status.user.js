@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.8
-// @description  Rocketlane improvements in one script (v1.10.8: Zendesk cases PPT faded-white inners + Fetch URLs spacing): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.9
+// @description  Rocketlane improvements in one script (v1.10.9: Zendesk cases spacing + title contrast): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -6458,7 +6458,7 @@
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
     // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
-    if (style && style.dataset.rlZdReady === "1.10.8") return;
+    if (style && style.dataset.rlZdReady === "1.10.9") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -6469,7 +6469,8 @@
       body.rlZdCasesActive #page > [class*="content__Content-"] > *:not(#rlZendeskCasesPanel) {
         display: none !important;
       }
-      /* PPT / Younium dark shell + faded white inners (same as Order info / Files). */
+      /* Always PPT / Younium dark shell — Rocketlane page is light, so do not
+         flip to dark ink via prefers-color-scheme (that made the title unreadable). */
       #rlZendeskCasesPanel {
         --rlZd-shell: #0f1424;
         --rlZd-surface-1: rgba(255,255,255,0.04);
@@ -6487,106 +6488,55 @@
         box-sizing: border-box;
         width: 100%;
         max-width: 1100px;
-        margin: 0 auto;
+        margin: 20px auto 12px;
         padding: 16px 20px 28px;
-        color: var(--rlZd-text);
+        color: var(--rlZd-text) !important;
         background: var(--rlZd-shell);
         border: 1px solid var(--rlZd-hairline-strong);
         border-radius: 14px;
         font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         box-shadow: 0 12px 32px rgba(0,0,0,0.24);
       }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) {
-          --rlZd-shell: #ffffff;
-          --rlZd-surface-1: rgba(15,23,42,0.03);
-          --rlZd-surface-2: rgba(15,23,42,0.035);
-          --rlZd-surface-3: rgba(15,23,42,0.055);
-          --rlZd-hairline: rgba(15,23,42,0.08);
-          --rlZd-hairline-strong: rgba(15,23,42,0.14);
-          --rlZd-border: rgba(15,23,42,0.10);
-          --rlZd-text: rgba(15,23,42,0.94);
-          --rlZd-muted: rgba(15,23,42,0.64);
-          --rlZd-muted2: rgba(15,23,42,0.44);
-          --rlZd-accent: #0284c7;
-          --rlZd-accent-soft: rgba(2,132,199,0.10);
-          --rlZd-accent-stroke: rgba(2,132,199,0.30);
-          box-shadow: 0 12px 32px rgba(15,23,42,0.12);
-        }
-      }
-      #rlZendeskCasesPanel.rlPopoverOnDark {
-        --rlZd-shell: #0f1424;
-        --rlZd-surface-1: rgba(255,255,255,0.04);
-        --rlZd-surface-2: rgba(255,255,255,0.035);
-        --rlZd-surface-3: rgba(255,255,255,0.07);
-        --rlZd-hairline: rgba(255,255,255,0.08);
-        --rlZd-hairline-strong: rgba(255,255,255,0.14);
-        --rlZd-border: rgba(255,255,255,0.10);
-        --rlZd-text: rgba(255,255,255,0.94);
-        --rlZd-muted: rgba(255,255,255,0.66);
-        --rlZd-muted2: rgba(255,255,255,0.46);
-        --rlZd-accent: #7dd3fc;
-        --rlZd-accent-soft: rgba(125,211,252,0.12);
-        --rlZd-accent-stroke: rgba(125,211,252,0.36);
-      }
       [data-rl-zd-tab="1"] svg { width: 14px; height: 14px; }
       #rlZendeskCasesPanel .rlZdHead {
         display: flex; align-items: center; justify-content: space-between;
         gap: 12px; margin-bottom: 12px;
       }
-      #rlZendeskCasesPanel .rlZdTitle {
-        margin: 0; font-size: 16px; font-weight: 700; color: var(--rlZd-text);
+      #rlZendeskCasesPanel .rlZdTitle,
+      #rlZendeskCasesPanel h2.rlZdTitle {
+        margin: 0; font-size: 16px; font-weight: 700;
+        color: rgba(255,255,255,0.96) !important;
       }
       #rlZendeskCasesPanel .rlZdRefresh {
         appearance: none; border: 1px solid var(--rlZd-hairline);
-        background: var(--rlZd-surface-3); color: var(--rlZd-muted);
+        background: var(--rlZd-surface-3); color: rgba(255,255,255,0.78) !important;
         border-radius: 8px; padding: 6px 12px; font: inherit; font-weight: 600;
         cursor: pointer;
       }
       #rlZendeskCasesPanel .rlZdRefresh:hover {
-        color: var(--rlZd-text); border-color: var(--rlZd-hairline-strong);
+        color: rgba(255,255,255,0.96) !important; border-color: var(--rlZd-hairline-strong);
       }
-      #rlZendeskCasesPanel .rlZdBody { min-height: 120px; }
+      #rlZendeskCasesPanel .rlZdBody { min-height: 120px; color: var(--rlZd-text); }
       #rlZendeskCasesPanel .rlZdEmpty,
       #rlZendeskCasesPanel .rlZdLoading { color: var(--rlZd-muted2); padding: 16px 4px; font-style: italic; }
       #rlZendeskCasesPanel .rlZdError { color: #fb7185; padding: 16px 4px; }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdError { color: #e11d48; }
-      }
-      /* Outer list tray — PPT .zendeskTaskList (dark inset / light frosted). */
+      /* Outer list tray — PPT .zendeskTaskList (dark inset). */
       #rlZendeskCasesPanel .rlZdTaskList {
         display: grid; gap: 6px; max-height: min(70vh, 720px); overflow-y: auto;
         padding: 8px; border-radius: 10px;
         background: rgba(0,0,0,0.18); border: 1px solid var(--rlZd-border);
-      }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskList {
-          background: rgba(255,255,255,0.5);
-        }
-      }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdTaskList {
-        background: rgba(0,0,0,0.18);
       }
       /* Rows / cards — faded white chips like PPT .zendeskTaskRow. */
       #rlZendeskCasesPanel .rlZdTaskRow {
         display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px;
         align-items: center; padding: 8px 10px; border-radius: 8px;
         background: rgba(255,255,255,0.04); border: 1px solid var(--rlZd-border);
-        font-size: 12px; color: var(--rlZd-text); cursor: pointer;
+        font-size: 12px; color: rgba(255,255,255,0.94) !important;
+        cursor: pointer;
         transition: background 120ms ease, border-color 120ms ease;
-      }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskRow {
-          background: rgba(15,23,42,0.03);
-        }
       }
       #rlZendeskCasesPanel .rlZdTaskRow:hover {
         background: rgba(255,255,255,0.07); border-color: var(--rlZd-hairline-strong);
-      }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskRow:hover {
-          background: rgba(15,23,42,0.055);
-        }
       }
       #rlZendeskCasesPanel .rlZdTaskStatus {
         display: inline-flex; align-items: center; justify-content: center;
@@ -6600,37 +6550,27 @@
       #rlZendeskCasesPanel .rlZdTaskStatus.zd-hold { background: rgba(251,113,133,0.15); color: #fb7185; border-color: rgba(251,113,133,0.32); }
       #rlZendeskCasesPanel .rlZdTaskStatus.zd-solved { background: rgba(52,211,153,0.15); color: #34d399; border-color: rgba(52,211,153,0.32); }
       #rlZendeskCasesPanel .rlZdTaskStatus.zd-closed { background: rgba(148,163,184,0.15); color: var(--rlZd-muted2); border-color: var(--rlZd-hairline); }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-new { color: #2563eb; }
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-open { color: #d97706; }
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-pending { color: #7c3aed; }
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-hold { color: #e11d48; }
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskStatus.zd-solved { color: #059669; }
-      }
       #rlZendeskCasesPanel .rlZdTaskMiddle { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
       #rlZendeskCasesPanel .rlZdTaskSubject {
         font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+        color: rgba(255,255,255,0.94) !important;
       }
       #rlZendeskCasesPanel .rlZdTaskWhen {
-        color: var(--rlZd-muted2); font-size: 11px; white-space: nowrap;
+        color: rgba(255,255,255,0.50) !important; font-size: 11px; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis;
       }
       #rlZendeskCasesPanel .rlZdTaskMetaLink {
-        color: var(--rlZd-muted2); font-size: 11px; white-space: nowrap;
+        color: rgba(255,255,255,0.50) !important; font-size: 11px; white-space: nowrap;
         text-decoration: none; padding: 2px 6px; border-radius: 6px;
         border: 1px solid transparent;
       }
       #rlZendeskCasesPanel .rlZdTaskMetaLink:hover {
-        background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong); color: var(--rlZd-text);
+        background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong);
+        color: rgba(255,255,255,0.94) !important;
       }
       #rlZendeskCasesPanel .rlZdTaskCard {
         display: grid; gap: 0; background: rgba(255,255,255,0.04);
         border: 1px solid var(--rlZd-border); border-radius: 8px; overflow: hidden;
-      }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskCard {
-          background: rgba(15,23,42,0.03);
-        }
       }
       #rlZendeskCasesPanel .rlZdTaskCard > .rlZdTaskRow {
         background: transparent; border: none; border-radius: 0;
@@ -6638,20 +6578,10 @@
       #rlZendeskCasesPanel .rlZdTaskCard.expanded {
         background: rgba(255,255,255,0.06); border-color: var(--rlZd-hairline-strong);
       }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdTaskCard.expanded {
-          background: rgba(15,23,42,0.05);
-        }
-      }
       #rlZendeskCasesPanel .rlZdTaskDetail { padding: 0 12px 12px; display: grid; gap: 10px; }
       #rlZendeskCasesPanel .rlZdConvo {
         display: grid; gap: 8px; max-height: 220px; overflow-y: auto; padding: 10px;
         border-radius: 8px; background: rgba(0,0,0,0.16); border: 1px solid var(--rlZd-border);
-      }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdConvo {
-          background: rgba(15,23,42,0.04);
-        }
       }
       #rlZendeskCasesPanel .rlZdConvoShowEarlier {
         align-self: stretch; background: transparent; color: var(--rlZd-accent);
@@ -6661,11 +6591,6 @@
       #rlZendeskCasesPanel .rlZdConvoShowEarlier:hover { background: var(--rlZd-accent-soft); }
       #rlZendeskCasesPanel .rlZdCompose { display: grid; gap: 8px; padding: 10px; border-radius: 8px;
         background: rgba(255,255,255,0.035); border: 1px solid var(--rlZd-border); position: relative; }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdCompose {
-          background: rgba(15,23,42,0.035);
-        }
-      }
       #rlZendeskCasesPanel .rlZdComposeHd {
         font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
         color: var(--rlZd-muted); margin-bottom: 2px;
@@ -6673,11 +6598,7 @@
       #rlZendeskCasesPanel .rlZdMsg {
         padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04);
         border: 1px solid var(--rlZd-border); font-size: 12px; line-height: 1.45;
-      }
-      @media (prefers-color-scheme: light) {
-        #rlZendeskCasesPanel:not(.rlPopoverOnDark) .rlZdMsg {
-          background: rgba(15,23,42,0.03);
-        }
+        color: rgba(255,255,255,0.94) !important;
       }
       #rlZendeskCasesPanel .rlZdMsg.rlZdMsgInternal {
         background: rgba(251,191,36,0.06); border-color: rgba(251,191,36,0.28);
@@ -6882,7 +6803,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.10.8";
+    style.dataset.rlZdReady = "1.10.9";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
@@ -7910,7 +7831,9 @@
     const parent = mountCtx.mountParent;
     parent.appendChild(panel);
     rlZdPanelEl = panel;
+    // Always dark PPT surface on this light Rocketlane route (ignore OS light scheme).
     rlApplyPopoverSurface(panel);
+    panel.classList.add("rlPopoverOnDark");
     // CSS body.rlZdCasesActive hides native siblings — no per-node display writes
     // on every ensure (that froze Rocketlane via MutationObserver).
     rlZdHideNativeStatusContent();
