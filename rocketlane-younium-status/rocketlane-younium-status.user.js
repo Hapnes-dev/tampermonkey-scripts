@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.10.2
-// @description  Rocketlane improvements in one script (v1.10.2: Zendesk cases keeps project header, mounts on first click): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.10.3
+// @description  Rocketlane improvements in one script (v1.10.3: stop Zendesk ensure MutationObserver freeze): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -64,7 +64,7 @@
  *     description. Edit/Remove stay
  *     tracker-only and are not ported. Mount target is the plan/tasks
  *     action-bar Secondary row (label text is "Responsible").
- *  1e. Zendesk cases (v1.10.2): renames native Project updates tab, mounts
+ *  1e. Zendesk cases (v1.10.3): renames native Project updates tab, mounts
  *     #rlZendeskCasesPanel with full PPT Zendesk-tasks UI (search/hydrate/
  *     thread/reply) via zendeskApiRequest — no window.ZendeskBridge.
  *  1d. Delivery to service (section 8), ported from the tracker's handover
@@ -1761,7 +1761,9 @@
     // after the nav chips, and a no-mount early-out stalled the pills for 1.5s+.
     if (btn && btn.isConnected && ofBtn && ofBtn.isConnected && dtsBtn && dtsBtn.isConnected &&
         actionBar && actionBar.isConnected) {
-      try { rlZdEnsureTabAndPanel(); } catch (_) {}
+      // Do NOT call rlZdEnsureTabAndPanel here — it used to rewrite a <style>
+      // tag (and re-hide nodes) on every SPA mutation → infinite observer loop /
+      // frozen Rocketlane. Zendesk cases is driven by route change + tab click.
       return;
     }
     if (ensureTimer) return;
@@ -6336,12 +6338,17 @@
 
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
+    if (style && style.dataset.rlZdReady === "1") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
       (document.head || document.documentElement).appendChild(style);
     }
     style.textContent = `
+      /* Hide native status-updates body without JS DOM writes (avoids observer loops). */
+      body.rlZdCasesActive #page > [class*="content__Content-"] > *:not(#rlZendeskCasesPanel) {
+        display: none !important;
+      }
       #rlZendeskCasesPanel {
         --rlZd-surface-1: #ffffff;
         --rlZd-surface-2: rgba(15,23,42,0.035);
@@ -6658,6 +6665,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
+    style.dataset.rlZdReady = "1";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
@@ -6889,6 +6897,7 @@
   function rlZdTeardownPanel() {
     rlZdPanelGen++;
     rlZdRestoreNativeContent();
+    try { document.body.classList.remove("rlZdCasesActive"); } catch (_) {}
     if (rlZdPanelEl && rlZdPanelEl.parentNode) {
       try { rlZdPanelEl.parentNode.removeChild(rlZdPanelEl); } catch (_) {}
     }
@@ -6915,8 +6924,7 @@
   }
 
   function rlZdCollectNativeStatusTargets() {
-    // Hide only native status-updates body inside the content pane. Never touch
-    // #page_header (logo / account / project title).
+    // Prefer CSS (body.rlZdCasesActive). Keep this for one-shot mount only.
     const content = rlZdFindContentPane();
     if (!content) return [];
     const hideTargets = [];
@@ -6928,16 +6936,8 @@
   }
 
   function rlZdHideNativeStatusContent() {
-    const targets = rlZdCollectNativeStatusTargets();
-    for (const el of targets) {
-      try {
-        if (!el || !el.isConnected) continue;
-        if (el.getAttribute("data-rl-zd-native-hidden") === "1") continue;
-        el.style.display = "none";
-        el.setAttribute("data-rl-zd-native-hidden", "1");
-        rlZdHiddenNative.push(el);
-      } catch (_) {}
-    }
+    // CSS class does the hide without mutating remounted nodes every tick.
+    try { document.body.classList.add("rlZdCasesActive"); } catch (_) {}
   }
 
   function rlZdFindMountContext(_navRow) {
@@ -6949,7 +6949,6 @@
         afterEl: null,
       };
     }
-    // Content pane not painted yet — caller retries via ensure timers.
     return null;
   }
 
@@ -6957,7 +6956,6 @@
     if (!cell || cell.getAttribute("data-rl-zd-click") === "1") return;
     cell.setAttribute("data-rl-zd-click", "1");
     const kick = () => {
-      // Native SPA may update history slightly after the click; retry quickly.
       [0, 30, 80, 160, 320, 600].forEach((d) => {
         setTimeout(() => { try { rlZdEnsureTabAndPanel(); } catch (_) {} }, d);
       });
@@ -6966,6 +6964,9 @@
     const a = cell.querySelector("a");
     if (a) a.addEventListener("click", kick, true);
   }
+
+  let rlZdEnsureLock = false;
+  let rlZdEnsureQueued = false;
 
   function rlZdAbsTime(iso) {
     const ZD_TZ = "Europe/Oslo";
@@ -7604,14 +7605,6 @@
     const gen = ++rlZdPanelGen;
     rlZdPanelProjectId = projectId;
 
-    for (const el of mountCtx.hideTargets || []) {
-      try {
-        el.style.display = "none";
-        el.setAttribute("data-rl-zd-native-hidden", "1");
-        rlZdHiddenNative.push(el);
-      } catch (_) {}
-    }
-
     const panel = document.createElement("div");
     panel.id = "rlZendeskCasesPanel";
     panel.setAttribute("role", "region");
@@ -7640,6 +7633,8 @@
     parent.appendChild(panel);
     rlZdPanelEl = panel;
     rlApplyPopoverSurface(panel);
+    // CSS body.rlZdCasesActive hides native siblings — no per-node display writes
+    // on every ensure (that froze Rocketlane via MutationObserver).
     rlZdHideNativeStatusContent();
 
     const projectName = readProjectName() || "";
@@ -7666,6 +7661,24 @@
   }
 
   function rlZdEnsureTabAndPanel() {
+    // Serialize: concurrent route+click+ensure timers must not remount in a storm.
+    if (rlZdEnsureLock) {
+      rlZdEnsureQueued = true;
+      return;
+    }
+    rlZdEnsureLock = true;
+    try {
+      rlZdEnsureTabAndPanelInner();
+    } finally {
+      rlZdEnsureLock = false;
+      if (rlZdEnsureQueued) {
+        rlZdEnsureQueued = false;
+        setTimeout(() => { try { rlZdEnsureTabAndPanel(); } catch (_) {} }, 50);
+      }
+    }
+  }
+
+  function rlZdEnsureTabAndPanelInner() {
     if (!/^\/projects\/\d+/.test(location.pathname)) {
       rlZdTeardownPanel();
       return;
@@ -7680,7 +7693,10 @@
 
     if (!active) {
       if (rlZdPanelEl) rlZdTeardownPanel();
-      else rlZdRestoreNativeContent();
+      else {
+        try { document.body.classList.remove("rlZdCasesActive"); } catch (_) {}
+        rlZdRestoreNativeContent();
+      }
       return;
     }
     if (!projectId) return;
@@ -7694,15 +7710,13 @@
       content.contains(rlZdPanelEl);
 
     if (mountedOk) {
-      // React often remounts the empty state after our first hide — re-hide only
-      // inside the content pane (never #page_header).
       rlZdHideNativeStatusContent();
       rlApplyPopoverSurface(rlZdPanelEl);
       return;
     }
 
     const mountCtx = rlZdFindMountContext(row || document.body);
-    if (!mountCtx) return; // content pane not ready; ensure timers / tab click retries
+    if (!mountCtx) return;
     rlZdMountPanel(mountCtx, projectId);
   }
 
