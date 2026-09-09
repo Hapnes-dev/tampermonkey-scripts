@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.147
+// @version      4.148
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1376,7 +1376,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.143';
+    const SCRIPT_VERSION   = '4.148';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3281,6 +3281,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-pct {
             color: #0f62fe; margin-right: 6px;
         }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-progress-clock { color: #6f6f6f; font-weight: 500; font-variant-numeric: tabular-nums; }
         #${WEEK_ID} { position: fixed; top: 64px; right: 24px; width: 480px; max-width: calc(100vw - 40px); background: #f9fbff; border: 1px solid #d0d7e2; border-radius: 10px; box-shadow: 0 10px 30px rgba(16,24,40,.22); z-index: 2147483000; padding: 12px 14px; color: #21272a; font-family: inherit; }
         #${WEEK_ID} .bookplan { max-height: 68vh; }
         #${WEEK_ID} .rl-week-day { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; font-size: 12px; color: #0043ce; margin-top: 8px; padding: 6px 0 2px; border-top: 2px solid #dfe6f2; }
@@ -4416,7 +4417,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const PRIOR_WEEKS = 8;
     let _priorPromise = null;
     let _projectsRefreshedThisSession = false; // one forced re-read of the project inventory per session (v4.133)
-    function rlTaskPrior() { // -> Promise<Map<`${projectId}|${categoryId}`, taskId[]>> (best first)
+    function rlTaskPrior(onWeek) { // -> Promise<Map<`${projectId}|${categoryId}`, taskId[]>> (best first); onWeek(w, of) per week read (v4.148)
         if (_priorPromise) return _priorPromise;
         _priorPromise = (async () => {
             const out = new Map();
@@ -4425,6 +4426,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const projLast = new Map(); // projectId -> last date booked — settles duplicate project numbers (v4.133)
             const monday = new Date(); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
             for (let w = 0; w < PRIOR_WEEKS; w++) {
+                try { onWeek && onWeek(w + 1, PRIOR_WEEKS); } catch (e) { /* progress is cosmetic */ }
                 const m = new Date(monday); m.setDate(monday.getDate() - 7 * w);
                 const mIso = `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}-${String(m.getDate()).padStart(2, '0')}`;
                 try {
@@ -4474,7 +4476,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         let s = String(t).replace(/^iw_(set|par)_/, '').replace(/_(groups|param)$/, '').replace(/^da3_/, '');
         return s.split('_').map(w => /\d/.test(w) ? w.toUpperCase() : (w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
     }
-    async function bookTexts(v) {
+    async function bookTexts(v, onPhase) {
+        const phase = (frac, txt) => { try { onPhase && onPhase(frac, txt); } catch (e) { /* progress is cosmetic */ } }; // v4.148
         const out = { integration: '', drawing: '', racHit: false, drawingNames: [], drawingLines: [], hints: '' };
         // Always-available fallbacks (no commits needed): what TOOLS the session used, and when the
         // Designer session ran — far more informative than a generic "device/DB config".
@@ -4534,6 +4537,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const cids = scan.map(c => String(c.id));
         const tsBy = {}; for (const c of scan) tsBy[String(c.id)] = tsFromPangDate(c.date);
         let patches = {};
+        phase(0, `reading ${cids.length} save${cids.length === 1 ? '' : 's'}`);
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
         // Per-save facts (v4.141). Every fact carries the commit that wrote it, so the same composition
         // below can run for ALL saves (the day's texts) or for one task's share of them.
@@ -4569,6 +4573,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const jobs = unitJobs.concat(settJobs, tuneJobs);
         if (jobs.length) {
             try {
+                phase(0.4, `diffing ${jobs.length} changed table${jobs.length === 1 ? '' : 's'}`);
                 const vers = await gmFetchTwoVersionsBatch(jobs);
                 for (let i = 0; i < jobs.length; i++) {
                     const ver = vers[i]; if (!ver) continue;
@@ -4606,6 +4611,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const gJobs = [...new Set(graphicCids)].slice(-BOOK_MAX_COMMITS).map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
         if (gJobs.length) {
             try {
+                phase(0.7, `reading ${gJobs.length} drawing save${gJobs.length === 1 ? '' : 's'}`);
                 const vers = await gmFetchTwoVersionsBatch(gJobs);
                 for (let i = 0; i < gJobs.length; i++) {
                     const ver = vers[i]; if (!ver) continue;
@@ -4763,6 +4769,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             T.leadActions = summarizeLeadActions(out.tools, true, out.opsChanged); // commits existed; used only when nothing above could be said
             return T;
         };
+        phase(0.95, 'writing the note');
         Object.assign(out, compose(null));
         // The same texts for a SUBSET of saves — what a split entry is described by (v4.141).
         out.forCommits = ids => Object.assign({}, out, compose(new Set((ids || []).map(String))));
@@ -4950,15 +4957,27 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     async function buildBookingPlan(visits, iso, onStep) {
+        // Progress (v4.148, Thomas: "this should show more data so the progress bar does not look
+        // stuck"). `onStep(done, total, v, phase)` fires before EVERY wait, with a fractional `done`
+        // inside a plant, so the bar keeps moving and the label says what it is waiting for. Until now
+        // it fired once per plant, after four Rocketlane reads and eight weeks of timesheet had already
+        // gone by in silence — "plant 0 of 13" sat at 8 % for the whole of that.
+        const n = visits.length;
+        const say = (done, v, phase) => { try { onStep && onStep(done, n, v, phase); } catch (e) { /* progress is cosmetic */ } };
+        say(0, null, 'reading your projects');
         let projects = await rlProjects(false);
-        const cats = await rlCategories(), existing = await rlEntriesOn(iso);
+        say(0, null, 'reading the timesheet categories');
+        const cats = await rlCategories();
+        say(0, null, 'reading what is already on the sheet');
+        const existing = await rlEntriesOn(iso);
+        say(0, null, 'reading your booking habits');
         // Built once per session and only used to break evidence ties (v4.113). A failure here must never
         // block a booking, so it resolves to an empty Map rather than throwing.
-        const taskPrior = await rlTaskPrior().catch(() => new Map());
+        const taskPrior = await rlTaskPrior((w, of) => say(0, null, `reading your booking habits — week ${w} of ${of}`)).catch(() => new Map());
         const plan = [];
         for (let vi = 0; vi < visits.length; vi++) {
             const v = visits[vi];
-            onStep && onStep(vi + 1, visits.length, v);
+            say(vi + 0.05, v, 'finding the project');
             const split = categorizeVisit(v);
             const bookable = Object.entries(split).filter(([c, m]) => !CAT_NOT_BOOKED.has(c) && Math.round(m) >= 1);
             if (!bookable.length) continue;
@@ -4976,17 +4995,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // with them — a real plan beats a seeded shell, whatever history says (v4.134).
             let twinCounts = null;
             if (match.candidates.length > 1 && match.reason !== 'pinned') {
+                say(vi + 0.15, v, `${match.candidates.length} projects share this number — counting their tasks`);
                 twinCounts = new Map();
                 for (const c of match.candidates) { try { twinCounts.set(String(c.id), (await rlTasks(c.id)).length); } catch (e) { /* unknown stays unknown */ } }
                 match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast, Object.assign({ taskCount: twinCounts }, pinOpts));
             }
             const proj = match.project;
+            say(vi + 0.25, v, 'checking whether the project takes billable time');
             const projBillable = proj ? await rlProjectBillable(proj.id) : null; // v4.137
             if (proj && (match.tier > 1 || match.candidates.length > 1)) {
                 LOG('book: project for', v.plant_id, '→', proj.name, '(tier', match.tier + (match.candidates.length > 1 ? `, ${match.candidates.length} share the number, chose by ${match.reason}` : '') + ')');
             }
-            const texts = await bookTexts(v);
+            say(vi + 0.3, v, 'reading what changed');
+            const texts = await bookTexts(v, (frac, phase) => say(vi + 0.3 + 0.5 * Math.min(1, Math.max(0, frac)), v, phase));
+            say(vi + 0.85, v, "reading the project's tasks");
             const tasks = proj ? await rlTasks(proj.id) : [];
+            say(vi + 0.9, v, 'matching tasks');
             const racProject = proj ? RAC_RE.test(proj.name) : false;
             const usedTasks = new Set(); // rescue must not book two categories onto the same task
             for (const [cat, min] of bookable) {
@@ -5095,6 +5119,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 }
             }
         }
+        say(n, null, 'holding the day to the workday');
         // Calendar entries (v4.117) lead the plan — they are booked at their real duration and the
         // plant rows were already distributed over what the workday had left.
         const calRows = calPlanEntries((visits && visits._calendar) || [], cats, existing);
@@ -5291,15 +5316,28 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (fill) fill.style.width = pct + '%';
         el.classList.toggle('is-busy', pct > 0 && pct < 100);
         el.setAttribute('aria-valuenow', String(pct));
-        if (lbl) {
-            const text = label || (t ? `${d} of ${t}` : '');
-            lbl.innerHTML = `<span class="bookplan-progress-pct">${pct}%</span>${escapeHtml(text)}`;
-        }
+        void lbl;
+        // A clock beside the label (v4.148): a slow pang or Rocketlane reply still shows the seconds
+        // passing, so a long single wait never reads as a frozen bar. Started on the first call, cleared
+        // by hideBookProgress or when the bar's element leaves the page.
+        el._label = label || (t ? `${Math.floor(d)} of ${t}` : '');
+        if (!el._t0) el._t0 = Date.now();
+        if (!el._tick) el._tick = setInterval(() => { if (!el.isConnected) { clearInterval(el._tick); el._tick = null; return; } paintBookProgressLabel(el); }, 1000);
+        paintBookProgressLabel(el);
+    }
+    function paintBookProgressLabel(el) {
+        const lbl = el.querySelector('.bookplan-progress-lbl'); if (!lbl) return;
+        const pct = el.getAttribute('aria-valuenow') || '0';
+        const secs = el._t0 ? Math.floor((Date.now() - el._t0) / 1000) : 0;
+        lbl.innerHTML = `<span class="bookplan-progress-pct">${pct}%</span>${escapeHtml(el._label || '')}`
+            + (secs >= 2 ? `<span class="bookplan-progress-clock"> · ${secs} s</span>` : '');
     }
     function hideBookProgress(root) {
         const el = root && root.querySelector('.bookplan-progress');
         if (!el) return;
         el.classList.remove('is-on', 'is-busy');
+        if (el._tick) { clearInterval(el._tick); el._tick = null; }
+        el._t0 = 0; el._label = '';
         const fill = el.querySelector('.bookplan-progress-fill');
         if (fill) fill.style.width = '0%';
         const lbl = el.querySelector('.bookplan-progress-lbl');
@@ -5457,9 +5495,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         withCalendar.then(() => {
             const head = box.querySelector('.bookplan-head');
             if (head) head.textContent = '⤴ Book to timesheet — reading what changed…';
-            setBookProgress(box, 0, Math.max(1, visits.length), `Reading plant 0 of ${visits.length}…`);
-            return buildBookingPlan(visits, iso, (n, total, v) => {
-                setBookProgress(box, n, total, `Reading what changed — plant ${n} of ${total}${v && v.plant_id ? ` (${v.plant_id})` : ''}…`);
+            setBookProgress(box, 0, Math.max(1, visits.length), 'Reading your projects…');
+            return buildBookingPlan(visits, iso, (done, total, v, phase) => {
+                // Fractional `done` (v4.148): the bar moves inside a plant and the label names the wait.
+                const num = Math.min(total, Math.floor(done) + 1);
+                setBookProgress(box, done, total, v
+                    ? `Reading what changed — plant ${num} of ${total} (${v.plant_id}${v.name ? ' ' + v.name : ''})${phase ? ' · ' + phase : ''}…`
+                    : `${phase ? phase.charAt(0).toUpperCase() + phase.slice(1) : 'Preparing'}…`);
             });
         }).then(plan => {
             hideBookProgress(box);
@@ -5924,8 +5966,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // full of them used to be skipped here, so Book week silently dropped it.
                     const hasWork = visits.length || (visits._calendar && visits._calendar.length);
                     const plan = hasWork ? await buildBookingPlan(visits, iso,
-                        (n, total, v) => say(0.55 + 0.4 * (total ? n / total : 0),
-                            `reading what changed — plant ${n} of ${total} (${v.plant_id})…`)) : [];
+                        (done, total, v, phase) => say(0.55 + 0.4 * (total ? Math.min(1, done / total) : 0), v
+                            ? `reading what changed — plant ${Math.min(total, Math.floor(done) + 1)} of ${total} (${v.plant_id})${phase ? ' · ' + phase : ''}…`
+                            : `${phase || 'preparing'}…`)) : [];
                     // Carry the calendar count so the row can say "no calendar events" rather than leave a
                     // silent empty calendar looking identical to a day with no meetings (v4.128) — the
                     // exact ambiguity that hid this feature's first failure, see calRowsForDate.
