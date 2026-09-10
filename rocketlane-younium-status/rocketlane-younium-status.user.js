@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.11
+// @version      1.14.12
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -7783,7 +7783,6 @@
       { id: "rlPabRocketlane", key: "rocketlane", label: "Rocketlane", emoji: "\uD83D\uDE80", always: "rocketlane" },
       { id: "rlPabFiles", key: "files", label: "Files", emoji: "\uD83D\uDCC1", always: "files" },
       { id: "rlPabOrderInfo", key: "orderInfo", label: "Order info", emoji: "\uD83D\uDCE6", always: "orderInfo" },
-      { id: "rlPabAddCategory", key: "addCategory", label: "Add category", emoji: "\u2795", always: "addCategory" },
       { id: "rlPabPang", key: "pang", label: "PANG", icon: RL_PANG_ICON, iconBare: true, always: "pang" },
       { id: "rlPabBaf", key: "baf", label: "BAF", emoji: "\uD83D\uDC65", always: "baf" },
     ];
@@ -7796,7 +7795,7 @@
         iconBare: d.iconBare,
         emoji: d.emoji,
         title: d.label,
-        asButton: d.always === "orderInfo" || d.always === "files" || d.always === "addCategory",
+        asButton: d.always === "orderInfo" || d.always === "files",
       });
       btn.hidden = !d.always;
       btn.dataset.rlSlot = d.key;
@@ -7812,14 +7811,6 @@
           ev.preventDefault();
           ev.stopPropagation();
           void rlFilesTogglePopover(btn);
-        });
-      }
-      if (d.always === "addCategory") {
-        btn.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const pid = String(getOneflowContext()?.rlProjectId || bar.dataset.rlProjectId || "").trim();
-          rlCatOpenAddCategoryDialog(pid);
         });
       }
       bar.appendChild(btn);
@@ -7867,12 +7858,6 @@
     if (orderBtn) {
       orderBtn.hidden = false;
       orderBtn.title = "Show HubSpot order / delivery status";
-    }
-
-    const addCatBtn = bar.querySelector("#rlPabAddCategory");
-    if (addCatBtn) {
-      addCatBtn.hidden = false;
-      addCatBtn.title = "Add category / import from order info / open project templates";
     }
 
     const plantId = ctx.plantId || "";
