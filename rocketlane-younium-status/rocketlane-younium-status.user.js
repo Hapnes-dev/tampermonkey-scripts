@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.15
+// @version      1.14.16
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9302,7 +9302,7 @@
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
     // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
-    if (style && style.dataset.rlZdReady === "1.14.15") return;
+    if (style && style.dataset.rlZdReady === "1.14.16") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -9358,7 +9358,7 @@
         position: fixed; z-index: 11000; margin: 0; max-width: none;
         min-width: 420px; min-height: 280px; max-height: 94vh;
         display: flex; flex-direction: column;
-        resize: both; overflow: hidden;
+        overflow: hidden;
         box-shadow: 0 2px 6px rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.18);
         background: rgba(255,255,255,0.96);
       }
@@ -9370,7 +9370,19 @@
         border-right: 2px solid rgba(15,23,42,0.28); border-bottom: 2px solid rgba(15,23,42,0.28);
         border-radius: 0 0 3px 0; pointer-events: none;
       }
+      /* Invisible grab zones on every edge and corner; only shown while floating. */
+      #rlZendeskCasesPanel .rlZdResize { display: none; position: absolute; z-index: 5; }
+      #rlZendeskCasesPanel.rlZdFloating .rlZdResize { display: block; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="right"]  { top: 10px; bottom: 10px; right: 0; width: 8px; cursor: ew-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="left"]   { top: 10px; bottom: 10px; left: 0; width: 8px; cursor: ew-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="bottom"] { left: 10px; right: 10px; bottom: 0; height: 8px; cursor: ns-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="top"]    { left: 10px; right: 10px; top: 0; height: 8px; cursor: ns-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="top-left"]     { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="top-right"]    { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="bottom-left"]  { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+      #rlZendeskCasesPanel .rlZdResize[data-resize="bottom-right"] { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
       body.rlZdDragging { user-select: none; cursor: move; }
+      body.rlZdResizing { user-select: none; }
       #rlZendeskCasesPanel .rlZdTitle,
       #rlZendeskCasesPanel h2.rlZdTitle {
         margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
@@ -9675,7 +9687,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.14.15";
+    style.dataset.rlZdReady = "1.14.16";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
@@ -10745,16 +10757,51 @@
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     window.addEventListener("blur", onUp);
-    // Resize from the corner (native CSS resize) — persist the new size.
-    let resizeTimer = null;
-    try {
-      const ro = new ResizeObserver(() => {
-        if (!panel.classList.contains("rlZdFloating") || !panel.isConnected) return;
-        if (resizeTimer) clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => { resizeTimer = null; rlZdSaveFloatGeom(panel); }, 250);
-      });
-      ro.observe(panel);
-    } catch (_) {}
+    // Resize from any edge or corner (v1.14.16): the grab zones are the
+    // .rlZdResize strips; dragging the right edge grows the panel to the right,
+    // the left edge moves the left side, and so on. Clamped to the viewport.
+    for (const name of ["top", "right", "bottom", "left", "top-left", "top-right", "bottom-left", "bottom-right"]) {
+      const h = document.createElement("div");
+      h.className = "rlZdResize";
+      h.dataset.resize = name;
+      panel.appendChild(h);
+    }
+    let rs = null;
+    panel.addEventListener("mousedown", (e) => {
+      const handle = e.target && e.target.closest && e.target.closest(".rlZdResize");
+      if (!handle || e.button !== 0 || !panel.classList.contains("rlZdFloating")) return;
+      const r = panel.getBoundingClientRect();
+      rs = { edge: handle.dataset.resize, x: e.clientX, y: e.clientY, left: r.left, top: r.top, width: r.width, height: r.height };
+      document.body.classList.add("rlZdResizing");
+      document.body.style.cursor = getComputedStyle(handle).cursor;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    const onResizeMove = (e) => {
+      if (!rs) return;
+      const dx = e.clientX - rs.x, dy = e.clientY - rs.y;
+      let { left, top, width, height } = rs;
+      const minW = 420, minH = 280;
+      if (rs.edge.includes("right")) width = Math.max(minW, rs.width + dx);
+      if (rs.edge.includes("left")) { width = Math.max(minW, rs.width - dx); left = rs.left + (rs.width - width); }
+      if (rs.edge.includes("bottom")) height = Math.max(minH, rs.height + dy);
+      if (rs.edge.includes("top")) { height = Math.max(minH, rs.height - dy); top = rs.top + (rs.height - height); }
+      const g = rlZdClampGeom({ left, top, width, height });
+      panel.style.left = g.left + "px";
+      panel.style.top = g.top + "px";
+      panel.style.width = g.width + "px";
+      panel.style.height = g.height + "px";
+    };
+    const onResizeUp = () => {
+      if (!rs) return;
+      rs = null;
+      document.body.classList.remove("rlZdResizing");
+      document.body.style.cursor = "";
+      rlZdSaveFloatGeom(panel);
+    };
+    window.addEventListener("mousemove", onResizeMove);
+    window.addEventListener("mouseup", onResizeUp);
+    window.addEventListener("blur", onResizeUp);
   }
 
   function rlZdMountPanel(mountCtx, projectId) {
