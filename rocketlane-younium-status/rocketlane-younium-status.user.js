@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.5
+// @version      1.19.6
 // @description  Rocketlane improvements in one script (v1.19.2: Project note white Categories shell + one gray .rlPnoteBox; v1.19.1: Project note panel matches Categories light-gray single-surface card; v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4159,6 +4159,8 @@
       "textarea.rlPtDeco{color:transparent!important;caret-color:rgba(15,23,42,0.9)}",
       ".rlPtDecoLayer{position:absolute;pointer-events:none;white-space:pre-wrap;overflow-wrap:anywhere;overflow:hidden;box-sizing:border-box;border-style:solid;border-color:transparent;color:rgba(15,23,42,0.88);z-index:1}",
       ".rlPtDecoLayer .proj{color:#0369a1;font-weight:600}",
+      ".rlPtDecoLayer .proj[data-href]{pointer-events:auto;cursor:pointer}",
+      ".rlPtDecoLayer .proj[data-href]:hover{text-decoration:underline}",
       ".rlPtDecoLayer .task{color:rgba(15,23,42,0.6)}",
       ".rlPtDecoLayer .sep{color:rgba(15,23,42,0.4)}",
     ].join("");
@@ -4166,29 +4168,36 @@
   }
   function rlPtDecoProjectNames() {
     if (Date.now() - rlPtDecoNames.at < 30000) return rlPtDecoNames.list;
-    const names = new Set();
+    const names = new Map(); // name -> href
     const walk = (v, depth) => {
       if (!v || depth > 4) return;
       if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
       if (typeof v !== "object") return;
       const n = v.projectName ?? v.name;
-      if (typeof n === "string" && n.trim() && (v.projectId != null || v.id != null || v.status != null || v.progress != null)) names.add(n.trim());
+      const id = String(v.projectId ?? v.id ?? "").trim();
+      if (typeof n === "string" && n.trim() && (id || v.status != null || v.progress != null)) {
+        const href = String(v.href || "").trim() || (id ? "/projects/" + encodeURIComponent(id) + "/plan" : "");
+        if (!names.has(n.trim()) || !names.get(n.trim())) names.set(n.trim(), href);
+      }
       for (const k of ["ownerProjects", "memberProjects", "projects", "items", "rows", "list"]) if (v[k]) walk(v[k], depth + 1);
     };
     try { walk(rlHpPeekCache(), 0); } catch (_) {}
-    rlPtDecoNames = { at: Date.now(), list: [...names].sort((a, b) => b.length - a.length) };
+    rlPtDecoNames = { at: Date.now(), list: [...names.entries()].map(([name, href]) => ({ name, href })).sort((a, b) => b.name.length - a.name.length) };
     return rlPtDecoNames.list;
   }
   function rlPtDecoSplit(value) {
     const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const v = String(value ?? "");
+    const names = rlPtDecoProjectNames();
+    const hrefOf = (name) => { const hit = names.find((x) => x.name === name); return hit && hit.href ? ' data-href="' + esc(hit.href) + '" title="Open project"' : ""; };
+    const proj = (name, tail) => '<span class="proj"' + hrefOf(name) + ">" + esc(name) + esc(tail || "") + "</span>";
     let m = v.match(/^([\s\S]+?)\s—\s([\s\S]+?)\s—\s([\s\S]+)$/);
-    if (m) return '<span class="proj">' + esc(m[1]) + '</span><span class="sep"> — </span><span class="task">' + esc(m[2]) + '</span><span class="sep"> — </span><span class="note">' + esc(m[3]) + "</span>";
-    for (const name of rlPtDecoProjectNames()) {
-      if (v.startsWith(name + ": ")) return '<span class="proj">' + esc(name) + ":</span> " + '<span class="note">' + esc(v.slice(name.length + 2)) + "</span>";
+    if (m) return proj(m[1]) + '<span class="sep"> — </span><span class="task">' + esc(m[2]) + '</span><span class="sep"> — </span><span class="note">' + esc(m[3]) + "</span>";
+    for (const { name } of names) {
+      if (v.startsWith(name + ": ")) return proj(name, ":") + ' <span class="note">' + esc(v.slice(name.length + 2)) + "</span>";
     }
     m = v.match(/^(\d[^:]*?): ([\s\S]+)$/);
-    if (m) return '<span class="proj">' + esc(m[1]) + ":</span> " + '<span class="note">' + esc(m[2]) + "</span>";
+    if (m) return proj(m[1], ":") + ' <span class="note">' + esc(m[2]) + "</span>";
     return null;
   }
   function rlPtDecorate() {
@@ -4227,6 +4236,12 @@
     document.addEventListener("focusout", rlPtDecoSchedule, true);
     document.addEventListener("input", (e) => { if (e.target && e.target.matches && e.target.matches("textarea.rlPtDeco")) rlPtDecoSchedule(); }, true);
     window.addEventListener("resize", rlPtDecoSchedule);
+    document.addEventListener("click", (e) => {
+      const a = e.target && e.target.closest && e.target.closest(".rlPtDecoLayer .proj[data-href]");
+      if (!a) return;
+      e.preventDefault(); e.stopPropagation();
+      rlHpOpenProject(a.getAttribute("data-href"));
+    }, true);
     try { new MutationObserver(rlPtDecoSchedule).observe(document.body, { childList: true, subtree: true, characterData: true }); } catch (_) {}
     setInterval(rlPtDecoSchedule, 2000);
     rlPtDecoSchedule();
