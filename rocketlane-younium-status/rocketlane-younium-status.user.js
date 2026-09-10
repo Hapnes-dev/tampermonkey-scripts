@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.16.1
+// @version      1.16.2
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2735,7 +2735,7 @@
   const RL_CO_GM_ACTIVE = "rlCoActive";
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
-  const RL_CO_STYLE_READY = "1.16.1";
+  const RL_CO_STYLE_READY = "1.16.2";
   const RL_CO_STATUS = [
     { v: 1, key: "todo", label: "To do" },
     { v: 2, key: "in_progress", label: "In progress" },
@@ -2826,8 +2826,8 @@
       #rlCoPanel .rlCoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
       @media (max-width: 1100px) { #rlCoPanel .rlCoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 760px) { #rlCoPanel .rlCoGrid { grid-template-columns: 1fr; } }
-      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair); background: var(--co-surface); border-radius: 12px; padding: 14px; display: grid; gap: 8px; min-width: 0; box-shadow: 0 1px 2px rgba(15,23,42,0.04); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
-      #rlCoPanel .rlCoBox:hover { background: rgba(255,255,255,0.92); border-color: rgba(15,23,42,0.14); box-shadow: 0 4px 12px rgba(15,23,42,0.08); }
+      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair); background: #f3f5f8; border-radius: 12px; padding: 14px; display: grid; gap: 8px; min-width: 0; box-shadow: 0 1px 2px rgba(15,23,42,0.04); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+      #rlCoPanel .rlCoBox:hover { background: #eef1f5; border-color: rgba(15,23,42,0.14); box-shadow: 0 4px 12px rgba(15,23,42,0.08); }
       #rlCoPanel .rlCoBox.hasInProgress { border-color: rgba(180,83,9,0.28); }
       #rlCoPanel .rlCoBox.allDone { border-color: rgba(5,150,105,0.30); }
       #rlCoPanel .rlCoBoxHd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -2841,8 +2841,8 @@
       #rlCoPanel .rlCoProgress { height: 8px; width: 100%; border-radius: 999px; background: rgba(15,23,42,0.22); box-shadow: inset 0 0 0 1px rgba(15,23,42,0.06); overflow: hidden; }
       #rlCoPanel .rlCoBar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #7dd3fc, #34d399); transition: width 400ms ease; }
       #rlCoPanel .rlCoTasks { display: grid; gap: 6px; }
-      #rlCoPanel .rlCoTask { display: grid; grid-template-columns: 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: rgba(255,255,255,0.65); }
-      #rlCoPanel .rlCoTask:hover { background: rgba(255,255,255,0.95); border-color: rgba(15,23,42,0.14); }
+      #rlCoPanel .rlCoTask { display: grid; grid-template-columns: 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: #fff; }
+      #rlCoPanel .rlCoTask:hover { background: #fff; border-color: rgba(15,23,42,0.14); }
       #rlCoPanel .rlCoTask.sub { margin-left: calc(var(--lvl, 1) * 18px); }
       #rlCoPanel.hideDone .rlCoTask.s-completed { display: none; }
       #rlCoPanel .rlCoTaskName { min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; color: var(--co-text); }
