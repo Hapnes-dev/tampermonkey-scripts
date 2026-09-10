@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.18
+// @version      1.14.19
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3452,7 +3452,9 @@
    * field — comments, requester, phone numbers, order numbers — and pulled in
    * cases that only mention the number in passing. Now the ticket must carry the
    * plant in a place that means it: the Plant ID ticket field, the subject
-   * (emne), or the description. The plant name is searched in the subject only.
+   * or the subject (emne); the plant name is Zendesk's own phrase search. A
+   * description-only mention (v1.14.17/18) pulled in 42 passing mentions for
+   * plant 8013, so it is gone (v1.14.19).
    */
   function rlZdBuildSearchQueries(plantId, plantName, plantFieldId) {
     const pid = String(plantId ?? "").trim();
@@ -3464,7 +3466,6 @@
     const queries = [];
     if (plantFieldId) queries.push({ query: "type:ticket custom_field_" + plantFieldId + ":" + pid, trusted: false });
     queries.push({ query: "type:ticket subject:" + pid, trusted: false });
-    queries.push({ query: "type:ticket description:" + pid, trusted: false });
     const pname = String(plantName ?? "").trim();
     if (pname && pname.length >= 4) {
       queries.push({ query: 'type:ticket "' + pname.replace(/"/g, "") + '"', trusted: true });
@@ -3493,8 +3494,7 @@
       if (f && rlZdHasPlantNumber(String(f.value ?? ""), pid) && String(f.value).trim() === pid) return true;
     }
     const subject = String(t?.subject ?? t?.raw_subject ?? "");
-    const description = String(t?.description ?? "");
-    if (rlZdHasPlantNumber(subject, pid) || rlZdHasPlantNumber(description, pid)) return true;
+    if (rlZdHasPlantNumber(subject, pid)) return true;
     const n = rlZdNormText(pname);
     if (n && n.length >= 4 && rlZdNormText(subject).includes(n)) return true;
     return false;
