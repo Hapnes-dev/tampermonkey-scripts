@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.15.0
+// @version      1.15.1
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4269,6 +4269,25 @@
   function rlHpNormalizeOwnerKey(name) {
     return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   }
+  // "Delivery Cooling" team filter (v1.15.1): the owners whose groups stay when
+  // the header toggle is on. Matched on the accent-stripped lower-case name;
+  // a shorter form of a name ("Svein Olav") matches its full form.
+  const RL_HP_TEAM_COOLING = {
+    label: "Delivery Cooling",
+    members: ["thomas kvalvag hapnes", "andreas sandnes", "ivarhaga haga", "matthias criel", "svein olav wahlberg"],
+  };
+  function rlHpNormName(s) {
+    return String(s ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+  function rlHpIsTeamOwner(ownerName) {
+    const n = rlHpNormName(ownerName);
+    if (!n) return false;
+    return RL_HP_TEAM_COOLING.members.some((m) => n === m || n.startsWith(m + " ") || (m.startsWith(n) && n.split(" ").length >= 2));
+  }
+  function rlHpTeamFilter(projects) {
+    const list = Array.isArray(projects) ? projects : [];
+    return rlHpUi.teamOnly ? list.filter((p) => rlHpIsTeamOwner(p.owner)) : list;
+  }
 
   function rlHpIsUserOnProject(raw, userId) {
     const uid = String(userId ?? "").trim();
@@ -4617,6 +4636,7 @@
   const RL_HP_GM_PINNED = "rlHpPinnedOwner";
   const RL_HP_GM_COLLAPSED = "rlHpCollapsedOwners";
   const RL_HP_GM_SORT = "rlHpSortMode";
+  const RL_HP_GM_TEAM_ONLY = "rlHpTeamOnly";
   const RL_HP_PANEL_SEL = rlHpPanelSelector("");
 
   let rlHpCache = { at: 0, userId: "", ownerProjects: null, memberProjects: null };
@@ -4626,6 +4646,7 @@
   let rlHpUi = {
     sort: "due_asc",
     pinned: { owner: "", member: "" },
+    teamOnly: false,
     collapsed: new Set(),
     syncing: false,
     error: "",
@@ -4699,12 +4720,29 @@
       const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
       rlHpUi.collapsed = new Set(Array.isArray(arr) ? arr.map((s) => rlHpNormalizeOwnerKey(s)).filter(Boolean) : []);
     } catch (_) { rlHpUi.collapsed = new Set(); }
+    try { rlHpUi.teamOnly = GM_getValue(RL_HP_GM_TEAM_ONLY, false) === true; } catch (_) { rlHpUi.teamOnly = false; }
     try {
       const sort = String(GM_getValue(RL_HP_GM_SORT, "due_asc") || "due_asc");
       rlHpUi.sort = /^(due_asc|due_desc|progress_asc|progress_desc|name_asc)$/.test(sort) ? sort : "due_asc";
     } catch (_) { rlHpUi.sort = "due_asc"; }
   }
 
+  function rlHpSaveTeamOnly(on) {
+    rlHpUi.teamOnly = !!on;
+    try { GM_setValue(RL_HP_GM_TEAM_ONLY, rlHpUi.teamOnly); } catch (_) {}
+  }
+  /** Collapse or expand every owner group currently shown in one panel. */
+  function rlHpSetAllCollapsed(listKind, collapsed) {
+    const projects = rlHpTeamFilter(listKind === "member" ? rlHpUi.memberProjects : rlHpUi.ownerProjects);
+    const grouped = rlHpGroupProjectsByOwner(rlHpSortProjects(projects, rlHpUi.sort));
+    for (const ownerKey of Object.keys(grouped)) {
+      const key = rlHpCollapseKey(listKind, ownerKey);
+      if (collapsed) rlHpUi.collapsed.add(key);
+      else { rlHpUi.collapsed.delete(key); rlHpUi.collapsed.delete(rlHpNormalizeOwnerKey(ownerKey)); }
+    }
+    rlHpSaveCollapsed();
+    rlHpRenderPanels();
+  }
   function rlHpSaveCollapsed() {
     try { GM_setValue(RL_HP_GM_COLLAPSED, JSON.stringify([...rlHpUi.collapsed])); } catch (_) {}
   }
@@ -4863,7 +4901,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.14.21";
+  const RL_HP_STYLE_READY = "1.15.1";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4894,7 +4932,8 @@
       sel(" .rlhpBtn") + "{appearance:none;border:1px solid var(--rlhp-border);background:var(--rlhp-surface-2);color:var(--rlhp-text);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}",
       sel(" .rlhpBtn:hover") + "{background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.16)}",
       sel(" .rlhpBtn:disabled") + "{opacity:0.55;cursor:default}",
-      sel(" .rlhpBtnPrimary") + "{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
+      sel(" .rlhpBtnPrimary") + "," + sel(" .rlhpBtn.active") + "{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
+      sel(" .rlhpBtn.active::before") + "{content:'';width:6px;height:6px;border-radius:50%;background:var(--rlhp-accent);margin-right:6px}",
       sel(" .rlhpStatusLine") + "{color:rgba(15,23,42,0.76);font-size:12.5px;margin:0 0 10px}",
       sel(" .rlhpStatusLine.rlhpErr") + "{color:var(--rlhp-bad)}",
       sel(" .rlhpEmpty") + "{color:var(--rlhp-muted);font-size:12px;padding:4px 2px}",
@@ -5490,6 +5529,32 @@
         });
         actions.appendChild(add);
       }
+      const team = document.createElement("button");
+      team.type = "button";
+      team.className = "rlhpBtn rlhpTeamBtn";
+      team.textContent = RL_HP_TEAM_COOLING.label;
+      team.title = "Show only projects owned by the Delivery Cooling team";
+      team.setAttribute("aria-pressed", "false");
+      team.addEventListener("click", (e) => {
+        e.preventDefault();
+        rlHpSaveTeamOnly(!rlHpUi.teamOnly);
+        rlHpRenderPanels();
+      });
+      actions.appendChild(team);
+      const collapseAll = document.createElement("button");
+      collapseAll.type = "button";
+      collapseAll.className = "rlhpBtn rlhpCollapseAllBtn";
+      collapseAll.textContent = "Collapse all";
+      collapseAll.title = "Collapse every owner group in this panel";
+      collapseAll.addEventListener("click", (e) => { e.preventDefault(); rlHpSetAllCollapsed(listKind, true); });
+      actions.appendChild(collapseAll);
+      const expandAll = document.createElement("button");
+      expandAll.type = "button";
+      expandAll.className = "rlhpBtn rlhpExpandAllBtn";
+      expandAll.textContent = "Expand all";
+      expandAll.title = "Expand every owner group in this panel";
+      expandAll.addEventListener("click", (e) => { e.preventDefault(); rlHpSetAllCollapsed(listKind, false); });
+      actions.appendChild(expandAll);
       const sync = document.createElement("button");
       sync.type = "button";
       sync.className = "rlhpBtn rlhpSyncBtn";
@@ -5516,10 +5581,18 @@
     return panel;
   }
 
-  function rlHpRenderOnePanel(panel, projects, listKind, emptyMsg, countLabel) {
+  function rlHpRenderOnePanel(panel, allProjects, listKind, emptyMsg, countLabel) {
     if (!panel) return;
-    const count = Array.isArray(projects) ? projects.length : 0;
+    const projects = rlHpTeamFilter(allProjects);
+    const count = projects.length;
+    if (rlHpUi.teamOnly) countLabel = countLabel + " · " + RL_HP_TEAM_COOLING.label;
 
+    const teamBtn = panel.querySelector(".rlhpTeamBtn");
+    if (teamBtn) {
+      teamBtn.classList.toggle("active", !!rlHpUi.teamOnly);
+      teamBtn.setAttribute("aria-pressed", rlHpUi.teamOnly ? "true" : "false");
+      teamBtn.title = rlHpUi.teamOnly ? "Showing only the Delivery Cooling team — click to show everyone" : "Show only projects owned by the Delivery Cooling team";
+    }
     const syncBtn = panel.querySelector(".rlhpSyncBtn");
     if (syncBtn) {
       syncBtn.disabled = !!rlHpUi.syncing;
@@ -5546,7 +5619,7 @@
     if (!count && !rlHpUi.syncing) {
       const empty = document.createElement("div");
       empty.className = "rlhpEmpty";
-      empty.textContent = "Nothing here.";
+      empty.textContent = rlHpUi.teamOnly && (allProjects || []).length ? "No Delivery Cooling projects here." : "Nothing here.";
       list.appendChild(empty);
       return;
     }
