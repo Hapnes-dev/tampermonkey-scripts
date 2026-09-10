@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.15.2
+// @version      1.15.3
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5559,17 +5559,6 @@
       title.title = titleHint || titleText;
       const actions = document.createElement("div");
       actions.className = "rlhpActions";
-      if (listKind === "owner") {
-        const add = document.createElement("a");
-        add.className = "rlhpBtn rlhpBtnPrimary";
-        add.href = "/projects";
-        add.textContent = "+ RL Project";
-        add.addEventListener("click", (e) => {
-          e.preventDefault();
-          rlHpOpenProject("/projects");
-        });
-        actions.appendChild(add);
-      }
       const search = document.createElement("input");
       search.type = "search";
       search.className = "rlhpSearch";
