@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.12
+// @version      1.14.13
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -7780,7 +7780,6 @@
       { id: "rlPabYouniumOrder", key: "younium", label: "Younium (Order)", icon: YOUNIUM_LOGO_URL, iconBare: true },
       { id: "rlPabYouniumSub", key: "youniumSubscription", label: "Younium (Subscription)", icon: YOUNIUM_LOGO_URL, iconBare: true },
       { id: "rlPabHubspot", key: "hubspot", label: "HubSpot", icon: rlFavicon("hubspot.com") },
-      { id: "rlPabRocketlane", key: "rocketlane", label: "Rocketlane", emoji: "\uD83D\uDE80", always: "rocketlane" },
       { id: "rlPabFiles", key: "files", label: "Files", emoji: "\uD83D\uDCC1", always: "files" },
       { id: "rlPabOrderInfo", key: "orderInfo", label: "Order info", emoji: "\uD83D\uDCE6", always: "orderInfo" },
       { id: "rlPabPang", key: "pang", label: "PANG", icon: RL_PANG_ICON, iconBare: true, always: "pang" },
@@ -7843,9 +7842,6 @@
     setLink("rlPabYouniumOrder", links.younium, links.younium);
     setLink("rlPabYouniumSub", links.youniumSubscription, links.youniumSubscription);
     setLink("rlPabHubspot", links.hubspot, links.hubspot);
-
-    const rlUrl = "https://kiona.rocketlane.com/projects/" + encodeURIComponent(ctx.rlProjectId) + "/";
-    setLink("rlPabRocketlane", rlUrl, "Open this project in Rocketlane");
 
     const filesBtn = bar.querySelector("#rlPabFiles");
     if (filesBtn) {
