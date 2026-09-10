@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.1
-// @description  Rocketlane improvements in one script (v1.19.1: Project note panel matches Categories light-gray single-surface card; v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.19.2
+// @description  Rocketlane improvements in one script (v1.19.2: Project note white Categories shell + one gray .rlPnoteBox; v1.19.1: Project note panel matches Categories light-gray single-surface card; v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.19.1";
+  const RL_CO_STYLE_READY = "1.19.2";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2834,22 +2834,19 @@
       ${sel(" .rlCoBtn.small")} { padding: 4px 10px; font-size: 11px; }
       #rlCoPanel .rlCoStatus { color: var(--co-muted); font-size: 12px; margin: 0 0 12px; }
       #rlCoPanel .rlCoStatus.err { color: var(--co-bad); }
-      /* Project note panel (v1.19.1): one Categories-gray surface — no nested
-         editor card; textarea flush; inline aria-live save state + conflict bar. */
-      #${RL_PNOTE_PANEL_ID} {
-        margin-bottom: 0;
-        background: #f3f5f8;
-        border-color: var(--co-hair);
-        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
-        backdrop-filter: none;
-        -webkit-backdrop-filter: none;
-      }
+      /* Project note panel (v1.19.2): white shared shell like #rlCoPanel; one gray
+         .rlPnoteBox (Categories .rlCoBox); textarea flush; Saved footer on shell. */
+      #${RL_PNOTE_PANEL_ID} { margin-bottom: 0; }
       #${RL_PNOTE_PANEL_ID} .rlCoHd { margin-bottom: 10px; }
-      #${RL_PNOTE_PANEL_ID} .rlPnoteBox { display: grid; gap: 8px; padding: 0; border: none; background: transparent; border-radius: 0; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteBox {
+        display: grid; gap: 8px; min-width: 0;
+        background: #f3f5f8; border: 1px solid var(--co-hair); border-radius: 12px; padding: 14px;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+      }
       #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput { width: 100%; min-height: 84px; resize: vertical; box-sizing: border-box; padding: 0; border: none; border-radius: 0; background: transparent; color: var(--co-text); font: inherit; font-size: 12.5px; line-height: 1.45; }
       #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:focus { outline: 2px solid rgba(3,105,161,0.35); outline-offset: 1px; }
       #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:disabled { opacity: 0.6; }
-      #${RL_PNOTE_PANEL_ID} .rlPnoteFoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteFoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteState { font-size: 11.5px; color: var(--co-muted); min-height: 1.2em; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteState.ok { color: var(--co-good); }
       #${RL_PNOTE_PANEL_ID} .rlPnoteState.err { color: var(--co-bad); }
@@ -4275,6 +4272,7 @@
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rlPnoteFlush(false); }
     });
     box.appendChild(ta);
+    panel.appendChild(box);
 
     const foot = document.createElement("div");
     foot.className = "rlPnoteFoot";
@@ -4287,8 +4285,7 @@
     hint.textContent = "Saves automatically · Ctrl+Enter saves now";
     foot.appendChild(state);
     foot.appendChild(hint);
-    box.appendChild(foot);
-    panel.appendChild(box);
+    panel.appendChild(foot);
 
     const conflict = document.createElement("div");
     conflict.className = "rlPnoteConflict";
