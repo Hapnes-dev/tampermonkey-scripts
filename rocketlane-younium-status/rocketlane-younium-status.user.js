@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.15.3
+// @version      1.16.0
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1729,6 +1729,7 @@
     try { rlEnsureProjectActionBar(); } catch (_) {}
     try { rlEnsureAutoFetchButton(); } catch (_) {}
     try { rlZdEnsureTabAndPanel(); } catch (_) {}
+    try { rlCoEnsure(); } catch (_) {}
     if (!document.getElementById("ynNavBtn")) {
       const row = getNavRow();
       if (!row) return;
@@ -1768,6 +1769,11 @@
     // Steady-state early-out: once the button is present + connected there's
     // nothing for the mutation observer to do (route changes are handled by the
     // history hooks below), so we never schedule work on the SPA's hot path.
+    if (rlCoNeedsMount()) {
+      if (ensureTimer) return;
+      ensureTimer = setTimeout(() => { ensureTimer = null; try { ensure(); } catch (_) {} }, 120);
+      return;
+    }
     const btn = document.getElementById("ynNavBtn");
     const ofBtn = document.getElementById("ofNavBtn");
     const dtsBtn = document.getElementById("dtsNavBtn");
@@ -2712,6 +2718,529 @@
       els.dlgOneflowStatusBody.innerHTML = '<div class="youniumWarnings">Error checking Oneflow status: ' + escHtml(e?.message ?? e) + '</div>';
       setOneflowButtonState("gray", "Oneflow");
     }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5c. Categories overview (v1.16.0) — a third view-switcher button on the
+  //     project plan that swaps the board for the Project Progress Tracker's
+  //     Categories section: one card per phase with counts and a status tint,
+  //     expandable to its tasks with a status picker per task, "✓ Complete
+  //     all" and "+ Add task" per category, and "Complete all tasks",
+  //     "Hide completed tasks", "+ Add category" on top. Data: the project's
+  //     phases and tasks through the Rocketlane API (rlCatFetchPhases, a paged
+  //     /projects/{id}/tasks); writes: PUT /tasks/{id} on the Status field,
+  //     verified by re-reading (the dtsCompleteTask pattern), rlCatCreateTask,
+  //     and the existing Add category dialog. The view choice persists in GM.
+  // ════════════════════════════════════════════════════════════════════════
+  const RL_CO_GM_ACTIVE = "rlCoActive";
+  const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
+  const RL_CO_GM_EXPANDED = "rlCoExpanded";
+  const RL_CO_STYLE_READY = "1.16.0";
+  const RL_CO_STATUS = [
+    { v: 1, key: "todo", label: "To do" },
+    { v: 2, key: "in_progress", label: "In progress" },
+    { v: 3, key: "completed", label: "Completed" },
+    { v: 4, key: "blocked", label: "Blocked" },
+  ];
+  let rlCoState = { projectId: "", phases: [], tasks: [], loading: false, error: "", note: "", gen: 0, busy: new Set() };
+  let rlCoRetryTimer = null;
+  let rlCoMenuEl = null;
+
+  function rlCoIsPlanPath(pathname) {
+    return /^\/projects\/\d+\/plan(?:\/|$)/i.test(String(pathname == null ? location.pathname : pathname));
+  }
+  function rlCoProjectId() {
+    const m = String(location.pathname || "").match(/^\/projects\/(\d+)/);
+    return m ? m[1] : "";
+  }
+  function rlCoIsActive() { return GM_getValue(RL_CO_GM_ACTIVE, false) === true; }
+  function rlCoSwitcher() {
+    const b = document.querySelector('[data-cy="project-plan.view-switcher.list"], [data-cy="project-plan.view-switcher.timeline"]');
+    return b ? b.parentElement : null;
+  }
+  function rlCoHost() {
+    return document.querySelector('[class*="project-plan__Wrapper"] .fullscreen') ||
+      (document.querySelector('[data-cy="project-plan-list.wrapper"]') || {}).parentElement || null;
+  }
+  function rlCoNeedsMount() {
+    if (!rlCoIsPlanPath()) return false;
+    const sw = rlCoSwitcher();
+    if (sw && !sw.querySelector("#rlCoSwitchBtn")) return true;
+    if (rlCoIsActive()) {
+      const p = document.getElementById("rlCoPanel");
+      if (!p || !p.isConnected) return !!rlCoHost();
+    }
+    return false;
+  }
+  function rlCoStatusOf(task) {
+    const v = Number(dtsTaskStatusField(task)?.fieldValue);
+    return RL_CO_STATUS.find((s) => s.v === v) || RL_CO_STATUS[0];
+  }
+  function rlCoTaskDue(task) {
+    return String(task?.dueDate ?? task?.endDate ?? "").trim().slice(0, 10);
+  }
+  function rlCoReadExpanded() {
+    try { const j = JSON.parse(GM_getValue(RL_CO_GM_EXPANDED, "") || "{}"); return j && typeof j === "object" ? j : {}; } catch (_) { return {}; }
+  }
+  function rlCoIsExpanded(pid, key) { return !!rlCoReadExpanded()[pid + ":" + key]; }
+  function rlCoSetExpanded(pid, key, on) {
+    const j = rlCoReadExpanded();
+    if (on) j[pid + ":" + key] = true; else delete j[pid + ":" + key];
+    try { GM_setValue(RL_CO_GM_EXPANDED, JSON.stringify(j)); } catch (_) {}
+  }
+
+  function rlCoInjectStyles() {
+    let style = document.getElementById("rlCoStyles");
+    if (style && style.dataset.rlCoReady === RL_CO_STYLE_READY) return;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "rlCoStyles";
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.textContent = `
+      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen > *:not([class*="action-bar__ActionBar"]):not(#rlCoPanel) { display: none !important; }
+      #rlCoSwitchBtn.rlCoOn { background: rgba(3,105,161,0.12) !important; color: #0369a1 !important; border-color: rgba(3,105,161,0.35) !important; }
+      #rlCoPanel {
+        --co-text: rgba(255,255,255,0.94); --co-muted: rgba(255,255,255,0.66); --co-muted2: rgba(255,255,255,0.46);
+        --co-hair: rgba(255,255,255,0.08); --co-hair2: rgba(255,255,255,0.14);
+        --co-good: #34d399; --co-warn: #fbbf24; --co-bad: #fb7185; --co-accent: #7dd3fc;
+        box-sizing: border-box; margin: 12px 16px 24px; padding: 16px 18px 20px; border-radius: 14px;
+        background: #0f1424; border: 1px solid var(--co-hair2); color: var(--co-text);
+        font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; box-shadow: 0 12px 32px rgba(0,0,0,0.24);
+      }
+      #rlCoPanel * { box-sizing: border-box; }
+      #rlCoPanel .rlCoHd { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+      #rlCoPanel .rlCoTitle { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--co-muted); display: flex; align-items: center; gap: 8px; }
+      #rlCoPanel .rlCoTools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      #rlCoPanel .rlCoBtn { appearance: none; border: 1px solid var(--co-hair2); background: rgba(255,255,255,0.06); color: var(--co-text); border-radius: 10px; padding: 7px 12px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; line-height: 1.2; }
+      #rlCoPanel .rlCoBtn:hover:not(:disabled) { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.22); }
+      #rlCoPanel .rlCoBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+      #rlCoPanel .rlCoBtn.primary { background: rgba(125,211,252,0.14); border-color: rgba(125,211,252,0.36); color: var(--co-accent); }
+      #rlCoPanel .rlCoBtn.small { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+      #rlCoPanel .rlCoStatus { color: var(--co-muted2); font-size: 12px; margin: 0 0 12px; }
+      #rlCoPanel .rlCoStatus.err { color: var(--co-bad); }
+      #rlCoPanel .rlCoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+      @media (max-width: 1100px) { #rlCoPanel .rlCoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+      @media (max-width: 760px) { #rlCoPanel .rlCoGrid { grid-template-columns: 1fr; } }
+      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair2); background: rgba(255,255,255,0.03); border-radius: 14px; padding: 14px; display: grid; gap: 10px; min-width: 0; transition: border-color 200ms ease, background 200ms ease; }
+      #rlCoPanel .rlCoBox:hover { border-color: rgba(255,255,255,0.16); background: rgba(255,255,255,0.045); }
+      #rlCoPanel .rlCoBox.hasInProgress { border-color: rgba(251,191,36,0.45); background: rgba(251,191,36,0.08); }
+      #rlCoPanel .rlCoBox.hasInProgress:hover { border-color: rgba(251,191,36,0.6); background: rgba(251,191,36,0.12); }
+      #rlCoPanel .rlCoBox.allDone { border-color: rgba(52,211,153,0.45); background: rgba(52,211,153,0.10); }
+      #rlCoPanel .rlCoBox.allDone:hover { border-color: rgba(52,211,153,0.6); background: rgba(52,211,153,0.14); }
+      #rlCoPanel .rlCoBoxHd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      #rlCoPanel .rlCoBoxName { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; cursor: pointer; user-select: none; min-width: 0; color: var(--co-text); }
+      #rlCoPanel .rlCoChev { display: inline-block; width: 1em; color: var(--co-muted2); transition: transform 200ms ease; font-size: 11px; }
+      #rlCoPanel .rlCoBox.expanded .rlCoChev { transform: rotate(90deg); }
+      #rlCoPanel .rlCoMeta { color: var(--co-muted2); font-size: 12px; cursor: pointer; }
+      #rlCoPanel .rlCoTasks { display: grid; gap: 8px; }
+      #rlCoPanel .rlCoTask { display: grid; grid-template-columns: 150px 1fr auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair2); border-radius: 12px; padding: 8px 12px; background: rgba(255,255,255,0.03); }
+      #rlCoPanel .rlCoTask.sub { margin-left: calc(var(--lvl, 1) * 18px); }
+      #rlCoPanel .rlCoTask.s-completed { border-color: rgba(52,211,153,0.35); background: rgba(52,211,153,0.06); }
+      #rlCoPanel .rlCoTask.s-in_progress { border-color: rgba(251,191,36,0.40); background: rgba(251,191,36,0.06); }
+      #rlCoPanel .rlCoTask.s-blocked { border-color: rgba(251,113,133,0.42); background: rgba(251,113,133,0.06); }
+      #rlCoPanel.hideDone .rlCoTask.s-completed { display: none; }
+      #rlCoPanel .rlCoTaskName { min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; }
+      #rlCoPanel .rlCoTask.s-completed .rlCoTaskName { color: var(--co-muted); }
+      #rlCoPanel .rlCoTaskDue { color: var(--co-muted2); font-size: 11px; white-space: nowrap; }
+      #rlCoPanel .rlCoStBtn { width: 100%; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--co-hair2); background: rgba(255,255,255,0.04); color: var(--co-text); font: inherit; font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; white-space: nowrap; line-height: 1; }
+      #rlCoPanel .rlCoTask.s-completed .rlCoStBtn { border-color: rgba(52,211,153,0.45); background: rgba(52,211,153,0.10); }
+      #rlCoPanel .rlCoTask.s-in_progress .rlCoStBtn { border-color: rgba(251,191,36,0.55); background: rgba(251,191,36,0.10); }
+      #rlCoPanel .rlCoTask.s-blocked .rlCoStBtn { border-color: rgba(251,113,133,0.55); background: rgba(251,113,133,0.10); }
+      #rlCoPanel .rlCoStBtn .caret { color: var(--co-muted2); font-size: 10px; }
+      #rlCoPanel .rlCoStBtn.busy { opacity: 0.6; cursor: progress; }
+      #rlCoPanel .rlCoEmpty { color: var(--co-muted2); font-size: 12px; padding: 2px 0; }
+      .rlCoMenu { position: fixed; z-index: 99999; min-width: 150px; padding: 6px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.14); background: #141a2e; box-shadow: 0 12px 32px rgba(0,0,0,0.4); font: 12px/1.3 ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: rgba(255,255,255,0.94); }
+      .rlCoMenu button { display: block; width: 100%; text-align: left; padding: 7px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+      .rlCoMenu button:hover { background: rgba(255,255,255,0.08); }
+      .rlCoMenu button.selected { background: rgba(125,211,252,0.14); color: #7dd3fc; }
+    `;
+    style.dataset.rlCoReady = RL_CO_STYLE_READY;
+  }
+
+  function rlCoEnsureSwitchButton() {
+    const sw = rlCoSwitcher();
+    if (!sw) return false;
+    let btn = document.getElementById("rlCoSwitchBtn");
+    if (!btn || btn.parentElement !== sw) {
+      if (btn) btn.remove();
+      const sibling = sw.querySelector("button");
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "rlCoSwitchBtn";
+      btn.className = sibling ? sibling.className : "rl-btn";
+      btn.setAttribute("data-cy", "project-plan.view-switcher.categories");
+      btn.title = "Categories overview";
+      btn.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px">' +
+        '<svg viewBox="0 0 512 512" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M0 96C0 60.7 28.7 32 64 32h160v192H0V96zM0 288h224v192H64c-35.3 0-64-28.7-64-64V288zM288 32h160c35.3 0 64 28.7 64 64v128H288V32zM512 288v128c0 35.3-28.7 64-64 64H288V288h224z"/></svg></span>';
+      btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); rlCoSetActive(!rlCoIsActive()); });
+      sw.appendChild(btn);
+    }
+    // A native switcher click leaves the overview.
+    for (const other of sw.querySelectorAll("button")) {
+      if (other === btn || other.dataset.rlCoWired) continue;
+      other.dataset.rlCoWired = "1";
+      other.addEventListener("click", () => { if (rlCoIsActive()) rlCoSetActive(false); }, true);
+    }
+    btn.classList.toggle("rlCoOn", rlCoIsActive());
+    return true;
+  }
+  function rlCoSetActive(on) {
+    try { GM_setValue(RL_CO_GM_ACTIVE, !!on); } catch (_) {}
+    if (on) rlCoMount(); else rlCoTeardown();
+    const btn = document.getElementById("rlCoSwitchBtn");
+    if (btn) btn.classList.toggle("rlCoOn", !!on);
+  }
+  function rlCoTeardown() {
+    document.body.classList.remove("rlCoActive");
+    const p = document.getElementById("rlCoPanel");
+    if (p) p.remove();
+    rlCoCloseMenu();
+  }
+  function rlCoEnsure() {
+    if (!rlCoIsPlanPath()) {
+      rlCoTeardown();
+      const b = document.getElementById("rlCoSwitchBtn");
+      if (b) b.remove();
+      return;
+    }
+    rlCoInjectStyles();
+    const haveBtn = rlCoEnsureSwitchButton();
+    let mounted = true;
+    if (rlCoIsActive()) mounted = rlCoMount();
+    if ((!haveBtn || !mounted) && !rlCoRetryTimer) {
+      rlCoRetryTimer = setTimeout(() => { rlCoRetryTimer = null; try { rlCoEnsure(); } catch (_) {} }, 600);
+    }
+  }
+  function rlCoMount() {
+    const host = rlCoHost();
+    if (!host) return false;
+    document.body.classList.add("rlCoActive");
+    const pid = rlCoProjectId();
+    let panel = document.getElementById("rlCoPanel");
+    let fresh = false;
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = "rlCoPanel";
+      panel.setAttribute("aria-label", "Categories overview");
+      host.appendChild(panel);
+      fresh = true;
+    } else if (panel.parentElement !== host) {
+      host.appendChild(panel);
+    }
+    if (fresh || rlCoState.projectId !== pid) {
+      rlCoState = { projectId: pid, phases: [], tasks: [], loading: true, error: "", note: "", gen: rlCoState.gen, busy: new Set() };
+      rlCoRender();
+      void rlCoLoad(true);
+    }
+    return true;
+  }
+
+  async function rlCoFetchTasks(pid) {
+    const out = [];
+    const seen = new Set();
+    let pageToken = "";
+    let pages = 0;
+    do {
+      const q = { pageSize: 100 };
+      if (pageToken) q.pageToken = pageToken;
+      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/tasks", q);
+      const { data, pagination } = rlCatUnwrapList(json);
+      for (const t of data || []) {
+        const id = rlCatTaskId(t);
+        if (id && !seen.has(id)) { seen.add(id); out.push(t); }
+      }
+      pageToken = rlCatPaginationNextToken(pagination) || "";
+      pages += 1;
+    } while (pageToken && pages < 30);
+    return out;
+  }
+  async function rlCoLoad(clear) {
+    const pid = rlCoProjectId();
+    if (!pid) return;
+    const gen = ++rlCoState.gen;
+    rlCoState.projectId = pid;
+    rlCoState.loading = true;
+    rlCoState.error = "";
+    rlCoRender();
+    try {
+      if (clear) { try { rlCatClearCaches(pid); } catch (_) {} }
+      const [phases, tasks] = await Promise.all([rlCatFetchPhases(pid), rlCoFetchTasks(pid)]);
+      if (gen !== rlCoState.gen) return;
+      rlCoState.phases = phases;
+      rlCoState.tasks = tasks;
+      rlCoState.loading = false;
+    } catch (e) {
+      if (gen !== rlCoState.gen) return;
+      rlCoState.loading = false;
+      rlCoState.error = String(e?.message || e || "Failed to load the plan.");
+    }
+    rlCoRender();
+  }
+
+  /** Group tasks per phase (board order), extra phases found only on tasks last, then "No category". */
+  function rlCoGroups() {
+    const groups = [];
+    const byName = new Map();
+    const norm = (s) => String(s ?? "").trim().toLowerCase();
+    for (const ph of rlCoState.phases) {
+      const name = rlCatPhaseName(ph) || ("Phase " + rlCatPhaseId(ph));
+      const g = { key: rlCatPhaseId(ph) || norm(name), name, phase: ph, tasks: [] };
+      groups.push(g);
+      byName.set(norm(name), g);
+    }
+    let none = null;
+    for (const t of rlCoState.tasks) {
+      const pn = norm(rlCatTaskPhaseName(t));
+      let g = pn ? byName.get(pn) : null;
+      if (!g && pn) { g = { key: "name:" + pn, name: rlCatTaskPhaseName(t), phase: null, tasks: [] }; groups.push(g); byName.set(pn, g); }
+      if (!g) { if (!none) { none = { key: "none", name: "No category", phase: null, tasks: [] }; } g = none; }
+      g.tasks.push(t);
+    }
+    if (none) groups.push(none);
+    return groups;
+  }
+  /** Tasks in tree order: parents first, children right after their parent. */
+  function rlCoOrderTree(tasks) {
+    const ids = new Set(tasks.map((t) => rlCatTaskId(t)));
+    const kids = new Map();
+    const roots = [];
+    for (const t of tasks) {
+      const p = rlCatTaskParentTaskId(t);
+      if (p && ids.has(p)) { if (!kids.has(p)) kids.set(p, []); kids.get(p).push(t); }
+      else roots.push(t);
+    }
+    const out = [];
+    const walk = (t, depth) => { out.push({ task: t, depth }); for (const c of kids.get(rlCatTaskId(t)) || []) walk(c, depth + 1); };
+    for (const r of roots) walk(r, 0);
+    return out;
+  }
+  function rlCoOpenTasks(tasks) {
+    return rlCoOrderTree(tasks).map((x) => x.task).filter((t) => rlCoStatusOf(t).v !== 3).sort((a, b) => {
+      const ad = rlCatTaskParentTaskId(a) ? 0 : 1, bd = rlCatTaskParentTaskId(b) ? 0 : 1;
+      return ad - bd; // subtasks first — completing a parent with open children can be rejected
+    });
+  }
+
+  async function rlCoSetTaskStatus(task, value) {
+    const id = rlCatTaskId(task);
+    if (!id || rlCoState.busy.has(id)) return false;
+    rlCoState.busy.add(id);
+    rlCoRender();
+    try {
+      let field = dtsTaskStatusField(task);
+      if (!field?.fieldId) field = dtsTaskStatusField(await gmRocketlaneGet("/tasks/" + encodeURIComponent(id)));
+      if (!field?.fieldId) throw new Error("No Status field on task " + id + ".");
+      if (Number(field.fieldValue) !== value) {
+        await gmRocketlaneRequest("PUT", "/tasks/" + encodeURIComponent(id), null, { fields: [{ fieldId: field.fieldId, fieldValue: value }] });
+      }
+      const after = await gmRocketlaneGet("/tasks/" + encodeURIComponent(id));
+      const now = Number(dtsTaskStatusField(after)?.fieldValue);
+      if (now !== value) throw new Error("Rocketlane accepted the update but the task is still status " + now + ".");
+      const idx = rlCoState.tasks.findIndex((t) => rlCatTaskId(t) === id);
+      if (idx >= 0) rlCoState.tasks[idx] = Object.assign({}, rlCoState.tasks[idx], after);
+      return true;
+    } catch (e) {
+      rlCatToast("Status change failed: " + (e?.message || e));
+      return false;
+    } finally {
+      rlCoState.busy.delete(id);
+      rlCoRender();
+    }
+  }
+  async function rlCoCompleteMany(tasks, label) {
+    const open = rlCoOpenTasks(tasks);
+    if (!open.length) { rlCatToast("Nothing open in " + label + "."); return; }
+    if (!confirm("Complete all " + open.length + " open task(s) in " + label + "?\n\nThey are written to Rocketlane one at a time.")) return;
+    let done = 0, failed = 0;
+    for (const t of open) {
+      rlCoState.note = "Completing " + (done + failed + 1) + " / " + open.length + "…";
+      rlCoRender();
+      const ok = await rlCoSetTaskStatus(t, 3);
+      if (ok) done += 1; else failed += 1;
+    }
+    rlCoState.note = "";
+    rlCatToast(done + " task(s) completed" + (failed ? ", " + failed + " failed" : "") + ".");
+    void rlCoLoad(true);
+  }
+  async function rlCoAddTask(group) {
+    const pid = rlCoState.projectId;
+    if (!pid) return;
+    if (!group.phase) { rlCatToast("This group has no Rocketlane phase to add a task to."); return; }
+    const name = prompt("New task in \"" + group.name + "\":");
+    if (!name || !name.trim()) return;
+    try {
+      await rlCatCreateTask(pid, group.phase, name.trim(), "", {});
+      rlCatToast("Task added.");
+      void rlCoLoad(true);
+    } catch (e) {
+      rlCatToast("Could not add the task: " + (e?.message || e));
+    }
+  }
+
+  function rlCoCloseMenu() { if (rlCoMenuEl) { rlCoMenuEl.remove(); rlCoMenuEl = null; } }
+  document.addEventListener("mousedown", (e) => {
+    if (rlCoMenuEl && !rlCoMenuEl.contains(e.target) && !(e.target.closest && e.target.closest(".rlCoStBtn"))) rlCoCloseMenu();
+  }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && rlCoMenuEl) rlCoCloseMenu(); }, true);
+  function rlCoOpenStatusMenu(btn, task) {
+    rlCoCloseMenu();
+    const menu = document.createElement("div");
+    menu.className = "rlCoMenu";
+    menu.setAttribute("role", "listbox");
+    const current = rlCoStatusOf(task).v;
+    for (const s of RL_CO_STATUS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = s.v === current ? "selected" : "";
+      b.textContent = s.label;
+      b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); rlCoCloseMenu(); void rlCoSetTaskStatus(task, s.v); });
+      menu.appendChild(b);
+    }
+    document.body.appendChild(menu);
+    rlCoMenuEl = menu;
+    const r = btn.getBoundingClientRect();
+    const h = menu.offsetHeight || 150, w = Math.max(menu.offsetWidth || 150, Math.round(r.width));
+    menu.style.width = w + "px";
+    menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+    menu.style.top = (r.bottom + 4 + h > window.innerHeight - 8 ? Math.max(8, r.top - 4 - h) : r.bottom + 4) + "px";
+  }
+
+  function rlCoRender() {
+    const panel = document.getElementById("rlCoPanel");
+    if (!panel) return;
+    const pid = rlCoState.projectId;
+    const hideDone = GM_getValue(RL_CO_GM_HIDE_DONE, false) === true;
+    panel.classList.toggle("hideDone", hideDone);
+    panel.textContent = "";
+
+    const groups = rlCoGroups();
+    const allTasks = rlCoState.tasks;
+    const openAll = allTasks.filter((t) => rlCoStatusOf(t).v !== 3).length;
+
+    const hd = document.createElement("div");
+    hd.className = "rlCoHd";
+    const title = document.createElement("h2");
+    title.className = "rlCoTitle";
+    title.textContent = "Categories";
+    const tools = document.createElement("div");
+    tools.className = "rlCoTools";
+    const mk = (label, cls, onClick, titleText) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "rlCoBtn" + (cls ? " " + cls : "");
+      b.textContent = label;
+      if (titleText) b.title = titleText;
+      b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onClick(); });
+      return b;
+    };
+    const completeAll = mk("Complete all tasks", "primary", () => void rlCoCompleteMany(allTasks, "this project"), "Mark every open task in the project as completed");
+    completeAll.disabled = !openAll || rlCoState.loading;
+    tools.appendChild(completeAll);
+    tools.appendChild(mk(hideDone ? "Show completed tasks" : "Hide completed tasks", "", () => { try { GM_setValue(RL_CO_GM_HIDE_DONE, !hideDone); } catch (_) {} rlCoRender(); }));
+    tools.appendChild(mk("+ Add category", "", () => { try { rlCatOpenAddCategoryDialog(pid); } catch (e) { rlCatToast(String(e?.message || e)); } }, "Add a category (phase) — the Add category / order info dialog"));
+    tools.appendChild(mk("Refresh", "", () => void rlCoLoad(true)));
+    hd.appendChild(title);
+    hd.appendChild(tools);
+    panel.appendChild(hd);
+
+    const status = document.createElement("p");
+    status.className = "rlCoStatus" + (rlCoState.error ? " err" : "");
+    const doneAll = allTasks.length - openAll;
+    status.textContent = rlCoState.error ? rlCoState.error
+      : rlCoState.loading ? "Loading phases and tasks…"
+      : rlCoState.note || (groups.length + " categor" + (groups.length === 1 ? "y" : "ies") + " · " + allTasks.length + " task(s) · " + doneAll + " completed · " + openAll + " open");
+    panel.appendChild(status);
+
+    const grid = document.createElement("div");
+    grid.className = "rlCoGrid";
+    if (!groups.length && !rlCoState.loading && !rlCoState.error) {
+      const empty = document.createElement("div");
+      empty.className = "rlCoEmpty";
+      empty.textContent = "No phases on this project yet.";
+      grid.appendChild(empty);
+    }
+    for (const g of groups) {
+      const box = document.createElement("div");
+      box.className = "rlCoBox";
+      box.dataset.key = g.key;
+      const total = g.tasks.length;
+      const completed = g.tasks.filter((t) => rlCoStatusOf(t).v === 3).length;
+      const inProgress = g.tasks.filter((t) => rlCoStatusOf(t).v === 2).length;
+      const blocked = g.tasks.filter((t) => rlCoStatusOf(t).v === 4).length;
+      if (total && completed === total) box.classList.add("allDone");
+      else if (inProgress) box.classList.add("hasInProgress");
+      const expanded = rlCoIsExpanded(pid, g.key);
+      if (expanded) box.classList.add("expanded");
+
+      const bh = document.createElement("div");
+      bh.className = "rlCoBoxHd";
+      const nm = document.createElement("div");
+      nm.className = "rlCoBoxName";
+      const chev = document.createElement("span");
+      chev.className = "rlCoChev";
+      chev.textContent = "▶";
+      const nmText = document.createElement("span");
+      nmText.textContent = g.name;
+      nm.appendChild(chev);
+      nm.appendChild(nmText);
+      const toggle = () => { rlCoSetExpanded(pid, g.key, !rlCoIsExpanded(pid, g.key)); rlCoRender(); };
+      nm.addEventListener("click", toggle);
+      const bt = document.createElement("div");
+      bt.className = "rlCoTools";
+      if (total - completed > 0) bt.appendChild(mk("✓ Complete all", "small", () => void rlCoCompleteMany(g.tasks, "'" + g.name + "'"), "Mark all " + (total - completed) + " open task(s) in this category as completed"));
+      bt.appendChild(mk("+ Add task", "small", () => void rlCoAddTask(g)));
+      bh.appendChild(nm);
+      bh.appendChild(bt);
+      box.appendChild(bh);
+
+      if (!expanded) {
+        const meta = document.createElement("div");
+        meta.className = "rlCoMeta";
+        meta.textContent = total
+          ? total + " task(s) | " + completed + " completed" + (inProgress ? " | " + inProgress + " In progress" : "") + (blocked ? " | " + blocked + " Blocked" : "")
+          : "No tasks yet.";
+        meta.title = "Click to show tasks";
+        meta.addEventListener("click", toggle);
+        box.appendChild(meta);
+      } else {
+        const list = document.createElement("div");
+        list.className = "rlCoTasks";
+        if (!total) {
+          const empty = document.createElement("div");
+          empty.className = "rlCoEmpty";
+          empty.textContent = "No tasks yet.";
+          list.appendChild(empty);
+        }
+        for (const { task, depth } of rlCoOrderTree(g.tasks)) {
+          const st = rlCoStatusOf(task);
+          const id = rlCatTaskId(task);
+          const row = document.createElement("div");
+          row.className = "rlCoTask s-" + st.key + (depth ? " sub" : "");
+          if (depth) row.style.setProperty("--lvl", String(depth));
+          const stBtn = document.createElement("button");
+          stBtn.type = "button";
+          stBtn.className = "rlCoStBtn" + (rlCoState.busy.has(id) ? " busy" : "");
+          stBtn.setAttribute("aria-haspopup", "listbox");
+          stBtn.innerHTML = "<span></span><span class=\"caret\">▾</span>";
+          stBtn.firstChild.textContent = rlCoState.busy.has(id) ? "Saving…" : st.label;
+          stBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); if (!rlCoState.busy.has(id)) rlCoOpenStatusMenu(stBtn, task); });
+          const name = document.createElement("div");
+          name.className = "rlCoTaskName";
+          name.textContent = (depth ? "↳ " : "") + (rlCatTaskName(task) || "(Untitled task)");
+          const due = document.createElement("div");
+          due.className = "rlCoTaskDue";
+          due.textContent = rlCoTaskDue(task);
+          row.appendChild(stBtn);
+          row.appendChild(name);
+          row.appendChild(due);
+          list.appendChild(row);
+        }
+        box.appendChild(list);
+      }
+      grid.appendChild(box);
+    }
+    panel.appendChild(grid);
   }
 
   // Initial attempts (covers the case where the nav is already present). Waits
