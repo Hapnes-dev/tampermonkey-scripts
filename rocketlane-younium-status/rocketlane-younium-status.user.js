@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.16
+// @version      1.14.17
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3447,16 +3447,79 @@
       .trim();
   }
 
-  /** Zendesk search queries: plant id always; quoted plant name if length >= 4. */
-  function rlZdBuildSearchQueries(plantId, plantName) {
+  /**
+   * Zendesk search queries (v1.14.17). A bare "type:ticket 4531" searched every
+   * field — comments, requester, phone numbers, order numbers — and pulled in
+   * cases that only mention the number in passing. Now the ticket must carry the
+   * plant in a place that means it: the Plant ID ticket field, the subject
+   * (emne), or the description. The plant name is searched in the subject only.
+   */
+  function rlZdBuildSearchQueries(plantId, plantName, plantFieldId) {
     const pid = String(plantId ?? "").trim();
     if (!pid) return [];
-    const queries = ["type:ticket " + pid];
+    const queries = [];
+    if (plantFieldId) queries.push("type:ticket custom_field_" + plantFieldId + ":" + pid);
+    queries.push("type:ticket subject:" + pid);
+    queries.push("type:ticket description:" + pid);
     const pname = String(plantName ?? "").trim();
     if (pname && pname.length >= 4) {
-      queries.push('type:ticket "' + pname.replace(/"/g, "") + '"');
+      queries.push('type:ticket subject:"' + pname.replace(/"/g, "") + '"');
     }
     return queries;
+  }
+
+  function rlZdNormText(s) {
+    return String(s ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+  }
+  /** Whole-number match: 4531 in "4531 - Bunnpris" yes, in "14531" or "O-014531" no. */
+  function rlZdHasPlantNumber(text, pid) {
+    const s = String(text ?? "");
+    if (!s || !pid) return false;
+    return new RegExp("(^|[^0-9])" + pid + "([^0-9]|$)").test(s);
+  }
+  /**
+   * Keep a search hit only when the plant is really referenced: the Plant ID
+   * ticket field equals it, or the subject / description carries the plant
+   * number as a whole number or the plant name. Zendesk's search is fuzzy
+   * around numbers, so this is the strict gate the user sees.
+   */
+  function rlZdTicketMatchesPlant(t, pid, pname, plantFieldId) {
+    if (plantFieldId && Array.isArray(t?.custom_fields)) {
+      const f = t.custom_fields.find((x) => String(x?.id) === String(plantFieldId));
+      if (f && rlZdHasPlantNumber(String(f.value ?? ""), pid) && String(f.value).trim() === pid) return true;
+    }
+    const subject = String(t?.subject ?? t?.raw_subject ?? "");
+    const description = String(t?.description ?? "");
+    if (rlZdHasPlantNumber(subject, pid) || rlZdHasPlantNumber(description, pid)) return true;
+    const n = rlZdNormText(pname);
+    if (n && n.length >= 4 && rlZdNormText(subject).includes(n)) return true;
+    return false;
+  }
+
+  /** The Zendesk ticket field titled "Plant ID" — looked up once, cached in GM storage. */
+  const RL_ZD_GM_PLANT_FIELD = "rlZdPlantIdFieldId";
+  let rlZdPlantFieldLookup = null;
+  async function rlZdGetPlantFieldId() {
+    const cached = GM_getValue(RL_ZD_GM_PLANT_FIELD, null);
+    if (cached !== null && cached !== undefined) return Number(cached) || 0;
+    if (rlZdPlantFieldLookup) return rlZdPlantFieldLookup;
+    rlZdPlantFieldLookup = (async () => {
+      try {
+        const json = await zendeskApiRequest("GET", "/ticket_fields.json?per_page=100");
+        const fields = Array.isArray(json?.ticket_fields) ? json.ticket_fields : [];
+        const f = fields.find((x) => /^\s*plant\s*id\s*\*?\s*$/i.test(String(x?.title ?? "")) || /^\s*plant\s*id\s*\*?\s*$/i.test(String(x?.title_in_portal ?? "")))
+          || fields.find((x) => /plant\s*id/i.test(String(x?.title ?? "")));
+        const id = f && f.id ? Number(f.id) : 0;
+        GM_setValue(RL_ZD_GM_PLANT_FIELD, id);
+        return id;
+      } catch (e) {
+        console.debug("[rlZd] ticket_fields lookup failed:", e?.message ?? e);
+        return 0;
+      } finally {
+        setTimeout(() => { rlZdPlantFieldLookup = null; }, 0);
+      }
+    })();
+    return rlZdPlantFieldLookup;
   }
 
   /** Merge search result arrays; keep first ticket per id (dedupe). */
@@ -10628,7 +10691,9 @@
     bodyEl.appendChild(loading);
 
     try {
-      const queries = rlZdBuildSearchQueries(plantId, plantName);
+      const plantFieldId = await rlZdGetPlantFieldId();
+      if (!rlZdGuard(gen, projectId)) return;
+      const queries = rlZdBuildSearchQueries(plantId, plantName, plantFieldId);
       const resultLists = [];
       for (const query of queries) {
         const params = new URLSearchParams({
@@ -10645,7 +10710,11 @@
         }
       }
       if (!rlZdGuard(gen, projectId)) return;
-      const tickets = rlZdMergeSearchResults(resultLists);
+      const merged = rlZdMergeSearchResults(resultLists);
+      const tickets = merged.filter((t) => rlZdTicketMatchesPlant(t, plantId, plantName, plantFieldId));
+      if (merged.length !== tickets.length) {
+        console.debug("[rlZd] dropped " + (merged.length - tickets.length) + " search hits that only mention " + plantId + " in passing");
+      }
       if (tickets.length === 0) {
         bodyEl.innerHTML = "";
         const empty = document.createElement("div");
