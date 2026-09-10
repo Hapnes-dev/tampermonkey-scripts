@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.4
+// @version      1.19.5
 // @description  Rocketlane improvements in one script (v1.19.2: Project note white Categories shell + one gray .rlPnoteBox; v1.19.1: Project note panel matches Categories light-gray single-surface card; v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3212,7 +3212,7 @@
   function rlCoPersonalTaskName(task, noteText) {
     const first = String(noteText ?? "").split(/\n/).map((l) => l.trim()).find(Boolean) || "";
     const proj = String(task?.project?.projectName ?? task?.project?.name ?? "").trim() || rlCoProjectLabel();
-    const parts = [first, rlCatTaskName(task) || "", proj].filter(Boolean);
+    const parts = [proj, rlCatTaskName(task) || "", first].filter(Boolean);
     let name = parts.join(" — ");
     if (name.length > 240) name = name.slice(0, 237) + "…";
     return name;
@@ -4138,6 +4138,100 @@
     }
     return stats;
   }
+  // ---- Personal tasks widget: two-tone names (v1.19.5) --------------------
+  // A personal task name is one plain string, and the widget renders each
+  // row as a <textarea>, so the colour split happens on the page: the
+  // textarea's text goes transparent (caret kept) and a pointer-less layer
+  // with identical metrics sits on top showing "<project>" in accent blue
+  // and the note in body text. The project part is matched against the home
+  // panels' project names (longest match wins) so a colon inside a project
+  // name ("…Sogndal: ny butikk") does not cut the split short; the task-note
+  // form "<project> — <task> — <note>" is split on the em dashes. A focused
+  // row is left alone so editing looks native.
+  const RL_PT_DECO_STYLE = "rlPtDecoStyles";
+  const RL_PT_DECO_PROPS = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "textAlign", "wordSpacing"];
+  let rlPtDecoNames = { at: 0, list: [] };
+  function rlPtDecoInjectStyles() {
+    if (document.getElementById(RL_PT_DECO_STYLE)) return;
+    const s = document.createElement("style");
+    s.id = RL_PT_DECO_STYLE;
+    s.textContent = [
+      "textarea.rlPtDeco{color:transparent!important;caret-color:rgba(15,23,42,0.9)}",
+      ".rlPtDecoLayer{position:absolute;pointer-events:none;white-space:pre-wrap;overflow-wrap:anywhere;overflow:hidden;box-sizing:border-box;border-style:solid;border-color:transparent;color:rgba(15,23,42,0.88);z-index:1}",
+      ".rlPtDecoLayer .proj{color:#0369a1;font-weight:600}",
+      ".rlPtDecoLayer .task{color:rgba(15,23,42,0.6)}",
+      ".rlPtDecoLayer .sep{color:rgba(15,23,42,0.4)}",
+    ].join("");
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function rlPtDecoProjectNames() {
+    if (Date.now() - rlPtDecoNames.at < 30000) return rlPtDecoNames.list;
+    const names = new Set();
+    const walk = (v, depth) => {
+      if (!v || depth > 4) return;
+      if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
+      if (typeof v !== "object") return;
+      const n = v.projectName ?? v.name;
+      if (typeof n === "string" && n.trim() && (v.projectId != null || v.id != null || v.status != null || v.progress != null)) names.add(n.trim());
+      for (const k of ["ownerProjects", "memberProjects", "projects", "items", "rows", "list"]) if (v[k]) walk(v[k], depth + 1);
+    };
+    try { walk(rlHpPeekCache(), 0); } catch (_) {}
+    rlPtDecoNames = { at: Date.now(), list: [...names].sort((a, b) => b.length - a.length) };
+    return rlPtDecoNames.list;
+  }
+  function rlPtDecoSplit(value) {
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const v = String(value ?? "");
+    let m = v.match(/^([\s\S]+?)\s—\s([\s\S]+?)\s—\s([\s\S]+)$/);
+    if (m) return '<span class="proj">' + esc(m[1]) + '</span><span class="sep"> — </span><span class="task">' + esc(m[2]) + '</span><span class="sep"> — </span><span class="note">' + esc(m[3]) + "</span>";
+    for (const name of rlPtDecoProjectNames()) {
+      if (v.startsWith(name + ": ")) return '<span class="proj">' + esc(name) + ":</span> " + '<span class="note">' + esc(v.slice(name.length + 2)) + "</span>";
+    }
+    m = v.match(/^(\d[^:]*?): ([\s\S]+)$/);
+    if (m) return '<span class="proj">' + esc(m[1]) + ":</span> " + '<span class="note">' + esc(m[2]) + "</span>";
+    return null;
+  }
+  function rlPtDecorate() {
+    const rows = document.querySelectorAll('textarea[class*="personal-tasks_add_task_input__mod_update"]');
+    if (!rows.length) return;
+    rlPtDecoInjectStyles();
+    for (const ta of rows) {
+      const host = ta.parentElement;
+      if (!host) continue;
+      let layer = null;
+      for (const c of host.children) if (c.classList && c.classList.contains("rlPtDecoLayer")) { layer = c; break; }
+      const html = document.activeElement === ta ? null : rlPtDecoSplit(ta.value);
+      if (!html) { ta.classList.remove("rlPtDeco"); if (layer) layer.remove(); continue; }
+      if (!layer) {
+        layer = document.createElement("div");
+        layer.className = "rlPtDecoLayer";
+        layer.setAttribute("aria-hidden", "true");
+        host.insertBefore(layer, ta.nextSibling);
+        if (getComputedStyle(host).position === "static") host.style.position = "relative";
+      }
+      const cs = getComputedStyle(ta);
+      for (const prop of RL_PT_DECO_PROPS) layer.style[prop] = cs[prop];
+      layer.style.borderWidth = cs.borderTopWidth + " " + cs.borderRightWidth + " " + cs.borderBottomWidth + " " + cs.borderLeftWidth;
+      layer.style.left = ta.offsetLeft + "px";
+      layer.style.top = ta.offsetTop + "px";
+      layer.style.width = ta.offsetWidth + "px";
+      layer.style.height = ta.offsetHeight + "px";
+      if (layer.dataset.v !== ta.value) { layer.innerHTML = html; layer.dataset.v = ta.value; }
+      ta.classList.add("rlPtDeco");
+    }
+  }
+  let rlPtDecoTimer = null;
+  function rlPtDecoSchedule() { if (rlPtDecoTimer) return; rlPtDecoTimer = setTimeout(() => { rlPtDecoTimer = null; try { rlPtDecorate(); } catch (_) {} }, 60); }
+  function rlPtDecorateInit() {
+    document.addEventListener("focusin", rlPtDecoSchedule, true);
+    document.addEventListener("focusout", rlPtDecoSchedule, true);
+    document.addEventListener("input", (e) => { if (e.target && e.target.matches && e.target.matches("textarea.rlPtDeco")) rlPtDecoSchedule(); }, true);
+    window.addEventListener("resize", rlPtDecoSchedule);
+    try { new MutationObserver(rlPtDecoSchedule).observe(document.body, { childList: true, subtree: true, characterData: true }); } catch (_) {}
+    setInterval(rlPtDecoSchedule, 2000);
+    rlPtDecoSchedule();
+  }
+
   rlWhenDomReady(() => {
     // A visit to the home page syncs right away (short guard); elsewhere the slow schedule applies.
     let lastPath = "";
@@ -4151,6 +4245,7 @@
     setInterval(onPath, 1000);
     setTimeout(() => void rlPnMaybeSync(false), 8000);
     setInterval(() => void rlPnMaybeSync(false), RL_PN_TICK_MS);
+    try { rlPtDecorateInit(); } catch (_) {}
   });
 
   // ════════════════════════════════════════════════════════════════════════
