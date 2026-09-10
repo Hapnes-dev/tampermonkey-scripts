@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.1
+// @version      1.21.2
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.21.1";
+  const RL_CO_STYLE_READY = "1.21.2";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2840,12 +2840,25 @@
       #${RL_PNOTE_PANEL_ID} { margin-bottom: 0; }
       #${RL_PNOTE_PANEL_ID} .rlCoHd { margin-bottom: 10px; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteBox {
-        display: grid; gap: 8px; min-width: 0;
-        background: #f3f5f8 !important; border: 1px solid var(--co-hair) !important; border-radius: 12px; padding: 14px;
+        position: relative; display: grid; gap: 8px; min-width: 0;
+        background: #f3f5f8 !important; border: 1px solid var(--co-hair) !important; border-radius: 12px; padding: 14px 14px 16px;
         box-shadow: 0 1px 2px rgba(15,23,42,0.04);
       }
+      /* Drag the bottom edge of the box to resize it (v1.21.2); double-click toggles the two preset sizes. */
+      #${RL_PNOTE_PANEL_ID} .rlPnoteGrip {
+        position: absolute; left: 0; right: 0; bottom: 0; height: 12px; cursor: ns-resize;
+        display: flex; align-items: center; justify-content: center; border-radius: 0 0 12px 12px;
+        touch-action: none; user-select: none;
+      }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteGrip::before {
+        content: ''; width: 40px; height: 3px; border-radius: 999px; background: rgba(15,23,42,0.18);
+        transition: background 140ms ease, width 140ms ease;
+      }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteGrip:hover::before { background: rgba(3,105,161,0.55); width: 64px; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteGrip.dragging::before { background: rgba(3,105,161,0.75); width: 64px; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteBox.resizing { user-select: none; }
       #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput {
-        width: 100%; min-height: 84px; resize: vertical; box-sizing: border-box;
+        width: 100%; min-height: 84px; resize: none; box-sizing: border-box;
         padding: 0 !important; border: none !important; border-radius: 0 !important;
         background: transparent !important; color: var(--co-text);
         font: inherit; font-size: 12.5px; line-height: 1.45;
@@ -4594,12 +4607,43 @@
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rlPnoteFlush(false); }
     });
-    // A manual drag of the textarea's grip is remembered too, so the box keeps the size it was left at.
-    ta.addEventListener("mouseup", () => {
-      const h = ta.offsetHeight;
-      if (h && Math.abs(h - rlPnoteReadHeight()) > 2) rlPnoteApplyHeight(panel, rlPnoteWriteHeight(h));
-    });
     box.appendChild(ta);
+    // Grab the bottom edge of the box and drag down to make it taller. The native
+    // textarea grip is off (resize:none) — this strip replaces it, is easier to hit,
+    // and the height it is left at is remembered like the Expand button's.
+    const grip = document.createElement("div");
+    grip.className = "rlPnoteGrip";
+    grip.setAttribute("role", "separator");
+    grip.setAttribute("aria-orientation", "horizontal");
+    grip.setAttribute("aria-label", "Resize the note box");
+    grip.title = "Drag to resize · double-click to expand or collapse";
+    let dragFrom = 0, dragH = 0;
+    const onMove = (e) => {
+      const next = Math.max(RL_PNOTE_MIN_H, Math.min(dragH + (e.clientY - dragFrom), 1200));
+      ta.style.height = next + "px";
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      grip.classList.remove("dragging");
+      box.classList.remove("resizing");
+      rlPnoteApplyHeight(panel, rlPnoteWriteHeight(ta.offsetHeight));
+    };
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      dragFrom = e.clientY;
+      dragH = ta.offsetHeight || RL_PNOTE_MIN_H;
+      grip.classList.add("dragging");
+      box.classList.add("resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+    grip.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      const cur = rlPnoteReadHeight();
+      rlPnoteApplyHeight(panel, rlPnoteWriteHeight(cur > RL_PNOTE_MIN_H + 8 ? RL_PNOTE_MIN_H : RL_PNOTE_TALL_H));
+    });
+    box.appendChild(grip);
     panel.appendChild(box);
 
     const foot = document.createElement("div");
