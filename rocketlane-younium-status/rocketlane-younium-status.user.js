@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.16.2
+// @version      1.17.0
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2735,14 +2735,16 @@
   const RL_CO_GM_ACTIVE = "rlCoActive";
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
-  const RL_CO_STYLE_READY = "1.16.2";
+  const RL_CO_STYLE_READY = "1.17.0";
+  const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
+  const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
     { v: 1, key: "todo", label: "To do" },
     { v: 2, key: "in_progress", label: "In progress" },
     { v: 3, key: "completed", label: "Completed" },
     { v: 4, key: "blocked", label: "Blocked" },
   ];
-  let rlCoState = { projectId: "", phases: [], tasks: [], loading: false, error: "", note: "", gen: 0, busy: new Set() };
+  let rlCoState = { projectId: "", phases: [], tasks: [], loading: false, error: "", note: "", gen: 0, busy: new Set(), noteEdit: new Set(), noteDraft: new Map(), noteBusy: new Set() };
   let rlCoRetryTimer = null;
   let rlCoMenuEl = null;
 
@@ -2859,6 +2861,22 @@
       #rlCoPanel .rlCoStBtn .caret { color: rgba(15,23,42,0.45); font-size: 9px; }
       #rlCoPanel .rlCoStBtn.busy { opacity: 0.6; cursor: progress; }
       #rlCoPanel .rlCoEmpty { color: var(--co-muted2); font-size: 12px; padding: 2px 0; }
+      /* Private note per task (v1.17.0): the tracker's "Add a private note" link and cream box. */
+      #rlCoPanel .rlCoNoteWrap { grid-column: 1 / -1; min-width: 0; }
+      #rlCoPanel .rlCoNoteLink { appearance: none; border: none; background: transparent; padding: 0; font: inherit; font-size: 11px; color: var(--co-accent); cursor: pointer; }
+      #rlCoPanel .rlCoNoteLink:hover { text-decoration: underline; }
+      #rlCoPanel .rlCoNoteBox { display: grid; gap: 6px; margin-top: 2px; padding: 8px 10px; border-radius: 8px; background: #fdf6dc; border: 1px solid rgba(138,109,8,0.28); }
+      #rlCoPanel .rlCoNoteLabel { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #8a6d08; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      #rlCoPanel .rlCoNoteLabel .mirror { font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 11px; color: #8a6d08; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+      #rlCoPanel .rlCoNoteLabel .mirror input { margin: 0; accent-color: #b45309; }
+      #rlCoPanel .rlCoNoteText { font-size: 12.5px; color: rgba(15,23,42,0.88); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+      #rlCoPanel .rlCoNoteText:hover { text-decoration: underline dotted rgba(138,109,8,0.6); }
+      #rlCoPanel textarea.rlCoNoteInput { width: 100%; min-height: 56px; resize: vertical; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(138,109,8,0.35); background: #fffbe8; color: rgba(15,23,42,0.9); font: inherit; font-size: 12.5px; line-height: 1.4; }
+      #rlCoPanel textarea.rlCoNoteInput:focus { outline: 2px solid rgba(180,83,9,0.35); outline-offset: 1px; }
+      #rlCoPanel .rlCoNoteTools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      #rlCoPanel .rlCoNoteTools .hint { font-size: 11px; color: var(--co-muted2); margin-left: auto; }
+      #rlCoPanel .rlCoNoteMirrorTag { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: #8a6d08; }
+      #rlCoPanel .rlCoNoteMirrorTag::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #b45309; }
       .rlCoMenu { position: fixed; z-index: 99999; min-width: 170px; padding: 6px; border-radius: 12px; border: 1px solid rgba(15,23,42,0.12); background: #fff; box-shadow: 0 12px 32px rgba(15,23,42,0.16); font: 12px/1.3 "Segoe UI", system-ui, sans-serif; color: rgba(15,23,42,0.90); }
       .rlCoMenu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; --co-dot: rgba(100,116,139,0.9); }
       .rlCoMenu button::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--co-dot); flex: 0 0 auto; }
@@ -2943,7 +2961,7 @@
       host.appendChild(panel);
     }
     if (fresh || rlCoState.projectId !== pid) {
-      rlCoState = { projectId: pid, phases: [], tasks: [], loading: true, error: "", note: "", gen: rlCoState.gen, busy: new Set() };
+      rlCoState = { projectId: pid, phases: [], tasks: [], loading: true, error: "", note: "", gen: rlCoState.gen, busy: new Set(), noteEdit: new Set(), noteDraft: new Map(), noteBusy: new Set() };
       rlCoRender();
       void rlCoLoad(true);
     }
@@ -3090,6 +3108,193 @@
     } catch (e) {
       rlCatToast("Could not add the task: " + (e?.message || e));
     }
+  }
+
+  // ---- Private notes (v1.17.0) -------------------------------------------
+  // Rocketlane stores a task's private note (the cream box in the task drawer)
+  // as the task-level `privateTaskDescription` HTML field. It is present on the
+  // project task list when set, and written through the partial-update endpoint
+  // PUT /projects/{pid}/tasks/{tid}/mini (verified live 2026-09-10). A saved
+  // note is optionally mirrored to the user's home "Personal tasks" widget via
+  // POST/PUT/DELETE /personal-tasks (personalTaskName), mapped per task in GM.
+  function rlCoHtmlToText(html) {
+    const s = String(html ?? "");
+    if (!s) return "";
+    const d = document.createElement("div");
+    d.innerHTML = s.replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>\s*<p[^>]*>/gi, "\n\n").replace(/<\/(div|li)>/gi, "\n");
+    return String(d.textContent || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  function rlCoTextToHtml(t) {
+    const s = String(t ?? "").trim();
+    if (!s) return "";
+    const esc = (x) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return s.split(/\n{2,}/).map((para) => "<p>" + esc(para).replace(/\n/g, "<br>") + "</p>").join("");
+  }
+  function rlCoPrivateNoteOf(task) {
+    return rlCoHtmlToText(task?.privateTaskDescription ?? task?.taskInfo?.privateTaskDescription ?? "");
+  }
+  function rlCoMirrorOn() { return GM_getValue(RL_CO_GM_NOTE_MIRROR_ON, true) !== false; }
+  function rlCoReadMirrorMap() {
+    try { const j = JSON.parse(GM_getValue(RL_CO_GM_NOTE_MIRROR, "") || "{}"); return j && typeof j === "object" ? j : {}; } catch (_) { return {}; }
+  }
+  function rlCoWriteMirrorMap(map) { try { GM_setValue(RL_CO_GM_NOTE_MIRROR, JSON.stringify(map)); } catch (_) {} }
+  function rlCoProjectLabel() {
+    const t = String(document.title || "").replace(/\s*[-–|]\s*Kiona\s*$/i, "").trim();
+    return t.length > 90 ? t.slice(0, 87) + "…" : t;
+  }
+  function rlCoPersonalTaskName(task, noteText) {
+    const first = String(noteText ?? "").split(/\n/).map((l) => l.trim()).find(Boolean) || "";
+    const proj = String(task?.project?.projectName ?? task?.project?.name ?? "").trim() || rlCoProjectLabel();
+    const parts = [first, rlCatTaskName(task) || "", proj].filter(Boolean);
+    let name = parts.join(" — ");
+    if (name.length > 240) name = name.slice(0, 237) + "…";
+    return name;
+  }
+  /** Keep the home "Personal tasks" widget in step with the note: create, rename, or remove the mirrored task. */
+  async function rlCoMirrorNote(task, noteText) {
+    const id = rlCatTaskId(task);
+    const map = rlCoReadMirrorMap();
+    const entry = map[id];
+    const text = String(noteText ?? "").trim();
+    if (!text) {
+      if (entry?.personalTaskId) {
+        try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(entry.personalTaskId), null, null); } catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) throw e; }
+      }
+      delete map[id];
+      rlCoWriteMirrorMap(map);
+      return "removed";
+    }
+    if (!rlCoMirrorOn()) return "off";
+    const personalTaskName = rlCoPersonalTaskName(task, text);
+    if (entry?.personalTaskId) {
+      try {
+        await gmRocketlaneRequest("PUT", "/personal-tasks/" + encodeURIComponent(entry.personalTaskId), null, { personalTaskName });
+        return "updated";
+      } catch (e) {
+        if (!/HTTP 404/.test(String(e?.message || e))) throw e; // gone from the widget — recreate
+      }
+    }
+    const created = await gmRocketlaneRequest("POST", "/personal-tasks", null, { personalTaskName });
+    const pt = created?.data ?? created;
+    const personalTaskId = pt?.personalTaskId ?? pt?.id ?? "";
+    if (!personalTaskId) throw new Error("Rocketlane did not return a personal task id.");
+    map[id] = { personalTaskId };
+    rlCoWriteMirrorMap(map);
+    return "created";
+  }
+  async function rlCoSavePrivateNote(task, noteText) {
+    const id = rlCatTaskId(task);
+    const pid = rlCoState.projectId;
+    if (!id || !pid || rlCoState.noteBusy.has(id)) return false;
+    const text = String(noteText ?? "").trim();
+    rlCoState.noteBusy.add(id);
+    rlCoRender();
+    try {
+      const path = "/projects/" + encodeURIComponent(pid) + "/tasks/" + encodeURIComponent(id);
+      await gmRocketlaneRequest("PUT", path + "/mini", null, { privateTaskDescription: rlCoTextToHtml(text) });
+      const after = await gmRocketlaneGet(path);
+      const got = rlCoHtmlToText(after?.privateTaskDescription ?? "");
+      if (got !== text) throw new Error("Rocketlane accepted the note but reads back differently.");
+      const idx = rlCoState.tasks.findIndex((t) => rlCatTaskId(t) === id);
+      if (idx >= 0) rlCoState.tasks[idx] = Object.assign({}, rlCoState.tasks[idx], { privateTaskDescription: after?.privateTaskDescription ?? "" });
+      rlCoState.noteEdit.delete(id);
+      rlCoState.noteDraft.delete(id);
+      let mirror = "";
+      try { mirror = await rlCoMirrorNote(rlCoState.tasks[idx] || task, text); }
+      catch (e) { rlCatToast("Note saved, but the Personal task mirror failed: " + (e?.message || e)); return true; }
+      rlCatToast(text ? "Private note saved" + (mirror === "created" ? " and added to Personal tasks." : mirror === "updated" ? " and Personal task updated." : ".") : "Private note removed" + (mirror === "removed" ? " and Personal task removed." : "."));
+      return true;
+    } catch (e) {
+      rlCatToast("Private note failed: " + (e?.message || e));
+      return false;
+    } finally {
+      rlCoState.noteBusy.delete(id);
+      rlCoRender();
+    }
+  }
+  /** The note block under a task row: link → cream box (read view or editor). */
+  function rlCoNoteBlock(task, id) {
+    const wrap = document.createElement("div");
+    wrap.className = "rlCoNoteWrap";
+    const saved = rlCoPrivateNoteOf(task);
+    const editing = rlCoState.noteEdit.has(id);
+    const busy = rlCoState.noteBusy.has(id);
+    const mirrored = !!rlCoReadMirrorMap()[id]?.personalTaskId;
+    if (!saved && !editing && !busy) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "rlCoNoteLink";
+      link.textContent = "+ Add a private note";
+      link.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); rlCoState.noteEdit.add(id); rlCoRender(); const ta = document.querySelector('#rlCoPanel .rlCoTask[data-id="' + id + '"] textarea.rlCoNoteInput'); if (ta) ta.focus(); });
+      wrap.appendChild(link);
+      return wrap;
+    }
+    const box = document.createElement("div");
+    box.className = "rlCoNoteBox";
+    const label = document.createElement("div");
+    label.className = "rlCoNoteLabel";
+    const lt = document.createElement("span");
+    lt.textContent = busy ? "Private note · saving…" : "Private note";
+    label.appendChild(lt);
+    if (editing && !busy) {
+      const mirror = document.createElement("label");
+      mirror.className = "mirror";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = rlCoMirrorOn();
+      cb.addEventListener("change", () => { try { GM_setValue(RL_CO_GM_NOTE_MIRROR_ON, cb.checked); } catch (_) {} });
+      mirror.appendChild(cb);
+      mirror.appendChild(document.createTextNode("Mirror to Personal tasks"));
+      label.appendChild(mirror);
+    } else if (mirrored) {
+      const tag = document.createElement("span");
+      tag.className = "rlCoNoteMirrorTag";
+      tag.textContent = "In Personal tasks";
+      tag.title = "This note is mirrored to the Personal tasks widget on the Rocketlane home page";
+      label.appendChild(tag);
+    }
+    box.appendChild(label);
+    if (editing || busy) {
+      const ta = document.createElement("textarea");
+      ta.className = "rlCoNoteInput";
+      ta.placeholder = "Only you and your team see this note.";
+      ta.value = rlCoState.noteDraft.has(id) ? rlCoState.noteDraft.get(id) : saved;
+      ta.disabled = busy;
+      ta.addEventListener("input", () => rlCoState.noteDraft.set(id, ta.value));
+      ta.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void rlCoSavePrivateNote(task, ta.value); }
+        else if (e.key === "Escape") { e.preventDefault(); rlCoState.noteEdit.delete(id); rlCoState.noteDraft.delete(id); rlCoRender(); }
+      });
+      box.appendChild(ta);
+      const tools = document.createElement("div");
+      tools.className = "rlCoNoteTools";
+      const mk = (labelText, cls, onClick) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "rlCoBtn small" + (cls ? " " + cls : "");
+        b.textContent = labelText;
+        b.disabled = busy;
+        b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onClick(); });
+        return b;
+      };
+      tools.appendChild(mk("Save", "primary", () => void rlCoSavePrivateNote(task, ta.value)));
+      tools.appendChild(mk("Cancel", "", () => { rlCoState.noteEdit.delete(id); rlCoState.noteDraft.delete(id); rlCoRender(); }));
+      if (saved) tools.appendChild(mk("Remove note", "", () => { if (confirm("Remove the private note" + (mirrored ? " and its Personal task" : "") + "?")) void rlCoSavePrivateNote(task, ""); }));
+      const hint = document.createElement("span");
+      hint.className = "hint";
+      hint.textContent = "Ctrl+Enter saves · Esc cancels";
+      tools.appendChild(hint);
+      box.appendChild(tools);
+    } else {
+      const txt = document.createElement("div");
+      txt.className = "rlCoNoteText";
+      txt.textContent = saved;
+      txt.title = "Click to edit";
+      txt.addEventListener("click", (e) => { e.stopPropagation(); rlCoState.noteEdit.add(id); rlCoRender(); const ta = document.querySelector('#rlCoPanel .rlCoTask[data-id="' + id + '"] textarea.rlCoNoteInput'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } });
+      box.appendChild(txt);
+    }
+    wrap.appendChild(box);
+    return wrap;
   }
 
   function rlCoCloseMenu() { if (rlCoMenuEl) { rlCoMenuEl.remove(); rlCoMenuEl = null; } }
@@ -3246,6 +3451,7 @@
           const id = rlCatTaskId(task);
           const row = document.createElement("div");
           row.className = "rlCoTask s-" + st.key + (depth ? " sub" : "");
+          row.dataset.id = id;
           if (depth) row.style.setProperty("--lvl", String(depth));
           const stBtn = document.createElement("button");
           stBtn.type = "button";
@@ -3263,6 +3469,7 @@
           row.appendChild(name);
           row.appendChild(due);
           row.appendChild(stBtn);
+          row.appendChild(rlCoNoteBlock(task, id));
           list.appendChild(row);
         }
         box.appendChild(list);
