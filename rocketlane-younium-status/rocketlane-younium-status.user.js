@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.16.0
+// @version      1.16.1
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2735,7 +2735,7 @@
   const RL_CO_GM_ACTIVE = "rlCoActive";
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
-  const RL_CO_STYLE_READY = "1.16.0";
+  const RL_CO_STYLE_READY = "1.16.1";
   const RL_CO_STATUS = [
     { v: 1, key: "todo", label: "To do" },
     { v: 2, key: "in_progress", label: "In progress" },
@@ -2800,61 +2800,75 @@
     style.textContent = `
       body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen > *:not([class*="action-bar__ActionBar"]):not(#rlCoPanel) { display: none !important; }
       #rlCoSwitchBtn.rlCoOn { background: rgba(3,105,161,0.12) !important; color: #0369a1 !important; border-color: rgba(3,105,161,0.35) !important; }
+      /* Light Rocketlane home chrome — same palette as the home PROJECT OWNER panel (rlHp*). */
       #rlCoPanel {
-        --co-text: rgba(255,255,255,0.94); --co-muted: rgba(255,255,255,0.66); --co-muted2: rgba(255,255,255,0.46);
-        --co-hair: rgba(255,255,255,0.08); --co-hair2: rgba(255,255,255,0.14);
-        --co-good: #34d399; --co-warn: #fbbf24; --co-bad: #fb7185; --co-accent: #7dd3fc;
-        box-sizing: border-box; margin: 12px 16px 24px; padding: 16px 18px 20px; border-radius: 14px;
-        background: #0f1424; border: 1px solid var(--co-hair2); color: var(--co-text);
-        font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; box-shadow: 0 12px 32px rgba(0,0,0,0.24);
+        --co-bg: rgba(255,255,255,0.78); --co-surface: rgba(255,255,255,0.78); --co-surface-2: rgba(255,255,255,0.72);
+        --co-text: rgba(15,23,42,0.90); --co-muted: rgba(15,23,42,0.74); --co-muted2: rgba(15,23,42,0.58);
+        --co-hair: rgba(15,23,42,0.08); --co-hair2: rgba(15,23,42,0.12);
+        --co-good: #059669; --co-warn: #b45309; --co-bad: #e11d48; --co-accent: #0369a1; --co-hold: rgba(148,163,184,0.95);
+        box-sizing: border-box; margin: 12px 16px 24px; padding: 14px 16px 16px; border-radius: 16px;
+        background: var(--co-bg); border: 1px solid var(--co-hair2); color: var(--co-text);
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.06);
+        backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        font: 13px/1.35 "Segoe UI", system-ui, sans-serif;
       }
       #rlCoPanel * { box-sizing: border-box; }
-      #rlCoPanel .rlCoHd { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-      #rlCoPanel .rlCoTitle { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--co-muted); display: flex; align-items: center; gap: 8px; }
+      #rlCoPanel .rlCoHd { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+      #rlCoPanel .rlCoTitle { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(15,23,42,0.82); display: flex; align-items: center; gap: 8px; }
       #rlCoPanel .rlCoTools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-      #rlCoPanel .rlCoBtn { appearance: none; border: 1px solid var(--co-hair2); background: rgba(255,255,255,0.06); color: var(--co-text); border-radius: 10px; padding: 7px 12px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; line-height: 1.2; }
-      #rlCoPanel .rlCoBtn:hover:not(:disabled) { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.22); }
+      #rlCoPanel .rlCoBtn { appearance: none; border: 1px solid var(--co-hair2); background: var(--co-surface-2); color: var(--co-text); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; line-height: 1.2; display: inline-flex; align-items: center; }
+      #rlCoPanel .rlCoBtn:hover:not(:disabled) { background: rgba(255,255,255,0.95); border-color: rgba(15,23,42,0.22); }
       #rlCoPanel .rlCoBtn:disabled { opacity: 0.45; cursor: not-allowed; }
-      #rlCoPanel .rlCoBtn.primary { background: rgba(125,211,252,0.14); border-color: rgba(125,211,252,0.36); color: var(--co-accent); }
-      #rlCoPanel .rlCoBtn.small { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
-      #rlCoPanel .rlCoStatus { color: var(--co-muted2); font-size: 12px; margin: 0 0 12px; }
+      #rlCoPanel .rlCoBtn.primary { border-color: rgba(3,105,161,0.35); background: linear-gradient(180deg, rgba(3,105,161,0.10), rgba(255,255,255,0.65)); color: var(--co-accent); }
+      #rlCoPanel .rlCoBtn.small { padding: 4px 10px; font-size: 11px; }
+      #rlCoPanel .rlCoStatus { color: var(--co-muted); font-size: 12px; margin: 0 0 12px; }
       #rlCoPanel .rlCoStatus.err { color: var(--co-bad); }
-      #rlCoPanel .rlCoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+      #rlCoPanel .rlCoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
       @media (max-width: 1100px) { #rlCoPanel .rlCoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 760px) { #rlCoPanel .rlCoGrid { grid-template-columns: 1fr; } }
-      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair2); background: rgba(255,255,255,0.03); border-radius: 14px; padding: 14px; display: grid; gap: 10px; min-width: 0; transition: border-color 200ms ease, background 200ms ease; }
-      #rlCoPanel .rlCoBox:hover { border-color: rgba(255,255,255,0.16); background: rgba(255,255,255,0.045); }
-      #rlCoPanel .rlCoBox.hasInProgress { border-color: rgba(251,191,36,0.45); background: rgba(251,191,36,0.08); }
-      #rlCoPanel .rlCoBox.hasInProgress:hover { border-color: rgba(251,191,36,0.6); background: rgba(251,191,36,0.12); }
-      #rlCoPanel .rlCoBox.allDone { border-color: rgba(52,211,153,0.45); background: rgba(52,211,153,0.10); }
-      #rlCoPanel .rlCoBox.allDone:hover { border-color: rgba(52,211,153,0.6); background: rgba(52,211,153,0.14); }
+      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair); background: var(--co-surface); border-radius: 12px; padding: 14px; display: grid; gap: 8px; min-width: 0; box-shadow: 0 1px 2px rgba(15,23,42,0.04); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+      #rlCoPanel .rlCoBox:hover { background: rgba(255,255,255,0.92); border-color: rgba(15,23,42,0.14); box-shadow: 0 4px 12px rgba(15,23,42,0.08); }
+      #rlCoPanel .rlCoBox.hasInProgress { border-color: rgba(180,83,9,0.28); }
+      #rlCoPanel .rlCoBox.allDone { border-color: rgba(5,150,105,0.30); }
       #rlCoPanel .rlCoBoxHd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-      #rlCoPanel .rlCoBoxName { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; cursor: pointer; user-select: none; min-width: 0; color: var(--co-text); }
-      #rlCoPanel .rlCoChev { display: inline-block; width: 1em; color: var(--co-muted2); transition: transform 200ms ease; font-size: 11px; }
+      #rlCoPanel .rlCoBoxName { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; cursor: pointer; user-select: none; min-width: 0; color: var(--co-text); }
+      #rlCoPanel .rlCoBoxName > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #rlCoPanel .rlCoChev { display: inline-block; width: 1em; color: var(--co-muted2); transition: transform 200ms ease; font-size: 10px; flex: 0 0 auto; }
       #rlCoPanel .rlCoBox.expanded .rlCoChev { transform: rotate(90deg); }
-      #rlCoPanel .rlCoMeta { color: var(--co-muted2); font-size: 12px; cursor: pointer; }
-      #rlCoPanel .rlCoTasks { display: grid; gap: 8px; }
-      #rlCoPanel .rlCoTask { display: grid; grid-template-columns: 150px 1fr auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair2); border-radius: 12px; padding: 8px 12px; background: rgba(255,255,255,0.03); }
+      #rlCoPanel .rlCoMetaRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      #rlCoPanel .rlCoMeta { color: var(--co-muted); font-size: 11px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #rlCoPanel .rlCoPct { font-size: 11px; color: var(--co-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      #rlCoPanel .rlCoProgress { height: 8px; width: 100%; border-radius: 999px; background: rgba(15,23,42,0.22); box-shadow: inset 0 0 0 1px rgba(15,23,42,0.06); overflow: hidden; }
+      #rlCoPanel .rlCoBar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #7dd3fc, #34d399); transition: width 400ms ease; }
+      #rlCoPanel .rlCoTasks { display: grid; gap: 6px; }
+      #rlCoPanel .rlCoTask { display: grid; grid-template-columns: 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: rgba(255,255,255,0.65); }
+      #rlCoPanel .rlCoTask:hover { background: rgba(255,255,255,0.95); border-color: rgba(15,23,42,0.14); }
       #rlCoPanel .rlCoTask.sub { margin-left: calc(var(--lvl, 1) * 18px); }
-      #rlCoPanel .rlCoTask.s-completed { border-color: rgba(52,211,153,0.35); background: rgba(52,211,153,0.06); }
-      #rlCoPanel .rlCoTask.s-in_progress { border-color: rgba(251,191,36,0.40); background: rgba(251,191,36,0.06); }
-      #rlCoPanel .rlCoTask.s-blocked { border-color: rgba(251,113,133,0.42); background: rgba(251,113,133,0.06); }
       #rlCoPanel.hideDone .rlCoTask.s-completed { display: none; }
-      #rlCoPanel .rlCoTaskName { min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; }
-      #rlCoPanel .rlCoTask.s-completed .rlCoTaskName { color: var(--co-muted); }
-      #rlCoPanel .rlCoTaskDue { color: var(--co-muted2); font-size: 11px; white-space: nowrap; }
-      #rlCoPanel .rlCoStBtn { width: 100%; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--co-hair2); background: rgba(255,255,255,0.04); color: var(--co-text); font: inherit; font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; white-space: nowrap; line-height: 1; }
-      #rlCoPanel .rlCoTask.s-completed .rlCoStBtn { border-color: rgba(52,211,153,0.45); background: rgba(52,211,153,0.10); }
-      #rlCoPanel .rlCoTask.s-in_progress .rlCoStBtn { border-color: rgba(251,191,36,0.55); background: rgba(251,191,36,0.10); }
-      #rlCoPanel .rlCoTask.s-blocked .rlCoStBtn { border-color: rgba(251,113,133,0.55); background: rgba(251,113,133,0.10); }
-      #rlCoPanel .rlCoStBtn .caret { color: var(--co-muted2); font-size: 10px; }
+      #rlCoPanel .rlCoTaskName { min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; color: var(--co-text); }
+      #rlCoPanel .rlCoTask.s-completed .rlCoTaskName { color: var(--co-muted2); }
+      #rlCoPanel .rlCoTaskDue { color: var(--co-muted); font-size: 11px; white-space: nowrap; }
+      /* Status chip doubles as the picker: hairline outline, neutral text, coloured dot carries the state (matches .rlhpTag). */
+      #rlCoPanel .rlCoStBtn { --co-dot: var(--co-hold); appearance: none; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 9px; border-radius: 999px; border: 1px solid var(--co-hair2); background: transparent; color: var(--co-muted); font: inherit; font-size: 11px; font-weight: 500; cursor: pointer; white-space: nowrap; line-height: 1.2; }
+      #rlCoPanel .rlCoStBtn::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--co-dot); flex: 0 0 auto; }
+      #rlCoPanel .rlCoStBtn:hover { border-color: rgba(15,23,42,0.24); background: rgba(15,23,42,0.04); }
+      #rlCoPanel .rlCoTask.s-completed .rlCoStBtn { --co-dot: var(--co-good); }
+      #rlCoPanel .rlCoTask.s-in_progress .rlCoStBtn { --co-dot: var(--co-warn); }
+      #rlCoPanel .rlCoTask.s-blocked .rlCoStBtn { --co-dot: var(--co-bad); }
+      #rlCoPanel .rlCoTask.s-todo .rlCoStBtn { --co-dot: var(--co-accent); }
+      #rlCoPanel .rlCoStBtn .caret { color: rgba(15,23,42,0.45); font-size: 9px; }
       #rlCoPanel .rlCoStBtn.busy { opacity: 0.6; cursor: progress; }
       #rlCoPanel .rlCoEmpty { color: var(--co-muted2); font-size: 12px; padding: 2px 0; }
-      .rlCoMenu { position: fixed; z-index: 99999; min-width: 150px; padding: 6px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.14); background: #141a2e; box-shadow: 0 12px 32px rgba(0,0,0,0.4); font: 12px/1.3 ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: rgba(255,255,255,0.94); }
-      .rlCoMenu button { display: block; width: 100%; text-align: left; padding: 7px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-      .rlCoMenu button:hover { background: rgba(255,255,255,0.08); }
-      .rlCoMenu button.selected { background: rgba(125,211,252,0.14); color: #7dd3fc; }
-    `;
+      .rlCoMenu { position: fixed; z-index: 99999; min-width: 170px; padding: 6px; border-radius: 12px; border: 1px solid rgba(15,23,42,0.12); background: #fff; box-shadow: 0 12px 32px rgba(15,23,42,0.16); font: 12px/1.3 "Segoe UI", system-ui, sans-serif; color: rgba(15,23,42,0.90); }
+      .rlCoMenu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; --co-dot: rgba(100,116,139,0.9); }
+      .rlCoMenu button::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--co-dot); flex: 0 0 auto; }
+      .rlCoMenu button.s-todo { --co-dot: #0369a1; }
+      .rlCoMenu button.s-in_progress { --co-dot: #b45309; }
+      .rlCoMenu button.s-completed { --co-dot: #059669; }
+      .rlCoMenu button.s-blocked { --co-dot: #e11d48; }
+      .rlCoMenu button:hover { background: rgba(15,23,42,0.05); }
+      .rlCoMenu button.selected { background: rgba(3,105,161,0.08); color: #0369a1; }
+        `;
     style.dataset.rlCoReady = RL_CO_STYLE_READY;
   }
 
@@ -3092,7 +3106,7 @@
     for (const s of RL_CO_STATUS) {
       const b = document.createElement("button");
       b.type = "button";
-      b.className = s.v === current ? "selected" : "";
+      b.className = "s-" + s.key + (s.v === current ? " selected" : "");
       b.textContent = s.label;
       b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); rlCoCloseMenu(); void rlCoSetTaskStatus(task, s.v); });
       menu.appendChild(b);
@@ -3194,16 +3208,31 @@
       bh.appendChild(bt);
       box.appendChild(bh);
 
-      if (!expanded) {
-        const meta = document.createElement("div");
-        meta.className = "rlCoMeta";
-        meta.textContent = total
-          ? total + " task(s) | " + completed + " completed" + (inProgress ? " | " + inProgress + " In progress" : "") + (blocked ? " | " + blocked + " Blocked" : "")
-          : "No tasks yet.";
-        meta.title = "Click to show tasks";
-        meta.addEventListener("click", toggle);
-        box.appendChild(meta);
-      } else {
+      const pct = total ? Math.round((completed / total) * 100) : 0;
+      const metaRow = document.createElement("div");
+      metaRow.className = "rlCoMetaRow";
+      const meta = document.createElement("div");
+      meta.className = "rlCoMeta";
+      meta.textContent = total
+        ? completed + " / " + total + " completed" + (inProgress ? " · " + inProgress + " In progress" : "") + (blocked ? " · " + blocked + " Blocked" : "")
+        : "No tasks yet.";
+      meta.title = expanded ? "Click to hide tasks" : "Click to show tasks";
+      meta.addEventListener("click", toggle);
+      const pctEl = document.createElement("div");
+      pctEl.className = "rlCoPct";
+      pctEl.textContent = pct + "%";
+      metaRow.appendChild(meta);
+      metaRow.appendChild(pctEl);
+      box.appendChild(metaRow);
+      const prog = document.createElement("div");
+      prog.className = "rlCoProgress";
+      const bar = document.createElement("div");
+      bar.className = "rlCoBar";
+      bar.style.width = pct + "%";
+      prog.appendChild(bar);
+      box.appendChild(prog);
+
+      if (expanded) {
         const list = document.createElement("div");
         list.className = "rlCoTasks";
         if (!total) {
@@ -3231,9 +3260,9 @@
           const due = document.createElement("div");
           due.className = "rlCoTaskDue";
           due.textContent = rlCoTaskDue(task);
-          row.appendChild(stBtn);
           row.appendChild(name);
           row.appendChild(due);
+          row.appendChild(stBtn);
           list.appendChild(row);
         }
         box.appendChild(list);
