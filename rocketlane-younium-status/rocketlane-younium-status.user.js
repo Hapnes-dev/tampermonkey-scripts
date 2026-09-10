@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.14
+// @version      1.14.15
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9302,7 +9302,7 @@
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
     // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
-    if (style && style.dataset.rlZdReady === "1.14.14") return;
+    if (style && style.dataset.rlZdReady === "1.14.15") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -9351,6 +9351,26 @@
         display: flex; align-items: center; justify-content: space-between;
         gap: 12px; margin-bottom: 12px;
       }
+      #rlZendeskCasesPanel .rlZdHeadActions { display: flex; gap: 8px; align-items: center; }
+      /* Floating mode (v1.14.15): a fixed window you drag by the header and resize
+         from the bottom-right corner; size and position persist in GM storage. */
+      #rlZendeskCasesPanel.rlZdFloating {
+        position: fixed; z-index: 11000; margin: 0; max-width: none;
+        min-width: 420px; min-height: 280px; max-height: 94vh;
+        display: flex; flex-direction: column;
+        resize: both; overflow: hidden;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.08), 0 18px 48px rgba(15,23,42,0.18);
+        background: rgba(255,255,255,0.96);
+      }
+      #rlZendeskCasesPanel.rlZdFloating .rlZdHead { cursor: move; user-select: none; flex: 0 0 auto; }
+      #rlZendeskCasesPanel.rlZdFloating .rlZdBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
+      #rlZendeskCasesPanel.rlZdFloating .rlZdTaskList { max-height: none; }
+      #rlZendeskCasesPanel.rlZdFloating::after {
+        content: ''; position: absolute; right: 4px; bottom: 4px; width: 10px; height: 10px;
+        border-right: 2px solid rgba(15,23,42,0.28); border-bottom: 2px solid rgba(15,23,42,0.28);
+        border-radius: 0 0 3px 0; pointer-events: none;
+      }
+      body.rlZdDragging { user-select: none; cursor: move; }
       #rlZendeskCasesPanel .rlZdTitle,
       #rlZendeskCasesPanel h2.rlZdTitle {
         margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
@@ -9655,7 +9675,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.14.14";
+    style.dataset.rlZdReady = "1.14.15";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
@@ -10650,6 +10670,93 @@
     }
   }
 
+  // ── Floating mode: drag by the header, resize from the corner, remembered. ──
+  const RL_ZD_GM_FLOAT = "rlZdFloat";
+  const RL_ZD_GM_FLOAT_GEOM = "rlZdFloatGeom";
+  function rlZdReadFloatGeom() {
+    try {
+      const j = JSON.parse(GM_getValue(RL_ZD_GM_FLOAT_GEOM, "") || "null");
+      if (j && Number.isFinite(j.left) && Number.isFinite(j.top) && Number.isFinite(j.width) && Number.isFinite(j.height)) return j;
+    } catch (_) {}
+    return null;
+  }
+  function rlZdSaveFloatGeom(panel) {
+    try {
+      const r = panel.getBoundingClientRect();
+      GM_setValue(RL_ZD_GM_FLOAT_GEOM, JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }));
+    } catch (_) {}
+  }
+  function rlZdDefaultFloatGeom() {
+    const width = Math.min(960, Math.round(window.innerWidth * 0.92));
+    const height = Math.round(window.innerHeight * 0.72);
+    return { left: Math.max(8, Math.round((window.innerWidth - width) / 2)), top: 80, width, height };
+  }
+  function rlZdClampGeom(g) {
+    const width = Math.max(420, Math.min(g.width, window.innerWidth - 16));
+    const height = Math.max(280, Math.min(g.height, window.innerHeight - 16));
+    const left = Math.max(0, Math.min(g.left, window.innerWidth - width));
+    const top = Math.max(0, Math.min(g.top, window.innerHeight - 60));
+    return { left, top, width, height };
+  }
+  function rlZdApplyFloating(panel, head, floating) {
+    panel.classList.toggle("rlZdFloating", !!floating);
+    const btn = head.querySelector(".rlZdFloatBtn");
+    if (btn) { btn.textContent = floating ? "Dock" : "Float"; btn.title = floating ? "Put the panel back in the page" : "Float the panel (drag by the header, resize from the corner)"; }
+    if (!floating) { panel.style.left = panel.style.top = panel.style.width = panel.style.height = ""; return; }
+    const g = rlZdClampGeom(rlZdReadFloatGeom() || rlZdDefaultFloatGeom());
+    panel.style.left = g.left + "px";
+    panel.style.top = g.top + "px";
+    panel.style.width = g.width + "px";
+    panel.style.height = g.height + "px";
+  }
+  function rlZdWireFloating(panel, head) {
+    let floating = GM_getValue(RL_ZD_GM_FLOAT, true) !== false;
+    rlZdApplyFloating(panel, head, floating);
+    const btn = head.querySelector(".rlZdFloatBtn");
+    if (btn) btn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      floating = !floating;
+      GM_setValue(RL_ZD_GM_FLOAT, floating);
+      rlZdApplyFloating(panel, head, floating);
+    });
+    // Drag by the header (buttons excluded).
+    let drag = null;
+    head.addEventListener("mousedown", (e) => {
+      if (!panel.classList.contains("rlZdFloating")) return;
+      if (e.button !== 0 || (e.target && e.target.closest && e.target.closest("button, a"))) return;
+      const r = panel.getBoundingClientRect();
+      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+      document.body.classList.add("rlZdDragging");
+      e.preventDefault();
+    });
+    const onMove = (e) => {
+      if (!drag) return;
+      const r = panel.getBoundingClientRect();
+      const g = rlZdClampGeom({ left: e.clientX - drag.dx, top: e.clientY - drag.dy, width: r.width, height: r.height });
+      panel.style.left = g.left + "px";
+      panel.style.top = g.top + "px";
+    };
+    const onUp = () => {
+      if (!drag) return;
+      drag = null;
+      document.body.classList.remove("rlZdDragging");
+      rlZdSaveFloatGeom(panel);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onUp);
+    // Resize from the corner (native CSS resize) — persist the new size.
+    let resizeTimer = null;
+    try {
+      const ro = new ResizeObserver(() => {
+        if (!panel.classList.contains("rlZdFloating") || !panel.isConnected) return;
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => { resizeTimer = null; rlZdSaveFloatGeom(panel); }, 250);
+      });
+      ro.observe(panel);
+    } catch (_) {}
+  }
+
   function rlZdMountPanel(mountCtx, projectId) {
     if (!mountCtx || !mountCtx.mountParent) return false;
     rlZdTeardownPanel();
@@ -10671,8 +10778,16 @@
     refreshBtn.className = "rlZdRefresh";
     refreshBtn.textContent = "Refresh";
     refreshBtn.title = "Refresh Zendesk cases";
+    const floatBtn = document.createElement("button");
+    floatBtn.type = "button";
+    floatBtn.className = "rlZdRefresh rlZdFloatBtn";
+    floatBtn.textContent = "Float";
+    const actions = document.createElement("div");
+    actions.className = "rlZdHeadActions";
+    actions.appendChild(floatBtn);
+    actions.appendChild(refreshBtn);
     head.appendChild(title);
-    head.appendChild(refreshBtn);
+    head.appendChild(actions);
 
     const body = document.createElement("div");
     body.className = "rlZdBody";
@@ -10684,6 +10799,7 @@
     parent.appendChild(panel);
     rlZdPanelEl = panel;
     // Light shell like the home panels (v1.14.14); no dark-surface class.
+    rlZdWireFloating(panel, head);
     // CSS body.rlZdCasesActive hides native siblings — no per-node display writes
     // on every ensure (that froze Rocketlane via MutationObserver).
     rlZdHideNativeStatusContent();
