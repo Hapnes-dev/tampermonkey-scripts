@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.17
+// @version      1.14.18
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3457,13 +3457,17 @@
   function rlZdBuildSearchQueries(plantId, plantName, plantFieldId) {
     const pid = String(plantId ?? "").trim();
     if (!pid) return [];
+    // { query, trusted }: a trusted query's hits are kept as they are — the
+    // plant-name phrase search is exactly what an agent types into Zendesk
+    // ("COOP EXTRA Verdal"), and Zendesk already matched the phrase somewhere
+    // in the ticket. Number queries are gated again client-side.
     const queries = [];
-    if (plantFieldId) queries.push("type:ticket custom_field_" + plantFieldId + ":" + pid);
-    queries.push("type:ticket subject:" + pid);
-    queries.push("type:ticket description:" + pid);
+    if (plantFieldId) queries.push({ query: "type:ticket custom_field_" + plantFieldId + ":" + pid, trusted: false });
+    queries.push({ query: "type:ticket subject:" + pid, trusted: false });
+    queries.push({ query: "type:ticket description:" + pid, trusted: false });
     const pname = String(plantName ?? "").trim();
     if (pname && pname.length >= 4) {
-      queries.push('type:ticket subject:"' + pname.replace(/"/g, "") + '"');
+      queries.push({ query: 'type:ticket "' + pname.replace(/"/g, "") + '"', trusted: true });
     }
     return queries;
   }
@@ -10695,23 +10699,26 @@
       if (!rlZdGuard(gen, projectId)) return;
       const queries = rlZdBuildSearchQueries(plantId, plantName, plantFieldId);
       const resultLists = [];
-      for (const query of queries) {
+      const trustedIds = new Set();
+      for (const { query, trusted } of queries) {
         const params = new URLSearchParams({
           query,
           sort_by: "updated_at",
           sort_order: "desc",
-          per_page: "50",
+          per_page: "100",
         });
         try {
           const json = await zendeskApiRequest("GET", "/search.json?" + params.toString());
-          resultLists.push(Array.isArray(json?.results) ? json.results : []);
+          const results = Array.isArray(json?.results) ? json.results : [];
+          if (trusted) for (const r of results) { if (r?.id != null) trustedIds.add(r.id); }
+          resultLists.push(results);
         } catch (e) {
           console.debug("[rlZd] search failed:", query, e?.message ?? e);
         }
       }
       if (!rlZdGuard(gen, projectId)) return;
       const merged = rlZdMergeSearchResults(resultLists);
-      const tickets = merged.filter((t) => rlZdTicketMatchesPlant(t, plantId, plantName, plantFieldId));
+      const tickets = merged.filter((t) => trustedIds.has(t.id) || rlZdTicketMatchesPlant(t, plantId, plantName, plantFieldId));
       if (merged.length !== tickets.length) {
         console.debug("[rlZd] dropped " + (merged.length - tickets.length) + " search hits that only mention " + plantId + " in passing");
       }
