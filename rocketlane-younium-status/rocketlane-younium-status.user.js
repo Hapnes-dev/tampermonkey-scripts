@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18.2
+// @version      1.18.3
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.17.3";
+  const RL_CO_STYLE_READY = "1.18.3";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2830,7 +2830,7 @@
       #rlCoPanel .rlCoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
       @media (max-width: 1100px) { #rlCoPanel .rlCoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 760px) { #rlCoPanel .rlCoGrid { grid-template-columns: 1fr; } }
-      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair); background: #f3f5f8; border-radius: 12px; padding: 14px; display: grid; gap: 8px; min-width: 0; box-shadow: 0 1px 2px rgba(15,23,42,0.04); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+      #rlCoPanel .rlCoBox { border: 1px solid var(--co-hair); background: #f3f5f8; border-radius: 12px; padding: 14px; display: grid; gap: 8px; min-width: 0; cursor: pointer; box-shadow: 0 1px 2px rgba(15,23,42,0.04); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
       #rlCoPanel .rlCoBox:hover { background: #eef1f5; border-color: rgba(15,23,42,0.14); box-shadow: 0 4px 12px rgba(15,23,42,0.08); }
       #rlCoPanel .rlCoBox.hasInProgress { border-color: rgba(180,83,9,0.28); }
       #rlCoPanel .rlCoBox.allDone { border-color: rgba(5,150,105,0.30); }
@@ -2845,7 +2845,7 @@
       #rlCoPanel .rlCoProgress { height: 8px; width: 100%; border-radius: 999px; background: rgba(15,23,42,0.22); box-shadow: inset 0 0 0 1px rgba(15,23,42,0.06); overflow: hidden; }
       #rlCoPanel .rlCoBar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #7dd3fc, #34d399); transition: width 400ms ease; }
       #rlCoPanel .rlCoTasks { display: grid; gap: 6px; }
-      #rlCoPanel .rlCoTask { display: grid; grid-template-columns: 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: #fff; }
+      #rlCoPanel .rlCoTask { cursor: default; display: grid; grid-template-columns: 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: #fff; }
       #rlCoPanel .rlCoTask:hover { background: #fff; border-color: rgba(15,23,42,0.14); }
       #rlCoPanel .rlCoTask.sub { margin-left: calc(var(--lvl, 1) * 18px); }
       #rlCoPanel.hideDone .rlCoTask.s-completed { display: none; }
@@ -3595,7 +3595,11 @@
       nm.appendChild(chev);
       nm.appendChild(nmText);
       const toggle = () => { rlCoSetExpanded(pid, g.key, !rlCoIsExpanded(pid, g.key)); rlCoRender(); };
-      nm.addEventListener("click", toggle);
+      box.addEventListener("click", (e) => {
+        if (e.target.closest("button, a, input, textarea, select, .rlCoTask, .rlCoNoteBox, .rlCoMenu")) return;
+        if (window.getSelection && String(window.getSelection()).trim()) return; // text selection, not a click
+        toggle();
+      });
       const bt = document.createElement("div");
       bt.className = "rlCoTools";
       if (total - completed > 0) bt.appendChild(mk("✓ Complete all", "small", () => void rlCoCompleteMany(g.tasks, "'" + g.name + "'"), "Mark all " + (total - completed) + " open task(s) in this category as completed"));
@@ -3613,7 +3617,6 @@
         ? completed + " / " + total + " completed" + (inProgress ? " · " + inProgress + " In progress" : "") + (blocked ? " · " + blocked + " Blocked" : "")
         : "No tasks yet.";
       meta.title = expanded ? "Click to hide tasks" : "Click to show tasks";
-      meta.addEventListener("click", toggle);
       const pctEl = document.createElement("div");
       pctEl.className = "rlCoPct";
       pctEl.textContent = pct + "%";
