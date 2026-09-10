@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.4
+// @version      1.21.5
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -11896,7 +11896,7 @@
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
     // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
-    if (style && style.dataset.rlZdReady === "1.14.16") return;
+    if (style && style.dataset.rlZdReady === "1.21.5") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -12076,13 +12076,18 @@
         font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
         color: var(--rlZd-muted); margin-bottom: 2px;
       }
+      /* v1.21.5: the message reads straight off the panel's gray — no white card inside it.
+         Messages are separated by a hairline instead of a border box. */
       #rlZendeskCasesPanel .rlZdMsg {
-        padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.85);
-        border: 1px solid var(--rlZd-hairline); font-size: 12px; line-height: 1.45;
+        padding: 8px 2px; border-radius: 0; background: transparent;
+        border: none; border-top: 1px solid var(--rlZd-hairline); font-size: 12px; line-height: 1.45;
         color: var(--rlZd-text) !important;
       }
+      #rlZendeskCasesPanel .rlZdMsg:first-child { border-top: none; padding-top: 2px; }
+      /* An internal note keeps a tint, but as a soft band rather than a card. */
       #rlZendeskCasesPanel .rlZdMsg.rlZdMsgInternal {
-        background: rgba(180,83,9,0.06); border-color: rgba(180,83,9,0.25);
+        background: rgba(180,83,9,0.06); border-radius: 8px; padding-left: 10px; padding-right: 10px;
+        box-shadow: inset 2px 0 0 rgba(180,83,9,0.45);
       }
       #rlZendeskCasesPanel .rlZdMsgHead {
         display: flex; gap: 8px; align-items: baseline; font-size: 11px; margin-bottom: 4px; flex-wrap: wrap;
@@ -12281,7 +12286,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.14.16";
+    style.dataset.rlZdReady = "1.21.5";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
