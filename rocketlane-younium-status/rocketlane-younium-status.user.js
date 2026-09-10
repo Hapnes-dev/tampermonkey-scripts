@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18.0
+// @version      1.18.1
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3609,6 +3609,8 @@
   const RL_PN_NOTES_FIELD_ID = 361059;      // "Project notes" (fieldName Projectnotes_361059)
   const RL_PN_MIN_INTERVAL_MS = 10 * 60 * 1000;
   const RL_PN_TICK_MS = 5 * 60 * 1000;
+  const RL_PN_HOME_MIN_MS = 20 * 1000;      // a home visit re-syncs unless one just finished
+  const RL_PN_GM_RELOADED = "rlPnReloadedAt"; // one widget reload per change burst
   let rlPnInflight = null;
 
   function rlPnEnabled() { return GM_getValue(RL_PN_GM_ENABLED, true) !== false; }
@@ -3650,10 +3652,11 @@
     if (name.length > 240) name = name.slice(0, 237) + "…";
     return name;
   }
-  async function rlPnMaybeSync(force) {
+  function rlPnIsHomePath() { return /^\/(home\/?)?$/.test(String(location.pathname || "")); }
+  async function rlPnMaybeSync(force, minMs) {
     if (!rlPnEnabled()) return null;
     const last = Number(GM_getValue(RL_PN_GM_LAST, 0)) || 0;
-    if (!force && Date.now() - last < RL_PN_MIN_INTERVAL_MS) return null;
+    if (!force && Date.now() - last < (minMs || RL_PN_MIN_INTERVAL_MS)) return null;
     if (rlPnInflight) return rlPnInflight;
     rlPnInflight = (async () => {
       try { return await rlPnSync(); }
@@ -3710,12 +3713,32 @@
       } catch (_) { stats.failed += 1; }
     }
     rlPnWriteMap(map);
-    if (stats.added || stats.updated || stats.removed || stats.failed) {
+    const changed = stats.added + stats.updated + stats.removed;
+    if (changed || stats.failed) {
       rlCatToast("Project notes → Personal tasks: " + stats.added + " added, " + stats.updated + " updated, " + stats.removed + " removed" + (stats.failed ? ", " + stats.failed + " failed" : "") + ".");
+    }
+    // The Personal tasks widget only reads its store on page load, so on the
+    // home page one reload shows what just changed. Guarded to once per burst.
+    if (changed && !stats.failed && rlPnIsHomePath()) {
+      const lastReload = Number(GM_getValue(RL_PN_GM_RELOADED, 0)) || 0;
+      if (Date.now() - lastReload > 2 * RL_PN_HOME_MIN_MS) {
+        try { GM_setValue(RL_PN_GM_RELOADED, Date.now()); } catch (_) {}
+        setTimeout(() => { try { location.reload(); } catch (_) {} }, 1200);
+      }
     }
     return stats;
   }
   rlWhenDomReady(() => {
+    // A visit to the home page syncs right away (short guard); elsewhere the slow schedule applies.
+    let lastPath = "";
+    const onPath = () => {
+      const path = String(location.pathname || "");
+      if (path === lastPath) return;
+      lastPath = path;
+      if (rlPnIsHomePath()) setTimeout(() => void rlPnMaybeSync(false, RL_PN_HOME_MIN_MS), 1500);
+    };
+    onPath();
+    setInterval(onPath, 1000);
     setTimeout(() => void rlPnMaybeSync(false), 8000);
     setInterval(() => void rlPnMaybeSync(false), RL_PN_TICK_MS);
   });
