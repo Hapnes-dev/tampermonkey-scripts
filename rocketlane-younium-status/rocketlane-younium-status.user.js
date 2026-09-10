@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.2
+// @version      1.21.3
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.21.2";
+  const RL_CO_STYLE_READY = "1.21.3";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2841,7 +2841,7 @@
       #${RL_PNOTE_PANEL_ID} .rlCoHd { margin-bottom: 10px; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteBox {
         position: relative; display: grid; gap: 8px; min-width: 0;
-        background: #f3f5f8 !important; border: 1px solid var(--co-hair) !important; border-radius: 12px; padding: 14px 14px 16px;
+        background: #f3f5f8 !important; border: 1px solid var(--co-hair) !important; border-radius: 12px; padding: 14px 14px 22px;
         box-shadow: 0 1px 2px rgba(15,23,42,0.04);
       }
       /* Drag the bottom edge of the box to resize it (v1.21.2); double-click toggles the two preset sizes. */
@@ -4542,9 +4542,16 @@
     try { GM_setValue(RL_PNOTE_GM_HEIGHT, n); } catch (_) {}
     return n;
   }
+  /** Whole text lines only: a height that is not a multiple of the line box slices the last line. */
+  function rlPnoteSnapHeight(ta, px) {
+    const lh = parseFloat(getComputedStyle(ta).lineHeight);
+    if (!Number.isFinite(lh) || lh < 4) return Math.round(px);
+    const lines = Math.max(Math.round(RL_PNOTE_MIN_H / lh), Math.round(px / lh));
+    return Math.round(lines * lh);
+  }
   function rlPnoteApplyHeight(panel, px) {
     const ta = panel && panel.querySelector("textarea.rlPnoteInput");
-    if (ta) ta.style.height = px + "px";
+    if (ta) ta.style.height = rlPnoteSnapHeight(ta, px) + "px";
     const btn = panel && panel.querySelector(".rlPnoteSize");
     if (btn) {
       const tall = px > RL_PNOTE_MIN_H + 8;
@@ -4620,7 +4627,7 @@
     let dragFrom = 0, dragH = 0;
     const onMove = (e) => {
       const next = Math.max(RL_PNOTE_MIN_H, Math.min(dragH + (e.clientY - dragFrom), 1200));
-      ta.style.height = next + "px";
+      ta.style.height = rlPnoteSnapHeight(ta, next) + "px";
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
