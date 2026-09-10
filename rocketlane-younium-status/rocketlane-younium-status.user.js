@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.1
+// @version      1.17.2
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2735,7 +2735,8 @@
   const RL_CO_GM_ACTIVE = "rlCoActive";
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
-  const RL_CO_STYLE_READY = "1.17.0";
+  const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
+  const RL_CO_STYLE_READY = "1.17.2";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2877,6 +2878,23 @@
       #rlCoPanel .rlCoNoteTools .hint { font-size: 11px; color: var(--co-muted2); margin-left: auto; }
       #rlCoPanel .rlCoNoteMirrorTag { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: #8a6d08; }
       #rlCoPanel .rlCoNoteMirrorTag::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #b45309; }
+      /* Private notes window above the grid (v1.17.2) — the tracker's collapsible Notes section. */
+      #rlCoPanel .rlCoNotesSec { margin: 0 0 14px; border: 1px solid rgba(138,109,8,0.28); border-radius: 12px; background: #fdf6dc; padding: 12px 14px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+      #rlCoPanel .rlCoNotesHd { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+      #rlCoPanel .rlCoNotesHd h3 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #8a6d08; }
+      #rlCoPanel .rlCoNotesHd .count { font-size: 11px; color: #8a6d08; opacity: 0.85; }
+      #rlCoPanel .rlCoNotesHd .rlCoChev { color: #8a6d08; }
+      #rlCoPanel .rlCoNotesSec.expanded .rlCoNotesHd .rlCoChev { transform: rotate(90deg); }
+      #rlCoPanel .rlCoNotesList { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+      @media (max-width: 1100px) { #rlCoPanel .rlCoNotesList { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+      @media (max-width: 760px) { #rlCoPanel .rlCoNotesList { grid-template-columns: 1fr; } }
+      #rlCoPanel .rlCoNoteCard { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; background: #fffbe8; border: 1px solid rgba(138,109,8,0.28); min-width: 0; cursor: pointer; }
+      #rlCoPanel .rlCoNoteCard:hover { border-color: rgba(138,109,8,0.5); }
+      #rlCoPanel .rlCoNoteCard .who { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: rgba(15,23,42,0.74); min-width: 0; }
+      #rlCoPanel .rlCoNoteCard .who b { font-weight: 650; color: rgba(15,23,42,0.9); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #rlCoPanel .rlCoNoteCard .who .cat { flex: 0 0 auto; color: #8a6d08; }
+      #rlCoPanel .rlCoNoteCard .txt { font-size: 12.5px; color: rgba(15,23,42,0.88); white-space: pre-wrap; overflow-wrap: anywhere; }
+      #rlCoPanel .rlCoNoteCard.done .txt, #rlCoPanel .rlCoNoteCard.done .who b { color: rgba(15,23,42,0.5); text-decoration: line-through; }
       .rlCoMenu { position: fixed; z-index: 99999; min-width: 170px; padding: 6px; border-radius: 12px; border: 1px solid rgba(15,23,42,0.12); background: #fff; box-shadow: 0 12px 32px rgba(15,23,42,0.16); font: 12px/1.3 "Segoe UI", system-ui, sans-serif; color: rgba(15,23,42,0.90); }
       .rlCoMenu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 10px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; --co-dot: rgba(100,116,139,0.9); }
       .rlCoMenu button::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--co-dot); flex: 0 0 auto; }
@@ -3409,6 +3427,61 @@
       : rlCoState.loading ? "Loading phases and tasks…"
       : rlCoState.note || (groups.length + " categor" + (groups.length === 1 ? "y" : "ies") + " · " + allTasks.length + " task(s) · " + doneAll + " completed · " + openAll + " open");
     panel.appendChild(status);
+
+    // Private notes window (v1.17.2): every task that carries a note, above the grid, like the tracker's Notes section.
+    const noted = [];
+    for (const g of groups) for (const t of g.tasks) { const n = rlCoPrivateNoteOf(t); if (n) noted.push({ task: t, group: g, note: n }); }
+    if (noted.length) {
+      const collapsed = GM_getValue(RL_CO_GM_NOTES_COLLAPSED, false) === true;
+      const sec = document.createElement("section");
+      sec.className = "rlCoNotesSec" + (collapsed ? "" : " expanded");
+      const nh = document.createElement("div");
+      nh.className = "rlCoNotesHd";
+      const chev = document.createElement("span");
+      chev.className = "rlCoChev";
+      chev.textContent = "▶";
+      const h3 = document.createElement("h3");
+      h3.textContent = "Private notes";
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = noted.length + " note" + (noted.length === 1 ? "" : "s") + (collapsed ? " · click to show" : "");
+      nh.appendChild(chev); nh.appendChild(h3); nh.appendChild(count);
+      nh.addEventListener("click", () => { try { GM_setValue(RL_CO_GM_NOTES_COLLAPSED, !collapsed); } catch (_) {} rlCoRender(); });
+      sec.appendChild(nh);
+      if (!collapsed) {
+        const list = document.createElement("div");
+        list.className = "rlCoNotesList";
+        const mirrorMap = rlCoReadMirrorMap();
+        for (const { task, group, note } of noted) {
+          const tid = rlCatTaskId(task);
+          const card = document.createElement("div");
+          card.className = "rlCoNoteCard" + (rlCoStatusOf(task).v === 3 ? " done" : "");
+          card.title = "Click to edit this note in its category";
+          const who = document.createElement("div");
+          who.className = "who";
+          const b = document.createElement("b");
+          b.textContent = rlCatTaskName(task) || "(Untitled task)";
+          const cat = document.createElement("span");
+          cat.className = "cat";
+          cat.textContent = group.name + (mirrorMap[tid]?.personalTaskId ? " · In Personal tasks" : "");
+          who.appendChild(b); who.appendChild(cat);
+          const txt = document.createElement("div");
+          txt.className = "txt";
+          txt.textContent = note;
+          card.appendChild(who); card.appendChild(txt);
+          card.addEventListener("click", () => {
+            rlCoSetExpanded(pid, group.key, true);
+            rlCoState.noteEdit.add(tid);
+            rlCoRender();
+            const row = document.querySelector('#rlCoPanel .rlCoTask[data-id="' + tid + '"]');
+            if (row) { row.scrollIntoView({ block: "center", behavior: "smooth" }); const ta = row.querySelector("textarea.rlCoNoteInput"); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }
+          });
+          list.appendChild(card);
+        }
+        sec.appendChild(list);
+      }
+      panel.appendChild(sec);
+    }
 
     const grid = document.createElement("div");
     grid.className = "rlCoGrid";
