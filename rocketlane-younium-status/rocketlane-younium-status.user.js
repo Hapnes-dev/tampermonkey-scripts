@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.0
+// @version      1.17.1
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3002,6 +3002,7 @@
       rlCoState.phases = phases;
       rlCoState.tasks = tasks;
       rlCoState.loading = false;
+      rlCoReconcileMirrors(tasks).catch(() => {});
     } catch (e) {
       if (gen !== rlCoState.gen) return;
       rlCoState.loading = false;
@@ -3071,6 +3072,8 @@
       if (now !== value) throw new Error("Rocketlane accepted the update but the task is still status " + now + ".");
       const idx = rlCoState.tasks.findIndex((t) => rlCatTaskId(t) === id);
       if (idx >= 0) rlCoState.tasks[idx] = Object.assign({}, rlCoState.tasks[idx], after);
+      try { await rlCoSyncMirrorForStatus(idx >= 0 ? rlCoState.tasks[idx] : task, value); }
+      catch (e) { rlCatToast("Status saved, but the Personal task mirror failed: " + (e?.message || e)); }
       return true;
     } catch (e) {
       rlCatToast("Status change failed: " + (e?.message || e));
@@ -3164,7 +3167,7 @@
       rlCoWriteMirrorMap(map);
       return "removed";
     }
-    if (!rlCoMirrorOn()) return "off";
+    if (!rlCoMirrorOn() || rlCoStatusOf(task).v === 3) return "off";
     const personalTaskName = rlCoPersonalTaskName(task, text);
     if (entry?.personalTaskId) {
       try {
@@ -3181,6 +3184,42 @@
     map[id] = { personalTaskId };
     rlCoWriteMirrorMap(map);
     return "created";
+  }
+  /** A completed task has no business in Personal tasks; a reopened task with a note gets its mirror back. */
+  async function rlCoSyncMirrorForStatus(task, statusValue) {
+    const id = rlCatTaskId(task);
+    if (!id) return;
+    const map = rlCoReadMirrorMap();
+    const entry = map[id];
+    if (Number(statusValue) === 3) {
+      if (!entry?.personalTaskId) return;
+      try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(entry.personalTaskId), null, null); }
+      catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) throw e; }
+      delete map[id];
+      rlCoWriteMirrorMap(map);
+      rlCatToast("Task completed — Personal task removed.");
+      return;
+    }
+    if (!entry && rlCoMirrorOn()) {
+      const note = rlCoPrivateNoteOf(task);
+      if (note) { const r = await rlCoMirrorNote(task, note); if (r === "created") rlCatToast("Task reopened — Personal task added back."); }
+    }
+  }
+  /** After a load: every mirrored task that is now completed loses its personal task. Quiet, best effort. */
+  async function rlCoReconcileMirrors(tasks) {
+    const map = rlCoReadMirrorMap();
+    const ids = Object.keys(map);
+    if (!ids.length) return;
+    let changed = false;
+    for (const id of ids) {
+      const t = tasks.find((x) => rlCatTaskId(x) === id);
+      if (!t || rlCoStatusOf(t).v !== 3) continue;
+      try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(map[id].personalTaskId), null, null); }
+      catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) continue; }
+      delete map[id];
+      changed = true;
+    }
+    if (changed) { rlCoWriteMirrorMap(map); rlCoRender(); }
   }
   async function rlCoSavePrivateNote(task, noteText) {
     const id = rlCatTaskId(task);
