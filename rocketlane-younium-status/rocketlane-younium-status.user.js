@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.21
+// @version      1.14.22
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3456,19 +3456,48 @@
    * description-only mention (v1.14.17/18) pulled in 42 passing mentions for
    * plant 8013, so it is gone (v1.14.19).
    */
+  // Chain / brand words that never identify a plant on their own: a phrase
+  // search for "Bunnpris" alone returns 4 244 tickets (measured 2026-09-10).
+  const RL_ZD_GENERIC_NAME_WORDS = new Set([
+    "coop", "bunnpris", "meny", "mega", "extra", "obs", "prix", "spar", "eurospar", "rema", "1000",
+    "kiwi", "joker", "europris", "matkroken", "narbutikken", "storcash", "marked", "butikk", "ny",
+    "nye", "as", "asa", "kiona", "iwmac", "bygg", "byggmakker", "xtra",
+  ]);
+  /**
+   * Split the plant name into the chain words and the distinctive rest:
+   * "Bunnpris Møllendalsbakken" → distinct "Møllendalsbakken"; "COOP EXTRA
+   * Verdal" → "Verdal"; "Bunnpris" → "" (generic only, never searched alone).
+   */
+  function rlZdDistinctName(plantName) {
+    const words = String(plantName ?? "").replace(/[():,]/g, " ").split(/\s+/).filter(Boolean);
+    const keep = words.filter((w) => !RL_ZD_GENERIC_NAME_WORDS.has(rlZdNormText(w)));
+    return keep.join(" ").trim();
+  }
+  /**
+   * Zendesk search queries (v1.14.22). { query, trusted }: a trusted query's
+   * hits are kept as they are; untrusted hits are gated again client-side.
+   *   - The plain plant number is trusted when it has 5+ digits ("10223":
+   *     17 hits, all this plant) and gated when shorter ("8013": 55 hits full
+   *     of order and phone numbers) — then only the Plant ID field and the
+   *     subject count.
+   *   - The full plant name phrase and its distinctive part
+   *     ("Bunnpris Møllendalsbakken", "Møllendalsbakken") are trusted, exactly
+   *     what an agent types into Zendesk; a chain name alone is never searched.
+   */
   function rlZdBuildSearchQueries(plantId, plantName, plantFieldId) {
     const pid = String(plantId ?? "").trim();
     if (!pid) return [];
-    // { query, trusted }: a trusted query's hits are kept as they are — the
-    // plant-name phrase search is exactly what an agent types into Zendesk
-    // ("COOP EXTRA Verdal"), and Zendesk already matched the phrase somewhere
-    // in the ticket. Number queries are gated again client-side.
     const queries = [];
     if (plantFieldId) queries.push({ query: "type:ticket custom_field_" + plantFieldId + ":" + pid, trusted: false });
-    queries.push({ query: "type:ticket subject:" + pid, trusted: false });
-    const pname = String(plantName ?? "").trim();
-    if (pname && pname.length >= 4) {
-      queries.push({ query: 'type:ticket "' + pname.replace(/"/g, "") + '"', trusted: true });
+    if (pid.length >= 5) queries.push({ query: 'type:ticket "' + pid + '"', trusted: true });
+    else queries.push({ query: "type:ticket subject:" + pid, trusted: false });
+    const pname = String(plantName ?? "").trim().replace(/"/g, "");
+    const distinct = rlZdDistinctName(pname);
+    if (pname && distinct && pname.length >= 4) {
+      queries.push({ query: 'type:ticket "' + pname + '"', trusted: true });
+      if (distinct.length >= 5 && rlZdNormText(distinct) !== rlZdNormText(pname)) {
+        queries.push({ query: 'type:ticket "' + distinct + '"', trusted: true });
+      }
     }
     return queries;
   }
@@ -3496,7 +3525,7 @@
     const subject = String(t?.subject ?? t?.raw_subject ?? "");
     if (rlZdHasPlantNumber(subject, pid)) return true;
     const n = rlZdNormText(pname);
-    if (n && n.length >= 4 && rlZdNormText(subject).includes(n)) return true;
+    if (n && n.length >= 4 && rlZdDistinctName(pname) && rlZdNormText(subject).includes(n)) return true;
     return false;
   }
 
