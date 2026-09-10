@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18.1
+// @version      1.18.2
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3172,6 +3172,91 @@
     if (name.length > 240) name = name.slice(0, 237) + "…";
     return name;
   }
+  // ---- Personal tasks through Rocketlane's own Redux store (v1.18.2) ----
+  // The home "Personal tasks" widget renders from the store and only reads the
+  // API on page load, so a task created behind its back is invisible until a
+  // reload. Dispatching the app's own saga actions ("personalTasks/create…",
+  // "…/updatePersonalTaskSagaAction", "…/deletePersonalTaskSagaAction") makes
+  // the saga do the request and the widget update live. Found by walking the
+  // React fiber tree from #root to the Provider's `store` prop; when that
+  // fails (isolated world, markup change) the direct API calls remain.
+  let rlPtStoreCache = null;
+  function rlPtStore() {
+    if (rlPtStoreCache && typeof rlPtStoreCache.getState === "function") return rlPtStoreCache;
+    try {
+      const root = document.getElementById("root") || document.body;
+      const seeds = [];
+      for (const el of [root, root.firstElementChild]) {
+        if (!el) continue;
+        for (const k of Object.keys(el)) if (k.startsWith("__reactContainer$") || k.startsWith("__reactFiber$")) seeds.push(el[k]);
+      }
+      const seen = new Set();
+      const stack = seeds.slice();
+      let n = 0;
+      while (stack.length && n < 30000) {
+        const f = stack.pop();
+        if (!f || seen.has(f)) continue;
+        seen.add(f); n += 1;
+        const pr = f.memoizedProps;
+        if (pr && pr.store && typeof pr.store.dispatch === "function" && typeof pr.store.getState === "function") { rlPtStoreCache = pr.store; return pr.store; }
+        if (f.child) stack.push(f.child);
+        if (f.sibling) stack.push(f.sibling);
+      }
+    } catch (_) {}
+    return null;
+  }
+  function rlPtStoreData(store) {
+    try { const d = store.getState()?.personalTasks?.data; return Array.isArray(d) ? d : []; } catch (_) { return []; }
+  }
+  const rlPtSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function rlPtWaitFor(pred, ms) {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { const v = pred(); if (v) return v; await rlPtSleep(150); }
+    return null;
+  }
+  /** Create a personal task; returns its id. Store first (live widget), API otherwise. */
+  async function rlPtCreate(personalTaskName) {
+    const store = rlPtStore();
+    if (store) {
+      const before = new Set(rlPtStoreData(store).map((t) => t.personalTaskId));
+      try {
+        store.dispatch({ type: "personalTasks/createPersonalTask", payload: { personalTaskName } });
+        const hit = await rlPtWaitFor(() => rlPtStoreData(store).find((t) => !before.has(t.personalTaskId) && t.personalTaskName === personalTaskName), 6000);
+        if (hit?.personalTaskId) return hit.personalTaskId;
+      } catch (_) {}
+    }
+    const created = await gmRocketlaneRequest("POST", "/personal-tasks", null, { personalTaskName });
+    const pt = created?.data ?? created;
+    const id = pt?.personalTaskId ?? pt?.id ?? "";
+    if (!id) throw new Error("Rocketlane did not return a personal task id.");
+    return id;
+  }
+  /** Rename; throws "HTTP 404" when the task is gone so callers can recreate. */
+  async function rlPtRename(personalTaskId, personalTaskName) {
+    const store = rlPtStore();
+    if (store && rlPtStoreData(store).some((t) => String(t.personalTaskId) === String(personalTaskId))) {
+      try {
+        store.dispatch({ type: "personalTasks/updatePersonalTaskSagaAction", payload: { id: personalTaskId, data: { personalTaskName } } });
+        const ok = await rlPtWaitFor(() => rlPtStoreData(store).some((t) => String(t.personalTaskId) === String(personalTaskId) && t.personalTaskName === personalTaskName), 4000);
+        if (ok) { await rlPtSleep(600); if (rlPtStoreData(store).some((t) => String(t.personalTaskId) === String(personalTaskId) && t.personalTaskName === personalTaskName)) return; }
+      } catch (_) {}
+    }
+    await gmRocketlaneRequest("PUT", "/personal-tasks/" + encodeURIComponent(personalTaskId), null, { personalTaskName });
+  }
+  /** Delete; a task that is already gone counts as deleted. */
+  async function rlPtDelete(personalTaskId) {
+    const store = rlPtStore();
+    if (store && rlPtStoreData(store).some((t) => String(t.personalTaskId) === String(personalTaskId))) {
+      try {
+        store.dispatch({ type: "personalTasks/deletePersonalTaskSagaAction", payload: { personalTaskId } });
+        const gone = await rlPtWaitFor(() => !rlPtStoreData(store).some((t) => String(t.personalTaskId) === String(personalTaskId)), 4000);
+        if (gone) return;
+      } catch (_) {}
+    }
+    try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(personalTaskId), null, null); }
+    catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) throw e; }
+  }
+
   /** Keep the home "Personal tasks" widget in step with the note: create, rename, or remove the mirrored task. */
   async function rlCoMirrorNote(task, noteText) {
     const id = rlCatTaskId(task);
@@ -3179,9 +3264,7 @@
     const entry = map[id];
     const text = String(noteText ?? "").trim();
     if (!text) {
-      if (entry?.personalTaskId) {
-        try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(entry.personalTaskId), null, null); } catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) throw e; }
-      }
+      if (entry?.personalTaskId) await rlPtDelete(entry.personalTaskId);
       delete map[id];
       rlCoWriteMirrorMap(map);
       return "removed";
@@ -3190,16 +3273,13 @@
     const personalTaskName = rlCoPersonalTaskName(task, text);
     if (entry?.personalTaskId) {
       try {
-        await gmRocketlaneRequest("PUT", "/personal-tasks/" + encodeURIComponent(entry.personalTaskId), null, { personalTaskName });
+        await rlPtRename(entry.personalTaskId, personalTaskName);
         return "updated";
       } catch (e) {
         if (!/HTTP 404/.test(String(e?.message || e))) throw e; // gone from the widget — recreate
       }
     }
-    const created = await gmRocketlaneRequest("POST", "/personal-tasks", null, { personalTaskName });
-    const pt = created?.data ?? created;
-    const personalTaskId = pt?.personalTaskId ?? pt?.id ?? "";
-    if (!personalTaskId) throw new Error("Rocketlane did not return a personal task id.");
+    const personalTaskId = await rlPtCreate(personalTaskName);
     map[id] = { personalTaskId };
     rlCoWriteMirrorMap(map);
     return "created";
@@ -3212,8 +3292,7 @@
     const entry = map[id];
     if (Number(statusValue) === 3) {
       if (!entry?.personalTaskId) return;
-      try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(entry.personalTaskId), null, null); }
-      catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) throw e; }
+      await rlPtDelete(entry.personalTaskId);
       delete map[id];
       rlCoWriteMirrorMap(map);
       rlCatToast("Task completed — Personal task removed.");
@@ -3233,8 +3312,7 @@
     for (const id of ids) {
       const t = tasks.find((x) => rlCatTaskId(x) === id);
       if (!t || rlCoStatusOf(t).v !== 3) continue;
-      try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(map[id].personalTaskId), null, null); }
-      catch (e) { if (!/HTTP 404/.test(String(e?.message || e))) continue; }
+      try { await rlPtDelete(map[id].personalTaskId); } catch (_) { continue; }
       delete map[id];
       changed = true;
     }
@@ -3610,7 +3688,6 @@
   const RL_PN_MIN_INTERVAL_MS = 10 * 60 * 1000;
   const RL_PN_TICK_MS = 5 * 60 * 1000;
   const RL_PN_HOME_MIN_MS = 20 * 1000;      // a home visit re-syncs unless one just finished
-  const RL_PN_GM_RELOADED = "rlPnReloadedAt"; // one widget reload per change burst
   let rlPnInflight = null;
 
   function rlPnEnabled() { return GM_getValue(RL_PN_GM_ENABLED, true) !== false; }
@@ -3676,55 +3753,64 @@
       const note = rlPnNoteOf(p);
       if (note) wanted.set(String(p.projectId), rlPnTaskName(p, note));
     }
-    const stats = { projects: projects.length, noted: wanted.size, added: 0, updated: 0, removed: 0, failed: 0 };
+    const stats = { projects: projects.length, noted: wanted.size, added: 0, updated: 0, removed: 0, adopted: 0, failed: 0 };
     const is404 = (e) => /HTTP 404/.test(String(e?.message || e));
+    // What the widget really holds right now. The map is the plan, this is the truth:
+    // a task with exactly the wanted name is adopted instead of created (so a lost or
+    // stale map never duplicates), extra exact copies are removed, and a mapped task
+    // that vanished is marked gone so it is not resurrected until the note changes.
+    let existing = [];
+    try { const r = await gmRocketlaneGet("/personal-tasks"); existing = Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : []; } catch (_) {}
+    const byName = new Map();
+    for (const t of existing) { const nm = String(t?.personalTaskName ?? ""); if (!byName.has(nm)) byName.set(nm, []); byName.get(nm).push(t); }
+    const alive = new Set(existing.map((t) => String(t.personalTaskId)));
+    if (existing.length) {
+      for (const pid of Object.keys(map)) { const e = map[pid]; if (e?.personalTaskId && !e.gone && !alive.has(String(e.personalTaskId))) map[pid] = Object.assign({}, e, { gone: true }); }
+    }
     // 1. Projects that dropped out (completed, note cleared, no longer mine) lose their personal task.
     for (const pid of Object.keys(map)) {
       if (wanted.has(pid)) continue;
       const e = map[pid];
       try {
-        if (e?.personalTaskId && !e.gone) {
-          try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(e.personalTaskId), null, null); stats.removed += 1; }
-          catch (err) { if (!is404(err)) throw err; }
-        }
+        if (e?.personalTaskId && !e.gone) { await rlPtDelete(e.personalTaskId); stats.removed += 1; }
         delete map[pid];
       } catch (_) { stats.failed += 1; }
     }
     // 2. Create or rename. Unchanged names are skipped, which also keeps hand-deleted tasks dead.
     for (const [pid, name] of wanted) {
       const hash = rlPnHash(name);
-      const e = map[pid];
-      if (e && e.hash === hash) continue;
+      let e = map[pid];
+      const same = (byName.get(name) || []).filter((t) => t?.status === "open" || t?.status === "To do" || !t?.status);
+      if ((!e || e.gone) && same.length) {
+        // Adopt the first exact match, drop the other exact copies (they can only be ours).
+        e = map[pid] = { personalTaskId: same[0].personalTaskId, hash };
+        stats.adopted += 1;
+        for (const dup of same.slice(1)) { try { await rlPtDelete(dup.personalTaskId); stats.removed += 1; } catch (_) {} }
+        continue;
+      }
+      if (e && e.hash === hash) {
+        for (const dup of same.filter((t) => String(t.personalTaskId) !== String(e.personalTaskId))) { try { await rlPtDelete(dup.personalTaskId); stats.removed += 1; } catch (_) {} }
+        continue;
+      }
       try {
         if (e?.personalTaskId && !e.gone) {
           try {
-            await gmRocketlaneRequest("PUT", "/personal-tasks/" + encodeURIComponent(e.personalTaskId), null, { personalTaskName: name });
+            await rlPtRename(e.personalTaskId, name);
             map[pid] = { personalTaskId: e.personalTaskId, hash };
             stats.updated += 1;
             continue;
           } catch (err) { if (!is404(err)) throw err; }
         }
-        const created = await gmRocketlaneRequest("POST", "/personal-tasks", null, { personalTaskName: name });
-        const pt = created?.data ?? created;
-        const id = pt?.personalTaskId ?? pt?.id ?? "";
-        if (!id) throw new Error("no personal task id in the response");
+        const id = await rlPtCreate(name);
         map[pid] = { personalTaskId: id, hash };
         stats.added += 1;
       } catch (_) { stats.failed += 1; }
     }
     rlPnWriteMap(map);
     const changed = stats.added + stats.updated + stats.removed;
+    try { console.info("[Rocketlane improvements] project notes → personal tasks", JSON.stringify(stats), "map", Object.keys(map).length); } catch (_) {}
     if (changed || stats.failed) {
       rlCatToast("Project notes → Personal tasks: " + stats.added + " added, " + stats.updated + " updated, " + stats.removed + " removed" + (stats.failed ? ", " + stats.failed + " failed" : "") + ".");
-    }
-    // The Personal tasks widget only reads its store on page load, so on the
-    // home page one reload shows what just changed. Guarded to once per burst.
-    if (changed && !stats.failed && rlPnIsHomePath()) {
-      const lastReload = Number(GM_getValue(RL_PN_GM_RELOADED, 0)) || 0;
-      if (Date.now() - lastReload > 2 * RL_PN_HOME_MIN_MS) {
-        try { GM_setValue(RL_PN_GM_RELOADED, Date.now()); } catch (_) {}
-        setTimeout(() => { try { location.reload(); } catch (_) {} }, 1200);
-      }
     }
     return stats;
   }
