@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.18.3
-// @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
+// @version      1.19.0
+// @description  Rocketlane improvements in one script (v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.18.3";
+  const RL_CO_STYLE_READY = "1.19.0";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2770,8 +2770,11 @@
     const sw = rlCoSwitcher();
     if (sw && !sw.querySelector("#rlCoSwitchBtn")) return true;
     if (rlCoIsActive()) {
+      const host = rlCoHost();
       const p = document.getElementById("rlCoPanel");
-      if (!p || !p.isConnected) return !!rlCoHost();
+      if (!p || !p.isConnected) return !!host;
+      // The note panel has to stay the immediate previous sibling of the grid.
+      if (host && !rlPnotePanelPrecedesCategories(document.getElementById(RL_PNOTE_PANEL_ID), p, host)) return true;
     }
     return false;
   }
@@ -2800,12 +2803,16 @@
       style.id = "rlCoStyles";
       (document.head || document.documentElement).appendChild(style);
     }
+    // The Project note panel and the Categories panel share one shell, so every
+    // shared descendant rule is repeated per id: "#a,#b .child" would bind the
+    // descendant to #b only and style #a itself (the v1.14.1 sliver bug).
+    const sel = (suffix) => rlPnotePanelSelector(suffix, RL_PNOTE_SHELL_ROOTS);
     style.textContent = `
-      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen > *:not([class*="action-bar__ActionBar"]):not(#rlCoPanel) { display: none !important; }
+      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen > *:not([class*="action-bar__ActionBar"]):not(#rlCoPanel):not(#${RL_PNOTE_PANEL_ID}) { display: none !important; }
       body.rlCoActive #rl-floating-chat-panel { display: none !important; } /* the timeline's floating chat stays off the overview (v1.17.3) */
       #rlCoSwitchBtn.rlCoOn { background: rgba(3,105,161,0.12) !important; color: #0369a1 !important; border-color: rgba(3,105,161,0.35) !important; }
       /* Light Rocketlane home chrome — same palette as the home PROJECT OWNER panel (rlHp*). */
-      #rlCoPanel {
+      ${sel("")} {
         --co-bg: rgba(255,255,255,0.78); --co-surface: rgba(255,255,255,0.78); --co-surface-2: rgba(255,255,255,0.72);
         --co-text: rgba(15,23,42,0.90); --co-muted: rgba(15,23,42,0.74); --co-muted2: rgba(15,23,42,0.58);
         --co-hair: rgba(15,23,42,0.08); --co-hair2: rgba(15,23,42,0.12);
@@ -2816,17 +2823,34 @@
         backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
         font: 13px/1.35 "Segoe UI", system-ui, sans-serif;
       }
-      #rlCoPanel * { box-sizing: border-box; }
-      #rlCoPanel .rlCoHd { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-      #rlCoPanel .rlCoTitle { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(15,23,42,0.82); display: flex; align-items: center; gap: 8px; }
-      #rlCoPanel .rlCoTools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-      #rlCoPanel .rlCoBtn { appearance: none; border: 1px solid var(--co-hair2); background: var(--co-surface-2); color: var(--co-text); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; line-height: 1.2; display: inline-flex; align-items: center; }
-      #rlCoPanel .rlCoBtn:hover:not(:disabled) { background: rgba(255,255,255,0.95); border-color: rgba(15,23,42,0.22); }
-      #rlCoPanel .rlCoBtn:disabled { opacity: 0.45; cursor: not-allowed; }
-      #rlCoPanel .rlCoBtn.primary { border-color: rgba(3,105,161,0.35); background: linear-gradient(180deg, rgba(3,105,161,0.10), rgba(255,255,255,0.65)); color: var(--co-accent); }
-      #rlCoPanel .rlCoBtn.small { padding: 4px 10px; font-size: 11px; }
+      ${sel(" *")} { box-sizing: border-box; }
+      ${sel(" .rlCoHd")} { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+      ${sel(" .rlCoTitle")} { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(15,23,42,0.82); display: flex; align-items: center; gap: 8px; }
+      ${sel(" .rlCoTools")} { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      ${sel(" .rlCoBtn")} { appearance: none; border: 1px solid var(--co-hair2); background: var(--co-surface-2); color: var(--co-text); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; line-height: 1.2; display: inline-flex; align-items: center; }
+      ${sel(" .rlCoBtn:hover:not(:disabled)")} { background: rgba(255,255,255,0.95); border-color: rgba(15,23,42,0.22); }
+      ${sel(" .rlCoBtn:disabled")} { opacity: 0.45; cursor: not-allowed; }
+      ${sel(" .rlCoBtn.primary")} { border-color: rgba(3,105,161,0.35); background: linear-gradient(180deg, rgba(3,105,161,0.10), rgba(255,255,255,0.65)); color: var(--co-accent); }
+      ${sel(" .rlCoBtn.small")} { padding: 4px 10px; font-size: 11px; }
       #rlCoPanel .rlCoStatus { color: var(--co-muted); font-size: 12px; margin: 0 0 12px; }
       #rlCoPanel .rlCoStatus.err { color: var(--co-bad); }
+      /* Project note panel (v1.19.0): same shell, a faded-white editor box, an
+         inline aria-live save state and the conflict bar. */
+      #${RL_PNOTE_PANEL_ID} { margin-bottom: 0; }
+      #${RL_PNOTE_PANEL_ID} .rlCoHd { margin-bottom: 10px; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteBox { display: grid; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--co-hair); background: rgba(255,255,255,0.55); }
+      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput { width: 100%; min-height: 84px; resize: vertical; box-sizing: border-box; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--co-hair2); background: #fff; color: var(--co-text); font: inherit; font-size: 12.5px; line-height: 1.45; }
+      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:focus { outline: 2px solid rgba(3,105,161,0.35); outline-offset: 1px; }
+      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:disabled { opacity: 0.6; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteFoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteState { font-size: 11.5px; color: var(--co-muted); min-height: 1.2em; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteState.ok { color: var(--co-good); }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteState.err { color: var(--co-bad); }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteFoot .hint { margin-left: auto; font-size: 11px; color: var(--co-muted2); }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteConflict { display: grid; gap: 8px; margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #fdf6dc; border: 1px solid rgba(138,109,8,0.35); }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteConflictMsg { font-size: 12px; color: #8a6d08; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteServer { font-size: 12px; color: rgba(15,23,42,0.85); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: #fffbe8; border: 1px solid rgba(138,109,8,0.22); }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteConflictTools { display: flex; gap: 8px; flex-wrap: wrap; }
       #rlCoPanel .rlCoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
       @media (max-width: 1100px) { #rlCoPanel .rlCoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 760px) { #rlCoPanel .rlCoGrid { grid-template-columns: 1fr; } }
@@ -2946,6 +2970,7 @@
     document.body.classList.remove("rlCoActive");
     const p = document.getElementById("rlCoPanel");
     if (p) p.remove();
+    rlPnoteTeardown();
     rlCoCloseMenu();
   }
   function rlCoEnsure() {
@@ -2984,6 +3009,12 @@
       rlCoRender();
       void rlCoLoad(true);
     }
+    // The Project note panel is a sibling directly above the grid, never a
+    // child of it (rlCoRender clears #rlCoPanel) and never parked on a generic
+    // MAIN ancestor — a wrong host is reported as "not mounted" so rlCoEnsure
+    // retries until the real plan host exists and the order holds (v1.12.3).
+    const notePanel = rlPnoteEnsurePanel(host, panel);
+    if (!rlPnotePanelPrecedesCategories(notePanel, panel, host)) return false;
     return true;
   }
 
@@ -3673,6 +3704,217 @@
     panel.appendChild(grid);
   }
 
+  // @@rlProjectNoteHelpers:start
+  // Pure "Project note" helpers (extracted by project-note.test.js). They cover
+  // the project-level "Project notes" custom field (id 361059, fieldName
+  // Projectnotes_361059, label "Project notes", objectType PROJECT, private).
+  // Its declared fieldType is SINGLE_SELECT but the real payload is
+  // MULTI_LINE_TEXT: values are HTML strings such as "<p>test5</p>". A project
+  // that never had a value omits the field entirely, even with
+  // includeAllFields=true, which means "empty note", not "no such field".
+  // Nothing here touches the DOM, GM storage or the network.
+
+  const RL_PNOTE_FIELD_ID = 361059;
+  const RL_PNOTE_FIELD_NAME = "Projectnotes_361059";
+  const RL_PNOTE_FIELD_LABEL = "Project notes";
+  const RL_PNOTE_PANEL_ID = "rlProjectNotePanel";
+  const RL_PNOTE_MAX_TASK_NAME = 240;
+  // The note panel and the Categories panel share one shell, so their common
+  // rules are emitted per id (see rlPnotePanelSelector).
+  const RL_PNOTE_SHELL_ROOTS = ["#rlProjectNotePanel", "#rlCoPanel"];
+
+  function rlPnoteNormKey(s) {
+    return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, "");
+  }
+
+  /**
+   * Pick the "Project notes" field out of a GET /fields listing. The id wins;
+   * an exact label or fieldName match is the fallback, so a re-created field
+   * with a new id is still found.
+   */
+  function rlPnoteFindFieldMeta(fields, fieldId) {
+    const list = Array.isArray(fields) ? fields : (Array.isArray(fields?.data) ? fields.data : []);
+    const wantId = Number(fieldId == null ? RL_PNOTE_FIELD_ID : fieldId);
+    const isProject = (f) => {
+      const t = String(f?.objectType ?? "").toUpperCase();
+      return t === "" || t === "PROJECT";
+    };
+    const shape = (f) => ({
+      fieldId: Number(f.fieldId),
+      fieldName: String(f.fieldName ?? ""),
+      fieldLabel: String(f.fieldLabel ?? f.fieldName ?? RL_PNOTE_FIELD_LABEL),
+      dataType: String(f.fieldDataType ?? f.fieldType ?? ""),
+    });
+    const byId = list.find((f) => Number(f?.fieldId) === wantId && isProject(f));
+    if (byId) return shape(byId);
+    const wantLabel = rlPnoteNormKey(RL_PNOTE_FIELD_LABEL);
+    const wantName = rlPnoteNormKey(RL_PNOTE_FIELD_NAME);
+    const byLabel = list.find((f) => isProject(f) && f?.customField !== false &&
+      (rlPnoteNormKey(f?.fieldLabel) === wantLabel || rlPnoteNormKey(f?.fieldName) === wantName));
+    return byLabel ? shape(byLabel) : null;
+  }
+
+  /** Raw HTML value of the notes field on a project payload; "" when the field is absent. */
+  function rlPnoteReadFieldValue(project, fieldId) {
+    const fields = Array.isArray(project?.fields) ? project.fields : [];
+    const wantId = Number(fieldId == null ? RL_PNOTE_FIELD_ID : fieldId);
+    const wantLabel = rlPnoteNormKey(RL_PNOTE_FIELD_LABEL);
+    const wantName = rlPnoteNormKey(RL_PNOTE_FIELD_NAME);
+    const f = fields.find((x) => Number(x?.fieldId) === wantId) ||
+      fields.find((x) => rlPnoteNormKey(x?.fieldLabel) === wantLabel || rlPnoteNormKey(x?.fieldName) === wantName);
+    if (!f) return "";
+    const v = f.fieldValue !== undefined && f.fieldValue !== null ? f.fieldValue : f.value;
+    if (v == null) return "";
+    return typeof v === "string" ? v : String(v);
+  }
+
+  /** HTML → plain text without a DOM, so the same conversion runs in tests. */
+  function rlPnoteHtmlToText(html) {
+    let s = String(html ?? "");
+    if (!s) return "";
+    s = s.replace(/<\s*br\s*\/?\s*>/gi, "\n")
+      .replace(/<\/\s*p\s*>\s*<\s*p[^>]*>/gi, "\n\n")
+      .replace(/<\/\s*(p|div|li|tr|h[1-6])\s*>/gi, "\n")
+      .replace(/<[^>]*>/g, "");
+    s = s.replace(/&nbsp;/gi, " ")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#0*39;|&apos;/gi, "'")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(Number(d)))
+      .replace(/&amp;/gi, "&");
+    return s.replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /** Plain text → the paragraph HTML Rocketlane stores for a MULTI_LINE_TEXT field. */
+  function rlPnoteTextToHtml(text) {
+    const s = rlPnoteNormalizeText(text);
+    if (!s) return "";
+    const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return s.split(/\n{2,}/).map((para) => "<p>" + esc(para).replace(/\n/g, "<br>") + "</p>").join("");
+  }
+
+  /** One canonical form for comparing an editor draft with what the server holds. */
+  function rlPnoteNormalizeText(text) {
+    return String(text ?? "").replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /** PUT /projects/{id} body. An empty note clears the field with an empty value. */
+  function rlPnoteBuildPayload(fieldId, text) {
+    return { fields: [{ fieldId: Number(fieldId == null ? RL_PNOTE_FIELD_ID : fieldId), fieldValue: rlPnoteTextToHtml(text) }] };
+  }
+
+  /**
+   * There is no ETag on the project endpoint, so every save re-reads first and
+   * decides from three normalized texts: what the editor loaded (baseline),
+   * what the user typed (draft) and what the server holds now.
+   */
+  function rlPnoteConflict(baselineText, draftText, serverText) {
+    const baseline = rlPnoteNormalizeText(baselineText);
+    const draft = rlPnoteNormalizeText(draftText);
+    const server = rlPnoteNormalizeText(serverText);
+    if (server === draft) return "already-saved";
+    if (server === baseline) return "save";
+    return "conflict";
+  }
+
+  function rlPnoteHash(s) {
+    let h = 0;
+    const str = String(s ?? "");
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+    return String(h);
+  }
+
+  /** "<project>: <first non-empty note line>", capped at 240 characters. */
+  function rlPnoteTaskName(projectName, noteText) {
+    const first = rlPnoteNormalizeText(noteText).split("\n").map((l) => l.trim()).find(Boolean) || "";
+    let name = String(projectName ?? "").trim() + ": " + first;
+    if (name.length > RL_PNOTE_MAX_TASK_NAME) name = name.slice(0, RL_PNOTE_MAX_TASK_NAME - 3) + "…";
+    return name;
+  }
+
+  function rlPnoteIsOpenTask(task) {
+    const s = task?.status;
+    return !s || s === "open" || s === "To do";
+  }
+
+  /**
+   * A mapped personal task that is no longer in the widget's list is flagged
+   * `gone` instead of being resurrected, so a task the user deleted by hand
+   * stays deleted until the note text changes.
+   */
+  function rlPnoteMarkGone(entry, alive, haveList) {
+    if (!entry || !entry.personalTaskId || entry.gone) return entry || null;
+    if (haveList === false || !alive) return entry;
+    return alive.has(String(entry.personalTaskId)) ? entry : Object.assign({}, entry, { gone: true });
+  }
+
+  /**
+   * The single decision the personal-tasks mirror makes for one project.
+   * Both the scheduled bulk sync and the editor-triggered sync run this, so the
+   * two paths can never disagree about create / rename / adopt / dedupe /
+   * remove. Pure: the caller performs the plan and writes the map.
+   */
+  function rlPnotePlanMirror(input) {
+    const haveList = input?.haveList !== false;
+    const alive = input?.alive || null;
+    const entry = rlPnoteMarkGone(input?.entry, alive, haveList);
+    const name = String(input?.wantedName ?? "");
+    const dupIdsOf = (tasks, keepId) => tasks
+      .filter((t) => keepId == null || String(t?.personalTaskId) !== String(keepId))
+      .map((t) => t?.personalTaskId)
+      .filter((id) => id != null && id !== "");
+    if (!name) {
+      if (entry?.personalTaskId && !entry.gone) {
+        return { action: "remove", personalTaskId: entry.personalTaskId, dupIds: [], entry: null };
+      }
+      return { action: "drop", personalTaskId: "", dupIds: [], entry: null };
+    }
+    const hash = rlPnoteHash(name);
+    const same = (Array.isArray(input?.sameNamed) ? input.sameNamed : []).filter(rlPnoteIsOpenTask);
+    if ((!entry || entry.gone) && same.length) {
+      return {
+        action: "adopt",
+        personalTaskId: same[0].personalTaskId,
+        dupIds: dupIdsOf(same, same[0].personalTaskId),
+        entry: { personalTaskId: same[0].personalTaskId, hash },
+      };
+    }
+    if (entry && entry.hash === hash) {
+      return {
+        action: "keep",
+        personalTaskId: entry.personalTaskId || "",
+        dupIds: entry.personalTaskId ? dupIdsOf(same, entry.personalTaskId) : [],
+        entry,
+      };
+    }
+    if (entry?.personalTaskId && !entry.gone) {
+      return { action: "rename", personalTaskId: entry.personalTaskId, dupIds: [], entry: { personalTaskId: entry.personalTaskId, hash } };
+    }
+    return { action: "create", personalTaskId: "", dupIds: [], entry: { hash } };
+  }
+
+  /** True when the note panel is the immediate previous sibling of the Categories panel on the same host. */
+  function rlPnotePanelPrecedesCategories(notePanel, categoriesPanel, host) {
+    if (!notePanel || !categoriesPanel) return false;
+    if (notePanel.isConnected === false || categoriesPanel.isConnected === false) return false;
+    if (host && (notePanel.parentElement !== host || categoriesPanel.parentElement !== host)) return false;
+    if (notePanel.parentElement !== categoriesPanel.parentElement) return false;
+    return notePanel.nextElementSibling === categoriesPanel;
+  }
+
+  /**
+   * A descendant combinator binds only to the last selector of a comma list, so
+   * a rule shared by the note panel and the Categories panel has to repeat the
+   * suffix per id — "#a,#b .child" would style #a itself (the v1.14.1 bug).
+   */
+  function rlPnotePanelSelector(suffix, roots) {
+    const list = Array.isArray(roots) && roots.length ? roots : RL_PNOTE_SHELL_ROOTS;
+    const tail = String(suffix == null ? "" : suffix);
+    return list.map((root) => root + tail).join(",");
+  }
+  // @@rlProjectNoteHelpers:end
+
   // ════════════════════════════════════════════════════════════════════════
   // 5d. Project notes → Personal tasks (v1.18.0). Every open project the
   //     current user owns or is a member of (lightV1 with projectOwner /
@@ -3687,7 +3929,7 @@
   const RL_PN_GM_MAP = "rlPnMirror";        // { [projectId]: { personalTaskId, hash, gone? } }
   const RL_PN_GM_LAST = "rlPnLastSyncAt";
   const RL_PN_GM_ENABLED = "rlPnEnabled";   // boolean, default true
-  const RL_PN_NOTES_FIELD_ID = 361059;      // "Project notes" (fieldName Projectnotes_361059)
+  const RL_PN_NOTES_FIELD_ID = RL_PNOTE_FIELD_ID; // "Project notes" (fieldName Projectnotes_361059)
   const RL_PN_MIN_INTERVAL_MS = 10 * 60 * 1000;
   const RL_PN_TICK_MS = 5 * 60 * 1000;
   const RL_PN_HOME_MIN_MS = 20 * 1000;      // a home visit re-syncs unless one just finished
@@ -3722,24 +3964,125 @@
     return [...out.values()];
   }
   function rlPnNoteOf(project) {
-    const f = (Array.isArray(project?.fields) ? project.fields : []).find((x) => Number(x?.fieldId) === RL_PN_NOTES_FIELD_ID);
-    return rlCoHtmlToText(f?.fieldValue ?? "");
+    return rlPnoteHtmlToText(rlPnoteReadFieldValue(project, rlPnoteFieldId()));
   }
-  function rlPnHash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return String(h); }
+  function rlPnHash(s) { return rlPnoteHash(s); }
   function rlPnTaskName(project, note) {
-    const first = String(note).split(/\n/).map((l) => l.trim()).find(Boolean) || "";
-    let name = String(project?.projectName ?? "").trim() + ": " + first;
-    if (name.length > 240) name = name.slice(0, 237) + "…";
-    return name;
+    return rlPnoteTaskName(project?.projectName ?? "", note);
   }
   function rlPnIsHomePath() { return /^\/(home\/?)?$/.test(String(location.pathname || "")); }
+
+  // ---- Shared mirror reconciler (v1.19.0) --------------------------------
+  // The scheduled bulk sync and the note editor's targeted sync both go
+  // through rlPnApplyMirror under rlPnRunLocked, so rlPtCreate / rlPtRename /
+  // rlPtDelete are only ever called from one place with one view of the GM map.
+  // Two independent writers used to be able to interleave and duplicate tasks.
+  let rlPnLock = Promise.resolve();
+  function rlPnRunLocked(fn) {
+    const run = rlPnLock.then(fn, fn);
+    rlPnLock = run.then(() => {}, () => {});
+    return run;
+  }
+  function rlPnEmptyStats() {
+    return { projects: 0, noted: 0, added: 0, updated: 0, removed: 0, adopted: 0, failed: 0 };
+  }
+  /** Snapshot of the Personal tasks widget: exact-name index, live ids, and whether the read worked. */
+  async function rlPnLoadExisting() {
+    let existing = [];
+    let haveList = false;
+    try {
+      const r = await gmRocketlaneGet("/personal-tasks");
+      existing = Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : [];
+      haveList = existing.length > 0;
+    } catch (_) {}
+    const byName = new Map();
+    for (const t of existing) {
+      const nm = String(t?.personalTaskName ?? "");
+      if (!byName.has(nm)) byName.set(nm, []);
+      byName.get(nm).push(t);
+    }
+    return { byName, alive: new Set(existing.map((t) => String(t.personalTaskId))), haveList };
+  }
+  /** Run rlPnotePlanMirror's plan for one project and update the map in place. */
+  async function rlPnApplyMirror(map, projectId, wantedName, ctx, stats) {
+    const pid = String(projectId);
+    const name = String(wantedName || "");
+    const plan = rlPnotePlanMirror({
+      entry: map[pid],
+      wantedName: name,
+      sameNamed: ctx.byName.get(name) || [],
+      alive: ctx.alive,
+      haveList: ctx.haveList,
+    });
+    const is404 = (e) => /HTTP 404/.test(String(e?.message || e));
+    for (const dup of plan.dupIds) {
+      try { await rlPtDelete(dup); stats.removed += 1; ctx.alive.delete(String(dup)); } catch (_) {}
+    }
+    try {
+      if (plan.action === "remove") {
+        await rlPtDelete(plan.personalTaskId);
+        stats.removed += 1;
+        ctx.alive.delete(String(plan.personalTaskId));
+        delete map[pid];
+        return plan.action;
+      }
+      if (plan.action === "drop") { delete map[pid]; return plan.action; }
+      if (plan.action === "adopt") { map[pid] = plan.entry; stats.adopted += 1; return plan.action; }
+      if (plan.action === "keep") { map[pid] = plan.entry; return plan.action; }
+      if (plan.action === "rename") {
+        try {
+          await rlPtRename(plan.personalTaskId, name);
+          map[pid] = plan.entry;
+          stats.updated += 1;
+          return plan.action;
+        } catch (err) { if (!is404(err)) throw err; }
+      }
+      const id = await rlPtCreate(name);
+      map[pid] = { personalTaskId: id, hash: plan.entry?.hash || rlPnoteHash(name) };
+      ctx.alive.add(String(id));
+      const nm = String(name);
+      if (!ctx.byName.has(nm)) ctx.byName.set(nm, []);
+      ctx.byName.get(nm).push({ personalTaskId: id, personalTaskName: nm, status: "open" });
+      stats.added += 1;
+      return "create";
+    } catch (_) {
+      stats.failed += 1;
+      return "failed";
+    }
+  }
+  /**
+   * Reconcile one project right after its note was saved and verified. Scope is
+   * the same as the bulk sync: an open project the user owns or belongs to.
+   */
+  async function rlPnSyncProject(project, noteText) {
+    if (!rlPnEnabled()) return null;
+    const pid = String(project?.projectId ?? project?.id ?? "");
+    if (!pid) return null;
+    const userId = rlHpReadCurrentUserId();
+    if (!userId || !rlHpIsUserOnProject(project, userId)) return null;
+    const completed = rlHpStatusKeyFromLabel(rlHpStatusLabelFromFields(project?.fields)) === "completed";
+    const note = rlPnoteNormalizeText(noteText);
+    const wanted = completed || !note ? "" : rlPnoteTaskName(project?.projectName ?? project?.name ?? "", note);
+    return rlPnRunLocked(async () => {
+      const map = rlPnReadMap();
+      if (!wanted && !map[pid]) return null;
+      const ctx = await rlPnLoadExisting();
+      const stats = rlPnEmptyStats();
+      stats.projects = 1;
+      stats.noted = wanted ? 1 : 0;
+      await rlPnApplyMirror(map, pid, wanted, ctx, stats);
+      rlPnWriteMap(map);
+      return stats;
+    });
+  }
+
   async function rlPnMaybeSync(force, minMs) {
     if (!rlPnEnabled()) return null;
     const last = Number(GM_getValue(RL_PN_GM_LAST, 0)) || 0;
     if (!force && Date.now() - last < (minMs || RL_PN_MIN_INTERVAL_MS)) return null;
     if (rlPnInflight) return rlPnInflight;
     rlPnInflight = (async () => {
-      try { return await rlPnSync(); }
+      try { return await rlPnRunLocked(() => rlPnSync()); }
       catch (e) { console.warn("[Rocketlane improvements] project notes → personal tasks failed:", e?.message || e); return null; }
       finally { rlPnInflight = null; }
     })();
@@ -3756,58 +4099,22 @@
       const note = rlPnNoteOf(p);
       if (note) wanted.set(String(p.projectId), rlPnTaskName(p, note));
     }
-    const stats = { projects: projects.length, noted: wanted.size, added: 0, updated: 0, removed: 0, adopted: 0, failed: 0 };
-    const is404 = (e) => /HTTP 404/.test(String(e?.message || e));
+    const stats = rlPnEmptyStats();
+    stats.projects = projects.length;
+    stats.noted = wanted.size;
     // What the widget really holds right now. The map is the plan, this is the truth:
     // a task with exactly the wanted name is adopted instead of created (so a lost or
     // stale map never duplicates), extra exact copies are removed, and a mapped task
     // that vanished is marked gone so it is not resurrected until the note changes.
-    let existing = [];
-    try { const r = await gmRocketlaneGet("/personal-tasks"); existing = Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : []; } catch (_) {}
-    const byName = new Map();
-    for (const t of existing) { const nm = String(t?.personalTaskName ?? ""); if (!byName.has(nm)) byName.set(nm, []); byName.get(nm).push(t); }
-    const alive = new Set(existing.map((t) => String(t.personalTaskId)));
-    if (existing.length) {
-      for (const pid of Object.keys(map)) { const e = map[pid]; if (e?.personalTaskId && !e.gone && !alive.has(String(e.personalTaskId))) map[pid] = Object.assign({}, e, { gone: true }); }
-    }
+    const ctx = await rlPnLoadExisting();
     // 1. Projects that dropped out (completed, note cleared, no longer mine) lose their personal task.
     for (const pid of Object.keys(map)) {
       if (wanted.has(pid)) continue;
-      const e = map[pid];
-      try {
-        if (e?.personalTaskId && !e.gone) { await rlPtDelete(e.personalTaskId); stats.removed += 1; }
-        delete map[pid];
-      } catch (_) { stats.failed += 1; }
+      await rlPnApplyMirror(map, pid, "", ctx, stats);
     }
     // 2. Create or rename. Unchanged names are skipped, which also keeps hand-deleted tasks dead.
     for (const [pid, name] of wanted) {
-      const hash = rlPnHash(name);
-      let e = map[pid];
-      const same = (byName.get(name) || []).filter((t) => t?.status === "open" || t?.status === "To do" || !t?.status);
-      if ((!e || e.gone) && same.length) {
-        // Adopt the first exact match, drop the other exact copies (they can only be ours).
-        e = map[pid] = { personalTaskId: same[0].personalTaskId, hash };
-        stats.adopted += 1;
-        for (const dup of same.slice(1)) { try { await rlPtDelete(dup.personalTaskId); stats.removed += 1; } catch (_) {} }
-        continue;
-      }
-      if (e && e.hash === hash) {
-        for (const dup of same.filter((t) => String(t.personalTaskId) !== String(e.personalTaskId))) { try { await rlPtDelete(dup.personalTaskId); stats.removed += 1; } catch (_) {} }
-        continue;
-      }
-      try {
-        if (e?.personalTaskId && !e.gone) {
-          try {
-            await rlPtRename(e.personalTaskId, name);
-            map[pid] = { personalTaskId: e.personalTaskId, hash };
-            stats.updated += 1;
-            continue;
-          } catch (err) { if (!is404(err)) throw err; }
-        }
-        const id = await rlPtCreate(name);
-        map[pid] = { personalTaskId: id, hash };
-        stats.added += 1;
-      } catch (_) { stats.failed += 1; }
+      await rlPnApplyMirror(map, pid, name, ctx, stats);
     }
     rlPnWriteMap(map);
     const changed = stats.added + stats.updated + stats.removed;
@@ -3831,6 +4138,362 @@
     setTimeout(() => void rlPnMaybeSync(false), 8000);
     setInterval(() => void rlPnMaybeSync(false), RL_PN_TICK_MS);
   });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5e. Project note panel (v1.19.0) — an editor for the project-level
+  //     "Project notes" custom field, mounted on the project plan as a sibling
+  //     immediately above the Categories panel. It is the same field the
+  //     projects list view shows and the same field section 5d mirrors into
+  //     the home Personal tasks widget, so a verified save reconciles the
+  //     mirror for that one project through rlPnSyncProject.
+  //
+  //     Read:  GET /projects/{id}?includeAllFields=true — a project that never
+  //            had a value omits the field, which means "empty note".
+  //     Write: PUT /projects/{id} {"fields":[{fieldId, fieldValue:"<p>…</p>"}]}.
+  //     There is no ETag, so each save re-reads first (rlPnoteConflict) and
+  //     re-reads again afterwards to verify what Rocketlane stored.
+  // ════════════════════════════════════════════════════════════════════════
+  const RL_PNOTE_GM_META = "rlPnoteFieldMeta";
+  const RL_PNOTE_SAVE_DELAY_MS = 800;
+  let rlPnoteMeta = null;
+  let rlPnoteMetaInflight = null;
+  let rlPnoteSaveTimer = null;
+  let rlPnoteSaving = false;
+  let rlPnoteState = {
+    projectId: "",
+    projectName: "",
+    project: null,
+    loading: false,
+    error: "",
+    baseline: "",
+    draft: "",
+    state: "idle",      // idle | loading | dirty | saving | saved | error | conflict
+    message: "",
+    conflictText: "",
+    gen: 0,
+  };
+
+  function rlPnoteFieldId() { return Number(rlPnoteMeta?.fieldId || RL_PNOTE_FIELD_ID); }
+  /** Resolve the field through GET /fields (id first, then label / name), cached in GM for a day. */
+  function rlPnoteLoadFieldMeta() {
+    if (rlPnoteMeta) return Promise.resolve(rlPnoteMeta);
+    try {
+      const j = JSON.parse(GM_getValue(RL_PNOTE_GM_META, "") || "null");
+      if (j?.fieldId && Date.now() - Number(j.at || 0) < 24 * 60 * 60 * 1000) { rlPnoteMeta = j; return Promise.resolve(j); }
+    } catch (_) {}
+    if (rlPnoteMetaInflight) return rlPnoteMetaInflight;
+    rlPnoteMetaInflight = (async () => {
+      let meta = null;
+      try { meta = rlPnoteFindFieldMeta(await gmRocketlaneGet("/fields")); }
+      catch (e) { console.warn("[Rocketlane improvements] Project notes field lookup failed, using the known id:", e?.message || e); }
+      if (!meta) meta = { fieldId: RL_PNOTE_FIELD_ID, fieldName: RL_PNOTE_FIELD_NAME, fieldLabel: RL_PNOTE_FIELD_LABEL, dataType: "MULTI_LINE_TEXT" };
+      meta.at = Date.now();
+      rlPnoteMeta = meta;
+      try { GM_setValue(RL_PNOTE_GM_META, JSON.stringify(meta)); } catch (_) {}
+      return meta;
+    })();
+    const pending = rlPnoteMetaInflight;
+    pending.then(() => { rlPnoteMetaInflight = null; }, () => { rlPnoteMetaInflight = null; });
+    return pending;
+  }
+
+  async function rlPnoteFetchProject(pid) {
+    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid), { includeAllFields: true });
+    const project = json?.data ?? json;
+    const html = rlPnoteReadFieldValue(project, rlPnoteFieldId());
+    return { project, html, text: rlPnoteHtmlToText(html) };
+  }
+
+  function rlPnoteResetState(pid) {
+    rlPnoteState = {
+      projectId: pid,
+      projectName: "",
+      project: null,
+      loading: true,
+      error: "",
+      baseline: "",
+      draft: "",
+      state: "loading",
+      message: "Loading…",
+      conflictText: "",
+      gen: rlPnoteState.gen,
+    };
+  }
+
+  function rlPnoteBuildShell(panel) {
+    panel.textContent = "";
+    const hd = document.createElement("div");
+    hd.className = "rlCoHd";
+    const title = document.createElement("h2");
+    title.className = "rlCoTitle";
+    title.textContent = "Project note";
+    const tools = document.createElement("div");
+    tools.className = "rlCoTools";
+    const mk = (label, cls, onClick, titleText) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "rlCoBtn" + (cls ? " " + cls : "");
+      b.textContent = label;
+      if (titleText) b.title = titleText;
+      b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onClick(); });
+      return b;
+    };
+    const retry = mk("Retry", "primary", () => rlPnoteFlush(true), "Try the failed save again");
+    retry.className += " rlPnoteRetry";
+    retry.hidden = true;
+    tools.appendChild(retry);
+    tools.appendChild(mk("Refresh", "", () => void rlPnoteLoad(), "Re-read the note from Rocketlane"));
+    hd.appendChild(title);
+    hd.appendChild(tools);
+    panel.appendChild(hd);
+
+    const box = document.createElement("div");
+    box.className = "rlPnoteBox";
+    const ta = document.createElement("textarea");
+    ta.className = "rlPnoteInput";
+    ta.setAttribute("aria-label", "Project note");
+    ta.placeholder = "Write a note for this project…";
+    ta.spellcheck = false;
+    ta.addEventListener("input", () => {
+      rlPnoteState.draft = ta.value;
+      rlPnoteState.conflictText = "";
+      if (rlPnoteState.state !== "saving") rlPnoteState.state = "dirty";
+      rlPnoteState.message = "Unsaved…";
+      rlPnoteState.error = "";
+      rlPnoteRender();
+      rlPnoteScheduleSave();
+    });
+    ta.addEventListener("blur", () => rlPnoteFlush(false));
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rlPnoteFlush(false); }
+    });
+    box.appendChild(ta);
+
+    const foot = document.createElement("div");
+    foot.className = "rlPnoteFoot";
+    const state = document.createElement("span");
+    state.className = "rlPnoteState";
+    state.setAttribute("role", "status");
+    state.setAttribute("aria-live", "polite");
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    hint.textContent = "Saves automatically · Ctrl+Enter saves now";
+    foot.appendChild(state);
+    foot.appendChild(hint);
+    box.appendChild(foot);
+    panel.appendChild(box);
+
+    const conflict = document.createElement("div");
+    conflict.className = "rlPnoteConflict";
+    conflict.hidden = true;
+    const cMsg = document.createElement("div");
+    cMsg.className = "rlPnoteConflictMsg";
+    cMsg.textContent = "Someone else changed this note while you were typing. Nothing was overwritten.";
+    const cServer = document.createElement("div");
+    cServer.className = "rlPnoteServer";
+    const cTools = document.createElement("div");
+    cTools.className = "rlPnoteConflictTools";
+    cTools.appendChild(mk("Load server", "", () => rlPnoteResolveConflict("server")));
+    cTools.appendChild(mk("Overwrite", "primary", () => rlPnoteResolveConflict("mine")));
+    conflict.appendChild(cMsg);
+    conflict.appendChild(cServer);
+    conflict.appendChild(cTools);
+    panel.appendChild(conflict);
+  }
+
+  function rlPnoteRender() {
+    const panel = document.getElementById(RL_PNOTE_PANEL_ID);
+    if (!panel) return;
+    const ta = panel.querySelector("textarea.rlPnoteInput");
+    const state = panel.querySelector(".rlPnoteState");
+    const retry = panel.querySelector(".rlPnoteRetry");
+    const conflict = panel.querySelector(".rlPnoteConflict");
+    if (!ta || !state || !conflict) return;
+    // Only push text into the box when the user is not the one holding it.
+    if (document.activeElement !== ta && ta.value !== rlPnoteState.draft) ta.value = rlPnoteState.draft;
+    ta.disabled = rlPnoteState.loading;
+    state.textContent = rlPnoteState.message;
+    state.classList.toggle("err", rlPnoteState.state === "error" || rlPnoteState.state === "conflict");
+    state.classList.toggle("ok", rlPnoteState.state === "saved");
+    if (retry) retry.hidden = rlPnoteState.state !== "error";
+    conflict.hidden = rlPnoteState.state !== "conflict";
+    const server = panel.querySelector(".rlPnoteServer");
+    if (server) server.textContent = rlPnoteState.conflictText || "(empty)";
+  }
+
+  async function rlPnoteLoad() {
+    const pid = rlPnoteState.projectId || rlCoProjectId();
+    if (!pid) return;
+    const gen = ++rlPnoteState.gen;
+    rlPnoteState.projectId = pid;
+    rlPnoteState.loading = true;
+    rlPnoteState.state = "loading";
+    rlPnoteState.message = "Loading…";
+    rlPnoteRender();
+    try {
+      await rlPnoteLoadFieldMeta();
+      const { project, text } = await rlPnoteFetchProject(pid);
+      if (gen !== rlPnoteState.gen) return;
+      rlPnoteState.project = project;
+      rlPnoteState.projectName = String(project?.projectName ?? project?.name ?? "");
+      rlPnoteState.baseline = rlPnoteNormalizeText(text);
+      rlPnoteState.draft = rlPnoteState.baseline;
+      rlPnoteState.loading = false;
+      rlPnoteState.error = "";
+      rlPnoteState.state = "idle";
+      rlPnoteState.message = rlPnoteState.baseline ? "Saved" : "No note yet";
+    } catch (e) {
+      if (gen !== rlPnoteState.gen) return;
+      rlPnoteState.loading = false;
+      rlPnoteState.error = String(e?.message || e);
+      rlPnoteState.state = "error";
+      rlPnoteState.message = "Could not load the note: " + rlPnoteState.error;
+    }
+    rlPnoteRender();
+  }
+
+  function rlPnoteScheduleSave() {
+    if (rlPnoteSaveTimer) clearTimeout(rlPnoteSaveTimer);
+    rlPnoteSaveTimer = setTimeout(() => { rlPnoteSaveTimer = null; rlPnoteFlush(false); }, RL_PNOTE_SAVE_DELAY_MS);
+  }
+  /** Save now: on blur, on Ctrl+Enter, on Retry, and when the 800 ms idle timer fires. */
+  function rlPnoteFlush(fromRetry) {
+    if (rlPnoteSaveTimer) { clearTimeout(rlPnoteSaveTimer); rlPnoteSaveTimer = null; }
+    if (rlPnoteState.loading) return;
+    if (fromRetry) { rlPnoteState.state = "dirty"; rlPnoteState.error = ""; }
+    if (rlPnoteState.state === "conflict") return;
+    if (rlPnoteNormalizeText(rlPnoteState.draft) === rlPnoteState.baseline) {
+      if (rlPnoteState.state === "dirty") {
+        rlPnoteState.state = "saved";
+        rlPnoteState.message = "Saved";
+        rlPnoteRender();
+      }
+      return;
+    }
+    void rlPnoteRunSaves();
+  }
+  /**
+   * One writer at a time. The loop re-reads rlPnoteState.draft on every pass,
+   * so keystrokes that land while a PUT is in flight are saved by the next
+   * pass instead of being lost or racing the first one.
+   */
+  async function rlPnoteRunSaves() {
+    if (rlPnoteSaving) return;
+    rlPnoteSaving = true;
+    try {
+      while (true) {
+        const pid = rlPnoteState.projectId;
+        const text = rlPnoteNormalizeText(rlPnoteState.draft);
+        if (!pid || rlPnoteState.state === "conflict" || text === rlPnoteState.baseline) break;
+        const ok = await rlPnoteSaveOnce(pid, text);
+        if (!ok || pid !== rlPnoteState.projectId) break;
+      }
+    } finally {
+      rlPnoteSaving = false;
+    }
+  }
+  async function rlPnoteSaveOnce(pid, text) {
+    rlPnoteState.state = "saving";
+    rlPnoteState.message = "Saving…";
+    rlPnoteRender();
+    try {
+      await rlPnoteLoadFieldMeta();
+      const before = await rlPnoteFetchProject(pid);
+      if (pid !== rlPnoteState.projectId) return false;
+      const decision = rlPnoteConflict(rlPnoteState.baseline, text, before.text);
+      if (decision === "already-saved") {
+        rlPnoteState.baseline = rlPnoteNormalizeText(before.text);
+        rlPnoteState.project = before.project;
+        rlPnoteState.state = "saved";
+        rlPnoteState.message = "Saved";
+        rlPnoteRender();
+        return true;
+      }
+      if (decision === "conflict") {
+        rlPnoteState.conflictText = rlPnoteNormalizeText(before.text);
+        rlPnoteState.state = "conflict";
+        rlPnoteState.message = "Not saved — the note changed in Rocketlane.";
+        rlPnoteRender();
+        return false;
+      }
+      await gmRocketlaneRequest("PUT", "/projects/" + encodeURIComponent(pid), null, rlPnoteBuildPayload(rlPnoteFieldId(), text));
+      const after = await rlPnoteFetchProject(pid);
+      if (rlPnoteNormalizeText(after.text) !== text) {
+        throw new Error("Rocketlane stored something else than what was sent.");
+      }
+      if (pid !== rlPnoteState.projectId) return false;
+      rlPnoteState.baseline = text;
+      rlPnoteState.project = after.project;
+      rlPnoteState.projectName = String(after.project?.projectName ?? after.project?.name ?? rlPnoteState.projectName);
+      rlPnoteState.error = "";
+      rlPnoteState.state = "saved";
+      rlPnoteState.message = "Saved";
+      rlPnoteRender();
+      // Only a verified save reconciles the mirror, and only through the shared reconciler.
+      void rlPnSyncProject(after.project, text).catch(() => {});
+      return true;
+    } catch (e) {
+      rlPnoteState.error = String(e?.message || e);
+      rlPnoteState.state = "error";
+      rlPnoteState.message = "Not saved: " + rlPnoteState.error;
+      rlPnoteRender();
+      return false;
+    }
+  }
+  function rlPnoteResolveConflict(choice) {
+    if (choice === "server") {
+      rlPnoteState.baseline = rlPnoteState.conflictText;
+      rlPnoteState.draft = rlPnoteState.conflictText;
+      rlPnoteState.conflictText = "";
+      rlPnoteState.state = "idle";
+      rlPnoteState.message = "Loaded the note from Rocketlane.";
+      const ta = document.getElementById(RL_PNOTE_PANEL_ID)?.querySelector("textarea.rlPnoteInput");
+      if (ta) ta.value = rlPnoteState.draft;
+      rlPnoteRender();
+      return;
+    }
+    // Overwrite: adopt the server text as the baseline so the next pass saves the draft.
+    rlPnoteState.baseline = rlPnoteState.conflictText;
+    rlPnoteState.conflictText = "";
+    rlPnoteState.state = "dirty";
+    rlPnoteState.message = "Overwriting…";
+    rlPnoteRender();
+    void rlPnoteRunSaves();
+  }
+
+  /** Mount / re-place the panel as the immediate previous sibling of #rlCoPanel. */
+  function rlPnoteEnsurePanel(host, categoriesPanel) {
+    if (!host || !categoriesPanel || categoriesPanel.parentElement !== host) return null;
+    let panel = document.getElementById(RL_PNOTE_PANEL_ID);
+    let fresh = false;
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = RL_PNOTE_PANEL_ID;
+      panel.setAttribute("aria-label", "Project note");
+      fresh = true;
+    }
+    if (panel.parentElement !== host || panel.nextElementSibling !== categoriesPanel) {
+      host.insertBefore(panel, categoriesPanel);
+    }
+    const pid = rlCoProjectId();
+    if (fresh || rlPnoteState.projectId !== pid) {
+      rlPnoteResetState(pid);
+      rlPnoteBuildShell(panel);
+      rlPnoteRender();
+      void rlPnoteLoad();
+    } else if (!panel.querySelector("textarea.rlPnoteInput")) {
+      rlPnoteBuildShell(panel);
+      rlPnoteRender();
+    }
+    return panel;
+  }
+  function rlPnoteTeardown() {
+    if (rlPnoteSaveTimer) { clearTimeout(rlPnoteSaveTimer); rlPnoteSaveTimer = null; }
+    const p = document.getElementById(RL_PNOTE_PANEL_ID);
+    if (p) p.remove();
+    rlPnoteState.projectId = "";
+    rlPnoteState.gen += 1;
+  }
 
   // Initial attempts (covers the case where the nav is already present). Waits
   // for the DOM: the script starts at document-start, but this section keeps
@@ -5415,34 +6078,6 @@
     }
     return list;
   }
-  // Search box (v1.15.2): one query filters both panels — every word must
-  // appear in the plant name, id, owner or status. Ctrl+F on the home page
-  // focuses it; Escape clears it. Groups render expanded while searching.
-  function rlHpSetQuery(q, sourceInput) {
-    rlHpUi.query = String(q || "");
-    for (const panel of [rlHpGetOwnerPanel(), rlHpGetMemberPanel()]) {
-      const input = panel && panel.querySelector(".rlhpSearch");
-      if (input && input !== sourceInput && input.value !== rlHpUi.query) input.value = rlHpUi.query;
-    }
-    rlHpRenderPanels();
-  }
-  function rlHpFocusSearch() {
-    const panel = rlHpGetOwnerPanel() || rlHpGetMemberPanel();
-    const input = panel && panel.isConnected ? panel.querySelector(".rlhpSearch") : null;
-    if (!input) return false;
-    try { input.scrollIntoView({ block: "nearest" }); } catch (_) {}
-    input.focus();
-    input.select();
-    return true;
-  }
-  document.addEventListener("keydown", (e) => {
-    if (!(e.key === "f" || e.key === "F") || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-    if (!rlHpIsHomePath(location.pathname)) return;
-    const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "")) && !(t.classList && t.classList.contains("rlhpSearch"))) return;
-    if (rlHpFocusSearch()) e.preventDefault();
-  }, true);
-
   function rlHpIsUserOnProject(raw, userId) {
     const uid = String(userId ?? "").trim();
     if (!uid) return false;
@@ -5770,6 +6405,35 @@
     return modeDesc;
   }
   // @@rlHomeProjectsHelpers:end
+
+  // Search box (v1.15.2): one query filters both panels — every word must
+  // appear in the plant name, id, owner or status. Ctrl+F on the home page
+  // focuses it; Escape clears it. Groups render expanded while searching.
+  // These three touch the DOM, so they live outside the pure helpers block.
+  function rlHpSetQuery(q, sourceInput) {
+    rlHpUi.query = String(q || "");
+    for (const panel of [rlHpGetOwnerPanel(), rlHpGetMemberPanel()]) {
+      const input = panel && panel.querySelector(".rlhpSearch");
+      if (input && input !== sourceInput && input.value !== rlHpUi.query) input.value = rlHpUi.query;
+    }
+    rlHpRenderPanels();
+  }
+  function rlHpFocusSearch() {
+    const panel = rlHpGetOwnerPanel() || rlHpGetMemberPanel();
+    const input = panel && panel.isConnected ? panel.querySelector(".rlhpSearch") : null;
+    if (!input) return false;
+    try { input.scrollIntoView({ block: "nearest" }); } catch (_) {}
+    input.focus();
+    input.select();
+    return true;
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!(e.key === "f" || e.key === "F") || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (!rlHpIsHomePath(location.pathname)) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "")) && !(t.classList && t.classList.contains("rlhpSearch"))) return;
+    if (rlHpFocusSearch()) e.preventDefault();
+  }, true);
 
   // ── Home PROJECTS twin panels (v1.14.0) — Project Owner + In progress under Overdue ──
 
