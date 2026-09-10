@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.0
+// @version      1.21.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.21.0";
+  const RL_CO_STYLE_READY = "1.21.1";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -4451,6 +4451,9 @@
   //     re-reads again afterwards to verify what Rocketlane stored.
   // ════════════════════════════════════════════════════════════════════════
   const RL_PNOTE_GM_META = "rlPnoteFieldMeta";
+  const RL_PNOTE_GM_HEIGHT = "rlPnoteHeight";   // px, remembered across projects and reloads
+  const RL_PNOTE_MIN_H = 84;
+  const RL_PNOTE_TALL_H = 360;
   const RL_PNOTE_SAVE_DELAY_MS = 800;
   let rlPnoteMeta = null;
   let rlPnoteMetaInflight = null;
@@ -4517,6 +4520,27 @@
     };
   }
 
+  function rlPnoteReadHeight() {
+    const n = Number(GM_getValue(RL_PNOTE_GM_HEIGHT, 0)) || 0;
+    return n >= RL_PNOTE_MIN_H ? Math.min(n, 1200) : RL_PNOTE_MIN_H;
+  }
+  function rlPnoteWriteHeight(px) {
+    const n = Math.max(RL_PNOTE_MIN_H, Math.min(Math.round(px) || RL_PNOTE_MIN_H, 1200));
+    try { GM_setValue(RL_PNOTE_GM_HEIGHT, n); } catch (_) {}
+    return n;
+  }
+  function rlPnoteApplyHeight(panel, px) {
+    const ta = panel && panel.querySelector("textarea.rlPnoteInput");
+    if (ta) ta.style.height = px + "px";
+    const btn = panel && panel.querySelector(".rlPnoteSize");
+    if (btn) {
+      const tall = px > RL_PNOTE_MIN_H + 8;
+      btn.textContent = tall ? "Collapse ▴" : "Expand ▾";
+      btn.title = tall ? "Shrink the note box" : "Make the note box taller (or drag its bottom-right corner)";
+      btn.setAttribute("aria-expanded", tall ? "true" : "false");
+    }
+  }
+
   function rlPnoteBuildShell(panel) {
     panel.textContent = "";
     const hd = document.createElement("div");
@@ -4539,6 +4563,12 @@
     retry.className += " rlPnoteRetry";
     retry.hidden = true;
     tools.appendChild(retry);
+    const size = mk("Expand ▾", "", () => {
+      const cur = rlPnoteReadHeight();
+      rlPnoteApplyHeight(panel, rlPnoteWriteHeight(cur > RL_PNOTE_MIN_H + 8 ? RL_PNOTE_MIN_H : RL_PNOTE_TALL_H));
+    });
+    size.className += " rlPnoteSize";
+    tools.appendChild(size);
     tools.appendChild(mk("Refresh", "", () => void rlPnoteLoad(), "Re-read the note from Rocketlane"));
     hd.appendChild(title);
     hd.appendChild(tools);
@@ -4563,6 +4593,11 @@
     ta.addEventListener("blur", () => rlPnoteFlush(false));
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rlPnoteFlush(false); }
+    });
+    // A manual drag of the textarea's grip is remembered too, so the box keeps the size it was left at.
+    ta.addEventListener("mouseup", () => {
+      const h = ta.offsetHeight;
+      if (h && Math.abs(h - rlPnoteReadHeight()) > 2) rlPnoteApplyHeight(panel, rlPnoteWriteHeight(h));
     });
     box.appendChild(ta);
     panel.appendChild(box);
@@ -4786,6 +4821,7 @@
     if (needShell) {
       if (fresh || projectChanged) rlPnoteResetState(pid);
       rlPnoteBuildShell(panel);
+      rlPnoteApplyHeight(panel, rlPnoteReadHeight());
       rlPnoteRender();
       if (fresh || projectChanged) void rlPnoteLoad();
     }
