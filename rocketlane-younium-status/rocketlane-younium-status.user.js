@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.20.1
+// @version      1.21.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.19.4";
+  const RL_CO_STYLE_READY = "1.21.0";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2883,7 +2883,7 @@
       #rlCoPanel .rlCoProgress { height: 8px; width: 100%; border-radius: 999px; background: rgba(15,23,42,0.22); box-shadow: inset 0 0 0 1px rgba(15,23,42,0.06); overflow: hidden; }
       #rlCoPanel .rlCoBar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #7dd3fc, #34d399); transition: width 400ms ease; }
       #rlCoPanel .rlCoTasks { display: grid; gap: 6px; }
-      #rlCoPanel .rlCoTask { cursor: default; display: grid; grid-template-columns: 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: #fff; }
+      #rlCoPanel .rlCoTask { cursor: default; display: grid; grid-template-columns: auto 1fr auto auto; column-gap: 10px; align-items: center; border: 1px solid var(--co-hair); border-radius: 10px; padding: 7px 10px; background: #fff; }
       #rlCoPanel .rlCoTask:hover { background: #fff; border-color: rgba(15,23,42,0.14); }
       #rlCoPanel .rlCoTask.sub { margin-left: calc(var(--lvl, 1) * 18px); }
       #rlCoPanel.hideDone .rlCoTask.s-completed { display: none; }
@@ -2899,6 +2899,10 @@
       #rlCoPanel .rlCoTask.s-blocked .rlCoStBtn { --co-dot: var(--co-bad); }
       #rlCoPanel .rlCoTask.s-todo .rlCoStBtn { --co-dot: var(--co-accent); }
       #rlCoPanel .rlCoStBtn .caret { color: rgba(15,23,42,0.45); font-size: 9px; }
+      /* "Set category" chip on a task with no phase (v1.21.0). */
+      #rlCoPanel .rlCoCatBtn { appearance: none; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; border: 1px dashed rgba(180,83,9,0.5); background: transparent; color: #8a6d08; font: inherit; font-size: 11px; font-weight: 500; cursor: pointer; white-space: nowrap; line-height: 1.2; }
+      #rlCoPanel .rlCoCatBtn:hover { border-style: solid; background: rgba(180,83,9,0.06); }
+      #rlCoPanel .rlCoCatBtn.busy { opacity: 0.6; cursor: progress; }
       #rlCoPanel .rlCoStBtn.busy { opacity: 0.6; cursor: progress; }
       #rlCoPanel .rlCoEmpty { color: var(--co-muted2); font-size: 12px; padding: 2px 0; }
       /* Private note per task (v1.17.0): the tracker's "Add a private note" link and cream box. */
@@ -3483,6 +3487,58 @@
     if (rlCoMenuEl && !rlCoMenuEl.contains(e.target) && !(e.target.closest && e.target.closest(".rlCoStBtn"))) rlCoCloseMenu();
   }, true);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && rlCoMenuEl) rlCoCloseMenu(); }, true);
+  /** Move a task into a phase. The public task endpoint accepts the field and ignores it; the
+   *  UI's own PUT /tasks/{id}/update-phase {projectPhase:{projectPhaseId}} is what actually moves it. */
+  async function rlCoSetTaskPhase(task, phase) {
+    const id = rlCatTaskId(task);
+    const phaseId = rlCatPhaseId(phase);
+    if (!id || !phaseId || rlCoState.busy.has(id)) return false;
+    rlCoState.busy.add(id);
+    rlCoRender();
+    try {
+      await gmRocketlaneRequest("PUT", "/tasks/" + encodeURIComponent(id) + "/update-phase", null, { projectPhase: { projectPhaseId: rlCatCoerceId(phaseId) } });
+      const after = await gmRocketlaneGet("/tasks/" + encodeURIComponent(id));
+      if (String(rlCatPhaseId(after?.projectPhase) || "") !== String(phaseId)) throw new Error("Rocketlane accepted the move but the task is still uncategorised.");
+      const idx = rlCoState.tasks.findIndex((t) => rlCatTaskId(t) === id);
+      if (idx >= 0) rlCoState.tasks[idx] = Object.assign({}, rlCoState.tasks[idx], after);
+      rlCatToast("Moved to " + (rlCatPhaseName(phase) || "the category") + ".");
+      return true;
+    } catch (e) {
+      rlCatToast("Could not set the category: " + (e?.message || e));
+      return false;
+    } finally {
+      rlCoState.busy.delete(id);
+      rlCoRender();
+    }
+  }
+  function rlCoOpenPhaseMenu(btn, task) {
+    rlCoCloseMenu();
+    const menu = document.createElement("div");
+    menu.className = "rlCoMenu";
+    menu.setAttribute("role", "listbox");
+    const phases = rlCoState.phases || [];
+    if (!phases.length) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "padding:7px 10px;color:rgba(15,23,42,0.58)";
+      empty.textContent = "No categories on this project.";
+      menu.appendChild(empty);
+    }
+    for (const ph of phases) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = rlCatPhaseName(ph) || ("Phase " + rlCatPhaseId(ph));
+      b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); rlCoCloseMenu(); void rlCoSetTaskPhase(task, ph); });
+      menu.appendChild(b);
+    }
+    document.body.appendChild(menu);
+    rlCoMenuEl = menu;
+    const r = btn.getBoundingClientRect();
+    const h = menu.offsetHeight || 150, w = Math.max(menu.offsetWidth || 170, Math.round(r.width));
+    menu.style.width = w + "px";
+    menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+    menu.style.top = (r.bottom + 4 + h > window.innerHeight - 8 ? Math.max(8, r.top - 4 - h) : r.bottom + 4) + "px";
+  }
+
   function rlCoOpenStatusMenu(btn, task) {
     rlCoCloseMenu();
     const menu = document.createElement("div");
@@ -3705,6 +3761,16 @@
           const due = document.createElement("div");
           due.className = "rlCoTaskDue";
           due.textContent = rlCoTaskDue(task);
+          if (!rlCatPhaseId(task?.projectPhase) && !rlCatTaskPhaseName(task)) {
+            const catBtn = document.createElement("button");
+            catBtn.type = "button";
+            catBtn.className = "rlCoCatBtn" + (rlCoState.busy.has(id) ? " busy" : "");
+            catBtn.setAttribute("aria-haspopup", "listbox");
+            catBtn.title = "This task has no category in Rocketlane — pick one";
+            catBtn.textContent = "Set category ▾";
+            catBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); if (!rlCoState.busy.has(id)) rlCoOpenPhaseMenu(catBtn, task); });
+            row.appendChild(catBtn);
+          }
           row.appendChild(name);
           row.appendChild(due);
           row.appendChild(stBtn);
