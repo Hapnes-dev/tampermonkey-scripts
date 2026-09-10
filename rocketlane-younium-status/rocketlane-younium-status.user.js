@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.13
+// @version      1.14.14
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9302,7 +9302,7 @@
   function rlZdInjectStyles() {
     let style = document.getElementById("rlZendeskCasesStyles");
     // Version pin so a TM bump refreshes CSS once without rewriting every ensure tick.
-    if (style && style.dataset.rlZdReady === "1.10.13") return;
+    if (style && style.dataset.rlZdReady === "1.14.14") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "rlZendeskCasesStyles";
@@ -9313,33 +9313,38 @@
       body.rlZdCasesActive #page > [class*="content__Content-"] > *:not(#rlZendeskCasesPanel) {
         display: none !important;
       }
-      /* Always PPT / Younium dark shell — Rocketlane page is light, so do not
-         flip to dark ink via prefers-color-scheme (that made the title unreadable). */
+      /* Same light shell as the home Project Owner / In progress panels (v1.14.14):
+         translucent white panel, hairline borders, white cards, muted uppercase title,
+         outlined status chips with a coloured dot. */
       #rlZendeskCasesPanel {
-        --rlZd-shell: #0f1424;
-        --rlZd-surface-1: rgba(255,255,255,0.04);
-        --rlZd-surface-2: rgba(255,255,255,0.035);
-        --rlZd-surface-3: rgba(255,255,255,0.07);
-        --rlZd-hairline: rgba(255,255,255,0.08);
-        --rlZd-hairline-strong: rgba(255,255,255,0.14);
-        --rlZd-border: rgba(255,255,255,0.10);
-        --rlZd-text: rgba(255,255,255,0.94);
-        --rlZd-muted: rgba(255,255,255,0.66);
-        --rlZd-muted2: rgba(255,255,255,0.46);
-        --rlZd-accent: #7dd3fc;
-        --rlZd-accent-soft: rgba(125,211,252,0.12);
-        --rlZd-accent-stroke: rgba(125,211,252,0.36);
+        --rlZd-shell: rgba(255,255,255,0.78);
+        --rlZd-surface-1: rgba(255,255,255,0.72);
+        --rlZd-surface-2: rgba(255,255,255,0.85);
+        --rlZd-surface-3: rgba(15,23,42,0.05);
+        --rlZd-hairline: rgba(15,23,42,0.08);
+        --rlZd-hairline-strong: rgba(15,23,42,0.14);
+        --rlZd-border: rgba(15,23,42,0.10);
+        --rlZd-text: rgba(15,23,42,0.90);
+        --rlZd-muted: rgba(15,23,42,0.74);
+        --rlZd-muted2: rgba(15,23,42,0.58);
+        --rlZd-accent: #0369a1;
+        --rlZd-accent-soft: rgba(3,105,161,0.08);
+        --rlZd-accent-stroke: rgba(3,105,161,0.28);
+        --rlZd-good: #059669;
+        --rlZd-warn: #b45309;
+        --rlZd-bad: #e11d48;
         box-sizing: border-box;
         width: 100%;
         max-width: 1100px;
         margin: 48px auto 16px;
-        padding: 16px 20px 28px;
+        padding: 14px 16px 16px;
         color: var(--rlZd-text) !important;
         background: var(--rlZd-shell);
-        border: 1px solid var(--rlZd-hairline-strong);
-        border-radius: 14px;
-        font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        box-shadow: 0 12px 32px rgba(0,0,0,0.24);
+        border: 1px solid var(--rlZd-border);
+        border-radius: 16px;
+        font: 13px/1.35 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.06);
+        backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
       }
       [data-rl-zd-tab="1"] svg { width: 14px; height: 14px; }
       #rlZendeskCasesPanel .rlZdHead {
@@ -9348,104 +9353,110 @@
       }
       #rlZendeskCasesPanel .rlZdTitle,
       #rlZendeskCasesPanel h2.rlZdTitle {
-        margin: 0; font-size: 16px; font-weight: 700;
-        color: rgba(255,255,255,0.96) !important;
+        margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
+        text-transform: uppercase; color: rgba(15,23,42,0.82) !important;
       }
       #rlZendeskCasesPanel .rlZdRefresh {
-        appearance: none; border: 1px solid var(--rlZd-hairline);
-        background: var(--rlZd-surface-3); color: rgba(255,255,255,0.78) !important;
-        border-radius: 8px; padding: 6px 12px; font: inherit; font-weight: 600;
-        cursor: pointer;
+        appearance: none; border: 1px solid var(--rlZd-border);
+        background: var(--rlZd-surface-1); color: var(--rlZd-text) !important;
+        border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12px; font-weight: 600;
+        cursor: pointer; display: inline-flex; align-items: center;
       }
       #rlZendeskCasesPanel .rlZdRefresh:hover {
-        color: rgba(255,255,255,0.96) !important; border-color: var(--rlZd-hairline-strong);
+        background: rgba(255,255,255,0.92); border-color: rgba(15,23,42,0.16);
       }
       #rlZendeskCasesPanel .rlZdBody { min-height: 120px; color: var(--rlZd-text); }
       #rlZendeskCasesPanel .rlZdEmpty,
-      #rlZendeskCasesPanel .rlZdLoading { color: var(--rlZd-muted2); padding: 16px 4px; font-style: italic; }
-      #rlZendeskCasesPanel .rlZdError { color: #fb7185; padding: 16px 4px; }
-      /* Outer list tray — PPT .zendeskTaskList (dark inset). */
+      #rlZendeskCasesPanel .rlZdLoading { color: var(--rlZd-muted); padding: 12px 2px; font-size: 12px; }
+      #rlZendeskCasesPanel .rlZdError { color: var(--rlZd-bad); padding: 12px 2px; font-size: 12px; }
+      /* List: plain stack of white cards, like the home project cards. */
       #rlZendeskCasesPanel .rlZdTaskList {
-        display: grid; gap: 6px; max-height: min(70vh, 720px); overflow-y: auto;
-        padding: 8px; border-radius: 10px;
-        background: rgba(0,0,0,0.18); border: 1px solid var(--rlZd-border);
+        display: grid; gap: 10px; max-height: min(70vh, 720px); overflow-y: auto;
+        padding: 0 2px 0 0; border: none; background: transparent;
       }
-      /* Rows / cards — faded white chips like PPT .zendeskTaskRow. */
       #rlZendeskCasesPanel .rlZdTaskRow {
-        display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px;
-        align-items: center; padding: 8px 10px; border-radius: 8px;
-        background: rgba(255,255,255,0.04); border: 1px solid var(--rlZd-border);
-        font-size: 12px; color: rgba(255,255,255,0.94) !important;
+        display: grid; grid-template-columns: auto 1fr auto auto; gap: 10px;
+        align-items: center; padding: 12px 14px; border-radius: 12px;
+        background: transparent; border: none;
+        font-size: 13px; color: var(--rlZd-text) !important;
         cursor: pointer;
-        transition: background 120ms ease, border-color 120ms ease;
       }
-      #rlZendeskCasesPanel .rlZdTaskRow:hover {
-        background: rgba(255,255,255,0.07); border-color: var(--rlZd-hairline-strong);
+      #rlZendeskCasesPanel .rlZdTaskCard {
+        display: grid; gap: 0; background: rgba(255,255,255,0.78);
+        border: 1px solid rgba(15,23,42,0.08); border-radius: 12px; overflow: hidden;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
       }
+      #rlZendeskCasesPanel .rlZdTaskCard:hover {
+        transform: translateY(-1px); background: rgba(255,255,255,0.92);
+        border-color: rgba(15,23,42,0.14); box-shadow: 0 4px 12px rgba(15,23,42,0.08);
+      }
+      #rlZendeskCasesPanel .rlZdTaskCard.expanded {
+        transform: none; background: rgba(255,255,255,0.92); border-color: rgba(15,23,42,0.14);
+      }
+      /* Status chip — hairline outline, neutral text, coloured dot for the state. */
       #rlZendeskCasesPanel .rlZdTaskStatus {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-width: 56px; padding: 2px 8px; border-radius: 999px;
-        font-size: 10px; font-weight: 700; text-transform: uppercase;
-        letter-spacing: 0.06em; border: 1px solid transparent; white-space: nowrap;
+        display: inline-flex; align-items: center; gap: 6px;
+        height: 22px; box-sizing: border-box; padding: 0 9px 0 8px; border-radius: 999px;
+        font-size: 11px; font-weight: 500; line-height: 1.2; text-transform: capitalize;
+        letter-spacing: 0.01em; color: var(--rlZd-muted); background: transparent;
+        border: 1px solid rgba(15,23,42,0.12); white-space: nowrap; --rlZd-dot: rgba(100,116,139,0.9);
       }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-new { background: rgba(96,165,250,0.15); color: #60a5fa; border-color: rgba(96,165,250,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-open { background: rgba(251,191,36,0.15); color: #fbbf24; border-color: rgba(251,191,36,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-pending { background: rgba(167,139,250,0.15); color: #a78bfa; border-color: rgba(167,139,250,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-hold { background: rgba(251,113,133,0.15); color: #fb7185; border-color: rgba(251,113,133,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-solved { background: rgba(52,211,153,0.15); color: #34d399; border-color: rgba(52,211,153,0.32); }
-      #rlZendeskCasesPanel .rlZdTaskStatus.zd-closed { background: rgba(148,163,184,0.15); color: var(--rlZd-muted2); border-color: var(--rlZd-hairline); }
-      #rlZendeskCasesPanel .rlZdTaskMiddle { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
+      #rlZendeskCasesPanel .rlZdTaskStatus::before {
+        content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--rlZd-dot); flex: 0 0 auto;
+      }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-new { --rlZd-dot: var(--rlZd-accent); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-open { --rlZd-dot: var(--rlZd-warn); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-pending { --rlZd-dot: #7c3aed; }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-hold { --rlZd-dot: var(--rlZd-bad); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-solved { --rlZd-dot: var(--rlZd-good); }
+      #rlZendeskCasesPanel .rlZdTaskStatus.zd-closed { --rlZd-dot: rgba(148,163,184,0.95); }
+      #rlZendeskCasesPanel .rlZdTaskMiddle { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow: hidden; }
       #rlZendeskCasesPanel .rlZdTaskSubject {
-        font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-        color: rgba(255,255,255,0.94) !important;
+        font-weight: 650; font-size: 13px; line-height: 16px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+        color: var(--rlZd-text) !important;
       }
       #rlZendeskCasesPanel .rlZdTaskWhen {
-        color: rgba(255,255,255,0.50) !important; font-size: 11px; white-space: nowrap;
+        color: var(--rlZd-muted) !important; font-size: 11px; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis;
       }
       #rlZendeskCasesPanel .rlZdTaskMetaLink {
-        color: rgba(255,255,255,0.50) !important; font-size: 11px; white-space: nowrap;
-        text-decoration: none; padding: 2px 6px; border-radius: 6px;
-        border: 1px solid transparent;
+        color: var(--rlZd-muted) !important; font-size: 11px; white-space: nowrap;
+        text-decoration: none; padding: 3px 8px; border-radius: 999px;
+        border: 1px solid transparent; font-variant-numeric: tabular-nums;
       }
       #rlZendeskCasesPanel .rlZdTaskMetaLink:hover {
         background: var(--rlZd-surface-2); border-color: var(--rlZd-hairline-strong);
-        color: rgba(255,255,255,0.94) !important;
-      }
-      #rlZendeskCasesPanel .rlZdTaskCard {
-        display: grid; gap: 0; background: rgba(255,255,255,0.04);
-        border: 1px solid var(--rlZd-border); border-radius: 8px; overflow: hidden;
+        color: var(--rlZd-text) !important;
       }
       #rlZendeskCasesPanel .rlZdTaskCard > .rlZdTaskRow {
-        background: transparent; border: none; border-radius: 0;
+        background: transparent; border: none;
       }
-      #rlZendeskCasesPanel .rlZdTaskCard.expanded {
-        background: rgba(255,255,255,0.06); border-color: var(--rlZd-hairline-strong);
-      }
-      #rlZendeskCasesPanel .rlZdTaskDetail { padding: 0 12px 12px; display: grid; gap: 10px; }
+      #rlZendeskCasesPanel .rlZdTaskDetail { padding: 0 14px 14px; display: grid; gap: 10px; }
       #rlZendeskCasesPanel .rlZdConvo {
         display: grid; gap: 8px; max-height: 220px; overflow-y: auto; padding: 10px;
-        border-radius: 8px; background: rgba(0,0,0,0.16); border: 1px solid var(--rlZd-border);
+        border-radius: 10px; background: rgba(15,23,42,0.03); border: 1px solid var(--rlZd-hairline);
       }
       #rlZendeskCasesPanel .rlZdConvoShowEarlier {
         align-self: stretch; background: transparent; color: var(--rlZd-accent);
-        border: 1px dashed var(--rlZd-accent-stroke); border-radius: 6px;
+        border: 1px dashed var(--rlZd-accent-stroke); border-radius: 8px;
         padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; text-align: center;
       }
       #rlZendeskCasesPanel .rlZdConvoShowEarlier:hover { background: var(--rlZd-accent-soft); }
-      #rlZendeskCasesPanel .rlZdCompose { display: grid; gap: 8px; padding: 10px; border-radius: 8px;
-        background: rgba(255,255,255,0.035); border: 1px solid var(--rlZd-border); position: relative; }
+      #rlZendeskCasesPanel .rlZdCompose { display: grid; gap: 8px; padding: 10px; border-radius: 10px;
+        background: rgba(15,23,42,0.03); border: 1px solid var(--rlZd-hairline); position: relative; }
       #rlZendeskCasesPanel .rlZdComposeHd {
         font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
         color: var(--rlZd-muted); margin-bottom: 2px;
       }
       #rlZendeskCasesPanel .rlZdMsg {
-        padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.04);
-        border: 1px solid var(--rlZd-border); font-size: 12px; line-height: 1.45;
-        color: rgba(255,255,255,0.94) !important;
+        padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.85);
+        border: 1px solid var(--rlZd-hairline); font-size: 12px; line-height: 1.45;
+        color: var(--rlZd-text) !important;
       }
       #rlZendeskCasesPanel .rlZdMsg.rlZdMsgInternal {
-        background: rgba(251,191,36,0.06); border-color: rgba(251,191,36,0.28);
+        background: rgba(180,83,9,0.06); border-color: rgba(180,83,9,0.25);
       }
       #rlZendeskCasesPanel .rlZdMsgHead {
         display: flex; gap: 8px; align-items: baseline; font-size: 11px; margin-bottom: 4px; flex-wrap: wrap;
@@ -9453,11 +9464,10 @@
       #rlZendeskCasesPanel .rlZdMsgAuthor { font-weight: 700; color: var(--rlZd-text); }
       #rlZendeskCasesPanel .rlZdMsgWhen { color: var(--rlZd-muted2); }
       #rlZendeskCasesPanel .rlZdMsgInternalTag {
-        color: #d97706; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+        color: var(--rlZd-warn); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
         font-size: 10px; padding: 1px 6px; border-radius: 999px;
-        border: 1px solid rgba(251,191,36,0.35); background: rgba(251,191,36,0.1);
+        border: 1px solid rgba(180,83,9,0.35); background: rgba(180,83,9,0.08);
       }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdMsgInternalTag { color: #fbbf24; }
       #rlZendeskCasesPanel .rlZdMsgBody { color: var(--rlZd-text); overflow-wrap: anywhere; }
       #rlZendeskCasesPanel .rlZdMsgBody [style*="color"]:not(a),
       #rlZendeskCasesPanel .rlZdMsgBody font { color: var(--rlZd-text) !important; }
@@ -9474,7 +9484,7 @@
         margin: 8px 0 4px; font-size: 13px; font-weight: 700;
       }
       #rlZendeskCasesPanel .rlZdMsgBody blockquote {
-        margin: 6px 0; padding: 0 0 0 12px; border-left: 2px solid var(--rlZd-hairline);
+        margin: 6px 0; padding: 0 0 0 12px; border-left: 2px solid var(--rlZd-hairline-strong);
         color: var(--rlZd-muted); background: none;
       }
       #rlZendeskCasesPanel .rlZdMsgBody blockquote blockquote {
@@ -9493,7 +9503,7 @@
         border-radius: 6px; padding: 8px 10px; margin: 4px 0; overflow-x: auto;
       }
       #rlZendeskCasesPanel .rlZdMsgBody hr {
-        border: none; border-top: 1px dashed var(--rlZd-hairline); margin: 8px 0;
+        border: none; border-top: 1px dashed var(--rlZd-hairline-strong); margin: 8px 0;
       }
       #rlZendeskCasesPanel .rlZdMsgBody table { border-collapse: collapse; margin: 4px 0; border: none; }
       #rlZendeskCasesPanel .rlZdMsgBody th, #rlZendeskCasesPanel .rlZdMsgBody td {
@@ -9510,7 +9520,7 @@
       }
       #rlZendeskCasesPanel .rlZdMsgAttachments {
         display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding-top: 8px;
-        border-top: 1px dashed var(--rlZd-hairline);
+        border-top: 1px dashed var(--rlZd-hairline-strong);
       }
       #rlZendeskCasesPanel .rlZdMsgImgThumb {
         display: inline-block; line-height: 0; border-radius: 6px; overflow: hidden;
@@ -9520,7 +9530,7 @@
       #rlZendeskCasesPanel .rlZdMsgImgThumb img { max-width: 200px; max-height: 140px; display: block; }
       #rlZendeskCasesPanel .rlZdMsgFile {
         display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
-        border-radius: 6px; background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
+        border-radius: 999px; background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
         color: var(--rlZd-text); text-decoration: none; font-size: 11px; font-weight: 500;
         max-width: 280px; overflow: hidden;
       }
@@ -9530,14 +9540,14 @@
       #rlZendeskCasesPanel .rlZdMsgFileName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       #rlZendeskCasesPanel .rlZdMsgFileSize { color: var(--rlZd-muted2); font-size: 10px; white-space: nowrap; }
       #rlZendeskCasesPanel .rlZdComposeClosed {
-        padding: 12px 14px; border-radius: 8px; background: rgba(148,163,184,0.10);
+        padding: 12px 14px; border-radius: 10px; background: rgba(148,163,184,0.10);
         border: 1px dashed var(--rlZd-hairline-strong); color: var(--rlZd-muted);
         font-size: 12.5px; font-style: italic; text-align: center;
       }
       #rlZendeskCasesPanel .rlZdComposeToolbar { display: flex; gap: 12px; align-items: center; font-size: 12px; }
       #rlZendeskCasesPanel .rlZdReplyKind {
         position: relative; display: inline-grid; grid-template-columns: 1fr 1fr;
-        background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-hairline);
+        background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
         border-radius: 999px; padding: 3px; user-select: none;
       }
       #rlZendeskCasesPanel .rlZdReplyKindThumb {
@@ -9549,7 +9559,7 @@
       }
       #rlZendeskCasesPanel .rlZdReplyKind[data-active="internal"] .rlZdReplyKindThumb {
         transform: translateX(100%);
-        background: rgba(251,191,36,0.18); border-color: rgba(251,191,36,0.4);
+        background: rgba(180,83,9,0.10); border-color: rgba(180,83,9,0.35);
       }
       #rlZendeskCasesPanel .rlZdReplyKindBtn {
         position: relative; z-index: 1; appearance: none; background: transparent; border: none;
@@ -9558,23 +9568,21 @@
       }
       #rlZendeskCasesPanel .rlZdReplyKindBtn:hover { color: var(--rlZd-text); }
       #rlZendeskCasesPanel .rlZdReplyKind[data-active="public"] .rlZdReplyKindBtn.public { color: var(--rlZd-accent); }
-      #rlZendeskCasesPanel .rlZdReplyKind[data-active="internal"] .rlZdReplyKindBtn.internal { color: #d97706; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdReplyKind[data-active="internal"] .rlZdReplyKindBtn.internal { color: #fbbf24; }
+      #rlZendeskCasesPanel .rlZdReplyKind[data-active="internal"] .rlZdReplyKindBtn.internal { color: var(--rlZd-warn); }
       #rlZendeskCasesPanel .rlZdComposeTextarea {
         width: 100%; min-height: 80px; resize: vertical; font: inherit; font-size: 12px; line-height: 1.45;
-        color: var(--rlZd-text); background: var(--rlZd-surface-1); border: 1px solid var(--rlZd-border);
-        border-radius: 6px; padding: 8px 10px; box-sizing: border-box;
+        color: var(--rlZd-text); background: rgba(255,255,255,0.9); border: 1px solid var(--rlZd-border);
+        border-radius: 8px; padding: 8px 10px; box-sizing: border-box;
       }
       #rlZendeskCasesPanel .rlZdComposeRow { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
       #rlZendeskCasesPanel .rlZdComposeStatus { flex: 1; font-size: 11px; color: var(--rlZd-muted2); }
-      #rlZendeskCasesPanel .rlZdComposeStatus.error { color: #e11d48; }
-      #rlZendeskCasesPanel.rlPopoverOnDark .rlZdComposeStatus.error { color: rgba(251,113,133,0.95); }
+      #rlZendeskCasesPanel .rlZdComposeStatus.error { color: var(--rlZd-bad); }
       #rlZendeskCasesPanel .rlZdComposeBtn {
         background: var(--rlZd-accent-soft); color: var(--rlZd-accent);
-        border: 1px solid var(--rlZd-accent-stroke); border-radius: 6px;
+        border: 1px solid var(--rlZd-accent-stroke); border-radius: 999px;
         padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
       }
-      #rlZendeskCasesPanel .rlZdComposeBtn:hover:not(:disabled) { filter: brightness(1.08); }
+      #rlZendeskCasesPanel .rlZdComposeBtn:hover:not(:disabled) { background: rgba(3,105,161,0.14); }
       #rlZendeskCasesPanel .rlZdComposeBtn:disabled { opacity: 0.5; cursor: not-allowed; }
       .rlZdTaskCard.rlZdCardFullscreen {
         display: flex; flex-direction: column; position: fixed; inset: 0; z-index: 12000;
@@ -9647,7 +9655,7 @@
       .rlZdTaskCard.rlZdCardFullscreen .rlZdInlineReplyHint { display: none; }
       .rlZdTaskCard:not(.rlZdCardFullscreen) .rlZdConvo { max-height: none; }
     `;
-    style.dataset.rlZdReady = "1.10.13";
+    style.dataset.rlZdReady = "1.14.14";
   }
 
   function rlZdSanitizeZendeskHtml(rawHtml) {
@@ -10661,7 +10669,7 @@
     const refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
     refreshBtn.className = "rlZdRefresh";
-    refreshBtn.textContent = "↻ Refresh";
+    refreshBtn.textContent = "Refresh";
     refreshBtn.title = "Refresh Zendesk cases";
     head.appendChild(title);
     head.appendChild(refreshBtn);
@@ -10675,9 +10683,7 @@
     const parent = mountCtx.mountParent;
     parent.appendChild(panel);
     rlZdPanelEl = panel;
-    // Always dark PPT surface on this light Rocketlane route (ignore OS light scheme).
-    rlApplyPopoverSurface(panel);
-    panel.classList.add("rlPopoverOnDark");
+    // Light shell like the home panels (v1.14.14); no dark-surface class.
     // CSS body.rlZdCasesActive hides native siblings — no per-node display writes
     // on every ensure (that froze Rocketlane via MutationObserver).
     rlZdHideNativeStatusContent();
