@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.15.1
+// @version      1.15.2
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4285,9 +4285,45 @@
     return RL_HP_TEAM_COOLING.members.some((m) => n === m || n.startsWith(m + " ") || (m.startsWith(n) && n.split(" ").length >= 2));
   }
   function rlHpTeamFilter(projects) {
-    const list = Array.isArray(projects) ? projects : [];
-    return rlHpUi.teamOnly ? list.filter((p) => rlHpIsTeamOwner(p.owner)) : list;
+    let list = Array.isArray(projects) ? projects : [];
+    if (rlHpUi.teamOnly) list = list.filter((p) => rlHpIsTeamOwner(p.owner));
+    const q = rlHpNormName(rlHpUi.query);
+    if (q) {
+      const words = q.split(" ").filter(Boolean);
+      list = list.filter((p) => {
+        const hay = rlHpNormName(p.name + " " + p.id + " " + p.owner + " " + (p.statusLabel || ""));
+        return words.every((w) => hay.includes(w));
+      });
+    }
+    return list;
   }
+  // Search box (v1.15.2): one query filters both panels — every word must
+  // appear in the plant name, id, owner or status. Ctrl+F on the home page
+  // focuses it; Escape clears it. Groups render expanded while searching.
+  function rlHpSetQuery(q, sourceInput) {
+    rlHpUi.query = String(q || "");
+    for (const panel of [rlHpGetOwnerPanel(), rlHpGetMemberPanel()]) {
+      const input = panel && panel.querySelector(".rlhpSearch");
+      if (input && input !== sourceInput && input.value !== rlHpUi.query) input.value = rlHpUi.query;
+    }
+    rlHpRenderPanels();
+  }
+  function rlHpFocusSearch() {
+    const panel = rlHpGetOwnerPanel() || rlHpGetMemberPanel();
+    const input = panel && panel.isConnected ? panel.querySelector(".rlhpSearch") : null;
+    if (!input) return false;
+    try { input.scrollIntoView({ block: "nearest" }); } catch (_) {}
+    input.focus();
+    input.select();
+    return true;
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!(e.key === "f" || e.key === "F") || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (!rlHpIsHomePath(location.pathname)) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "")) && !(t.classList && t.classList.contains("rlhpSearch"))) return;
+    if (rlHpFocusSearch()) e.preventDefault();
+  }, true);
 
   function rlHpIsUserOnProject(raw, userId) {
     const uid = String(userId ?? "").trim();
@@ -4647,6 +4683,7 @@
     sort: "due_asc",
     pinned: { owner: "", member: "" },
     teamOnly: false,
+    query: "",
     collapsed: new Set(),
     syncing: false,
     error: "",
@@ -4901,7 +4938,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.15.1";
+  const RL_HP_STYLE_READY = "1.15.2";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4933,6 +4970,10 @@
       sel(" .rlhpBtn:hover") + "{background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.16)}",
       sel(" .rlhpBtn:disabled") + "{opacity:0.55;cursor:default}",
       sel(" .rlhpBtnPrimary") + "," + sel(" .rlhpBtn.active") + "{border-color:rgba(3,105,161,0.35);background:linear-gradient(180deg,rgba(3,105,161,0.10),rgba(255,255,255,0.65));color:var(--rlhp-accent)}",
+      sel(" .rlhpSearch") + "{appearance:none;-webkit-appearance:none;height:30px;width:220px;max-width:40vw;padding:0 12px;border:1px solid var(--rlhp-border);border-radius:999px;background:var(--rlhp-surface-2);color:var(--rlhp-text);font:500 12px/1.2 inherit;font-family:inherit;outline:none}",
+      sel(" .rlhpSearch::placeholder") + "{color:rgba(15,23,42,0.45)}",
+      sel(" .rlhpSearch:focus") + "{border-color:rgba(3,105,161,0.45);box-shadow:0 0 0 3px rgba(3,105,161,0.12)}",
+      sel(" .rlhpSearch::-webkit-search-cancel-button") + "{cursor:pointer}",
       sel(" .rlhpBtn.active::before") + "{content:'';width:6px;height:6px;border-radius:50%;background:var(--rlhp-accent);margin-right:6px}",
       sel(" .rlhpStatusLine") + "{color:rgba(15,23,42,0.76);font-size:12.5px;margin:0 0 10px}",
       sel(" .rlhpStatusLine.rlhpErr") + "{color:var(--rlhp-bad)}",
@@ -5408,7 +5449,7 @@
       const ownerProjects = grouped[ownerKey] || [];
       const ownerNorm = rlHpNormalizeOwnerKey(ownerKey);
       const collapseKey = rlHpCollapseKey(sectionId, ownerKey);
-      const collapsed = rlHpUi.collapsed.has(collapseKey) || rlHpUi.collapsed.has(ownerNorm);
+      const collapsed = !rlHpUi.query && (rlHpUi.collapsed.has(collapseKey) || rlHpUi.collapsed.has(ownerNorm));
 
       const ownerHd = document.createElement("div");
       ownerHd.className = "rlhpOwnerHd";
@@ -5529,6 +5570,21 @@
         });
         actions.appendChild(add);
       }
+      const search = document.createElement("input");
+      search.type = "search";
+      search.className = "rlhpSearch";
+      search.placeholder = "Search plants…  (Ctrl+F)";
+      search.setAttribute("aria-label", "Search projects");
+      search.autocomplete = "off";
+      search.spellcheck = false;
+      search.value = rlHpUi.query || "";
+      search.addEventListener("input", () => rlHpSetQuery(search.value, search));
+      search.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); rlHpSetQuery("", search); search.blur(); }
+        else e.stopPropagation();
+      });
+      search.addEventListener("click", (e) => e.stopPropagation());
+      actions.appendChild(search);
       const team = document.createElement("button");
       team.type = "button";
       team.className = "rlhpBtn rlhpTeamBtn";
@@ -5586,6 +5642,7 @@
     const projects = rlHpTeamFilter(allProjects);
     const count = projects.length;
     if (rlHpUi.teamOnly) countLabel = countLabel + " · " + RL_HP_TEAM_COOLING.label;
+    if (rlHpUi.query) countLabel = countLabel + ' · matching "' + rlHpUi.query + '"';
 
     const teamBtn = panel.querySelector(".rlhpTeamBtn");
     if (teamBtn) {
@@ -5619,7 +5676,8 @@
     if (!count && !rlHpUi.syncing) {
       const empty = document.createElement("div");
       empty.className = "rlhpEmpty";
-      empty.textContent = rlHpUi.teamOnly && (allProjects || []).length ? "No Delivery Cooling projects here." : "Nothing here.";
+      empty.textContent = rlHpUi.query ? 'No match for "' + rlHpUi.query + '".'
+        : (rlHpUi.teamOnly && (allProjects || []).length ? "No Delivery Cooling projects here." : "Nothing here.");
       list.appendChild(empty);
       return;
     }
