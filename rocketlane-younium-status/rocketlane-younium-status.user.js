@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.6
+// @version      1.20.0
 // @description  Rocketlane improvements in one script (v1.19.2: Project note white Categories shell + one gray .rlPnoteBox; v1.19.1: Project note panel matches Categories light-gray single-surface card; v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4229,11 +4229,118 @@
       ta.classList.add("rlPtDeco");
     }
   }
+  // ---- Editing a Personal task writes the note back (v1.20.0) ------------
+  // The widget rows are the mirror, so an edit there has to reach the source:
+  // a "<project>: <note>" row saves the project's "Project notes" field, a
+  // "<project> — <task> — <note>" row saves that task's private note. The row
+  // is tied to a source through the two GM mirror maps (rlPnMirror keyed by
+  // project, rlCoNoteMirror keyed by task) via the personal task's id, which
+  // is read from the Redux store by matching the value the row had before the
+  // edit. Renaming the project part is refused — that would move the note to
+  // a different project. After a verified write the shared mirror reconciler
+  // runs, so the row settles on its canonical name.
+  function rlPtFindIdByName(name) {
+    const store = rlPtStore();
+    if (!store) return "";
+    const hit = rlPtStoreData(store).find((t) => String(t?.personalTaskName ?? "") === String(name ?? ""));
+    return hit ? String(hit.personalTaskId ?? "") : "";
+  }
+  function rlPtSourceOf(personalTaskId) {
+    const id = String(personalTaskId ?? "");
+    if (!id) return null;
+    try {
+      const pn = rlPnReadMap();
+      for (const pid of Object.keys(pn)) if (String(pn[pid]?.personalTaskId ?? "") === id) return { kind: "project", projectId: pid };
+    } catch (_) {}
+    try {
+      const co = rlCoReadMirrorMap();
+      for (const tid of Object.keys(co)) if (String(co[tid]?.personalTaskId ?? "") === id) return { kind: "task", taskId: tid };
+    } catch (_) {}
+    return null;
+  }
+  /** Note text carried by a personal task name, or null when the name no longer matches its source. */
+  function rlPtNoteFromName(value, source) {
+    const v = String(value ?? "");
+    if (source.kind === "task") {
+      const m = v.match(/^([\s\S]+?)\s—\s([\s\S]+?)\s—\s([\s\S]+)$/);
+      return m ? m[3] : null;
+    }
+    for (const { name } of rlPtDecoProjectNames()) if (v.startsWith(name + ": ")) return v.slice(name.length + 2);
+    const m = v.match(/^\d[^:]*?: ([\s\S]+)$/);
+    return m ? m[1] : null;
+  }
+  async function rlPtWriteBackProject(pid, noteText) {
+    await rlPnoteLoadFieldMeta();
+    await gmRocketlaneRequest("PUT", "/projects/" + encodeURIComponent(pid), null, rlPnoteBuildPayload(rlPnoteFieldId(), noteText));
+    const after = await rlPnoteFetchProject(pid);
+    if (rlPnoteNormalizeText(after.text) !== rlPnoteNormalizeText(noteText)) throw new Error("Rocketlane stored something else than what was sent.");
+    // The panel may be open on this project — keep it in step instead of letting it overwrite.
+    try {
+      if (rlPnoteState && String(rlPnoteState.projectId) === String(pid) && rlPnoteState.state !== "dirty" && rlPnoteState.state !== "saving") {
+        rlPnoteState.baseline = rlPnoteNormalizeText(after.text);
+        rlPnoteState.draft = rlPnoteState.baseline;
+        rlPnoteState.project = after.project;
+        rlPnoteRender();
+      }
+    } catch (_) {}
+    await rlPnSyncProject(after.project, after.text).catch(() => {});
+    return after;
+  }
+  async function rlPtWriteBackTask(taskId, noteText) {
+    const task = await gmRocketlaneGet("/tasks/" + encodeURIComponent(taskId));
+    const pid = String(task?.project?.projectId ?? task?.project?.id ?? "").trim();
+    if (!pid) throw new Error("No project on task " + taskId + ".");
+    const path = "/projects/" + encodeURIComponent(pid) + "/tasks/" + encodeURIComponent(taskId);
+    await gmRocketlaneRequest("PUT", path + "/mini", null, { privateTaskDescription: rlCoTextToHtml(noteText) });
+    const after = await gmRocketlaneGet(path);
+    if (rlCoHtmlToText(after?.privateTaskDescription ?? "") !== String(noteText).trim()) throw new Error("Rocketlane stored something else than what was sent.");
+    try {
+      const idx = rlCoState.tasks.findIndex((t) => rlCatTaskId(t) === String(taskId));
+      if (idx >= 0) { rlCoState.tasks[idx] = Object.assign({}, rlCoState.tasks[idx], { privateTaskDescription: after?.privateTaskDescription ?? "" }); rlCoRender(); }
+    } catch (_) {}
+    await rlCoMirrorNote(Object.assign({}, task, after), String(noteText).trim()).catch(() => {});
+    return after;
+  }
+  const rlPtWriteBackBusy = new Set();
+  async function rlPtWriteBack(ta, oldValue) {
+    const newValue = String(ta.value ?? "");
+    if (newValue === String(oldValue ?? "") || !newValue.trim()) return;
+    const personalTaskId = rlPtFindIdByName(oldValue);
+    if (!personalTaskId) return;                       // not a row we mirror
+    const source = rlPtSourceOf(personalTaskId);
+    if (!source) return;                               // a personal task of the user's own
+    if (rlPtWriteBackBusy.has(personalTaskId)) return;
+    const note = rlPtNoteFromName(newValue, source);
+    if (note == null) {
+      rlCatToast("Kept the personal task, but the project part changed — the note in Rocketlane was left alone.");
+      return;
+    }
+    rlPtWriteBackBusy.add(personalTaskId);
+    try {
+      if (source.kind === "project") await rlPtWriteBackProject(source.projectId, note);
+      else await rlPtWriteBackTask(source.taskId, note);
+      rlCatToast(source.kind === "project" ? "Project note updated in Rocketlane." : "Private note updated in Rocketlane.");
+    } catch (e) {
+      rlCatToast("Could not write the note back: " + (e?.message || e));
+    } finally {
+      rlPtWriteBackBusy.delete(personalTaskId);
+      rlPtDecoSchedule();
+    }
+  }
+
   let rlPtDecoTimer = null;
   function rlPtDecoSchedule() { if (rlPtDecoTimer) return; rlPtDecoTimer = setTimeout(() => { rlPtDecoTimer = null; try { rlPtDecorate(); } catch (_) {} }, 60); }
   function rlPtDecorateInit() {
-    document.addEventListener("focusin", rlPtDecoSchedule, true);
-    document.addEventListener("focusout", rlPtDecoSchedule, true);
+    const isRow = (el) => !!(el && el.matches && el.matches('textarea[class*="personal-tasks_add_task_input__mod_update"]'));
+    document.addEventListener("focusin", (e) => { if (isRow(e.target)) e.target.dataset.rlPtOld = e.target.value; rlPtDecoSchedule(); }, true);
+    document.addEventListener("focusout", (e) => {
+      if (isRow(e.target) && "rlPtOld" in e.target.dataset) {
+        const ta = e.target, old = ta.dataset.rlPtOld;
+        delete ta.dataset.rlPtOld;
+        setTimeout(() => { void rlPtWriteBack(ta, old); }, 400); // let the widget save the rename first
+      }
+      rlPtDecoSchedule();
+    }, true);
     document.addEventListener("input", (e) => { if (e.target && e.target.matches && e.target.matches("textarea.rlPtDeco")) rlPtDecoSchedule(); }, true);
     window.addEventListener("resize", rlPtDecoSchedule);
     document.addEventListener("click", (e) => {
