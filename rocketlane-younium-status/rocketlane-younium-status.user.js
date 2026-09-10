@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.2
+// @version      1.17.3
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.17.2";
+  const RL_CO_STYLE_READY = "1.17.3";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2802,6 +2802,7 @@
     }
     style.textContent = `
       body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen > *:not([class*="action-bar__ActionBar"]):not(#rlCoPanel) { display: none !important; }
+      body.rlCoActive #rl-floating-chat-panel { display: none !important; } /* the timeline's floating chat stays off the overview (v1.17.3) */
       #rlCoSwitchBtn.rlCoOn { background: rgba(3,105,161,0.12) !important; color: #0369a1 !important; border-color: rgba(3,105,161,0.35) !important; }
       /* Light Rocketlane home chrome — same palette as the home PROJECT OWNER panel (rlHp*). */
       #rlCoPanel {
