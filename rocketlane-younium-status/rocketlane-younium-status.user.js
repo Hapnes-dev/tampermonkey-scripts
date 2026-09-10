@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.19.3
+// @version      1.19.4
 // @description  Rocketlane improvements in one script (v1.19.2: Project note white Categories shell + one gray .rlPnoteBox; v1.19.1: Project note panel matches Categories light-gray single-surface card; v1.19.0: a Project note panel on the project plan, directly above the Categories overview, that reads and writes the project's "Project notes" custom field and keeps the Personal tasks mirror in step; v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.19.3";
+  const RL_CO_STYLE_READY = "1.19.4";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2834,17 +2834,27 @@
       ${sel(" .rlCoBtn.small")} { padding: 4px 10px; font-size: 11px; }
       #rlCoPanel .rlCoStatus { color: var(--co-muted); font-size: 12px; margin: 0 0 12px; }
       #rlCoPanel .rlCoStatus.err { color: var(--co-bad); }
-      /* Project note panel (v1.19.2): white shared shell like #rlCoPanel; one gray
-         .rlPnoteBox (Categories .rlCoBox); textarea flush; Saved footer on shell. */
+      /* Project note panel (v1.19.4): white shared shell; ONE gray .rlPnoteBox;
+         textarea flush (no border/bg — kills the double-box look). !important so
+         a stale TM inject cannot leave a white bordered textarea on top. */
       #${RL_PNOTE_PANEL_ID} { margin-bottom: 0; }
       #${RL_PNOTE_PANEL_ID} .rlCoHd { margin-bottom: 10px; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteBox {
         display: grid; gap: 8px; min-width: 0;
-        background: #f3f5f8; border: 1px solid var(--co-hair); border-radius: 12px; padding: 14px;
+        background: #f3f5f8 !important; border: 1px solid var(--co-hair) !important; border-radius: 12px; padding: 14px;
         box-shadow: 0 1px 2px rgba(15,23,42,0.04);
       }
-      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput { width: 100%; min-height: 84px; resize: vertical; box-sizing: border-box; padding: 0; border: none; border-radius: 0; background: transparent; color: var(--co-text); font: inherit; font-size: 12.5px; line-height: 1.45; }
-      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:focus { outline: none; box-shadow: none; }
+      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput {
+        width: 100%; min-height: 84px; resize: vertical; box-sizing: border-box;
+        padding: 0 !important; border: none !important; border-radius: 0 !important;
+        background: transparent !important; color: var(--co-text);
+        font: inherit; font-size: 12.5px; line-height: 1.45;
+        outline: none !important; box-shadow: none !important;
+        -webkit-appearance: none; appearance: none;
+      }
+      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:focus {
+        outline: none !important; box-shadow: none !important; border: none !important;
+      }
       #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput:disabled { opacity: 0.6; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteFoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteState { font-size: 11.5px; color: var(--co-muted); min-height: 1.2em; }
@@ -4480,14 +4490,21 @@
       host.insertBefore(panel, categoriesPanel);
     }
     const pid = rlCoProjectId();
-    if (fresh || rlPnoteState.projectId !== pid) {
-      rlPnoteResetState(pid);
+    // Rebuild when the shell is missing, the project changed, or an older build
+    // left the Saved footer nested inside .rlPnoteBox (double-box DOM).
+    const box = panel.querySelector(".rlPnoteBox");
+    const nestedFoot = !!(box && box.querySelector(".rlPnoteFoot"));
+    const projectChanged = rlPnoteState.projectId !== pid;
+    const needShell = fresh
+      || projectChanged
+      || !panel.querySelector("textarea.rlPnoteInput")
+      || nestedFoot
+      || panel.querySelector(".rlPnoteFoot")?.parentElement !== panel;
+    if (needShell) {
+      if (fresh || projectChanged) rlPnoteResetState(pid);
       rlPnoteBuildShell(panel);
       rlPnoteRender();
-      void rlPnoteLoad();
-    } else if (!panel.querySelector("textarea.rlPnoteInput")) {
-      rlPnoteBuildShell(panel);
-      rlPnoteRender();
+      if (fresh || projectChanged) void rlPnoteLoad();
     }
     return panel;
   }
