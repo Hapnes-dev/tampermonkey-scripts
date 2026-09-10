@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.17.3
+// @version      1.18.0
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3591,6 +3591,134 @@
     }
     panel.appendChild(grid);
   }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5d. Project notes → Personal tasks (v1.18.0). Every open project the
+  //     current user owns or is a member of (lightV1 with projectOwner /
+  //     teamMembers oneOf me, status isNot 3) whose "Project notes" custom
+  //     field (id 361059, HTML) is non-empty gets one entry in the home page's
+  //     Personal tasks widget: "<project>: <first line of the note>". Runs
+  //     shortly after load and every few minutes (GM-throttled across tabs),
+  //     creates / renames / removes, and never touches personal tasks it did
+  //     not create. Completed projects are never synced. A personal task the
+  //     user deleted by hand is left dead until the note changes.
+  // ════════════════════════════════════════════════════════════════════════
+  const RL_PN_GM_MAP = "rlPnMirror";        // { [projectId]: { personalTaskId, hash, gone? } }
+  const RL_PN_GM_LAST = "rlPnLastSyncAt";
+  const RL_PN_GM_ENABLED = "rlPnEnabled";   // boolean, default true
+  const RL_PN_NOTES_FIELD_ID = 361059;      // "Project notes" (fieldName Projectnotes_361059)
+  const RL_PN_MIN_INTERVAL_MS = 10 * 60 * 1000;
+  const RL_PN_TICK_MS = 5 * 60 * 1000;
+  let rlPnInflight = null;
+
+  function rlPnEnabled() { return GM_getValue(RL_PN_GM_ENABLED, true) !== false; }
+  function rlPnReadMap() {
+    try { const j = JSON.parse(GM_getValue(RL_PN_GM_MAP, "") || "{}"); return j && typeof j === "object" ? j : {}; } catch (_) { return {}; }
+  }
+  function rlPnWriteMap(map) { try { GM_setValue(RL_PN_GM_MAP, JSON.stringify(map)); } catch (_) {} }
+  function rlPnFilter(field, userId) {
+    return {
+      nativeFields: [{ name: field, operation: "oneOf", value: String(userId), sourceType: "project", order: 0 }],
+      customFields: [],
+      match: "all",
+      nestedFilter: [{ nativeFields: [{ name: "status", operation: "isNot", value: "3", sourceType: "project", order: 0 }], customFields: [], match: "all", nestedFilter: [] }],
+    };
+  }
+  /** Open projects I own or belong to, de-duplicated by id (two filtered lightV1 scans, paged). */
+  async function rlPnFetchMine(userId) {
+    const out = new Map();
+    for (const field of ["teamMembers", "projectOwner"]) {
+      let offset = 0;
+      for (let page = 0; page < 20; page++) {
+        const r = await gmRocketlaneRequest("POST", "/projects/lightV1", { offset: String(offset), limit: "100" }, { sortModel: [], filterModel: {}, filter: rlPnFilter(field, userId) });
+        const rows = Array.isArray(r?.data) ? r.data : [];
+        for (const p of rows) if (p?.projectId != null) out.set(String(p.projectId), p);
+        if (rows.length < 100) break;
+        offset += rows.length;
+      }
+    }
+    return [...out.values()];
+  }
+  function rlPnNoteOf(project) {
+    const f = (Array.isArray(project?.fields) ? project.fields : []).find((x) => Number(x?.fieldId) === RL_PN_NOTES_FIELD_ID);
+    return rlCoHtmlToText(f?.fieldValue ?? "");
+  }
+  function rlPnHash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return String(h); }
+  function rlPnTaskName(project, note) {
+    const first = String(note).split(/\n/).map((l) => l.trim()).find(Boolean) || "";
+    let name = String(project?.projectName ?? "").trim() + ": " + first;
+    if (name.length > 240) name = name.slice(0, 237) + "…";
+    return name;
+  }
+  async function rlPnMaybeSync(force) {
+    if (!rlPnEnabled()) return null;
+    const last = Number(GM_getValue(RL_PN_GM_LAST, 0)) || 0;
+    if (!force && Date.now() - last < RL_PN_MIN_INTERVAL_MS) return null;
+    if (rlPnInflight) return rlPnInflight;
+    rlPnInflight = (async () => {
+      try { return await rlPnSync(); }
+      catch (e) { console.warn("[Rocketlane improvements] project notes → personal tasks failed:", e?.message || e); return null; }
+      finally { rlPnInflight = null; }
+    })();
+    return rlPnInflight;
+  }
+  async function rlPnSync() {
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) return null;
+    try { GM_setValue(RL_PN_GM_LAST, Date.now()); } catch (_) {}
+    const projects = await rlPnFetchMine(userId);
+    const map = rlPnReadMap();
+    const wanted = new Map(); // projectId -> personal task name
+    for (const p of projects) {
+      const note = rlPnNoteOf(p);
+      if (note) wanted.set(String(p.projectId), rlPnTaskName(p, note));
+    }
+    const stats = { projects: projects.length, noted: wanted.size, added: 0, updated: 0, removed: 0, failed: 0 };
+    const is404 = (e) => /HTTP 404/.test(String(e?.message || e));
+    // 1. Projects that dropped out (completed, note cleared, no longer mine) lose their personal task.
+    for (const pid of Object.keys(map)) {
+      if (wanted.has(pid)) continue;
+      const e = map[pid];
+      try {
+        if (e?.personalTaskId && !e.gone) {
+          try { await gmRocketlaneRequest("DELETE", "/personal-tasks/" + encodeURIComponent(e.personalTaskId), null, null); stats.removed += 1; }
+          catch (err) { if (!is404(err)) throw err; }
+        }
+        delete map[pid];
+      } catch (_) { stats.failed += 1; }
+    }
+    // 2. Create or rename. Unchanged names are skipped, which also keeps hand-deleted tasks dead.
+    for (const [pid, name] of wanted) {
+      const hash = rlPnHash(name);
+      const e = map[pid];
+      if (e && e.hash === hash) continue;
+      try {
+        if (e?.personalTaskId && !e.gone) {
+          try {
+            await gmRocketlaneRequest("PUT", "/personal-tasks/" + encodeURIComponent(e.personalTaskId), null, { personalTaskName: name });
+            map[pid] = { personalTaskId: e.personalTaskId, hash };
+            stats.updated += 1;
+            continue;
+          } catch (err) { if (!is404(err)) throw err; }
+        }
+        const created = await gmRocketlaneRequest("POST", "/personal-tasks", null, { personalTaskName: name });
+        const pt = created?.data ?? created;
+        const id = pt?.personalTaskId ?? pt?.id ?? "";
+        if (!id) throw new Error("no personal task id in the response");
+        map[pid] = { personalTaskId: id, hash };
+        stats.added += 1;
+      } catch (_) { stats.failed += 1; }
+    }
+    rlPnWriteMap(map);
+    if (stats.added || stats.updated || stats.removed || stats.failed) {
+      rlCatToast("Project notes → Personal tasks: " + stats.added + " added, " + stats.updated + " updated, " + stats.removed + " removed" + (stats.failed ? ", " + stats.failed + " failed" : "") + ".");
+    }
+    return stats;
+  }
+  rlWhenDomReady(() => {
+    setTimeout(() => void rlPnMaybeSync(false), 8000);
+    setInterval(() => void rlPnMaybeSync(false), RL_PN_TICK_MS);
+  });
 
   // Initial attempts (covers the case where the nav is already present). Waits
   // for the DOM: the script starts at document-start, but this section keeps
