@@ -148,17 +148,22 @@ rejection now names the box as the way through.
 {
   "format": "iwmac-designer-panel",
   "version": 1,
-  "exported_at": "2026-08-06T09:12:00.000Z",
-  "generator": "IWDIE v1.17.0",
+  "exported_at": "2026-09-10T09:12:00.000Z",
+  "generator": "IWDIE v1.22.0",
   "ai_guide": {
-    // v1.17.0 — reading instructions: what to read, in what order, what to skip,
-    // what the coordinates mean, and what not to change. See below.
+    // v1.17.0, rewritten in v1.22.0 — the reading contract: what every key is for,
+    // the field-by-field schema, relationships, identifiers, linking, what to
+    // preserve, how to add, how to validate, worked examples. See below.
   },
   "source_plant_id": "10113",
   "panel_name": "Oversikt",
   "panel_width": "1400px",
   "panel_height": "750px",
   "counts": { "single_objects": 54, "containers": 0, "graphics": 0 },
+  "summary": {
+    // v1.22.0 — facts derived from the panel: object types and how often they
+    // occur, linking counts, units referenced, z-index values, extent
+  },
   "background_embedded": true,
   "background": {
     // v1.17.0 — what the image_data blob is, without opening it
@@ -173,11 +178,57 @@ rejection now names the box as the way through.
     // + converted:"true" when a background is embedded
   },
   "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
-  "image_svg_trace": "<svg …>"               // v1.17.0: last in the file
+  "image_svg_trace": "<svg …>",              // v1.17.0: last in the file
+  "change_log": []                            // v1.22.0: optional, written by an AI that modified the file
 }
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
+
+### The file explains itself (v1.22.0)
+
+The usual round trip is: export a panel, hand the `.json` to a Copilot agent together
+with the plant's parameter list (the userscript's own Excel export) or the equipment
+order, and ask it to analyse the panel, add or relink objects, or build a new panel
+from scratch — then insert what it returns. The agent has no access to this source
+and often no access to the internal reference kit, so since v1.22.0 the file carries
+the whole contract itself. `ai_guide` (guide version 2) holds:
+
+| Section | What it answers |
+|---|---|
+| `purpose`, `how_to_use`, `read_order`, `skip_fields`, `coordinates` | what the file is, how to read it, how to modify it, how to create one; the coordinate system, including container-relative item positions |
+| `file_layout` | every top-level key: type, whether the importer requires it, who sets it, what it means |
+| `schema.panel`, `schema.object_entry`, `schema.container`, `schema.container_item`, `schema.graphic` | field by field: type, required or optional, allowed values, meaning, an example — the 17 object fields, the container keys, the panel keys |
+| `relationships` | how objects, containers, parameters, the background and the counts refer to each other |
+| `identifiers` | how each id is generated or, mostly, *not* generated but copied: `obj_id`, `name`, `unique_id`, `driver_id`, `unit_id`, `plant_id` |
+| `linking` | the unlinked and linked shapes, the parameter-export columns and the object field each one feeds, and the rules that keep an agent from inventing a binding |
+| `z_index` | why the stacking values matter and where to take them from |
+| `when_modifying`, `when_adding_objects`, `when_creating` | what to preserve byte-for-byte, how to add an object or a container, how to turn a unit and parameter list into a panel |
+| `validate_before_returning`, `when_information_is_missing`, `do_not` | the checklist, the rule for unknowns, and what must never be changed or removed |
+| `examples` | an unlinked object, a linked object taken from the file itself, a container, and the smallest complete file the importer accepts |
+| `object_fields`, `constant_fields`, `constant_fields_note`, `structure` | unchanged from v1.17.0–v1.19.0 |
+
+The guide describes the file it is in: a panel whose objects all live in containers
+is told so and pointed at `panel.containers[].items` rather than at an empty
+`panel.single_objects[]` — the misdirection recorded on plant 4731's floor plans.
+
+`summary` is derived from the panel at export time — object types with counts,
+how many objects carry a parameter binding, the units and plant prefixes referenced,
+the z-index values in use, the content extent against the canvas — so a reader can
+orient without counting 94 lines by hand. It is orientation only: the object entries
+are the truth, and an agent that changes the file is told to drop or recompute it.
+
+**Nothing the importer reads moved**, so the format version stays at 1: files
+written before v1.22.0 import unchanged, a file with the guide and one without import
+identically, and an agent may keep or omit `ai_guide` and `summary` in what it returns
+(it must not edit the guide). `change_log` is the one sanctioned place for an agent's
+notes — an optional top-level array the importer ignores. One thing Insert now checks
+that it did not before: when the envelope's `counts` disagree with the array lengths,
+the arrays are used and the mismatch is reported as a warning in the result message,
+because a stale count is the commonest bookkeeping slip in an AI-edited file.
+
+Measured on a 94-object Ventilasjon export, the guide is about 33 kB and the summary
+3 kB; the guide is the same on every export, the summary grows with the object count.
 
 ### Written to be read (v1.17.0)
 
@@ -198,7 +249,8 @@ What actually helps a reader are the two fields added ahead of the panel:
 - **`ai_guide`** — the read order, the coordinate system, the 17 object fields, and
   the rules that get a file rejected. `skip_fields` names the one field worth
   ignoring — the base64 picture — and, when the export carries a trace,
-  `ai_guide.structure` describes that instead of hiding it (see below).
+  `ai_guide.structure` describes that instead of hiding it (see below). Since
+  v1.22.0 it is the complete contract, described above.
 - **`background`** — mime type, pixel size and byte count, read from the image
   header rather than by decoding it. These are the facts a reader would otherwise
   open the blob to get.

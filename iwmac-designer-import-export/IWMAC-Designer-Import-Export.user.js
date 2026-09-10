@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.2
+// @version      1.22.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.21.2';
+var IWDIE_VERSION = '1.22.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -161,40 +161,460 @@ function iwdieBackgroundInfo(dataUrl, orgImageName) {
   };
 }
 
-/**
- * The reading instructions an AI agent needs to work on this file without
- * opening either blob. Sits near the top because that is where an agent that
- * only reads the first part of a large file will look.
+/* ---------- the embedded reading contract (ai_guide) and the export summary ----------
+ *
+ * An export has two kinds of reader: the importer in this script, which reads
+ * structure only, and an AI assistant (a Copilot agent, usually) that is handed
+ * the file together with a plant's parameter list or equipment order and asked
+ * to analyse, extend, relink or rebuild the panel. The assistant has no access
+ * to this source and often none to the reference kit, so the file explains
+ * itself: what every key is for, which values are allowed, how objects relate
+ * to containers, parameters and the background, what must be preserved when a
+ * file is edited, and how a valid file is produced from nothing.
+ *
+ * Everything under ai_guide and summary is documentation and derived fact. The
+ * importer never reads either, so a file that lacks them, or carries a stale
+ * copy, imports exactly the same — which is why the file format version did
+ * not move. The guide has its own version so a reader can tell the generations
+ * apart.
  */
-function iwdieBuildAiGuide(hasBackground, constantFields) {
+
+/** Generation of the embedded guide; independent of IWDIE_FORMAT_VERSION. */
+var IWDIE_AI_GUIDE_VERSION = 2;
+
+/**
+ * One row per object field, in the order the host writes them. The same 17
+ * fields sit on every entry of single_objects[] and of containers[].items[].
+ * Rows are flat on purpose: iwdieStringifyEnvelope() then writes the schema as
+ * one row per line, which reads as a table.
+ */
+var IWDIE_OBJECT_SCHEMA = [
+  { field: 'obj_id', type: 'string', required: 'yes', meaning: 'Which palette object this is (its type). An exact id from the palette catalogue (DESIGN-OBJECT-CATALOG.md) or copied from an existing object; an unknown id draws nothing at all. Case and underscores matter.', example: 'number_v3_60px_dark_no_conn' },
+  { field: 'name', type: 'string', required: 'yes', meaning: 'Sequential label "object_0", "object_1", ... in array order, no gaps or duplicates within single_objects. The importer renumbers it on insert, so it carries no identity: never match objects between files by name.', example: 'object_12' },
+  { field: 'id', type: 'string', required: 'yes', allowed: 'the literal "driver_id"', meaning: 'A host type marker, identical on every object. Not an identifier and not a parameter id. Never change it.', example: 'driver_id' },
+  { field: 'posWidth', type: 'integer (pixels)', required: 'yes', meaning: 'Box width. Copy it from an existing object of the same obj_id; never derive it from how wide the text looks.', example: 62 },
+  { field: 'posHeight', type: 'integer (pixels)', required: 'yes', meaning: 'Box height.', example: 22 },
+  { field: 'posLeft', type: 'integer (pixels)', required: 'yes', meaning: 'X position from the left edge of the canvas (of the container, for a container item). Emit a plain number: a missing or non-numeric value silently lands the object at 0, and a string such as "120px" is read as 120.', example: 1169 },
+  { field: 'posTop', type: 'integer (pixels)', required: 'yes', meaning: 'Y position from the top edge of the canvas (of the container, for a container item).', example: 58 },
+  { field: 'zIndex', type: 'string', required: 'yes', allowed: 'digits as a string ("110"), or "default"', meaning: 'Stacking order; higher paints on top. Copy the value used by objects of the same role in this file. "default" makes array order the stacking order, so a label emitted before a duct disappears under it.', example: '110' },
+  { field: 'tag_text', type: 'string or null', required: 'yes', meaning: 'The visible caption: an instrument code ("RT401 °C"), a header, a label. Objects that show only a value or a symbol ignore it. A single space " " is the palette default on live-value widgets and null occurs on container items; preserve either exactly and never turn one into the other.', example: 'Tilluft' },
+  { field: 'linked', type: 'string', required: 'yes', allowed: '"true" or "false"', meaning: 'Whether the host treats the object as bound. Real exports say "true" on every object, because the host sets it on load whenever driver_id is not the literal "driver_id", even when driver_id is empty. A newly authored unlinked object says "false". It proves nothing about whether the binding is valid.', example: 'true' },
+  { field: 'link_name', type: 'string', required: 'yes', meaning: 'Host bookkeeping: the literal "link_name" on exported objects, "" on newly authored ones. Never a panel name or a destination.', example: 'link_name' },
+  { field: 'link_tag', type: 'string', required: 'yes', meaning: 'IWMAC system tag written by the host tagger (the Tag column of the parameter export); "" or "NA" on most objects. Copy it, never compose one.', example: '' },
+  { field: 'sub_group', type: 'string', required: 'yes', meaning: 'Parameter instance letter ("A", "B") from the parameter source (its SGR column); "" when not tagged.', example: '' },
+  { field: 'driver_id', type: 'string', required: 'yes', meaning: 'The parameter binding: the full plant-prefixed parameter string, "<plant_id>_<DRIVER>_<address>", copied verbatim from one row of the plant parameter source (its Driver ID column). "" on an exported object that is not linked; the literal "driver_id" on a newly authored unlinked object; on sub_page_* navigation objects the numeric id of the target panel ("16"). Never construct, edit, translate or guess one.', example: '10242_AK3_AKC_0_111_0_0_2532' },
+  { field: 'unit_id', type: 'string', required: 'yes', meaning: 'The unit (controller) the parameter belongs to, as the Designer\'s UNITS list names it and the parameter export\'s Unit ID column carries it ("V01", "2180", "000:111"); "" when not linked. The literal string "undefined" occurs in real exports; preserve it.', example: '000:111' },
+  { field: 'unit_ref', type: 'string', required: 'yes', meaning: 'Optional stable unit reference; "" in practically every export. Leave it as found.', example: '' },
+  { field: 'alias_text', type: 'string', required: 'yes', meaning: 'What the signal is, in words: the parameter description shown to the person who links the object, and the key by which a whole panel is relinked on another plant. "new text" is the Designer default on unbound scaffold objects; keep it.', example: 'u17 Ther Air' }
+];
+
+/** One row per container key, as the host writes a plain objects_container. */
+var IWDIE_CONTAINER_SCHEMA = [
+  { field: 'id', type: 'string', required: 'yes', meaning: 'Container kind; "objects_container" on every production container.', example: 'objects_container' },
+  { field: 'unique_id', type: 'string', required: 'yes', meaning: 'MUST contain "custom_" ("custom_30"). A container whose unique_id lacks that substring is silently dropped on insert; the host renumbers it anyway.', example: 'custom_30' },
+  { field: 'name', type: 'string', required: 'yes', meaning: '"objects_container_<n>", renumbered on insert.', example: 'objects_container_30' },
+  { field: 'type', type: 'string', required: 'yes', allowed: '"container_c" (content only), "container_hc" (header + content), "container_hcf" (header, content, footer), "container_cf" (content + footer)', meaning: 'Layout type.', example: 'container_c' },
+  { field: 'container_type', type: 'string', required: 'yes', allowed: '"objects_container" or "table_container"', meaning: 'Flavour. A table_container carries extra keys (num_of_rows, num_of_col, descr_width, val_width, cells, last_y, header_descr) that must be preserved and must not be added to an objects_container.', example: 'objects_container' },
+  { field: 'className', type: 'string', required: 'yes', meaning: 'CSS class; equals container_type on production containers.', example: 'objects_container' },
+  { field: 'header_footer', type: 'array', required: 'yes', meaning: 'Header and footer rows as {type: "header" or "footer", text, function: "none", function_id: "none"}; an empty array on a plain container.', example: '[]' },
+  { field: 'linked', type: 'string', required: 'yes', meaning: 'Host bookkeeping; "0" unless the container is bound to a unit.', example: '0' },
+  { field: 'linked_to', type: 'string', required: 'yes', meaning: 'Host bookkeeping; "0" unless bound.', example: '0' },
+  { field: 'width', type: 'integer (pixels)', required: 'yes', meaning: 'Container box width. Metadata, not a clip: items may extend past it.', example: 52 },
+  { field: 'height', type: 'integer (pixels)', required: 'yes', meaning: 'Container box height.', example: 44 },
+  { field: 'left', type: 'integer (pixels)', required: 'yes', meaning: 'X position of the container on the canvas.', example: 920 },
+  { field: 'top', type: 'integer (pixels)', required: 'yes', meaning: 'Y position of the container on the canvas.', example: 352 },
+  { field: 'zIndex', type: 'integer', required: 'yes', meaning: 'A JSON number here (4), unlike objects, where it is a string.', example: 4 },
+  { field: 'items', type: 'array of object entries', required: 'yes', meaning: 'The objects inside the container: the same 17 fields as single_objects entries, positioned relative to the container. See schema.container_item.', example: '[ {object entry}, ... ]' },
+  { field: 'title', type: 'string', required: 'no', meaning: 'Custom attribute the host adds; "Objects Container" on production containers.', example: 'Objects Container' }
+];
+
+/** One row per key of the panel document, in host order. */
+var IWDIE_PANEL_SCHEMA = [
+  { field: 'plant_id', type: 'string', required: 'no', meaning: 'The plant the panel belongs to ("3157"); "" for a plant-neutral template. The plant number is also the prefix of every parameter driver_id on that plant.', example: '3157' },
+  { field: 'panel_name', type: 'string', required: 'no', meaning: 'The panel name as the Designer shows it.', example: '360.001 Ventilasjon' },
+  { field: 'panel_width', type: 'string (CSS length)', required: 'recommended', meaning: 'Canvas width with the px suffix; "1400px" on a standard panel. Without it the panel size is not applied on insert.', example: '1400px' },
+  { field: 'panel_height', type: 'string (CSS length)', required: 'recommended', meaning: 'Canvas height with the px suffix; "750px" on a standard panel.', example: '750px' },
+  { field: 'org_image_name', type: 'string', required: 'no', meaning: 'Server-side name of the background picture; "" when the panel has none.', example: '00-blank-sidebar-1400x750' },
+  { field: 'image_name', type: 'string', required: 'no', meaning: 'Host bookkeeping, normally "".', example: '' },
+  { field: 'saved_by', type: 'string', required: 'no', meaning: 'Who saved the panel. Write your agent name when you create or modify a file.', example: 'copilot' },
+  { field: 'single_objects', type: 'array of object entries', required: 'yes', meaning: 'Free objects placed directly on the canvas, in creation order. See schema.object_entry.', example: '[ {object entry}, ... ]' },
+  { field: 'containers', type: 'array of containers', required: 'yes', meaning: 'Grouped objects (table rows, room cards). [] on most panels. See schema.container.', example: '[]' },
+  { field: 'graphics', type: 'array', required: 'yes', meaning: 'Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel.', example: '[]' },
+  { field: 'converted', type: 'string', required: 'no', allowed: '"true"', meaning: 'Present as "true" when a background picture is embedded in image_data.', example: 'true' },
+  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'Optional AI-authored background: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert converts it into image_data. Never for a Ventilasjon panel, which is objects-only, and never as a replacement for a supplied raster.', example: '<svg viewBox="0 0 1400 750" ...>' }
+];
+
+/** One row per top-level key of the export file, in file order. */
+function iwdieFileLayout() {
+  return [
+    { key: 'format', type: 'string', required: 'yes', set_by: 'fixed', meaning: 'File type marker, always "' + IWDIE_FORMAT + '". Checked before anything else is read; any other value is refused.' },
+    { key: 'version', type: 'integer', required: 'yes', set_by: 'fixed', meaning: 'File format version, always ' + IWDIE_FORMAT_VERSION + '.' },
+    { key: 'exported_at', type: 'string (ISO 8601)', required: 'no', set_by: 'exporter or agent', meaning: 'When the file was produced.' },
+    { key: 'generator', type: 'string', required: 'no', set_by: 'exporter or agent', meaning: 'Who produced the file: "IWDIE v' + IWDIE_VERSION + '" for an export. Write your own agent name when you generate or modify a file.' },
+    { key: 'ai_guide', type: 'object', required: 'no', set_by: 'exporter', meaning: 'This guide (guide_version ' + IWDIE_AI_GUIDE_VERSION + '). The importer ignores it. Keep it as it is when you return a file, or omit it; never edit it.' },
+    { key: 'source_plant_id', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'The plant the panel came from; the same value as panel.plant_id. Informational.' },
+    { key: 'panel_name', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'Copy of panel.panel_name for readers; keep the two equal.' },
+    { key: 'panel_width', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'Copy of panel.panel_width for readers; keep the two equal.' },
+    { key: 'panel_height', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'Copy of panel.panel_height for readers; keep the two equal.' },
+    { key: 'counts', type: 'object', required: 'recommended', set_by: 'exporter or agent', meaning: '{single_objects, containers, graphics}: the lengths of the three arrays in panel. Recompute after adding or removing anything; the importer warns when they disagree.' },
+    { key: 'summary', type: 'object', required: 'no', set_by: 'exporter', meaning: 'Facts derived from this panel at export time (object types, linking, units, z-index values, extent). Read it to orient; drop it or recompute it when you return a changed file, because a stale summary misleads the next reader.' },
+    { key: 'background_embedded', type: 'boolean', required: 'no', set_by: 'exporter or agent', meaning: 'true when image_data carries the background picture.' },
+    { key: 'background', type: 'object or null', required: 'no', set_by: 'exporter', meaning: 'What the image_data blob is (field, mime, width, height, bytes, source_name) so it never has to be opened.' },
+    { key: 'panel', type: 'object', required: 'yes', set_by: 'exporter or agent', meaning: 'The panel document itself, the only part the importer draws. See schema.panel.' },
+    { key: 'image_data', type: 'string (data URL)', required: 'no', set_by: 'exporter or agent', meaning: 'The background picture as base64, one very long line, deliberately last. Copy it byte-for-byte or omit it; never retype, re-encode or edit it. Older exports carry it inside panel instead; both places are read.' },
+    { key: 'image_svg_trace', type: 'string (SVG markup)', required: 'no', set_by: 'exporter', meaning: 'A coarse vector trace of the background, for reading where things are (see structure). Input only: the importer discards it. Never copy it into image_svg.' },
+    { key: 'change_log', type: 'array', required: 'no', set_by: 'agent', meaning: 'Optional. When you modify a file you may append entries {when, by, change} here. It is the only sanctioned place for notes; the importer ignores it.' }
+  ];
+}
+
+/**
+ * Facts about the panel that a reader would otherwise count by hand: which
+ * palette objects it uses and how often, how many objects carry a parameter
+ * binding and to which units, the z-index values in play, how far the content
+ * reaches. Pure; the importer never reads it.
+ */
+function iwdieSummarizeDoc(doc) {
+  var single = (doc && Array.isArray(doc.single_objects)) ? doc.single_objects : [];
+  var containers = (doc && Array.isArray(doc.containers)) ? doc.containers : [];
+  var graphics = (doc && Array.isArray(doc.graphics)) ? doc.graphics : [];
+  var isObj = function (o) { return o != null && typeof o === 'object' && !Array.isArray(o); };
+  var all = [];          // every object entry, free or contained
+  var placed = [];       // [entry, absoluteLeft, absoluteTop]
+  var itemCount = 0;
+  single.forEach(function (o) {
+    if (!isObj(o)) return;
+    all.push(o);
+    placed.push([o, parseInt(o.posLeft, 10) || 0, parseInt(o.posTop, 10) || 0]);
+  });
+  containers.forEach(function (c) {
+    if (!isObj(c) || !Array.isArray(c.items)) return;
+    var cl = parseInt(c.left, 10) || 0, ct = parseInt(c.top, 10) || 0;
+    c.items.forEach(function (o) {
+      if (!isObj(o)) return;
+      all.push(o);
+      itemCount++;
+      placed.push([o, cl + (parseInt(o.posLeft, 10) || 0), ct + (parseInt(o.posTop, 10) || 0)]);
+    });
+  });
+
+  function tally(list, keyName, pick) {
+    var counts = {}, order = [];
+    list.forEach(function (o) {
+      var v = pick(o);
+      if (v === undefined) return;
+      if (!Object.prototype.hasOwnProperty.call(counts, v)) { counts[v] = 0; order.push(v); }
+      counts[v]++;
+    });
+    order.sort(function (a, b) { return counts[b] - counts[a] || (a < b ? -1 : a > b ? 1 : 0); });
+    return order.map(function (v) { var row = {}; row[keyName] = v; row.objects = counts[v]; return row; });
+  }
+  function str(v) { return v == null ? '' : String(v); }
+
+  var linkedToParameter = 0, navigation = 0, unlinked = 0, other = 0;
+  all.forEach(function (o) {
+    var id = str(o.driver_id);
+    if (/^\d+_/.test(id)) linkedToParameter++;
+    else if (id === '' || id === 'driver_id') unlinked++;
+    else if (/^\d+$/.test(id) && /^sub_page/.test(str(o.obj_id))) navigation++;
+    else other++;
+  });
+
+  var extent = null;
+  placed.forEach(function (p) {
+    var o = p[0], l = p[1], t = p[2];
+    var r = l + (parseInt(o.posWidth, 10) || 0), b = t + (parseInt(o.posHeight, 10) || 0);
+    if (!extent) extent = { min_left: l, min_top: t, max_right: r, max_bottom: b };
+    else {
+      if (l < extent.min_left) extent.min_left = l;
+      if (t < extent.min_top) extent.min_top = t;
+      if (r > extent.max_right) extent.max_right = r;
+      if (b > extent.max_bottom) extent.max_bottom = b;
+    }
+  });
+  var canvasW = doc ? parseInt(doc.panel_width, 10) : NaN;
+  var canvasH = doc ? parseInt(doc.panel_height, 10) : NaN;
+  var outside = 0;
+  if (!isNaN(canvasW) && !isNaN(canvasH)) {
+    placed.forEach(function (p) {
+      var o = p[0];
+      if (p[1] < 0 || p[2] < 0 || p[1] + (parseInt(o.posWidth, 10) || 0) > canvasW || p[2] + (parseInt(o.posHeight, 10) || 0) > canvasH) outside++;
+    });
+  }
+  var withTag = 0, aliases = {}, aliasCount = 0;
+  all.forEach(function (o) {
+    if (str(o.tag_text).trim()) withTag++;
+    var a = str(o.alias_text);
+    if (a && !Object.prototype.hasOwnProperty.call(aliases, a)) { aliases[a] = true; aliasCount++; }
+  });
+
+  return {
+    what: 'Facts derived from this panel when it was exported. Orientation only: the object entries are the truth. Drop or recompute this block when you return a changed file.',
+    objects: {
+      single_objects: single.length,
+      containers: containers.length,
+      container_items: itemCount,
+      graphics: graphics.length,
+      total_object_entries: all.length
+    },
+    object_types_used: tally(all, 'obj_id', function (o) { return str(o.obj_id); }),
+    linking: {
+      linked_to_a_parameter: linkedToParameter,
+      navigation_links: navigation,
+      unlinked: unlinked,
+      other_driver_id_values: other,
+      note: 'linked_to_a_parameter counts driver_id values of the form "<plant>_<DRIVER>_...". It says the binding is present in the file, not that it resolves on the plant.'
+    },
+    units_referenced: tally(all, 'unit_id', function (o) { var u = str(o.unit_id); return u === '' ? undefined : u; }),
+    driver_id_plant_prefixes: tally(all, 'plant_prefix', function (o) { var m = /^(\d+)_/.exec(str(o.driver_id)); return m ? m[1] : undefined; }),
+    z_index_values: tally(all, 'zIndex', function (o) { return o.zIndex == null ? 'missing' : String(o.zIndex); }),
+    text: { objects_with_tag_text: withTag, distinct_alias_texts: aliasCount },
+    extent: {
+      canvas_width: isNaN(canvasW) ? null : canvasW,
+      canvas_height: isNaN(canvasH) ? null : canvasH,
+      min_left: extent ? extent.min_left : null,
+      min_top: extent ? extent.min_top : null,
+      max_right: extent ? extent.max_right : null,
+      max_bottom: extent ? extent.max_bottom : null,
+      objects_outside_canvas: (!isNaN(canvasW) && !isNaN(canvasH)) ? outside : null
+    }
+  };
+}
+
+/** A complete object entry with the values a newly authored, unlinked object carries. */
+function iwdieExampleUnlinkedObject() {
+  return {
+    obj_id: 'number_v3_label_11px_norm', name: 'object_0', id: 'driver_id',
+    posWidth: 100, posHeight: 20, posLeft: 40, posTop: 60, zIndex: '1100',
+    tag_text: 'Tilluft', linked: 'false', link_name: '', link_tag: '', sub_group: '',
+    driver_id: 'driver_id', unit_id: '', unit_ref: '', alias_text: 'Caption above the supply-air value box'
+  };
+}
+
+/** A linked entry taken from this export when it has one, else a shaped template with unmistakable placeholders. */
+function iwdieExampleLinkedObject(doc) {
+  var found = null;
+  iwdieEachDriverId(doc, function (id, obj) { if (!found && /^\d+_/.test(id)) found = obj; });
+  var out = {};
+  if (found) {
+    IWDIE_OBJECT_FIELDS.forEach(function (k) { out[k] = Object.prototype.hasOwnProperty.call(found, k) ? found[k] : ''; });
+    return out;
+  }
+  return {
+    obj_id: 'number_v3_60px_dark_no_conn', name: 'object_1', id: 'driver_id',
+    posWidth: 60, posHeight: 22, posLeft: 1190, posTop: 80, zIndex: '110',
+    tag_text: ' ', linked: 'true', link_name: 'link_name', link_tag: '', sub_group: '',
+    driver_id: '<Driver ID copied verbatim from one row of the parameter source>',
+    unit_id: '<Unit ID of that row>', unit_ref: '',
+    alias_text: '<Alias text of that row>'
+  };
+}
+
+/** The smallest complete file the importer accepts: one label on a blank standard canvas. */
+function iwdieExampleMinimalFile() {
+  var object = iwdieExampleUnlinkedObject();
+  return {
+    format: IWDIE_FORMAT,
+    version: IWDIE_FORMAT_VERSION,
+    generator: '<your agent name>',
+    source_plant_id: '',
+    panel_name: 'Example',
+    panel_width: '1400px',
+    panel_height: '750px',
+    counts: { single_objects: 1, containers: 0, graphics: 0 },
+    background_embedded: false,
+    panel: {
+      plant_id: '', panel_name: 'Example', panel_width: '1400px', panel_height: '750px',
+      org_image_name: '', image_name: '', saved_by: '<your agent name>',
+      single_objects: [object], containers: [], graphics: []
+    }
+  };
+}
+
+/** A plain container holding one item, in host shape. Clone real ones rather than authoring from this. */
+function iwdieExampleContainer() {
+  return {
+    id: 'objects_container', unique_id: 'custom_0', name: 'objects_container_0',
+    type: 'container_c', container_type: 'objects_container', className: 'objects_container',
+    header_footer: [], linked: '0', linked_to: '0',
+    width: 52, height: 44, left: 920, top: 352, zIndex: 4,
+    items: [{
+      obj_id: 'number_v3_label_11px_norm', name: 'object_0', id: 'driver_id',
+      posWidth: 50, posHeight: 20, posLeft: 0, posTop: 0, zIndex: '1100',
+      tag_text: 'Arb. sp.', linked: 'true', link_name: 'link_name', link_tag: '', sub_group: '',
+      driver_id: '', unit_id: '', unit_ref: '', alias_text: 'new text'
+    }],
+    title: 'Objects Container'
+  };
+}
+
+/**
+ * The reading contract an AI agent needs to work on this file without opening
+ * either blob and without access to this source. Sits near the top because
+ * that is where a reader that only reads the first part of a large file looks.
+ *
+ * summary (optional) is the iwdieSummarizeDoc() result for the same document;
+ * with it the guide describes the file it is actually in — a panel whose
+ * objects all live in containers is told so, instead of being sent to an empty
+ * single_objects[] (the failure recorded on plant 4731).
+ */
+function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
   var skip = [];
   if (hasBackground) skip.push('image_data');
+  var s = summary && summary.objects ? summary : null;
+  var hasContainers = !!(s && s.objects.containers > 0);
+  var onlyContainers = !!(s && s.objects.single_objects === 0 && s.objects.container_items > 0);
+
+  var readOrder = ['counts', 'summary', 'background'];
+  if (onlyContainers) readOrder.push('panel.containers[].items');
+  else {
+    readOrder.push('panel.single_objects');
+    if (hasContainers || !s) readOrder.push('panel.containers');
+  }
+
+  var coordinates = 'posLeft and posTop are pixels from the top-left corner of the background picture, which is also the canvas (panel_width x panel_height); posWidth and posHeight are the object box. Free objects in panel.single_objects[] use canvas coordinates directly. Objects inside a container (panel.containers[].items[]) are positioned relative to that container: absolute left = container.left + item.posLeft, absolute top = container.top + item.posTop. Compute absolute positions only to reason about layout; never write them back into an item.';
+  if (onlyContainers) coordinates += ' In this file every object is a container item and panel.single_objects[] is empty, so every object coordinate you read is container-relative.';
+  else if (hasContainers) coordinates += ' This file has both: ' + s.objects.single_objects + ' free objects and ' + s.objects.container_items + ' container items.';
+
   return {
-    purpose: 'IWMAC Designer panel export. The panel is a set of objects positioned absolutely over one background picture.',
-    read_order: ['counts', 'background', 'panel.single_objects', 'panel.containers'],
+    guide_version: IWDIE_AI_GUIDE_VERSION,
+    purpose: 'IWMAC Designer panel export, written by the IWMAC Designer Import/Export userscript. A panel is a set of palette objects placed at pixel positions over one background picture; some panels group objects in containers (table rows, room cards). The same format is what the userscript imports, so a file you return is inserted into the Designer exactly as written.',
+    how_to_use: {
+      reading: 'Read counts and summary for the inventory, background for the picture, then the object arrays. Every object entry has the same 17 fields (schema.object_entry). The fields that differ between objects describe the panel; the ones listed in constant_fields do not.',
+      modifying: 'Change only what the request names, inside panel.single_objects[] and panel.containers[]. Copy every untouched object byte-for-byte, keep array order, recompute counts, keep ai_guide as it is, drop or recompute summary, and return the complete file as a .json attachment. Rules: when_modifying and when_adding_objects.',
+      creating: 'Start from examples.minimal_file, add one object entry per thing to show (when_creating), take obj_id, size and zIndex from a real export of the same panel type, link from the plant parameter source (linking), check validate_before_returning, and answer with raw JSON only.'
+    },
+    read_order: readOrder,
     skip_fields: skip,
     skip_reason: skip.length
       ? 'One very long line of base64. It is placed last so everything above stays readable, and "background" already states its mime, pixel size and byte count.'
       : 'This export carries no embedded picture.',
-    coordinates: 'posLeft and posTop are pixels from the top-left of the background picture; posWidth and posHeight are the object box. There is no nesting or transform — the numbers are absolute.',
+    coordinates: coordinates,
+    file_layout: iwdieFileLayout(),
+    schema: {
+      panel: IWDIE_PANEL_SCHEMA,
+      object_entry: IWDIE_OBJECT_SCHEMA,
+      container: IWDIE_CONTAINER_SCHEMA,
+      container_item: 'The same 17 fields as schema.object_entry, with three differences: posLeft/posTop are relative to the container, tag_text may be null, and names may repeat across containers (identity is the position within the container). zIndex is still a string.',
+      graphic: 'Opaque host records {id, name, attributes, styles, graphic_def, links}. Preserve verbatim when present; never author or edit one.'
+    },
+    relationships: [
+      'object.obj_id -> one entry of the palette catalogue (DESIGN-OBJECT-CATALOG.md): decides what is drawn, whether the object can carry a driver_id, and whether it shows tag_text.',
+      'object.driver_id -> one row of the plant parameter source (the Driver ID column of the parameter export, or a row of the iw_gen_driver_parameters dump). unit_id, alias_text, link_tag and sub_group come from the same row; the plant prefix of the driver_id equals panel.plant_id.',
+      'container.items[] -> objects positioned relative to container.left/top. A container is one row or card of a grid, not a category; the plain objects_container is what production uses.',
+      'counts.* -> the lengths of panel.single_objects, panel.containers and panel.graphics.',
+      'background, image_data, panel.converted, panel.org_image_name -> one background picture; every object position is measured against its pixels (background.width x background.height, normally the canvas size).',
+      'image_svg_trace -> derived from image_data; reading material only, never rendered.',
+      'sub_page_* objects -> driver_id holds the numeric id of the panel they navigate to, not a parameter.',
+      'top-level panel_name, panel_width, panel_height, source_plant_id -> copies of panel.panel_name, panel.panel_width, panel.panel_height, panel.plant_id for readers.'
+    ],
+    identifiers: {
+      obj_id: 'Never generated. Copied from the palette catalogue or from an existing object of the same kind.',
+      name: 'Generated: "object_<index>" in array order from 0 within single_objects. Renumbered on insert, so it never identifies an object between two files; match objects by obj_id, alias_text, tag_text and position instead.',
+      container_unique_id_and_name: '"custom_<n>" and "objects_container_<n>", sequential from 0; unique_id must contain "custom_". Renumbered on insert.',
+      driver_id: 'Never generated. Copied verbatim from one row of the plant parameter source. "" on an exported unlinked object, the literal "driver_id" on a newly authored unlinked object, a numeric panel id on sub_page_* objects (from the Designer panel list).',
+      unit_id: 'Never generated. Copied verbatim from the same parameter row (Unit ID column).',
+      plant_id: 'source_plant_id and panel.plant_id name the plant; "" for a plant-neutral template. When a panel is inserted on another plant the importer offers to rewrite the plant prefix of every driver_id; the rest of the id is plant-specific and only the target plant\'s parameter source can supply it.'
+    },
+    linking: {
+      unlinked_new_object: { id: 'driver_id', driver_id: 'driver_id', linked: 'false', link_name: '', link_tag: '', sub_group: '', unit_id: '', unit_ref: '' },
+      unlinked_exported_object: 'driver_id "" with linked "true" and link_name "link_name" is how the Designer itself writes an object nobody has linked. Leave it as found; do not convert it to the new-object placeholders unless asked for a template.',
+      linked_object: 'driver_id = the parameter string, unit_id = its unit, alias_text = its description, linked "true"; id stays "driver_id" and link_name stays as found. See examples.linked_object.',
+      parameter_source_columns: {
+        'Driver ID': 'object.driver_id, copied verbatim',
+        'Unit ID': 'object.unit_id, copied verbatim',
+        'Unit name': 'which unit (system) the row belongs to; match it to the panel or section, e.g. "360.001 Ventilasjon"',
+        'Alias text': 'object.alias_text, and the text to match a row by',
+        'Tag': 'object.link_tag',
+        'SGR': 'object.sub_group',
+        'Application': '"Analog values" rows feed value boxes; "Digital IO" rows feed LEDs, alarms and state symbols',
+        'Access': 'a setpoint object needs a Read/write row; readings use Read rows',
+        'Eng unit / Type': 'sanity check that the row matches the object\'s role (temperature, %, Pa, boolean)'
+      },
+      rules: [
+        'Copy driver_id and unit_id verbatim from exactly one row; never build, edit, translate or reuse one from another plant.',
+        'Match a row by unit (Unit name), parameter description (Alias text) and object role: readings to value boxes, states to LEDs and alarms, writable rows to setpoint objects.',
+        'linked "true" with a driver_id is only structurally linked. Only a row in the plant\'s own parameter source proves the binding; a familiar suffix or a matching prefix proves nothing.',
+        'A parameter you cannot find stays unlinked: keep the object, give it an alias_text that says what it should show, and report the gap in your answer rather than inside the file.',
+        'Relinking a panel on another plant is done by alias_text against that plant\'s parameter source; the prefix rewrite alone does not make ids resolve.'
+      ]
+    },
+    z_index: {
+      meaning: 'zIndex is stacking order: higher paints on top. Objects carry it as a string of digits, containers as a JSON number. "default" is legal but makes array order the stacking order, which hides labels under ducts and value boxes under artwork.',
+      rule: 'Copy the zIndex of an existing object with the same role in this file (summary.z_index_values lists the values in use). Never emit "default" into a panel whose objects carry numbers, and never reorder a band to fix a geometry problem.',
+      bands_seen_on_ventilation_panels: '5 ducts and headers, 15 dummy arrows, 20 navigation buttons, 40 equipment bodies, 110 value boxes, 375 alarms, LEDs, pumps and valves, 1100 labels. Other panel types use other bands; the supplied file always wins.'
+    },
+    when_modifying: [
+      'Every object you were not asked to change stays byte-for-byte identical: same 17 fields, same values, same JSON types (object zIndex "110" is a string, container zIndex 4 is a number), same whitespace inside strings, same array position.',
+      'Placement and linking are different jobs. A move changes posLeft/posTop only; a resize changes posWidth/posHeight only; a link changes driver_id, unit_id, alias_text and linked only. Do one unless the request asks for both.',
+      'Delete an object by removing its whole entry; never blank its fields. "Remove the parameter" means clear driver_id, unit_id, unit_ref and alias_text and keep the object with its geometry.',
+      'Do not renumber, sort, deduplicate or reorder objects: array order is creation order and, where zIndex is "default", stacking order.',
+      'Do not normalise text: a single-space tag_text, a null tag_text, "new text", "undefined", double spaces, odd encodings and trailing punctuation are real values that round-trip through the Designer.',
+      'Leave image_data, panel.converted, org_image_name, background, image_svg_trace, containers and graphics alone unless the request is about them. A replaced background whose pixel size differs invalidates every stored coordinate.',
+      'Recompute counts after adding or removing anything, and keep the top-level panel_name, panel_width and panel_height equal to panel.*.',
+      'Keys outside this schema are dropped by the Designer on the next export, so never store information in new keys; use change_log for notes.'
+    ],
+    when_adding_objects: [
+      'Clone the most similar existing object (same obj_id and role) from this file or from a production export of the same panel type, then change only what differs: position, tag_text, alias_text, and the binding when a parameter row exists.',
+      'Take obj_id only from the palette catalogue or an existing object; take posWidth, posHeight and zIndex from the cloned object, never from how large the text looks.',
+      'Append at the end of the array with name "object_<next index>". Positions are integers inside the canvas (0..panel_width, 0..panel_height) unless the panel type scrolls (list panels, room-control tables).',
+      'A new unlinked object carries linking.unlinked_new_object values and an alias_text that says what it should show, so a person can link it later.',
+      'Never put a live object over descriptive text; text, icon and value each get their own rectangle.',
+      'To add a container, clone a complete one from this file or a reference export (every key, unique_id containing "custom_"); do not hand-author one from the schema alone.'
+    ],
+    when_creating: [
+      'Start from what the plant has: the unit list and parameter list (the userscript\'s parameter export, columns in linking.parameter_source_columns) or the order and equipment list. One panel usually shows one unit or system ("360.001 Ventilasjon"). Each reading to display becomes one value object, each state one LED, alarm or state object, each caption one label object, each group one header object.',
+      'Copy the geometry of a real export of the same panel type: positions, sizes, zIndex and object vocabulary. Replace only the plant-specific content. A layout invented from the catalogue alone looks nothing like production.',
+      'Set panel.plant_id and source_plant_id to the target plant number when the file is for one plant, or "" for a reusable template; set generator and panel.saved_by to your agent name.',
+      'Link from the parameter source when it is supplied (linking); otherwise leave every object unlinked with a descriptive alias_text and say so in your answer.',
+      'Ventilasjon (360.NNN) panels are objects on the blank sidebar background: never draw ducts or equipment into image_svg. Maskin, Oversikt and curve panels own a raster background that is copied, never redrawn.',
+      'Leave containers and graphics as [] unless the panel type is container-built (list panels, room-control tables); then clone the container structure from a reference export.'
+    ],
+    validate_before_returning: [
+      'format is exactly "' + IWDIE_FORMAT + '" and version is ' + IWDIE_FORMAT_VERSION + '.',
+      'panel is an object holding single_objects, containers and graphics, all three arrays (empty arrays are fine).',
+      'Every object entry, free or in a container, has all 17 fields of schema.object_entry: obj_id is a known palette id, posLeft/posTop/posWidth/posHeight are integers, zIndex is a string, id is "driver_id".',
+      'single_objects names run object_0 .. object_<n-1> with no gaps or duplicates.',
+      'counts.single_objects, counts.containers and counts.graphics equal the array lengths.',
+      'Every container unique_id contains "custom_", its zIndex is a number, and its items follow schema.object_entry.',
+      'Every driver_id and unit_id you wrote is copied from one row of the supplied parameter source; none is invented, edited or taken from another plant.',
+      'No object you were not asked to change differs from the input, and the array order is unchanged.',
+      'Text is UTF-8 ("°C", "æøå"); the file is strict JSON with no comments, trailing commas, single quotes or markdown fences; the first character is "{" and the last is "}"; nothing is truncated or abbreviated. An "..." inside an array makes the whole file unusable.',
+      'A long file is returned as a downloadable .json attachment: a chat answer cut off mid-array cannot be imported.'
+    ],
+    when_information_is_missing: [
+      'Never invent an obj_id, driver_id, unit_id, unit_ref, plant_id, navigation target or coordinate. An invented id looks linked and reads nothing.',
+      'A parameter you cannot resolve stays unlinked: driver_id "driver_id" and linked "false" on a new object, the original binding untouched on an existing one; alias_text says what it should show.',
+      'Unknown size or position: copy from an object of the same obj_id in this file or a reference export; if none exists, say the value is unverified.',
+      'Unknown panel size: "1400px" by "750px" is the standard canvas.',
+      'Open questions, assumptions and gaps go in your chat answer or in change_log, never in new keys inside panel or on an object.',
+      'If you cannot read a knowledge file or the parameter source, say so and stop; do not substitute a document you wrote yourself.'
+    ],
+    examples: {
+      unlinked_new_object: iwdieExampleUnlinkedObject(),
+      linked_object: iwdieExampleLinkedObject(doc),
+      container: iwdieExampleContainer(),
+      minimal_file: iwdieExampleMinimalFile()
+    },
     object_fields: IWDIE_OBJECT_FIELDS,
     constant_fields: constantFields || null,
     constant_fields_note: constantFields
       ? 'These hold the same value on every object in this export. The host requires them, but they say nothing about this panel — read the fields that differ.'
       : 'Every object field varies across this export.',
-    editing: 'Edit values inside panel.single_objects[] and leave every other key exactly as it is. Feed the result back with the "Insert JSON…" button in the userscript.',
     do_not: [
-      'Do not change "format" or invent a new one — it is checked before anything else is read.',
-      'Do not add prose, notes or provenance keys; the importer rejects files that look improvised.',
-      'Do not renumber obj_id, and do not reformat the blob fields.'
+      'Do not change "format" or "version", and do not invent a wrapper, a schema or a format name of your own — "format" is checked before anything else is read.',
+      'Do not edit ai_guide, and do not add prose, notes or provenance keys anywhere except change_log; a file that looks improvised is refused.',
+      'Do not renumber, reorder or deduplicate objects, and do not "fix" overlaps, out-of-canvas containers or odd-looking values you were not asked about.',
+      'Do not construct, translate or copy driver_id or unit_id values across plants; copy them from the target plant\'s parameter source or leave the object unlinked.',
+      'Do not re-encode, redraw or retype image_data, and never copy image_svg_trace into image_svg.',
+      'Do not answer with a description, a plan or a summary of a panel; the deliverable is the complete file.'
     ]
   };
 }
 
 /**
  * Envelope layout is chosen for readers, human and machine: identity first,
- * then the counts and the background label, then the panel itself, and only
- * then the blobs. image_data and image_svg_trace are lifted out of the panel
+ * then the guide, the counts, the summary and the background label, then the
+ * panel itself, and only then the blobs. image_data and image_svg_trace are lifted out of the panel
  * document so they land at the very end of the file instead of in the middle
  * of it — they used to be 80-86% of an export, sitting between the objects and
  * the closing brace. Nothing is dropped, so the file still imports on its own;
@@ -210,12 +630,13 @@ function iwdieBuildEnvelope(doc, meta) {
     if (IWDIE_BLOB_KEYS.indexOf(k) !== -1) continue;
     panel[k] = doc[k];
   }
+  var summary = iwdieSummarizeDoc(doc);
   var env = {
     format: IWDIE_FORMAT,
     version: IWDIE_FORMAT_VERSION,
     exported_at: meta.exported_at || new Date().toISOString(),
     generator: 'IWDIE v' + IWDIE_VERSION,
-    ai_guide: iwdieBuildAiGuide(!!bg, iwdieConstantObjectFields(doc.single_objects)),
+    ai_guide: iwdieBuildAiGuide(!!bg, iwdieConstantObjectFields(doc.single_objects), summary, doc),
     source_plant_id: doc.plant_id != null ? String(doc.plant_id) : null,
     panel_name: doc.panel_name || null,
     panel_width: doc.panel_width || null,
@@ -225,6 +646,7 @@ function iwdieBuildEnvelope(doc, meta) {
       containers: (doc.containers || []).length,
       graphics: (doc.graphics || []).length
     },
+    summary: summary,
     background_embedded: doc.converted === 'true' && !!bg,
     background: bg ? iwdieBackgroundInfo(bg, doc.org_image_name) : null
   };
@@ -595,6 +1017,7 @@ function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
   L.push('- For an unlinked panel: "id" and "driver_id" are the literal string "driver_id", "linked" is the string "false", and link_name / link_tag / sub_group / unit_id / unit_ref are empty strings.');
   L.push('- "counts" must equal the real array lengths.');
   L.push('- The canvas is 1400 x 750. Objects outside it are not visible.');
+  L.push('- Every file the userscript exports carries an "ai_guide" with the complete field-by-field contract, the linking rules and worked examples — read it and follow it. You may keep or omit "ai_guide" and "summary" in your answer; never edit them.');
   L.push('- A 360.001 Ventilasjon panel is objects-only: no image_svg, no image_data, no drawn background.');
   L.push('');
   L.push('Return the corrected JSON file and nothing else.');
@@ -647,6 +1070,28 @@ function iwdieValidateDoc(doc, opts) {
   }
   if (!doc.panel_width || !doc.panel_height) warnings.push('No panel_width/panel_height — panel size will not be applied.');
   return { errors: errors, warnings: warnings };
+}
+
+/**
+ * The envelope's counts against the arrays the importer will actually use.
+ * A mismatch is the commonest bookkeeping slip in an AI-edited file — an
+ * object added, counts left alone — and it never blocks an import, because the
+ * arrays are what gets drawn; it is reported so the file can be fixed.
+ * Returns warning strings; empty when there is nothing to say.
+ */
+function iwdieCheckEnvelopeCounts(meta, doc) {
+  var warnings = [];
+  if (!meta || meta.counts == null || typeof meta.counts !== 'object' || !doc) return warnings;
+  ['single_objects', 'containers', 'graphics'].forEach(function (key) {
+    var declared = meta.counts[key];
+    if (declared == null) return;
+    var actual = Array.isArray(doc[key]) ? doc[key].length : 0;
+    if (Number(declared) !== actual) {
+      warnings.push('counts.' + key + ' says ' + declared + ' but panel.' + key + ' holds ' + actual +
+        ' — the array was used; set counts to the real lengths.');
+    }
+  });
+  return warnings;
 }
 
 /**
@@ -3646,6 +4091,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // A background-only import never reads the object arrays, so a file that
       // carries artwork and nothing else is valid input here.
       var v = iwdieValidateDoc(res.doc, { allowEmpty: bgOnly });
+      v.warnings = v.warnings.concat(iwdieCheckEnvelopeCounts(res.meta, res.doc));
       if (v.errors.length) {
         // A file with artwork and no objects is not a broken export — it is a
         // background-only patch, and the switch above is what it is for. Say so
@@ -3823,7 +4269,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (foreign.length) {
           msg += '\n⚠ ' + foreign.length + ' object(s) still reference drivers from another plant and will not link here.';
         }
-        toast(msg, foreign.length > 0, 9000);
+        var warnings = (v && v.warnings) || [];
+        if (warnings.length) {
+          msg += '\n⚠ ' + warnings.length + ' warning' + (warnings.length === 1 ? '' : 's') + ': ' +
+            warnings.slice(0, 3).join(' | ') + (warnings.length > 3 ? ' | …' : '');
+        }
+        toast(msg, foreign.length > 0 || warnings.length > 0, 9000);
       }
     }
 
@@ -4360,6 +4811,17 @@ if (typeof module !== 'undefined' && module.exports) {
     buildEnvelope: iwdieBuildEnvelope,
     envelopeDoc: iwdieEnvelopeDoc,
     buildAiGuide: iwdieBuildAiGuide,
+    AI_GUIDE_VERSION: IWDIE_AI_GUIDE_VERSION,
+    OBJECT_SCHEMA: IWDIE_OBJECT_SCHEMA,
+    CONTAINER_SCHEMA: IWDIE_CONTAINER_SCHEMA,
+    PANEL_SCHEMA: IWDIE_PANEL_SCHEMA,
+    fileLayout: iwdieFileLayout,
+    summarizeDoc: iwdieSummarizeDoc,
+    exampleUnlinkedObject: iwdieExampleUnlinkedObject,
+    exampleLinkedObject: iwdieExampleLinkedObject,
+    exampleMinimalFile: iwdieExampleMinimalFile,
+    exampleContainer: iwdieExampleContainer,
+    checkEnvelopeCounts: iwdieCheckEnvelopeCounts,
     stringifyEnvelope: iwdieStringifyEnvelope,
     isFlatObject: iwdieIsFlatObject,
     constantObjectFields: iwdieConstantObjectFields,
