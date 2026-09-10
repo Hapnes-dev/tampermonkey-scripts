@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.3
+// @version      1.21.4
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2736,7 +2736,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.21.3";
+  const RL_CO_STYLE_READY = "1.21.4";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2845,6 +2845,17 @@
         box-shadow: 0 1px 2px rgba(15,23,42,0.04);
       }
       /* Drag the bottom edge of the box to resize it (v1.21.2); double-click toggles the two preset sizes. */
+      /* Read view over the textarea so URLs are clickable (v1.21.4); the textarea
+         itself takes over the moment the box is focused, so editing is untouched. */
+      #${RL_PNOTE_PANEL_ID} .rlPnoteWrap { position: relative; min-width: 0; }
+      #${RL_PNOTE_PANEL_ID} textarea.rlPnoteInput.linked { color: transparent !important; caret-color: rgba(15,23,42,0.9); }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteView {
+        position: absolute; inset: 0; pointer-events: none; overflow: hidden;
+        white-space: pre-wrap; overflow-wrap: anywhere; box-sizing: border-box;
+        color: var(--co-text); font: inherit; font-size: 12.5px; line-height: 1.45;
+      }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteView a { pointer-events: auto; color: #0369a1; text-decoration: underline; text-underline-offset: 2px; }
+      #${RL_PNOTE_PANEL_ID} .rlPnoteView a:hover { color: #024d78; }
       #${RL_PNOTE_PANEL_ID} .rlPnoteGrip {
         position: absolute; left: 0; right: 0; bottom: 0; height: 12px; cursor: ns-resize;
         display: flex; align-items: center; justify-content: center; border-radius: 0 0 12px 12px;
@@ -4614,7 +4625,39 @@
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); rlPnoteFlush(false); }
     });
-    box.appendChild(ta);
+    const wrap = document.createElement("div");
+    wrap.className = "rlPnoteWrap";
+    wrap.appendChild(ta);
+    // A read-only copy of the text with real anchors, laid over the textarea. Only the
+    // anchors take clicks: anywhere else the click falls through to the textarea and
+    // puts the caret where it was clicked, so the box still behaves like a text field.
+    const view = document.createElement("div");
+    view.className = "rlPnoteView";
+    view.setAttribute("aria-hidden", "true");
+    wrap.appendChild(view);
+    const syncView = () => {
+      const focused = document.activeElement === ta;
+      const value = ta.value || "";
+      const hasLink = /\b(?:https?:\/\/|www\.)[^\s<>"']+/i.test(value);
+      if (focused || !hasLink) { view.style.display = "none"; ta.classList.remove("linked"); return; }
+      view.style.display = "";
+      ta.classList.add("linked");
+      if (view.dataset.v !== value) {
+        view.textContent = "";
+        const lines = value.split("\n");
+        lines.forEach((line, i) => {
+          if (i > 0) view.appendChild(document.createElement("br"));
+          appendTextWithLinks(view, line, {});
+        });
+        view.dataset.v = value;
+      }
+      view.scrollTop = ta.scrollTop;
+    };
+    ta.addEventListener("focus", syncView);
+    ta.addEventListener("blur", () => setTimeout(syncView, 0));
+    ta.addEventListener("input", syncView);
+    ta.addEventListener("scroll", () => { view.scrollTop = ta.scrollTop; });
+    panel.rlPnoteSyncView = syncView;
     // Grab the bottom edge of the box and drag down to make it taller. The native
     // textarea grip is off (resize:none) — this strip replaces it, is easier to hit,
     // and the height it is left at is remembered like the Expand button's.
@@ -4650,8 +4693,10 @@
       const cur = rlPnoteReadHeight();
       rlPnoteApplyHeight(panel, rlPnoteWriteHeight(cur > RL_PNOTE_MIN_H + 8 ? RL_PNOTE_MIN_H : RL_PNOTE_TALL_H));
     });
+    box.appendChild(wrap);
     box.appendChild(grip);
     panel.appendChild(box);
+    syncView();
 
     const foot = document.createElement("div");
     foot.className = "rlPnoteFoot";
@@ -4702,6 +4747,7 @@
     conflict.hidden = rlPnoteState.state !== "conflict";
     const server = panel.querySelector(".rlPnoteServer");
     if (server) server.textContent = rlPnoteState.conflictText || "(empty)";
+    if (typeof panel.rlPnoteSyncView === "function") panel.rlPnoteSyncView();
   }
 
   async function rlPnoteLoad() {
