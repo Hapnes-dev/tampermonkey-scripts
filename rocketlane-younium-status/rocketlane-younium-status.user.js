@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.22
+// @version      1.15.0
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4296,19 +4296,20 @@
   }
 
   /**
-   * Home "Project Owner" panel: any project current user is on (owner or member)
-   * so multi-owner headers list every project-owner person you work with.
+   * Home "Project Owner" panel (v1.15.0): every open project in the tenant,
+   * grouped by owner — so an owner's count is their real count (Matthias 19),
+   * not just the projects you happen to be on. Completed is dropped by the
+   * server filter and again by rlHpIsHomeListStatus.
    */
   function rlHpShouldKeepOwnerProject(raw, userId) {
     if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
-    return rlHpIsUserOnProject(raw, userId);
+    return true;
   }
 
-  /** Home "In progress" panel: on project as member, not crown owner. */
+  /** Home "In progress" panel (v1.15.0): every project whose Status is In progress, grouped by owner. */
   function rlHpShouldKeepMemberProject(raw, userId) {
     if (!raw || rlHpIsExcludedMetaProject(raw)) return false;
-    if (rlHpIsUserProjectOwner(raw, userId)) return false;
-    return rlHpIsUserOnProject(raw, userId);
+    return rlHpStatusKeyFromLabel(rlHpStatusLabelFromFields(raw?.fields)) === "in_progress";
   }
 
   /** @deprecated Prefer rlHpShouldKeepOwnerProject — on-project alias for owner panel. */
@@ -4482,6 +4483,7 @@
     const id = String(raw?.projectId ?? raw?.id ?? "").trim();
     const name = String(raw?.projectName ?? raw?.name ?? "").trim() || ("Project " + id);
     const owner = rlHpPersonDisplayName(raw?.projectOwner);
+    const ownerId = String(raw?.projectOwner?.userId ?? raw?.projectOwner?.id ?? "").trim();
     const statusLabel = rlHpStatusLabelFromFields(raw?.fields);
     const status = rlHpStatusKeyFromLabel(statusLabel);
     const statusField = (Array.isArray(raw?.fields) ? raw.fields : []).find((f) =>
@@ -4495,6 +4497,7 @@
       id,
       name,
       owner,
+      ownerId,
       ownerKey: rlHpNormalizeOwnerKey(owner) || "no owner",
       status,
       statusLabel,
@@ -4622,7 +4625,7 @@
   let rlHpGen = 0;
   let rlHpUi = {
     sort: "due_asc",
-    pinnedOwner: "",
+    pinned: { owner: "", member: "" },
     collapsed: new Set(),
     syncing: false,
     error: "",
@@ -4636,7 +4639,7 @@
       const raw = GM_getValue(RL_HP_GM_CACHE, "");
       if (!raw) return null;
       const j = JSON.parse(raw);
-      if (!j || String(j.userId) !== String(userId)) return null;
+      if (!j || String(j.userId) !== String(userId) || Number(j.v) !== 2) return null;
       if (!Array.isArray(j.ownerProjects) || !Array.isArray(j.memberProjects)) return null;
       const at = Number(j.at || 0);
       if (!(Date.now() - at < RL_HP_PERSIST_MAX_AGE_MS)) return null;
@@ -4646,7 +4649,7 @@
   function rlHpWritePersistedCache(cache) {
     try {
       GM_setValue(RL_HP_GM_CACHE, JSON.stringify({
-        v: 1, at: cache.at, userId: cache.userId,
+        v: 2, at: cache.at, userId: cache.userId,
         ownerProjects: cache.ownerProjects, memberProjects: cache.memberProjects,
       }));
     } catch (_) {}
@@ -4683,8 +4686,14 @@
 
   function rlHpLoadUiPrefs() {
     try {
-      rlHpUi.pinnedOwner = String(GM_getValue(RL_HP_GM_PINNED, "") || "");
-    } catch (_) { rlHpUi.pinnedOwner = ""; }
+      const raw = GM_getValue(RL_HP_GM_PINNED, "");
+      let parsed = null;
+      if (typeof raw === "string" && raw.trim().startsWith("{")) { try { parsed = JSON.parse(raw); } catch (_) {} }
+      // A plain string is the pre-1.15.0 single pin: it belonged to the owner panel.
+      rlHpUi.pinned = parsed && typeof parsed === "object"
+        ? { owner: String(parsed.owner || ""), member: String(parsed.member || "") }
+        : { owner: String(raw || ""), member: "" };
+    } catch (_) { rlHpUi.pinned = { owner: "", member: "" }; }
     try {
       const raw = GM_getValue(RL_HP_GM_COLLAPSED, "[]");
       const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -4700,9 +4709,11 @@
     try { GM_setValue(RL_HP_GM_COLLAPSED, JSON.stringify([...rlHpUi.collapsed])); } catch (_) {}
   }
 
-  function rlHpSavePinned(ownerKey) {
-    rlHpUi.pinnedOwner = String(ownerKey || "");
-    try { GM_setValue(RL_HP_GM_PINNED, rlHpUi.pinnedOwner); } catch (_) {}
+  function rlHpSavePinned(sectionId, ownerKey) {
+    const id = sectionId === "member" ? "member" : "owner";
+    if (!rlHpUi.pinned) rlHpUi.pinned = { owner: "", member: "" };
+    rlHpUi.pinned[id] = String(ownerKey || "");
+    try { GM_setValue(RL_HP_GM_PINNED, JSON.stringify(rlHpUi.pinned)); } catch (_) {}
   }
 
   function rlHpSaveSort(mode) {
@@ -4719,16 +4730,14 @@
   // owner clause stays in as an "any" so an owner-only project is never lost.
   // An unknown field name is ignored by the API (count stays 872), so a
   // renamed field degrades to the slow full scan, not to an error.
+  // v1.15.0: the panels show the whole tenant's open projects, so the filter is
+  // "status isNot 3 (Completed)" — the same clause the Rocketlane grid sends.
+  // Measured live: 396 of 872 projects in two pages (~4 MB, ~2 s first page).
   function rlHpBuildMineFilter(userId) {
-    const me = String(userId || "").trim();
-    if (!me) return null;
     return {
-      nativeFields: [
-        { name: "teamMembers", operation: "oneOf", value: me, sourceType: "project" },
-        { name: "projectOwner", operation: "oneOf", value: me, sourceType: "project" },
-      ],
+      nativeFields: [{ name: "status", operation: "isNot", value: "3", sourceType: "project" }],
       customFields: [],
-      match: "any",
+      match: "all",
       nestedFilter: [],
     };
   }
@@ -4756,8 +4765,8 @@
       console.warn("[Rocketlane improvements] filtered lightV1 failed, falling back to the full scan:", e?.message || e);
       return rlHpFetchAllLightProjectsUnfiltered();
     }
-    if (filter && typeof first?.count === "number" && first.count > 400) {
-      console.warn("[Rocketlane improvements] lightV1 ignored the member filter (count " + first.count + ") — check the nativeFields names.");
+    if (filter && typeof first?.count === "number" && first.count > 700) {
+      console.warn("[Rocketlane improvements] lightV1 ignored the status filter (count " + first.count + ") — check the nativeFields names.");
     }
     return rlHpCollectLightPages(first, filter);
   }
@@ -5344,17 +5353,17 @@
     const sorted = rlHpSortProjects(projects, rlHpUi.sort);
     const grouped = rlHpGroupProjectsByOwner(sorted);
 
-    if (!rlHpUi.pinnedOwner && sectionId === "owner") {
-      let best = "";
-      let bestCount = 0;
-      for (const [k, arr] of Object.entries(grouped)) {
-        if (k === "No owner") continue;
-        if (arr.length > bestCount) { best = k; bestCount = arr.length; }
-      }
-      if (best) rlHpSavePinned(rlHpNormalizeOwnerKey(best));
+    // No pin yet in this panel: pin your own group (the projects you own), so
+    // your name sits first in both panels until you pin someone else.
+    const sectionKey = sectionId === "member" ? "member" : "owner";
+    if (!rlHpUi.pinned[sectionKey]) {
+      const me = rlHpReadCurrentUserId();
+      const mine = me ? Object.entries(grouped).find(([, arr]) => arr.some((p) => String(p.ownerId) === String(me))) : null;
+      if (mine) rlHpSavePinned(sectionKey, rlHpNormalizeOwnerKey(mine[0]));
     }
+    const pinnedKey = rlHpUi.pinned[sectionKey] || "";
 
-    const ownerKeys = rlHpOrderOwnerKeys(Object.keys(grouped), rlHpUi.pinnedOwner);
+    const ownerKeys = rlHpOrderOwnerKeys(Object.keys(grouped), pinnedKey);
 
     for (const ownerKey of ownerKeys) {
       const ownerProjects = grouped[ownerKey] || [];
@@ -5381,16 +5390,16 @@
       count.textContent = "(" + ownerProjects.length + ")";
       const pin = document.createElement("button");
       pin.type = "button";
-      pin.className = "rlhpPinBtn" + (ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner) ? " pinned" : "");
+      const isPinned = ownerNorm === rlHpNormalizeOwnerKey(pinnedKey);
+      pin.className = "rlhpPinBtn" + (isPinned ? " pinned" : "");
       pin.textContent = "📌";
-      pin.title = ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner)
-        ? "Your group — listed first. Click to unpin."
-        : 'List "' + ownerKey + '" first';
+      pin.title = isPinned
+        ? "Pinned — listed first in this panel. Click to unpin."
+        : 'List "' + ownerKey + '" first in this panel';
       pin.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const isMine = ownerNorm === rlHpNormalizeOwnerKey(rlHpUi.pinnedOwner);
-        rlHpSavePinned(isMine ? "" : ownerNorm);
+        rlHpSavePinned(sectionKey, isPinned ? "" : ownerNorm);
         rlHpRenderPanels();
       });
       left.appendChild(chev);
@@ -5559,7 +5568,7 @@
       rlHpUi.memberProjects,
       "member",
       "No member projects (except Completed).",
-      "project" + ((rlHpUi.memberProjects || []).length === 1 ? "" : "s") + " you joined",
+      "project" + ((rlHpUi.memberProjects || []).length === 1 ? "" : "s") + " in progress · by owner",
     );
   }
 
@@ -5604,13 +5613,13 @@
     const ownerPanel = rlHpEnsurePanelShell(
       RL_HP_PANEL_OWNER_ID,
       "Project Owner",
-      "People who own projects you are on (all statuses except Completed)",
+      "All open projects in Rocketlane, grouped by owner (all statuses except Completed)",
       "owner",
     );
     const memberPanel = rlHpEnsurePanelShell(
       RL_HP_PANEL_MEMBER_ID,
       "In progress",
-      "Projects you were added to as a team member (not owner); all statuses except Completed",
+      "Every project with status In progress, grouped by owner",
       "member",
     );
     rlHpPlacePanels(ownerPanel, memberPanel);
