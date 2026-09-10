@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.19
+// @version      1.14.20
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -10206,18 +10206,10 @@
     subject.className = "rlZdTaskSubject";
     subject.textContent = String(t.subject ?? "(no subject)");
     middle.appendChild(subject);
-    const stampIso = String(t?.lastReplyAt ?? t?.updated_at ?? "").trim();
-    if (stampIso) {
-      const usingReply = !!t?.lastReplyAt;
-      const when = document.createElement("span");
-      when.className = "rlZdTaskWhen";
-      const abs = rlZdAbsTime(stampIso);
-      const rel = rlZdFormatRelativeTimeShort(stampIso);
-      const label = usingReply ? "Last reply " : "Updated ";
-      when.textContent = label + abs + (rel ? " · " + rel : "");
-      when.title = (usingReply ? "Last public reply: " : "Last updated: ") + rlZdFullTime(stampIso);
-      middle.appendChild(when);
-    }
+    const when = document.createElement("span");
+    when.className = "rlZdTaskWhen";
+    rlZdApplyWhen(when, t);
+    middle.appendChild(when);
 
     const idLink = document.createElement("a");
     idLink.className = "rlZdTaskMetaLink";
@@ -10686,36 +10678,93 @@
     container.appendChild(compose);
   }
 
+  // ── Speed (v1.14.20) ──
+  // The three searches run in parallel; the list is drawn as soon as they
+  // return (stamped "Updated …" from the search row); the per-ticket
+  // "Last reply …" lookups then run in the background, update each card in
+  // place and reorder the list. A ticket's last public reply is remembered in
+  // GM storage keyed by its updated_at, so unchanged tickets need no comments
+  // request on later visits, and the last list per plant is kept for the
+  // session so re-opening the tab paints instantly before refreshing.
+  const RL_ZD_GM_REPLY_CACHE = "rlZdReplyAtCache";
+  const RL_ZD_REPLY_CACHE_MAX = 600;
+  const rlZdTicketsSessionCache = new Map(); // plantId -> { at, tickets }
+  function rlZdReadReplyCache() {
+    try {
+      const j = JSON.parse(GM_getValue(RL_ZD_GM_REPLY_CACHE, "") || "{}");
+      return j && typeof j === "object" && !Array.isArray(j) ? j : {};
+    } catch (_) { return {}; }
+  }
+  function rlZdWriteReplyCache(map) {
+    try {
+      const keys = Object.keys(map);
+      if (keys.length > RL_ZD_REPLY_CACHE_MAX) {
+        keys.sort((a, b) => (Number(map[a]?.t) || 0) - (Number(map[b]?.t) || 0));
+        for (const k of keys.slice(0, keys.length - RL_ZD_REPLY_CACHE_MAX)) delete map[k];
+      }
+      GM_setValue(RL_ZD_GM_REPLY_CACHE, JSON.stringify(map));
+    } catch (_) {}
+  }
+  function rlZdStamp(t) {
+    return String(t?.lastReplyAt ?? t?.updated_at ?? t?.created_at ?? "").trim();
+  }
+  function rlZdSortTickets(tickets) {
+    return tickets.slice().sort((a, b) => (Date.parse(rlZdStamp(b)) || 0) - (Date.parse(rlZdStamp(a)) || 0));
+  }
+  function rlZdApplyWhen(el, t) {
+    if (!el) return;
+    const stampIso = rlZdStamp(t);
+    if (!stampIso) { el.textContent = ""; el.title = ""; return; }
+    const usingReply = !!t?.lastReplyAt;
+    const abs = rlZdAbsTime(stampIso);
+    const rel = rlZdFormatRelativeTimeShort(stampIso);
+    el.textContent = (usingReply ? "Last reply " : "Updated ") + abs + (rel ? " · " + rel : "");
+    el.title = (usingReply ? "Last public reply: " : "Last updated: ") + rlZdFullTime(stampIso);
+  }
+  function rlZdRenderTicketList(bodyEl, tickets, gen, projectId) {
+    bodyEl.innerHTML = "";
+    const list = document.createElement("div");
+    list.className = "rlZdTaskList";
+    const cards = new Map();
+    for (const t of rlZdSortTickets(tickets)) {
+      const card = rlZdBuildTicketCard(t, bodyEl, gen, projectId);
+      cards.set(String(t.id), card);
+      list.appendChild(card);
+    }
+    bodyEl.appendChild(list);
+    return { list, cards };
+  }
+
   async function rlZdLoadTickets(bodyEl, plantId, plantName, gen, projectId) {
     if (!rlZdGuard(gen, projectId)) return;
-    bodyEl.innerHTML = "";
-    const loading = document.createElement("div");
-    loading.className = "rlZdLoading";
-    loading.textContent = "Loading Zendesk cases…";
-    bodyEl.appendChild(loading);
+    const cached = rlZdTicketsSessionCache.get(String(plantId));
+    if (cached && cached.tickets.length) {
+      rlZdRenderTicketList(bodyEl, cached.tickets, gen, projectId);
+    } else {
+      bodyEl.innerHTML = "";
+      const loading = document.createElement("div");
+      loading.className = "rlZdLoading";
+      loading.textContent = "Loading Zendesk cases…";
+      bodyEl.appendChild(loading);
+    }
 
     try {
       const plantFieldId = await rlZdGetPlantFieldId();
       if (!rlZdGuard(gen, projectId)) return;
       const queries = rlZdBuildSearchQueries(plantId, plantName, plantFieldId);
-      const resultLists = [];
       const trustedIds = new Set();
-      for (const { query, trusted } of queries) {
-        const params = new URLSearchParams({
-          query,
-          sort_by: "updated_at",
-          sort_order: "desc",
-          per_page: "100",
-        });
+      const resultLists = await Promise.all(queries.map(async ({ query, trusted }) => {
+        const params = new URLSearchParams({ query, sort_by: "updated_at", sort_order: "desc", per_page: "100" });
         try {
           const json = await zendeskApiRequest("GET", "/search.json?" + params.toString());
           const results = Array.isArray(json?.results) ? json.results : [];
           if (trusted) for (const r of results) { if (r?.id != null) trustedIds.add(r.id); }
-          resultLists.push(results);
+          return results;
         } catch (e) {
           console.debug("[rlZd] search failed:", query, e?.message ?? e);
+          return [];
         }
-      }
+      }));
       if (!rlZdGuard(gen, projectId)) return;
       const merged = rlZdMergeSearchResults(resultLists);
       const tickets = merged.filter((t) => trustedIds.has(t.id) || rlZdTicketMatchesPlant(t, plantId, plantName, plantFieldId));
@@ -10723,6 +10772,7 @@
         console.debug("[rlZd] dropped " + (merged.length - tickets.length) + " search hits that only mention " + plantId + " in passing");
       }
       if (tickets.length === 0) {
+        rlZdTicketsSessionCache.set(String(plantId), { at: Date.now(), tickets: [] });
         bodyEl.innerHTML = "";
         const empty = document.createElement("div");
         empty.className = "rlZdEmpty";
@@ -10730,24 +10780,35 @@
         bodyEl.appendChild(empty);
         return;
       }
-      await rlZdMapWithConcurrency(tickets, 8, async (t) => {
+
+      // Stamp from the reply cache when the ticket has not changed since; the
+      // rest show "Updated …" until their comments arrive.
+      const replyCache = rlZdReadReplyCache();
+      const missing = [];
+      for (const t of tickets) {
+        const c = replyCache[String(t.id)];
+        if (c && c.u === t.updated_at) t.lastReplyAt = c.r || t.updated_at || null;
+        else { t.lastReplyAt = null; missing.push(t); }
+      }
+      const { list, cards } = rlZdRenderTicketList(bodyEl, tickets, gen, projectId);
+      rlZdTicketsSessionCache.set(String(plantId), { at: Date.now(), tickets });
+      if (!missing.length) return;
+
+      await rlZdMapWithConcurrency(missing, 10, async (t) => {
         const replyAt = await rlZdFetchLastPublicReplyAt(t.id);
+        if (!rlZdGuard(gen, projectId)) return;
         t.lastReplyAt = replyAt || t.updated_at || t.created_at || null;
+        replyCache[String(t.id)] = { u: t.updated_at, r: replyAt || null, t: Date.now() };
+        const card = cards.get(String(t.id));
+        if (card) rlZdApplyWhen(card.querySelector(".rlZdTaskWhen"), t);
       });
       if (!rlZdGuard(gen, projectId)) return;
-
-      const sorted = tickets.slice().sort((a, b) => {
-        const at = Date.parse(String(a?.lastReplyAt ?? a?.updated_at ?? "")) || 0;
-        const bt = Date.parse(String(b?.lastReplyAt ?? b?.updated_at ?? "")) || 0;
-        return bt - at;
-      });
-      bodyEl.innerHTML = "";
-      const list = document.createElement("div");
-      list.className = "rlZdTaskList";
-      for (const t of sorted) {
-        list.appendChild(rlZdBuildTicketCard(t, bodyEl, gen, projectId));
+      rlZdWriteReplyCache(replyCache);
+      // Reorder in place — the nodes move, so an expanded card stays expanded.
+      for (const t of rlZdSortTickets(tickets)) {
+        const card = cards.get(String(t.id));
+        if (card && card.parentElement === list) list.appendChild(card);
       }
-      bodyEl.appendChild(list);
     } catch (e) {
       if (!rlZdGuard(gen, projectId)) return;
       bodyEl.innerHTML = "";
