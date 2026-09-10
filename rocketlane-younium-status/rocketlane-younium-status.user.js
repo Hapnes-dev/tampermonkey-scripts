@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.10
+// @version      1.14.11
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4753,7 +4753,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.14.10";
+  const RL_HP_STYLE_READY = "1.14.11";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4789,7 +4789,7 @@
       sel(" .rlhpStatusLine.rlhpErr") + "{color:var(--rlhp-bad)}",
       sel(" .rlhpEmpty") + "{color:var(--rlhp-muted);font-size:12px;padding:4px 2px}",
       sel(" .rlhpList") + "{max-height:min(50vh,520px);overflow:auto;display:grid;gap:10px;padding-right:2px}",
-      sel(" .rlhpOwnerHd") + "{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 4px;cursor:pointer;border-radius:8px;user-select:none}",
+      sel(" .rlhpOwnerHd") + "{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;height:40px;padding:0 4px;box-sizing:border-box;cursor:pointer;border-radius:8px;user-select:none}",
       sel(" .rlhpOwnerHd:hover") + "{background:rgba(15,23,42,0.04)}",
       sel(" .rlhpOwnerLeft") + "{display:flex;gap:8px;align-items:center;min-width:0}",
       sel(" .rlhpOwnerName") + "{font-weight:650;color:var(--rlhp-text)}",
@@ -4800,23 +4800,23 @@
       sel(" .rlhpPinBtn.pinned") + "{opacity:1;filter:none}",
       sel(" .rlhpSortCluster") + "{display:flex;gap:4px}",
       sel(" .rlhpSortBtn.active") + "{color:var(--rlhp-accent);border-color:rgba(3,105,161,0.28);background:rgba(3,105,161,0.08)}",
-      sel(" .rlhpCard") + "{border:1px solid rgba(15,23,42,0.08);background:rgba(255,255,255,0.78);border-radius:var(--rlhp-radius);padding:12px 14px;display:grid;gap:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.04);transition:transform 120ms ease,background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}",
+      sel(" .rlhpCard") + "{border:1px solid rgba(15,23,42,0.08);background:rgba(255,255,255,0.78);border-radius:var(--rlhp-radius);padding:14px;box-sizing:border-box;height:90px;display:grid;grid-template-rows:16px 22px 8px;align-content:start;gap:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.04);transition:transform 120ms ease,background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}",
       sel(" .rlhpCard:hover") + "{transform:translateY(-1px);background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.14);box-shadow:0 4px 12px rgba(15,23,42,0.08)}",
       sel(" .rlhpCard:focus-visible") + "{outline:2px solid rgba(3,105,161,0.45);outline-offset:2px}",
       sel(" .rlhpRow") + "{display:flex;gap:10px;align-items:center;justify-content:space-between}",
-      sel(" .rlhpName") + "{font-weight:650;font-size:13px;line-height:1.2;word-break:break-word;color:var(--rlhp-text)}",
-      sel(" .rlhpPct") + "{display:inline-flex;align-items:center;font-size:11px;font-variant-numeric:tabular-nums;color:var(--rlhp-muted);font-weight:500;white-space:nowrap;padding:2px 0}",
-      sel(" .rlhpMeta") + "{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}",
+      sel(" .rlhpName") + "{font-weight:650;font-size:13px;line-height:16px;height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rlhp-text)}",
+      sel(" .rlhpPct") + "{display:inline-flex;align-items:center;font-size:11px;line-height:16px;height:16px;font-variant-numeric:tabular-nums;color:var(--rlhp-muted);font-weight:500;white-space:nowrap;padding:0}",
+      sel(" .rlhpMeta") + "{display:flex;flex-wrap:nowrap;gap:12px;align-items:center;height:22px;overflow:hidden}",
       /* Status chip: hairline outline, neutral text, a small coloured dot carries the state — no tinted button look. */
-      sel(" .rlhpTag") + "{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;line-height:1.2;color:var(--rlhp-muted);background:transparent;border:1px solid rgba(15,23,42,0.12);border-radius:999px;padding:3px 9px 3px 8px;--rlhp-dot:rgba(100,116,139,0.9)}",
+      sel(" .rlhpTag") + "{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;line-height:1.2;color:var(--rlhp-muted);background:transparent;border:1px solid rgba(15,23,42,0.12);border-radius:999px;height:22px;box-sizing:border-box;padding:0 9px 0 8px;--rlhp-dot:rgba(100,116,139,0.9)}",
       sel(" .rlhpTag::before") + "{content:'';width:6px;height:6px;border-radius:50%;background:var(--rlhp-dot);flex:0 0 auto}",
       sel(" .rlhpTag.good") + "{--rlhp-dot:var(--rlhp-good)}",
       sel(" .rlhpTag.warn") + "{--rlhp-dot:var(--rlhp-warn)}",
       sel(" .rlhpTag.bad") + "{--rlhp-dot:var(--rlhp-bad)}",
       sel(" .rlhpTag.normal") + "{--rlhp-dot:var(--rlhp-accent)}",
       sel(" .rlhpTag.hold") + "{--rlhp-dot:rgba(148,163,184,0.95)}",
-      sel(" .rlhpDate") + "{font-size:11px;color:var(--rlhp-muted);letter-spacing:0.01em;white-space:nowrap}",
-      sel(" .rlhpProgress") + "{height:6px;width:100%;border-radius:999px;background:rgba(15,23,42,0.22);box-shadow:inset 0 0 0 1px rgba(15,23,42,0.06);overflow:hidden}",
+      sel(" .rlhpDate") + "{font-size:11px;line-height:22px;color:var(--rlhp-muted);letter-spacing:0.01em;white-space:nowrap}",
+      sel(" .rlhpProgress") + "{height:8px;width:100%;border-radius:999px;background:rgba(15,23,42,0.22);box-shadow:inset 0 0 0 1px rgba(15,23,42,0.06);overflow:hidden}",
       sel(" .rlhpBar") + "{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#7dd3fc,#34d399);transition:width 400ms ease}",
       "@media (max-width:720px){" + root + "{margin:12px 0 16px;padding:12px}" + sel(" .rlhpList") + "{max-height:min(70vh,560px)}}",
     ].join("");
