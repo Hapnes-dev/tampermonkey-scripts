@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.14.20
+// @version      1.14.21
 // @description  Rocketlane improvements in one script (v1.14.0: home PROJECTS — two panels under Overdue: Project Owner grouped by owner for on-project rows, In progress member-not-owner; except Completed): Younium order + subscription and Oneflow signing status chips with detail modals on project pages (same verdict engines as the Project Progress Tracker), PPT-style project action buttons (Files pill opens a project-files popover), and a Fetch URLs control left of Present, the "Delivery to service" handover wizard on the Handover to service task card, a hideable Gantt calendar with a toggle button, a floating two-conversation chat panel on the timeline, and a writable Note column on the Projects list (toolbox SQL persistence, clickable links — off by default since v1.4.2).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4455,6 +4455,10 @@
     const owner = rlHpPersonDisplayName(raw?.projectOwner);
     const statusLabel = rlHpStatusLabelFromFields(raw?.fields);
     const status = rlHpStatusKeyFromLabel(statusLabel);
+    const statusField = (Array.isArray(raw?.fields) ? raw.fields : []).find((f) =>
+      String(f?.fieldName ?? "").trim().toLowerCase() === "status" || String(f?.fieldColumnName ?? "").trim().toLowerCase() === "status");
+    const statusValue = statusField && typeof statusField.fieldValue === "number" ? statusField.fieldValue
+      : (statusField && statusField.fieldValue && typeof statusField.fieldValue === "object" && typeof statusField.fieldValue.value === "number" ? statusField.fieldValue.value : null);
     const due = rlHpNormalizeDueDate(raw?.dueDate ?? raw?.endDate ?? raw?.targetDate);
     const start = rlHpNormalizeDueDate(raw?.startDate ?? raw?.startDateActual);
     const progress = rlHpComputeProgressPercent(raw?.progressStatus);
@@ -4465,6 +4469,7 @@
       ownerKey: rlHpNormalizeOwnerKey(owner) || "no owner",
       status,
       statusLabel,
+      statusValue,
       due,
       start,
       progress,
@@ -4820,7 +4825,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.14.11";
+  const RL_HP_STYLE_READY = "1.14.21";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -4883,6 +4888,23 @@
       sel(" .rlhpTag.normal") + "{--rlhp-dot:var(--rlhp-accent)}",
       sel(" .rlhpTag.hold") + "{--rlhp-dot:rgba(148,163,184,0.95)}",
       sel(" .rlhpDate") + "{font-size:11px;line-height:22px;color:var(--rlhp-muted);letter-spacing:0.01em;white-space:nowrap}",
+      /* Status chip doubles as the status picker (v1.14.21). */
+      sel(" .rlhpStatusBtn") + "{appearance:none;font:inherit;font-size:11px;cursor:pointer;color:var(--rlhp-muted)}",
+      sel(" .rlhpStatusBtn::after") + "{content:'\\25BE';font-size:9px;color:rgba(15,23,42,0.45);margin-left:2px}",
+      sel(" .rlhpStatusBtn:hover") + "{border-color:rgba(15,23,42,0.24);background:rgba(15,23,42,0.04)}",
+      sel(" .rlhpStatusBtn.saving") + "{opacity:0.6;cursor:progress}",
+      sel(" .rlhpStatusBtn.failed") + "{border-color:var(--rlhp-bad);color:var(--rlhp-bad)}",
+      ".rlhpStatusMenu{position:fixed;z-index:12000;min-width:190px;background:#fff;border:1px solid rgba(15,23,42,0.12);border-radius:12px;box-shadow:0 12px 32px rgba(15,23,42,0.16);padding:6px;font:12px/1.3 'Segoe UI',system-ui,sans-serif;color:rgba(15,23,42,0.9)}",
+      ".rlhpStatusMenu .rlhpStatusItem{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:none;background:transparent;border-radius:8px;cursor:pointer;text-align:left;font:inherit;color:inherit;--rlhp-dot:rgba(100,116,139,0.9)}",
+      ".rlhpStatusMenu .rlhpStatusItem:hover{background:rgba(15,23,42,0.05)}",
+      ".rlhpStatusMenu .rlhpStatusItem.active{background:rgba(3,105,161,0.08);color:#0369a1}",
+      ".rlhpStatusMenu .rlhpStatusItem::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--rlhp-dot);flex:0 0 auto}",
+      ".rlhpStatusMenu .rlhpStatusItem.good{--rlhp-dot:#059669}",
+      ".rlhpStatusMenu .rlhpStatusItem.warn{--rlhp-dot:#b45309}",
+      ".rlhpStatusMenu .rlhpStatusItem.bad{--rlhp-dot:#e11d48}",
+      ".rlhpStatusMenu .rlhpStatusItem.normal{--rlhp-dot:#0369a1}",
+      ".rlhpStatusMenu .rlhpStatusItem.hold{--rlhp-dot:rgba(148,163,184,0.95)}",
+      ".rlhpStatusMenu .rlhpStatusMenuErr{padding:6px 10px;color:#e11d48;font-size:11px}",
       sel(" .rlhpProgress") + "{height:8px;width:100%;border-radius:999px;background:rgba(15,23,42,0.22);box-shadow:inset 0 0 0 1px rgba(15,23,42,0.06);overflow:hidden}",
       sel(" .rlhpBar") + "{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#7dd3fc,#34d399);transition:width 400ms ease}",
       "@media (max-width:720px){" + root + "{margin:12px 0 16px;padding:12px}" + sel(" .rlhpList") + "{max-height:min(70vh,560px)}}",
@@ -5100,6 +5122,130 @@
     }
   }
 
+  // ── Change project status from the overview (v1.14.21) ──
+  // The chip on each card opens a menu with the tenant's project-status
+  // options; picking one PUTs the Status field on the project (the same call
+  // the settings page makes: PUT /projects/{id} {fields:[{fieldId,fieldValue}]}),
+  // updates the card at once and revalidates the lists shortly after, so a
+  // project set to Completed drops out. The Status field id and its options
+  // come from /fields once per day (GM cache) with a fallback of the known
+  // tenant values.
+  const RL_HP_GM_STATUS_META = "rlHpStatusFieldMeta";
+  const RL_HP_STATUS_FALLBACK = {
+    fieldId: 230410,
+    options: [
+      { label: "Proposed", value: 5 }, { label: "In Planning", value: 6 }, { label: "To be Staffed", value: 7 },
+      { label: "In progress", value: 2 }, { label: "On Hold", value: 9 }, { label: "Blocked", value: 4 },
+      { label: "Completed", value: 3 }, { label: "Cancelled", value: 8 },
+    ],
+  };
+  let rlHpStatusMetaInflight = null;
+  async function rlHpGetStatusFieldMeta() {
+    try {
+      const j = JSON.parse(GM_getValue(RL_HP_GM_STATUS_META, "") || "null");
+      if (j && j.fieldId && Array.isArray(j.options) && j.options.length && Date.now() - Number(j.at || 0) < 24 * 60 * 60 * 1000) return j;
+    } catch (_) {}
+    if (rlHpStatusMetaInflight) return rlHpStatusMetaInflight;
+    rlHpStatusMetaInflight = (async () => {
+      try {
+        const json = await gmRocketlaneGet("/fields");
+        const fields = Array.isArray(json) ? json : (json?.data ?? []);
+        const f = fields.find((x) => String(x?.objectType ?? "").toUpperCase() === "PROJECT" &&
+          String(x?.fieldName ?? "").trim().toLowerCase() === "status");
+        const opts = (f?.metaData?.options || f?.fieldOptions || f?.options || [])
+          .filter((o) => o && o.active !== false && o.label != null && o.value != null)
+          .map((o) => ({ label: String(o.label), value: o.value }));
+        if (f?.fieldId && opts.length) {
+          const meta = { fieldId: f.fieldId, options: opts, at: Date.now() };
+          GM_setValue(RL_HP_GM_STATUS_META, JSON.stringify(meta));
+          return meta;
+        }
+      } catch (e) {
+        console.warn("[Rocketlane improvements] status field lookup failed, using the known values:", e?.message || e);
+      }
+      return RL_HP_STATUS_FALLBACK;
+    })();
+    try { return await rlHpStatusMetaInflight; } finally { rlHpStatusMetaInflight = null; }
+  }
+
+  let rlHpStatusMenuEl = null;
+  function rlHpCloseStatusMenu() {
+    if (rlHpStatusMenuEl) { rlHpStatusMenuEl.remove(); rlHpStatusMenuEl = null; }
+  }
+  document.addEventListener("mousedown", (e) => {
+    if (rlHpStatusMenuEl && !rlHpStatusMenuEl.contains(e.target) && !(e.target.closest && e.target.closest(".rlhpStatusBtn"))) rlHpCloseStatusMenu();
+  }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && rlHpStatusMenuEl) rlHpCloseStatusMenu(); }, true);
+
+  async function rlHpOpenStatusMenu(chipEl, p) {
+    if (rlHpStatusMenuEl && rlHpStatusMenuEl.dataset.projectId === String(p.id)) { rlHpCloseStatusMenu(); return; }
+    rlHpCloseStatusMenu();
+    const menu = document.createElement("div");
+    menu.className = "rlhpStatusMenu";
+    menu.dataset.projectId = String(p.id);
+    menu.setAttribute("role", "menu");
+    const place = () => {
+      const r = chipEl.getBoundingClientRect();
+      const w = menu.offsetWidth || 190, h = menu.offsetHeight || 240;
+      menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+      menu.style.top = (r.bottom + 4 + h > window.innerHeight - 8 ? Math.max(8, r.top - 4 - h) : r.bottom + 4) + "px";
+    };
+    const loading = document.createElement("div");
+    loading.className = "rlhpStatusMenuErr";
+    loading.style.color = "rgba(15,23,42,0.6)";
+    loading.textContent = "Loading…";
+    menu.appendChild(loading);
+    document.body.appendChild(menu);
+    rlHpStatusMenuEl = menu;
+    place();
+    const meta = await rlHpGetStatusFieldMeta();
+    if (rlHpStatusMenuEl !== menu) return;
+    menu.textContent = "";
+    for (const o of meta.options) {
+      const item = document.createElement("button");
+      item.type = "button";
+      const key = rlHpStatusKeyFromLabel(o.label);
+      item.className = "rlhpStatusItem " + rlHpStatusTag(key).cls + (String(o.value) === String(p.statusValue) || o.label === p.statusLabel ? " active" : "");
+      item.setAttribute("role", "menuitem");
+      item.textContent = o.label;
+      item.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        rlHpCloseStatusMenu();
+        void rlHpChangeProjectStatus(p, o, meta, chipEl);
+      });
+      menu.appendChild(item);
+    }
+    place();
+  }
+
+  async function rlHpChangeProjectStatus(p, option, meta, chipEl) {
+    if (!p?.id || !option) return;
+    const prev = { status: p.status, statusLabel: p.statusLabel, statusValue: p.statusValue };
+    chipEl.classList.add("saving");
+    chipEl.classList.remove("failed");
+    chipEl.textContent = option.label;
+    try {
+      await gmRocketlaneRequest("PUT", "/projects/" + encodeURIComponent(p.id), null, {
+        fields: [{ fieldId: meta.fieldId, fieldValue: option.value }],
+      });
+      p.statusLabel = option.label;
+      p.status = rlHpStatusKeyFromLabel(option.label);
+      p.statusValue = option.value;
+      try { if (rlHpCache && rlHpCache.ownerProjects) rlHpWritePersistedCache(rlHpCache); } catch (_) {}
+      rlHpRenderPanels();
+      // Let Rocketlane settle, then pull the lists again so a Completed
+      // project leaves the panels and the sort reflects the new state.
+      setTimeout(() => { try { void rlHpRefresh({ force: true }); } catch (_) {} }, 1500);
+    } catch (e) {
+      p.status = prev.status; p.statusLabel = prev.statusLabel; p.statusValue = prev.statusValue;
+      chipEl.classList.remove("saving");
+      chipEl.classList.add("failed");
+      chipEl.textContent = prev.statusLabel || rlHpStatusTag(prev.status).text;
+      chipEl.title = "Could not change status: " + (e?.message || e);
+      console.warn("[Rocketlane improvements] status change failed", e);
+    }
+  }
+
   function rlHpRenderProjectCard(p) {
     const card = document.createElement("div");
     card.className = "rlhpCard";
@@ -5121,9 +5267,13 @@
     const meta = document.createElement("div");
     meta.className = "rlhpMeta";
     const st = rlHpStatusTag(p.status);
-    const stEl = document.createElement("span");
-    stEl.className = "rlhpTag " + st.cls;
-    stEl.textContent = st.text;
+    const stEl = document.createElement("button");
+    stEl.type = "button";
+    stEl.className = "rlhpTag rlhpStatusBtn " + st.cls;
+    stEl.textContent = p.statusLabel || st.text;
+    stEl.title = "Change project status";
+    stEl.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); void rlHpOpenStatusMenu(stEl, p); });
+    stEl.addEventListener("keydown", (e) => { e.stopPropagation(); });
     meta.appendChild(stEl);
     const startText = rlHpStartText(p.start);
     if (startText) {
