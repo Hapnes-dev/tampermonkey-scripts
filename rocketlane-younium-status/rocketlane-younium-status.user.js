@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.30.0
+// @version      1.30.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -7409,7 +7409,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.30.0";
+  const RL_HP_STYLE_READY = "1.30.1";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -7469,6 +7469,8 @@
       sel(" .rlhpCard.hasNote") + "{height:106px;grid-template-rows:16px 22px 16px 8px}",
       sel(" .rlhpNote") + "{font-size:11.5px;line-height:16px;height:16px;color:var(--rlhp-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.95}",
       sel(" .rlhpNote::before") + "{content:'\\1F4DD';margin-right:5px;opacity:0.75}",
+      sel(" .rlhpNote a") + "{color:var(--rlhp-accent);text-decoration:underline;text-underline-offset:2px}",
+      sel(" .rlhpNote a:hover") + "{color:#024d78}",
       sel(" .rlhpRow") + "{display:flex;gap:10px;align-items:center;justify-content:space-between}",
       sel(" .rlhpName") + "{font-weight:650;font-size:13px;line-height:16px;height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rlhp-text)}",
       sel(" .rlhpPct") + "{display:inline-flex;align-items:center;font-size:11px;line-height:16px;height:16px;font-variant-numeric:tabular-nums;color:var(--rlhp-muted);font-weight:500;white-space:nowrap;padding:0}",
@@ -7892,7 +7894,10 @@
     if (p.note) {
       const note = document.createElement("div");
       note.className = "rlhpNote";
-      note.textContent = p.note;
+      // Real anchors, same linkifier the Project note panel uses. The whole card is a
+      // click target, so a click on a link must not also open the project behind it.
+      appendTextWithLinks(note, p.note, {});
+      note.addEventListener("click", (e) => { if (e.target && e.target.closest && e.target.closest("a")) e.stopPropagation(); }, true);
       card.classList.add("hasNote");
       card.appendChild(note);
       card.title = tip + "\n\n" + p.note;
