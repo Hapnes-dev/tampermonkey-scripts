@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.28.0
+// @version      1.29.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3171,8 +3171,14 @@
     if (none) groups.push(none);
     return groups;
   }
-  /** Tasks in tree order: parents first, children right after their parent. */
-  function rlCoOrderTree(tasks) {
+  /**
+   * Tasks in tree order: parents first, children right after their parent — and in the
+   * order the board shows them. `GET /projects/{id}/tasks` returns its own order, which
+   * is not the board's; the board reads `phase.taskOrder` (top-level task ids) and each
+   * parent's `subTaskOrder`. Anything missing from those lists (a task created after the
+   * order was last written) keeps its API position, after the ordered ones.
+   */
+  function rlCoOrderTree(tasks, phase) {
     const ids = new Set(tasks.map((t) => rlCatTaskId(t)));
     const kids = new Map();
     const roots = [];
@@ -3181,8 +3187,25 @@
       if (p && ids.has(p)) { if (!kids.has(p)) kids.set(p, []); kids.get(p).push(t); }
       else roots.push(t);
     }
+    const LAST = Number.MAX_SAFE_INTEGER;
+    const rankBy = (list) => {
+      const idx = new Map();
+      (Array.isArray(list) ? list : []).forEach((id, i) => idx.set(String(id), i));
+      // Array.sort is stable, so equal ranks keep the order the API gave us.
+      return (t) => (idx.has(rlCatTaskId(t)) ? idx.get(rlCatTaskId(t)) : LAST);
+    };
+    const rootRank = rankBy(phase?.taskOrder);
+    roots.sort((a, b) => rootRank(a) - rootRank(b));
     const out = [];
-    const walk = (t, depth) => { out.push({ task: t, depth }); for (const c of kids.get(rlCatTaskId(t)) || []) walk(c, depth + 1); };
+    const walk = (t, depth) => {
+      out.push({ task: t, depth });
+      const children = kids.get(rlCatTaskId(t)) || [];
+      if (children.length > 1) {
+        const kidRank = rankBy(t?.subTaskOrder);
+        children.sort((a, b) => kidRank(a) - kidRank(b));
+      }
+      for (const c of children) walk(c, depth + 1);
+    };
     for (const r of roots) walk(r, 0);
     return out;
   }
@@ -3880,7 +3903,7 @@
           empty.textContent = "No tasks yet.";
           list.appendChild(empty);
         }
-        for (const { task, depth } of rlCoOrderTree(g.tasks)) {
+        for (const { task, depth } of rlCoOrderTree(g.tasks, g.phase)) {
           const st = rlCoStatusOf(task);
           const id = rlCatTaskId(task);
           const row = document.createElement("div");
