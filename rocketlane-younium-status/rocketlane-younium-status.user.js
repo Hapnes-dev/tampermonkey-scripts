@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.23.1
+// @version      1.24.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2766,7 +2766,7 @@
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
-  const RL_CO_STYLE_READY = "1.21.4";
+  const RL_CO_STYLE_READY = "1.24.0";
   const RL_CO_GM_NOTE_MIRROR = "rlCoNoteMirror";      // { [taskId]: { personalTaskId } }
   const RL_CO_GM_NOTE_MIRROR_ON = "rlCoNoteMirrorOn"; // boolean, default true
   const RL_CO_STATUS = [
@@ -2839,6 +2839,20 @@
     const sel = (suffix) => rlPnotePanelSelector(suffix, RL_PNOTE_SHELL_ROOTS);
     style.textContent = `
       body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen > *:not([class*="action-bar__ActionBar"]):not(#rlCoPanel):not(#${RL_PNOTE_PANEL_ID}) { display: none !important; }
+      /* The plan wrapper is a fixed-height box inside an overflow:hidden ancestor and the
+         document itself does not scroll, so a tall overview was simply cut off — 1662 px of
+         panel in 900 px of host on project 1454534, with no scrollbar anywhere. Let the
+         wrapper scroll while the overview is up; it reverts the moment it is switched off. */
+      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen {
+        overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+      }
+      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen::-webkit-scrollbar { width: 10px; }
+      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen::-webkit-scrollbar-thumb {
+        background: rgba(15,23,42,0.22); border-radius: 999px; border: 3px solid transparent; background-clip: content-box;
+      }
+      body.rlCoActive [class*="project-plan__Wrapper"] .fullscreen::-webkit-scrollbar-thumb:hover {
+        background: rgba(15,23,42,0.34); background-clip: content-box;
+      }
       body.rlCoActive #rl-floating-chat-panel { display: none !important; } /* the timeline's floating chat stays off the overview (v1.17.3) */
       #rlCoSwitchBtn.rlCoOn { background: rgba(3,105,161,0.12) !important; color: #0369a1 !important; border-color: rgba(3,105,161,0.35) !important; }
       /* Light Rocketlane home chrome — same palette as the home PROJECT OWNER panel (rlHp*). */
