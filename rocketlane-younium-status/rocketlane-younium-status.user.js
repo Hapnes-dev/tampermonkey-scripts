@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.29.0
+// @version      1.29.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2764,6 +2764,27 @@
   // ════════════════════════════════════════════════════════════════════════
   const RL_CO_GM_ACTIVE = "rlCoActive";
   const RL_CO_GM_HIDE_DONE = "rlCoHideCompleted";
+  // Per project, not one flag for the tenant. As a single boolean it was a trap:
+  // hiding finished categories on one project made every other project open with
+  // categories missing, which reads as lost data rather than a filter. A legacy
+  // `true` is ignored on purpose, so nobody inherits the old global state.
+  function rlCoReadHideDone(pid) {
+    try {
+      const raw = GM_getValue(RL_CO_GM_HIDE_DONE, "");
+      if (typeof raw !== "string" || !raw.trim().startsWith("{")) return false;
+      const j = JSON.parse(raw);
+      return !!(j && j[String(pid)]);
+    } catch (_) { return false; }
+  }
+  function rlCoWriteHideDone(pid, on) {
+    let j = {};
+    try {
+      const raw = GM_getValue(RL_CO_GM_HIDE_DONE, "");
+      if (typeof raw === "string" && raw.trim().startsWith("{")) j = JSON.parse(raw) || {};
+    } catch (_) { j = {}; }
+    if (on) j[String(pid)] = true; else delete j[String(pid)];
+    try { GM_setValue(RL_CO_GM_HIDE_DONE, JSON.stringify(j)); } catch (_) {}
+  }
   const RL_CO_GM_EXPANDED = "rlCoExpanded";
   const RL_CO_GM_NOTES_COLLAPSED = "rlCoNotesCollapsed"; // the Private notes window above the grid
   const RL_CO_STYLE_READY = "1.24.0";
@@ -3716,7 +3737,7 @@
     const panel = document.getElementById("rlCoPanel");
     if (!panel) return;
     const pid = rlCoState.projectId;
-    const hideDone = GM_getValue(RL_CO_GM_HIDE_DONE, false) === true;
+    const hideDone = rlCoReadHideDone(pid);
     panel.classList.toggle("hideDone", hideDone);
     panel.textContent = "";
 
@@ -3743,7 +3764,7 @@
     const completeAll = mk("Complete all tasks", "primary", () => void rlCoCompleteMany(allTasks, "this project"), "Mark every open task in the project as completed");
     completeAll.disabled = !openAll || rlCoState.loading;
     tools.appendChild(completeAll);
-    tools.appendChild(mk(hideDone ? "Show completed tasks" : "Hide completed tasks", "", () => { try { GM_setValue(RL_CO_GM_HIDE_DONE, !hideDone); } catch (_) {} rlCoRender(); }));
+    tools.appendChild(mk(hideDone ? "Show completed tasks" : "Hide completed tasks", "", () => { rlCoWriteHideDone(pid, !hideDone); rlCoRender(); }, "Applies to this project only"));
     tools.appendChild(mk("+ Add category", "", () => { try { rlCatOpenAddCategoryDialog(pid); } catch (e) { rlCatToast(String(e?.message || e)); } }, "Add a category (phase) — the Add category / order info dialog"));
     tools.appendChild(mk("Refresh", "", () => void rlCoLoad(true)));
     hd.appendChild(title);
