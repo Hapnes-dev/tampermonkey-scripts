@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.29.1
+// @version      1.29.2
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3171,21 +3171,43 @@
   }
 
   /** Group tasks per phase (board order), extra phases found only on tasks last, then "No category". */
+  /**
+   * Group tasks per phase, **by phase id first**. Two phases in one project can carry
+   * the same name — project 1426801 has two "Refrigeration and freezing systems"
+   * (6087957, 6087958) — and matching on the name alone dumped every one of their
+   * tasks into whichever group registered that name last, leaving the other box
+   * reading "No tasks yet". The name map stays as the fallback for a task that
+   * reports a phase name without an id.
+   */
   function rlCoGroups() {
     const groups = [];
+    const byId = new Map();
     const byName = new Map();
     const norm = (s) => String(s ?? "").trim().toLowerCase();
     for (const ph of rlCoState.phases) {
       const name = rlCatPhaseName(ph) || ("Phase " + rlCatPhaseId(ph));
-      const g = { key: rlCatPhaseId(ph) || norm(name), name, phase: ph, tasks: [] };
+      const id = rlCatPhaseId(ph);
+      const g = { key: id || norm(name), name, phase: ph, tasks: [] };
       groups.push(g);
-      byName.set(norm(name), g);
+      if (id) byId.set(String(id), g);
+      // First phase with a given name wins the name lookup; the duplicates are
+      // still reachable by id, which is what tasks normally carry.
+      if (!byName.has(norm(name))) byName.set(norm(name), g);
     }
     let none = null;
     for (const t of rlCoState.tasks) {
+      const pid = rlCatPhaseId(t?.projectPhase ?? t?.phase);
       const pn = norm(rlCatTaskPhaseName(t));
-      let g = pn ? byName.get(pn) : null;
-      if (!g && pn) { g = { key: "name:" + pn, name: rlCatTaskPhaseName(t), phase: null, tasks: [] }; groups.push(g); byName.set(pn, g); }
+      let g = pid ? byId.get(String(pid)) : null;
+      if (!g && pn) g = byName.get(pn);
+      if (!g && (pid || pn)) {
+        // A phase the project's own phase list did not mention.
+        const name = rlCatTaskPhaseName(t) || ("Phase " + pid);
+        g = { key: pid ? String(pid) : "name:" + pn, name, phase: null, tasks: [] };
+        groups.push(g);
+        if (pid) byId.set(String(pid), g);
+        if (pn && !byName.has(pn)) byName.set(pn, g);
+      }
       if (!g) { if (!none) { none = { key: "none", name: "No category", phase: null, tasks: [] }; } g = none; }
       g.tasks.push(t);
     }
