@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.22.2
+// @version      1.23.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14254,7 +14254,7 @@
     if (!dtsProject) return;
     try { GM_setValue(dtsAnswersKey(dtsProject.rlProjectId), JSON.stringify(dtsProject.answers || {})); } catch (_) {}
   }
-  function dtsToast(msg) {
+  function dtsToast(msg, tone) {
     let el = document.getElementById("dtsToast");
     if (!el) {
       el = document.createElement("div");
@@ -14263,9 +14263,135 @@
       document.body.appendChild(el);
     }
     el.textContent = String(msg || "");
+    el.classList.toggle("dtsToastOk", tone === "ok");
+    el.classList.toggle("dtsToastErr", tone === "err");
     el.classList.add("dtsToastOn");
     clearTimeout(el.__t);
     el.__t = setTimeout(() => el.classList.remove("dtsToastOn"), 6000);
+  }
+
+  /** Replaces the wizard body with what actually happened; the dialog stays open until the user closes it. */
+  function dtsRenderResult(kind, opts) {
+    const body = document.getElementById("dlgDeliveryWizardBody");
+    const footer = document.getElementById("dlgDeliveryWizardFooter");
+    if (!body || !footer) return false;
+    const o = opts || {};
+    body.textContent = "";
+    const wrap = document.createElement("div");
+    wrap.className = "dtsResult " + (kind === "ok" ? "ok" : "err");
+    const hd = document.createElement("div");
+    hd.className = "dtsResultHd";
+    const icon = document.createElement("span");
+    icon.className = "dtsResultIcon";
+    icon.textContent = kind === "ok" ? "✓" : "!";
+    const hdText = document.createElement("span");
+    hdText.textContent = kind === "ok"
+      ? "Zendesk-sak #" + o.ticketId + " er opprettet"
+      : "Saken ble ikke opprettet";
+    hd.appendChild(icon);
+    hd.appendChild(hdText);
+    wrap.appendChild(hd);
+
+    const list = document.createElement("ul");
+    list.className = "dtsResultList";
+    const row = (k, v, href) => {
+      const li = document.createElement("li");
+      const ks = document.createElement("span");
+      ks.className = "k";
+      ks.textContent = k;
+      li.appendChild(ks);
+      if (href) {
+        const a = document.createElement("a");
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = v;
+        li.appendChild(a);
+      } else {
+        const vs = document.createElement("span");
+        vs.textContent = v;
+        li.appendChild(vs);
+      }
+      list.appendChild(li);
+    };
+    if (kind === "ok") {
+      row("Emne", o.subject || "—");
+      row("Lenke", ZENDESK_AGENT_TICKET_URL + o.ticketId, ZENDESK_AGENT_TICKET_URL + o.ticketId);
+      row("Gruppe / status", "IWMAC Support · open");
+      row("Sjekklisten", "lagt inn som offentlig svar");
+      row("Handover to service", o.taskNote || "ikke endret");
+      if (o.popupBlocked) row("Ny fane", "ble blokkert av nettleseren — bruk lenken over");
+      wrap.appendChild(list);
+    } else {
+      row("Emne", o.subject || "—");
+      row("Handover to service", "ikke endret");
+      wrap.appendChild(list);
+      const err = document.createElement("div");
+      err.className = "dtsResultErrBox";
+      err.textContent = String(o.error || "Ukjent feil.");
+      wrap.appendChild(err);
+      const note = document.createElement("div");
+      note.className = "dtsResultNote";
+      note.textContent = "Svarene dine er lagret. Prøv igjen, eller gå tilbake og kopier teksten inn i Zendesk manuelt.";
+      wrap.appendChild(note);
+    }
+    body.appendChild(wrap);
+
+    for (const el of Array.from(footer.children)) {
+      if (el.dataset && el.dataset.dtsResultBtn === "1") { el.remove(); continue; }
+      // Record the original visibility once: rendering a second result screen
+      // (error after error) must not learn "hidden" from the first one.
+      if (el.dataset && !("dtsHidden" in el.dataset)) {
+        el.dataset.dtsHidden = el.style.display === "none" ? "was-none" : "was-shown";
+      }
+      el.style.display = "none";
+    }
+    const mk = (label, onClick) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ynBtn";
+      b.textContent = label;
+      b.dataset.dtsResultBtn = "1";
+      b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onClick(); });
+      return b;
+    };
+    if (kind === "ok") {
+      footer.appendChild(mk("Kopier lenke", () => {
+        const url = ZENDESK_AGENT_TICKET_URL + o.ticketId;
+        try { navigator.clipboard.writeText(url); dtsToast("Lenken er kopiert.", "ok"); }
+        catch (_) { dtsToast("Kunne ikke kopiere — merk lenken over.", "err"); }
+      }));
+      footer.appendChild(mk("Åpne saken", () => {
+        try { window.open(ZENDESK_AGENT_TICKET_URL + encodeURIComponent(o.ticketId), "_blank", "noopener"); }
+        catch (_) {}
+      }));
+      footer.appendChild(mk("Lukk", () => closeDeliveryWizard()));
+    } else {
+      footer.appendChild(mk("Tilbake til teksten", () => dtsRestoreWizardFooter()));
+      footer.appendChild(mk("Prøv igjen", () => {
+        dtsRestoreWizardFooter();
+        const again = document.getElementById("btnDeliveryWizardCreateTicket");
+        if (again) again.click();
+      }));
+    }
+    return true;
+  }
+
+  /** Drop the result screen's buttons and show the wizard's own again (DOM only). */
+  function dtsResetFooterButtons() {
+    const footer = document.getElementById("dlgDeliveryWizardFooter");
+    if (!footer) return;
+    for (const el of Array.from(footer.children)) {
+      if (el.dataset && el.dataset.dtsResultBtn === "1") { el.remove(); continue; }
+      if (el.dataset && el.dataset.dtsHidden === "was-none") { el.style.display = "none"; }
+      else { el.style.display = ""; }
+      if (el.dataset) delete el.dataset.dtsHidden;
+    }
+  }
+  /** Undo dtsRenderResult and go back to the step the user was on. */
+  function dtsRestoreWizardFooter() {
+    dtsResetFooterButtons();
+    try { renderDeliveryWizardStep(); } catch (_) {}
   }
 
   function ensureDeliveryWizardDialog() {
@@ -14540,20 +14666,35 @@
       if (p.rlProjectId) dtsVerdictCache.delete(String(p.rlProjectId));
       const tick = await dtsMaybeCompleteTask();
       try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
-      dtsToast("Zendesk-sak #" + id + " opprettet (IWMAC Support, open)." + tick);
-      try { window.open(ZENDESK_AGENT_TICKET_URL + encodeURIComponent(id), "_blank", "noopener"); } catch (_) {}
-      closeDeliveryWizard();
+      let popupBlocked = false;
+      let win = null;
+      try { win = window.open(ZENDESK_AGENT_TICKET_URL + encodeURIComponent(id), "_blank", "noopener"); } catch (_) {}
+      if (!win) popupBlocked = true;
+      dtsToast("Zendesk-sak #" + id + " opprettet.", "ok");
+      // The wizard stays open on the result screen: a toast alone left people
+      // unsure whether the ticket existed, especially when the new tab was blocked.
+      if (!dtsRenderResult("ok", {
+        ticketId: id,
+        subject,
+        taskNote: String(tick || "").trim() ? String(tick).replace(/^\s*[—-]\s*/, "") : "ikke endret",
+        popupBlocked,
+      })) closeDeliveryWizard();
     } catch (e) {
-      const msg = e instanceof TypeError ? "Nettverks-/CORS-feil." : String(e?.message ?? e);
-      dtsToast("Kunne ikke opprette Zendesk-sak: " + msg);
+      const msg = e instanceof TypeError
+        ? "Nettverks- eller CORS-feil — er du logget inn i Zendesk i denne nettleseren?"
+        : String(e?.message ?? e);
+      dtsToast("Kunne ikke opprette Zendesk-sak.", "err");
       btn.disabled = false;
       btn.textContent = label;
+      dtsRenderResult("err", { subject, error: msg });
     }
   }
 
   function closeDeliveryWizard() {
     const dlg = document.getElementById("dlgDeliveryWizard");
     if (!dlg) return;
+    // The dialog is reused, so a result screen must not outlive it.
+    try { dtsResetFooterButtons(); } catch (_) {}
     dtsSaveAnswers();
     try { dlg.close(); } catch (_) {}
     try { dlg.removeAttribute("open"); } catch (_) {}
@@ -14592,7 +14733,7 @@
   // ── Styles (own id, so section 5's injectStyles stays untouched) ──
   function dtsInjectStyles() {
     let style = document.getElementById("dtsStyles");
-    if (style && style.dataset.rlDtsReady === "1.10.11") return;
+    if (style && style.dataset.rlDtsReady === "1.23.0") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "dtsStyles";
@@ -14693,8 +14834,32 @@
         opacity: 0; pointer-events: none; transition: opacity 160ms ease, transform 160ms ease;
       }
       .dtsToast.dtsToastOn { opacity: 1; transform: translate(-50%, 0); }
+      .dtsToast.dtsToastOk { background: #065f46; }
+      .dtsToast.dtsToastErr { background: #7f1d1d; }
+      /* Result screen after the Zendesk call (v1.23.0) — the wizard says what happened
+         instead of closing on a toast the user may never see. */
+      .dtsResult { display: grid; gap: 14px; padding: 8px 2px; }
+      .dtsResultHd { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; }
+      .dtsResultIcon {
+        width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center;
+        justify-content: center; font-size: 16px; flex: 0 0 auto;
+      }
+      .dtsResult.ok .dtsResultIcon { background: rgba(16,185,129,0.16); color: #34d399; }
+      .dtsResult.err .dtsResultIcon { background: rgba(248,113,113,0.16); color: #f87171; }
+      .dtsResult.ok .dtsResultHd { color: #34d399; }
+      .dtsResult.err .dtsResultHd { color: #f87171; }
+      .dtsResultList { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--text); }
+      .dtsResultList li { display: flex; gap: 8px; align-items: flex-start; }
+      .dtsResultList li .k { color: var(--muted2); min-width: 132px; flex: 0 0 auto; }
+      .dtsResultList li a { color: var(--accent); }
+      .dtsResultErrBox {
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #fecaca;
+        background: rgba(127,29,29,0.28); border: 1px solid rgba(248,113,113,0.35);
+        border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+      }
+      .dtsResultNote { font-size: 12.5px; color: var(--muted); }
     `;
-    style.dataset.rlDtsReady = "1.10.11";
+    style.dataset.rlDtsReady = "1.23.0";
   }
 
   // ── Entry point 1: the button on the "Handover to service" task card ──
