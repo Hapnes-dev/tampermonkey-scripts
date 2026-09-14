@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.23.0
+// @version      1.23.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -13775,18 +13775,42 @@
   // tag do the narrowing; the plant id is then required as a standalone number
   // in the subject so "3214" can't be satisfied by "13214".
   const DTS_HANDOVER_SUBJECT = "Avblokkering og Overlevering";
+  /**
+   * The plant's handover case. Two passes, because only cases raised by this
+   * wizard carry the macro's tag and the full "Avblokkering og Overlevering"
+   * subject — one typed by hand in Zendesk says something like
+   * "3530 - Nor-Log - Overlevering" and used to count as "no case at all",
+   * which is what left a finished delivery sitting on an amber chip.
+   *   1. the canonical case (tag + exact phrase + plant id)
+   *   2. any case whose subject carries the plant id and the word "overlevering"
+   * Both passes require the plant id as a whole number in the subject, so 3530
+   * never matches 35301.
+   */
   async function dtsFindHandoverTicket(plantId) {
     const pid = String(plantId ?? "").trim();
     if (!/^\d+$/.test(pid)) return null;
-    const query = 'type:ticket tags:' + (ZENDESK_HANDOVER_TAGS[0] || "aktivering_basic") +
-      ' subject:"' + DTS_HANDOVER_SUBJECT + '" ' + pid;
-    const res = await zendeskApiRequest("GET", "/search.json?query=" + encodeURIComponent(query) + "&per_page=10");
-    const list = Array.isArray(res?.results) ? res.results : [];
     const token = new RegExp("(?:^|\\D)" + pid + "(?!\\d)");
-    // Newest first, so a re-delivered plant reports its current ticket.
-    return list
-      .filter((t) => token.test(String(t?.subject ?? "")))
+    const newestFirst = (list) => list
+      .slice()
       .sort((a, b) => (Date.parse(b?.created_at || 0) || 0) - (Date.parse(a?.created_at || 0) || 0))[0] || null;
+    const search = async (query) => {
+      const res = await zendeskApiRequest("GET", "/search.json?query=" + encodeURIComponent(query) + "&per_page=25");
+      return Array.isArray(res?.results) ? res.results : [];
+    };
+
+    const exact = await search(
+      'type:ticket tags:' + (ZENDESK_HANDOVER_TAGS[0] || "aktivering_basic") +
+      ' subject:"' + DTS_HANDOVER_SUBJECT + '" ' + pid,
+    );
+    const exactHit = newestFirst(exact.filter((t) => token.test(String(t?.subject ?? ""))));
+    if (exactHit) return exactHit;
+
+    // Second pass: the delivery happened, someone just raised the case by hand.
+    const loose = await search('type:ticket subject:overlevering ' + pid);
+    return newestFirst(loose.filter((t) => {
+      const subject = String(t?.subject ?? "");
+      return token.test(subject) && /overlevering/i.test(subject);
+    }));
   }
 
   const dtsVerdictCache = new Map(); // Rocketlane project id -> verdict
@@ -13832,7 +13856,7 @@
     } else if (done && !tick) {
       out.color = "yellow";
       out.label = "Delivery: fullført, ingen sak";
-      out.problems.push("Oppgaven er merket Completed, men det finnes ingen Zendesk-sak med «" + DTS_HANDOVER_SUBJECT + "» for plant " + ctx.plantId + ".");
+      out.problems.push("Oppgaven er merket Completed, men Zendesk har ingen sak med plant " + ctx.plantId + " og «overlevering» i emnet.");
     } else if (!done && tick) {
       out.color = "yellow";
       out.label = "Delivery: sak #" + out.ticket.id + ", ikke fullført";
