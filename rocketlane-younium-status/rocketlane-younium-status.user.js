@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.24.0
+// @version      1.24.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9656,7 +9656,7 @@
         flex: 0 0 auto;
       }
       /* PPT Find-style control — sibling of Present inside Secondary flex row */
-      #rlAutoFetchUrlsBtn {
+      #rlAutoFetchUrlsBtn:not(.rlPabBtn) {
         display: inline-flex; align-items: center; justify-content: center; gap: 8px;
         height: 32px; min-height: 32px; padding: 6px 14px 6px 12px; margin: 0 8px 0 0;
         border-radius: 8px; border: 1px solid rgba(15, 23, 42, 0.14);
@@ -9667,7 +9667,7 @@
         vertical-align: middle;
         transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
       }
-      #rlAutoFetchUrlsBtn:hover {
+      #rlAutoFetchUrlsBtn:not(.rlPabBtn):hover {
         background: rgba(15, 23, 42, 0.09);
         border-color: rgba(15, 23, 42, 0.22);
         color: rgba(15, 23, 42, 0.96);
@@ -9679,7 +9679,7 @@
         opacity: 0.65; cursor: wait;
       }
       #rlAutoFetchUrlsBtn .rlFetchIcon {
-        font-size: 14px; line-height: 1; flex: 0 0 auto;
+        font-size: 13px; line-height: 1; flex: 0 0 auto;
         display: inline-flex; align-items: center; justify-content: center;
         width: 1.1em; margin: 0;
       }
@@ -11799,6 +11799,19 @@
         void rlRunAutoFetchUrls();
       });
     }
+    // Preferred home: in the project action bar, immediately left of BAF, wearing
+    // the same pill as the link buttons. The Present-anchored mount below is the
+    // fallback for the moment before the bar exists (or if Rocketlane drops it).
+    const baf = document.getElementById("rlPabBaf");
+    if (baf && baf.parentElement) {
+      btn.classList.add("rlPabBtn");
+      btn.style.margin = "";
+      if (btn.parentElement !== baf.parentElement || btn.nextSibling !== baf) {
+        baf.parentElement.insertBefore(btn, baf);
+      }
+      return;
+    }
+    btn.classList.remove("rlPabBtn");
     // Left of Present's top-level Secondary sibling (not inside the 32px Action wrapper).
     if (btn.parentElement !== mount.secondary || btn.nextSibling !== mount.anchor) {
       mount.secondary.insertBefore(btn, mount.anchor);
