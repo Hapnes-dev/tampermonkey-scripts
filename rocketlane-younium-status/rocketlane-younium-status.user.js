@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.30.1
+// @version      1.30.2
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -4040,6 +4040,40 @@
   }
 
   /** Raw HTML value of the notes field on a project payload; "" when the field is absent. */
+  /**
+   * Append `text` to `container`, turning http(s) and www URLs into real anchors.
+   * Trailing punctuation stays outside the link.
+   */
+  function rlLinkifyInto(container, text) {
+    const s = String(text == null ? "" : text);
+    const re = /\b((?:https?:\/\/|www\.)[^\s<>"']+)/gi;
+    let last = 0;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) container.appendChild(document.createTextNode(s.slice(last, m.index)));
+      let raw = m[0];
+      let trailing = "";
+      while (raw.length && /[).,;:!?\]]/.test(raw[raw.length - 1])) {
+        trailing = raw[raw.length - 1] + trailing;
+        raw = raw.slice(0, -1);
+      }
+      if (!raw) {
+        container.appendChild(document.createTextNode(m[0]));
+        last = re.lastIndex;
+        continue;
+      }
+      const a = document.createElement("a");
+      a.href = /^https?:\/\//i.test(raw) ? raw : "https://" + raw;
+      a.textContent = raw;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      container.appendChild(a);
+      if (trailing) container.appendChild(document.createTextNode(trailing));
+      last = re.lastIndex;
+    }
+    if (last < s.length) container.appendChild(document.createTextNode(s.slice(last)));
+  }
+
   function rlPnoteReadFieldValue(project, fieldId) {
     const fields = Array.isArray(project?.fields) ? project.fields : [];
     const wantId = Number(fieldId == null ? RL_PNOTE_FIELD_ID : fieldId);
@@ -4838,13 +4872,20 @@
       view.style.display = "";
       ta.classList.add("linked");
       if (view.dataset.v !== value) {
-        view.textContent = "";
-        const lines = value.split("\n");
-        lines.forEach((line, i) => {
-          if (i > 0) view.appendChild(document.createElement("br"));
-          appendTextWithLinks(view, line, {});
-        });
-        view.dataset.v = value;
+        try {
+          view.textContent = "";
+          value.split("\n").forEach((line, i) => {
+            if (i > 0) view.appendChild(document.createElement("br"));
+            rlLinkifyInto(view, line);
+          });
+          view.dataset.v = value;
+        } catch (e) {
+          // Never leave the box looking empty: fall back to the plain textarea.
+          console.warn("[Rocketlane improvements] note link layer failed", e);
+          view.style.display = "none";
+          ta.classList.remove("linked");
+          return;
+        }
       }
       view.scrollTop = ta.scrollTop;
     };
@@ -7409,7 +7450,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.30.1";
+  const RL_HP_STYLE_READY = "1.30.2";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -7896,7 +7937,8 @@
       note.className = "rlhpNote";
       // Real anchors, same linkifier the Project note panel uses. The whole card is a
       // click target, so a click on a link must not also open the project behind it.
-      appendTextWithLinks(note, p.note, {});
+      try { rlLinkifyInto(note, p.note); }
+      catch (_) { note.textContent = p.note; }
       note.addEventListener("click", (e) => { if (e.target && e.target.closest && e.target.closest("a")) e.stopPropagation(); }, true);
       card.classList.add("hasNote");
       card.appendChild(note);
