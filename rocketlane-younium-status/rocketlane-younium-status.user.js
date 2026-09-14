@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.26.1
+// @version      1.27.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14035,6 +14035,43 @@
     dtsVerdictInflight.set(id, pr);
     return pr;
   }
+  /**
+   * The case the verdict found, as its own little chip next to the Delivery one —
+   * the Delivery chip itself opens the wizard, so there was no way to reach the
+   * ticket it had just told you about without searching Zendesk by hand.
+   */
+  function dtsSyncTicketLink(btn, verdict) {
+    const wrap = btn.parentElement;
+    if (!wrap) return;
+    let link = document.getElementById("dtsTicketLink");
+    const ticket = verdict?.ticket;
+    if (!ticket?.id) { if (link) link.remove(); return; }
+    if (!link) {
+      link = document.createElement("a");
+      link.id = "dtsTicketLink";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.style.textDecoration = "none";
+      link.style.marginLeft = "6px"; // the cell is a flex row with no gap
+      const icon = document.createElement("span");
+      icon.textContent = "🎫";
+      icon.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.className = "ynNavBtnLabel";
+      link.appendChild(icon);
+      link.appendChild(label);
+      // Opening the case is its own action; never let it also trigger the wizard.
+      link.addEventListener("click", (ev) => ev.stopPropagation());
+    }
+    link.className = "ynNavBtn yn-" + (verdict?.color === "green" ? "green" : "yellow");
+    link.href = ZENDESK_AGENT_TICKET_URL + encodeURIComponent(ticket.id);
+    link.querySelector(".ynNavBtnLabel").textContent = "#" + ticket.id;
+    link.title = "Åpne Zendesk-sak #" + ticket.id +
+      (ticket.status ? " · " + ticket.status : "") +
+      (ticket.subject ? "\n" + String(ticket.subject).slice(0, 120) : "");
+    if (link.parentElement !== wrap || link.previousSibling !== btn) wrap.insertBefore(link, btn.nextSibling);
+  }
+
   function applyDeliveryVerdictToChip(rlProjectId, verdict) {
     const btn = document.getElementById("dtsNavBtn");
     if (!btn || btn.dataset.rlProjectId !== String(rlProjectId)) return; // stale project
@@ -14050,6 +14087,7 @@
     }
     lines.push("", "Klikk for å åpne veiviseren.");
     btn.title = lines.join("\n");
+    try { dtsSyncTicketLink(btn, verdict); } catch (_) {}
   }
   function refreshDeliveryChipForCurrentProject() {
     const btn = document.getElementById("dtsNavBtn");
@@ -14064,6 +14102,7 @@
       btn.classList.add("yn-action");
       const label = btn.querySelector(".ynNavBtnLabel");
       if (label) label.textContent = "Delivery to service";
+      document.getElementById("dtsTicketLink")?.remove(); // the old project's case
     }
     computeDeliveryForProject(ctx)
       .then((v) => applyDeliveryVerdictToChip(ctx.rlProjectId, v))
