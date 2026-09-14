@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.26.0
+// @version      1.26.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3727,12 +3727,18 @@
     hd.appendChild(tools);
     panel.appendChild(hd);
 
+    // With "Hide completed tasks" on, a category whose tasks are all completed has
+    // nothing left to show — hide the whole box rather than leaving an empty shell.
+    const isFinished = (g) => g.tasks.length > 0 && g.tasks.every((t) => rlCoStatusOf(t).v === 3);
+    const hiddenGroups = hideDone ? groups.filter(isFinished).length : 0;
+
     const status = document.createElement("p");
     status.className = "rlCoStatus" + (rlCoState.error ? " err" : "");
     const doneAll = allTasks.length - openAll;
     status.textContent = rlCoState.error ? rlCoState.error
       : rlCoState.loading ? "Loading phases and tasks…"
-      : rlCoState.note || (groups.length + " categor" + (groups.length === 1 ? "y" : "ies") + " · " + allTasks.length + " task(s) · " + doneAll + " completed · " + openAll + " open");
+      : rlCoState.note || (groups.length + " categor" + (groups.length === 1 ? "y" : "ies") + " · " + allTasks.length + " task(s) · " + doneAll + " completed · " + openAll + " open" +
+        (hiddenGroups ? " · " + hiddenGroups + " finished categor" + (hiddenGroups === 1 ? "y" : "ies") + " hidden" : ""));
     panel.appendChild(status);
 
     // Private notes window (v1.17.2): every task that carries a note, above the grid, like the tracker's Notes section.
@@ -3797,8 +3803,14 @@
       empty.className = "rlCoEmpty";
       empty.textContent = "No phases on this project yet.";
       grid.appendChild(empty);
+    } else if (hideDone && hiddenGroups === groups.length && groups.length && !rlCoState.loading && !rlCoState.error) {
+      const empty = document.createElement("div");
+      empty.className = "rlCoEmpty";
+      empty.textContent = "Everything is completed — press “Show completed tasks” to see the finished categories.";
+      grid.appendChild(empty);
     }
     for (const g of groups) {
+      if (hideDone && isFinished(g)) continue;
       const box = document.createElement("div");
       box.className = "rlCoBox";
       box.dataset.key = g.key;
