@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.22.1
+// @version      1.22.2
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -13997,7 +13997,8 @@
       { key: "q8", type: "choice", options: JA_NEI, label: "8. Skal kuldefirma stå på vaktliste?" },
       { key: "q9", type: "choice", options: ["Ja", "Nei", "ANEO alarm senter"], label: "9. Skal anlegget inn i Alarmsenteret vårt?" },
       { key: "q9b", type: "choice", options: JA_NEI, when: () => a.q9 === "Ja", label: "9b. Har vi etterspurt ringeliste?" },
-      { key: "q10", type: "choice", options: JA_NEI, label: "10. Er det lagt inn IK-mat?" },
+      { key: "q10", type: "choice", options: JA_NEI, label: "10. Er det lagt inn IK-mat?",
+        hint: "Sett opp IK-mat her: http://toolbox.iwmac.local/ikmat_setup/" },
       { key: "q11", type: "choice", options: JA_NEI, label: "11. Er remote access satt opp?",
         hint: "Gjerne bekreft ved å sjekke om du får tilgang via remote access." },
       { key: "q12", type: "choice", options: JA_NEI, label: "12. Integrert i energinett?" },
