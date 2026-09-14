@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.29.2
+// @version      1.30.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -6994,6 +6994,9 @@
       due,
       start,
       progress,
+      // "Project notes" travels on the lightV1 row when it is set, so the card can
+      // show it without a second request per project.
+      note: rlPnoteHtmlToText(rlPnoteReadFieldValue(raw, RL_PNOTE_FIELD_ID)).replace(/\s*\n+\s*/g, " · ").trim(),
       href: id ? ("/projects/" + encodeURIComponent(id) + "/plan") : "/projects",
     };
   }
@@ -7406,7 +7409,7 @@
     }
   }
 
-  const RL_HP_STYLE_READY = "1.15.2";
+  const RL_HP_STYLE_READY = "1.30.0";
 
   function rlHpInjectStyles() {
     let style = document.getElementById("rlHomeProjectsStyles");
@@ -7461,6 +7464,11 @@
       sel(" .rlhpCard") + "{border:1px solid rgba(15,23,42,0.08);background:rgba(255,255,255,0.78);border-radius:var(--rlhp-radius);padding:14px;box-sizing:border-box;height:90px;display:grid;grid-template-rows:16px 22px 8px;align-content:start;gap:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.04);transition:transform 120ms ease,background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}",
       sel(" .rlhpCard:hover") + "{transform:translateY(-1px);background:rgba(255,255,255,0.92);border-color:rgba(15,23,42,0.14);box-shadow:0 4px 12px rgba(15,23,42,0.08)}",
       sel(" .rlhpCard:focus-visible") + "{outline:2px solid rgba(3,105,161,0.45);outline-offset:2px}",
+      /* Project note line (v1.30.0). The card keeps its fixed rows — a note adds one
+         16px row and 16px of height, so bars stay pixel-identical across cards. */
+      sel(" .rlhpCard.hasNote") + "{height:106px;grid-template-rows:16px 22px 16px 8px}",
+      sel(" .rlhpNote") + "{font-size:11.5px;line-height:16px;height:16px;color:var(--rlhp-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.95}",
+      sel(" .rlhpNote::before") + "{content:'\\1F4DD';margin-right:5px;opacity:0.75}",
       sel(" .rlhpRow") + "{display:flex;gap:10px;align-items:center;justify-content:space-between}",
       sel(" .rlhpName") + "{font-weight:650;font-size:13px;line-height:16px;height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rlhp-text)}",
       sel(" .rlhpPct") + "{display:inline-flex;align-items:center;font-size:11px;line-height:16px;height:16px;font-variant-numeric:tabular-nums;color:var(--rlhp-muted);font-weight:500;white-space:nowrap;padding:0}",
@@ -7881,6 +7889,14 @@
 
     card.appendChild(top);
     card.appendChild(meta);
+    if (p.note) {
+      const note = document.createElement("div");
+      note.className = "rlhpNote";
+      note.textContent = p.note;
+      card.classList.add("hasNote");
+      card.appendChild(note);
+      card.title = tip + "\n\n" + p.note;
+    }
     card.appendChild(prog);
 
     const open = () => rlHpOpenProject(p.href);
