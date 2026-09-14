@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.25.0
+// @version      1.26.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3221,20 +3221,77 @@
       rlCoRender();
     }
   }
+  /** One PUT, no per-task verification — the reload at the end of the batch is the check. */
+  async function rlCoWriteStatusOnly(task, value) {
+    const id = rlCatTaskId(task);
+    if (!id) return false;
+    let field = dtsTaskStatusField(task);
+    if (!field?.fieldId) field = dtsTaskStatusField(await gmRocketlaneGet("/tasks/" + encodeURIComponent(id)));
+    if (!field?.fieldId) throw new Error("No Status field on task " + id + ".");
+    if (Number(field.fieldValue) === value) return true;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await gmRocketlaneRequest("PUT", "/tasks/" + encodeURIComponent(id), null, { fields: [{ fieldId: field.fieldId, fieldValue: value }] });
+        return true;
+      } catch (e) {
+        // Backing off once on a rate limit is cheaper than serialising everything.
+        if (attempt < 2 && /HTTP 429|HTTP 5\d\d/.test(String(e?.message || e))) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+  /** Run `worker` over `items` with at most `limit` in flight. */
+  async function rlCoPool(items, limit, worker) {
+    let next = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        await worker(items[i], i);
+      }
+    });
+    await Promise.all(runners);
+  }
   async function rlCoCompleteMany(tasks, label) {
     const open = rlCoOpenTasks(tasks);
     if (!open.length) { rlCatToast("Nothing open in " + label + "."); return; }
-    if (!confirm("Complete all " + open.length + " open task(s) in " + label + "?\n\nThey are written to Rocketlane one at a time.")) return;
-    let done = 0, failed = 0;
-    for (const t of open) {
-      rlCoState.note = "Completing " + (done + failed + 1) + " / " + open.length + "…";
+    if (!confirm("Complete all " + open.length + " open task(s) in " + label + "?")) return;
+    // Subtasks first, then their parents: Rocketlane can refuse to complete a
+    // parent that still has open children. Within a wave order does not matter,
+    // so each wave runs several writes at once instead of one at a time.
+    const subs = open.filter((t) => rlCatTaskParentTaskId(t));
+    const parents = open.filter((t) => !rlCatTaskParentTaskId(t));
+    let done = 0, failed = 0, lastPaint = 0;
+    const paint = (force) => {
+      const now = Date.now();
+      if (!force && now - lastPaint < 200) return; // repainting per task was most of the wait
+      lastPaint = now;
+      rlCoState.note = "Completing " + Math.min(done + failed + 1, open.length) + " / " + open.length + "…";
       rlCoRender();
-      const ok = await rlCoSetTaskStatus(t, 3);
-      if (ok) done += 1; else failed += 1;
+    };
+    paint(true);
+    const run = async (t) => {
+      try { await rlCoWriteStatusOnly(t, 3); done += 1; }
+      catch (e) { failed += 1; console.warn("[Rocketlane improvements] complete failed", rlCatTaskId(t), e?.message || e); }
+      paint(false);
+    };
+    for (const wave of [subs, parents]) {
+      if (wave.length) await rlCoPool(wave, 6, run);
     }
+    rlCoState.note = "Bekrefter…";
+    rlCoRender();
+    await rlCoLoad(true); // re-reads every task: this is the verification pass
+    const stillOpen = open.filter((t) => {
+      const fresh = rlCoState.tasks.find((x) => rlCatTaskId(x) === rlCatTaskId(t));
+      return fresh && rlCoStatusOf(fresh).v !== 3;
+    }).length;
     rlCoState.note = "";
-    rlCatToast(done + " task(s) completed" + (failed ? ", " + failed + " failed" : "") + ".");
-    void rlCoLoad(true);
+    rlCoRender();
+    rlCatToast(stillOpen
+      ? (open.length - stillOpen) + " of " + open.length + " completed — " + stillOpen + " still open."
+      : open.length + " task(s) completed.");
   }
   async function rlCoAddTask(group) {
     const pid = rlCoState.projectId;
