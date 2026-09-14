@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.24.2
+// @version      1.25.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -3060,6 +3060,8 @@
     rlCoCloseMenu();
   }
   function rlCoEnsure() {
+    // Fetch the project note now rather than when the panel finally mounts.
+    try { void rlPnoteWarm(rlCoProjectId()); } catch (_) {}
     if (!rlCoIsPlanPath()) {
       rlCoTeardown();
       const b = document.getElementById("rlCoSwitchBtn");
@@ -4572,17 +4574,31 @@
     return { project, html, text: rlPnoteHtmlToText(html) };
   }
 
+  // The panel is rebuilt whenever React wipes the plan host, and each rebuild used
+  // to blank the box and restart the fetch — so a slow or interrupted load left
+  // "Loading…" sitting there until something else re-rendered it. Keep the last
+  // note we actually read, never run two loads for the same project at once, and
+  // give a stalled load a bounded retry.
+  let rlPnoteLastGood = { pid: "", text: "" };
+  let rlPnoteInflight = null;
+  let rlPnoteInflightPid = "";
+  let rlPnoteLoadStartedAt = 0;
+  let rlPnoteLoadTries = 0;
+  const RL_PNOTE_STALL_MS = 6000;
+  const RL_PNOTE_MAX_TRIES = 3;
+
   function rlPnoteResetState(pid) {
+    const known = rlPnoteLastGood.pid === pid ? rlPnoteLastGood.text : null;
     rlPnoteState = {
       projectId: pid,
       projectName: "",
       project: null,
-      loading: true,
+      loading: known === null,
       error: "",
-      baseline: "",
-      draft: "",
-      state: "loading",
-      message: "Loading…",
+      baseline: known || "",
+      draft: known || "",
+      state: known === null ? "loading" : "idle",
+      message: known === null ? "Loading…" : (known ? "Saved" : "No note yet"),
       conflictText: "",
       gen: rlPnoteState.gen,
     };
@@ -4644,7 +4660,7 @@
     });
     size.className += " rlPnoteSize";
     tools.appendChild(size);
-    tools.appendChild(mk("Refresh", "", () => void rlPnoteLoad(), "Re-read the note from Rocketlane"));
+    tools.appendChild(mk("Refresh", "", () => void rlPnoteLoad(true), "Re-read the note from Rocketlane"));
     hd.appendChild(title);
     hd.appendChild(tools);
     panel.appendChild(hd);
@@ -4794,10 +4810,47 @@
     if (typeof panel.rlPnoteSyncView === "function") panel.rlPnoteSyncView();
   }
 
-  async function rlPnoteLoad() {
+  let rlPnoteWarmPid = "";
+  /** Read the note before the panel exists, so the first render already has it. */
+  async function rlPnoteWarm(pid) {
+    const id = String(pid || "").trim();
+    if (!id || rlPnoteWarmPid === id || rlPnoteLastGood.pid === id) return;
+    rlPnoteWarmPid = id;
+    try {
+      await rlPnoteLoadFieldMeta();
+      const { text } = await rlPnoteFetchProject(id);
+      rlPnoteLastGood = { pid: id, text: rlPnoteNormalizeText(text) };
+      // If the panel mounted meanwhile and is still waiting, fill it in place —
+      // but never over the top of something the user has already typed.
+      if (rlPnoteState.projectId === id && rlPnoteState.loading && !rlPnoteState.draft) {
+        rlPnoteState.baseline = rlPnoteLastGood.text;
+        rlPnoteState.draft = rlPnoteLastGood.text;
+        rlPnoteState.loading = false;
+        rlPnoteState.state = "idle";
+        rlPnoteState.message = rlPnoteState.baseline ? "Saved" : "No note yet";
+        rlPnoteRender();
+      }
+    } catch (_) {
+      rlPnoteWarmPid = ""; // let a later tick try again
+    }
+  }
+
+  async function rlPnoteLoad(force) {
     const pid = rlPnoteState.projectId || rlCoProjectId();
     if (!pid) return;
+    // A second ensure tick must join the load already running, not restart it —
+    // restarting was what kept the box empty while the ticks kept coming.
+    if (!force && rlPnoteInflight && rlPnoteInflightPid === pid) return rlPnoteInflight;
+    const pr = rlPnoteLoadInner(pid);
+    rlPnoteInflight = pr;
+    rlPnoteInflightPid = pid;
+    const done = () => { if (rlPnoteInflight === pr) { rlPnoteInflight = null; rlPnoteInflightPid = ""; } };
+    pr.then(done, done);
+    return pr;
+  }
+  async function rlPnoteLoadInner(pid) {
     const gen = ++rlPnoteState.gen;
+    rlPnoteLoadStartedAt = Date.now();
     rlPnoteState.projectId = pid;
     rlPnoteState.loading = true;
     rlPnoteState.state = "loading";
@@ -4815,6 +4868,8 @@
       rlPnoteState.error = "";
       rlPnoteState.state = "idle";
       rlPnoteState.message = rlPnoteState.baseline ? "Saved" : "No note yet";
+      rlPnoteLastGood = { pid, text: rlPnoteState.baseline };
+      rlPnoteLoadTries = 0;
     } catch (e) {
       if (gen !== rlPnoteState.gen) return;
       rlPnoteState.loading = false;
@@ -4965,6 +5020,16 @@
       rlPnoteApplyHeight(panel, rlPnoteReadHeight());
       rlPnoteRender();
       if (fresh || projectChanged) void rlPnoteLoad();
+    } else if (rlPnoteState.projectId === pid) {
+      // Watchdog: a load that never came back (page still warming up, request
+      // dropped) would otherwise leave the box on "Loading…" for good.
+      const stalled = rlPnoteState.loading && rlPnoteLoadStartedAt &&
+        Date.now() - rlPnoteLoadStartedAt > RL_PNOTE_STALL_MS && !rlPnoteInflight;
+      const failed = rlPnoteState.state === "error";
+      if ((stalled || failed) && rlPnoteLoadTries < RL_PNOTE_MAX_TRIES) {
+        rlPnoteLoadTries += 1;
+        void rlPnoteLoad(true);
+      }
     }
     return panel;
   }
