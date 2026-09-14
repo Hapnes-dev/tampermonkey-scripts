@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.24.1
+// @version      1.24.2
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -11799,15 +11799,15 @@
         void rlRunAutoFetchUrls();
       });
     }
-    // Preferred home: in the project action bar, immediately left of BAF, wearing
+    // Preferred home: in the project action bar, immediately right of BAF, wearing
     // the same pill as the link buttons. The Present-anchored mount below is the
     // fallback for the moment before the bar exists (or if Rocketlane drops it).
     const baf = document.getElementById("rlPabBaf");
     if (baf && baf.parentElement) {
       btn.classList.add("rlPabBtn");
       btn.style.margin = "";
-      if (btn.parentElement !== baf.parentElement || btn.nextSibling !== baf) {
-        baf.parentElement.insertBefore(btn, baf);
+      if (btn.parentElement !== baf.parentElement || btn.previousSibling !== baf) {
+        baf.parentElement.insertBefore(btn, baf.nextSibling);
       }
       return;
     }
