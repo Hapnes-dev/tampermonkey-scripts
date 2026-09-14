@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.21.5
+// @version      1.22.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9570,6 +9570,14 @@
         margin-right: 8px; vertical-align: middle; flex: 0 0 auto;
         max-width: none; overflow: visible;
       }
+      /* Links collapse behind one pill (v1.22.0) and start hidden on every project. */
+      #rlProjectActionBar .rlPabLinks { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 4px; }
+      #rlProjectActionBar:not(.rlPabOpen) .rlPabLinks { display: none; }
+      #rlProjectActionBar .rlPabToggle .rlPabCount {
+        font-variant-numeric: tabular-nums; opacity: 0.7; font-size: 11px;
+      }
+      #rlProjectActionBar .rlPabToggle .rlPabCaret { font-size: 9px; opacity: 0.6; }
+      #rlProjectActionBar.rlPabOpen .rlPabToggle { border-color: rgba(3,105,161,0.35); color: #0369a1; }
       #rlProjectActionBar .rlPabBtn {
         display: inline-flex; align-items: center; gap: 5px;
         height: 24px; padding: 3px 9px; border-radius: 999px;
@@ -10366,6 +10374,36 @@
     bar.id = "rlProjectActionBar";
     bar.setAttribute("role", "group");
     bar.setAttribute("aria-label", "Project links");
+    const toggle = rlMakeLinkBtn({
+      id: "rlPabToggle",
+      href: "",
+      label: "Links",
+      emoji: "\uD83D\uDD17",
+      title: "Show or hide the project links",
+      asButton: true,
+    });
+    toggle.classList.add("rlPabToggle");
+    toggle.setAttribute("aria-expanded", "false");
+    const count = document.createElement("span");
+    count.className = "rlPabCount";
+    const caret = document.createElement("span");
+    caret.className = "rlPabCaret";
+    caret.textContent = "\u25BE";
+    toggle.appendChild(count);
+    toggle.appendChild(caret);
+    toggle.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const open = bar.classList.toggle("rlPabOpen");
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      caret.textContent = open ? "\u25B4" : "\u25BE";
+      rlPabSyncToggle(bar);
+    });
+    bar.appendChild(toggle);
+    const linkWrap = document.createElement("span");
+    linkWrap.className = "rlPabLinks";
+    bar.appendChild(linkWrap);
+
     const defs = [
       { id: "rlPabZendesk", key: "zendesk", label: "Zendesk", icon: rlFavicon("zendesk.com") },
       { id: "rlPabOneflowOrder", key: "oneflowOrder", label: "Oneflow (Order)", icon: rlFavicon("oneflow.com") },
@@ -10406,12 +10444,24 @@
           void rlFilesTogglePopover(btn);
         });
       }
-      bar.appendChild(btn);
+      linkWrap.appendChild(btn);
     }
     return bar;
   }
 
+  /** The pill reports how many links the project actually has, so it is useful while collapsed. */
+  function rlPabSyncToggle(bar) {
+    if (!bar) return;
+    const toggle = bar.querySelector("#rlPabToggle");
+    if (!toggle) return;
+    const n = bar.querySelectorAll(".rlPabLinks .rlPabBtn:not([hidden])").length;
+    const count = toggle.querySelector(".rlPabCount");
+    if (count) count.textContent = n ? String(n) : "";
+    toggle.title = (bar.classList.contains("rlPabOpen") ? "Hide" : "Show") + " the project links (" + n + ")";
+  }
+
   function rlPatchActionBar(bar, links, ctx) {
+    try { setTimeout(() => rlPabSyncToggle(bar), 0); } catch (_) {}
     const setLink = (id, href, title) => {
       const el = bar.querySelector("#" + id);
       if (!el) return;
@@ -11739,6 +11789,16 @@
     }
     if (rlOrderInfoPopoverProjectId && rlOrderInfoPopoverProjectId !== ctx.rlProjectId) {
       rlOrderInfoClosePopover();
+    }
+    // Opening a project starts with the links tucked away; the pill reveals them.
+    if (bar.dataset.rlProjectId !== ctx.rlProjectId) {
+      bar.classList.remove("rlPabOpen");
+      const t = bar.querySelector("#rlPabToggle");
+      if (t) {
+        t.setAttribute("aria-expanded", "false");
+        const c = t.querySelector(".rlPabCaret");
+        if (c) c.textContent = "\u25BE";
+      }
     }
     bar.dataset.rlProjectId = ctx.rlProjectId;
 
