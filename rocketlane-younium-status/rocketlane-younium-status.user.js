@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.30.2
+// @version      1.31.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -7176,7 +7176,12 @@
   // once on the next page load and only revalidate in the background.
   const RL_HP_GM_CACHE = "rlHpProjectsCache";
   const RL_HP_PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-  const RL_HP_PAGE_SIZE = 200;
+  // 100 beats 200: the server cost per page grows faster than the page, and small
+  // pages parallelise better. Measured on this tenant (397 open projects):
+  // 4×100 fired at once 1075 ms, 2×200 at once 1733 ms, one 400-row call 2074 ms,
+  // and the old "first page, then the rest" 1997 ms.
+  const RL_HP_PAGE_SIZE = 100;
+  const RL_HP_GM_LAST_COUNT = "rlHpLastProjectCount";
   const RL_HP_MAX_PAGES = 50;
   // The tenant has 1000+ projects, i.e. 5-6 pages after the first; once the
   // first page reveals the count, the rest go out in a single parallel round.
@@ -7340,8 +7345,60 @@
     );
   }
 
+  function rlHpReadLastCount() {
+    const n = Number(GM_getValue(RL_HP_GM_LAST_COUNT, 0)) || 0;
+    return n > 0 && n < RL_HP_MAX_PAGES * RL_HP_PAGE_SIZE ? n : 0;
+  }
+  function rlHpWriteLastCount(n) {
+    if (!Number.isFinite(n) || n <= 0) return;
+    try { GM_setValue(RL_HP_GM_LAST_COUNT, Math.round(n)); } catch (_) {}
+  }
+
+  /**
+   * Fetch every page at once instead of learning the total from page one first.
+   * The project count barely moves between refreshes, so the previous total is a
+   * good guess: fire that many pages (plus one spare) in parallel and top up only
+   * if the count came back higher. Saves a whole round trip — see the timings on
+   * RL_HP_PAGE_SIZE.
+   */
+  async function rlHpFetchAllPagesParallel(filter, guessCount) {
+    const pages = Math.min(RL_HP_MAX_PAGES, Math.max(1, Math.ceil(guessCount / RL_HP_PAGE_SIZE) + 1));
+    const offsets = Array.from({ length: pages }, (_, i) => i * RL_HP_PAGE_SIZE);
+    const responses = await Promise.all(offsets.map((off) => rlHpFetchLightPage(off, RL_HP_PAGE_SIZE, filter)));
+    const all = [];
+    let total;
+    for (const json of responses) {
+      if (typeof json?.count === "number" && total == null) total = json.count;
+      const batch = Array.isArray(json?.data) ? json.data : [];
+      if (batch.length) all.push(...batch);
+    }
+    // The tenant grew past the guess: fetch what is still missing, again in one round.
+    if (total != null && all.length < total) {
+      const more = [];
+      for (let off = pages * RL_HP_PAGE_SIZE; off < total && more.length < RL_HP_MAX_PAGES; off += RL_HP_PAGE_SIZE) more.push(off);
+      if (more.length) {
+        const rest = await Promise.all(more.map((off) => rlHpFetchLightPage(off, RL_HP_PAGE_SIZE, filter)));
+        for (const json of rest) {
+          const batch = Array.isArray(json?.data) ? json.data : [];
+          if (batch.length) all.push(...batch);
+        }
+      }
+    }
+    if (total != null) rlHpWriteLastCount(total);
+    return all;
+  }
+
   async function rlHpFetchAllLightProjects(userId) {
     const filter = rlHpBuildMineFilter(userId);
+    const guess = rlHpReadLastCount();
+    if (guess) {
+      try { return await rlHpFetchAllPagesParallel(filter, guess); }
+      catch (e) {
+        // Fall through to the one-page-first path, which also covers the case
+        // where the filtered call itself is the problem.
+        console.warn("[Rocketlane improvements] parallel project fetch failed, falling back:", e?.message || e);
+      }
+    }
     let first;
     try {
       first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE, filter);
@@ -7355,6 +7412,7 @@
     if (filter && typeof first?.count === "number" && first.count > 700) {
       console.warn("[Rocketlane improvements] lightV1 ignored the status filter (count " + first.count + ") — check the nativeFields names.");
     }
+    if (typeof first?.count === "number") rlHpWriteLastCount(first.count);
     return rlHpCollectLightPages(first, filter);
   }
 
