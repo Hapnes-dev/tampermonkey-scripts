@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.27.0
+// @version      1.28.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -7057,6 +7057,11 @@
   // instant first paint. This guard stops the SPA's route bouncing (ensure runs
   // at 60/350/900 ms after a navigation) from fetching several times in a row.
   const RL_HP_REVALIDATE_MIN_MS = 15 * 1000;
+  // Auto-refresh while the home page sits open (v1.28.0). The tick is cheap —
+  // it only fetches when the panel is actually on screen, the tab is visible and
+  // the data has aged past the interval, so a background tab costs nothing.
+  const RL_HP_AUTO_MS = 3 * 60 * 1000;
+  const RL_HP_AUTO_TICK_MS = 20 * 1000;
   // The last result also lives in Tampermonkey storage so the panels paint at
   // once on the next page load and only revalidate in the background.
   const RL_HP_GM_CACHE = "rlHpProjectsCache";
@@ -8089,6 +8094,28 @@
     );
   }
 
+  let rlHpAutoTimer = null;
+  function rlHpAutoTick() {
+    try {
+      if (!rlHpIsHomePath(location.pathname)) return;
+      if (document.visibilityState === "hidden") return;
+      const panel = document.getElementById(RL_HP_PANEL_OWNER_ID) || document.getElementById(RL_HP_PANEL_MEMBER_ID);
+      if (!panel || !panel.isConnected) return;
+      if (rlHpUi.syncing) return;
+      const age = Date.now() - (rlHpUi.cachedAt || 0);
+      if (age < RL_HP_AUTO_MS) return;
+      void rlHpRefresh({ force: true });
+    } catch (_) { /* a failed tick must never stop the next one */ }
+  }
+  function rlHpStartAutoRefresh() {
+    if (rlHpAutoTimer) return;
+    rlHpAutoTimer = setInterval(rlHpAutoTick, RL_HP_AUTO_TICK_MS);
+    // Coming back to the tab should not wait for the next tick.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") rlHpAutoTick();
+    });
+  }
+
   async function rlHpRefresh(opts) {
     // Stale-while-revalidate: paint the last result at once (this session's or
     // the persisted one), then let rlHpLoadProjects decide whether the network
@@ -8148,6 +8175,7 @@
       rlHpRenderPanels();
       void rlHpRefresh({ force: false, revalidate: true });
     }
+    rlHpStartAutoRefresh();
     // First time both shells are in the document: draw the current state into
     // them (cached list, "Loading projects…", or the result that arrived while
     // they were detached).
