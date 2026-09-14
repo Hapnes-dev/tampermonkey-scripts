@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.22.0
+// @version      1.22.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -611,7 +611,32 @@
     //    (2) plant_id-wide search for a separate subscription order.
     let subMatch = null, subscriptionOrder = null, subscriptionOrderIsSeparate = false;
     const onOrder = findIwmacSubscriptionItem(order);
-    if (onOrder) { subMatch = onOrder; subscriptionOrder = order; }
+    if (onOrder) {
+      subMatch = onOrder;
+      subscriptionOrder = order;
+      // The promoted order carries the IWMAC subscription product, so it is the
+      // subscription agreement itself — the name heuristic above cannot see that
+      // (this tenant does not always put "Abonnementsavtale" in the description,
+      // e.g. plant 3214's O-002298). Hand the Order/offer slot to the newest
+      // other order; if the plant has none, say so instead of showing the
+      // agreement twice.
+      const alt = sorted.find((o) => o.id !== order.id && !looksLikeSubscriptionAgreement(o));
+      let swapped = null;
+      if (alt) {
+        try { swapped = await youniumFetchOrderDetails(alt.id); }
+        catch (e) { dbg("alt order hydrate failed", e); }
+      }
+      if (swapped && !findIwmacSubscriptionItem(swapped)) {
+        order = swapped;
+        out.raw.order = order;
+        out.raw.subscriptionOrder = subscriptionOrder;
+        out.orderNumber = order.orderNumber || alt.id;
+        out.links.saved = ynOrderUrl(order.id);
+        subscriptionOrderIsSeparate = true;
+      } else {
+        out.orderIsSubscriptionAgreement = true;
+      }
+    }
     if (!subMatch) {
       const found = await youniumFindSubscriptionByPlantId(pid);
       if (found) {
@@ -1463,8 +1488,13 @@
         : "") +
       '<div class="youniumSection">' +
         '<div class="youniumSectionTitle">Order / offer' +
-          ' <span class="youniumSubBadge ' + orderBadgeClass + '">' + escHtml(displayOrderStatus) + '</span>' +
-        '</div>' + renderKV(orderKV) +
+          (verdict.orderIsSubscriptionAgreement
+            ? ''
+            : ' <span class="youniumSubBadge ' + orderBadgeClass + '">' + escHtml(displayOrderStatus) + '</span>') +
+        '</div>' +
+        (verdict.orderIsSubscriptionAgreement
+          ? '<div style="color: var(--muted); font-style: italic; padding: 2px 0;">No order or offer for this plant — only the subscription agreement below.</div>'
+          : renderKV(orderKV)) +
       '</div>' +
       '<div class="youniumSection youniumSubSection">' +
         '<div class="youniumSectionTitle">Subscription' +
