@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.35.0
+// @version      1.36.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -11581,6 +11581,74 @@
     return true;
   }
 
+  // Download every attachment in `atts`, extracted from the Project files
+  // popover so the delivery wizard can offer the same thing without a second
+  // implementation. `setLabel` reports progress to whatever button invoked it.
+  //
+  // MUST be called synchronously from a click handler: showDirectoryPicker has
+  // to be the first await in the gesture turn or the browser refuses it.
+  // Resolves { failed, cancelled, blocked } rather than throwing, so the two
+  // callers can word their own buttons.
+  async function rlFilesDownloadAll(atts, projectLabel, setLabel) {
+    const list = Array.isArray(atts) ? atts : [];
+    const say = typeof setLabel === "function" ? setLabel : () => {};
+    if (!list.length) return { failed: 0, cancelled: false, blocked: false };
+    let dirHandle = null;
+    if (typeof window.showDirectoryPicker === "function") {
+      try {
+        const parentDir = await rlFilesGetOrPickDownloadParentDir();
+        if (!parentDir) return { failed: 0, cancelled: true, blocked: false };
+        const d = new Date();
+        const dlStamp = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        const destFolderName = rlFilesSanitizeFolderName(String(projectLabel || "Project") + " " + dlStamp);
+        try {
+          dirHandle = await parentDir.getDirectoryHandle(destFolderName, { create: true });
+        } catch (subErr) {
+          console.warn("[rlFiles] could not create subfolder, writing into picked parent:", subErr);
+          dirHandle = parentDir;
+        }
+      } catch (e) {
+        console.warn("[rlFiles] download dir setup failed:", e);
+        return { failed: 0, cancelled: true, blocked: true };
+      }
+    }
+    let current = 0;
+    let failed = 0;
+    const usedNames = new Set();
+    for (const att of list) {
+      const attId = att?.attachmentId;
+      const fileName = rlFilesSanitizeFileName(String(att?.name ?? "Attachment").trim());
+      current++;
+      say("Downloading " + current + "/" + list.length + "\u2026");
+      if (!attId) { failed++; continue; }
+      try {
+        const { blob } = await gmRocketlaneDownloadAttachmentBlob(attId);
+        if (dirHandle) {
+          const safeName = rlFilesUniqueName(fileName, usedNames);
+          const fileHandle = await dirHandle.getFileHandle(safeName, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        } else {
+          // No File System Access API: fall back to one download per file.
+          const objUrl = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = objUrl;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      } catch (e) {
+        console.warn("[rlFiles] Download failed for " + fileName + ":", e);
+        failed++;
+      }
+    }
+    return { failed, cancelled: false, blocked: false };
+  }
+
   async function rlFilesTogglePopover(anchorBtn) {
     if (rlFilesPopoverEl) { rlFilesClosePopover(); return; }
     try { rlOrderInfoClosePopover(); } catch (_) {}
@@ -11791,73 +11859,34 @@
       downloadAllBtn.title = "Download every file in this list to your computer";
       const downloadAllBtnIdleText = "\u2B07 Download all (" + atts.length + ")";
       downloadAllBtn.textContent = downloadAllBtnIdleText;
-      downloadAllBtn.addEventListener("click", async (ev) => {
+      downloadAllBtn.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         if (!attsRef.length) return;
-        let dirHandle = null;
-        if (typeof window.showDirectoryPicker === "function") {
-          try {
-            // Must run in the same user-gesture turn — no awaits above this call.
-            const parentDir = await rlFilesGetOrPickDownloadParentDir();
-            if (!parentDir) return; // cancelled
-            const dlStamp = (() => {
-              const d = new Date();
-              return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-            })();
-            const destFolderName = rlFilesSanitizeFolderName((readProjectName() || ("Project " + rlPid)) + " " + dlStamp);
-            try {
-              dirHandle = await parentDir.getDirectoryHandle(destFolderName, { create: true });
-            } catch (subErr) {
-              console.warn("[rlFiles] could not create subfolder, writing into picked parent:", subErr);
-              dirHandle = parentDir;
-            }
-          } catch (e) {
-            console.warn("[rlFiles] download dir setup failed:", e);
-            downloadAllBtn.textContent = "Folder picker blocked";
-            setTimeout(() => { downloadAllBtn.textContent = downloadAllBtnIdleText; }, 2500);
-            return;
-          }
-        }
         downloadAllBtn.disabled = true;
-        let current = 0;
-        let failed = 0;
-        const usedNames = new Set();
-        for (const att of attsRef) {
-          const attId = att?.attachmentId;
-          const fileName = rlFilesSanitizeFileName(String(att?.name ?? "Attachment").trim());
-          current++;
-          downloadAllBtn.textContent = "Downloading " + current + "/" + attsRef.length + "\u2026";
-          if (!attId) { failed++; continue; }
-          try {
-            const { blob } = await gmRocketlaneDownloadAttachmentBlob(attId);
-            if (dirHandle) {
-              const safeName = rlFilesUniqueName(fileName, usedNames);
-              const fileHandle = await dirHandle.getFileHandle(safeName, { create: true });
-              const writable = await fileHandle.createWritable();
-              await writable.write(blob);
-              await writable.close();
-            } else {
-              const objUrl = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = objUrl;
-              a.download = fileName;
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-              setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
-              await new Promise((r) => setTimeout(r, 250));
+        const settle = (text) => {
+          downloadAllBtn.textContent = text;
+          setTimeout(() => {
+            downloadAllBtn.textContent = downloadAllBtnIdleText;
+            downloadAllBtn.disabled = false;
+          }, 2500);
+        };
+        // Called synchronously: the folder picker inside has to be the first
+        // await, or the browser drops the user gesture.
+        rlFilesDownloadAll(attsRef, readProjectName() || ("Project " + rlPid), (t) => { downloadAllBtn.textContent = t; })
+          .then((r) => {
+            if (r.blocked) { settle("Folder picker blocked"); return; }
+            if (r.cancelled) {
+              downloadAllBtn.textContent = downloadAllBtnIdleText;
+              downloadAllBtn.disabled = false;
+              return;
             }
-          } catch (e) {
-            console.warn("[rlFiles] Download failed for " + fileName + ":", e);
-            failed++;
-          }
-        }
-        downloadAllBtn.textContent = failed ? "Done — " + failed + " failed" : "Done \u2713";
-        setTimeout(() => {
-          downloadAllBtn.textContent = downloadAllBtnIdleText;
-          downloadAllBtn.disabled = false;
-        }, 2500);
+            settle(r.failed ? "Done \u2014 " + r.failed + " failed" : "Done \u2713");
+          })
+          .catch((e) => {
+            console.warn("[rlFiles] download all failed:", e);
+            settle("Failed");
+          });
       });
       filesActions.insertBefore(downloadAllBtn, uploadBtn);
 
@@ -14595,6 +14624,88 @@
       (where ? " Sjekk: " + where : "");
   }
 
+  // Question 15 asks whether the documentation is saved in the plant folder.
+  // The files are right there in Rocketlane, so the step offers the same
+  // "Download all" the Project files panel has rather than sending you off to
+  // find it. The list is fetched when the step opens, never on click: the
+  // folder picker must be the first await of the click's own gesture turn.
+  function dtsFilesCard(p) {
+    const box = document.createElement("div");
+    box.className = "dtsFacts none";
+    const hd = document.createElement("div");
+    hd.className = "dtsFactsHd";
+    const src = document.createElement("span");
+    src.className = "dtsFactsSrc";
+    src.textContent = "Prosjektfiler";
+    const head = document.createElement("span");
+    head.className = "dtsFactsHeadline";
+    head.textContent = "henter filer…";
+    hd.appendChild(src);
+    hd.appendChild(head);
+    box.appendChild(hd);
+    const note = document.createElement("div");
+    note.className = "dtsFactsNote";
+    box.appendChild(note);
+    const actions = document.createElement("div");
+    actions.className = "dtsZdActions";
+    box.appendChild(actions);
+
+    (async () => {
+      const pid = String(p?.rlProjectId || "").trim();
+      if (!pid) { head.textContent = "ingen prosjekt-id"; return; }
+      let atts = [];
+      try {
+        const [taskAtts, folderPack] = await Promise.all([
+          gmRocketlaneFetchProjectAttachments(pid),
+          gmRocketlaneFetchProjectFolders(pid).catch((e) => {
+            console.warn("[Delivery to service] folder fetch failed:", e);
+            return { folders: [], attachments: [] };
+          }),
+        ]);
+        atts = rlFilesMergeAttachments(taskAtts, folderPack.attachments) || [];
+      } catch (e) {
+        if (!box.isConnected) return;
+        box.className = "dtsFacts warn";
+        head.textContent = "kunne ikke hentes";
+        note.textContent = String(e?.message ?? e);
+        return;
+      }
+      if (!box.isConnected) return; // stepped away while fetching
+      if (!atts.length) {
+        head.textContent = "ingen filer på prosjektet";
+        return;
+      }
+      head.textContent = atts.length + (atts.length === 1 ? " fil" : " filer") + " på prosjektet";
+      note.textContent = "Lastes ned til en mappe du velger, i en undermappe per prosjekt.";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dtsZdBtn";
+      const idle = "⬇ Last ned alle (" + atts.length + ")";
+      btn.textContent = idle;
+      const reset = () => { btn.textContent = idle; btn.disabled = false; };
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        btn.disabled = true;
+        // Synchronous into the routine — see the note on rlFilesDownloadAll.
+        rlFilesDownloadAll(atts, readProjectName() || ("Project " + pid), (t) => { btn.textContent = t; })
+          .then((r) => {
+            if (r.cancelled) { reset(); return; }
+            btn.textContent = r.failed ? "Ferdig — " + r.failed + " feilet" : "Ferdig ✓";
+            setTimeout(reset, 2500);
+          })
+          .catch((e) => {
+            console.warn("[Delivery to service] download all failed:", e);
+            btn.textContent = "Feilet";
+            setTimeout(reset, 2500);
+          });
+      });
+      actions.appendChild(btn);
+    })();
+
+    return box;
+  }
+
   function dtsPlantAdminCard(p) {
     const pid = String(p?.plantId || "").trim();
     const link = pid ? { href: bafSearchUrl(pid), label: "Åpne i BAF" } : null;
@@ -14885,7 +14996,9 @@
       { key: "q14", type: "choice", options: JA_NEI,
         label: "14. Er det gjort endringer av antall systemer på ordre iht opprinnelig salgsordre — i så fall, er dette oppdatert i abm.ordre?",
         hint: dtsYouniumHint(p) },
-      { key: "q15", type: "choice", options: JA_NEI, label: "15. Har du lagret all dokumentasjon i anleggsmappe: 99-underlag fra kunde?" },
+      { key: "q15", type: "choice", options: JA_NEI,
+        label: "15. Har du lagret all dokumentasjon i anleggsmappe: 99-underlag fra kunde?",
+        hintRich: () => dtsFilesCard(p) },
       { key: "q16", type: "fields", label: "16. Tilleggsinformasjon",
         fields: [
           { k: "internt",   label: "Hvem har gjort leveransen internt", def: String(p.ownerName || "") },
