@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.36.1
+// @version      1.37.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14835,10 +14835,32 @@
       youniumUrl: "",
       youniumSubscriptionUrl: "",
     };
+    // Every lookup below is started here, together, and only consumed further
+    // down. They were previously awaited one after another, so opening the
+    // wizard cost their sum: the four Rocketlane calls alone measured ~1.8s
+    // serially against ~0.41s in parallel on this tenant. Nothing here depends
+    // on anything else being finished first — the one real ordering constraint
+    // (the Oneflow subscription override needs the curated link) is handled
+    // where it is consumed, not by delaying the request.
+    //
+    // The no-op catch marks each promise as handled the moment it is created.
+    // Without it, a lookup that rejects while an earlier await is still
+    // pending is reported as an unhandled rejection even though the await
+    // below does catch it. The original promise is what gets returned, so the
+    // await still throws into its own try/catch.
+    const keep = (pr) => { pr.catch(() => {}); return pr; };
+    const linksP = keep(rlLoadProjectLinks(ctx.rlProjectId, { force: true }));
+    const projectP = keep(gmRocketlaneGet("/projects/" + encodeURIComponent(ctx.rlProjectId), { includeAllFields: true }));
+    const oneflowP = keep(computeOneflowForProject(ctx.rlProjectId, ctx.plantId));
+    // ctx.name, not p.name: the project fetch may not have landed yet, and the
+    // name is only a label for this lookup.
+    const youniumP = ctx.plantId ? keep(computeForPlant(ctx.plantId, ctx.name || "")) : null;
+    const bafP = ctx.plantId ? keep(bafPlantAdmins(ctx.plantId)) : null;
+
     // Same sources as Fetch URLs / PPT autoFetchProjectLinksOnce: IQC → Deal
     // Description → Delivery status. Curated links win; chip lookups only fill gaps.
     try {
-      const links = await rlLoadProjectLinks(ctx.rlProjectId, { force: true });
+      const links = await linksP;
       p.oneflowUrl = String(links.oneflowOrder || "").trim();
       p.oneflowSubscriptionUrl = String(links.oneflowSubscription || "").trim();
       p.youniumUrl = String(links.younium || "").trim();
@@ -14854,7 +14876,7 @@
     }
     // Rocketlane project — partner (customer) and project owner seed step 16.
     try {
-      const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(ctx.rlProjectId), { includeAllFields: true });
+      const json = await projectP;
       const proj = json?.data ?? json;
       if (proj?.projectName) p.name = proj.projectName;
       p.client = String(proj?.customer?.companyName ?? "").trim();
@@ -14865,7 +14887,7 @@
     }
     // Oneflow — signing verdict always; URLs only when still empty after auto-fetch.
     try {
-      const v = await computeOneflowForProject(ctx.rlProjectId, ctx.plantId);
+      const v = await oneflowP;
       p.oneflowSigned = v?.signed ?? null;
       if (!p.oneflowUrl) p.oneflowUrl = String(v?.documentUrl ?? "").trim();
       if (!p.oneflowSubscriptionUrl) p.oneflowSubscriptionUrl = String(v?.subDocumentUrl ?? "").trim();
@@ -14926,7 +14948,7 @@
     // Younium — fill gaps from the same plant verdict the chip uses.
     if (ctx.plantId) {
       try {
-        const v = await computeForPlant(ctx.plantId, p.name);
+        const v = await youniumP;
         if (!p.youniumUrl) p.youniumUrl = String(v?.links?.saved ?? "").trim();
         if (!p.youniumSubscriptionUrl) {
           const subId = v?.subscriptionOrder?.id;
@@ -14939,7 +14961,7 @@
     // BAF — Plant admin holders seed question 2.
     if (ctx.plantId) {
       try {
-        const admins = await bafPlantAdmins(ctx.plantId);
+        const admins = await bafP;
         if (Array.isArray(admins)) {
           p.plantAdmins = admins;
           p.plantAdminsKnown = true;
@@ -15843,7 +15865,7 @@
     const title = document.getElementById("dlgDeliveryWizardTitle");
     const body = document.getElementById("dlgDeliveryWizardBody");
     if (title) title.textContent = "Delivery to service · " + (ctx.name || "");
-    if (body) body.innerHTML = '<div style="padding:28px; text-align:center; color:var(--muted);">Henter lenker (IQC / Deal / Delivery) og prosjektdata fra Rocketlane, Oneflow og Younium…</div>';
+    if (body) body.innerHTML = '<div style="padding:28px; text-align:center; color:var(--muted);">Henter lenker (IQC / Deal / Delivery) og prosjektdata fra Rocketlane, Oneflow, Younium og BAF…</div>';
     try { dlg.showModal(); } catch (_) {}
     dtsStepIdx = 0;
     dtsMarkComplete = true;
