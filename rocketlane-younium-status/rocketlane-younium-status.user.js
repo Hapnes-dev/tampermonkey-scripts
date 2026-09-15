@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.33.0
+// @version      1.33.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14443,25 +14443,39 @@
   // Says which document the answer came from and what state it is in, so a
   // pre-selected answer can be checked rather than trusted. The hint is
   // linkified when rendered, so the bare URL becomes a clickable link.
+  // Lists every Oneflow document the lookup actually identified, each under its
+  // own label, so the answer can be checked against the documents rather than
+  // trusted. Bare URLs are linkified when the hint is rendered.
   function dtsSubscriptionHint(p) {
-    const link = String(p?.subUrl || p?.oneflowSubscriptionUrl || "").trim();
-    const tail = link ? " Abonnementsavtale: " + link : "";
+    const parts = [];
+    const subLink = String(p?.subUrl || p?.oneflowSubscriptionUrl || "").trim();
+    const rejectedUrl = String(p?.subNotSubscriptionUrl || "").trim();
+    const orderLink = String(p?.oneflowUrl || "").trim();
+
     if (p?.subSigned === true) {
-      return "Oneflow: abonnementsavtalen er signert — forhåndsvalgt Ja." + tail;
-    }
-    if (p?.subSigned === false) {
+      parts.push("Oneflow: abonnementsavtalen er signert — forhåndsvalgt Ja.");
+    } else if (p?.subSigned === false) {
       const short = ofStateVerdict(p.subState)?.short || "ikke signert";
-      return "Oneflow: abonnementsavtalen er «" + short + "», ikke signert — forhåndsvalgt Nei." + tail;
+      parts.push("Oneflow: abonnementsavtalen er «" + short + "», ikke signert — forhåndsvalgt Nei.");
+    } else if (p?.subNotSubscription) {
+      parts.push("Fant ingen abonnementsavtale i Oneflow — svar manuelt.");
+    } else if (subLink) {
+      parts.push("Fant abonnementsavtalen, men ikke signeringsstatusen — sjekk selv.");
+    } else {
+      parts.push("Fant ingen abonnementsavtale i Oneflow — svar manuelt.");
     }
-    // Says what was rejected and why, so a blank question 1 doesn't look like
-    // the lookup simply failed.
+
+    if (subLink) parts.push("Abonnementsavtale: " + subLink);
+    // The document that was rejected is still worth showing — it is a real
+    // document on this project, just not the one question 1 is about.
     if (p?.subNotSubscription) {
-      return "Oneflow-lenken peker på «" + p.subNotSubscription + "», som ser ut som en ordre og ikke en abonnementsavtale — ingen status forhåndsvalgt. Svar manuelt.";
+      parts.push("Engangsordre «" + p.subNotSubscription + "» (ikke abonnementsavtale)" +
+        (rejectedUrl ? ": " + rejectedUrl : "."));
     }
-    if (String(p?.oneflowSubscriptionUrl || "").trim()) {
-      return "Fant abonnementsavtalen, men ikke signeringsstatusen — sjekk selv." + tail;
-    }
-    return "Fant ingen abonnementsavtale i Oneflow — svar manuelt.";
+    // Skip when the order slot is the rejected document itself — it was just
+    // printed above and would otherwise appear twice.
+    if (orderLink && orderLink !== rejectedUrl) parts.push("Ordre: " + orderLink);
+    return parts.join(" ");
   }
   async function dtsBuildProject(ctx) {
     const p = {
@@ -14475,6 +14489,9 @@
       subState: null,
       subSigned: null,
       subUrl: "",
+      // A document that sat in the subscription slot but named itself an order.
+      subNotSubscription: "",
+      subNotSubscriptionUrl: "",
       oneflowUrl: "",
       oneflowSubscriptionUrl: "",
       youniumUrl: "",
@@ -14548,10 +14565,15 @@
       if (subAgreement && !subName) {
         subAgreement = null;
       } else if (subAgreement && ofKindByName(subName) !== "subscription") {
+        const rejectedUrl = String(p.oneflowSubscriptionUrl || "").trim() ||
+          (subAgreement.id ? ofDocumentUrl(subAgreement.id) : "");
         p.subNotSubscription = subName;
-        // Don't hand a one-off order to question 3 as "Abonnementsavtalen"
-        // either — it would go out in the Zendesk ticket under that label.
-        // Only ever cleared for a document we actually inspected and named.
+        p.subNotSubscriptionUrl = rejectedUrl;
+        // Wrong slot, not a worthless document: it is an order, so move it to
+        // the order slot when that is empty. The link stays in the wizard and
+        // in the ticket, just under the label it actually deserves, instead of
+        // going out as "Abonnementsavtalen".
+        if (rejectedUrl && !String(p.oneflowUrl || "").trim()) p.oneflowUrl = rejectedUrl;
         p.oneflowSubscriptionUrl = "";
         subAgreement = null;
       }
