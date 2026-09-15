@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.34.0
+// @version      1.35.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14443,6 +14443,78 @@
   // Says which document the answer came from and what state it is in, so a
   // pre-selected answer can be checked rather than trusted. The hint is
   // linkified when rendered, so the bare URL becomes a clickable link.
+  // A small result card: where the answer came from, what it concluded, the
+  // rows behind it, and a link to go check. Built from DOM nodes, never from
+  // interpolated HTML — the values are document names and user names.
+  function dtsFactCard(o) {
+    const box = document.createElement("div");
+    box.className = "dtsFacts " + (o.tone || "none");
+    const hd = document.createElement("div");
+    hd.className = "dtsFactsHd";
+    const src = document.createElement("span");
+    src.className = "dtsFactsSrc";
+    src.textContent = o.source || "";
+    hd.appendChild(src);
+    if (o.headline) {
+      const h = document.createElement("span");
+      h.className = "dtsFactsHeadline";
+      h.textContent = o.headline;
+      hd.appendChild(h);
+    }
+    if (o.badge) {
+      const b = document.createElement("span");
+      b.className = "dtsFactsBadge";
+      b.textContent = "Forhåndsvalgt " + o.badge;
+      hd.appendChild(b);
+    }
+    box.appendChild(hd);
+    const items = Array.isArray(o.items) ? o.items.filter(Boolean) : [];
+    if (items.length) {
+      const ul = document.createElement("ul");
+      ul.className = "dtsFactsList";
+      for (const it of items) {
+        const li = document.createElement("li");
+        if (it.href) {
+          const a = document.createElement("a");
+          a.href = it.href;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          a.textContent = it.text;
+          li.appendChild(a);
+        } else {
+          const t = document.createElement("span");
+          t.className = "dtsFactsItemText";
+          t.textContent = it.text;
+          li.appendChild(t);
+        }
+        if (it.sub) {
+          const s = document.createElement("span");
+          s.className = "dtsFactsSub";
+          s.textContent = it.sub;
+          li.appendChild(s);
+        }
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
+    }
+    if (o.note) {
+      const n = document.createElement("div");
+      n.className = "dtsFactsNote";
+      n.textContent = o.note;
+      box.appendChild(n);
+    }
+    if (o.link && o.link.href) {
+      const a = document.createElement("a");
+      a.className = "dtsFactsLink";
+      a.href = o.link.href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = (o.link.label || "Åpne") + " ↗";
+      box.appendChild(a);
+    }
+    return box;
+  }
+
   // ── BAF: who holds Plant admin on this plant ──
   // The Access tab of baf.qxs is a plain JSON-RPC call, so question 2 doesn't
   // need the page scraped: POST services/baf/plant.php with get_access and BAF
@@ -14521,6 +14593,75 @@
     return "BAF: " + list.length + (list.length === 1 ? " bruker" : " brukere") +
       " har Plant admin på anlegg " + pid + " — " + shown + rest + ". Forhåndsvalgt Ja." +
       (where ? " Sjekk: " + where : "");
+  }
+
+  function dtsPlantAdminCard(p) {
+    const pid = String(p?.plantId || "").trim();
+    const link = pid ? { href: bafSearchUrl(pid), label: "Åpne i BAF" } : null;
+    if (p?.plantAdminsError) {
+      return dtsFactCard({
+        source: "BAF", tone: "warn", headline: "kunne ikke sjekkes",
+        note: p.plantAdminsError + " Svar manuelt.", link,
+      });
+    }
+    if (!p?.plantAdminsKnown) return null;
+    const list = Array.isArray(p.plantAdmins) ? p.plantAdmins : [];
+    const where = "BAF · anlegg " + pid;
+    if (!list.length) {
+      return dtsFactCard({
+        source: where, tone: "warn",
+        headline: "ingen brukere har Plant admin", badge: "Nei", link,
+      });
+    }
+    return dtsFactCard({
+      source: where, tone: "ok",
+      headline: list.length + (list.length === 1 ? " bruker har Plant admin" : " brukere har Plant admin"),
+      badge: "Ja",
+      items: list.slice(0, 6).map((u) => ({ text: u.name, sub: u.firm })),
+      note: list.length > 6 ? "+" + (list.length - 6) + " til" : "",
+      link,
+    });
+  }
+
+  function dtsSubscriptionCard(p) {
+    const subLink = String(p?.subUrl || p?.oneflowSubscriptionUrl || "").trim();
+    const rejectedUrl = String(p?.subNotSubscriptionUrl || "").trim();
+    const orderLink = String(p?.oneflowUrl || "").trim();
+    const items = [];
+    if (subLink) {
+      items.push({
+        text: "Abonnementsavtale",
+        sub: p?.subSigned === true ? "signert"
+          : (p?.subSigned === false ? (ofStateVerdict(p.subState)?.short || "ikke signert") : "status ukjent"),
+        href: subLink,
+      });
+    }
+    // The rejected document is still a real document on the project, so it is
+    // listed — just under the label it actually earns.
+    if (p?.subNotSubscription) {
+      items.push({
+        text: "Engangsordre «" + p.subNotSubscription + "»",
+        sub: "ikke abonnementsavtale",
+        href: rejectedUrl || undefined,
+      });
+    }
+    if (orderLink && orderLink !== rejectedUrl) items.push({ text: "Ordre", href: orderLink });
+
+    let tone = "warn";
+    let headline = "fant ingen abonnementsavtale";
+    let badge = "";
+    let note = "Svar manuelt.";
+    if (p?.subSigned === true) {
+      tone = "ok"; headline = "abonnementsavtalen er signert"; badge = "Ja"; note = "";
+    } else if (p?.subSigned === false) {
+      tone = "warn";
+      headline = "abonnementsavtalen er «" + (ofStateVerdict(p.subState)?.short || "ikke signert") + "», ikke signert";
+      badge = "Nei"; note = "";
+    } else if (subLink) {
+      headline = "fant avtalen, men ikke signeringsstatusen";
+    }
+    if (!items.length && !p?.plantId && !headline) return null;
+    return dtsFactCard({ source: "Oneflow", tone, headline, badge, items, note });
   }
 
   // Lists every Oneflow document the lookup actually identified, each under its
@@ -14713,13 +14854,15 @@
         // order-first verdict. A known-unsigned agreement pre-selects Nei —
         // that is an answer too, and nothing auto-advances, so it is seen.
         def: p.subSigned === true ? "Ja" : (p.subSigned === false ? "Nei" : undefined),
-        hint: dtsSubscriptionHint(p) },
+        hint: dtsSubscriptionHint(p),
+        hintRich: () => dtsSubscriptionCard(p) },
       { key: "q2", type: "choice", options: JA_NEI,
         label: "2. Er det oppgitt anleggs administrator i abonnementsavtalen?",
         // Only a lookup that actually completed may answer: a BAF session that
         // expired must leave the question blank, not pre-select "Nei".
         def: p.plantAdminsKnown ? (p.plantAdmins.length ? "Ja" : "Nei") : undefined,
-        hint: dtsPlantAdminHint(p) },
+        hint: dtsPlantAdminHint(p),
+        hintRich: () => dtsPlantAdminCard(p) },
       { key: "q3", type: "fields", label: "3. Legg ved linker til Oneflow",
         fields: [
           { k: "ordre", label: "Ordre tilbudet", def: String(p.oneflowUrl || "") },
@@ -15193,7 +15336,17 @@
     q.style.cssText = "font-size:16px; font-weight:600;";
     q.textContent = step.label;
     wrap.appendChild(q);
-    if (step.hint) {
+    // A question answered from a lookup gets the lookup rendered as a card —
+    // source, conclusion, what was found, and a link to go check — because a
+    // paragraph of the same facts just gets skimmed. Falls back to the plain
+    // string hint when there is nothing structured to show.
+    let richHint = null;
+    if (typeof step.hintRich === "function") {
+      try { richHint = step.hintRich(); } catch (_) { richHint = null; }
+    }
+    if (richHint) {
+      wrap.appendChild(richHint);
+    } else if (step.hint) {
       const h = document.createElement("div");
       h.style.cssText = "color:var(--muted2); font-size:12px;";
       // Linkify http(s) URLs in the hint (the AM Counter link on Q14) —
@@ -15624,6 +15777,49 @@
       dialog.dlgYouniumStatus .dtsInput:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent-stroke); }
       dialog.dlgYouniumStatus .dtsReview { min-height: 380px; max-height: 55vh; overflow: auto; resize: vertical; }
       dialog.dlgYouniumStatus .dtsLabel { font-size: 12px; color: var(--muted); }
+      /* Lookup result card behind a question */
+      dialog.dlgYouniumStatus .dtsFacts {
+        border: 1px solid var(--hairline); border-left-width: 3px;
+        border-radius: 10px; padding: 10px 12px; background: var(--surface-1);
+        font-size: 12.5px; line-height: 1.5;
+      }
+      dialog.dlgYouniumStatus .dtsFacts.ok { border-left-color: var(--good); }
+      dialog.dlgYouniumStatus .dtsFacts.warn { border-left-color: var(--warn); }
+      dialog.dlgYouniumStatus .dtsFacts.none { border-left-color: var(--muted2); }
+      dialog.dlgYouniumStatus .dtsFactsHd {
+        display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px;
+      }
+      dialog.dlgYouniumStatus .dtsFactsSrc {
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+        color: var(--muted2);
+      }
+      dialog.dlgYouniumStatus .dtsFactsHeadline { color: var(--text); font-weight: 600; }
+      dialog.dlgYouniumStatus .dtsFactsBadge {
+        margin-left: auto; font-size: 11px; font-weight: 700; white-space: nowrap;
+        padding: 2px 8px; border-radius: 999px;
+        background: var(--surface-3); color: var(--muted);
+      }
+      dialog.dlgYouniumStatus .dtsFacts.ok .dtsFactsBadge { background: var(--good-soft); color: var(--good); }
+      dialog.dlgYouniumStatus .dtsFacts.warn .dtsFactsBadge { background: var(--warn-soft); color: var(--warn); }
+      dialog.dlgYouniumStatus .dtsFactsList {
+        margin: 7px 0 0; padding: 0; list-style: none; display: grid; gap: 3px;
+      }
+      dialog.dlgYouniumStatus .dtsFactsList li {
+        display: flex; align-items: baseline; gap: 6px;
+        padding-left: 11px; position: relative; color: var(--text);
+      }
+      dialog.dlgYouniumStatus .dtsFactsList li::before {
+        content: "•"; position: absolute; left: 0; color: var(--muted2);
+      }
+      dialog.dlgYouniumStatus .dtsFactsList a { color: var(--accent); text-decoration: none; }
+      dialog.dlgYouniumStatus .dtsFactsList a:hover { text-decoration: underline; }
+      dialog.dlgYouniumStatus .dtsFactsSub { color: var(--muted2); font-size: 11.5px; }
+      dialog.dlgYouniumStatus .dtsFactsNote { margin-top: 7px; color: var(--muted2); font-size: 11.5px; }
+      dialog.dlgYouniumStatus .dtsFactsLink {
+        display: inline-block; margin-top: 8px; font-size: 11.5px; font-weight: 600;
+        color: var(--accent); text-decoration: none;
+      }
+      dialog.dlgYouniumStatus .dtsFactsLink:hover { text-decoration: underline; }
       /* Zendesk reachability on the review step */
       dialog.dlgYouniumStatus .dtsZdCheck {
         font-size: 12.5px; line-height: 1.5; color: var(--muted);
