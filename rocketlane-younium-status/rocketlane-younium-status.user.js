@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.33.1
+// @version      1.34.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14443,6 +14443,86 @@
   // Says which document the answer came from and what state it is in, so a
   // pre-selected answer can be checked rather than trusted. The hint is
   // linkified when rendered, so the bare URL becomes a clickable link.
+  // ── BAF: who holds Plant admin on this plant ──
+  // The Access tab of baf.qxs is a plain JSON-RPC call, so question 2 doesn't
+  // need the page scraped: POST services/baf/plant.php with get_access and BAF
+  // returns one row per user carrying a real plant_admin boolean. Cookies are
+  // the browser's own BAF session (anonymous: false) — the script never touches
+  // the login, and says so when the session is missing.
+  const BAF_ORIGIN = "http://internal.iwmac.local";
+  const BAF_RPC_URL = BAF_ORIGIN + "/services/baf/plant.php";
+  function bafSearchUrl(plantId) {
+    return BAF_ORIGIN + "/baf.qxs?search=" + encodeURIComponent(String(plantId ?? ""));
+  }
+  function gmBafRpc(method, params) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: BAF_RPC_URL,
+        headers: { "content-type": "application/json", accept: "application/json" },
+        data: JSON.stringify([{ jsonrpc: "2.0", method: String(method), params: params || {}, id: 0 }]),
+        timeout: 20000,
+        anonymous: false,
+        onload: (res) => {
+          if (res.status < 200 || res.status >= 300) { reject(new Error("HTTP " + res.status)); return; }
+          let parsed = null;
+          try {
+            parsed = JSON.parse(res.responseText || "");
+          } catch (_) {
+            // BAF answers an unauthenticated request with its login page, not a
+            // 401, so "not JSON" is how a dead session actually presents.
+            reject(new Error("BAF svarte ikke med JSON — er du logget inn på " + BAF_ORIGIN + "?"));
+            return;
+          }
+          const o = Array.isArray(parsed) ? parsed[0] : parsed;
+          if (o && o.error) { reject(new Error(String(o.error?.message ?? "BAF-feil"))); return; }
+          resolve(o ? o.result : null);
+        },
+        onerror: () => reject(new Error("Fikk ikke kontakt med BAF (" + BAF_ORIGIN + ")")),
+        ontimeout: () => reject(new Error("BAF svarte ikke i tide")),
+      });
+    });
+  }
+  // BAF returns a real boolean today; the spellings are accepted too so a
+  // change of encoding doesn't silently turn every plant admin into "no". An
+  // absent field is never a yes.
+  function bafIsYes(v) {
+    if (v === true) return true;
+    return /^(yes|ja|true|1)$/i.test(String(v ?? "").trim());
+  }
+  async function bafPlantAdmins(plantId) {
+    const pid = String(plantId ?? "").trim();
+    if (!/^\d+$/.test(pid)) return null;
+    const rows = await gmBafRpc("get_access", { cust_id: pid });
+    if (!Array.isArray(rows)) return null;
+    return rows.filter((r) => bafIsYes(r?.plant_admin)).map((r) => ({
+      name: String(r?.name ?? "").trim() || String(r?.username ?? "").trim(),
+      username: String(r?.username ?? "").trim(),
+      firm: String(r?.firm_name ?? "").trim(),
+    }));
+  }
+  // Question 2 asks about the subscription AGREEMENT; BAF knows who holds Plant
+  // admin in the system. That is a strong signal but not the same document, so
+  // the hint names what was actually checked and who was found, rather than
+  // presenting it as the agreement's own answer.
+  function dtsPlantAdminHint(p) {
+    const pid = String(p?.plantId || "").trim();
+    const where = pid ? bafSearchUrl(pid) : "";
+    if (p?.plantAdminsError) {
+      return "Kunne ikke sjekke BAF: " + p.plantAdminsError + " Svar manuelt." + (where ? " BAF: " + where : "");
+    }
+    if (!p?.plantAdminsKnown) return "";
+    const list = Array.isArray(p.plantAdmins) ? p.plantAdmins : [];
+    if (!list.length) {
+      return "BAF: ingen brukere har Plant admin på anlegg " + pid + " — forhåndsvalgt Nei." + (where ? " Sjekk: " + where : "");
+    }
+    const shown = list.slice(0, 3).map((u) => u.name + (u.firm ? " (" + u.firm + ")" : "")).join(", ");
+    const rest = list.length > 3 ? " +" + (list.length - 3) + " til" : "";
+    return "BAF: " + list.length + (list.length === 1 ? " bruker" : " brukere") +
+      " har Plant admin på anlegg " + pid + " — " + shown + rest + ". Forhåndsvalgt Ja." +
+      (where ? " Sjekk: " + where : "");
+  }
+
   // Lists every Oneflow document the lookup actually identified, each under its
   // own label, so the answer can be checked against the documents rather than
   // trusted. Bare URLs are linkified when the hint is rendered.
@@ -14492,6 +14572,12 @@
       // A document that sat in the subscription slot but named itself an order.
       subNotSubscription: "",
       subNotSubscriptionUrl: "",
+      // BAF Plant admin holders. `known` separates "checked, found none" from
+      // "never managed to check" — only the first may answer question 2.
+      plantId: ctx.plantId || "",
+      plantAdmins: [],
+      plantAdminsKnown: false,
+      plantAdminsError: "",
       oneflowUrl: "",
       oneflowSubscriptionUrl: "",
       youniumUrl: "",
@@ -14598,6 +14684,19 @@
         console.warn("[Delivery to service] Younium lookup failed:", e?.message ?? e);
       }
     }
+    // BAF — Plant admin holders seed question 2.
+    if (ctx.plantId) {
+      try {
+        const admins = await bafPlantAdmins(ctx.plantId);
+        if (Array.isArray(admins)) {
+          p.plantAdmins = admins;
+          p.plantAdminsKnown = true;
+        }
+      } catch (e) {
+        p.plantAdminsError = String(e?.message ?? e);
+        console.warn("[Delivery to service] BAF lookup failed:", e?.message ?? e);
+      }
+    }
     return p;
   }
 
@@ -14615,7 +14714,12 @@
         // that is an answer too, and nothing auto-advances, so it is seen.
         def: p.subSigned === true ? "Ja" : (p.subSigned === false ? "Nei" : undefined),
         hint: dtsSubscriptionHint(p) },
-      { key: "q2", type: "choice", options: JA_NEI, label: "2. Er det oppgitt anleggs administrator i abonnementsavtalen?" },
+      { key: "q2", type: "choice", options: JA_NEI,
+        label: "2. Er det oppgitt anleggs administrator i abonnementsavtalen?",
+        // Only a lookup that actually completed may answer: a BAF session that
+        // expired must leave the question blank, not pre-select "Nei".
+        def: p.plantAdminsKnown ? (p.plantAdmins.length ? "Ja" : "Nei") : undefined,
+        hint: dtsPlantAdminHint(p) },
       { key: "q3", type: "fields", label: "3. Legg ved linker til Oneflow",
         fields: [
           { k: "ordre", label: "Ordre tilbudet", def: String(p.oneflowUrl || "") },
