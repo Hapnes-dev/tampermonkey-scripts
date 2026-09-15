@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.31.0
+// @version      1.32.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14347,13 +14347,36 @@
     if (order) return base + " Ingen abonnementslenke funnet — Younium-ordre: " + order;
     return base + " Ingen Younium-lenke funnet for dette anlegget.";
   }
+  // Says which document the answer came from and what state it is in, so a
+  // pre-selected answer can be checked rather than trusted. The hint is
+  // linkified when rendered, so the bare URL becomes a clickable link.
+  function dtsSubscriptionHint(p) {
+    const link = String(p?.subUrl || p?.oneflowSubscriptionUrl || "").trim();
+    const tail = link ? " Abonnementsavtale: " + link : "";
+    if (p?.subSigned === true) {
+      return "Oneflow: abonnementsavtalen er signert — forhåndsvalgt Ja." + tail;
+    }
+    if (p?.subSigned === false) {
+      const short = ofStateVerdict(p.subState)?.short || "ikke signert";
+      return "Oneflow: abonnementsavtalen er «" + short + "», ikke signert — forhåndsvalgt Nei." + tail;
+    }
+    if (String(p?.oneflowSubscriptionUrl || "").trim()) {
+      return "Fant abonnementsavtalen, men ikke signeringsstatusen — sjekk selv." + tail;
+    }
+    return "Fant ingen abonnementsavtale i Oneflow — svar manuelt.";
+  }
   async function dtsBuildProject(ctx) {
     const p = {
       rlProjectId: ctx.rlProjectId,
       name: ctx.name || "",
       client: "",
       ownerName: "",
+      // oneflowSigned is the CHIP's verdict, which follows the order document —
+      // do not wire question 1 to it. subSigned below is the abonnementsavtale.
       oneflowSigned: null,
+      subState: null,
+      subSigned: null,
+      subUrl: "",
       oneflowUrl: "",
       oneflowSubscriptionUrl: "",
       youniumUrl: "",
@@ -14393,6 +14416,28 @@
       p.oneflowSigned = v?.signed ?? null;
       if (!p.oneflowUrl) p.oneflowUrl = String(v?.documentUrl ?? "").trim();
       if (!p.oneflowSubscriptionUrl) p.oneflowSubscriptionUrl = String(v?.subDocumentUrl ?? "").trim();
+
+      // Question 1 asks whether the ABONNEMENTSAVTALE is signed, so it must not
+      // read v.signed: the chip's verdict follows the order document whenever
+      // one exists (primary = order.agreement || sub.agreement), so a signed
+      // sales order was pre-selecting "Ja" for an unsigned subscription
+      // agreement. Resolve the subscription document's own state instead.
+      //
+      // The curated link wins when the project has one: it is the document the
+      // wizard puts in question 3, and it can be a different agreement from the
+      // one the plant-ID search found. Only fetch when it really is different —
+      // the verdict already hydrated its own.
+      let subAgreement = v?.sub?.agreement ?? null;
+      const curatedId = ofExtractAgreementId(p.oneflowSubscriptionUrl);
+      if (curatedId && curatedId !== String(v?.sub?.id ?? "")) {
+        const fetched = await ofFetchAgreementByUrl(p.oneflowSubscriptionUrl);
+        if (fetched?.agreement) subAgreement = fetched.agreement;
+      }
+      if (subAgreement && typeof subAgreement.state === "number") {
+        p.subState = subAgreement.state;
+        p.subSigned = subAgreement.state === 4; // 4 = Signed
+        p.subUrl = p.oneflowSubscriptionUrl || String(v?.subDocumentUrl ?? "").trim();
+      }
     } catch (e) {
       console.warn("[Delivery to service] Oneflow lookup failed:", e?.message ?? e);
     }
@@ -14421,8 +14466,11 @@
         def: dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering" },
       { key: "q1", type: "choice", options: ["Ja", "Nei", "ANEO"],
         label: "1. Er abonnementsavtalen signert?",
-        def: p.oneflowSigned === true ? "Ja" : undefined,
-        hint: p.oneflowSigned === true ? "Oneflow-sjekken sier dokumentet er signert — forhåndsvalgt Ja." : "" },
+        // Driven by the subscription agreement's own state, not the chip's
+        // order-first verdict. A known-unsigned agreement pre-selects Nei —
+        // that is an answer too, and nothing auto-advances, so it is seen.
+        def: p.subSigned === true ? "Ja" : (p.subSigned === false ? "Nei" : undefined),
+        hint: dtsSubscriptionHint(p) },
       { key: "q2", type: "choice", options: JA_NEI, label: "2. Er det oppgitt anleggs administrator i abonnementsavtalen?" },
       { key: "q3", type: "fields", label: "3. Legg ved linker til Oneflow",
         fields: [
