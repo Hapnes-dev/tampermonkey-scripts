@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.1
+// @version      1.33.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14070,6 +14070,99 @@
     rlZdMountPanel(mountCtx, projectId);
   }
 
+  // ── Is Zendesk usable right now? ──
+  // Creating the ticket needs the session cookie AND the CSRF token, and that
+  // token is only written while a Zendesk tab is open. Discovering that after
+  // sixteen questions is the wrong time, so the review step asks first.
+  //
+  // A GET proves the session; it cannot prove the CSRF token is still the
+  // current one, since only a write would. So the token's age is reported too
+  // and a day-old token is called out rather than silently trusted.
+  const DTS_ZD_TOKEN_STALE_MS = 10 * 60 * 60 * 1000; // ~a working day
+  let dtsZdCheck = { at: 0 };
+  async function dtsZendeskPreflight(force) {
+    if (!force && dtsZdCheck.at && Date.now() - dtsZdCheck.at < 60 * 1000) return dtsZdCheck;
+    const out = { at: Date.now(), ok: false, reason: "", who: "", detail: "", tokenAgeMs: null, stale: false };
+    const csrf = GM_getValue("zdCsrfToken", "");
+    const capturedAt = Number(GM_getValue("zdCsrfCapturedAt", 0)) || 0;
+    if (capturedAt) {
+      out.tokenAgeMs = Date.now() - capturedAt;
+      out.stale = out.tokenAgeMs > DTS_ZD_TOKEN_STALE_MS;
+    }
+    if (!csrf) {
+      out.reason = "no-token";
+    } else {
+      try {
+        const me = await zendeskApiRequest("GET", "/users/me.json");
+        const u = me?.user;
+        if (u?.id) {
+          out.ok = true;
+          out.who = String(u.name || u.email || "").trim();
+        } else {
+          out.reason = "no-session";
+        }
+      } catch (e) {
+        const msg = String(e?.message ?? e);
+        out.detail = msg;
+        out.reason = /\b401\b|\b403\b|session/i.test(msg) ? "no-session" : "error";
+      }
+    }
+    dtsZdCheck = out;
+    return out;
+  }
+  function dtsZendeskFixSteps(reason) {
+    const steps = [
+      "Åpne " + ZENDESK_HOST + " i en fane i denne nettleseren.",
+      "Logg inn hvis du blir bedt om det, og la siden laste ferdig.",
+      "Kom tilbake hit og trykk «Sjekk på nytt».",
+    ];
+    if (reason === "no-token") {
+      steps.unshift("Skriptet har ikke sett Zendesk ennå i denne nettleseren.");
+    } else if (reason === "no-session") {
+      steps.unshift("Zendesk-økten er utløpt eller du er ikke logget inn.");
+    }
+    return steps;
+  }
+
+  // Read the ticket back after creating it. The POST response already carries
+  // an id, but reading it from Zendesk is what proves the case actually exists
+  // and is the thing worth telling the user.
+  async function dtsVerifyTicketExists(ticketId) {
+    const id = String(ticketId ?? "").trim();
+    if (!id) return { ok: false, error: "Ingen sak-id." };
+    try {
+      const res = await zendeskApiRequest("GET", "/tickets/" + encodeURIComponent(id) + ".json");
+      const t = res?.ticket;
+      if (!t?.id) return { ok: false, error: "Saken finnes ikke i Zendesk." };
+      return { ok: true, ticket: t };
+    } catch (e) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+  }
+
+  // Safety net for the ugly case: the POST reached Zendesk and created the case,
+  // but the reply never got back here (connection dropped, timeout). Reporting
+  // that as a plain failure invites a second identical case, so before saying
+  // "not created" we look for one with this exact subject from the last minutes.
+  async function dtsFindJustCreatedTicket(subject) {
+    const subj = String(subject ?? "").trim();
+    if (!subj) return null;
+    try {
+      const res = await zendeskApiRequest(
+        "GET",
+        "/search.json?query=" + encodeURIComponent('type:ticket subject:"' + subj.replace(/"/g, " ") + '"') + "&sort_by=created_at&sort_order=desc&per_page=5"
+      );
+      const list = Array.isArray(res?.results) ? res.results : [];
+      const cutoff = Date.now() - 10 * 60 * 1000;
+      return list.find((t) => {
+        const made = Date.parse(t?.created_at || 0) || 0;
+        return made >= cutoff && String(t?.subject || "").trim() === subj;
+      }) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function zendeskCreateHandoverTicket(subject, html) {
     let groupId = ZENDESK_HANDOVER_GROUP_ID;
     let tags = ZENDESK_HANDOVER_TAGS.slice();
@@ -14835,6 +14928,7 @@
       row("Lenke", ZENDESK_AGENT_TICKET_URL + o.ticketId, ZENDESK_AGENT_TICKET_URL + o.ticketId);
       row("Gruppe / status", "IWMAC Support · open");
       row("Sjekklisten", "lagt inn som offentlig svar");
+      row("Bekreftet", o.verified || "ikke sjekket");
       row("Handover to service", o.taskNote || "ikke endret");
       if (o.popupBlocked) row("Ny fane", "ble blokkert av nettleseren — bruk lenken over");
       wrap.appendChild(list);
@@ -15070,6 +15164,15 @@
         none.textContent = "Fant ingen «Handover to service»-oppgave i dette prosjektet — ingenting blir merket fullført.";
         wrap.appendChild(none);
       }
+      // Zendesk reachability, checked here rather than on the button: if the
+      // session is gone you want to know while you can still copy the text out,
+      // not after a failed POST.
+      const zd = document.createElement("div");
+      zd.className = "dtsZdCheck";
+      zd.textContent = "Sjekker Zendesk-tilgang…";
+      wrap.appendChild(zd);
+      dtsPaintZendeskCheck(zd, false);
+
       // Rich preview, not a textarea: the clipboard gets this element's HTML,
       // so what you see is what lands in the Zendesk composer. Still editable.
       const ed = document.createElement("div");
@@ -15080,6 +15183,91 @@
       wrap.appendChild(ed);
     }
     body.appendChild(wrap);
+  }
+
+  // Paint the Zendesk reachability line, and gate the create button on it —
+  // an enabled button that is certain to fail is worse than a disabled one that
+  // says why. Copy & close stays available throughout: the checklist is still
+  // useful when Zendesk is unreachable.
+  async function dtsPaintZendeskCheck(el, force) {
+    if (!el || !el.isConnected) return;
+    const btn = document.getElementById("btnDeliveryWizardCreateTicket");
+    el.className = "dtsZdCheck";
+    el.textContent = "Sjekker Zendesk-tilgang…";
+    if (btn) btn.disabled = true;
+    const r = await dtsZendeskPreflight(!!force);
+    if (!el.isConnected) return;
+    const btnNow = document.getElementById("btnDeliveryWizardCreateTicket");
+    el.textContent = "";
+    if (r.ok) {
+      el.className = "dtsZdCheck ok";
+      el.appendChild(document.createTextNode(
+        "✓ Zendesk: tilkoblet" + (r.who ? " som " + r.who : "") +
+        (r.stale ? " — men skriptet har ikke sett en Zendesk-fane på en stund, så nøkkelen kan ha rullert. Åpne Zendesk hvis opprettelsen feiler." : "")
+      ));
+      if (btnNow) btnNow.disabled = false;
+      return;
+    }
+    el.className = "dtsZdCheck bad";
+    const hd = document.createElement("div");
+    hd.className = "dtsZdHd";
+    hd.textContent = "Kan ikke opprette Zendesk-sak ennå";
+    el.appendChild(hd);
+    const ol = document.createElement("ol");
+    ol.className = "dtsZdSteps";
+    for (const s of dtsZendeskFixSteps(r.reason)) {
+      const li = document.createElement("li");
+      // The host is emitted as a real link so it can just be clicked.
+      const i = s.indexOf(ZENDESK_HOST);
+      if (i >= 0) {
+        li.appendChild(document.createTextNode(s.slice(0, i)));
+        const a = document.createElement("a");
+        a.href = ZENDESK_HOST;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = ZENDESK_HOST;
+        li.appendChild(a);
+        li.appendChild(document.createTextNode(s.slice(i + ZENDESK_HOST.length)));
+      } else {
+        li.textContent = s;
+      }
+      ol.appendChild(li);
+    }
+    el.appendChild(ol);
+    if (r.detail) {
+      const d = document.createElement("div");
+      d.className = "dtsZdDetail";
+      d.textContent = r.detail;
+      el.appendChild(d);
+    }
+    const actions = document.createElement("div");
+    actions.className = "dtsZdActions";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "dtsZdBtn";
+    open.textContent = "Åpne Zendesk";
+    open.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      try { window.open(ZENDESK_HOST, "_blank", "noopener"); } catch (_) {}
+    });
+    const again = document.createElement("button");
+    again.type = "button";
+    again.className = "dtsZdBtn";
+    again.textContent = "Sjekk på nytt";
+    again.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      dtsPaintZendeskCheck(el, true);
+    });
+    actions.appendChild(open);
+    actions.appendChild(again);
+    el.appendChild(actions);
+    const note = document.createElement("div");
+    note.className = "dtsZdDetail";
+    note.textContent = "«Copy & close» virker uansett — teksten kan limes rett inn i Zendesk.";
+    el.appendChild(note);
+    if (btnNow) btnNow.disabled = true;
   }
 
   // Set the task to Completed if the reviewer left the box ticked. Never throws
@@ -15173,6 +15361,12 @@
       const ticket = await zendeskCreateHandoverTicket(subject, html);
       const id = String(ticket?.id ?? "").trim();
       if (!id) throw new Error("Zendesk returnerte ingen sak-id.");
+      // Read it back before claiming success. The POST response is Zendesk's
+      // word for it; this is the case actually being there.
+      const check = await dtsVerifyTicketExists(id);
+      const verified = check.ok
+        ? "ja — lest tilbake fra Zendesk (status: " + String(check.ticket?.status || "?") + ")"
+        : "nei — saken ble opprettet, men kunne ikke leses tilbake: " + (check.error || "ukjent");
       // Remember it on the project so the wizard doesn't silently create a
       // second ticket for the same handover.
       a.zendeskTicketId = id;
@@ -15194,11 +15388,34 @@
         subject,
         taskNote: String(tick || "").trim() ? String(tick).replace(/^\s*[—-]\s*/, "") : "ikke endret",
         popupBlocked,
+        verified,
       })) closeDeliveryWizard();
     } catch (e) {
       const msg = e instanceof TypeError
         ? "Nettverks- eller CORS-feil — er du logget inn i Zendesk i denne nettleseren?"
         : String(e?.message ?? e);
+      // The POST may well have created the case before the connection died.
+      // Saying "not created" here is what produces a duplicate, so look for it
+      // first and report the real outcome.
+      const orphan = await dtsFindJustCreatedTicket(subject);
+      if (orphan?.id) {
+        const oid = String(orphan.id);
+        a.zendeskTicketId = oid;
+        dtsSaveAnswers();
+        if (p.rlProjectId) dtsVerdictCache.delete(String(p.rlProjectId));
+        try { refreshDeliveryChipForCurrentProject(); } catch (_) {}
+        dtsToast("Zendesk-sak #" + oid + " finnes allerede — den ble opprettet.", "ok");
+        if (!dtsRenderResult("ok", {
+          ticketId: oid,
+          subject,
+          taskNote: "ikke endret",
+          popupBlocked: false,
+          verified: "ja — svaret fra Zendesk gikk tapt, men saken ble funnet igjen på emnet. Ikke opprett den på nytt.",
+        })) closeDeliveryWizard();
+        btn.disabled = false;
+        btn.textContent = label;
+        return;
+      }
       dtsToast("Kunne ikke opprette Zendesk-sak.", "err");
       btn.disabled = false;
       btn.textContent = label;
@@ -15281,6 +15498,25 @@
       dialog.dlgYouniumStatus .dtsInput:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent-stroke); }
       dialog.dlgYouniumStatus .dtsReview { min-height: 380px; max-height: 55vh; overflow: auto; resize: vertical; }
       dialog.dlgYouniumStatus .dtsLabel { font-size: 12px; color: var(--muted); }
+      /* Zendesk reachability on the review step */
+      dialog.dlgYouniumStatus .dtsZdCheck {
+        font-size: 12.5px; line-height: 1.5; color: var(--muted);
+        border: 1px solid var(--hairline); border-radius: 10px;
+        padding: 10px 12px; background: var(--surface-1);
+      }
+      dialog.dlgYouniumStatus .dtsZdCheck.ok { color: var(--good); border-color: rgba(52,211,153,0.35); background: var(--good-soft); }
+      dialog.dlgYouniumStatus .dtsZdCheck.bad { color: var(--text); border-color: rgba(251,191,36,0.45); background: var(--warn-soft); }
+      dialog.dlgYouniumStatus .dtsZdHd { font-weight: 700; color: var(--warn); margin-bottom: 6px; }
+      dialog.dlgYouniumStatus .dtsZdSteps { margin: 0 0 6px; padding-left: 20px; display: grid; gap: 3px; }
+      dialog.dlgYouniumStatus .dtsZdSteps a { color: var(--accent); }
+      dialog.dlgYouniumStatus .dtsZdDetail { font-size: 11.5px; color: var(--muted2); margin-top: 6px; }
+      dialog.dlgYouniumStatus .dtsZdActions { display: flex; gap: 8px; margin-top: 8px; }
+      dialog.dlgYouniumStatus .dtsZdBtn {
+        font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+        padding: 6px 12px; border-radius: 8px;
+        border: 1px solid var(--hairline-strong); background: var(--surface-2); color: var(--text);
+      }
+      dialog.dlgYouniumStatus .dtsZdBtn:hover { background: var(--surface-3); }
       dialog.dlgYouniumStatus .dtsCheckRow {
         display: flex; align-items: center; gap: 8px;
         font-size: 12.5px; color: var(--text); cursor: pointer;
