@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.36.0
+// @version      1.36.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -15582,7 +15582,14 @@
   // says why. Copy & close stays available throughout: the checklist is still
   // useful when Zendesk is unreachable.
   async function dtsPaintZendeskCheck(el, force) {
-    if (!el || !el.isConnected) return;
+    // No isConnected check here on purpose. The review step builds its content
+    // in a detached wrapper and only appends it at the end of the render, so
+    // this runs while `el` is still out of the document — an isConnected guard
+    // up here returned immediately every time, leaving the banner stuck on
+    // "Sjekker Zendesk-tilgang…" and the create button never gated. The check
+    // that matters is the one after the await, which catches stepping away
+    // while the request is in flight.
+    if (!el) return;
     const btn = document.getElementById("btnDeliveryWizardCreateTicket");
     el.className = "dtsZdCheck";
     el.textContent = "Sjekker Zendesk-tilgang…";
