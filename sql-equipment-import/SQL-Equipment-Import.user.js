@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.10
+// @version      9.11
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -494,6 +494,16 @@
 
     const clip = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
+    // grp_name is the name the toolbox Search All Plants table shows for an
+    // equipment (the parameter-list base, e.g. modbus_mpxpro_v4), so every row
+    // carries it next to the order_no (v9.11). Left out when it only repeats
+    // the order_no or the regulator type. Returns escaped text or ''.
+    const grpLabel = (grps, orderNo, regs) => {
+        const g = String(grps || '').trim();
+        const same = (a) => g.toLowerCase() === String(a || '').trim().toLowerCase();
+        return !g || same(orderNo) || same(regs) ? '' : escapeHtml(clip(g, 60));
+    };
+
     function renderDrivers() {
         const f = ($('seii-search').value || '').trim().toLowerCase();
         const terms = searchTerms(f);
@@ -517,16 +527,25 @@
             const multi = d.orders.length > 1;
             // Unit NAMES are searchable but deliberately not displayed —
             // the rows show only counts and regulator types.
+            // Row text: driver — grp_name — n units — regulators for a single
+            // equipment; a multi-equipment driver keeps its summary row and puts
+            // the grp_name on each ↳ order_no sub-row instead.
+            const segs = [];
+            if (!multi) { const g = grpLabel(d.grps, d.orders[0] && d.orders[0].order_no, d.regs); if (g) segs.push(g); }
+            segs.push(`${d.n} unit${d.n === 1 ? '' : 's'}`);
+            if (multi) segs.push(`${d.orders.length} equipment — fetches ALL of them`);
+            else if (d.regs) segs.push(escapeHtml(d.regs));
             html.push(`<div class="drv" data-drv="${escapeHtml(d.driver_type)}"><b>${escapeHtml(d.driver_type)}</b>` +
-                ` <span class="meta">— ${d.n} unit${d.n === 1 ? '' : 's'}` +
-                (multi ? ` — ${d.orders.length} equipment — fetches ALL of them`
-                       : (d.regs ? ' — ' + escapeHtml(d.regs) : '')) +
-                '</span></div>');
+                ` <span class="meta">— ${segs.join(' — ')}</span></div>`);
             if (multi) {
                 for (const o of subs) {
+                    const sub = [];
+                    const g = grpLabel(o.grps, o.order_no, o.regs); if (g) sub.push(g);
+                    sub.push(`${o.n} unit${o.n === 1 ? '' : 's'}`);
+                    if (o.regs) sub.push(escapeHtml(o.regs));
                     html.push(`<div class="drv sub" data-drv="${escapeHtml(d.driver_type)}" data-order="${escapeHtml(o.order_no)}">` +
                         `↳ ${escapeHtml(o.order_no || '(no order_no)')}` +
-                        ` <span class="meta">— ${o.n} unit${o.n === 1 ? '' : 's'}${o.regs ? ' — ' + escapeHtml(o.regs) : ''}</span></div>`);
+                        ` <span class="meta">— ${sub.join(' — ')}</span></div>`);
                 }
             }
         }
@@ -640,9 +659,12 @@
         // unit count) plus ONE unit name — the first of the alphabetical line-4
         // list, cut out server-side so the full unit/grp name lists are still
         // searched but never transferred. Every index row has all 5 lines
-        // (upsertIndex always writes them), so line 4 is always the unit names.
+        // (upsertIndex always writes them), so line 4 is always the unit names
+        // and line 5 the grp names, which come back clipped (v9.11) because
+        // grp_name is the name Search All Plants shows for an equipment.
         const unit1 = `SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(sql_text, '\\n', 4), '\\n', -1), ', ', 1)`;
-        const sql = `SELECT display_name AS plant_id, driver_type, SUBSTRING_INDEX(sql_text, '\\n', 3) AS head, ${unit1} AS unit1 FROM ${IDX_TABLE}` +
+        const grps = `LEFT(SUBSTRING_INDEX(sql_text, '\\n', -1), 120)`;
+        const sql = `SELECT display_name AS plant_id, driver_type, SUBSTRING_INDEX(sql_text, '\\n', 3) AS head, ${unit1} AS unit1, ${grps} AS grps FROM ${IDX_TABLE}` +
             ` WHERE name LIKE ${likePrefixQ(IDX_PREFIX)} AND ${where}` +
             ` ORDER BY CAST(display_name AS UNSIGNED) DESC, driver_type LIMIT 60`;
         const rs = await toolboxSql(sql);
@@ -655,6 +677,7 @@
                 regs: head[1] || '',
                 n_units: Number(head[2]) || 0,
                 unit1: String(r.unit1 || '').trim(),
+                grps: String(r.grps || '').trim(),
             };
         });
     }
@@ -669,15 +692,19 @@
             // the top line stays driver ↳ order_no — plant — regulators and a
             // long order_no is not pushed onto a wrapped line by "— 1 unit —".
             // A regulator type that merely repeats the order_no (CARELBOSS,
-            // EM270) is left out for the same reason.
+            // EM270) is left out for the same reason. The grp_name sits right
+            // after the order_no (v9.11): driver ↳ order_no — grp — plant — regs.
             const count = `${r.n_units} unit${r.n_units === 1 ? '' : 's'}`;
             const name = r.unit1 ? escapeHtml(clip(r.unit1, 60)) : '';
             const unitLine = `<div class="unit"><span class="meta">${count}${name ? (r.n_units > 1 ? ', e.g.' : ':') : ''}</span>${name ? ' ' + name : ''}</div>`;
             const regs = r.regs && r.regs.toLowerCase() !== r.order_no.toLowerCase() ? r.regs : '';
+            const meta = [];
+            const g = grpLabel(r.grps, r.order_no, regs); if (g) meta.push(g);
+            meta.push('plant ' + pid);
+            if (regs) meta.push(escapeHtml(clip(regs, 60)));
             return `<div class="drv" data-plant="${pid}" data-drv="${escapeHtml(r.driver_type)}" data-order="${escapeHtml(r.order_no)}">` +
                 `<b>${escapeHtml(r.driver_type)}</b>${r.order_no ? ' ↳ ' + escapeHtml(r.order_no) : ''}` +
-                ` <span class="meta">— plant ${pid}` +
-                `${regs ? ' — ' + escapeHtml(clip(regs, 60)) : ''}</span>${unitLine}</div>`;
+                ` <span class="meta">— ${meta.join(' — ')}</span>${unitLine}</div>`;
         }).join('') || '<div class="drv"><span class="meta">no indexed equipment matches — the index covers plants this tool has loaded</span></div>';
         box.classList.add('show');
     }
