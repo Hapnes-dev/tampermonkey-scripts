@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.0
+// @version      1.32.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14360,6 +14360,11 @@
       const short = ofStateVerdict(p.subState)?.short || "ikke signert";
       return "Oneflow: abonnementsavtalen er «" + short + "», ikke signert — forhåndsvalgt Nei." + tail;
     }
+    // Says what was rejected and why, so a blank question 1 doesn't look like
+    // the lookup simply failed.
+    if (p?.subNotSubscription) {
+      return "Oneflow-lenken peker på «" + p.subNotSubscription + "», som ser ut som en ordre og ikke en abonnementsavtale — ingen status forhåndsvalgt. Svar manuelt.";
+    }
     if (String(p?.oneflowSubscriptionUrl || "").trim()) {
       return "Fant abonnementsavtalen, men ikke signeringsstatusen — sjekk selv." + tail;
     }
@@ -14432,6 +14437,30 @@
       if (curatedId && curatedId !== String(v?.sub?.id ?? "")) {
         const fetched = await ofFetchAgreementByUrl(p.oneflowSubscriptionUrl);
         if (fetched?.agreement) subAgreement = fetched.agreement;
+      }
+      // Landing in the subscription SLOT does not make a document a
+      // subscription agreement. An Oneflow link whose surrounding text doesn't
+      // label it fills the order slot first and then the subscription slot by
+      // position alone (rlParseProjectLinksFromHtml), so a project carrying two
+      // unlabelled links puts a plain one-off order in the subscription slot —
+      // seen on 3502 Spar Kjørbekk, where document 15013132 is a one-off order
+      // and the wizard reported "abonnementsavtalen er signert".
+      //
+      // So the document has to identify itself by name before its signing state
+      // is allowed to answer question 1. Nothing found, nothing claimed: the
+      // question is left blank rather than guessed at.
+      // A document with no name is not evidence of anything: don't claim it as
+      // the subscription, but don't throw its link away either.
+      const subName = String(subAgreement?.name ?? "").trim();
+      if (subAgreement && !subName) {
+        subAgreement = null;
+      } else if (subAgreement && ofKindByName(subName) !== "subscription") {
+        p.subNotSubscription = subName;
+        // Don't hand a one-off order to question 3 as "Abonnementsavtalen"
+        // either — it would go out in the Zendesk ticket under that label.
+        // Only ever cleared for a document we actually inspected and named.
+        p.oneflowSubscriptionUrl = "";
+        subAgreement = null;
       }
       if (subAgreement && typeof subAgreement.state === "number") {
         p.subState = subAgreement.state;
