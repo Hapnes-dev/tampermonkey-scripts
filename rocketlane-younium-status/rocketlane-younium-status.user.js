@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.38.1
+// @version      1.39.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -655,8 +655,12 @@
       });
       return result?.result || [];
     } catch (e) {
+      // Do NOT return [] — an empty list means "this plant has no orders", and
+      // reporting that for a failed request hid expired sessions and missing
+      // permissions behind "Younium: No orders found" for as long as this
+      // script has existed. Let the caller tell the two apart.
       console.warn("[Younium status] plant_id all-orders search failed", e);
-      return [];
+      throw e;
     }
   }
 
@@ -685,7 +689,7 @@
       return null;
     } catch (e) {
       console.warn("[Younium status] subscription-by-plant_id search failed", e);
-      return null;
+      throw e;
     }
   }
 
@@ -830,7 +834,16 @@
     dbg("compute for", { plantId: pid, projectName });
     if (!pid) { out.problems.push("No plant ID found in the project name."); return out; }
 
-    const allOrders = await youniumFindAllOrdersByPlantId(pid);
+    let allOrders;
+    try {
+      allOrders = await youniumFindAllOrdersByPlantId(pid);
+    } catch (e) {
+      out.color = "red";
+      out.label = "Younium: Lookup failed";
+      out.fetchFailed = true;
+      out.problems.push("Couldn't reach Younium for plant " + pid + ": " + (e?.message ?? e));
+      return out;
+    }
     out.relatedOrders = allOrders;
     if (!allOrders.length) {
       out.color = "gray";
@@ -900,7 +913,12 @@
       }
     }
     if (!subMatch) {
-      const found = await youniumFindSubscriptionByPlantId(pid);
+      let found = null;
+      try {
+        found = await youniumFindSubscriptionByPlantId(pid);
+      } catch (e) {
+        out.problems.push("Couldn't check Younium for a separate subscription order: " + (e?.message ?? e));
+      }
       if (found) {
         subMatch = { item: null, productName: found.productName };
         subscriptionOrder = found.order;
@@ -2616,6 +2634,7 @@
         if (found.subscription) out.sub = { id: String(found.subscription.id), agreement: found.subscription, error: "" };
         if (found.order || found.subscription) out.source = "Found by searching Oneflow for plant " + plantId + " — no link is stored on the Rocketlane project";
       } catch (e) {
+        out.fetchFailed = true;
         out.problems.push("Oneflow search for plant " + plantId + " failed: " + (e?.message ?? e));
       }
     }
@@ -2633,6 +2652,12 @@
       if (v.color !== "green") out.problems.unshift(v.summary);
     } else if (out.notConnected) {
       out.label = "Oneflow: Not connected";
+      out.color = "red";
+    } else if (out.fetchFailed) {
+      // "Missing" is the default label and used to survive a failed search,
+      // which reads as "there is no document" rather than "we could not ask".
+      out.label = "Oneflow: Lookup failed";
+      out.color = "red";
     } else if (out.order.id || out.sub.id) {
       out.label = "Oneflow: Error";
     } else if (!out.problems.length) {
