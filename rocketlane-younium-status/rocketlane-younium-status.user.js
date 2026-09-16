@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.39.0
+// @version      1.40.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2610,6 +2610,7 @@
     const out = {
       color: "gray", label: "Oneflow: Missing", signed: null, problems: [], lastCheckedAt: Date.now(),
       order: empty(), sub: empty(), documentUrl: "", subDocumentUrl: "", source: "", notConnected: false,
+      related: [],
     };
     dbg("compute for", { rlProjectId, plantId });
     let links = null;
@@ -2632,6 +2633,10 @@
         const found = await ofSearchByPlantId(plantId);
         if (found.order) out.order = { id: String(found.order.id), agreement: found.order, error: "" };
         if (found.subscription) out.sub = { id: String(found.subscription.id), agreement: found.subscription, error: "" };
+        // A plant often has several documents — different jobs, or an older
+        // version of the same one. The modal lists the ones not shown above so
+        // the pick is visible rather than implied.
+        out.related = Array.isArray(found.candidates) ? found.candidates : [];
         if (found.order || found.subscription) out.source = "Found by searching Oneflow for plant " + plantId + " — no link is stored on the Rocketlane project";
       } catch (e) {
         out.fetchFailed = true;
@@ -2987,7 +2992,34 @@
           warnings.map((w) => '<li>' + escHtml(w) + '</li>').join("") + '</ul></div>'
         : "") +
       sectionFor("Document / order", verdict.order) +
-      sectionFor("Subscription agreement", verdict.sub);
+      sectionFor("Subscription agreement", verdict.sub) +
+      (() => {
+        const shown = new Set([String(verdict.order?.id || ""), String(verdict.sub?.id || "")].filter(Boolean));
+        const others = (verdict.related || [])
+          .filter((a) => a?.id && !shown.has(String(a.id)))
+          .sort((a, b) => (Date.parse(b?.created_time || 0) || 0) - (Date.parse(a?.created_time || 0) || 0));
+        if (!others.length) return "";
+        const rows = others.map((a) => {
+          const v = ofStateVerdict(a.state);
+          const cls = v.color === "green" ? "youniumSubBadge-green"
+            : (v.color === "red" ? "youniumSubBadge-red" : (v.color === "yellow" ? "youniumSubBadge-yellow" : "youniumSubBadge-gray"));
+          const kind = ofKindByName(a.name) === "subscription" ? "Subscription agreement" : "Order / offer";
+          return '<div class="youniumRelatedRow">' +
+            '<div class="youniumRelatedHead">' +
+              '<a href="' + escHtml(toHttpUrl(ofDocumentUrl(a.id)) || "#") + '" target="_blank" rel="noopener noreferrer">' +
+                escHtml(String(a.name || a.id)) + '</a>' +
+              ' <span class="youniumSubBadge ' + cls + '">' + escHtml(v.short) + '</span>' +
+            '</div>' +
+            '<div class="youniumRelatedMeta">' + escHtml(kind) + ' · Created ' + escHtml(fmtDateOnly(a.created_time)) +
+              (a.updated_time ? ' · Updated ' + escHtml(fmtDateOnly(a.updated_time)) : "") + '</div>' +
+          '</div>';
+        }).join("");
+        return '<div class="youniumSection">' +
+          '<div class="youniumSectionTitle">Other documents for this plant ' +
+            '<span class="youniumSubBadge youniumSubBadge-gray">' + others.length + '</span>' +
+          '</div>' + rows +
+        '</div>';
+      })();
 
     if (verdict.documentUrl) {
       els.btnOneflowStatusOpenDoc.href = toHttpUrl(verdict.documentUrl) || "#";
