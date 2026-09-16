@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.38.0
+// @version      1.38.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -310,6 +310,8 @@
   const YN_GM_ENTITIES_AT = "ynLegalEntitiesAt";
   const YN_GM_PLANT_ENTITY = "ynPlantEntity";
   const YN_GM_RESTORE = "ynEntityRestoreTo";
+  const YN_GM_DENIED = "ynEntityDenied";
+  const YN_DENIED_TTL_MS = 12 * 60 * 60 * 1000;
   const YN_ENTITIES_TTL_MS = 24 * 60 * 60 * 1000;
   const YN_PLANT_ENTITY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   // Sweden first: it is the sibling that actually comes up in delivery work.
@@ -353,6 +355,30 @@
     if (!safe) throw new Error("ynSwitchLegalEntity: id is required");
     await gmYouniumRequest("POST", "/api/auth/legalentity/" + encodeURIComponent(safe), {});
     await gmYouniumRefreshToken(true);
+  }
+
+  // Being listed in the picker does not mean the account may use it: switching to
+  // an entity the user has no permissions in answers
+  //   HTTP 400 {"message":"User … has no permissions in Kiona Oy"}
+  // On this account only Kiona AS and Kiona Sweden AB are permitted; A/S, Oy,
+  // GmbH, Sp Zoo and Sàrl all refuse. A refusal must skip that entity, never
+  // abort the sweep, or a plant missing from Sweden would fail the whole lookup.
+  function ynReadDenied() {
+    try {
+      const j = JSON.parse(GM_getValue(YN_GM_DENIED, "") || "{}");
+      if (!j || typeof j !== "object") return {};
+      const fresh = {};
+      for (const [id, at] of Object.entries(j)) if (Date.now() - (Number(at) || 0) < YN_DENIED_TTL_MS) fresh[id] = at;
+      return fresh;
+    } catch (_) { return {}; }
+  }
+  function ynMarkDenied(entityId) {
+    const map = ynReadDenied();
+    map[String(entityId)] = Date.now();
+    try { GM_setValue(YN_GM_DENIED, JSON.stringify(map)); } catch (_) {}
+  }
+  function ynIsDeniedError(e) {
+    return /no permissions/i.test(String(e?.message || e)) || /HTTP 40[0-3]/.test(String(e?.message || e));
   }
 
   function ynReadPlantEntityMap() {
@@ -437,7 +463,13 @@
       try { GM_setValue(YN_GM_RESTORE, original); } catch (_) {}
       ynEntityScope += 1;
       try {
-        await ynSwitchLegalEntity(entityId);
+        try {
+          await ynSwitchLegalEntity(entityId);
+        } catch (e) {
+          // The remembered entity is no longer reachable for this account.
+          if (ynIsDeniedError(e)) { ynMarkDenied(entityId); return null; }
+          throw e;
+        }
         return await fn();
       } finally {
         ynEntityScope -= 1;
@@ -459,13 +491,23 @@
         console.warn("[Younium status] legal entity sweep unavailable", e);
         return null;
       }
-      const others = entities.filter((e) => e.id && e.id !== original);
+      const denied = ynReadDenied();
+      const others = entities.filter((e) => e.id && e.id !== original && !denied[e.id]);
       if (!others.length) return null;
       try { GM_setValue(YN_GM_RESTORE, original); } catch (_) {}
       ynEntityScope += 1;
       try {
         for (const entity of others) {
-          await ynSwitchLegalEntity(entity.id);
+          try {
+            await ynSwitchLegalEntity(entity.id);
+          } catch (e) {
+            if (ynIsDeniedError(e)) {
+              ynMarkDenied(entity.id);
+              console.log("[Younium status] no access to " + entity.name + " — skipping it from now on");
+              continue;
+            }
+            throw e;
+          }
           if (!(await ynPlantHasOrders(pid))) continue;
           const res = await fn();
           if (!empty(res)) {
