@@ -5,8 +5,12 @@ per page load: pick a file, press *Upload and Install*, wait, come back, repeat.
 This userscript adds a batch queue underneath that form — pick every package in
 one go, put them in the order you want, press start once.
 
-[Install](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/etahen-dpi-queue/etaHEN-DPI-Queue.user.js)
+[Install](https://gitlab.com/thomas.kvalvag/tampermonkey-scripts/-/raw/main/etahen-dpi-queue/etaHEN-DPI-Queue.user.js)
 · requires [Tampermonkey](https://www.tampermonkey.net/)
+
+> This one is hosted on GitLab only — it is deliberately not part of the GitHub
+> copy of this repository, so install and auto-update both run off the GitLab
+> raw URL.
 
 ## What it does
 

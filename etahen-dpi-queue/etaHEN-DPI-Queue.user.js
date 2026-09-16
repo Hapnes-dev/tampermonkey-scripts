@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         etaHEN DPI Upload Queue
 // @namespace    https://github.com/Hapnes-dev/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  Adds a batch upload queue to the etaHEN DPIv2 web interface: pick many PKG files (or paste many URLs) at once, drag them into the order you want, and the queue installs them one at a time with per-file progress, speed and ETA, a configurable wait between installs, pause/abort, and retry of failed items.
 // @author       Thomas
-// @homepageURL  https://github.com/Hapnes-dev/tampermonkey-scripts
-// @supportURL   https://github.com/Hapnes-dev/tampermonkey-scripts/issues
-// @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/etahen-dpi-queue/etaHEN-DPI-Queue.user.js
-// @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/etahen-dpi-queue/etaHEN-DPI-Queue.user.js
+// @homepageURL  https://gitlab.com/thomas.kvalvag/tampermonkey-scripts
+// @supportURL   https://gitlab.com/thomas.kvalvag/tampermonkey-scripts/-/issues
+// @updateURL    https://gitlab.com/thomas.kvalvag/tampermonkey-scripts/-/raw/main/etahen-dpi-queue/etaHEN-DPI-Queue.user.js
+// @downloadURL  https://gitlab.com/thomas.kvalvag/tampermonkey-scripts/-/raw/main/etahen-dpi-queue/etaHEN-DPI-Queue.user.js
 // @match        http://10.0.0.17:12800/*
 // @include      /^https?:\/\/[^\/]+:12800\/.*$/
 // @grant        GM_setValue
