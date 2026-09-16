@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.37.0
+// @version      1.38.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -291,6 +291,216 @@
     try { return JSON.parse(res.text); } catch { return null; }
   }
 
+  // ── Legal entities (v1.32.0) ────────────────────────────────────────────
+  // Younium scopes every query to ONE active legal entity, server-side. A plant
+  // that belongs to Kiona Sweden AB is simply invisible while Kiona AS is
+  // active: the same plant_id search returns 0 rows, not an error. Verified
+  // against plants 4414 and 2923, which return 9 and 3 orders from Sweden and
+  // nothing from Norway.
+  //
+  // There is no per-request override. Header and body variants (legalEntityId,
+  // X-Younium-LegalEntity, younium-legal-entity, X-LegalEntityId, a query
+  // param, legalEntityIds, includeAllLegalEntities, allLegalEntities,
+  // crossLegalEntity) were all probed and every one still returned 0 rows. The
+  // only mechanism is the one the Younium UI itself uses:
+  //   POST /api/auth/legalentity/{id}   then mint a fresh token
+  // which changes the entity for the whole session — so this switches only when
+  // a plant is NOT found in the current entity, and always switches back.
+  const YN_GM_ENTITIES = "ynLegalEntities";
+  const YN_GM_ENTITIES_AT = "ynLegalEntitiesAt";
+  const YN_GM_PLANT_ENTITY = "ynPlantEntity";
+  const YN_GM_RESTORE = "ynEntityRestoreTo";
+  const YN_ENTITIES_TTL_MS = 24 * 60 * 60 * 1000;
+  const YN_PLANT_ENTITY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  // Sweden first: it is the sibling that actually comes up in delivery work.
+  const YN_ENTITY_PRIORITY = ["kiona sweden ab", "kiona a/s", "kiona oy", "kiona gmbh", "kiona sp zoo", "kiona sarl"];
+
+  function ynEntityRank(name) {
+    const n = String(name || "").trim().toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+    const i = YN_ENTITY_PRIORITY.indexOf(n);
+    return i < 0 ? YN_ENTITY_PRIORITY.length : i;
+  }
+  async function ynListLegalEntities() {
+    const at = Number(GM_getValue(YN_GM_ENTITIES_AT, 0)) || 0;
+    if (Date.now() - at < YN_ENTITIES_TTL_MS) {
+      try {
+        const cached = JSON.parse(GM_getValue(YN_GM_ENTITIES, "") || "[]");
+        if (Array.isArray(cached) && cached.length) return cached;
+      } catch (_) {}
+    }
+    const json = await gmYouniumRequest("GET", "/api/ApplicationLegalEntity", null);
+    const rows = Array.isArray(json) ? json : (json?.result ?? []);
+    const list = rows
+      .map((e) => ({ id: String(e?.id ?? "").trim(), name: String(e?.name ?? "").trim() }))
+      .filter((e) => e.id)
+      .sort((a, b) => ynEntityRank(a.name) - ynEntityRank(b.name));
+    if (list.length) {
+      try {
+        GM_setValue(YN_GM_ENTITIES, JSON.stringify(list));
+        GM_setValue(YN_GM_ENTITIES_AT, Date.now());
+      } catch (_) {}
+    }
+    return list;
+  }
+  async function ynCurrentLegalEntity() {
+    const json = await gmYouniumRequest("GET", "/api/applicationlegalentity/current", null);
+    const e = json?.result ?? json;
+    return { id: String(e?.id ?? "").trim(), name: String(e?.name ?? "").trim() };
+  }
+  /** Switch the session's active entity. The entity is baked into the token, so mint a new one. */
+  async function ynSwitchLegalEntity(id) {
+    const safe = String(id || "").trim();
+    if (!safe) throw new Error("ynSwitchLegalEntity: id is required");
+    await gmYouniumRequest("POST", "/api/auth/legalentity/" + encodeURIComponent(safe), {});
+    await gmYouniumRefreshToken(true);
+  }
+
+  function ynReadPlantEntityMap() {
+    try { const j = JSON.parse(GM_getValue(YN_GM_PLANT_ENTITY, "") || "{}"); return j && typeof j === "object" ? j : {}; } catch (_) { return {}; }
+  }
+  function ynReadPlantEntity(plantId) {
+    const rec = ynReadPlantEntityMap()[String(plantId)];
+    if (!rec || typeof rec !== "object") return null;
+    if (Date.now() - (Number(rec.at) || 0) > YN_PLANT_ENTITY_TTL_MS) return null;
+    return rec; // { id: "<entity>" | "", at }
+  }
+  function ynWritePlantEntity(plantId, entityId) {
+    const map = ynReadPlantEntityMap();
+    map[String(plantId)] = { id: String(entityId || ""), at: Date.now() };
+    try { GM_setValue(YN_GM_PLANT_ENTITY, JSON.stringify(map)); } catch (_) {}
+  }
+
+  // One switch at a time across the whole page, and nested lookups must not try
+  // to switch again — the outer scope already put us in the right entity.
+  let ynEntityScope = 0;
+  let ynEntityChain = Promise.resolve();
+  function ynEntityQueue(fn) {
+    const run = () => fn();
+    const p = ynEntityChain.then(run, run);
+    ynEntityChain = p.then(() => {}, () => {});
+    return p;
+  }
+  /** Cheap "does this plant exist here" probe — one row, one field. */
+  async function ynPlantHasOrders(plantId) {
+    try {
+      const res = await ynSearchOrders("", {
+        pageSize: 1,
+        displayFields: ["id"],
+        conditions: [
+          { fieldName: "plant_id", value: String(plantId), operator: 0 },
+          { fieldName: "isLastVersion", value: true, operator: 0 },
+        ],
+      });
+      return !!(res?.result || []).length;
+    } catch (_) { return false; }
+  }
+
+  /**
+   * Run `fn` against the legal entity that owns `plantId`.
+   * Current entity first — when the plant lives there, nothing is switched at
+   * all, which is the normal case. Only a miss triggers the sweep, and the
+   * original entity is always restored.
+   */
+  async function ynRunForPlant(plantId, fn, isEmpty) {
+    const pid = String(plantId || "").trim();
+    const empty = isEmpty || ((v) => !v || (Array.isArray(v) && v.length === 0));
+    if (!pid || ynEntityScope > 0) return fn();
+
+    const remembered = ynReadPlantEntity(pid);
+    if (remembered && remembered.id) {
+      let current = "";
+      try { current = (await ynCurrentLegalEntity()).id; } catch (_) {}
+      if (current && remembered.id !== current) {
+        const viaCache = await ynRunInEntity(remembered.id, fn);
+        if (!empty(viaCache)) return viaCache;
+        ynWritePlantEntity(pid, ""); // moved or deleted — fall through and look again
+      }
+    }
+
+    const here = await fn();
+    if (!empty(here)) {
+      try { ynWritePlantEntity(pid, (await ynCurrentLegalEntity()).id); } catch (_) {}
+      return here;
+    }
+    if (remembered && !remembered.id) return here; // known to be nowhere; do not sweep again
+
+    const swept = await ynSweepForPlant(pid, fn, empty);
+    return swept === null ? here : swept;
+  }
+
+  /** Switch to one entity, run, switch back. */
+  async function ynRunInEntity(entityId, fn) {
+    return ynEntityQueue(async () => {
+      let original = "";
+      try { original = (await ynCurrentLegalEntity()).id; } catch (_) {}
+      if (!original || original === entityId) return fn();
+      try { GM_setValue(YN_GM_RESTORE, original); } catch (_) {}
+      ynEntityScope += 1;
+      try {
+        await ynSwitchLegalEntity(entityId);
+        return await fn();
+      } finally {
+        ynEntityScope -= 1;
+        try { await ynSwitchLegalEntity(original); } catch (e) { console.warn("[Younium status] could not restore legal entity", e); }
+        try { GM_setValue(YN_GM_RESTORE, ""); } catch (_) {}
+      }
+    });
+  }
+
+  /** Try the other entities in turn; run `fn` in the first one that has the plant. */
+  async function ynSweepForPlant(pid, fn, empty) {
+    return ynEntityQueue(async () => {
+      let original = "";
+      let entities = [];
+      try {
+        original = (await ynCurrentLegalEntity()).id;
+        entities = await ynListLegalEntities();
+      } catch (e) {
+        console.warn("[Younium status] legal entity sweep unavailable", e);
+        return null;
+      }
+      const others = entities.filter((e) => e.id && e.id !== original);
+      if (!others.length) return null;
+      try { GM_setValue(YN_GM_RESTORE, original); } catch (_) {}
+      ynEntityScope += 1;
+      try {
+        for (const entity of others) {
+          await ynSwitchLegalEntity(entity.id);
+          if (!(await ynPlantHasOrders(pid))) continue;
+          const res = await fn();
+          if (!empty(res)) {
+            ynWritePlantEntity(pid, entity.id);
+            console.log("[Younium status] plant " + pid + " found in " + entity.name);
+            return res;
+          }
+        }
+        ynWritePlantEntity(pid, ""); // not in any entity
+        return null;
+      } finally {
+        ynEntityScope -= 1;
+        try { await ynSwitchLegalEntity(original); } catch (e) { console.warn("[Younium status] could not restore legal entity", e); }
+        try { GM_setValue(YN_GM_RESTORE, ""); } catch (_) {}
+      }
+    });
+  }
+
+  // A tab closed mid-sweep would leave the session on the wrong entity; put it back.
+  rlWhenDomReady(() => {
+    const pending = String(GM_getValue(YN_GM_RESTORE, "") || "").trim();
+    if (!pending) return;
+    setTimeout(() => {
+      (async () => {
+        try {
+          const current = (await ynCurrentLegalEntity()).id;
+          if (current && current !== pending) await ynSwitchLegalEntity(pending);
+        } catch (_) {
+        } finally {
+          try { GM_setValue(YN_GM_RESTORE, ""); } catch (_) {}
+        }
+      })();
+    }, 4000);
+  });
+
   // ── Thin Younium API methods (mirror the bridge's YouniumBridge surface) ──
   function ynSearchOrders(query, opts) {
     const body = {
@@ -557,6 +767,16 @@
    * modal renderer expects.
    */
   async function computeYouniumStatusByPlantId(plantId, projectName) {
+    // Wrapped so every follow-up call (order hydration, invoices, event logs) runs
+    // in the same entity as the search that found the orders.
+    return ynRunForPlant(
+      plantId,
+      () => computeYouniumStatusInCurrentEntity(plantId, projectName),
+      (out) => !out || !Array.isArray(out.relatedOrders) || out.relatedOrders.length === 0,
+    );
+  }
+
+  async function computeYouniumStatusInCurrentEntity(plantId, projectName) {
     const dbg = (...a) => { try { if (window.__matchDebug !== false) console.log("[Younium status]", ...a); } catch (_) {} };
     const out = {
       color: "gray", label: "Younium: Missing", kind: null,
@@ -9835,6 +10055,12 @@
   }
 
   async function youniumFindAllSubscriptionsByPlantId(plantId) {
+    const pid = String(plantId || "").trim();
+    if (!pid) return [];
+    return ynRunForPlant(pid, () => youniumFindAllSubscriptionsHere(pid));
+  }
+
+  async function youniumFindAllSubscriptionsHere(plantId) {
     const pid = String(plantId || "").trim();
     if (!pid) return [];
     const summaries = await youniumFindAllOrdersByPlantId(pid);
