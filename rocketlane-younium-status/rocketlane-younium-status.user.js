@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.42.0
+// @version      1.43.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -16242,7 +16242,7 @@
   // ── Styles (own id, so section 5's injectStyles stays untouched) ──
   function dtsInjectStyles() {
     let style = document.getElementById("dtsStyles");
-    if (style && style.dataset.rlDtsReady === "1.23.0") return;
+    if (style && style.dataset.rlDtsReady === "1.43.0") return;
     if (!style) {
       style = document.createElement("style");
       style.id = "dtsStyles";
@@ -16342,10 +16342,37 @@
       }
       /* Delivery wizard stays dark PPT shell — OS light scheme must not flip
          choice ink to slate (that is the black-on-dark hover/click bug). */
+      /* The wizard is always dark. It forces a dark panel, but the shared tokens
+         on dialog.dlgYouniumStatus flip to their light values under
+         prefers-color-scheme: light — so every child using var(--muted) or
+         var(--surface-*) painted light-theme ink on a dark panel, which is why
+         labels and helper text became unreadable in Chrome's light mode. Pin the
+         dark token set here, and color-scheme so native inputs, selects and
+         scrollbars inside the dialog render dark too. */
       #dlgDeliveryWizard.dlgYouniumStatus[open] {
         background: #0f1424 !important;
         color: rgba(255,255,255,0.94) !important;
+        color-scheme: dark;
+        --surface-1: rgba(255,255,255,0.025);
+        --surface-2: rgba(255,255,255,0.045);
+        --surface-3: rgba(255,255,255,0.07);
+        --hairline: rgba(255,255,255,0.06);
+        --hairline-strong: rgba(255,255,255,0.10);
+        --text: rgba(255,255,255,0.94);
+        --muted: rgba(255,255,255,0.66);
+        --muted2: rgba(255,255,255,0.46);
+        --accent: #7dd3fc; --accent-soft: rgba(125,211,252,0.14); --accent-stroke: rgba(125,211,252,0.36);
+        --good: #34d399;  --good-soft: rgba(52,211,153,0.13);
+        --warn: #fbbf24;  --warn-soft: rgba(251,191,36,0.13);
+        --bad: #fb7185;   --bad-soft: rgba(251,113,133,0.13);
       }
+      /* The input keeps its own ink rather than inheriting the page's. */
+      #dlgDeliveryWizard.dlgYouniumStatus[open] .dtsInput {
+        background: rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.94);
+        border-color: rgba(255,255,255,0.14);
+      }
+      #dlgDeliveryWizard.dlgYouniumStatus[open] .dtsInput::placeholder { color: rgba(255,255,255,0.42); }
       /* Hardcoded ink — Rocketlane/OS button:hover|:active paint ButtonText (black)
          and beat var(--text)/var(--accent) on the dark #0f1424 dialog. */
       #dlgDeliveryWizard.dlgYouniumStatus button.dtsChoice,
@@ -16430,7 +16457,7 @@
       }
       .dtsResultNote { font-size: 12.5px; color: var(--muted); }
     `;
-    style.dataset.rlDtsReady = "1.23.0";
+    style.dataset.rlDtsReady = "1.43.0";
   }
 
   // ── Entry point 1: the button on the "Handover to service" task card ──
