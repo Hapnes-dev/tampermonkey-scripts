@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.40.0
+// @version      1.41.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -15468,7 +15468,13 @@
     L.push("[ ] Fullført");
     L.push(SUB + "NB! Sett riktig oppstartdato");
     L.push("Oppstartdato:");
-    L.push(SUB + "Younium ordre: " + String(p.youniumUrl || ""));
+    // This step is about the SUBSCRIPTION order, so link that one. Linking
+    // p.youniumUrl put the module order here (IWMAC Modul/Product lines), which
+    // is a different document entirely — see v1.41.0 in the notes.
+    L.push(SUB + "Younium abonnementsordre: " +
+      (p.youniumSubscriptionUrl
+        ? String(p.youniumSubscriptionUrl)
+        : "fant ingen abonnementsordre i Younium for dette anlegget"));
     L.push("");
     L.push("Tilleggsinformasjon:");
     L.push("");
@@ -15564,7 +15570,11 @@
     H.push(item("<strong>NB! Sjekk startdato om det er testperiode</strong><br>[] Bekreftet testperiode"));
     H.push("<li><p><strong>Aktiver abonnent ordre i Younium</strong><br>[] Fullført</p><ul>" +
       "<li><p><strong>NB! Sett riktig oppstartdato</strong><br>Oppstartdato:</p></li>" +
-      "<li><p>Younium ordre: " + link(p.youniumUrl) + "</p></li>" +
+      "<li><p>Younium abonnementsordre: " +
+        (p.youniumSubscriptionUrl
+          ? link(p.youniumSubscriptionUrl)
+          : "<em>fant ingen abonnementsordre i Younium for dette anlegget</em>") +
+      "</p></li>" +
       "</ul></li>");
     H.push("</ul>");
     H.push("<p><strong>Tilleggsinformasjon:</strong></p>");
