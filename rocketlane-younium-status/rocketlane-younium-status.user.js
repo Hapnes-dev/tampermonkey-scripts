@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.41.0
+// @version      1.42.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -10180,6 +10180,24 @@
   // @@rlMatchRuntime:end
 
 
+  // The task that carries the "Attach links:" block. Newer projects call it
+  // "URL's for checking and invoicing"; older ones "Internal Quality control and
+  // notes". A project has one or the other, never both (checked across
+  // 1458650, 1426801, 1189195 and 1206343), so the first match wins and the
+  // order only decides which name is preferred when a project somehow has both.
+  const RL_LINK_TASK_PATTERNS = [
+    /\binternal\s+(?:quality\s+control|qc)\b/i,
+    /\burl'?s?\b[\s\S]{0,40}\binvoic/i,
+  ];
+  const RL_LINK_TASK_NAMES = '"Internal Quality control and notes" or "URL\'s for checking and invoicing"';
+  function rlFindLinkTask(list) {
+    for (const re of RL_LINK_TASK_PATTERNS) {
+      const hit = (list || []).find((t) => re.test(String(t?.taskName || t?.name || "").trim()));
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   async function rlFetchIqcTask(rlProjectId) {
     const empty = {
       found: false, taskId: "", taskName: "", descriptionHtml: "", links: rlEmptyProjectLinks(),
@@ -10188,7 +10206,7 @@
     if (!pid) return empty;
     const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/tasks");
     const list = Array.isArray(json) ? json : (json?.data || []);
-    const qc = list.find((t) => /\binternal\s+(?:quality\s+control|qc)\b/i.test(String(t?.taskName || t?.name || "").trim()));
+    const qc = rlFindLinkTask(list);
     if (!qc) return empty;
     const taskId = String(qc.taskId || qc.id || "").trim();
     if (!taskId) return empty;
@@ -10211,13 +10229,15 @@
     const pid = String(rlProjectId || "").trim();
     if (!pid) throw new Error("Missing Rocketlane project id.");
     const fresh = await rlFetchIqcTask(pid);
-    if (!fresh.found || !fresh.taskId) throw new Error('No "Internal Quality control and notes" task on this project.');
+    if (!fresh.found || !fresh.taskId) {
+      throw new Error("This project has no task to attach the links to — expected " + RL_LINK_TASK_NAMES + ".");
+    }
     const nextHtml = rlUpsertAttachLinksHtml(fresh.descriptionHtml, links);
     await gmRocketlaneRequest("PUT", "/tasks/" + encodeURIComponent(fresh.taskId), null, {
       taskDescription: nextHtml,
     });
     const verify = await rlFetchIqcTask(pid);
-    if (!verify.found) throw new Error("IQC task vanished after save.");
+    if (!verify.found) throw new Error("The links task vanished after saving — nothing was confirmed.");
     rlProjectLinksCache.delete(pid);
     rlProjectLinksInflight.delete(pid);
     return verify;
@@ -11606,7 +11626,7 @@
     if (!projectId) return;
     const links = rlUrlPickerCollectLinks(dlg);
     if (saveBtn) saveBtn.disabled = true;
-    if (meta) meta.textContent = "Saving into Internal Quality control and notes…";
+    if (meta) meta.textContent = "Saving into the project's links task…";
     try {
       const verify = await rlSaveIqcAttachLinks(projectId, links);
       if (gen !== rlUrlPickerGen || dlg.dataset.rlProjectId !== projectId) return;
