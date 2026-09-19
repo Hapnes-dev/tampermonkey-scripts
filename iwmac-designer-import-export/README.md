@@ -212,6 +212,20 @@ with its one deliberate warning, the same file checked as if on plant 9999 gets 
 foreign-prefix warning, and broken JSON, a wrong format, a bad `image_svg` and an empty
 document are each refused with the reason Insert would give.
 
+Verified live on plant 2313 with Playwright against the installed 1.26.0: the 2313 panel
+→ ⚠ one warning and the full read-back; *Copy report* → "Copied — paste it back to the
+AI"; *Insert this file…* → check dialog closed, import ran, 122 objects on the canvas
+under the authored SVG; truncated JSON → ⛔ with the "4 brackets never close, the answer
+was cut off" diagnosis and no insert button; the 2746 export → ⚠ 9 overlapping pairs, 4
+doubled aliases, and *bindings carry plant prefix 2746 but this is plant 2313*.
+
+**1.26.1** fixes what that run showed: the report is amber for warnings and green for
+clean instead of borrowing the refusal's red, the headline sits on its own line, a
+truncated roles list no longer ends "….", the report opens scrolled to its top, and
+`summary.extent.objects_outside_canvas` uses the same 2 px of grace as the geometry check
+— the facts said "2 objects outside the canvas" for the house's own 1 px header overhang
+while the warnings, correctly, said nothing.
+
 ### The export explains the panel, seeds a new one, and Insert checks geometry (v1.25.0)
 
 Found by reading a finished export end to end the way a Copilot agent does, rather than

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.26.0
+// @version      1.26.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.26.0';
+var IWDIE_VERSION = '1.26.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -338,7 +338,8 @@ function iwdieSummarizeDoc(doc) {
   if (!isNaN(canvasW) && !isNaN(canvasH)) {
     placed.forEach(function (p) {
       var o = p[0];
-      if (p[1] < 0 || p[2] < 0 || p[1] + (parseInt(o.posWidth, 10) || 0) > canvasW || p[2] + (parseInt(o.posHeight, 10) || 0) > canvasH) outside++;
+      // same 2 px of grace as the geometry check: the house's own headers overhang a 1400 canvas by one
+      if (p[1] < -2 || p[2] < -2 || p[1] + (parseInt(o.posWidth, 10) || 0) > canvasW + 2 || p[2] + (parseInt(o.posHeight, 10) || 0) > canvasH + 2) outside++;
     });
   }
   var withTag = 0, aliases = {}, aliasCount = 0;
@@ -1286,7 +1287,7 @@ function iwdieCheckFile(text, opts) {
     (res.doc && res.doc.plant_id ? ' on plant ' + res.doc.plant_id : ', no plant id') + '.');
   f.push(summary.objects.single_objects + ' object(s), ' + summary.objects.containers + ' container(s), ' + summary.objects.graphics + ' graphic(s).');
   if (summary.roles && summary.roles.length) {
-    f.push('Roles: ' + summary.roles.slice(0, 7).map(function (r) { return r.objects + ' ' + r.role; }).join(', ') + (summary.roles.length > 7 ? ', …' : '') + '.');
+    f.push('Roles: ' + summary.roles.slice(0, 7).map(function (r) { return r.objects + ' ' + r.role; }).join(', ') + (summary.roles.length > 7 ? ', …' : '.'));
   }
   f.push('Linked to a parameter: ' + summary.linking.linked_to_a_parameter + '; unlinked: ' + summary.linking.unlinked +
     (summary.linking.navigation_links ? '; navigation: ' + summary.linking.navigation_links : '') + '.');
@@ -3664,6 +3665,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-btn.iwdie-secondary{background:#7a8794}',
       '.iwdie-errlist{background:#fdf0f0;border:1px solid #e3b3b3;border-radius:6px;padding:10px 14px;margin:8px 0;max-height:420px;overflow:auto}',
       '.iwdie-errlist li{margin:4px 0}',
+      '.iwdie-errlist.iwdie-warn{background:#fff8e6;border-color:#e6c77a}',
+      '.iwdie-errlist.iwdie-ok{background:#eef8ee;border-color:#a9d3a9}',
+      '.iwdie-errlist .iwdie-headline{margin:0 0 6px;font-size:14px}',
       '.iwdie-diag{background:#fff;border:1px solid #e3b3b3;border-radius:5px;padding:8px 12px;margin:8px 0}',
       '.iwdie-diag ul{margin:6px 0 0;padding-left:18px}',
       '.iwdie-diag li{font-family:Consolas,monospace;font-size:12px;color:#444}',
@@ -4500,12 +4504,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var old = panel.querySelector('.iwdie-errlist');
       if (old) old.remove();
       var div = document.createElement('div');
-      div.className = 'iwdie-errlist';
+      div.className = 'iwdie-errlist' + (result.verdict === 'warnings' ? ' iwdie-warn' : result.verdict === 'clean' ? ' iwdie-ok' : '');
       var headline = result.verdict === 'refused' ? '⛔ Insert would block this file' :
         result.verdict === 'warnings' ? '⚠ Insert would take this file, with ' + result.warnings.length + ' warning' + (result.warnings.length === 1 ? '' : 's') :
         '✅ Clean — every check passes';
       var list = function (items) { return '<ul>' + items.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>'; };
-      var html = '<b>' + esc(headline) + '</b>';
+      var html = '<div class="iwdie-headline"><b>' + esc(headline) + '</b></div>';
       if (result.facts.length) html += '<i>What the file holds:</i>' + list(result.facts);
       if (result.errors.length) html += '<i>Errors — fix these first:</i>' + list(result.errors);
       if (result.warnings.length) html += '<i>Warnings:</i>' + list(result.warnings);
@@ -4513,6 +4517,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         (result.verdict !== 'refused' ? '<button class="iwdie-btn" id="iwdie_check_insert">Insert this file…</button>' : '') + '</div>';
       div.innerHTML = html;
       panel.appendChild(div);
+      div.scrollTop = 0;
+      if (typeof div.scrollIntoView === 'function') div.scrollIntoView({ block: 'nearest' });
       div.querySelector('#iwdie_check_copy').addEventListener('click', function () {
         copyToClipboard(iwdieCheckReportText(result, checkName));
       });
