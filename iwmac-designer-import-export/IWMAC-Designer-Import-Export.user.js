@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.25.0
+// @version      1.26.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.25.0';
+var IWDIE_VERSION = '1.26.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1051,7 +1051,7 @@ var IWDIE_QUICK_START = [
   '6. tag_text is what the operator reads (caption_conventions); alias_text is the signal, and the key a linker matches.',
   '7. Link only by copying driver_id and unit_id from one row of the plant parameter source; otherwise leave driver_id "driver_id" and linked "false".',
   '8. zIndex bands: 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels.',
-  '9. Run self_check before returning; Insert runs the same geometry checks and reports what it finds.',
+  '9. Run self_check before returning; the userscript\'s Check AI file… button and Insert run the same checks and report what they find.',
   '10. Grow examples.starter_ventilation rather than starting from an empty array.'
 ];
 
@@ -1235,6 +1235,97 @@ function iwdieCheckPanelGeometry(doc) {
   var unk = Object.keys(unknown);
   if (unk.length) warnings.push(unk.length + ' obj_id(s) the catalogue does not list: ' + unk.slice(0, 3).join(', ') + (unk.length > 3 ? ', …' : '') + ' - legal if they are palette ids, broken if typed from memory.');
   return warnings;
+}
+
+/**
+ * Every check Insert runs, on a file that has not touched the canvas: JSON,
+ * envelope, document shape, counts, geometry, authored SVG, and the plant
+ * prefix of the bindings. Plus the facts an author wants read back: what the
+ * file shows, where its sections are, whether it carries a picture. Verdicts:
+ * "refused" (Insert would block it), "warnings" (Insert would take it and warn),
+ * "clean". Pure so the node checks can drive it; the modal only renders it.
+ */
+function iwdieCheckFile(text, opts) {
+  opts = opts || {};
+  var out = { verdict: 'refused', errors: [], warnings: [], facts: [], doc: null, meta: null };
+  var parsed;
+  try { parsed = JSON.parse(String(text == null ? '' : text)); }
+  catch (e) {
+    var bad = (typeof iwdieDiagnoseBadJson === 'function') ? iwdieDiagnoseBadJson(String(text || ''), e.message) : { errors: ['Not valid JSON: ' + e.message] };
+    out.errors = bad.errors || ['Not valid JSON: ' + e.message];
+    if (bad.diagnosis && bad.diagnosis.facts) out.facts = bad.diagnosis.facts.slice();
+    return out;
+  }
+  var res = iwdieParsePayload(parsed);
+  if (res.errors) {
+    out.errors = res.errors.slice();
+    if (res.diagnosis && res.diagnosis.facts) out.facts = res.diagnosis.facts.slice();
+    return out;
+  }
+  out.doc = res.doc; out.meta = res.meta;
+  var v = iwdieValidateDoc(res.doc, { allowEmpty: true });
+  out.errors = v.errors.slice();
+  out.warnings = v.warnings.slice();
+  out.warnings = out.warnings.concat(iwdieCheckEnvelopeCounts(res.meta, res.doc));
+  if (res.doc && typeof res.doc.image_svg === 'string' && res.doc.image_svg) {
+    out.errors = out.errors.concat(iwdieValidateSvg(res.doc.image_svg));
+  }
+  if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc));
+
+  var so = (res.doc && Array.isArray(res.doc.single_objects)) ? res.doc.single_objects : [];
+  var total = so.length + ((res.doc && Array.isArray(res.doc.containers)) ? res.doc.containers.length : 0);
+  if (total === 0 && !iwdieDocHasBackground(res.doc) && !(res.doc && res.doc.image_svg)) {
+    out.errors.push('Panel document is empty — no objects, no containers, no background.');
+  }
+
+  var summary = iwdieSummarizeDoc(res.doc);
+  var f = out.facts;
+  f.push((res.meta && res.meta.format === IWDIE_FORMAT ? 'Envelope' : 'Bare panel document') +
+    (res.meta && res.meta.generator ? ', written by ' + res.meta.generator : '') +
+    (res.doc && res.doc.panel_name ? ' — panel "' + res.doc.panel_name + '"' : '') +
+    (res.doc && res.doc.plant_id ? ' on plant ' + res.doc.plant_id : ', no plant id') + '.');
+  f.push(summary.objects.single_objects + ' object(s), ' + summary.objects.containers + ' container(s), ' + summary.objects.graphics + ' graphic(s).');
+  if (summary.roles && summary.roles.length) {
+    f.push('Roles: ' + summary.roles.slice(0, 7).map(function (r) { return r.objects + ' ' + r.role; }).join(', ') + (summary.roles.length > 7 ? ', …' : '') + '.');
+  }
+  f.push('Linked to a parameter: ' + summary.linking.linked_to_a_parameter + '; unlinked: ' + summary.linking.unlinked +
+    (summary.linking.navigation_links ? '; navigation: ' + summary.linking.navigation_links : '') + '.');
+  if (summary.units_referenced.length) {
+    f.push('Units: ' + summary.units_referenced.map(function (u) { return u.unit_id + ' (' + u.objects + ')'; }).join(', ') + '.');
+  }
+  var prefixes = summary.driver_id_plant_prefixes.map(function (p) { return p.plant_prefix; });
+  if (prefixes.length) f.push('Driver ids carry plant prefix ' + prefixes.join(', ') + '.');
+  if (opts.plantId && prefixes.length && prefixes.some(function (p) { return String(p) !== String(opts.plantId); })) {
+    out.warnings.push('Bindings carry plant prefix ' + prefixes.filter(function (p) { return String(p) !== String(opts.plantId); }).join(', ') +
+      ' but this is plant ' + opts.plantId + ' — Insert will offer to rewrite the prefix, and the rest of each id only resolves if that plant has the same parameters.');
+  }
+  if (summary.layout && summary.layout.sections && summary.layout.sections.length) {
+    f.push('Sections: ' + summary.layout.sections.map(function (h) { return h.title || '(untitled)'; }).join(' / ') + '.');
+  }
+  if (summary.layout && summary.layout.duct_lines && summary.layout.duct_lines.length) {
+    f.push(summary.layout.duct_lines.length + ' straight duct run(s) in the artwork.');
+  }
+  if (res.doc && res.doc.image_svg) f.push('Background: authored SVG artwork (panel.image_svg), ' + iwdieCountSvgShapes(res.doc.image_svg) + ' shapes.');
+  else if (iwdieDocHasBackground(res.doc)) f.push('Background: embedded picture (image_data).');
+  else f.push('Background: none — Insert takes it, Compile renders no picture behind the objects.');
+  if (summary.extent && summary.extent.objects_outside_canvas) f.push(summary.extent.objects_outside_canvas + ' object(s) outside the canvas.');
+
+  out.verdict = out.errors.length ? 'refused' : (out.warnings.length ? 'warnings' : 'clean');
+  return out;
+}
+
+/** The same report as plain text, for pasting back to the AI that wrote the file. */
+function iwdieCheckReportText(result, fileName) {
+  var L = [];
+  L.push('IWDIE check of ' + (fileName || 'the file') + ': ' +
+    (result.verdict === 'refused' ? 'REFUSED — Insert would block this file.' :
+     result.verdict === 'warnings' ? 'accepted with ' + result.warnings.length + ' warning(s).' : 'clean.'));
+  if (result.facts.length) { L.push(''); L.push('Facts:'); result.facts.forEach(function (x) { L.push('- ' + x); }); }
+  if (result.errors.length) { L.push(''); L.push('Errors (fix these first):'); result.errors.forEach(function (x) { L.push('- ' + x); }); }
+  if (result.warnings.length) { L.push(''); L.push('Warnings:'); result.warnings.forEach(function (x) { L.push('- ' + x); }); }
+  L.push('');
+  L.push('Return the complete corrected .json file; keep every object you were not asked to change byte for byte.');
+  return L.join('\n');
 }
 
 /**
@@ -3700,6 +3791,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '    <legend>Panel JSON</legend>',
         "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
         "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
+        "    <button id='iwdie_check_btn' class='btn_full ui-button ui-corner-all' title='Run every check Insert runs on a .json file, and read it back - nothing touches the canvas' onclick=\"window.__IWDIE.openCheckPanel()\">Check AI file…</button>",
         "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
         '  </fieldset>',
         '</div>'].join('\n');
@@ -4327,6 +4419,112 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!txt) { toast('Nothing pasted.', true); return; }
         importFromText(txt);
       });
+    }
+
+    /* ---------- Check AI file (v1.26.0) ----------
+       The checks Insert runs, run first, on a file that has not touched the
+       canvas - and the file read back in words: what it shows, where its
+       sections are, whether it carries a picture. The report copies as text
+       for the AI that wrote the file, and a file that passes can go straight
+       on to Insert without being picked again. */
+    var checkOverlay = null;
+    var checkText = '';
+    var checkName = '';
+
+    function closeCheckPanel() {
+      if (checkOverlay) { checkOverlay.remove(); checkOverlay = null; }
+      document.removeEventListener('keydown', onCheckKeydown, true);
+    }
+
+    function onCheckKeydown(ev) {
+      if (ev.key === 'Escape' && checkOverlay) { ev.preventDefault(); closeCheckPanel(); }
+    }
+
+    function openCheckPanel() {
+      closeCheckPanel();
+      checkOverlay = document.createElement('div');
+      checkOverlay.className = 'iwdie-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'iwdie-panel';
+      panel.innerHTML = [
+        '<h3>Check an AI-written panel file</h3>',
+        '<div>Runs every check Insert runs — JSON, envelope, the 17 object fields, counts, geometry, artwork, plant prefix — and reads the file back: what it shows, its sections, its picture. <b>Nothing touches the canvas.</b> Copy the report for the AI, or insert the file when it passes.</div>',
+        '<label>The .json file</label>',
+        '<input type="file" id="iwdie_check_file" accept=".json,application/json">',
+        '<div class="iwdie-drop" id="iwdie_check_drop">…or drop the .json here</div>',
+        '<label>…or paste the JSON text instead</label>',
+        '<textarea id="iwdie_check_paste" spellcheck="false" placeholder="Paste the JSON here…"></textarea>',
+        '<div>',
+        '  <button class="iwdie-btn" id="iwdie_check_paste_btn">Check the pasted JSON</button>',
+        '  <button class="iwdie-btn iwdie-secondary" id="iwdie_check_cancel_btn">Close</button>',
+        '</div>'
+      ].join('\n');
+      checkOverlay.appendChild(panel);
+      document.body.appendChild(checkOverlay);
+      document.addEventListener('keydown', onCheckKeydown, true);
+      checkOverlay.addEventListener('mousedown', function (ev) { if (ev.target === checkOverlay) closeCheckPanel(); });
+      panel.querySelector('#iwdie_check_cancel_btn').addEventListener('click', closeCheckPanel);
+      panel.querySelector('#iwdie_check_file').addEventListener('change', function (ev) {
+        if (ev.target.files && ev.target.files[0]) readFileAndCheck(ev.target.files[0]);
+      });
+      var drop = panel.querySelector('#iwdie_check_drop');
+      drop.addEventListener('dragover', function (ev) { ev.preventDefault(); drop.classList.add('iwdie-over'); });
+      drop.addEventListener('dragleave', function () { drop.classList.remove('iwdie-over'); });
+      drop.addEventListener('drop', function (ev) {
+        ev.preventDefault(); drop.classList.remove('iwdie-over');
+        if (ev.dataTransfer.files && ev.dataTransfer.files[0]) readFileAndCheck(ev.dataTransfer.files[0]);
+      });
+      panel.querySelector('#iwdie_check_paste_btn').addEventListener('click', function () {
+        var txt = panel.querySelector('#iwdie_check_paste').value.trim();
+        if (!txt) { toast('Nothing pasted.', true); return; }
+        runFileCheck(txt, 'pasted JSON');
+      });
+    }
+
+    function readFileAndCheck(file) {
+      var fr = new FileReader();
+      fr.onload = function () { runFileCheck(String(fr.result), file.name); };
+      fr.onerror = function () { toast('Could not read the file.', true); };
+      fr.readAsText(file);
+    }
+
+    function runFileCheck(text, name) {
+      checkText = text; checkName = name || 'the file';
+      var result = iwdieCheckFile(text, { plantId: currentPlantId() });
+      renderCheckReport(result);
+    }
+
+    function renderCheckReport(result) {
+      var panel = checkOverlay ? checkOverlay.querySelector('.iwdie-panel') : null;
+      if (!panel) return;
+      var old = panel.querySelector('.iwdie-errlist');
+      if (old) old.remove();
+      var div = document.createElement('div');
+      div.className = 'iwdie-errlist';
+      var headline = result.verdict === 'refused' ? '⛔ Insert would block this file' :
+        result.verdict === 'warnings' ? '⚠ Insert would take this file, with ' + result.warnings.length + ' warning' + (result.warnings.length === 1 ? '' : 's') :
+        '✅ Clean — every check passes';
+      var list = function (items) { return '<ul>' + items.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>'; };
+      var html = '<b>' + esc(headline) + '</b>';
+      if (result.facts.length) html += '<i>What the file holds:</i>' + list(result.facts);
+      if (result.errors.length) html += '<i>Errors — fix these first:</i>' + list(result.errors);
+      if (result.warnings.length) html += '<i>Warnings:</i>' + list(result.warnings);
+      html += '<div><button class="iwdie-btn" id="iwdie_check_copy">📋 Copy report for the AI</button>' +
+        (result.verdict !== 'refused' ? '<button class="iwdie-btn" id="iwdie_check_insert">Insert this file…</button>' : '') + '</div>';
+      div.innerHTML = html;
+      panel.appendChild(div);
+      div.querySelector('#iwdie_check_copy').addEventListener('click', function () {
+        copyToClipboard(iwdieCheckReportText(result, checkName));
+      });
+      var ins = div.querySelector('#iwdie_check_insert');
+      if (ins) {
+        ins.addEventListener('click', function () {
+          var text = checkText;
+          closeCheckPanel();
+          openImportPanel();
+          importFromText(text);
+        });
+      }
     }
 
     function readFileAndImport(file) {
@@ -5321,6 +5519,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       openImportPanel: openImportPanel,
       applyImport: applyImport,
       doExportBackgroundAi: doExportBackgroundAi,
+      openCheckPanel: openCheckPanel,
       doExportParams: doExportParams,
       doExportAllParams: doExportAllParams,
       _collect: collectCurrentDoc
@@ -5383,6 +5582,8 @@ if (typeof module !== 'undefined' && module.exports) {
     CAPTION_CONVENTIONS: IWDIE_CAPTION_CONVENTIONS,
     roleOf: iwdieRoleOf,
     checkPanelGeometry: iwdieCheckPanelGeometry,
+    checkFile: iwdieCheckFile,
+    checkReportText: iwdieCheckReportText,
     ductLinesFromSvg: iwdieDuctLinesFromSvg,
     svgSize: iwdieSvgSize,
     exampleStarterVentilation: iwdieExampleStarterVentilation,

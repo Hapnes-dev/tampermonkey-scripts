@@ -187,6 +187,31 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Check AI file… — the checks before the canvas (v1.26.0)
+
+A fourth button under *Panel JSON*. Pick, drop or paste a `.json` and it runs **every check
+Insert runs** — JSON, envelope, the 17 object fields, counts, geometry, authored SVG — plus
+one Insert cannot: whether the bindings carry *this* plant's prefix. Nothing touches the
+canvas. The verdict is Insert's: ⛔ *would block*, ⚠ *would take it with N warnings*, ✅
+*clean*.
+
+It also reads the file back in words, which is the half an author actually needs: what
+it holds (`12 objects, 0 containers`), roles (`3 label, 2 alarm, 2 fan …`), linking counts,
+units, plant prefix, the section headers in order, straight duct runs in the artwork, and
+whether the background is authored SVG, an embedded picture, or missing — in which case
+it says what Compile will do about it.
+
+*📋 Copy report for the AI* puts the whole thing on the clipboard as plain text ending in
+the one instruction that matters (*return the complete corrected file, keep every
+untouched object byte for byte*); *Insert this file…* hands a passing file straight to
+the import dialog without picking it again.
+
+The check is a pure function, `iwdieCheckFile(text, {plantId})`, exported to node and
+covered by 13 assertions: the starter scaffold comes back clean, the 2313 panel comes back
+with its one deliberate warning, the same file checked as if on plant 9999 gets the
+foreign-prefix warning, and broken JSON, a wrong format, a bad `image_svg` and an empty
+document are each refused with the reason Insert would give.
+
 ### The export explains the panel, seeds a new one, and Insert checks geometry (v1.25.0)
 
 Found by reading a finished export end to end the way a Copilot agent does, rather than
