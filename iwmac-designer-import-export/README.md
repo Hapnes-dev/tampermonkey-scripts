@@ -201,6 +201,15 @@ incomplete — it was cut off before the JSON finished*, with the bracket count)
 *📋 Copy the fix for the AI* beside *📋 Copy report for the AI*. `window.__IWDIE.stageImportText(text, name)`
 drives the staged step from automation. `iwdieCheckFile` now returns the `diagnosis` too.
 
+Verified live on plant 2313 against the installed 1.27.0: the 2313 panel staged → ⚠ *Ready
+to insert, with 1 warning* and canvas at 0 → **Insert now** → *Inserted 122 objects,
+background applied*, dialog closed; a truncated paste → ⛔ *Not inserted*, the "cut off"
+diagnosis, *Copy the fix* offered and no *Insert now*; the 2746 export → ⚠ 3 warnings with
+the foreign-prefix line, and no phantom "outside the canvas" fact any more. **1.27.1** stops
+a refused file's diagnosis facts printing twice — once in the facts list and again under
+the diagnosis headline; they now live under the headline only, in the dialog and in the
+copied text.
+
 ### Check AI file… — the checks before the canvas (v1.26.0)
 
 A fourth button under *Panel JSON*. Pick, drop or paste a `.json` and it runs **every check

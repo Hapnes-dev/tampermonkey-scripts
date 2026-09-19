@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.27.0
+// @version      1.27.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.27.0';
+var IWDIE_VERSION = '1.27.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1254,13 +1254,13 @@ function iwdieCheckFile(text, opts) {
   catch (e) {
     var bad = (typeof iwdieDiagnoseBadJson === 'function') ? iwdieDiagnoseBadJson(String(text || ''), e.message) : { errors: ['Not valid JSON: ' + e.message] };
     out.errors = bad.errors || ['Not valid JSON: ' + e.message];
-    if (bad.diagnosis) { out.diagnosis = bad.diagnosis; if (bad.diagnosis.facts) out.facts = bad.diagnosis.facts.slice(); }
+    if (bad.diagnosis) out.diagnosis = bad.diagnosis;
     return out;
   }
   var res = iwdieParsePayload(parsed);
   if (res.errors) {
     out.errors = res.errors.slice();
-    if (res.diagnosis) { out.diagnosis = res.diagnosis; if (res.diagnosis.facts) out.facts = res.diagnosis.facts.slice(); }
+    if (res.diagnosis) out.diagnosis = res.diagnosis;
     return out;
   }
   out.doc = res.doc; out.meta = res.meta;
@@ -1324,6 +1324,8 @@ function iwdieCheckReportText(result, fileName) {
      result.verdict === 'warnings' ? 'accepted with ' + result.warnings.length + ' warning(s).' : 'clean.'));
   if (result.facts.length) { L.push(''); L.push('Facts:'); result.facts.forEach(function (x) { L.push('- ' + x); }); }
   if (result.errors.length) { L.push(''); L.push('Errors (fix these first):'); result.errors.forEach(function (x) { L.push('- ' + x); }); }
+  var d = result.diagnosis;
+  if (d && d.headline) { L.push(''); L.push('Diagnosis: ' + d.headline); (d.facts || []).forEach(function (x) { L.push('- ' + x); }); }
   if (result.warnings.length) { L.push(''); L.push('Warnings:'); result.warnings.forEach(function (x) { L.push('- ' + x); }); }
   L.push('');
   L.push('Return the complete corrected .json file; keep every object you were not asked to change byte for byte.');
