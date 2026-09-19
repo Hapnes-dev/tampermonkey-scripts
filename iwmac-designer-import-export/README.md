@@ -187,6 +187,20 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The check is the first step of Insert (v1.27.0)
+
+The separate *Check AI file…* button lasted one day. A check you have to remember to run
+is a check that gets skipped, so it is now the first thing *Insert JSON…* does: pick, drop
+or paste a file and the dialog runs every check and reads the file back — ⛔ *Not inserted
+— the file is refused*, ⚠ *Ready to insert, with N warnings*, ✅ *Ready to insert* — and
+the file stays in memory. It reaches the canvas only when you press **Insert now**; the
+replace-or-add question and the driver-id rebinding follow exactly as before.
+
+A refused file shows the importer's own diagnosis in the same report (*the file is
+incomplete — it was cut off before the JSON finished*, with the bracket count) and offers
+*📋 Copy the fix for the AI* beside *📋 Copy report for the AI*. `window.__IWDIE.stageImportText(text, name)`
+drives the staged step from automation. `iwdieCheckFile` now returns the `diagnosis` too.
+
 ### Check AI file… — the checks before the canvas (v1.26.0)
 
 A fourth button under *Panel JSON*. Pick, drop or paste a `.json` and it runs **every check
