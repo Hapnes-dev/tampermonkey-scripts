@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.24.0
+// @version      1.24.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.24.0';
+var IWDIE_VERSION = '1.24.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -519,6 +519,12 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       unlinked_new_object: { id: 'driver_id', driver_id: 'driver_id', linked: 'false', link_name: '', link_tag: '', sub_group: '', unit_id: '', unit_ref: '' },
       unlinked_exported_object: 'driver_id "" with linked "true" and link_name "link_name" is how the Designer itself writes an object nobody has linked. Leave it as found; do not convert it to the new-object placeholders unless asked for a template.',
       linked_object: 'driver_id = the parameter string, unit_id = its unit, alias_text = its description, linked "true"; id stays "driver_id" and link_name stays as found. See examples.linked_object.',
+      alias_shapes: {
+        what: 'The Alias text column is written by whatever created the unit, so its shape is predictable and can be reconstructed before any panel exists.',
+        modbus_units: 'System number, tag and description joined by hyphens - "360.02-RT40-Temperatur Inntak"; a point with no tag drops the middle part - "360.02-Systemvender". Reconstructing the alias from a Modbus point list matched all 272 rows of one plant, so an agent can prepare its bindings from the point list alone and confirm them against the parameter export.',
+        vendor_units: 'A vendor path instead - "SNE00108D12A900/Local Hardware IO.JV40 Start tilluftsvifte [  ]" on BACnet, Danfoss names on AK-PC packs. Nothing is derivable: match on the description and copy the row.',
+        caution: 'A reconstructed alias is a lookup key, never a binding. Only a row in this plant parameter source gives driver_id and unit_id.'
+      },
       parameter_source_columns: {
         'Driver ID': 'object.driver_id, copied verbatim',
         'Unit ID': 'object.unit_id, copied verbatim',
