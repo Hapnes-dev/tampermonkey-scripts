@@ -187,6 +187,37 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### A vector trace Illustrator can edit (v1.28.0)
+
+*Background → Illustrator* on the house Ventilasjon template gave **1 017 paths, 200 kB**,
+of which 905 had fewer than eight points — anti-aliasing specks — under one `scale(0.5)`
+group with no names. Measured, then rebuilt:
+
+- **Dominant colours are never merged.** The palette builder folded any shade within 24
+  of a picked colour into it; the zone-box grey (205,210,215) is 9 from the canvas grey
+  (204,205,206) and covers a quarter of the image, and it was lost on every trace. A
+  colour covering half a percent of the image is a fill, not a halo.
+- **Halos are blends.** An anti-aliasing colour lies on the straight line between the two
+  colours it blends; a palette colour within 14 of the segment between two dominant ones
+  is dropped (`iwdieMergeBlendColours`). Distance alone cannot tell a halo from a
+  neighbouring grey; geometry can.
+- **One quantisation cycle.** The palette is derived from the image already; letting the
+  tracer re-average it drifted the 2 000-pixel fresh-air blue into whatever light pixels
+  landed nearest, and it vanished from the shipped trace.
+- **Editing options**: `pathomit` 32 per scale step (64 at 2×) instead of 4, straight
+  fits (`ltres`/`qtres` 1).
+- **Tidied output** (`iwdieTidyTraceSvg`): the supersample scale baked into the
+  coordinates, no transform group, `stroke`/`opacity` noise gone, one group per colour
+  named after the house palette (`Soner`, `Avtrekk-kjerne`, `Uteluft-kjerne`, `Piler` …),
+  the full-canvas plate as a single rect, a title and a description.
+
+Result on the same template: **109 paths, 33 kB, ten named groups**, mean pixel error
+0.38 against 1.93 before — the zones and the blue are right for the first time; what
+moved are the half-transparent white edges along the duct casings, 0.5 % of the pixels,
+which is exactly what a person editing the file does not want as separate rings. The
+export's `image_svg_trace` goes through the same tidy, so an agent reading it gets
+named colour layers too. 14 assertions drive the whole pipeline on the real template.
+
 ### The check is the first step of Insert (v1.27.0)
 
 The separate *Check AI file…* button lasted one day. A check you have to remember to run

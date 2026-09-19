@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.27.1
+// @version      1.28.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.27.1';
+var IWDIE_VERSION = '1.28.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2125,10 +2125,15 @@ function iwdieBuildPalette(imgData, maxColors) {
     }
     return false;
   };
+  // A colour that covers half a percent of the image is a fill, not an
+  // anti-aliasing halo, however close it sits to one already picked: the house
+  // zone boxes (205,210,215) are 9 from the canvas grey (204,205,206) and were
+  // folded into it on every trace before 1.28.0.
+  var dominant = Math.max(floor, Math.round(imgData.width * imgData.height / 200));
   var pal = [], j;
   for (j = 0; j < keys.length && pal.length < maxColors; j++) {
     if (counts[keys[j]] < floor && pal.length >= 8) break;
-    if (pal.length && near(pal, best[keys[j]])) continue;
+    if (pal.length && counts[keys[j]] < dominant && near(pal, best[keys[j]])) continue;
     pal.push(toRGB(best[keys[j]]));
   }
   var extra = 0;
@@ -2136,7 +2141,115 @@ function iwdieBuildPalette(imgData, maxColors) {
     if (counts[keys[j]] < Math.max(24, floor >> 1)) break;
     if (isSat(best[keys[j]]) && !near(pal, best[keys[j]])) { pal.push(toRGB(best[keys[j]])); extra++; }
   }
-  return pal;
+  return iwdieMergeBlendColours(pal, IWDIE_TRACE_BLEND_TOLERANCE);
+}
+
+/** A halo is a blend of two real colours, within this distance of the line between them. */
+var IWDIE_TRACE_BLEND_TOLERANCE = 14;
+
+/**
+ * Anti-aliasing halos sit on the straight line between the two colours they
+ * blend, in RGB. Drop a palette colour that lies within tol of the segment
+ * between two colours kept before it, well away from both ends. The palette
+ * arrives in pixel-count order, so the ends tested are the dominant colours,
+ * and two genuinely different greys a few units apart both survive.
+ */
+function iwdieMergeBlendColours(pal, tol) {
+  var kept = [], i, j, k;
+  for (k = 0; k < pal.length; k++) {
+    var c = pal[k], blend = false;
+    for (i = 0; i < kept.length && !blend; i++) {
+      for (j = i + 1; j < kept.length && !blend; j++) {
+        var a = kept[i], b = kept[j];
+        var abr = b.r - a.r, abg = b.g - a.g, abb = b.b - a.b;
+        var len2 = abr * abr + abg * abg + abb * abb;
+        if (len2 < 400) continue;
+        var t = ((c.r - a.r) * abr + (c.g - a.g) * abg + (c.b - a.b) * abb) / len2;
+        if (t < 0.12 || t > 0.88) continue;
+        var dr = c.r - (a.r + abr * t), dg = c.g - (a.g + abg * t), db = c.b - (a.b + abb * t);
+        if (Math.sqrt(dr * dr + dg * dg + db * db) <= tol) blend = true;
+      }
+    }
+    if (!blend) kept.push(c);
+  }
+  return kept;
+}
+
+/** Colours the house artwork is drawn in, so a traced layer can carry a name. */
+var IWDIE_TRACE_LAYER_NAMES = [
+  ['Avtrekk-kjerne', [243, 201, 106]], ['Tilluft-kjerne', [247, 158, 122]], ['Uteluft-kjerne', [176, 224, 239]],
+  ['Soner', [205, 210, 215]], ['Gjenvinner', [206, 209, 210]], ['Gjenvinner-kant', [166, 166, 169]],
+  ['Piler', [105, 124, 134]], ['Symboler', [90, 90, 93]], ['Hvitt', [255, 255, 255]], ['Bakgrunn', [204, 205, 206]]
+];
+
+function iwdieTraceLayerName(rgb, used) {
+  var best = null, bestD = 1e9, i;
+  for (i = 0; i < IWDIE_TRACE_LAYER_NAMES.length; i++) {
+    var c = IWDIE_TRACE_LAYER_NAMES[i][1];
+    var d = Math.max(Math.abs(c[0] - rgb[0]), Math.abs(c[1] - rgb[1]), Math.abs(c[2] - rgb[2]));
+    if (d < bestD) { bestD = d; best = IWDIE_TRACE_LAYER_NAMES[i][0]; }
+  }
+  var hex = '#' + rgb.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('').toUpperCase();
+  var name = bestD <= 12 ? best : 'Farge-' + hex.slice(1);
+  if (used[name]) { used[name]++; name += '-' + used[name]; } else used[name] = 1;
+  return { name: name, hex: hex };
+}
+
+/**
+ * The trace as Illustrator wants it: the supersample scale baked into the
+ * coordinates instead of a transform group, no stroke/opacity noise, one
+ * named group per colour, the full-canvas plate as a single rect, a title and
+ * a description. Pure string work, so Node can hold it to the tracer's output.
+ */
+function iwdieTidyTraceSvg(svg, scale, width, height) {
+  var s = String(svg == null ? '' : svg);
+  scale = scale || 1;
+  var re = /<path\b([^>]*?)\/?>(?:<\/path>)?/g, m;
+  var byFill = {}, order = [], plate = null;
+  var dec = scale === 1 ? 0 : 1;
+  var num = function (n) { var v = Number(n) / scale; return dec ? String(Math.round(v * 10) / 10) : String(Math.round(v)); };
+  while ((m = re.exec(s)) !== null) {
+    var attrs = m[1];
+    var fill = (/fill="([^"]+)"/.exec(attrs) || [])[1] || 'none';
+    var d = (/\bd="([^"]*)"/.exec(attrs) || [])[1] || '';
+    if (!d) continue;
+    d = d.replace(/-?\d+(?:\.\d+)?/g, num);
+    var nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    var minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9, i;
+    for (i = 0; i + 1 < nums.length; i += 2) {
+      if (nums[i] < minx) minx = nums[i]; if (nums[i] > maxx) maxx = nums[i];
+      if (nums[i + 1] < miny) miny = nums[i + 1]; if (nums[i + 1] > maxy) maxy = nums[i + 1];
+    }
+    if (!plate && minx <= 0 && miny <= 0 && maxx >= width - 1 && maxy >= height - 1) { plate = fill; continue; }
+    if (!byFill[fill]) { byFill[fill] = []; order.push(fill); }
+    byFill[fill].push(d);
+  }
+  var rgbOf = function (f) { var k = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(f); return k ? [+k[1], +k[2], +k[3]] : [0, 0, 0]; };
+  var used = {}, groups = [], n;
+  if (plate) {
+    n = iwdieTraceLayerName(rgbOf(plate), used);
+    groups.push('  <g id="' + n.name + '">\n    <rect x="0" y="0" width="' + width + '" height="' + height + '" fill="' + n.hex + '"/>\n  </g>');
+  }
+  order.sort(function (a, b) { return byFill[b].join('').length - byFill[a].join('').length; });
+  order.forEach(function (fill) {
+    n = iwdieTraceLayerName(rgbOf(fill), used);
+    groups.push('  <g id="' + n.name + '" fill="' + n.hex + '">\n' +
+      byFill[fill].map(function (d) { return '    <path d="' + d + '"/>'; }).join('\n') + '\n  </g>');
+  });
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width + '" height="' + height + '">\n' +
+    '  <title>Panel background, traced</title>\n' +
+    '  <desc>Vector trace of the panel background: one group per colour, named after the house palette where it matches, coordinates in panel pixels' +
+    (scale > 1 ? ' (traced at ' + scale + 'x and scaled back)' : '') + '. The full-canvas plate is a single rect.</desc>\n' +
+    groups.join('\n') + '\n</svg>\n';
+}
+
+/** Tracer options for a trace someone will edit: straight lines stay straight, specks go. */
+function iwdieTraceOptionsIllustrator(scale) {
+  return {
+    numberofcolors: 16, ltres: 1, qtres: 1, pathomit: 32 * (scale || 1),
+    rightangleenhance: true, roundcoords: 1, strokewidth: 0,
+    linefilter: false, viewbox: true, desc: false, colorquantcycles: 1
+  };
 }
 
 /**
@@ -3911,7 +4024,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return {
         numberofcolors: 16, ltres: 0.5, qtres: 0.5, pathomit: 4,
         rightangleenhance: true, roundcoords: 1, strokewidth: 0,
-        linefilter: false, viewbox: true, desc: false
+        linefilter: false, viewbox: true, desc: false,
+        // the palette is derived from the image already; letting the tracer
+        // re-average it over its own assignment drifts a 2000-pixel colour into
+        // whatever light pixels land nearest - the fresh-air blue vanished that way
+        colorquantcycles: 1
       };
     }
 
@@ -3985,14 +4102,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // the time to add detail that is then thrown away.
           var got = buildTraceSource(img, w, h, fillCss, 1);
           if (!got) { reject(new Error('Could not read background image pixels for tracing.')); return; }
-          var finish = function (svg) { resolve(iwdieRescaleTraceSvg(svg, got.scale, w, h)); };
+          var finish = function (svg) { resolve(iwdieTidyTraceSvg(svg, got.scale, w, h)); };
           traceInWorker(got.data, traceOptsStructure(), IWDIE_TRACE_PALETTE_COLORS).then(finish).catch(function (workerError) {
             try {
               // the first buffer was transferred into the worker, so both the
               // pixels and the palette have to be taken again here
               var again = buildTraceSource(img, w, h, fillCss, 1);
               if (!again) throw new Error('could not rebuild the pixels');
-              resolve(iwdieRescaleTraceSvg(
+              resolve(iwdieTidyTraceSvg(
                 IWDIE_TRACER.imagedataToSVG(again.data, traceOptsStructureFor(again.data)), again.scale, w, h));
             } catch (fallbackError) {
               reject(new Error('Vector trace failed in worker and main-thread fallback: ' + workerError + '; ' + fallbackError));
@@ -4258,15 +4375,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var svgName = iwdieBuildBackgroundFilename(plant, panel + ' traced', 'svg');
           var t0 = Date.now();
           var deliverTrace = function (traced, scale) {
-            traced = iwdieRescaleTraceSvg(traced, scale, w, h);
+            traced = iwdieTidyTraceSvg(traced, scale, w, h);
             downloadBytes(traced, svgName, 'image/svg+xml');
             hostOk('Background traced to vectors in ' + Math.round((Date.now() - t0) / 100) / 10 + ' s → ' + svgName + ' (' +
-              ((traced.match(/<path/g) || []).length) + ' paths' +
-              (scale > 1 ? ', traced at ' + scale + '× so the small labels survive' : '') +
-              '). Open in Illustrator (File → Open); retype small labels there.');
+              ((traced.match(/<path/g) || []).length) + ' paths in ' + ((traced.match(/<g id=/g) || []).length) + ' named colour groups' +
+              (scale > 1 ? ', traced at ' + scale + '×' : '') +
+              '). Open in Illustrator (File → Open); each colour is a group, the canvas plate is one rect.');
           };
           toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
-          traceInWorker(got.data, traceOpts(), IWDIE_TRACE_PALETTE_COLORS)
+          traceInWorker(got.data, iwdieTraceOptionsIllustrator(got.scale), IWDIE_TRACE_PALETTE_COLORS)
             .then(function (svg) { deliverTrace(svg, got.scale); })
             .catch(function () {
               // no worker available (old browser / strict CSP): trace on the
@@ -4276,7 +4393,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 try {
                   var again = buildTraceSource(img, w, h, fillCss); // first buffer was transferred away
                   if (!again) throw new Error('could not rebuild the pixels');
-                  deliverTrace(IWDIE_TRACER.imagedataToSVG(again.data, traceOptsFor(again.data)), again.scale);
+                  var illu = iwdieTraceOptionsIllustrator(again.scale);
+                  var illuPal = iwdieBuildPalette(again.data, IWDIE_TRACE_PALETTE_COLORS);
+                  if (illuPal) illu.pal = illuPal;
+                  deliverTrace(IWDIE_TRACER.imagedataToSVG(again.data, illu), again.scale);
                 }
                 catch (e) { toast('Vector trace failed: ' + e, true); }
               }, 80);
@@ -5583,6 +5703,10 @@ if (typeof module !== 'undefined' && module.exports) {
     TRACE_SUPERSAMPLE_MAX_PX: IWDIE_TRACE_SUPERSAMPLE_MAX_PX,
     traceScaleFor: iwdieTraceScaleFor,
     rescaleTraceSvg: iwdieRescaleTraceSvg,
+    tidyTraceSvg: iwdieTidyTraceSvg,
+    mergeBlendColours: iwdieMergeBlendColours,
+    traceOptionsIllustrator: iwdieTraceOptionsIllustrator,
+    traceLayerName: iwdieTraceLayerName,
     TRACE_WORKER_INPUTS: IWDIE_TRACE_WORKER_INPUTS,
     buildTraceWorkerCode: iwdieBuildTraceWorkerCode,
     buildTraceWorkerPayload: iwdieBuildTraceWorkerPayload,
