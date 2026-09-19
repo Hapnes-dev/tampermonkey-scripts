@@ -187,6 +187,40 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Objects, a progress bar, and the worker that died (v1.29.0)
+
+1.28.0 froze the tab. The tracer runs in a Web Worker whose source is lifted from the
+script by `Function.prototype.toString`, which carries a function's body and nothing it
+closes over — and 1.28.0 had just made the palette builder call `iwdieMergeBlendColours`.
+The worker threw `ReferenceError` on its first message, the catch fell back to tracing on
+the main thread, and the only feedback for the length of the job was Chrome's *Page
+Unresponsive* dialog. Three things changed:
+
+- **The worker carries its dependencies** (`iwdieTraceWorkerDeps`), and the check suite
+  runs the built worker source in a bare scope on the real template, so the next helper
+  added to the palette builder fails a test instead of a browser. A trace that fails
+  *inside* the worker is reported, never retried on the main thread; the main-thread
+  fallback is only for a browser that cannot start a worker at all.
+- **A progress panel** for both traces (*Background → Illustrator* and the export's
+  structural trace): the worker runs the tracer's pipeline step by step and reports the
+  palette scan, the quantisation, each colour layer by name (*Tracing colour 4 of 9 –
+  Uteluft-kjerne*), and the SVG; the panel shows the bar, the stage, the elapsed seconds
+  and a **Cancel** that terminates the worker.
+- **The trace is grouped as the drawing's objects**, not as colour layers. Colour layers
+  put every duct casing, zone border and pill into one *Hvitt*. Now
+  `iwdieTraceObjectTree` nests what lies inside what (a zone's grey inside its border, the
+  exchanger's pill inside its ring, a symbol's white inside its outline), and
+  `iwdieTraceAssemblies` joins the shapes a duct is made of — the core line, the white
+  strip along each side, the arrows — which touch but never nest. Each group is named by
+  what it is: *Kanaler* (the joined network, with *Kapsling*, *Kjerne-avtrekk*,
+  *Kjerne-tilluft* and *Pil* inside), *Kanal-uteluft*, *Kanal-avtrekk*, *Sone*,
+  *Sidefelt*, *Gjenvinner*, *Symbol*; anti-aliasing crumbs are *Kant* and ride inside the
+  object they touch; canvas-coloured islands are dropped because the plate shows through
+  identically. Stacked back to front, top-level objects numbered first.
+
+On the house template: **24 top-level objects, 86 paths, 35 kB**, and the render is
+pixel-identical to 1.28.0 (mean error 0.38). 31 new assertions.
+
 ### A vector trace Illustrator can edit (v1.28.0)
 
 *Background → Illustrator* on the house Ventilasjon template gave **1 017 paths, 200 kB**,
@@ -552,7 +586,7 @@ system.
 The third button exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; the script relaxes `#manager_div` to fit its content so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size. v1.3.3 capped that growth to the viewport, which turned out to clip the fieldset's bottom edge on shorter windows — since v1.5.2 there is no cap and `overflow` is forced visible. Since v1.5.4 a measured **compact mode** kicks in only when the column wouldn't fit the window — fieldset gaps 8→4px and slimmer paddings reclaim ~68px with the buttons untouched at 28px; tall windows keep the host's stock spacing, with hysteresis so the mode never flaps. And v1.5.5 found the *actual* constant clipper: the host also hard-codes the sidebar's parent `#master_wrapper` to 900px with `overflow:hidden`, which cut the last ~18px of the fieldset at **any** window size — it now grows with content exactly like `#manager_div`.)
 
 - **PNG/JPG background** → a confirm offers two deliveries, because **pixels contain no vectors** — any vectors must be *made*:
-  - **OK — vector trace** (v1.4.0): the image is auto-traced to an **`.svg` of editable vector shapes** (vendored [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs), public domain — the script stays one self-contained file). Shapes, pills and pipe runs come out clean **in the drawing's own colours** (v1.5.1: the palette is built from the image's exact colours with a guaranteed slot for saturated ones — before that, flat schematics traced to grey because thin coloured lines never won a sampled palette slot); **small text becomes rough outlines** — retype labels in Illustrator (that limitation is inherent to tracing, Illustrator's own Image Trace included). Since v1.4.1 the trace runs **in a Web Worker**, so the browser stays fully responsive even on photo backgrounds that take minutes (measured: main thread answers in ~4 ms while tracing; ~1–2 s total for a 1400×750 schematic, ≈7–16 k paths depending on colours). The worker is built by lifting the tracer's own constructor source — no second copy of the library, and a main-thread fallback (with a warning toast) covers CSP-restricted loads.
+  - **OK — vector trace** (v1.4.0): the image is auto-traced to an **`.svg` of editable vector shapes** (vendored [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs), public domain — the script stays one self-contained file). Shapes, pills and pipe runs come out clean **in the drawing's own colours** (v1.5.1: the palette is built from the image's exact colours with a guaranteed slot for saturated ones — before that, flat schematics traced to grey because thin coloured lines never won a sampled palette slot); **small text becomes rough outlines** — retype labels in Illustrator (that limitation is inherent to tracing, Illustrator's own Image Trace included). Since v1.4.1 the trace runs **in a Web Worker**, so the browser stays fully responsive even on photo backgrounds that take minutes (measured: main thread answers in ~4 ms while tracing; ~1–2 s total for a 1400×750 schematic, ≈7–16 k paths depending on colours). The worker is built by lifting the tracer's own constructor source — no second copy of the library, and a main-thread fallback covers browsers that cannot start a worker at all (since v1.29.0 that is the *only* case it covers: a failure inside the worker is reported, not retried on the main thread, and a progress panel with a Cancel shows the stage the worker is at).
   - **Cancel — pixel-exact `.ai`**: modern `.ai` is PDF-based and Illustrator opens any PDF as editable artwork, so the script hand-builds a minimal PDF: artboard = panel size (1 px = 1 pt), the image placed 1:1 and **losslessly** re-encoded (raw RGB via the browser's native `CompressionStream`; JPEG fallback on very old Chrome). Verified with a real PDF engine: 1400×750 artboard, image intact. Ideal when you want the original as an exact tracing/reference layer.
   - **Save the picture as-is** (v1.11.0, flatten v1.16.2): opaque pixels stay **byte-for-byte**; transparent holes are filled with `#main_image`'s CSS background-color so the file matches the designer (a transparent PNG otherwise renders those holes black in viewers). Same file the empty-canvas export path produces. This is what an AI asked to look at the panel and propose link positions actually wants; a trace or a PDF only makes the drawing harder for it to read.
 - **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.

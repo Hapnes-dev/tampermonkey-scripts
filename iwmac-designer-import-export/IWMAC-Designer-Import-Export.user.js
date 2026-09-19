@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.28.0
+// @version      1.29.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.28.0';
+var IWDIE_VERSION = '1.29.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -855,8 +855,8 @@ function iwdieNoteTraceInAiGuide(env) {
   guide.structure = {
     field: 'image_svg_trace',
     paths: (trace.match(/<path/g) || []).length,
-    what: 'A coarse vector trace of the background picture: equipment outlines, pipe runs and frames, in panel coordinates. Small paths are dropped, so there is no text in it.',
-    use: 'Read it to find where things are — then use panel.single_objects[] for what they are. tag_text and alias_text carry the labels, spelled properly.',
+    what: 'A coarse vector trace of the background picture: equipment outlines, pipe runs and frames, in panel coordinates. Small paths are dropped, so there is no text in it. The shapes are grouped as the drawing\'s objects, each <g id> named by what it is: Kanaler / Kanal-avtrekk / Kanal-tilluft / Kanal-uteluft (a duct run with its casing, core line and arrows), Sone (a zone box), Sidefelt (the side column), Gjenvinner (the heat exchanger), Symbol, Pil; Kant is an anti-aliasing remnant.',
+    use: 'Read it to find where things are — a group\'s path coordinates are the place to put the objects that belong to it — then use panel.single_objects[] for what they are. tag_text and alias_text carry the labels, spelled properly.',
     not: 'It is reading material only. Insert deletes it, and it is never the artwork; image_data is.'
   };
   return env;
@@ -2182,32 +2182,200 @@ var IWDIE_TRACE_LAYER_NAMES = [
   ['Piler', [105, 124, 134]], ['Symboler', [90, 90, 93]], ['Hvitt', [255, 255, 255]], ['Bakgrunn', [204, 205, 206]]
 ];
 
-function iwdieTraceLayerName(rgb, used) {
+/** The house colour a traced fill belongs to (within 12 per channel), or null. */
+function iwdieTraceColourRole(rgb) {
   var best = null, bestD = 1e9, i;
   for (i = 0; i < IWDIE_TRACE_LAYER_NAMES.length; i++) {
     var c = IWDIE_TRACE_LAYER_NAMES[i][1];
     var d = Math.max(Math.abs(c[0] - rgb[0]), Math.abs(c[1] - rgb[1]), Math.abs(c[2] - rgb[2]));
     if (d < bestD) { bestD = d; best = IWDIE_TRACE_LAYER_NAMES[i][0]; }
   }
-  var hex = '#' + rgb.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('').toUpperCase();
-  var name = bestD <= 12 ? best : 'Farge-' + hex.slice(1);
+  return bestD <= 12 ? best : null;
+}
+
+function iwdieTraceHex(rgb) {
+  return '#' + rgb.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('').toUpperCase();
+}
+
+function iwdieTraceLayerName(rgb, used) {
+  var hex = iwdieTraceHex(rgb);
+  var name = iwdieTraceColourRole(rgb) || 'Farge-' + hex.slice(1);
   if (used[name]) { used[name]++; name += '-' + used[name]; } else used[name] = 1;
   return { name: name, hex: hex };
 }
 
 /**
+ * What a traced shape is, from its own colour and the colours nested inside
+ * or joined to it. A white shape is a duct casing when a core line runs with
+ * it, a zone when zone grey sits inside it, a symbol when symbol grey does;
+ * the cores, zones, the exchanger ring, arrows and symbols name themselves.
+ */
+var IWDIE_TRACE_OBJECT_NAMES = {
+  'Avtrekk-kjerne': 'Kjerne-avtrekk', 'Tilluft-kjerne': 'Kjerne-tilluft', 'Uteluft-kjerne': 'Kjerne-uteluft',
+  'Soner': 'Sone', 'Gjenvinner': 'Gjenvinner-flate', 'Gjenvinner-kant': 'Symbol',
+  'Piler': 'Pil', 'Symboler': 'Symbol', 'Hvitt': 'Hvit-flate', 'Bakgrunn': 'Flate'
+};
+var IWDIE_TRACE_CORE_ROLES = ['Avtrekk-kjerne', 'Tilluft-kjerne', 'Uteluft-kjerne'];
+var IWDIE_TRACE_DUCT_ROLES = { 'Avtrekk-kjerne': 1, 'Tilluft-kjerne': 1, 'Uteluft-kjerne': 1, 'Hvitt': 1, 'Piler': 1 };
+
+/** Kanal-avtrekk, Kanal-tilluft, Kanal-uteluft; Kanaler when cores of more than one colour run together; null without a core. */
+function iwdieTraceDuctName(inside) {
+  var cores = IWDIE_TRACE_CORE_ROLES.filter(function (r) { return inside[r]; });
+  if (cores.length > 1) return 'Kanaler';
+  if (cores.length === 1) return 'Kanal-' + cores[0].split('-')[0].toLowerCase();
+  return null;
+}
+
+/**
+ * ownRole: the shape's own house colour (null when none). inside: the roles
+ * of everything nested in or joined to it. info.sliver: a thin anti-aliasing
+ * remnant; info.assembly: a duct assembly (no shape of its own);
+ * info.member: a shape inside an assembly; info.sidebar: zone grey running
+ * the height of the canvas at its right edge — the house side column.
+ */
+function iwdieTraceObjectName(ownRole, inside, hex, info) {
+  inside = inside || {}; info = info || {};
+  if (info.sliver) return 'Kant';
+  if (info.assembly) return iwdieTraceDuctName(inside) || (inside.Hvitt ? 'Hvit-flate' : 'Pil');
+  if (info.member && ownRole === 'Hvitt') return 'Kapsling';
+  if (ownRole === 'Hvitt') return iwdieTraceDuctName(inside) || (inside.Soner ? 'Sone' : inside.Symboler ? 'Symbol' : 'Hvit-flate');
+  if (ownRole === 'Soner') return info.sidebar ? 'Sidefelt' : 'Sone';
+  // the exchanger is the ring with the white pill inside; the same grey without one is a valve stem or a frame
+  if (ownRole === 'Gjenvinner-kant') return inside.Hvitt ? 'Gjenvinner' : 'Symbol';
+  if (ownRole && IWDIE_TRACE_OBJECT_NAMES[ownRole]) return IWDIE_TRACE_OBJECT_NAMES[ownRole];
+  return 'Form-' + String(hex || '#000000').slice(1);
+}
+
+/** Ray casting: is the point inside the polygon ring (array of [x, y])? */
+function iwdiePointInRing(pt, ring) {
+  var c = false, i, j, n = ring.length;
+  for (i = 0, j = n - 1; i < n; j = i++) {
+    var xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+
+/** Above this many shapes the nesting search (n^2) is skipped and the trace is grouped by colour. */
+var IWDIE_TRACE_OBJECT_LIMIT = 3000;
+
+/**
+ * Nesting, from the traced shapes. A quantised image gives disjoint regions,
+ * so a shape lying inside another's outer ring can only sit in a hole of it:
+ * a zone's grey inside its white border, the exchanger's inner pill inside its
+ * ring, a symbol's white inside its outline. Each shape gets the smallest such
+ * enclosing shape as its parent — bounding box first, then a vote over up to
+ * twelve of its outline points, because a nested shape often starts exactly
+ * where the enclosing outline does and a single point would land on the edge.
+ * Returns the top-level shapes, largest first; every item gains .parent and
+ * .children (children largest first).
+ */
+function iwdieTraceObjectTree(items) {
+  var i, j, k, n = items.length;
+  var tol = 0.6;
+  var contains = function (a, b) {
+    if (a.area <= b.area) return false;
+    if (b.bbox[0] < a.bbox[0] - tol || b.bbox[1] < a.bbox[1] - tol || b.bbox[2] > a.bbox[2] + tol || b.bbox[3] > a.bbox[3] + tol) return false;
+    var ring = b.ring, step = Math.max(1, Math.floor(ring.length / 12)), hits = 0, tested = 0;
+    for (k = 0; k < ring.length; k += step) { tested++; if (iwdiePointInRing(ring[k], a.ring)) hits++; }
+    return hits * 2 > tested;
+  };
+  for (i = 0; i < n; i++) { items[i].parent = null; items[i].children = []; }
+  if (n <= IWDIE_TRACE_OBJECT_LIMIT) {
+    for (i = 0; i < n; i++) {
+      var best = null;
+      for (j = 0; j < n; j++) {
+        if (i === j || (best && items[j].area >= best.area)) continue;
+        if (contains(items[j], items[i])) best = items[j];
+      }
+      items[i].parent = best;
+      if (best) best.children.push(items[i]);
+    }
+  }
+  var byArea = function (a, b) { return b.area - a.area; };
+  for (i = 0; i < n; i++) items[i].children.sort(byArea);
+  return items.filter(function (it) { return !it.parent; }).sort(byArea);
+}
+
+/**
+ * A duct in these drawings is a coloured core line with a white strip along
+ * each side and arrows on top — shapes that touch but do not nest, so the
+ * containment tree leaves them apart. Top-level shapes of those colours that
+ * touch (within 1.5 px; 8 px for an arrow, which sits a little off the casing
+ * end) are joined into one assembly, named by the core colours in it: the
+ * whole network where ducts join, Kanal-uteluft where a run stands alone.
+ * Zones, symbols and the exchanger keep to the containment tree. Returns the
+ * new top-level list, largest first.
+ */
+function iwdieTraceBoxesTouch(a, b, gap) {
+  var dx = Math.max(0, a.bbox[0] - b.bbox[2], b.bbox[0] - a.bbox[2]);
+  var dy = Math.max(0, a.bbox[1] - b.bbox[3], b.bbox[1] - a.bbox[3]);
+  return dx <= gap && dy <= gap;
+}
+
+function iwdieTraceAssemblies(tops) {
+  var n = tops.length, root = [], i, j;
+  for (i = 0; i < n; i++) root[i] = i;
+  var find = function (x) { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+  for (i = 0; i < n; i++) {
+    if (!IWDIE_TRACE_DUCT_ROLES[tops[i].role] || tops[i].sliver) continue;
+    for (j = i + 1; j < n; j++) {
+      if (!IWDIE_TRACE_DUCT_ROLES[tops[j].role] || tops[j].sliver) continue;
+      if (iwdieTraceBoxesTouch(tops[i], tops[j], (tops[i].role === 'Piler' || tops[j].role === 'Piler') ? 8 : 1.5)) root[find(i)] = find(j);
+    }
+  }
+  var groups = {}, order = [], r;
+  for (i = 0; i < n; i++) { r = find(i); if (!groups[r]) { groups[r] = []; order.push(r); } groups[r].push(tops[i]); }
+  var byArea = function (a, b) { return b.area - a.area; };
+  var out = order.map(function (key) {
+    var members = groups[key];
+    if (members.length === 1) return members[0];
+    var bbox = [1e9, 1e9, -1e9, -1e9];
+    members.forEach(function (m) {
+      m.member = true;
+      bbox[0] = Math.min(bbox[0], m.bbox[0]); bbox[1] = Math.min(bbox[1], m.bbox[1]);
+      bbox[2] = Math.max(bbox[2], m.bbox[2]); bbox[3] = Math.max(bbox[3], m.bbox[3]);
+    });
+    return { assembly: true, role: null, hex: '', d: '', children: members.sort(byArea), bbox: bbox,
+      area: (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) };
+  });
+  // an anti-aliasing remnant rides inside the smallest object it touches, so
+  // the top level lists the drawing's things and not two dozen edge crumbs
+  var keep = [];
+  out.forEach(function (it) {
+    if (!it.sliver) { keep.push(it); return; }
+    var host = null;
+    for (j = 0; j < out.length; j++) {
+      var o = out[j];
+      if (o === it || o.sliver) continue;
+      if (iwdieTraceBoxesTouch(it, o, 1.5) && (!host || o.area < host.area)) host = o;
+    }
+    if (host) host.children.push(it); else keep.push(it);
+  });
+  return keep.sort(byArea);
+}
+
+/**
  * The trace as Illustrator wants it: the supersample scale baked into the
- * coordinates instead of a transform group, no stroke/opacity noise, one
- * named group per colour, the full-canvas plate as a single rect, a title and
- * a description. Pure string work, so Node can hold it to the tracer's output.
+ * coordinates instead of a transform group, no stroke/opacity noise, the
+ * full-canvas plate as a single rect, a title and a description — and the
+ * shapes grouped as the drawing's objects: nesting (iwdieTraceObjectTree),
+ * then duct assemblies (iwdieTraceAssemblies), each group named by what it is
+ * (Kanaler, Kanal-uteluft, Sone, Gjenvinner, Symbol, Pil …) and stacked back
+ * to front. Canvas-coloured islands are dropped when the plate is there (they
+ * render the same), thin anti-aliasing remnants are named Kant. Colour layers
+ * mixed every casing, zone border and pill into one "Hvitt"; an object is what
+ * a person selects. Pure string work, so Node can hold it to the tracer's
+ * output.
  */
 function iwdieTidyTraceSvg(svg, scale, width, height) {
   var s = String(svg == null ? '' : svg);
   scale = scale || 1;
   var re = /<path\b([^>]*?)\/?>(?:<\/path>)?/g, m;
-  var byFill = {}, order = [], plate = null;
+  var items = [], plate = null;
   var dec = scale === 1 ? 0 : 1;
   var num = function (n) { var v = Number(n) / scale; return dec ? String(Math.round(v * 10) / 10) : String(Math.round(v)); };
+  var rgbOf = function (f) { var k = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(f); return k ? [+k[1], +k[2], +k[3]] : [0, 0, 0]; };
   while ((m = re.exec(s)) !== null) {
     var attrs = m[1];
     var fill = (/fill="([^"]+)"/.exec(attrs) || [])[1] || 'none';
@@ -2221,26 +2389,67 @@ function iwdieTidyTraceSvg(svg, scale, width, height) {
       if (nums[i + 1] < miny) miny = nums[i + 1]; if (nums[i + 1] > maxy) maxy = nums[i + 1];
     }
     if (!plate && minx <= 0 && miny <= 0 && maxx >= width - 1 && maxy >= height - 1) { plate = fill; continue; }
-    if (!byFill[fill]) { byFill[fill] = []; order.push(fill); }
-    byFill[fill].push(d);
+    if (plate && fill === plate) continue; // canvas-coloured island: the plate shows through identically
+    // the outer ring is the first subpath; the tracer appends holes after it
+    var outer = (d.split(/(?=M)/)[0].match(/-?\d+(?:\.\d+)?/g) || []).map(Number), ring = [];
+    for (i = 0; i + 1 < outer.length; i += 2) ring.push([outer[i], outer[i + 1]]);
+    var rgb = rgbOf(fill), role = iwdieTraceColourRole(rgb);
+    var w = Math.max(0, maxx - minx), h = Math.max(0, maxy - miny);
+    items.push({ d: d, fill: fill, rgb: rgb, hex: iwdieTraceHex(rgb), role: role, bbox: [minx, miny, maxx, maxy], area: w * h, ring: ring,
+      // a thin line or a crumb of a fill colour is an anti-aliasing remnant; a
+      // core line is thin by design and a symbol stroke is a symbol
+      sliver: (Math.min(w, h) <= 2.5 || w * h < 100) && IWDIE_TRACE_CORE_ROLES.indexOf(role) < 0 && role !== 'Symboler',
+      sidebar: role === 'Soner' && maxx >= width - 1 && h >= 0.9 * height });
   }
-  var rgbOf = function (f) { var k = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(f); return k ? [+k[1], +k[2], +k[3]] : [0, 0, 0]; };
-  var used = {}, groups = [], n;
+  var out = [];
   if (plate) {
-    n = iwdieTraceLayerName(rgbOf(plate), used);
-    groups.push('  <g id="' + n.name + '">\n    <rect x="0" y="0" width="' + width + '" height="' + height + '" fill="' + n.hex + '"/>\n  </g>');
+    out.push('  <g id="Bakgrunn">\n    <rect x="0" y="0" width="' + width + '" height="' + height + '" fill="' + iwdieTraceHex(rgbOf(plate)) + '"/>\n  </g>');
   }
-  order.sort(function (a, b) { return byFill[b].join('').length - byFill[a].join('').length; });
-  order.forEach(function (fill) {
-    n = iwdieTraceLayerName(rgbOf(fill), used);
-    groups.push('  <g id="' + n.name + '" fill="' + n.hex + '">\n' +
-      byFill[fill].map(function (d) { return '    <path d="' + d + '"/>'; }).join('\n') + '\n  </g>');
-  });
+  var nested = items.length <= IWDIE_TRACE_OBJECT_LIMIT;
+  if (!nested) {
+    // thousands of shapes (a photo): one group per colour, as 1.28.0 did
+    var byFill = {}, order = [];
+    items.forEach(function (it) { if (!byFill[it.fill]) { byFill[it.fill] = []; order.push(it.fill); } byFill[it.fill].push(it); });
+    order.sort(function (a, b) { return byFill[b].length - byFill[a].length; });
+    var used = { Bakgrunn: 1 };
+    order.forEach(function (fill) {
+      var nm = iwdieTraceLayerName(byFill[fill][0].rgb, used);
+      out.push('  <g id="' + nm.name + '" fill="' + nm.hex + '">\n' +
+        byFill[fill].map(function (it) { return '    <path d="' + it.d + '"/>'; }).join('\n') + '\n  </g>');
+    });
+  } else {
+    var tops = iwdieTraceAssemblies(iwdieTraceObjectTree(items));
+    var counts = {}, seen = {};
+    var nameOf = function (node) {
+      var inside = {};
+      (function walk(x) { x.children.forEach(function (c) { if (c.role) inside[c.role] = true; walk(c); }); })(node);
+      return iwdieTraceObjectName(node.role, inside, node.hex, node);
+    };
+    (function label(list) { list.forEach(function (it) { it.name = nameOf(it); counts[it.name] = (counts[it.name] || 0) + 1; label(it.children); }); })(tops);
+    var idFor = function (it) {
+      if (counts[it.name] < 2) return it.name;
+      seen[it.name] = (seen[it.name] || 0) + 1;
+      return it.name + '-' + seen[it.name];
+    };
+    // the top-level objects take the low numbers; what nests inside follows
+    tops.forEach(function (it) { it.id = idFor(it); });
+    (function number(list) { list.forEach(function (it) { if (!it.id) it.id = idFor(it); number(it.children); }); })(tops);
+    var emit = function (it, depth) {
+      var pad = new Array(depth + 2).join('  ');
+      var str = pad + '<g id="' + it.id + '">\n';
+      if (it.d) str += pad + '  <path fill="' + it.hex + '" d="' + it.d + '"/>\n';
+      it.children.forEach(function (c) { str += emit(c, depth + 1); });
+      return str + pad + '</g>\n';
+    };
+    tops.forEach(function (it) { out.push(emit(it, 0).replace(/\n$/, '')); });
+  }
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + width + ' ' + height + '" width="' + width + '" height="' + height + '">\n' +
     '  <title>Panel background, traced</title>\n' +
-    '  <desc>Vector trace of the panel background: one group per colour, named after the house palette where it matches, coordinates in panel pixels' +
-    (scale > 1 ? ' (traced at ' + scale + 'x and scaled back)' : '') + '. The full-canvas plate is a single rect.</desc>\n' +
-    groups.join('\n') + '\n</svg>\n';
+    '  <desc>Vector trace of the panel background' + (nested ?
+      ' as objects: each drawn thing is a group holding what sits inside it or runs with it (a duct network with its casing, core lines and arrows; a zone with its border; the exchanger with its rings), named by what it is (Kanaler, Kanal-avtrekk, Kanal-tilluft, Kanal-uteluft, Sone, Gjenvinner, Symbol, Pil; Kant is an anti-aliasing remnant), stacked back to front' :
+      ': one group per colour, named after the house palette where it matches') +
+    ', coordinates in panel pixels' + (scale > 1 ? ' (traced at ' + scale + 'x and scaled back)' : '') + '. The full-canvas plate is a single rect.</desc>\n' +
+    out.join('\n') + '\n</svg>\n';
 }
 
 /** Tracer options for a trace someone will edit: straight lines stay straight, specks go. */
@@ -2264,13 +2473,66 @@ function iwdieTraceOptionsIllustrator(scale) {
  */
 var IWDIE_TRACE_WORKER_INPUTS = ['img', 'opts', 'paletteColors'];
 
-function iwdieBuildTraceWorkerCode(tracerSrc, paletteSrc) {
-  return 'var IT=new (' + tracerSrc + ')();' +
-    'var BP=' + paletteSrc + ';' +
+/**
+ * Everything iwdieBuildPalette reaches for besides its own body, as source text
+ * the worker can evaluate. The palette function is lifted into the worker by
+ * Function.prototype.toString, which carries the body and nothing it closes
+ * over: 1.28.0 made it call iwdieMergeBlendColours and read
+ * IWDIE_TRACE_BLEND_TOLERANCE, the worker threw ReferenceError on its first
+ * message, and the catch fell back to tracing on the main thread — which is
+ * how the tab went "Page Unresponsive" for the length of the job. The check
+ * suite runs the built worker source in a bare context so the next helper added
+ * here breaks a test instead of a browser.
+ */
+function iwdieTraceWorkerDeps() {
+  return [
+    'var IWDIE_TRACE_BLEND_TOLERANCE=' + IWDIE_TRACE_BLEND_TOLERANCE + ';',
+    iwdieMergeBlendColours.toString()
+  ];
+}
+
+/**
+ * The worker runs the tracer's own sequential pipeline step by step instead of
+ * one imagedataToSVG call, so it can report where it is: {progress:{phase,
+ * i, n, rgb}} before the palette scan, before quantisation, before each colour
+ * layer (with that layer's colour, so the panel can name it), and before the
+ * SVG string. The final message is {svg} or {err}. iwdieTraceProgress() turns a
+ * progress message into a bar position and a line of text.
+ */
+function iwdieBuildTraceWorkerCode(tracerSrc, paletteSrc, deps) {
+  return 'var IT=new (' + tracerSrc + ')();\n' +
+    (deps || []).join('\n') + '\n' +
+    'var BP=' + paletteSrc + ';\n' +
+    'var say=function(p){postMessage({progress:p})};\n' +
     'onmessage=function(e){try{' +
-    'var o=e.data.opts;' +
-    'if(e.data.paletteColors){var p=BP(e.data.img,e.data.paletteColors); if(p)o.pal=p;}' +
-    'postMessage({svg:IT.imagedataToSVG(e.data.img,o)})}catch(err){postMessage({err:String(err)})}};';
+    'var o=IT.checkoptions(e.data.opts);' +
+    'if(e.data.paletteColors){say({phase:"palette"});var p=BP(e.data.img,e.data.paletteColors);if(p)o.pal=p;}' +
+    'say({phase:"quantize",n:o.pal?o.pal.length:o.numberofcolors});' +
+    'var ii=IT.colorquantization(e.data.img,o);' +
+    'var td={layers:[],palette:ii.palette,width:ii.array[0].length-2,height:ii.array.length-2};' +
+    'for(var c=0;c<ii.palette.length;c++){var pc=ii.palette[c];say({phase:"layer",i:c,n:ii.palette.length,rgb:[pc.r,pc.g,pc.b]});' +
+    'td.layers.push(IT.batchtracepaths(IT.internodes(IT.pathscan(IT.layeringstep(ii,c),o.pathomit),o),o.ltres,o.qtres));}' +
+    'say({phase:"svg"});' +
+    'postMessage({svg:IT.getsvgstring(td,o)})}catch(err){postMessage({err:String(err)})}};';
+}
+
+/** One bar position and one line of text per stage the trace reports. */
+function iwdieTraceProgress(p) {
+  p = p || {};
+  var n = Math.max(1, Number(p.n) || 1), i = Math.max(0, Number(p.i) || 0);
+  switch (p.phase) {
+    case 'palette': return { pct: 5, line: 'Reading the colours of the picture' };
+    case 'quantize': return { pct: 10, line: 'Sorting every pixel into ' + (p.n ? p.n + ' colours' : 'its colour') };
+    case 'layer': {
+      var name = p.rgb ? iwdieTraceLayerName(p.rgb, {}).name : '';
+      return { pct: 14 + Math.round(76 * i / n), line: 'Tracing colour ' + (i + 1) + ' of ' + n + (name ? ' - ' + name : '') };
+    }
+    case 'svg': return { pct: 91, line: 'Writing the paths' };
+    case 'tidy': return { pct: 95, line: 'Grouping the shapes into objects' };
+    case 'main-thread': return { pct: 8, line: 'No worker available - tracing on the main thread, the browser is busy for a moment' };
+    case 'done': return { pct: 100, line: 'Done' };
+    default: return { pct: 2, line: 'Reading the pixels' };
+  }
 }
 
 function iwdieBuildTraceWorkerPayload(imgData, opts, paletteColors) {
@@ -4090,7 +4352,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function traceRasterBackground(bg) {
       if (!IWDIE_TRACER) return Promise.reject(new Error('Background tracer is unavailable.'));
-      toast('Tracing the background structure… the export downloads when done.', false, 6000);
       return new Promise(function (resolve, reject) {
         var img = new Image();
         img.onload = function () {
@@ -4102,18 +4363,37 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // the time to add detail that is then thrown away.
           var got = buildTraceSource(img, w, h, fillCss, 1);
           if (!got) { reject(new Error('Could not read background image pixels for tracing.')); return; }
-          var finish = function (svg) { resolve(iwdieTidyTraceSvg(svg, got.scale, w, h)); };
-          traceInWorker(got.data, traceOptsStructure(), IWDIE_TRACE_PALETTE_COLORS).then(finish).catch(function (workerError) {
-            try {
-              // the first buffer was transferred into the worker, so both the
-              // pixels and the palette have to be taken again here
-              var again = buildTraceSource(img, w, h, fillCss, 1);
-              if (!again) throw new Error('could not rebuild the pixels');
-              resolve(iwdieTidyTraceSvg(
-                IWDIE_TRACER.imagedataToSVG(again.data, traceOptsStructureFor(again.data)), again.scale, w, h));
-            } catch (fallbackError) {
-              reject(new Error('Vector trace failed in worker and main-thread fallback: ' + workerError + '; ' + fallbackError));
+          var prog = openTraceProgress('Tracing the background for the export');
+          var finish = function (svg) {
+            prog.step({ phase: 'tidy' });
+            var out = iwdieTidyTraceSvg(svg, got.scale, w, h);
+            prog.close();
+            resolve(out);
+          };
+          var job = traceInWorker(got.data, traceOptsStructure(), IWDIE_TRACE_PALETTE_COLORS, prog.step);
+          prog.onCancel(job.cancel);
+          job.promise.then(finish).catch(function (workerError) {
+            if (!workerError || workerError.kind !== 'no-worker') {
+              prog.close();
+              reject(workerError && workerError.kind === 'cancelled'
+                ? new Error('Trace cancelled - the export was stopped.')
+                : new Error('Vector trace failed: ' + (workerError && workerError.message ? workerError.message : workerError)));
+              return;
             }
+            // no worker (old browser / strict CSP): the main thread does it,
+            // after the panel has painted. The first buffer was transferred
+            // into the worker, so both the pixels and the palette are taken again.
+            prog.step({ phase: 'main-thread' });
+            setTimeout(function () {
+              try {
+                var again = buildTraceSource(img, w, h, fillCss, 1);
+                if (!again) throw new Error('could not rebuild the pixels');
+                finish(IWDIE_TRACER.imagedataToSVG(again.data, traceOptsStructureFor(again.data)));
+              } catch (fallbackError) {
+                prog.close();
+                reject(new Error('Vector trace failed in worker and main-thread fallback: ' + workerError + '; ' + fallbackError));
+              }
+            }, 80);
           });
         };
         img.onerror = function () { reject(new Error('Background image failed to load.')); };
@@ -4287,29 +4567,88 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return new Response(stream).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
     }
 
+    /* The trace used to announce itself with one toast and then go quiet for
+       the length of the job; when the worker broke in 1.28.0 and the job moved
+       to the main thread, the only feedback left was Chrome's "Page
+       Unresponsive". A centred panel with a bar, the stage the worker reports,
+       the elapsed time and a Cancel that terminates the worker. */
+    function openTraceProgress(title) {
+      var overlay = document.createElement('div');
+      overlay.className = 'iwdie-overlay';
+      var panel = document.createElement('div');
+      panel.className = 'iwdie-panel iwdie-progress-panel';
+      panel.innerHTML = [
+        '<h3>' + title + '</h3>',
+        '<div class="iwdie-progress-line" id="iwdie_trace_line">Reading the pixels</div>',
+        '<div class="iwdie-progress-track"><div class="iwdie-progress-fill" id="iwdie_trace_fill" style="width:2%"></div></div>',
+        '<div class="iwdie-progress-sub" id="iwdie_trace_sub">0 s</div>',
+        '<button class="iwdie-btn iwdie-secondary" id="iwdie_trace_cancel" style="margin-top:12px">Cancel</button>'
+      ].join('\n');
+      overlay.appendChild(panel);
+      overlayParent().appendChild(overlay);
+      var t0 = Date.now(), cancelled = false, onCancel = null;
+      var line = panel.querySelector('#iwdie_trace_line');
+      var fill = panel.querySelector('#iwdie_trace_fill');
+      var sub = panel.querySelector('#iwdie_trace_sub');
+      var btn = panel.querySelector('#iwdie_trace_cancel');
+      var tick = setInterval(function () { sub.textContent = Math.round((Date.now() - t0) / 1000) + ' s'; }, 500);
+      btn.addEventListener('click', function () {
+        cancelled = true;
+        btn.disabled = true;
+        line.textContent = 'Cancelling...';
+        if (onCancel) onCancel();
+      });
+      return {
+        step: function (p) { var st = iwdieTraceProgress(p); fill.style.width = st.pct + '%'; line.textContent = st.line; },
+        close: function () { clearInterval(tick); overlay.remove(); },
+        onCancel: function (fn) { onCancel = fn; },
+        cancelled: function () { return cancelled; }
+      };
+    }
+
+    function traceError(kind, msg) {
+      var e = new Error(String(msg && msg.message ? msg.message : msg));
+      e.kind = kind;
+      return e;
+    }
+
     /* Run the vendored tracer in a Web Worker so long traces (photo
        backgrounds can take minutes) never freeze the tab. The whole library
        is one self-contained constructor, so its source can be lifted into
-       the worker via Function.prototype.toString — no second copy needed. */
-    function traceInWorker(imgData, opts, paletteColors) {
-      return new Promise(function (resolve, reject) {
-        var src, paletteSrc;
+       the worker via Function.prototype.toString — no second copy needed.
+       Returns {promise, cancel}. The promise rejects with e.kind 'no-worker'
+       when no worker could be started (old browser, CSP without blob:
+       worker-src) — the one case a main-thread fallback is for — 'cancelled'
+       when cancel() was called, and 'worker' when the trace itself failed,
+       which must never be retried on the main thread: that is the freeze. */
+    function traceInWorker(imgData, opts, paletteColors, onProgress) {
+      var handle = { cancel: function () {} };
+      handle.promise = new Promise(function (resolve, reject) {
+        var src, paletteSrc, deps;
         try {
           src = IWDIE_TRACER.constructor.toString();
           paletteSrc = iwdieBuildPalette.toString();
-        } catch (e) { reject(e); return; }
+          deps = iwdieTraceWorkerDeps();
+        } catch (e) { reject(traceError('no-worker', e)); return; }
         // The palette scan is lifted in the same way as the tracer itself, by
         // source: it is a pure function of the ImageData, and running it here
         // keeps a 26-72 ms pass over a 4 MB buffer off the UI thread.
-        var code = iwdieBuildTraceWorkerCode(src, paletteSrc);
+        var code = iwdieBuildTraceWorkerCode(src, paletteSrc, deps);
         var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
         var w;
-        try { w = new Worker(url); } catch (e) { URL.revokeObjectURL(url); reject(e); return; } // e.g. CSP without blob: worker-src
+        try { w = new Worker(url); } catch (e) { URL.revokeObjectURL(url); reject(traceError('no-worker', e)); return; }
         var done = function () { URL.revokeObjectURL(url); try { w.terminate(); } catch (e) {} };
-        w.onmessage = function (ev) { done(); if (ev.data && ev.data.svg) resolve(ev.data.svg); else reject(new Error(ev.data && ev.data.err || 'trace failed')); };
-        w.onerror = function (ev) { done(); reject(new Error('worker: ' + (ev.message || 'error'))); };
+        handle.cancel = function () { done(); reject(traceError('cancelled', 'cancelled')); };
+        w.onmessage = function (ev) {
+          var d = ev.data || {};
+          if (d.progress) { if (onProgress) { try { onProgress(d.progress); } catch (e) { /* noop */ } } return; }
+          done();
+          if (d.svg) resolve(d.svg); else reject(traceError('worker', d.err || 'trace failed'));
+        };
+        w.onerror = function (ev) { done(); reject(traceError('worker', ev.message || 'error')); };
         w.postMessage(iwdieBuildTraceWorkerPayload(imgData, opts, paletteColors), [imgData.data.buffer]);
       });
+      return handle;
     }
 
     function doExportBackgroundAi() {
@@ -4374,33 +4713,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!got) { toast('Could not read the image pixels for tracing.', true); return; }
           var svgName = iwdieBuildBackgroundFilename(plant, panel + ' traced', 'svg');
           var t0 = Date.now();
+          var prog = openTraceProgress('Tracing the background to vectors');
           var deliverTrace = function (traced, scale) {
+            prog.step({ phase: 'tidy' });
             traced = iwdieTidyTraceSvg(traced, scale, w, h);
+            prog.step({ phase: 'done' });
+            prog.close();
             downloadBytes(traced, svgName, 'image/svg+xml');
             hostOk('Background traced to vectors in ' + Math.round((Date.now() - t0) / 100) / 10 + ' s → ' + svgName + ' (' +
-              ((traced.match(/<path/g) || []).length) + ' paths in ' + ((traced.match(/<g id=/g) || []).length) + ' named colour groups' +
+              ((traced.match(/<path/g) || []).length) + ' paths in ' + ((traced.match(/^  <g id=/mg) || []).length) + ' objects' +
               (scale > 1 ? ', traced at ' + scale + '×' : '') +
-              '). Open in Illustrator (File → Open); each colour is a group, the canvas plate is one rect.');
+              '). Open in Illustrator (File → Open); each drawn thing is a group named by what it is, the canvas plate is one rect.');
           };
-          toast('Tracing background to vectors… the browser stays usable; the .svg downloads when done.', false, 6000);
-          traceInWorker(got.data, iwdieTraceOptionsIllustrator(got.scale), IWDIE_TRACE_PALETTE_COLORS)
-            .then(function (svg) { deliverTrace(svg, got.scale); })
-            .catch(function () {
-              // no worker available (old browser / strict CSP): trace on the
-              // main thread after letting the toast paint first
-              toast('Tracing on the main thread — the browser will be busy for a moment…', false, 8000);
-              setTimeout(function () {
-                try {
-                  var again = buildTraceSource(img, w, h, fillCss); // first buffer was transferred away
-                  if (!again) throw new Error('could not rebuild the pixels');
-                  var illu = iwdieTraceOptionsIllustrator(again.scale);
-                  var illuPal = iwdieBuildPalette(again.data, IWDIE_TRACE_PALETTE_COLORS);
-                  if (illuPal) illu.pal = illuPal;
-                  deliverTrace(IWDIE_TRACER.imagedataToSVG(again.data, illu), again.scale);
-                }
-                catch (e) { toast('Vector trace failed: ' + e, true); }
-              }, 80);
-            });
+          var failed = function (e) {
+            prog.close();
+            if (e && e.kind === 'cancelled') { toast('Trace cancelled - nothing was saved.'); return; }
+            toast('Vector trace failed: ' + (e && e.message ? e.message : e), true, 8000);
+          };
+          var job = traceInWorker(got.data, iwdieTraceOptionsIllustrator(got.scale), IWDIE_TRACE_PALETTE_COLORS, prog.step);
+          prog.onCancel(job.cancel);
+          job.promise.then(function (svg) { deliverTrace(svg, got.scale); }).catch(function (e) {
+            if (!e || e.kind !== 'no-worker') { failed(e); return; }
+            // no worker available (old browser / strict CSP): trace on the
+            // main thread after letting the panel paint first
+            prog.step({ phase: 'main-thread' });
+            setTimeout(function () {
+              try {
+                var again = buildTraceSource(img, w, h, fillCss); // first buffer was transferred away
+                if (!again) throw new Error('could not rebuild the pixels');
+                var illu = iwdieTraceOptionsIllustrator(again.scale);
+                var illuPal = iwdieBuildPalette(again.data, IWDIE_TRACE_PALETTE_COLORS);
+                if (illuPal) illu.pal = illuPal;
+                deliverTrace(IWDIE_TRACER.imagedataToSVG(again.data, illu), again.scale);
+              }
+              catch (e2) { failed(e2); }
+            }, 80);
+          });
           return;
         }
         // artboard path: native resolution, the pixels go into the PDF as-is
@@ -5707,6 +6055,15 @@ if (typeof module !== 'undefined' && module.exports) {
     mergeBlendColours: iwdieMergeBlendColours,
     traceOptionsIllustrator: iwdieTraceOptionsIllustrator,
     traceLayerName: iwdieTraceLayerName,
+    traceColourRole: iwdieTraceColourRole,
+    traceObjectName: iwdieTraceObjectName,
+    traceObjectTree: iwdieTraceObjectTree,
+    traceAssemblies: iwdieTraceAssemblies,
+    traceDuctName: iwdieTraceDuctName,
+    pointInRing: iwdiePointInRing,
+    TRACE_OBJECT_LIMIT: IWDIE_TRACE_OBJECT_LIMIT,
+    traceProgress: iwdieTraceProgress,
+    traceWorkerDeps: iwdieTraceWorkerDeps,
     TRACE_WORKER_INPUTS: IWDIE_TRACE_WORKER_INPUTS,
     buildTraceWorkerCode: iwdieBuildTraceWorkerCode,
     buildTraceWorkerPayload: iwdieBuildTraceWorkerPayload,
