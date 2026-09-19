@@ -187,6 +187,46 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The export explains the panel, seeds a new one, and Insert checks geometry (v1.25.0)
+
+Found by reading a finished export end to end the way a Copilot agent does, rather than
+reading the source. Three gaps, three answers.
+
+**An agent could count objects but not see the panel.** `summary` listed obj_ids; it
+said nothing about what they meant or where they sat. Two derived blocks now do:
+`summary.roles` counts by role (17 setpoints, 17 duct values, 12 alarms, 5 fans …)
+using the catalogue's own role index, and `summary.layout` gives the header bars in
+reading order with how many live objects sit under each, the settings column, the
+rows of live objects on the drawing as y-bands, and — when the background is authored
+SVG — every straight duct run parsed from the artwork, so a con_down or con_top can be
+attached to real geometry. `background.width`/`height` are no longer null for an SVG
+background; the viewBox is read.
+
+**An agent had rules but no seed.** `examples.minimal_file` was one label.
+`examples.starter_ventilation` is a complete, correct file — two duct runs, exchanger
+and zone in `image_svg`, eleven unlinked objects at the measured positions, every id
+from the catalogue — that passes the importer and the geometry checks as it stands.
+`quick_start` (ten lines) opens the guide, `read_order_by_task` says which sections
+matter for reading, modifying, creating or linking, `caption_conventions` records what
+production writes in `tag_text` (including the non-breaking space it uses to nudge a
+centred caption — copy it, never trim it), and the decision blocks now precede
+`examples` instead of trailing 30 kB behind them. Two references to an internal
+`DESIGN-OBJECT-CATALOG.md` the agent never had point at `object_catalogue` instead.
+
+**Nothing stopped a messy file at the door.** Insert validated shape only. It now runs
+the `self_check` geometry over the incoming panel and reports, as warnings never
+refusals: objects outside the canvas (2 px of grace, because the house's own headers
+overhang by one), live objects on top of each other, the drawing running under the
+settings column, one alias linked on two objects, and obj_ids the catalogue does not
+list. Run on a real house panel it finds nine overlapping pairs and two doubled
+setpoint boxes — true, and left for the owner to judge.
+
+The catalogue's `number_v3_40px_dark_con_down` — the cascade-setpoint box on both
+production Ventilasjon panels — now sits under `value_conn`; the 1.24.0 generator had
+filed it under an unnamed role, and the new geometry check flagged it as unknown on the
+first real panel it saw. A listed id is known whatever its role; only an id the catalogue
+has never seen is reported.
+
 ### The guide tells an agent what to place, where, and which parameters to pick (v1.24.0)
 
 v1.22.0 made the file explain its *format*. It still could not answer the two questions an

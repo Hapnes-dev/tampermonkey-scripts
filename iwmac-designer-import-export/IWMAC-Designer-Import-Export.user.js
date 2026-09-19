@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.24.1
+// @version      1.25.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.24.1';
+var IWDIE_VERSION = '1.25.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -151,6 +151,7 @@ function iwdieBackgroundInfo(dataUrl, orgImageName) {
   var mime = /^data:([^;,]*)/.exec(url);
   var b64 = /;base64,([\s\S]*)$/.exec(url);
   var size = iwdieImageHeaderSize(url);
+  if (!size && /^data:image\/svg\+xml/i.test(url)) size = iwdieSvgSize(iwdieSvgTextFromDoc({ image_data: url }));
   return {
     field: 'image_data',
     mime: (mime && mime[1]) || null,
@@ -189,7 +190,7 @@ var IWDIE_AI_GUIDE_VERSION = 2;
  * one row per line, which reads as a table.
  */
 var IWDIE_OBJECT_SCHEMA = [
-  { field: 'obj_id', type: 'string', required: 'yes', meaning: 'Which palette object this is (its type). An exact id from the palette catalogue (DESIGN-OBJECT-CATALOG.md) or copied from an existing object; an unknown id draws nothing at all. Case and underscores matter.', example: 'number_v3_60px_dark_no_conn' },
+  { field: 'obj_id', type: 'string', required: 'yes', meaning: 'Which palette object this is (its type). An exact id from object_catalogue in this guide or copied from an existing object; an unknown id draws nothing at all. Case and underscores matter.', example: 'number_v3_60px_dark_no_conn' },
   { field: 'name', type: 'string', required: 'yes', meaning: 'Sequential label "object_0", "object_1", ... in array order, no gaps or duplicates within single_objects. The importer renumbers it on insert, so it carries no identity: never match objects between files by name.', example: 'object_12' },
   { field: 'id', type: 'string', required: 'yes', allowed: 'the literal "driver_id"', meaning: 'A host type marker, identical on every object. Not an identifier and not a parameter id. Never change it.', example: 'driver_id' },
   { field: 'posWidth', type: 'integer (pixels)', required: 'yes', meaning: 'Box width. Copy it from an existing object of the same obj_id; never derive it from how wide the text looks.', example: 62 },
@@ -347,6 +348,47 @@ function iwdieSummarizeDoc(doc) {
     if (a && !Object.prototype.hasOwnProperty.call(aliases, a)) { aliases[a] = true; aliasCount++; }
   });
 
+  var roles = tally(all, 'role', function (o) { return iwdieRoleOf(o.obj_id); });
+
+  var COLUMN = 1145;
+  var headers = [];
+  placed.forEach(function (p) {
+    var o = p[0];
+    if (!/header/.test(str(o.obj_id))) return;
+    headers.push({ title: str(o.tag_text).trim(), left: p[1], top: p[2], width: parseInt(o.posWidth, 10) || 0 });
+  });
+  headers.sort(function (a, b) { return a.left - b.left || a.top - b.top; });
+  headers.forEach(function (h, i) {
+    var next = null;
+    for (var k = i + 1; k < headers.length; k++) { if (Math.abs(headers[k].left - h.left) < 60) { next = headers[k]; break; } }
+    var below = 0;
+    placed.forEach(function (p) {
+      var o = p[0];
+      if (!IWDIE_LIVE_ROLES[iwdieRoleOf(o.obj_id)]) return;
+      if (Math.abs(p[1] - h.left) > 300) return;
+      if (p[2] > h.top && (!next || p[2] < next.top)) below++;
+    });
+    h.live_objects_below = below;
+  });
+  var column = placed.filter(function (p) { return p[1] >= COLUMN; });
+  var bands = [], ys = [];
+  placed.forEach(function (p) { if (p[1] < COLUMN && IWDIE_LIVE_ROLES[iwdieRoleOf(p[0].obj_id)]) ys.push(p[2]); });
+  ys.sort(function (a, b) { return a - b; });
+  ys.forEach(function (y) {
+    var last = bands[bands.length - 1];
+    if (last && y - last.bottom <= 40) { last.bottom = y; last.objects++; }
+    else bands.push({ top: y, bottom: y, objects: 1 });
+  });
+  var svgText = iwdieSvgTextFromDoc(doc);
+  var ducts = svgText ? iwdieDuctLinesFromSvg(svgText) : null;
+  var layout = {
+    what: 'Where things are on this panel, derived from the objects (and from the artwork when it is authored SVG). Sections are the header bars in reading order; value_bands are rows of live objects on the drawing; duct_lines are straight runs parsed from the artwork - curves are not listed.',
+    settings_column: column.length ? { from_x: COLUMN, objects: column.length } : null,
+    sections: headers,
+    value_bands: bands,
+    duct_lines: ducts && ducts.length ? ducts : null
+  };
+
   return {
     what: 'Facts derived from this panel when it was exported. Orientation only: the object entries are the truth. Drop or recompute this block when you return a changed file.',
     objects: {
@@ -356,6 +398,8 @@ function iwdieSummarizeDoc(doc) {
       graphics: graphics.length,
       total_object_entries: all.length
     },
+    roles: roles,
+    layout: layout,
     object_types_used: tally(all, 'obj_id', function (o) { return str(o.obj_id); }),
     linking: {
       linked_to_a_parameter: linkedToParameter,
@@ -477,13 +521,15 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
 
   return {
     guide_version: IWDIE_AI_GUIDE_VERSION,
+    quick_start: IWDIE_QUICK_START,
     purpose: 'IWMAC Designer panel export, written by the IWMAC Designer Import/Export userscript. A panel is a set of palette objects placed at pixel positions over one background picture; some panels group objects in containers (table rows, room cards). The same format is what the userscript imports, so a file you return is inserted into the Designer exactly as written.',
     how_to_use: {
-      reading: 'Read counts and summary for the inventory, background for the picture, then the object arrays. Every object entry has the same 17 fields (schema.object_entry). The fields that differ between objects describe the panel; the ones listed in constant_fields do not.',
+      reading: 'Read counts, then summary.roles for what the panel shows and summary.layout for where its sections, value bands and duct runs are, then background for the picture and the object arrays. Every object entry has the same 17 fields (schema.object_entry). The fields that differ between objects describe the panel; the ones listed in constant_fields do not.',
       modifying: 'Change only what the request names, inside panel.single_objects[] and panel.containers[]. Copy every untouched object byte-for-byte, keep array order, recompute counts, keep ai_guide as it is, drop or recompute summary, and return the complete file as a .json attachment. Rules: when_modifying and when_adding_objects.',
-      creating: 'Start from examples.minimal_file, add one object entry per thing to show (when_creating), take obj_id, size and zIndex from a real export of the same panel type, link from the plant parameter source (linking), check validate_before_returning, and answer with raw JSON only.'
+      creating: 'Read quick_start. Decide which rows belong on the panel (parameter_selection), pick each row\'s object (signal_to_object) and its place (layout), draw the picture to drawing_style, caption to caption_conventions, and grow examples.starter_ventilation rather than an empty array. Link from the plant parameter source (linking), run self_check, answer with raw JSON only.'
     },
     read_order: readOrder,
+    read_order_by_task: IWDIE_READ_ORDER_BY_TASK,
     skip_fields: skip,
     skip_reason: skip.length
       ? 'One very long line of base64. It is placed last so everything above stays readable, and "background" already states its mime, pixel size and byte count.'
@@ -498,7 +544,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       graphic: 'Opaque host records {id, name, attributes, styles, graphic_def, links}. Preserve verbatim when present; never author or edit one.'
     },
     relationships: [
-      'object.obj_id -> one entry of the palette catalogue (DESIGN-OBJECT-CATALOG.md): decides what is drawn, whether the object can carry a driver_id, and whether it shows tag_text.',
+      'object.obj_id -> one entry of object_catalogue: decides what is drawn, whether the object can carry a driver_id, and whether it shows tag_text.',
       'object.driver_id -> one row of the plant parameter source (the Driver ID column of the parameter export, or a row of the iw_gen_driver_parameters dump). unit_id, alias_text, link_tag and sub_group come from the same row; the plant prefix of the driver_id equals panel.plant_id.',
       'container.items[] -> objects positioned relative to container.left/top. A container is one row or card of a grid, not a category; the plain objects_container is what production uses.',
       'counts.* -> the lengths of panel.single_objects, panel.containers and panel.graphics.',
@@ -575,6 +621,14 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       'A production panel sits on a drawing. Copy the plant\'s own background when it has one — Maskin, Oversikt, curve and most Ventilasjon panels do, and that raster is copied verbatim, never redrawn. When the plant has none, author one in image_svg to the house construction in drawing_style: ducts, the rotary exchanger and the zone boxes belong in the artwork, while fans, filters, dampers, coils, pumps, values and alarms stay objects, because only an object can show a signal.',
       'Leave containers and graphics as [] unless the panel type is container-built (list panels, room-control tables); then clone the container structure from a reference export.'
     ],
+    object_catalogue: IWDIE_OBJECT_CATALOGUE,
+    signal_to_object: IWDIE_SIGNAL_TO_OBJECT,
+    layout: IWDIE_LAYOUT,
+    parameter_selection: IWDIE_PARAMETER_SELECTION,
+    drawing_style: IWDIE_DRAWING_STYLE,
+    caption_conventions: IWDIE_CAPTION_CONVENTIONS,
+    self_check: IWDIE_SELF_CHECK,
+    common_mistakes: IWDIE_COMMON_MISTAKES,
     validate_before_returning: [
       'format is exactly "' + IWDIE_FORMAT + '" and version is ' + IWDIE_FORMAT_VERSION + '.',
       'panel is an object holding single_objects, containers and graphics, all three arrays (empty arrays are fine).',
@@ -599,15 +653,9 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       unlinked_new_object: iwdieExampleUnlinkedObject(),
       linked_object: iwdieExampleLinkedObject(doc),
       container: iwdieExampleContainer(),
-      minimal_file: iwdieExampleMinimalFile()
+      minimal_file: iwdieExampleMinimalFile(),
+      starter_ventilation: iwdieExampleStarterVentilation()
     },
-    object_catalogue: IWDIE_OBJECT_CATALOGUE,
-    signal_to_object: IWDIE_SIGNAL_TO_OBJECT,
-    layout: IWDIE_LAYOUT,
-    parameter_selection: IWDIE_PARAMETER_SELECTION,
-    drawing_style: IWDIE_DRAWING_STYLE,
-    self_check: IWDIE_SELF_CHECK,
-    common_mistakes: IWDIE_COMMON_MISTAKES,
     object_fields: IWDIE_OBJECT_FIELDS,
     constant_fields: constantFields || null,
     constant_fields_note: constantFields
@@ -905,6 +953,7 @@ var IWDIE_OBJECT_CATALOGUE = {
       'number_v3_R_45px_con_left 62x20 uses=22 - 45px Conn - Left',
       'number_v3_R_45px_con_top 45x38 uses=18 - 45px Conn - top',
       'number_v3_R_45px_con_right 62x20 uses=17 - 45px Conn - Right',
+      'number_v3_40px_dark_con_down 41x26 uses=4 - dark reference box, connector down; the cascade setpoint on a duct',
     ],
     value_tag: [
       'number_v3_R_45px_no_conn_tag_up_center 45x20 uses=27 - 45px No conn up center tag',
@@ -989,11 +1038,249 @@ var IWDIE_OBJECT_CATALOGUE = {
     button: [
       'V3_81x21_enebled_disabled_nrm 80x21 uses=10 - Enebled - Disabled',
     ],
-    other: [
-      'number_v3_40px_dark_con_down 41x28 uses=0 - 40px Conn - down',
-    ],
   }
 };
+
+/** Ten lines that produce a valid, house-shaped file even if nothing else is read. */
+var IWDIE_QUICK_START = [
+  '1. One JSON object: format "iwmac-designer-panel", version 1, counts, panel{plant_id, panel_name, panel_width "1400px", panel_height "750px", single_objects[], containers[], graphics[]}.',
+  '2. Every object has the same 17 fields (schema.object_entry); a new unlinked one uses linking.unlinked_new_object.',
+  '3. obj_id only from object_catalogue; never invent one.',
+  '4. Which object a parameter row wants: signal_to_object. Where it goes: layout. Which rows belong on a panel at all: parameter_selection.',
+  '5. The picture is artwork (panel.image_svg, drawn to drawing_style) or the plant\'s own background; fans, filters, dampers, coils, pumps, values and alarms are objects on top of it.',
+  '6. tag_text is what the operator reads (caption_conventions); alias_text is the signal, and the key a linker matches.',
+  '7. Link only by copying driver_id and unit_id from one row of the plant parameter source; otherwise leave driver_id "driver_id" and linked "false".',
+  '8. zIndex bands: 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels.',
+  '9. Run self_check before returning; Insert runs the same geometry checks and reports what it finds.',
+  '10. Grow examples.starter_ventilation rather than starting from an empty array.'
+];
+
+/** Which parts of this file matter for which job, so 45 kB of guide is not read for a one-line edit. */
+var IWDIE_READ_ORDER_BY_TASK = {
+  to_understand_a_panel: ['counts', 'summary.roles', 'summary.layout', 'background', 'panel.single_objects', 'artwork or structure when present'],
+  to_modify_a_panel: ['when_modifying', 'when_adding_objects', 'schema.object_entry', 'linking', 'self_check'],
+  to_create_a_panel: ['quick_start', 'parameter_selection', 'signal_to_object', 'layout', 'drawing_style', 'caption_conventions', 'object_catalogue', 'examples.starter_ventilation', 'self_check'],
+  to_link_or_relink: ['linking', 'summary.linking', 'summary.units_referenced']
+};
+
+/** What production writes in tag_text, by role. Read off real panels, not invented. */
+var IWDIE_CAPTION_CONVENTIONS = {
+  value_with_caption: 'Instrument code, a space, the unit: "RT52 °C", "RD50 Pa", "SB40 %". The unit is part of the caption; the number comes from the binding.',
+  output_under_equipment: '"Padrag %" under a fan or coil; a flow box reads " Luftmengde" or " Sp.rom" with a LEADING space - production uses a non-breaking space (U+00A0) to nudge a centred caption. Copy it byte for byte; never trim it.',
+  equipment: 'The short code only - "JV40", "KA50", "QD50", "SB43" - and the description in alias_text.',
+  setpoint_box: 'tag_text is a single space " "; the words come from a number_v3_label_10px_bold to its right ("Settpunkt butikk °C").',
+  section_header: 'Norwegian, as production writes it: "Butikk settpunkt", "Kontor settpunkt", "Status og vendere", "Vifteregulering", "Temperaturregulering".',
+  bell_or_led: 'tag_text "" (empty). The alarm description is alias_text and appears on hover and in the linker.',
+  zone_and_room: 'Zone name as a bold label ("Butikk", "Kontor"); room sensors as "RT-60" style codes above their box, " Snitt" for an average.',
+  never: 'No value written into tag_text, no unit on an equipment code, no translation of the plant\'s own wording.'
+};
+
+/**
+ * obj_id -> role, from the catalogue. Used by summary.roles, the geometry checks
+ * and any reader that wants "how many setpoints" instead of "how many
+ * number_v3_60px_dark_no_conn_no_tag".
+ */
+var IWDIE_ROLE_INDEX = (function () {
+  var index = {};
+  var roles = IWDIE_OBJECT_CATALOGUE.by_role;
+  Object.keys(roles).forEach(function (role) {
+    roles[role].forEach(function (row) { index[String(row).split(' ')[0]] = role; });
+  });
+  return index;
+})();
+
+function iwdieRoleOf(objId) {
+  var id = String(objId == null ? '' : objId);
+  if (Object.prototype.hasOwnProperty.call(IWDIE_ROLE_INDEX, id)) return IWDIE_ROLE_INDEX[id];
+  if (/^sub_page/.test(id)) return 'navigation';
+  if (/label/.test(id)) return 'label';
+  if (/header/.test(id)) return 'header';
+  if (/alarm/.test(id)) return 'alarm';
+  if (/led/i.test(id)) return 'led';
+  return 'other';
+}
+
+/** Roles that show a live value or a state: the ones that must not sit on each other. */
+var IWDIE_LIVE_ROLES = { value: 1, value_conn: 1, value_tag: 1, enum: 1, alarm: 1, led: 1, sensor: 1 };
+
+/** The artwork as text, from panel.image_svg or an SVG data URL in image_data. */
+function iwdieDecodeBase64Text(b64) {
+  var clean = String(b64 || '').replace(/\s+/g, '');
+  try {
+    if (typeof atob === 'function') {
+      var bin = atob(clean), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      if (typeof TextDecoder !== 'undefined') return new TextDecoder('utf-8').decode(bytes);
+      return decodeURIComponent(escape(bin));
+    }
+  } catch (e) { /* fall through to Buffer */ }
+  if (typeof Buffer !== 'undefined') return Buffer.from(clean, 'base64').toString('utf8');
+  return '';
+}
+
+function iwdieSvgTextFromDoc(doc) {
+  if (!doc) return '';
+  if (typeof doc.image_svg === 'string' && /^\s*<svg/i.test(doc.image_svg)) return doc.image_svg;
+  var url = String(doc.image_data || '');
+  if (!/^data:image\/svg\+xml/i.test(url)) return '';
+  var m = /;base64,([\s\S]*)$/.exec(url);
+  if (m) return iwdieDecodeBase64Text(m[1]);
+  var q = /^data:[^,]*,([\s\S]*)$/.exec(url);
+  try { return q ? decodeURIComponent(q[1]) : ''; } catch (e) { return ''; }
+}
+
+/** Pixel size of an SVG from its viewBox, else width/height attributes. */
+function iwdieSvgSize(svgText) {
+  var s = String(svgText || '');
+  var vb = /viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["']/i.exec(s);
+  if (vb) return { width: Math.round(parseFloat(vb[1])), height: Math.round(parseFloat(vb[2])) };
+  var w = /<svg[^>]*\swidth\s*=\s*["']([\d.]+)(?:px)?["']/i.exec(s);
+  var h = /<svg[^>]*\sheight\s*=\s*["']([\d.]+)(?:px)?["']/i.exec(s);
+  if (w && h) return { width: Math.round(parseFloat(w[1])), height: Math.round(parseFloat(h[1])) };
+  return null;
+}
+
+/**
+ * Straight duct runs in authored artwork: every path whose d is "M x y H x2" or
+ * "M x y V y2" (the house construction draws each duct as one such path), plus
+ * thin rects. Enough to tell an agent where a con_down or con_top may attach;
+ * curves and diagonals are left out and said so.
+ */
+function iwdieDuctLinesFromSvg(svgText) {
+  var s = String(svgText || '');
+  if (!s) return null;
+  var lines = [], seen = {};
+  var add = function (orientation, at, from, to) {
+    if (from > to) { var t = from; from = to; to = t; }
+    var key = orientation + at + ':' + from + '-' + to;
+    if (seen[key]) return;
+    seen[key] = true;
+    lines.push({ orientation: orientation, at: at, from: from, to: to });
+  };
+  var re = /<path\b[^>]*\bd\s*=\s*["']\s*M\s*([\d.]+)[\s,]+([\d.]+)\s*([HV])\s*([\d.]+)(?:\s*([HV])\s*([\d.]+))?\s*["']/gi, m;
+  while ((m = re.exec(s)) !== null) {
+    var x = Math.round(+m[1]), y = Math.round(+m[2]);
+    if (m[3].toUpperCase() === 'H') { add('horizontal', y, x, Math.round(+m[4])); if (m[5]) add('vertical', Math.round(+m[4]), y, Math.round(+m[6])); }
+    else { add('vertical', x, y, Math.round(+m[4])); if (m[5]) add('horizontal', Math.round(+m[4]), x, Math.round(+m[6])); }
+  }
+  var rr = /<rect\b([^>]*)>/gi, r;
+  while ((r = rr.exec(s)) !== null) {
+    var a = r[1];
+    var g = function (name) { var mm = new RegExp('\\b' + name + '\\s*=\\s*["\']([\\d.]+)', 'i').exec(a); return mm ? +mm[1] : NaN; };
+    var rx = g('x'), ry = g('y'), rw = g('width'), rh = g('height');
+    if ([rx, ry, rw, rh].some(isNaN)) continue;
+    if (rh <= 20 && rw > 40) add('horizontal', Math.round(ry + rh / 2), Math.round(rx), Math.round(rx + rw));
+    else if (rw <= 20 && rh > 40) add('vertical', Math.round(rx + rw / 2), Math.round(ry), Math.round(ry + rh));
+  }
+  lines.sort(function (p, q) { return p.orientation < q.orientation ? -1 : p.orientation > q.orientation ? 1 : p.at - q.at || p.from - q.from; });
+  return lines;
+}
+
+/**
+ * Geometry an agent gets wrong without seeing the picture: things off the
+ * canvas, live objects on top of each other, the drawing running under the
+ * settings column, one alias shown twice, ids the catalogue does not know.
+ * Warnings, never refusals - a real panel may do any of these on purpose.
+ */
+function iwdieCheckPanelGeometry(doc) {
+  var warnings = [];
+  var so = (doc && Array.isArray(doc.single_objects)) ? doc.single_objects : [];
+  if (!so.length) return warnings;
+  var W = parseInt(doc.panel_width, 10), H = parseInt(doc.panel_height, 10);
+  var num = function (v) { var n = parseInt(v, 10); return isNaN(n) ? 0 : n; };
+  var box = function (o) { return { l: num(o.posLeft), t: num(o.posTop), r: num(o.posLeft) + num(o.posWidth), b: num(o.posTop) + num(o.posHeight) }; };
+  var label = function (o) { return (o.tag_text && String(o.tag_text).trim()) || (o.alias_text && String(o.alias_text).trim()) || o.obj_id; };
+
+  var outside = [];
+  if (!isNaN(W) && !isNaN(H)) {
+    // 2 px of grace: the house's own 250-wide headers sit at x 1151 and overhang a 1400 canvas by one
+    so.forEach(function (o) { var b = box(o); if (b.l < -2 || b.t < -2 || b.r > W + 2 || b.b > H + 2) outside.push(label(o)); });
+  }
+  if (outside.length) warnings.push(outside.length + ' object(s) reach outside the ' + W + 'x' + H + ' canvas: ' + outside.slice(0, 3).join(', ') + (outside.length > 3 ? ', …' : ''));
+
+  var live = so.filter(function (o) { return IWDIE_LIVE_ROLES[iwdieRoleOf(o.obj_id)]; });
+  var overlaps = [];
+  for (var i = 0; i < live.length; i++) {
+    var A = box(live[i]);
+    for (var j = i + 1; j < live.length; j++) {
+      var B = box(live[j]);
+      if (A.l < B.r && B.l < A.r && A.t < B.b && B.t < A.b) overlaps.push(label(live[i]) + ' / ' + label(live[j]));
+    }
+  }
+  if (overlaps.length) warnings.push(overlaps.length + ' pair(s) of live objects overlap: ' + overlaps.slice(0, 3).join('; ') + (overlaps.length > 3 ? '; …' : ''));
+
+  var COLUMN = 1145;
+  var hasColumn = so.some(function (o) { return /header/.test(String(o.obj_id)) && num(o.posLeft) >= COLUMN; });
+  if (hasColumn) {
+    var crossing = so.filter(function (o) { var b = box(o); return b.l < COLUMN && b.r > COLUMN + 5; }).map(label);
+    if (crossing.length) warnings.push(crossing.length + ' object(s) run from the drawing into the settings column (x ' + COLUMN + '): ' + crossing.slice(0, 3).join(', ') + (crossing.length > 3 ? ', …' : ''));
+  }
+
+  var seen = {}, dup = [];
+  so.forEach(function (o) {
+    if (String(o.linked) !== 'true') return;
+    var a = String(o.alias_text || '').trim();
+    if (!a) return;
+    if (seen[a]) { if (seen[a] === 1) dup.push(a); seen[a]++; } else seen[a] = 1;
+  });
+  if (dup.length) warnings.push(dup.length + ' alias(es) are linked on more than one object: ' + dup.slice(0, 2).join(' | ') + (dup.length > 2 ? ' | …' : '') + ' - fine when the same signal is meant to show twice.');
+
+  // listed under any role, even "other", is known; only an id the catalogue has never seen is flagged
+  var unknown = {};
+  so.forEach(function (o) {
+    var id = String(o.obj_id || '');
+    if (Object.prototype.hasOwnProperty.call(IWDIE_ROLE_INDEX, id) || /^sub_page/.test(id)) return;
+    unknown[id] = (unknown[id] || 0) + 1;
+  });
+  var unk = Object.keys(unknown);
+  if (unk.length) warnings.push(unk.length + ' obj_id(s) the catalogue does not list: ' + unk.slice(0, 3).join(', ') + (unk.length > 3 ? ', …' : '') + ' - legal if they are palette ids, broken if typed from memory.');
+  return warnings;
+}
+
+/**
+ * A complete, correct Ventilasjon seed: eleven unlinked objects on a two-run
+ * drawing, every position from layout, every id from the catalogue. Grow it;
+ * do not start from an empty array.
+ */
+function iwdieExampleStarterVentilation() {
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 750">'
+    + '<rect x="1145" y="0" width="255" height="750" fill="#CDD2D7" opacity="0.5"/>'
+    + '<rect x="1000" y="240" width="140" height="300" rx="16" fill="#CDD2D7" stroke="#FFFFFF" stroke-width="5"/>'
+    + '<g fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round"><path d="M58 238 H1000"/><path d="M58 428 H300"/><path d="M360 428 H1000"/></g>'
+    + '<g fill="none" stroke-width="2" stroke-linecap="round"><path d="M58 238 H1000" stroke="#F3C96A"/><path d="M58 428 H300" stroke="#B0E0EF"/><path d="M360 428 H1000" stroke="#F79E7A"/></g>'
+    + '<rect x="298" y="197" width="64" height="320" rx="32" fill="#CED1D2" stroke="#A6A6A9" stroke-width="1.5"/>'
+    + '<rect x="306" y="205" width="48" height="304" rx="24" fill="none" stroke="#FFFFFF" stroke-width="3"/>'
+    + '</svg>';
+  var n = 0;
+  var obj = function (objId, w, h, x, y, z, tag, alias) {
+    return { obj_id: objId, name: 'object_' + (n++), id: 'driver_id', posWidth: w, posHeight: h, posLeft: x, posTop: y,
+      zIndex: z, tag_text: tag, linked: 'false', link_name: '', link_tag: '', sub_group: '',
+      driver_id: 'driver_id', unit_id: '', unit_ref: '', alias_text: alias };
+  };
+  var objects = [
+    obj('number_v3_label_12px_bold', 50, 20, 430, 10, '1100', 'VENTILASJON 360.001 - <PLANT>', ''),
+    obj('V3_R_34px_circular_alarm_nrm', 34, 34, 384, 8, '375', '', 'Communication error'),
+    obj('V3_58px_fan_left_nrm', 59, 59, 186, 209, '40', 'JV50', 'JV50 Start avtrekksvifte'),
+    obj('number_v3_R_45px_con_top', 46, 38, 192, 266, '110', 'Padrag %', 'LR50 Padrag avtrekksvifte'),
+    obj('V3_R_34px_circular_alarm_nrm', 34, 34, 250, 208, '375', '', 'JV50 Feil avtrekksvifte'),
+    obj('number_v3_R_45px_con_down', 46, 38, 120, 363, '110', 'RT40 °C', 'RT40 Temperatur inntak'),
+    obj('V3_58px_fan_right_nrm', 59, 59, 380, 399, '40', 'JV40', 'JV40 Start tilluftsvifte'),
+    obj('number_v3_label_10px_bold', 50, 20, 1008, 246, '1100', 'Butikk', ''),
+    obj('number_v3_R_40px_no_conn_tag_up_left', 42, 22, 1076, 296, '110', 'RT-60', 'RT60 Temperatur butikk'),
+    obj('number_v3_header_grey75', 250, 20, 1150, 20, '5', 'Butikk settpunkt', ''),
+    obj('number_v3_60px_dark_no_conn_no_tag', 62, 22, 1175, 52, '110', ' ', 'Settpunkt romtemperatur butikk'),
+    obj('number_v3_label_10px_bold', 50, 20, 1245, 54, '1100', 'Settpunkt butikk °C', '')
+  ];
+  return {
+    format: IWDIE_FORMAT, version: IWDIE_FORMAT_VERSION, generator: '<your agent name>',
+    source_plant_id: '', panel_name: '360.001 Ventilasjon', panel_width: '1400px', panel_height: '750px',
+    counts: { single_objects: objects.length, containers: 0, graphics: 0 },
+    background_embedded: true,
+    panel: { plant_id: '', panel_name: '360.001 Ventilasjon', panel_width: '1400px', panel_height: '750px',
+      org_image_name: '', image_name: '', saved_by: '<your agent name>', image_svg: svg,
+      single_objects: objects, containers: [], graphics: [] }
+  };
+}
 
 /**
  * Which object a parameter row wants. Cross-tabulated over 202 linked objects
@@ -4348,6 +4635,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // carries artwork and nothing else is valid input here.
       var v = iwdieValidateDoc(res.doc, { allowEmpty: bgOnly });
       v.warnings = v.warnings.concat(iwdieCheckEnvelopeCounts(res.meta, res.doc));
+      v.warnings = v.warnings.concat(iwdieCheckPanelGeometry(res.doc));
       if (v.errors.length) {
         // A file with artwork and no objects is not a broken export — it is a
         // background-only patch, and the switch above is what it is for. Say so
@@ -5091,6 +5379,13 @@ if (typeof module !== 'undefined' && module.exports) {
     DRAWING_STYLE: IWDIE_DRAWING_STYLE,
     SELF_CHECK: IWDIE_SELF_CHECK,
     COMMON_MISTAKES: IWDIE_COMMON_MISTAKES,
+    QUICK_START: IWDIE_QUICK_START,
+    CAPTION_CONVENTIONS: IWDIE_CAPTION_CONVENTIONS,
+    roleOf: iwdieRoleOf,
+    checkPanelGeometry: iwdieCheckPanelGeometry,
+    ductLinesFromSvg: iwdieDuctLinesFromSvg,
+    svgSize: iwdieSvgSize,
+    exampleStarterVentilation: iwdieExampleStarterVentilation,
     backgroundInfo: iwdieBackgroundInfo,
     imageHeaderSize: iwdieImageHeaderSize,
     base64ByteLength: iwdieBase64ByteLength,
