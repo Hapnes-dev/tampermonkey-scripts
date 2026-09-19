@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.23.0
+// @version      1.24.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.23.0';
+var IWDIE_VERSION = '1.24.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -563,7 +563,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
     ],
     when_creating: [
       'Start from what the plant has: the unit list and parameter list (the userscript\'s parameter export, columns in linking.parameter_source_columns) or the order and equipment list. One panel usually shows one unit or system ("360.001 Ventilasjon"). Each reading to display becomes one value object, each state one LED, alarm or state object, each caption one label object, each group one header object.',
-      'Copy the geometry of a real export of the same panel type: positions, sizes, zIndex and object vocabulary. Replace only the plant-specific content. A layout invented from the catalogue alone looks nothing like production.',
+      'Copy the geometry of a real export of the same panel type when you have one: positions, sizes, zIndex and object vocabulary, with only the plant-specific content replaced. With no export to copy, build from layout (where things go, in measured pixels), signal_to_object (which object a parameter row wants) and parameter_selection (which rows belong on a panel at all) - and say in your answer that the geometry is derived, not cloned.',
       'Set panel.plant_id and source_plant_id to the target plant number when the file is for one plant, or "" for a reusable template; set generator and panel.saved_by to your agent name.',
       'Link from the parameter source when it is supplied (linking); otherwise leave every object unlinked with a descriptive alias_text and say so in your answer.',
       'A production panel sits on a drawing. Copy the plant\'s own background when it has one — Maskin, Oversikt, curve and most Ventilasjon panels do, and that raster is copied verbatim, never redrawn. When the plant has none, author one in image_svg to the house construction in drawing_style: ducts, the rotary exchanger and the zone boxes belong in the artwork, while fans, filters, dampers, coils, pumps, values and alarms stay objects, because only an object can show a signal.',
@@ -596,7 +596,12 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       minimal_file: iwdieExampleMinimalFile()
     },
     object_catalogue: IWDIE_OBJECT_CATALOGUE,
+    signal_to_object: IWDIE_SIGNAL_TO_OBJECT,
+    layout: IWDIE_LAYOUT,
+    parameter_selection: IWDIE_PARAMETER_SELECTION,
     drawing_style: IWDIE_DRAWING_STYLE,
+    self_check: IWDIE_SELF_CHECK,
+    common_mistakes: IWDIE_COMMON_MISTAKES,
     object_fields: IWDIE_OBJECT_FIELDS,
     constant_fields: constantFields || null,
     constant_fields_note: constantFields
@@ -857,76 +862,205 @@ var IWDIE_OBJECT_FIELDS = ['obj_id', 'name', 'id', 'posWidth', 'posHeight', 'pos
   'unit_id', 'unit_ref', 'alias_text'];
 
 /**
- * The palette an agent may draw from, with each id's natural size. An unknown
- * obj_id renders broken, and until 1.23.0 the only list of legal ids lived in
- * the internal briefing — so an agent given nothing but an export could copy
- * the ids it saw and no more. Sizes are the catalogue defaults; stretch a
- * header or a banner, but leave a symbol at its own size.
+ * The palette an agent may draw from. Generated from the designer's own live
+ * palette dump (820 entries) narrowed to the ids production actually uses: the
+ * object census over 22 compiled panels on 6 plants, plus every id on the real
+ * Ventilasjon panels. An unknown obj_id renders broken, and before 1.23.0 the
+ * only list of legal ids lived in an internal briefing, so an agent holding one
+ * export could copy the ids it saw and no more.
  */
 var IWDIE_OBJECT_CATALOGUE = {
-  how_to_use: 'Pick ids from here. Never invent one. Text goes in tag_text, the signal in alias_text, except on equipment where tag_text is the short name (JV401) and alias_text the description.',
-  text: [
-    'number_v3_header_grey75 260x20 - section header bar',
-    'number_v3_label_12px_bold - panel title',
-    'number_v3_label_11px_bold / _11px_norm - sub heading, row label',
-    'number_v3_label_10px_bold / _10px_norm - small bold, small normal',
-    'number_v3_label_8px_norm - footnote; every label is height 20, any width'
-  ],
-  values: [
-    'number_v3_value_only 50x20 - bare number, the workhorse',
-    'number_v3_40px_no_conn_no_tag 42x22 / _60px_no_conn_no_tag 62x22 - framed value',
-    'number_v3_60px_dark_no_conn_no_tag 62x22 - dark box, a setpoint',
-    'number_v3_R_40px_no_conn_tag_up_left 42x22 / _R_45px_no_conn_tag_up_left 46x22 - caption above left, room sensors',
-    'number_v3_R_45px_con_down / _con_top 46x38 - value with a connector to the duct above or below',
-    'number_v3_R_45px_con_left / _con_right 62x22 - connector to the side',
-    'number_v3_R_60px_no_conn_tag_up_center 62x22 - caption centred above',
-    'number_v3_R_45px_no_conn_bott_center 46x22 - caption below',
-    'number_v3_40px_dark_con_down 41x26 - dark reference value on a duct',
-    'number_v3_60px_json_obj / number_v3_custom_json_obj 60x20 - enum or mode box',
-    'number_v3_rc_temp_48 49x21 - room temperature'
-  ],
-  status: [
-    'V3_R_34px_circular_alarm_nrm 34x34 - alarm bell, next to its component',
-    'V3_ok_alarm_nrm 61x21 - OK/ALARM banner',
-    'V3_led_13px_circ_grey_green 13x13 - run LED',
-    'V3_led_16px_circ_grey_red / _grey_yellow 16x16 - A-alarm, B-alarm',
-    'V3_led_18px_circ_grey_red 18x18 - smoke/fire',
-    'V3_R_28px_circular_cooling_nrm / _defrost_nrm 28x28 - case cooling, defrost',
-    'V3_akpc_782A_suct / _772_781_781A_783_contr / _783_781A_782A_cond 81x21 - Danfoss strips'
-  ],
-  equipment: [
-    'V3_58px_fan_left_nrm / V3_58px_fan_right_nrm 59x59 - fan, facing the flow',
-    'V3_21px_single_pump_grey_green_left / _up / _down 21x21 - pump',
-    'number_v3_filter_only 27x70 - filter; numberV3_filter_with_diff_press 90x83 - filter with its dP value',
-    'V3_horis_damper_flow-left_nrm 36x26 / V3_vert_damper_flow-up_inv 26x36 - damper',
-    'number_v3_dummy_resirc_damp_hor 42x42 / _vert 70x40 - recirculation damper',
-    'number_v3_heater_3_way 40x210 - water coil with 3-way valve; number_v3_el_heater 40x85 - electric heater',
-    'number_v3_cooler_2-way 38x132 - cooling coil; number_360_vb 37x70 - compact water battery',
-    'number_v3_dummy_3way_motor_right 30x19 / v3_3w_valve_right_down_nrm 22x18 - valve motors',
-    'numberV3_outside_temp 79x50 - outdoor sensor on a wall'
-  ],
-  ducts_and_rooms: [
-    'number_v3_fresh_pipe_horisontal / _vertical 50x18, 18x50 - outdoor air',
-    'number_v3_supply_pipe_horisontal / _vertical - supply air',
-    'number_v3_exhaust_pipe_horisontal / _vertical - extract and exhaust',
-    'number_v3_supply_connector_down / number_v3_exhaust_connector_up 18x50 - duct corners',
-    'number_v3_dummy_21x17_Arrow_Left / _Right 21x17 - flow direction',
-    'number_360_vg_rot 60x343 - rotary heat exchanger across both runs',
-    'number_360_room 100x339 - room symbol at the end of a run',
-    'Stretch any of these to the run you need. They are dummies: never linked.'
-  ],
-  lists: [
-    'previous_page_tekn_box_no 1570x57 - banner with back navigation',
-    'number_v3_label_12px_bold_white - white title on the banner',
-    'number_v3_header_grey50 / number_v3_header_appgrey - stretched stripe, divider'
+  how_to_use: 'Pick ids from here; never invent one. Text goes in tag_text and the signal in alias_text, except on equipment, where tag_text is the short name (JV401) and alias_text the description. signal_to_object says which id a given parameter row wants.',
+  sizes: 'The size after each id is the palette default. Production stretches headers, banners and duct pieces to the run they cover and leaves symbols at their own size - number_v3_header_grey75 is 60x25 in the palette and 250x20 on every panel that uses it. When this file already has an object in the role you are adding, copy its size.',
+  uses: 'uses counts that id across the 22 compiled production panels. A high count is the house habit for the role; uses=0 means legal but rare, and most of those are ventilation pieces that only appear on duct drawings.',
+  by_role: {
+    header: [
+      'number_v3_header_grey75 60x25 uses=6 - header_grey75',
+    ],
+    label: [
+      'number_v3_label_11px_norm 77x20 uses=36 - 11px Normal',
+      'number_v3_label_10px_bold 77x20 uses=35 - 10px Bold',
+      'number_v3_label_12px_bold 77x20 uses=7 - 12px  Bold',
+      'number_v3_label_8px_norm 77x20 uses=7 - 8px Normal',
+      'number_v3_label_11px_bold 77x20 uses=2 - 11px Bold',
+      'number_v3_label_10px_norm 77x20 uses=0 - 10px Normal',
+    ],
+    value: [
+      'number_v3_value_only 50x20 uses=419 - Value Only',
+      'number_v3_40px_no_conn_no_tag 50x20 uses=182 - 40px  Box , No Tag',
+      'number_v3_white_value_only 50x20 uses=60 - Value Only White',
+      'number_v3_60px_dark_no_conn_no_tag 50x20 uses=15 - 60px Dark Box , No Tag',
+      'number_v3_60px_no_conn_no_tag 50x20 uses=9 - 60px  Box , No Tag',
+      'number_v3_60px_dark_no_conn 61x21 uses=8 - 60px Dark  No connector',
+      'number_v3_60px_no_conn 61x21 uses=8 - 60px No connector',
+    ],
+    value_conn: [
+      'number_v3_R_45px_con_down 45x38 uses=27 - 45px Conn - down',
+      'number_v3_R_45px_con_left 62x20 uses=22 - 45px Conn - Left',
+      'number_v3_R_45px_con_top 45x38 uses=18 - 45px Conn - top',
+      'number_v3_R_45px_con_right 62x20 uses=17 - 45px Conn - Right',
+    ],
+    value_tag: [
+      'number_v3_R_45px_no_conn_tag_up_center 45x20 uses=27 - 45px No conn up center tag',
+      'number_v3_R_40px_no_conn_tag_up_center 41x21 uses=25 - 40px No conn up center tag',
+      'number_v3_R_45px_no_conn_bott_center 45x20 uses=12 - 45px No conn bott center tag',
+      'number_v3_R_60px_no_conn_tag_up_center 60x20 uses=11 - 60px No conn up center tag',
+      'number_v3_R_40px_no_conn_tag_up_left 41x21 uses=4 - 40px No conn up left tag',
+      'number_v3_R_45px_no_conn_tag_up_left 45x20 uses=0 - 45px No conn up left tag',
+    ],
+    enum: [
+      'number_v3_custom_json_obj 61x21 uses=21 - Free width JSON Obj box',
+      'number_v3_60px_json_obj 61x21 uses=0 - Free width JSON Obj box',
+    ],
+    alarm: [
+      'V3_R_34px_circular_alarm_nrm 34x34 uses=219 - 34px Animated Circular Alarmicon',
+      'V3_R_28px_circular_cooling_nrm 28x28 uses=152 - 28px Circular Cooling icon',
+      'V3_R_28px_circular_defrost_nrm 28x28 uses=152 - 28px Circular Defrost icon',
+      'V3_R_24px_anim_rg_alarm_nrm 24x24 uses=18 - 24px anim/grey alarmbell',
+      'V3_ok_alarm_nrm 60x20 uses=10 - CO2 Alarm Normal',
+    ],
+    led: [
+      'V3_led_13px_circ_grey_green 13x13 uses=20 - 13px Grey-Green',
+      'V3_led_21px_square_grey_red 21x21 uses=3 - 21px Grey-Red',
+      'V3_led_16px_circ_grey_red 16x16 uses=2 - 16px Grey-Red',
+      'V3_led_16px_circ_grey_yellow 16x16 uses=0 - 16px Grey-Yellow',
+      'V3_led_18px_circ_grey_red 18x18 uses=0 - 18px Grey-Red',
+    ],
+    fan: [
+      'V3_58px_fan_left_nrm 59x59 uses=8 - 58px Fan - Left',
+      'V3_58px_fan_right_nrm 59x59 uses=4 - 58px Fan -Right',
+    ],
+    pump: [
+      'V3_21px_single_pump_grey_green_down 21x21 uses=21 - 21px Single pump down',
+      'V3_21px_single_pump_grey_green_left 21x21 uses=12 - 21px Single pump left',
+      'V3_21px_single_pump_grey_green_up 21x21 uses=7 - 21px Single pump Up',
+    ],
+    valve: [
+      'number_v3_dummy_3way_motor_right 30x19 uses=0 - Dummy 3-way motor right',
+      'v3_3w_valve_right_down_nrm 22x18 uses=0 - 3Way-Valve Digital',
+    ],
+    coil: [
+      'number_v3_cooler_2-way 38x132 uses=0 - Cooler 2-Way',
+      'number_v3_el_heater 38x65 uses=0 - El-Heater',
+      'number_v3_heater_3_way 38x132 uses=0 - Heater 3-Way',
+    ],
+    filter: [
+      'number_v3_filter_only 27x53 uses=4 - Filter only',
+      'numberV3_filter_with_diff_press 100x82 uses=0 - Filter w/diff pressure',
+    ],
+    damper: [
+      'V3_horis_damper_flow-left_nrm 36x26 uses=0 - Damper horiz flow-left',
+      'V3_vert_damper_flow-up_inv 26x36 uses=0 - Damper vertical flow-up',
+      'number_v3_dummy_resirc_damp_hor 36x26 uses=0 - Dummy Damper Resirc Horisontal',
+      'number_v3_dummy_resirc_damp_vert 26x36 uses=0 - Dummy Damper Resirc Vertical',
+    ],
+    duct: [
+      'number_v3_exhaust_pipe_horisontal 51x19 uses=11 - Pipe Horisontal',
+      'number_v3_exhaust_pipe_vertical 19x51 uses=2 - Pipe Vertical',
+      'number_v3_dummy_21x17_Arrow_Left 21x17 uses=0 - Arrow Left',
+      'number_v3_dummy_21x17_Arrow_Right 21x17 uses=0 - Arrow Right',
+      'number_v3_dummy_6x15_Line_Small_Down 6x15 uses=0 - Small Connector',
+      'number_v3_exhaust_connector_up 19x39 uses=0 - Connector Up',
+      'number_v3_fresh_pipe_horisontal 51x19 uses=0 - Pipe Horosontal',
+      'number_v3_supply_connector_down 19x39 uses=0 - Connector Down',
+      'number_v3_supply_pipe_horisontal 51x19 uses=0 - Pipe Horisontal',
+      'number_v3_supply_pipe_vertical 19x51 uses=0 - Pipe Vertical',
+    ],
+    zone: [
+      'number_360_room 100x339 uses=0 - Room',
+      'number_360_vb 37x52 uses=0 - heating coil',
+      'number_360_vg_rot 60x324 uses=0 - VG Roterende',
+    ],
+    sensor: [
+      'number_v3_rc_temp_48 49x21 uses=4 - 48px temperature',
+      'numberV3_outside_temp 79x50 uses=0 - Outsite temp',
+    ],
+    akpc: [
+      'V3_akpc_772_781_781A_783_contr 80x80 uses=40 - Controller Groups state 0-8',
+      'V3_akpc_782A_suct 80x80 uses=18 - Suction Groups',
+      'V3_akpc_783_781A_782A_cond 80x80 uses=8 - Condensing Group',
+    ],
+    button: [
+      'V3_81x21_enebled_disabled_nrm 80x21 uses=10 - Enebled - Disabled',
+    ],
+    other: [
+      'number_v3_40px_dark_con_down 41x28 uses=0 - 40px Conn - down',
+    ],
+  }
+};
+
+/**
+ * Which object a parameter row wants. Cross-tabulated over 202 linked objects
+ * in two production Ventilasjon panels: dark boxes carried setpoints 17 times
+ * of 22, con_down carried duct temperatures 12 of 16, the alarm bell carried a
+ * fault 12 of 16, and fans and pumps carried start/drift every time. Keyed on
+ * the parameter export's own columns so an agent can decide mechanically.
+ */
+var IWDIE_SIGNAL_TO_OBJECT = {
+  how_to_use: 'Read the parameter row first - Application, Access, Type and Eng unit decide the object. The description only decides where it goes.',
+  rules: [
+    'Analog values + Read + a unit, a sensor on a duct -> number_v3_R_45px_con_down above the duct or number_v3_R_45px_con_top below it, with the connector pointing at the duct.',
+    'Analog values + Read/write, a value the operator sets -> number_v3_60px_dark_no_conn_no_tag in the settings column, with a number_v3_label_10px_bold caption beside it.',
+    'Analog values + Read, a motor output in % -> number_v3_R_45px_con_top under the fan, coil or valve it drives.',
+    'Analog values + Read, an air flow -> number_v3_R_60px_no_conn_tag_up_center above the fan.',
+    'Analog values + Read, a room temperature -> number_v3_R_40px_no_conn_tag_up_left inside the zone box, one column per zone.',
+    'Analog values + Read, a calculated reference the operator only watches -> number_v3_40px_dark_con_down on the duct it belongs to.',
+    'Digital IO + Read, the description says feil, alarm, utlost, vakt, frost or brann -> V3_R_34px_circular_alarm_nrm beside the component it names.',
+    'Digital IO + Read, smoke or fire -> V3_led_18px_circ_grey_red; a plant-wide A- or B-alarm -> V3_led_16px_circ_grey_red or _grey_yellow in the settings column.',
+    'Digital IO, start or drift of a fan or a pump -> link the equipment object itself (V3_58px_fan_left_nrm, V3_21px_single_pump_grey_green_up). Do not add a separate LED next to it.',
+    'Digital IO, a damper or a valve -> link the damper or valve object.',
+    'Integral values, or any value with a state list (systemvender, driftsmodus, valg) -> number_v3_60px_json_obj or number_v3_custom_json_obj.',
+    'Application Alarm (COM_ERR, COM_STAT) -> one V3_R_34px_circular_alarm_nrm near the panel title.',
+    'A reading with no unit and no state list is usually a constant or a tuning value: leave it off the panel rather than giving it a box.'
   ]
 };
 
 /**
- * How the house draws a panel background. Measured off the production
- * Ventilasjon template: an agent that has only this file would otherwise draw
- * flat bars, which is visibly not the same picture.
+ * Where things go. Numbers measured on a production Ventilasjon panel, because
+ * "copy a real export" is no help to an agent that was given none.
  */
+var IWDIE_LAYOUT = {
+  canvas: '1400 x 750. The drawing lives left of x 1145; the settings column owns x 1145-1400 and nothing from the drawing crosses into it.',
+  settings_column: 'Header bar at x 1150, 250 wide, 20 high. Value boxes at x 1175, captions at x 1245. Rows 25-30 apart, sections separated by a header bar. A section is a heading plus three to five rows.',
+  ventilation_anatomy: 'Extract run across the top flowing right to left, supply run below it flowing left to right, rotary exchanger across both, zone boxes at the right end of the runs, special extracts on a branch above the extract run, coil branches dropping off the supply run towards their zone.',
+  attach: 'Measured: a con_down value sits about 30 px above the duct centre line, a con_top value about 28 px below it, a flow box about 67 px above, an alarm bell within 40 px of the component it names, and a pump within 40 px of its coil.',
+  reading_order: 'Along the air path, not alphabetically: intake, damper, filter, exchanger, fan, coils, duct sensor, zone.'
+};
+
+/**
+ * Which parameters belong on a panel at all. A plant list is 200-800 rows; a
+ * panel is 80-120 objects, and picking is most of the work.
+ */
+var IWDIE_PARAMETER_SELECTION = {
+  belongs: 'Every sensor on the flow path, every motor with its status and its output, every alarm the plant can raise, the zone temperatures, and the handful of setpoints an operator actually changes.',
+  stays_off: 'Manual-override enables and their values, controller tuning (P-band, I-time, sequence breakpoints), commissioning constants (K-factors, signal min and max), and any reading already shown elsewhere on the panel.',
+  scale: 'Roughly a third of a plant list reaches the panel. If every row has a box, the selection was never made - say so rather than shipping it.',
+  say_what_you_left_out: 'Name the groups you left off in your answer, not in the file. The next person needs to know it was a decision.'
+};
+
+/** Assertions an agent can run over its own file before returning it. */
+var IWDIE_SELF_CHECK = [
+  'counts.single_objects, .containers and .graphics equal the array lengths.',
+  'Every object has all 17 fields of schema.object_entry, obj_id is in object_catalogue, and posLeft, posTop, posWidth and posHeight are integers.',
+  'Every object lies inside the canvas: posLeft + posWidth <= panel_width and posTop + posHeight <= panel_height.',
+  'No two value, setpoint, LED or bell objects overlap. A label may sit beside one, never on it.',
+  'Nothing except the settings column reaches past x 1145.',
+  'Every linked object carries a driver_id and a unit_id copied from one parameter row; every unlinked one carries driver_id "driver_id" and linked "false".',
+  'No two objects carry the same alias_text unless the same signal is deliberately shown twice - then say which, and why.',
+  'zIndex is a string of digits from the bands in z_index, not "default", on a panel whose other objects carry numbers.'
+];
+
+/** What goes wrong, from panels that had to be rebuilt. */
+var IWDIE_COMMON_MISTAKES = [
+  'Drawing ducts as flat coloured bars. A duct is a white casing with a thin coloured core (drawing_style); flat bars are the visible tell that a panel was authored blind.',
+  'Letting the drawing run under the settings column, or a zone box past x 1145.',
+  'Captions colliding: two value boxes 40 px apart print their captions on top of each other. Leave 60 px between boxes that carry a caption.',
+  'An alarm bell parked in open space instead of beside its component - the operator cannot tell what it belongs to.',
+  'A value box for a signal that has no parameter row. If nothing can be linked to it, it shows nothing: leave it out and say so.',
+  'Placing objects against a background that is about to be replaced. If the artwork moves, everything standing on it moves too.',
+  'Copying a driver_id or unit_id from another plant because the suffix looked familiar. Only a row in this plant parameter source proves a binding.'
+];
+
 var IWDIE_DRAWING_STYLE = {
   canvas: '1400 x 750. Leave x 1145-1400 for the settings column, and keep the drawing left of it.',
   duct: 'Not a solid bar: a WHITE casing 16 wide with round caps, and a 2 wide coloured core on the same centre line. Draw both from one path so they stay together.',
@@ -936,7 +1070,8 @@ var IWDIE_DRAWING_STYLE = {
   settings_band: '#CDD2D7 at about half opacity behind the settings column.',
   in_the_artwork: 'Ducts, exchanger, zone boxes, flow arrows, enclosures.',
   stays_objects: 'Fans, filters, dampers, coils, pumps, valves, values, setpoints, LEDs, alarm bells and every label — only an object can show a signal or be linked.',
-  never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills.'
+  never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills.',
+  how_common: 'Surveyed over 20 MENY plants: a background picture is on 82% of Oversikt panels, 63% of Energi, 50% of Ventilasjon and 20% of Maskin. Check what this plant has before deciding to draw one.'
 };
 
 /** Wrap an error list with a diagnosis and a paste-back prompt for the AI. */
@@ -4944,7 +5079,12 @@ if (typeof module !== 'undefined' && module.exports) {
     noteArtworkInAiGuide: iwdieNoteArtworkInAiGuide,
     countSvgShapes: iwdieCountSvgShapes,
     OBJECT_CATALOGUE: IWDIE_OBJECT_CATALOGUE,
+    SIGNAL_TO_OBJECT: IWDIE_SIGNAL_TO_OBJECT,
+    LAYOUT: IWDIE_LAYOUT,
+    PARAMETER_SELECTION: IWDIE_PARAMETER_SELECTION,
     DRAWING_STYLE: IWDIE_DRAWING_STYLE,
+    SELF_CHECK: IWDIE_SELF_CHECK,
+    COMMON_MISTAKES: IWDIE_COMMON_MISTAKES,
     backgroundInfo: iwdieBackgroundInfo,
     imageHeaderSize: iwdieImageHeaderSize,
     base64ByteLength: iwdieBase64ByteLength,

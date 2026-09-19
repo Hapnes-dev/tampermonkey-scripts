@@ -187,6 +187,36 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The guide tells an agent what to place, where, and which parameters to pick (v1.24.0)
+
+v1.22.0 made the file explain its *format*. It still could not answer the two questions an
+agent actually has — **which object does this signal want, and where does it go** — and
+answered both with "clone a real export", which is no help to an agent that was given
+none. Four blocks, each built from data rather than opinion:
+
+| Block | What it settles | Where it comes from |
+|---|---|---|
+| `object_catalogue` | every legal `obj_id`, grouped by role, with its palette size and how often production uses it | the designer's own live palette dump (820 entries) narrowed to the 72 ids that appear in the 22-panel usage census and the real Ventilasjon panels |
+| `signal_to_object` | which object a parameter row wants, keyed on `Application`, `Access`, `Type` and `Eng unit` | cross-tabulated over 202 linked objects in two production Ventilasjon panels |
+| `layout` | where it goes, in pixels: settings column at x 1150/1175/1245, a `con_down` value ~30 px above the duct centre line, `con_top` ~28 px below, a flow box ~67 px above, a bell within 40 px of its component | measured on a production panel |
+| `parameter_selection` | which rows belong on a panel at all, and which stay in the list | the 272-row plant list that became a 122-object panel |
+
+`self_check` adds the assertions an agent can run over its own file before returning it
+(counts, canvas bounds, 17 fields, no overlaps among value and icon objects, nothing past
+x 1145, no invented bindings), and `common_mistakes` names what went wrong on panels that
+had to be rebuilt. `drawing_style` gained the survey behind the background question: over
+20 MENY plants a background picture is on 82 % of Oversikt panels, 63 % of Energi, 50 % of
+Ventilasjon and 20 % of Maskin — so "does this plant have one" is a question to ask, not a
+rule to assume either way.
+
+The guide grew from 36 kB to 44 kB. On an export that is usually 100-800 kB, and it
+replaces the internal briefing an outside agent never had.
+
+**Sizes in the 1.23.0 catalogue were wrong.** They were taken from how production stretches
+an object, not from the palette: `number_v3_heater_3_way` is 38x132, not 40x210, and
+`number_v3_el_heater` 38x65, not 40x85. The generated catalogue carries the palette default
+and says plainly that production stretches headers, banners and duct pieces.
+
 ### Authored artwork round-trips, and the guide says how to draw (v1.23.0)
 
 Three changes, all of them from building a Ventilasjon panel for plant 2313 against the
