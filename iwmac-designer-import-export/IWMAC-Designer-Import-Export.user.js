@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.22.0
+// @version      1.23.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.22.0';
+var IWDIE_VERSION = '1.23.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -241,7 +241,7 @@ var IWDIE_PANEL_SCHEMA = [
   { field: 'containers', type: 'array of containers', required: 'yes', meaning: 'Grouped objects (table rows, room cards). [] on most panels. See schema.container.', example: '[]' },
   { field: 'graphics', type: 'array', required: 'yes', meaning: 'Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel.', example: '[]' },
   { field: 'converted', type: 'string', required: 'no', allowed: '"true"', meaning: 'Present as "true" when a background picture is embedded in image_data.', example: 'true' },
-  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'Optional AI-authored background: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert converts it into image_data. Never for a Ventilasjon panel, which is objects-only, and never as a replacement for a supplied raster.', example: '<svg viewBox="0 0 1400 750" ...>' }
+  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert converts it into image_data, and Export writes it back when the panel still carries it, so the drawing survives the round trip as editable vector. Author one when the plant has no background picture for this panel; never as a replacement for a supplied raster, which is copied verbatim. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
 ];
 
 /** One row per top-level key of the export file, in file order. */
@@ -566,7 +566,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       'Copy the geometry of a real export of the same panel type: positions, sizes, zIndex and object vocabulary. Replace only the plant-specific content. A layout invented from the catalogue alone looks nothing like production.',
       'Set panel.plant_id and source_plant_id to the target plant number when the file is for one plant, or "" for a reusable template; set generator and panel.saved_by to your agent name.',
       'Link from the parameter source when it is supplied (linking); otherwise leave every object unlinked with a descriptive alias_text and say so in your answer.',
-      'Ventilasjon (360.NNN) panels are objects on the blank sidebar background: never draw ducts or equipment into image_svg. Maskin, Oversikt and curve panels own a raster background that is copied, never redrawn.',
+      'A production panel sits on a drawing. Copy the plant\'s own background when it has one — Maskin, Oversikt, curve and most Ventilasjon panels do, and that raster is copied verbatim, never redrawn. When the plant has none, author one in image_svg to the house construction in drawing_style: ducts, the rotary exchanger and the zone boxes belong in the artwork, while fans, filters, dampers, coils, pumps, values and alarms stay objects, because only an object can show a signal.',
       'Leave containers and graphics as [] unless the panel type is container-built (list panels, room-control tables); then clone the container structure from a reference export.'
     ],
     validate_before_returning: [
@@ -595,6 +595,8 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       container: iwdieExampleContainer(),
       minimal_file: iwdieExampleMinimalFile()
     },
+    object_catalogue: IWDIE_OBJECT_CATALOGUE,
+    drawing_style: IWDIE_DRAWING_STYLE,
     object_fields: IWDIE_OBJECT_FIELDS,
     constant_fields: constantFields || null,
     constant_fields_note: constantFields
@@ -756,6 +758,31 @@ function iwdieConstantObjectFields(objects) {
  * for structure instead (451 paths, 141 kB on the same panel), which is small
  * enough to read and is the whole reason the field exists.
  */
+/** Shapes in an SVG, for a count a reader can compare against an autotrace. */
+function iwdieCountSvgShapes(svg) {
+  return (String(svg || '').match(/<(path|rect|circle|ellipse|line|polyline|polygon|use)\b/g) || []).length;
+}
+
+/**
+ * The panel's own artwork came back with it (SVG background). Say so, and drop
+ * the trace description: the two never both apply, and an agent told to read a
+ * "coarse trace" would ignore the pristine drawing sitting in panel.image_svg.
+ */
+function iwdieNoteArtworkInAiGuide(env, svg) {
+  if (!env || typeof env !== 'object') return env;
+  var guide = env.ai_guide;
+  if (!guide || typeof guide !== 'object') return env;
+  delete guide.structure;
+  guide.artwork = {
+    field: 'panel.image_svg',
+    shapes: iwdieCountSvgShapes(svg),
+    what: 'The background of this panel is authored vector artwork, returned verbatim — the same markup that drew it, not a trace of the pixels.',
+    use: 'Edit it as SVG when the drawing must change: move a duct, add a branch, resize a zone box. Keep the viewBox and the panel size. Insert re-applies it, so the drawing stays editable for the next round.',
+    also: 'image_data holds the same artwork as a data URL and stays the rendered background. Move an object only together with the part of the drawing it sits on.'
+  };
+  return env;
+}
+
 function iwdieNoteTraceInAiGuide(env) {
   if (!env || typeof env !== 'object') return env;
   var guide = env.ai_guide;
@@ -764,6 +791,7 @@ function iwdieNoteTraceInAiGuide(env) {
   // both directions: a file that lost its trace must lose the description too,
   // or the guide sends a reader looking for a field that is not there
   if (!trace) { delete guide.structure; return env; }
+  delete guide.artwork;
   guide.structure = {
     field: 'image_svg_trace',
     paths: (trace.match(/<path/g) || []).length,
@@ -827,6 +855,89 @@ function iwdieParsePayload(parsed) {
 var IWDIE_OBJECT_FIELDS = ['obj_id', 'name', 'id', 'posWidth', 'posHeight', 'posLeft', 'posTop',
   'zIndex', 'tag_text', 'linked', 'link_name', 'link_tag', 'sub_group', 'driver_id',
   'unit_id', 'unit_ref', 'alias_text'];
+
+/**
+ * The palette an agent may draw from, with each id's natural size. An unknown
+ * obj_id renders broken, and until 1.23.0 the only list of legal ids lived in
+ * the internal briefing — so an agent given nothing but an export could copy
+ * the ids it saw and no more. Sizes are the catalogue defaults; stretch a
+ * header or a banner, but leave a symbol at its own size.
+ */
+var IWDIE_OBJECT_CATALOGUE = {
+  how_to_use: 'Pick ids from here. Never invent one. Text goes in tag_text, the signal in alias_text, except on equipment where tag_text is the short name (JV401) and alias_text the description.',
+  text: [
+    'number_v3_header_grey75 260x20 - section header bar',
+    'number_v3_label_12px_bold - panel title',
+    'number_v3_label_11px_bold / _11px_norm - sub heading, row label',
+    'number_v3_label_10px_bold / _10px_norm - small bold, small normal',
+    'number_v3_label_8px_norm - footnote; every label is height 20, any width'
+  ],
+  values: [
+    'number_v3_value_only 50x20 - bare number, the workhorse',
+    'number_v3_40px_no_conn_no_tag 42x22 / _60px_no_conn_no_tag 62x22 - framed value',
+    'number_v3_60px_dark_no_conn_no_tag 62x22 - dark box, a setpoint',
+    'number_v3_R_40px_no_conn_tag_up_left 42x22 / _R_45px_no_conn_tag_up_left 46x22 - caption above left, room sensors',
+    'number_v3_R_45px_con_down / _con_top 46x38 - value with a connector to the duct above or below',
+    'number_v3_R_45px_con_left / _con_right 62x22 - connector to the side',
+    'number_v3_R_60px_no_conn_tag_up_center 62x22 - caption centred above',
+    'number_v3_R_45px_no_conn_bott_center 46x22 - caption below',
+    'number_v3_40px_dark_con_down 41x26 - dark reference value on a duct',
+    'number_v3_60px_json_obj / number_v3_custom_json_obj 60x20 - enum or mode box',
+    'number_v3_rc_temp_48 49x21 - room temperature'
+  ],
+  status: [
+    'V3_R_34px_circular_alarm_nrm 34x34 - alarm bell, next to its component',
+    'V3_ok_alarm_nrm 61x21 - OK/ALARM banner',
+    'V3_led_13px_circ_grey_green 13x13 - run LED',
+    'V3_led_16px_circ_grey_red / _grey_yellow 16x16 - A-alarm, B-alarm',
+    'V3_led_18px_circ_grey_red 18x18 - smoke/fire',
+    'V3_R_28px_circular_cooling_nrm / _defrost_nrm 28x28 - case cooling, defrost',
+    'V3_akpc_782A_suct / _772_781_781A_783_contr / _783_781A_782A_cond 81x21 - Danfoss strips'
+  ],
+  equipment: [
+    'V3_58px_fan_left_nrm / V3_58px_fan_right_nrm 59x59 - fan, facing the flow',
+    'V3_21px_single_pump_grey_green_left / _up / _down 21x21 - pump',
+    'number_v3_filter_only 27x70 - filter; numberV3_filter_with_diff_press 90x83 - filter with its dP value',
+    'V3_horis_damper_flow-left_nrm 36x26 / V3_vert_damper_flow-up_inv 26x36 - damper',
+    'number_v3_dummy_resirc_damp_hor 42x42 / _vert 70x40 - recirculation damper',
+    'number_v3_heater_3_way 40x210 - water coil with 3-way valve; number_v3_el_heater 40x85 - electric heater',
+    'number_v3_cooler_2-way 38x132 - cooling coil; number_360_vb 37x70 - compact water battery',
+    'number_v3_dummy_3way_motor_right 30x19 / v3_3w_valve_right_down_nrm 22x18 - valve motors',
+    'numberV3_outside_temp 79x50 - outdoor sensor on a wall'
+  ],
+  ducts_and_rooms: [
+    'number_v3_fresh_pipe_horisontal / _vertical 50x18, 18x50 - outdoor air',
+    'number_v3_supply_pipe_horisontal / _vertical - supply air',
+    'number_v3_exhaust_pipe_horisontal / _vertical - extract and exhaust',
+    'number_v3_supply_connector_down / number_v3_exhaust_connector_up 18x50 - duct corners',
+    'number_v3_dummy_21x17_Arrow_Left / _Right 21x17 - flow direction',
+    'number_360_vg_rot 60x343 - rotary heat exchanger across both runs',
+    'number_360_room 100x339 - room symbol at the end of a run',
+    'Stretch any of these to the run you need. They are dummies: never linked.'
+  ],
+  lists: [
+    'previous_page_tekn_box_no 1570x57 - banner with back navigation',
+    'number_v3_label_12px_bold_white - white title on the banner',
+    'number_v3_header_grey50 / number_v3_header_appgrey - stretched stripe, divider'
+  ]
+};
+
+/**
+ * How the house draws a panel background. Measured off the production
+ * Ventilasjon template: an agent that has only this file would otherwise draw
+ * flat bars, which is visibly not the same picture.
+ */
+var IWDIE_DRAWING_STYLE = {
+  canvas: '1400 x 750. Leave x 1145-1400 for the settings column, and keep the drawing left of it.',
+  duct: 'Not a solid bar: a WHITE casing 16 wide with round caps, and a 2 wide coloured core on the same centre line. Draw both from one path so they stay together.',
+  duct_colours: { avtrekk: '#F3C96A', tilluft: '#F79E7A', uteluft: '#B0E0EF' },
+  zone_box: 'Rounded rectangle, fill #CDD2D7, white border 5 wide, rx 16. One per zone at the end of the runs.',
+  exchanger: 'Rounded pill, fill #CED1D2 with a #A6A6A9 hairline, a white inner pill 3 wide inset 8, and a grey triangle at each end. Place it across both runs.',
+  settings_band: '#CDD2D7 at about half opacity behind the settings column.',
+  in_the_artwork: 'Ducts, exchanger, zone boxes, flow arrows, enclosures.',
+  stays_objects: 'Fans, filters, dampers, coils, pumps, valves, values, setpoints, LEDs, alarm bells and every label — only an object can show a signal or be linked.',
+  never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills.'
+};
 
 /** Wrap an error list with a diagnosis and a paste-back prompt for the AI. */
 function iwdieReject(parsed, errors) {
@@ -1018,7 +1129,7 @@ function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
   L.push('- "counts" must equal the real array lengths.');
   L.push('- The canvas is 1400 x 750. Objects outside it are not visible.');
   L.push('- Every file the userscript exports carries an "ai_guide" with the complete field-by-field contract, the linking rules and worked examples — read it and follow it. You may keep or omit "ai_guide" and "summary" in your answer; never edit them.');
-  L.push('- A 360.001 Ventilasjon panel is objects-only: no image_svg, no image_data, no drawn background.');
+  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, else author it in "image_svg" to the construction in ai_guide.drawing_style. Ducts, exchanger and zone boxes go in the artwork; fans, filters, dampers, coils, pumps, values and alarms stay objects.');
   L.push('');
   L.push('Return the corrected JSON file and nothing else.');
   return L.join('\n');
@@ -1556,6 +1667,7 @@ function iwdiePrepareExportTrace(env, deps) {
   var bg = String((env.image_data != null ? env.image_data : panel.image_data) || '');
   delete env.image_svg_trace;
   delete panel.image_svg_trace;
+  delete panel.image_svg;         // re-export must not carry a stale one
   iwdieNoteTraceInAiGuide(env);   // the guide follows the file, not the intent
   if (!/^data:image\//i.test(bg)) return Promise.resolve({ env: env, traceNote: '' });
 
@@ -1570,9 +1682,12 @@ function iwdiePrepareExportTrace(env, deps) {
       catch (error) { throw new Error('Embedded SVG background could not be decoded: ' + error); }
       svg = iwdieNormalizeTraceSvg(svg);
       if (!svg) throw new Error('Embedded SVG background did not contain valid SVG.');
-      env.image_svg_trace = svg;
-      iwdieNoteTraceInAiGuide(env);
-      return { env: env, traceNote: ' + vector structure' };
+      // The background IS the artwork here, not a trace of one. Hand it back as
+      // panel.image_svg — the field Insert reads — so the drawing round-trips as
+      // editable vector instead of coming back as an autotrace of its own pixels.
+      panel.image_svg = svg;
+      iwdieNoteArtworkInAiGuide(env, svg);
+      return { env: env, traceNote: ' + editable artwork (' + iwdieCountSvgShapes(svg) + ' shapes)' };
     });
   }
 
@@ -4148,7 +4263,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!iwdieDocHasBackground(doc)) {
           showErrors([
             'This file carries no background image, so “Background picture only” has nothing to apply.',
-            'Either the panel it was exported from had no artwork, or the file is objects-only by design (a 360.001 Ventilasjon panel is). Pick a PNG/JPG in step 1 to use as the background, or untick the box to insert the file’s objects instead.'
+            'Either the panel it was exported from had no artwork, or the file carries objects only. Pick a PNG/JPG in step 1 to use as the background, or untick the box to insert the file’s objects instead.'
           ], v.warnings);
           return;
         }
@@ -4826,6 +4941,10 @@ if (typeof module !== 'undefined' && module.exports) {
     isFlatObject: iwdieIsFlatObject,
     constantObjectFields: iwdieConstantObjectFields,
     noteTraceInAiGuide: iwdieNoteTraceInAiGuide,
+    noteArtworkInAiGuide: iwdieNoteArtworkInAiGuide,
+    countSvgShapes: iwdieCountSvgShapes,
+    OBJECT_CATALOGUE: IWDIE_OBJECT_CATALOGUE,
+    DRAWING_STYLE: IWDIE_DRAWING_STYLE,
     backgroundInfo: iwdieBackgroundInfo,
     imageHeaderSize: iwdieImageHeaderSize,
     base64ByteLength: iwdieBase64ByteLength,

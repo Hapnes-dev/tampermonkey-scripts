@@ -176,6 +176,8 @@ rejection now names the box as the way through.
     // plant_id, panel_name, panel_width, panel_height, org_image_name, image_name,
     // saved_by, single_objects[], containers[], graphics[]
     // + converted:"true" when a background is embedded
+    // + image_svg when that background is authored artwork (v1.23.0) — the markup
+    //   itself, returned so the drawing stays editable across round trips
   },
   "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
   "image_svg_trace": "<svg …>",              // v1.17.0: last in the file
@@ -184,6 +186,38 @@ rejection now names the box as the way through.
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
+
+### Authored artwork round-trips, and the guide says how to draw (v1.23.0)
+
+Three changes, all of them from building a Ventilasjon panel for plant 2313 against the
+system drawing and watching where the file left an agent stranded.
+
+**`panel.image_svg` comes back out.** Insert has converted AI-authored SVG into the
+background since v1.2.0 and then dropped the markup, so the next export could only offer
+the raster plus an autotrace of it — on a real panel, 3.8 kB of named paths came back as
+1002 traced paths and 203 kB. Export now returns the markup verbatim as `panel.image_svg`
+whenever the background still is that SVG, and writes no `image_svg_trace` beside it: the
+artwork is the artwork, not a trace of itself. The download note says *editable artwork
+(N shapes)*. A raster background is unchanged — trace as before — and a stale `image_svg`
+on a raster panel is dropped, so re-export is idempotent.
+
+**The "Ventilasjon is objects-only" rule is gone.** `ai_guide` asserted in three places
+that a 360.NNN panel carries no background and that ducts must never be drawn into
+`image_svg`. Production disagrees: the house Ventilasjon panels sit on
+`<plant>--template-Ventilasjon.png`, and an agent that followed the guide produced a bare
+canvas that was rejected on sight. The guide now says what the house does — copy the
+plant's own background when it has one, author one when it does not, and keep ducts,
+exchanger and zone boxes in the artwork while fans, filters, dampers, coils, pumps,
+values and alarms stay objects, because only an object can carry a signal.
+
+**`ai_guide.object_catalogue` and `ai_guide.drawing_style`.** The legal `obj_id` list
+lived only in the internal briefing, so an agent holding one export could copy the ids it
+saw and nothing else; the catalogue now ships in the file, grouped by role with each id's
+natural size. `drawing_style` carries what no document stated and had to be measured off
+the template: a duct is a **white casing 16 wide with a 2 wide coloured core**
+(`#F3C96A` avtrekk, `#F79E7A` tilluft, `#B0E0EF` uteluft), a zone box is `#CDD2D7` with a
+5 wide white border, the exchanger a grey pill with a white inner pill. Drawing flat
+coloured bars instead is the visible tell that a panel was authored without it.
 
 ### The file explains itself (v1.22.0)
 
