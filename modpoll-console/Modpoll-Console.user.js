@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.20.0
+// @version      1.21.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.20.0';
+    const VERSION = '1.21.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -927,7 +927,10 @@
      * that raises an exception both exist, so the answer is reported as observed
      * rather than interpreted.
      */
-    async function scanDevice(input) {
+    async function scanDevice(input, deep, onProgress) {
+        // A new scan is a new action: a Stop that ended the last one must not end
+        // this one before it starts.
+        abortRequested = false;
         const spec = normaliseSpec(Object.assign({ count: 1 }, input, { format: '' }));
         const TABLES = ['4', '3', '1', '0'];
         // Every invocation costs about 190 ms of process start, so the probe list
@@ -975,7 +978,25 @@
                 refused: REFS.filter(ref => first[table + ':' + ref] && !first[table + ':' + ref].answered).slice(0, 4),
             };
         }
-        return { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
+        const report = { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
+
+        // Then read each answering table until its answers stop, so the scan ends
+        // with the registers themselves rather than only their starting point.
+        if (deep) {
+            report.sweep = {};
+            report.values = [];
+            for (const table of TABLES) {
+                if (!tables[table].answers || abortRequested) continue;
+                const swept = await sweepForValues(spec, table, tables[table].firstReadable, onProgress);
+                report.sweep[table] = {
+                    answered: swept.answered, nonZero: swept.nonZero,
+                    first: swept.first, last: swept.last,
+                    ranges: swept.ranges, withValues: swept.withValues,
+                };
+                for (const value of swept.values) report.values.push(Object.assign({ table }, value));
+            }
+        }
+        return report;
     }
 
     /*
@@ -1092,6 +1113,56 @@
         if (rows.length > shown.length) tail.push('(' + (rows.length - shown.length) + ' further rows not shown)');
 
         return head.join('\n') + '\n\n' + body.join('\n') + '\n\n' + tail.join('\n');
+    }
+
+    /*
+     * Where does this device actually keep anything? Probing which tables answer
+     * says where to start; this reads onwards until the answers run out. Blocks
+     * that come back empty are the signal to stop — three in a row means the map
+     * has ended, which is cheaper than reading to some arbitrary ceiling and far
+     * cheaper than isolating every refused reference on the way.
+     */
+    const SWEEP_CEILING = 6000;
+    const SWEEP_MAX_BLOCKS = 80;
+    const SWEEP_EMPTY_STOP = 3;
+
+    async function sweepForValues(spec, table, from, onProgress) {
+        const found = [];
+        let ref = Math.max(1, from);
+        let emptyRuns = 0;
+        let blocks = 0;
+        let refused = 0;
+        while (ref <= SWEEP_CEILING && blocks < SWEEP_MAX_BLOCKS && emptyRuns < SWEEP_EMPTY_STOP && !abortRequested) {
+            const count = Math.min(MAX_COUNT * CHAIN_MAX, SWEEP_CEILING - ref + 1);
+            if (onProgress) onProgress({ table, ref, count, found: found.length });
+            const result = await readRegisters(Object.assign({}, spec, {
+                table, format: '', base: 'printed', start: ref, count, recover: false,
+            }));
+            if (result.values.length) {
+                emptyRuns = 0;
+                for (const value of result.values) found.push(value);
+            } else {
+                emptyRuns++;
+                refused += result.diagnostics.some(d => /exception/i.test(d.text)) ? 1 : 0;
+            }
+            if (result.diagnostics.some(d => d.level === 'fatal')) break;
+            blocks += Math.ceil(count / MAX_COUNT);
+            ref += count;
+        }
+        const refs = found.map(v => v.i);
+        const nonZero = found.filter(v => v.v !== 0);
+        return {
+            table,
+            answered: found.length,
+            nonZero: nonZero.length,
+            first: refs.length ? Math.min.apply(null, refs) : null,
+            last: refs.length ? Math.max.apply(null, refs) : null,
+            ranges: asRanges(refs),
+            withValues: asRanges(nonZero.map(v => v.i)),
+            values: found,
+            refusedBlocks: refused,
+            stoppedAt: ref,
+        };
     }
 
     /** The same result, shrunk for a caller that pays by the token. */
@@ -2342,6 +2413,62 @@
         ]));
     }
 
+    const SCAN_COLUMNS = [
+        { label: 'table', width: '13%', title: 'Which table the register lives in' },
+        { label: 'ref', width: '8%', title: "modpoll's 1-based reference" },
+        { label: 'addr', width: '8%', title: 'Protocol address' },
+        { label: 'name', width: '33%', align: 'left', title: 'From the plant database or the loaded list' },
+        { label: 'value', width: '10%', title: 'What the register held during the scan' },
+        { label: 'shown', width: '12%', title: 'What the plant makes of it' },
+        { label: 'unit', width: '7%' },
+        { label: 'where from', width: '9%', align: 'left' },
+    ];
+
+    /** Everything a scan found, most interesting first: the registers holding data. */
+    function renderScan(report) {
+        setGridColumns(SCAN_COLUMNS);
+        ui.gridBody.textContent = '';
+        const values = (report.values || []).slice();
+        if (!values.length) {
+            renderEmptyGrid('The scan found no registers holding values');
+            ui.summary.textContent = '';
+            return;
+        }
+        const onlyNonZero = ui.filterZero.checked;
+        const rows = values
+            .map(v => Object.assign({ table: v.table }, enrichValue(v, v.table, '')))
+            .filter(r => !onlyNonZero || r.raw !== 0)
+            .sort((a, b) => (a.raw === 0) - (b.raw === 0) || a.table.localeCompare(b.table) || a.ref - b.ref);
+        const shown = rows.slice(0, 2000);
+        const frag = document.createDocumentFragment();
+        for (const r of shown) {
+            const tableName = (REGISTER_TABLES.find(t => t.value === r.table) || {}).label || r.table;
+            const cells = [
+                { text: tableName },
+                { text: String(r.ref) },
+                { text: String(r.addr) },
+                { text: r.name || '', align: 'left' },
+                { text: String(r.raw), className: r.raw === 0 ? 'zero' : '' },
+                { text: r.shown === '' || r.shown === null ? '' : String(r.shown) },
+                { text: r.unit || '' },
+                { text: r.source || '', align: 'left' },
+            ];
+            const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
+                cells.map(c => el('td', {
+                    textContent: c.text, className: c.className || '',
+                    style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
+                })));
+            tr.addEventListener('click', () => toggleDetailRow(tr, r.raw,
+                pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref)));
+            frag.appendChild(tr);
+        }
+        ui.gridBody.appendChild(frag);
+        const nonZero = rows.filter(r => r.raw !== 0).length;
+        const named = rows.filter(r => r.name).length;
+        ui.summary.textContent = rows.length + ' registers answered, ' + nonZero + ' holding a value, ' +
+            named + ' named' + (rows.length > shown.length ? ' — showing the first 2000' : '');
+    }
+
     /** Matches in the grid, each one a click away from being polled. */
     function renderFindResults(matches, query) {
         setGridColumns(FIND_COLUMNS);
@@ -2951,23 +3078,38 @@
                 log('modpoll ' + (info.version || 'version unknown') + ' — ' + (info.hasTcpPortFlag ? '-p carries the TCP port in tcp mode' : 'no TCP port flag found in -h'), 'ok');
             } catch (e) { log('ERROR: ' + e.message, 'err'); }
         });
-        const scanBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Scan device', title: 'Which tables answer, and where the readable range starts' });
+        const scanBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Scan device', title: 'Find every register this device answers with, table by table' });
         scanBtn.addEventListener('click', async () => {
+            if (termState.busy) return;
             scanBtn.disabled = true;
+            termState.busy = true;
+            abortRequested = false;
+            ui.stop.disabled = false;
+            setDot('warn');
             try {
-                log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + '…');
-                const report = await scanDevice(readForm());
+                log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — Stop ends it early');
+                const report = await scanDevice(readForm(), true,
+                    p => log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
+                        ' from ' + p.ref + ' (' + p.found + ' found so far)'));
+                lastScan = report;
                 for (const table of Object.keys(report.tables)) {
                     const t = report.tables[table];
                     const name = (REGISTER_TABLES.find(r => r.value === table) || {}).label || table;
-                    log(t.answers
-                        ? name + ': answers from ' + t.firstReadable + ' (' + t.sample.join(', ') + ')'
-                        : name + ': no answer (' + (t.refused.length ? 'refused ' + t.refused.join(', ') : 'silent') + ')',
-                        t.answers ? 'ok' : '');
+                    const swept = report.sweep && report.sweep[table];
+                    if (!t.answers) { log(name + ': no answer'); continue; }
+                    log(name + ': answers from ' + t.firstReadable +
+                        (swept ? ' — ' + swept.answered + ' registers, ' + swept.nonZero + ' holding a value' +
+                            (swept.first !== null ? ', ' + swept.first + '–' + swept.last : '') : ''), 'ok');
+                    if (swept && swept.withValues) log('    with values: ' + swept.withValues);
                 }
-                lastScan = report;
-            } catch (e) { log('ERROR: ' + e.message, 'err'); }
-            finally { scanBtn.disabled = false; }
+                renderScan(report);
+                setDot('ok');
+            } catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); }
+            finally {
+                scanBtn.disabled = false;
+                termState.busy = false;
+                ui.stop.disabled = !repeatTimer;
+            }
         });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
@@ -3266,7 +3408,17 @@
             return { ok: parsed.values.length > 0 && !parsed.fatal, command, values: parsed.values, diagnostics: parsed.diagnostics, raw };
         },
         probe(force) { return probeBinary(!!force); },
-        scan(spec) { return scanDevice(spec).then(report => { lastScan = report; return report; }); },
+        /**
+         * Which tables answer and where they start; with deep, also every register
+         * they answer with, read on until the answers stop.
+         */
+        scan(spec, deep) {
+            return scanDevice(spec, deep !== false).then(report => {
+                lastScan = report;
+                try { renderScan(report); } catch (e) { /* panel not built */ }
+                return report;
+            });
+        },
         /**
          * Name registers from the plant's own parameter list for a unit — alias
          * text, engineering unit, group, the value the plant currently shows, and
@@ -3298,6 +3450,7 @@
         /** Poll every point the loaded list declares and judge the answers. */
         async verify(spec) {
             if (!pointList) throw new Error('No point list loaded — call loadList first');
+            abortRequested = false;
             const verification = await verifyPointList(pointList, normaliseSpec(Object.assign(readForm(), spec || {})));
             lastVerification = verification;
             try { renderVerification(verification); ui.reportBtn.disabled = false; ui.verifyJsonBtn.disabled = false; } catch (e) { /* panel not built */ }
