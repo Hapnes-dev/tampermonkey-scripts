@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.10.1
+// @version      1.10.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.10.1';
+    const VERSION = '1.10.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1515,7 +1515,9 @@
     #${PANEL_ID} table.mpc-grid td.bad{color:#c0392b}
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable{cursor:pointer}
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable:hover td{background:#eef4fb}
-    #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#f4f7fb;text-align:left;padding:8px 10px}
+    /* The grid's own cells are nowrap, and white-space inherits — without this the
+       detail view cannot wrap a single line of it. */
+    #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#f4f7fb;text-align:left;padding:8px 10px;white-space:normal}
     #${PANEL_ID} .mpc-detailbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 22px}
     /* min-width:0 on both, or a long value refuses to wrap and runs over the
        column beside it. */
