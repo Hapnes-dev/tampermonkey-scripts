@@ -29,8 +29,50 @@ rebuilt.
   the protocol address, the raw value, hex, the int16 reading and ×0.1 / ×0.01
   scalings. modpoll's error lines become one diagnostic line each instead of a
   wall of repeated text.
-- **Exports.** *Download JSON* writes the full result; *Copy for AI* puts a
-  compact form on the clipboard (values as a bare array, addresses as two anchors).
+- **Recovers what a refused block still holds.** Modbus refuses a read whole, so
+  one unmapped register inside a 99-register block returns nothing. The block is
+  halved until the readable part comes back, and the references the device will
+  not serve are listed as `result.unreadable`. Capped at 32 attempts, since every
+  refusal is paid for on the wire; `read({recover: false})` turns it off.
+- **Scans a device.** *Scan device* asks all four tables where they start
+  answering — doubling, then halving back — and reports the first readable
+  reference in both bases. Useful before blaming a point list.
+- **Exports.** *Save JSON* writes the full result; *Copy for AI* puts a compact
+  form on the clipboard (values as a bare array, addresses as two anchors).
+
+## What a deep dive on plant 2313 established
+
+Measured against the VENT controller at 192.168.10.100, with the 2002-2004
+FieldTalk build the plants carry.
+
+| Measurement | Number |
+|---|---|
+| One poll, on its own | ~170 ms |
+| One poll, chained with others | ~56 ms |
+| A **refused** poll (exception) | ~630 ms — the device is slow to say no |
+| 272 registers, three blocks | ~300 ms total |
+
+Those numbers shape the tool: blocks go out four to a chained command line, and a
+poll returns as soon as the values asked for have arrived rather than waiting out
+a settle window. The same numbers explain why a device scan takes seconds — it is
+paying for refusals, not round trips.
+
+The build also turned out to support more than the memo said:
+
+- **32-bit formats exist**: `-t 4:int`, `4:float`, `4:mod`, `4:hex`, and the same
+  on table 3. `-c` still counts *values*, and a 32-bit value spends two registers.
+- **`-i` and `-f` are the endianness flags** — big-endian integers and floats.
+- **There is no `-0` flag in this build.** It answers "Unrecognized option", so
+  nothing here can switch to zero-based addressing; `-r` is 1-based, always.
+- `-r 0` is rejected outright ("Invalid reference parameter!"), and `-c 100` is
+  rejected too, although `-h` claims 1-100.
+- Two of its messages are misspelled — "Unknwon error!" (on TCP, usually a slave
+  the gateway does not serve) and "Progam stopped with exit code".
+
+And one thing about the device rather than the binary: **it refuses printed
+reference 1 — protocol address 0 — in every table**, while answering 0 for
+unmapped references higher up. A block containing that one reference was refused
+whole, which is why registers 1-20 first read as silence.
 
 ## The three traps it handles for you
 
@@ -59,8 +101,12 @@ panel can set a register.
 await __modpoll.devices();                 // units from the plant database
 await __modpoll.read({                     // full result
   host: '10.0.0.5', slave: 1, table: '4',
-  start: 430, count: 272, base: 'printed'  // or base: 'protocol'
+  start: 430, count: 272, base: 'printed', // or base: 'protocol'
+  format: 'float',                         // '' 16-bit | int | float | mod | hex
+  bigEndian: true,                         // adds -i (int) or -f (float)
+  recover: true                            // halve a refused block, default on
 });
+await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // which tables answer
 await __modpoll.readCompact(spec);         // same, values as a bare array
 await __modpoll.raw('c:\\iwmac\\bin\\modpoll.exe -m tcp -a 1 -t 4 -r 430 -c 99 -1 10.0.0.5');
 await __modpoll.probe();                   // what this plant's modpoll -h reports
@@ -108,11 +154,18 @@ Both cost a version to find, and both are invisible from the code alone.
 
 ## Verified against
 
-Plant 2313, the VENT controller at 192.168.10.100 over Modbus TCP: holding
-registers 430-449 read back live, a 120-register sweep split into `-r 430 -c 99`
-plus `-r 529 -c 21` and came back contiguous, and registers 1-20 — which that
-controller does not map — surfaced the device's own "Illegal Data Address
-exception" rather than an empty grid.
+Plant 2313, the VENT controller at 192.168.10.100 over Modbus TCP:
+
+- holding registers 430-449 read back live, values matching the plant (432 = 190,
+  that is 19,0 °C at ×0,1; 442 = −50, 0xFFCE);
+- a 272-register sweep returned all 272, contiguous, in about 300 ms across three
+  chained blocks;
+- `-t 4:hex`, `4:float` and `4:int` all parsed, with 32-bit values stepping two
+  references at a time;
+- slave 2, which the gateway does not serve, produced one diagnostic rather than
+  a wait;
+- reading references 1-20 returned 19 values and named printed reference 1 as the
+  only one the device refuses.
 
 ## Related
 
