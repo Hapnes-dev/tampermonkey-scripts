@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.10.0
+// @version      1.10.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.10.0';
+    const VERSION = '1.10.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1516,10 +1516,12 @@
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable{cursor:pointer}
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable:hover td{background:#eef4fb}
     #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#f4f7fb;text-align:left;padding:8px 10px}
-    #${PANEL_ID} .mpc-detailbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:3px 18px}
-    #${PANEL_ID} .mpc-kv{display:flex;gap:8px;font:11.5px Consolas,ui-monospace,monospace}
-    #${PANEL_ID} .mpc-kv .mpc-k{color:#6a7180;min-width:118px;flex:0 0 auto}
-    #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;word-break:break-word}
+    #${PANEL_ID} .mpc-detailbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 22px}
+    /* min-width:0 on both, or a long value refuses to wrap and runs over the
+       column beside it. */
+    #${PANEL_ID} .mpc-kv{display:flex;gap:8px;align-items:baseline;min-width:0;font:11.5px/1.5 Consolas,ui-monospace,monospace}
+    #${PANEL_ID} .mpc-kv .mpc-k{color:#6a7180;width:118px;flex:0 0 118px}
+    #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;min-width:0;overflow-wrap:anywhere}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
     #${PANEL_ID} .mpc-log{grid-column:span 12;max-height:120px;overflow-y:auto;overflow-x:hidden;
