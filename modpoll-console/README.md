@@ -150,7 +150,7 @@ __modpoll.loadList(projectJson);          // a modbusgen project: points and sys
 await __modpoll.verify();                 // poll every point in it and judge the answers
 __modpoll.report();                       // [{name, text}] markdown parts, ready to upload
 await __modpoll.readCompact(spec);         // same, values as a bare array
-await __modpoll.raw('c:\\iwmac\\bin\\modpoll.exe -m tcp -a 1 -t 4 -r 430 -c 99 -1 10.0.0.5');
+await __modpoll.raw('modpoll -1 -m tcp -a 1 -t 4 -r 430 -c 99 10.0.0.5');
 await __modpoll.probe();                   // what this plant's modpoll -h reports
 __modpoll.last();                          // last full result
 __modpoll.stop();                          // abort a running sweep
@@ -189,8 +189,10 @@ Both cost a version to find, and both are invisible from the code alone.
 - Plant Term must be reachable. If connecting throws, it is nearly always the HTTP
   login for `*.plants.iwmac.local/secure/*` having expired — open the plant in a
   normal tab, log in once, then retry.
-- `c:\iwmac\bin\modpoll.exe` must exist on the plant server. *Probe binary* runs
-  `modpoll.exe -h` and reports the version it finds.
+- modpoll must be on the plant server. Commands are written as plain `modpoll`,
+  which Plant Term resolves; a plant that does not falls back to
+  `c:\iwmac\bin\modpoll.exe` by itself, saying so once. *Probe* runs `modpoll -h`
+  and reports what that plant's build supports.
 - The Toolbox plant-SQL API (`toolbox.iwmac.local:8505`) is needed for the unit
   list only; the rest of the panel works without it if you fill the fields yourself.
 
