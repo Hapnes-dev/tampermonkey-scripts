@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.6.0
+// @version      1.7.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.6.0';
+    const VERSION = '1.7.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -65,6 +65,10 @@
     // Four is a deliberate ceiling — roughly 400 lines, which the terminal holds
     // comfortably.
     const CHAIN_MAX = 4;
+    // A chained line also has to stay short. A line long enough to be cut on its
+    // way through the shell turns the tail of it into something modpoll never
+    // meant to run.
+    const CHAIN_CHARS = 420;
     const MARK = '#mpc';
 
     // 32-bit formats consume two registers per value, and -c counts values rather
@@ -257,6 +261,12 @@
         const s = Object.assign({}, spec, overrides || {});
         const fmt = formatOf(s.format);
         const args = [MODPOLL_EXE];
+        // -1 first, not last. Without it modpoll polls every second forever, and a
+        // command line that gets cut short on its way through the shell would
+        // otherwise leave a process flooding the terminal for everyone — which is
+        // exactly what happened once on plant 2313. Truncation now costs the host
+        // argument instead, and modpoll simply refuses to start.
+        args.push('-1');
         args.push('-m', s.mode === 'tcp' ? 'tcp' : (s.mode === 'ascii' ? 'ascii' : 'rtu'));
         args.push('-a', String(s.slave));
         args.push('-t', String(s.table) + (fmt.value ? ':' + fmt.value : ''));
@@ -274,7 +284,6 @@
             args.push('-s', String(s.stopbits));
             args.push('-p', String(s.parity));
         }
-        args.push('-1');           // poll once; the panel handles repetition itself
         args.push(s.host);
         return args.join(' ');
     }
@@ -426,6 +435,24 @@
         return termState;
     }
 
+    /**
+     * Throw the session away and take a fresh one. The frame is sent back to
+     * about:blank first, because pointing it at the same URL it already holds
+     * does not always reload it.
+     */
+    async function reconnectTerminal() {
+        const ifr = document.getElementById(IFRAME_ID);
+        termState.t = null;
+        termState.outEl = null;
+        if (ifr) {
+            ifr.src = 'about:blank';
+            await sleep(400);
+            ifr.src = PLANT_TERM_URL;
+        }
+        await sleep(600);
+        return ensureTerminal();
+    }
+
     async function connectShell(t) {
         if (isConnected(t)) return;
         t.exec('');   // the page's own "Press enter to connect"
@@ -536,8 +563,16 @@
         }
         const chunk = readChunk();
         if (grew) return chunk;
+        // A shell that answers nothing at all is usually a dead session rather
+        // than a slow device — the page keeps its prompt either way, so silence
+        // is the only symptom. Reload the frame once and try again.
+        if (options.reconnect !== false) {
+            log('Plant Term answered nothing — reconnecting', 'warn');
+            await reconnectTerminal();
+            return termRun(command, Object.assign({}, options, { reconnect: false }));
+        }
         throw new Error('Plant Term printed nothing within ' + Math.round(options.timeoutMs / 1000) +
-            ' s of running the command.');
+            ' s of running the command, before and after reconnecting. Another session may be flooding it.');
     }
 
     // -------------------------------------------------------- polling engine
@@ -571,6 +606,18 @@
         const line = parts.join(' & ');
         assertReadOnly(line);
         return line;
+    }
+
+    /**
+     * How many of these blocks may share one command line, given both the segment
+     * ceiling and the character budget.
+     */
+    function chainableCount(spec, blocks, limit) {
+        const max = Math.min(limit || CHAIN_MAX, blocks.length);
+        for (let n = max; n > 1; n--) {
+            if (chainBlocks(spec, blocks.slice(0, n)).length <= CHAIN_CHARS) return n;
+        }
+        return 1;
     }
 
     async function readRegisters(input, onProgress) {
@@ -608,9 +655,10 @@
             }
         };
 
-        for (let bi = 0; bi < blocks.length && !fatal; bi += CHAIN_MAX) {
+        for (let bi = 0; bi < blocks.length && !fatal;) {
             if (abortRequested) { diagnostics.push({ level: 'warn', text: 'Stopped by user', line: '' }); break; }
-            const group = blocks.slice(bi, bi + CHAIN_MAX);
+            const group = blocks.slice(bi, bi + chainableCount(spec, blocks.slice(bi)));
+            bi += group.length;
             let expect = 0;
             for (const b of group) {
                 commands.push(buildCommand(spec, { ref: b.ref, count: b.count }));
@@ -663,7 +711,7 @@
         let budget = spec.recover === false ? 0 : 40;
         let queue = missingRuns.slice();
         while (queue.length && budget > 0 && !abortRequested && !fatal) {
-            const attempt = queue.splice(0, CHAIN_MAX);
+            const attempt = queue.splice(0, chainableCount(spec, queue));
             budget -= attempt.length;
             if (onProgress) onProgress({ recovering: attempt.length, command: 're-asking for ' + attempt.length + ' gap(s)' });
             let raw;
@@ -731,19 +779,22 @@
      */
     async function probeRefs(spec, probes) {
         const results = {};
-        // Single-register probes print little, so more of them fit in one run than
-        // a block poll would.
-        const PER_RUN = CHAIN_MAX * 3;
         // Each probe is a table and a reference, so one run can ask all four
-        // tables at once instead of one table at a time.
+        // tables at once instead of one table at a time — as many as fit inside
+        // the character budget for a single command line.
         const list = probes.map(p => (typeof p === 'object' ? p : { table: spec.table, ref: p }));
-        for (let i = 0; i < list.length; i += PER_RUN) {
-            const group = list.slice(i, i + PER_RUN);
+        for (let i = 0; i < list.length;) {
             const parts = [];
-            for (const probe of group) {
-                const key = probe.table + ':' + probe.ref;
-                parts.push('echo ' + MARK + ':' + key,
-                    buildCommand(Object.assign({}, spec, { table: probe.table }), { ref: probe.ref, count: 1 }));
+            const group = [];
+            while (i < list.length) {
+                const probe = list[i];
+                const segment = ['echo ' + MARK + ':' + probe.table + ':' + probe.ref,
+                    buildCommand(Object.assign({}, spec, { table: probe.table }), { ref: probe.ref, count: 1 })];
+                const wouldBe = parts.concat(segment).join(' & ').length;
+                if (group.length && wouldBe > CHAIN_CHARS) break;
+                parts.push(segment[0], segment[1]);
+                group.push(probe);
+                i++;
             }
             const line = parts.join(' & ');
             assertReadOnly(line);
@@ -1901,6 +1952,13 @@
             const csv = rows.map(r => r.map(c => /[",;\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c).join(';')).join('\r\n');
             download('modpoll_' + nowStamp() + '.csv', csv, 'text/csv');
         });
+        const reconnectBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Reconnect', title: 'Throw away the Plant Term session and take a fresh one' });
+        reconnectBtn.addEventListener('click', async () => {
+            reconnectBtn.disabled = true;
+            try { await reconnectTerminal(); log('Plant Term reconnected', 'ok'); setDot(''); }
+            catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); }
+            finally { reconnectBtn.disabled = false; }
+        });
         const probeBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Probe', title: "Run modpoll -h and report this plant's build" });
         probeBtn.addEventListener('click', async () => {
             try {
@@ -1928,7 +1986,7 @@
         });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
-            el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, csvBtn, probeBtn,
+            el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, csvBtn, probeBtn, reconnectBtn,
         ]));
 
         // --- point list ------------------------------------------------------
