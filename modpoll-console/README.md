@@ -6,8 +6,11 @@ the tab, as parsed JSON from `window.__modpoll`.
 
 [Install](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/modpoll-console/Modpoll-Console.user.js)
 
-Matches `*://*.plants.iwmac.local:8080/secure/sys_tools/*`. A ⚡ **Modpoll**
-button appears bottom-right; the panel is draggable and remembers the last form.
+Matches `*://*.plants.iwmac.local:8080/secure/sys_tools/*`. It appears as
+**Modpoll** in the sidebar's Tools group, under Screen Dump, and opens in the
+same main panel as every other sys_tools tool. Leaving the tool and coming back
+keeps the form, the last result and a running repeat — the panel is moved, not
+rebuilt.
 
 ## What it does
 
@@ -16,9 +19,10 @@ button appears bottom-right; the panel is draggable and remembers the last form.
   (for Modbus TCP), COM port, baud rate and parity. Selecting one fills the form.
   The slave address is read from the last numeric segment of `driver_addr` — it is
   a starting value, not a fact, so check it against the plant when it matters.
-- **Builds the command, then runs it through Plant Term.** The script loads
-  `plant_term` in the sys_tools sidebar, connects the shell, executes the command
-  and reads back only what that command printed.
+- **Builds the command, then runs it through Plant Term.** The shell creates every
+  tool's iframe up front parked at `about:blank`, so the script points that frame
+  at `/secure/plant_term/` itself, connects the shell and reads back only what the
+  command printed. Opening the console does not switch the main panel away from it.
 - **Splits long ranges.** A count above 99 becomes several commands; the results
   are stitched back into one list.
 - **Parses the output.** `[N]: value` rows become a table with the printed index,
@@ -78,6 +82,20 @@ window.postMessage({ __modpoll: 'request', id: 1, method: 'readCompact', args: [
 // → { __modpoll: 'response', id: 1, ok: true, result: { … } }
 ```
 
+## Two things the page does that are worth knowing
+
+Both cost a version to find, and both are invisible from the code alone.
+
+- **jQuery Terminal's `get_output()` is not the transcript.** It returns only what
+  the terminal itself echoed — on Plant Term that is the two connect lines and
+  nothing else. Everything the shell sends is rendered as one `div` per line in
+  `#my_top .terminal-output`, which is what this script reads. Connection state
+  comes from `get_prompt()`, since the prompt never appears in the output buffer.
+- **The terminal renders every space as a non-breaking one**, so `innerText` hands
+  back U+00A0. Output is normalised before parsing; without that, no pattern
+  containing a space can match and a device answering "Illegal Data Address
+  exception response!" reads as an empty result rather than an answer.
+
 ## Requirements
 
 - Plant Term must be reachable. If connecting throws, it is nearly always the HTTP
@@ -87,6 +105,14 @@ window.postMessage({ __modpoll: 'request', id: 1, method: 'readCompact', args: [
   `modpoll.exe -h` and reports the version it finds.
 - The Toolbox plant-SQL API (`toolbox.iwmac.local:8505`) is needed for the unit
   list only; the rest of the panel works without it if you fill the fields yourself.
+
+## Verified against
+
+Plant 2313, the VENT controller at 192.168.10.100 over Modbus TCP: holding
+registers 430-449 read back live, a 120-register sweep split into `-r 430 -c 99`
+plus `-r 529 -c 21` and came back contiguous, and registers 1-20 — which that
+controller does not map — surfaced the device's own "Illegal Data Address
+exception" rather than an empty grid.
 
 ## Related
 
