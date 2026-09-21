@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.10.2
+// @version      1.11.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.10.2';
+    const VERSION = '1.11.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1307,6 +1307,121 @@
         }));
     }
 
+    // ------------------------------------- names from the plant's own database
+
+    /*
+     * The plant serves its own configuration over a JSON-RPC endpoint on the same
+     * origin as this page, which means no cross-origin helper and no external
+     * service: get_regulators lists the units, get_groups and get_parameters give
+     * every parameter the plant has for one of them — its alias text, its unit,
+     * its current value, and its driver_id.
+     *
+     * The driver_id is the part that matters. modbusgen writes it as
+     * "0_<read_func>_<protocol address>", with ".<bit>" appended for a bit inside
+     * a register, behind a prefix naming the plant, driver and table. So
+     * "2313_VENT_vent_1_1_0_1_100" is read function 1 — coils — at protocol
+     * address 100, which is modpoll's reference 101.
+     */
+    const PLANT_RPC_URL = '/services/iwmac_plant/settings.php';
+    const RE_DRIVER_ID = /_0_(\d+)_(\d+)(?:\.(\d+))?$/;
+
+    async function plantRpc(method, params) {
+        const response = await fetch(PLANT_RPC_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 }),
+            cache: 'no-cache',
+        });
+        const body = await response.json();
+        if (body && body.error) throw new Error(String(body.error.message || body.error));
+        return body ? body.result : null;
+    }
+
+    /** The plant's own unit list. Works without any cross-origin permission. */
+    async function fetchPlantRegulators(plantOverride) {
+        const plantId = Number(plantOverride || plantIdFromHost());
+        if (!plantId) throw new Error('Could not read a plant id from the hostname');
+        const result = await plantRpc('get_regulators', { plant: plantId });
+        const regulators = (result && result.regulators) || {};
+        return Object.keys(regulators).map(key => {
+            const r = regulators[key];
+            return {
+                unit_id: r.unit_id, unit_name: r.unit_name, driver_type: r.unit_type,
+                driver_addr: r.unit_addr, status: r.unit_status,
+            };
+        });
+    }
+
+    const stripTags = html => String(html == null ? '' : html)
+        .replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+
+    function parseParameterCsvLine(line) {
+        const fields = [];
+        let value = '';
+        let quoted = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (quoted) {
+                if (ch === '"' && line[i + 1] === '"') { value += '"'; i++; }
+                else if (ch === '"') quoted = false;
+                else value += ch;
+            } else if (ch === '"') quoted = true;
+            else if (ch === ',') { fields.push(value); value = ''; }
+            else value += ch;
+        }
+        fields.push(value);
+        return fields;
+    }
+
+    /**
+     * Every parameter the plant holds for one unit, indexed by the register it
+     * reads. Several parameters can share a register — one per bit — so the index
+     * holds a list per reference rather than a single name.
+     */
+    async function fetchPlantNames(unitId, plantOverride) {
+        const plantId = Number(plantOverride || plantIdFromHost());
+        if (!plantId) throw new Error('Could not read a plant id from the hostname');
+        const groups = (await plantRpc('get_groups', { plant: plantId, unit_id: unitId })) || [];
+        const byRef = new Map();
+        let rows = 0;
+        let undecodable = 0;
+        for (const group of groups) {
+            const result = await plantRpc('get_parameters', {
+                plant: plantId, unit_id: unitId, group: group.id, preffered_group: '',
+            }) || {};
+            for (const side of ['read', 'write']) {
+                for (const line of String(result[side] || '').split('\n')) {
+                    const text = line.trim();
+                    if (!text) continue;
+                    rows++;
+                    const fields = parseParameterCsvLine(text);
+                    const driverId = fields[3] || '';
+                    const match = driverId.match(RE_DRIVER_ID);
+                    if (!match) { undecodable++; continue; }
+                    const table = FUNC_TO_TABLE[Number(match[1])];
+                    if (!table) { undecodable++; continue; }
+                    const ref = Number(match[2]) + 1;
+                    const key = table + '||' + ref;
+                    const entry = {
+                        name: fields[0] || '',
+                        plantValue: stripTags(fields[1]),
+                        unit: stripTags(fields[2]),
+                        bit: match[3] === undefined ? null : Number(match[3]),
+                        group: group.alias_text || '',
+                        access: side === 'write' ? 'rw' : 'r',
+                        driverId,
+                        table,
+                        ref,
+                        protocol: Number(match[2]),
+                    };
+                    if (!byRef.has(key)) byRef.set(key, []);
+                    byRef.get(key).push(entry);
+                }
+            }
+        }
+        return { unitId, byRef, groups: groups.length, rows, undecodable, at: new Date().toISOString() };
+    }
+
     // --------------------------------------------- unit list from the plant DB
 
     let _runId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
@@ -1386,15 +1501,27 @@
         return null;
     }
 
+    /**
+     * The unit list, from whichever source can answer. The plant's own RPC is on
+     * this origin and always available; the Toolbox query adds what it alone
+     * knows — the resolved IP, the baud rate, the parity — and is allowed to fail.
+     */
     async function fetchUnits(force) {
         if (_unitsCache && !force) return _unitsCache;
         const plantId = plantIdFromHost();
         if (!plantId) throw new Error('Could not read a plant id from the hostname');
-        const res = await gmPostJson(TOOLBOX_SQL_URL, { plant_id: plantId, sql_command: UNITS_SQL });
-        if (!res.body || !res.body.success) {
-            throw new Error((res.body && (res.body.error || res.body.message)) || ('HTTP ' + res.status));
+
+        let rows = [];
+        try {
+            const res = await gmPostJson(TOOLBOX_SQL_URL, { plant_id: plantId, sql_command: UNITS_SQL });
+            if (!res.body || !res.body.success) {
+                throw new Error((res.body && (res.body.error || res.body.message)) || ('HTTP ' + res.status));
+            }
+            rows = (res.body.results && res.body.results[0] && res.body.results[0].data) || [];
+        } catch (e) {
+            log('Toolbox unit query unavailable (' + e.message + ') — using the plant\'s own list', 'warn');
+            rows = await fetchPlantRegulators();
         }
-        const rows = (res.body.results && res.body.results[0] && res.body.results[0].data) || [];
         _unitsCache = rows.map(r => {
             const preset = presetFor(r.driver_type) || {};
             return {
@@ -1536,6 +1663,7 @@
     let lastResult = null;
     let lastScan = null;
     let pointList = null;
+    let plantNames = null;
     let lastVerification = null;
     let repeatTimer = null;
     // Printed reference -> the value seen on the previous pass, so a repeat run
@@ -1660,6 +1788,12 @@
      * ordinary poll as much as for a verification — the list is the only place
      * that knows what 190 in register 432 means.
      */
+    /** What the plant itself calls this register, if its parameters are loaded. */
+    function plantNamesFor(table, format, ref) {
+        if (!plantNames || format) return null;      // the plant's own list is 16-bit
+        return plantNames.byRef.get(String(table) + '||' + ref) || null;
+    }
+
     function pointForReading(table, format, ref) {
         if (!pointList) return null;
         const key = String(table) + '|' + String(format || '') + '|' + ref;
@@ -1674,7 +1808,7 @@
     }
 
     /** Everything one register can be read as, for the row that expands on click. */
-    function readingDetail(value, point, previous) {
+    function readingDetail(value, point, previous, fromPlant) {
         const u16 = value < 0 ? value + 65536 : value;
         const i16 = value > 32767 ? value - 65536 : value;
         const bits = (u16 >>> 0).toString(2).padStart(16, '0').replace(/(.{4})(?=.)/g, '$1 ');
@@ -1701,14 +1835,30 @@
             }
             rows.push(['addresses', 'list ' + point.addr + ' · protocol ' + point.protocol + ' · modpoll ' + point.ref]);
         }
+        if (fromPlant && fromPlant.length) {
+            const u16 = value < 0 ? value + 65536 : value;
+            rows.push(['plant parameters', fromPlant.length + ' on this register']);
+            for (const entry of fromPlant) {
+                // A bit parameter is worth showing against the bit it reads, so a
+                // status word can be read off without counting in binary.
+                const bitNote = entry.bit === null ? '' : ' — bit ' + entry.bit + ' is ' + ((u16 >> entry.bit) & 1);
+                rows.push([
+                    entry.bit === null ? 'plant says' : 'bit ' + entry.bit,
+                    entry.name + (entry.plantValue ? ': ' + entry.plantValue : '') +
+                        (entry.unit ? ' ' + entry.unit : '') + bitNote +
+                        (entry.group ? '  [' + entry.group + ']' : ''),
+                ]);
+            }
+            rows.push(['driver_id', fromPlant[0].driverId]);
+        }
         return rows;
     }
 
-    function toggleDetailRow(tr, value, point, previous) {
+    function toggleDetailRow(tr, value, point, previous, fromPlant) {
         const next = tr.nextElementSibling;
         if (next && next.classList.contains('mpc-detail')) { next.remove(); return; }
         for (const open of ui.gridBody.querySelectorAll('tr.mpc-detail')) open.remove();
-        const cells = readingDetail(value, point, previous).map(([label, text]) =>
+        const cells = readingDetail(value, point, previous, fromPlant).map(([label, text]) =>
             el('div', { className: 'mpc-kv' }, [
                 el('span', { className: 'mpc-k', textContent: label }),
                 el('span', { className: 'mpc-v', textContent: text }),
@@ -1782,26 +1932,32 @@
             const changed = previous !== undefined && previous !== v.v;
             watchPrevious.set(v.i, v.v);
             const point = pointForReading(table, format, v.i);
-            if (point) named++;
+            // A register the point list does not cover may still be named by the
+            // plant's own parameter list, and several bits can share one register.
+            const fromPlant = point ? null : plantNamesFor(table, format, v.i);
+            if (point || fromPlant) named++;
             const scaled = point ? (point.scale.invert ? (v.v ? 0 : 1) : v.v * point.scale.factor) : null;
+            const plantLabel = fromPlant
+                ? fromPlant[0].name + (fromPlant.length > 1 ? '  (+' + (fromPlant.length - 1) + ' more)' : '')
+                : '';
             const cells = [
                 { text: String(v.i) },
                 { text: String(v.addr) },
-                { text: point ? point.name : '', align: 'left' },
+                { text: point ? point.name : plantLabel, align: 'left' },
                 { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
                 { text: scaled === null ? '' : (point.decimals ? scaled.toFixed(point.decimals) : String(scaled)) },
-                { text: point ? (point.unit || '') : '' },
+                { text: point ? (point.unit || '') : (fromPlant ? fromPlant[0].unit : '') },
                 { text: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') },
                 { text: String(i16) },
                 { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
-                { text: point ? point.datatype : '', align: 'left' },
+                { text: point ? point.datatype : (fromPlant ? 'plant: ' + fromPlant[0].group : ''), align: 'left' },
             ];
             const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
                 })));
-            tr.addEventListener('click', () => toggleDetailRow(tr, v.v, point, previous));
+            tr.addEventListener('click', () => toggleDetailRow(tr, v.v, point, previous, fromPlant));
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
@@ -2169,9 +2325,24 @@
             if (!lastVerification) return;
             download('modpoll-verify_' + nowStamp() + '.json', JSON.stringify(lastVerification, null, 2));
         });
+        const plantNamesBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Names from plant', title: "Every parameter the plant holds for this unit, by the register it reads" });
+        plantNamesBtn.addEventListener('click', async () => {
+            const unitId = ui.units.value;
+            if (!unitId) return log('Pick a unit first — load the unit list, then choose one', 'warn');
+            plantNamesBtn.disabled = true;
+            try {
+                log('Reading the plant\'s parameters for ' + unitId + '…');
+                plantNames = await fetchPlantNames(unitId);
+                log('Plant database: ' + plantNames.rows + ' parameters across ' + plantNames.groups +
+                    ' groups, on ' + plantNames.byRef.size + ' registers' +
+                    (plantNames.undecodable ? ' (' + plantNames.undecodable + ' without a decodable driver_id)' : ''), 'ok');
+                if (lastResult) renderGrid(lastResult);
+            } catch (e) { log('ERROR: ' + e.message, 'err'); }
+            finally { plantNamesBtn.disabled = false; }
+        });
         ui.listNote = el('span', { className: 'mpc-sum', textContent: 'No point list loaded' });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
-            loadListBtn, ui.verifyBtn, ui.reportBtn, ui.verifyJsonBtn,
+            loadListBtn, ui.verifyBtn, ui.reportBtn, ui.verifyJsonBtn, plantNamesBtn,
             el('span', { className: 'mpc-spacer' }), ui.listNote, ui.listFile,
         ]));
 
@@ -2311,6 +2482,21 @@
         },
         probe(force) { return probeBinary(!!force); },
         scan(spec) { return scanDevice(spec).then(report => { lastScan = report; return report; }); },
+        /**
+         * Name registers from the plant's own parameter list for a unit — alias
+         * text, engineering unit, group, the value the plant currently shows, and
+         * the bit when several parameters share a register.
+         */
+        async names(unitId, plantId) {
+            plantNames = await fetchPlantNames(unitId, plantId);
+            try { if (lastResult) renderGrid(lastResult); } catch (e) { /* panel not built */ }
+            return { unit: unitId, parameters: plantNames.rows, registers: plantNames.byRef.size, groups: plantNames.groups, undecodable: plantNames.undecodable };
+        },
+        nameFor(table, ref) {
+            const found = plantNamesFor(String(table), '', Number(ref));
+            return found ? found.map(e => ({ name: e.name, unit: e.unit, bit: e.bit, group: e.group, plantValue: e.plantValue })) : null;
+        },
+        units(plantId) { return fetchPlantRegulators(plantId); },
         /** Adopt a modbusgen project file: its points, and how to reach the device. */
         loadList(json, name) {
             const list = parsePointList(json);
