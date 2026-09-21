@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.8.0
+// @version      1.9.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,13 +52,19 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.8.0';
+    const VERSION = '1.9.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
     const IFRAME_ID = 'iframe_plant_term';
     const PLANT_TERM_URL = '/secure/plant_term/';
-    const MODPOLL_EXE = 'c:\\iwmac\\bin\\modpoll.exe';
+    // Plant Term resolves a bare "modpoll", and a command line that says so is far
+    // easier to read — and to paste into a ticket. The full path stays as a
+    // fallback for a plant whose PATH does not carry it; the swap happens by
+    // itself, once, the first time the shell says it cannot find the command.
+    const EXE_BARE = 'modpoll';
+    const EXE_FULL = 'c:\\iwmac\\bin\\modpoll.exe';
+    let exePath = EXE_BARE;
     const MAX_COUNT = 99;
     // The shell runs chained commands in one round trip: three full blocks came
     // back in 221 ms against a plant, where three separate runs cost about 3 s.
@@ -260,7 +266,7 @@
     function buildCommand(spec, overrides) {
         const s = Object.assign({}, spec, overrides || {});
         const fmt = formatOf(s.format);
-        const args = [MODPOLL_EXE];
+        const args = [exePath];
         // -1 first, not last. Without it modpoll polls every second forever, and a
         // command line that gets cut short on its way through the shell would
         // otherwise leave a process flooding the terminal for everyone — which is
@@ -329,7 +335,7 @@
         { re: /illegal function exception/i, level: 'warn', text: 'Illegal function exception — device answered, but not for this function' },
         { re: /illegal data address exception/i, level: 'warn', text: 'Illegal data address exception — device answered, register is outside its map' },
         { re: /illegal data value exception/i, level: 'warn', text: 'Illegal data value exception — device answered' },
-        { re: /is not recognized as an internal or external command|cannot find the path/i, level: 'fatal', text: 'modpoll.exe not found at ' + MODPOLL_EXE },
+        { re: /is not recognized as an internal or external command|cannot find the path/i, level: 'fatal', text: 'modpoll not found — neither on the PATH nor at ' + EXE_FULL },
     ];
 
     function parseModpoll(raw) {
@@ -477,6 +483,7 @@
     // Lines that mean this command is over: a device exception, a rejected
     // argument, or the process reporting its exit ("Progam" is the binary's typo).
     const RE_FINAL_ERROR = /exception response|unkn[wo]{2}n error|invalid \w+ parameter|unrecognized option|prog(r)?am stopped with exit code/i;
+    const RE_NOT_FOUND = /is not recognized as an internal or external command|cannot find the path/i;
     const countValueLines = text => (String(text).match(/\[\d+\]\s*:/g) || []).length;
     let runCounter = 0;
 
@@ -558,6 +565,13 @@
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
             if (options.expect && countValueLines(chunk) >= options.expect) return chunk;
+            // This plant does not resolve a bare "modpoll": say so once, take the
+            // full path, and run the same command again.
+            if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
+                exePath = EXE_FULL;
+                log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
+                return termRun(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
+            }
             if (options.stopOnError !== false && RE_FINAL_ERROR.test(chunk)) return chunk;
             if (grew && Date.now() - stableSince > options.settleMs) return chunk;
         }
@@ -1411,7 +1425,7 @@
      */
     async function probeBinary(force) {
         if (_usageCache && !force) return _usageCache;
-        const raw = await termRun(MODPOLL_EXE + ' -h', { timeoutMs: 15000, settleMs: 900 });
+        const raw = await termRun(exePath + ' -h', { timeoutMs: 15000, settleMs: 900 });
         _usageCache = {
             usage: raw.trim(),
             hasTcpPortFlag: /-p\s+#?\s*(tcp\s+)?port/i.test(raw),
