@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.12.0
+// @version      1.13.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.12.0';
+    const VERSION = '1.13.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -249,7 +249,7 @@
         spec.port = Number(spec.port) || 502;
         spec.table = String(spec.table);
         spec.host = String(spec.host || '').trim();
-        if (!spec.host) throw new Error(spec.mode === 'tcp' ? 'No IP address given' : 'No COM port given');
+        if (!spec.host) throw new Error(isSerialMode(spec.mode) ? 'No COM port given' : 'No IP address given');
         // The binary answers "Invalid reference parameter!" below 1; say so here
         // rather than spending a round trip to be told.
         if (printedRef(spec) < 1) throw new Error('Start reference must be 1 or higher — modpoll counts from 1');
@@ -273,16 +273,17 @@
         // exactly what happened once on plant 2313. Truncation now costs the host
         // argument instead, and modpoll simply refuses to start.
         args.push('-1');
-        args.push('-m', s.mode === 'tcp' ? 'tcp' : (s.mode === 'ascii' ? 'ascii' : 'rtu'));
+        const mode = ['tcp', 'enc', 'ascii', 'rtu'].indexOf(s.mode) >= 0 ? s.mode : 'rtu';
+        args.push('-m', mode);
         args.push('-a', String(s.slave));
         args.push('-t', String(s.table) + (fmt.value ? ':' + fmt.value : ''));
         if (s.bigEndian && fmt.endianFlag) args.push(fmt.endianFlag);
         args.push('-r', String(overrides && overrides.ref !== undefined ? overrides.ref : printedRef(s)));
         args.push('-c', String(Math.min(MAX_COUNT, s.count)));
-        if (s.mode === 'tcp') {
-            // In tcp mode -p is the TCP port on modpoll 3.x. Emitted only when the
-            // port is not the default, so the common case stays the command shape
-            // that is known to work on the plants.
+        if (!isSerialMode(mode)) {
+            // Over a network -p is the TCP port. Emitted only when it is not the
+            // default, so the common case keeps the command shape known to work on
+            // the plants; a serial gateway almost always needs it.
             if (Number(s.port) && Number(s.port) !== 502) args.push('-p', String(s.port));
         } else {
             args.push('-b', String(s.baudrate));
@@ -1311,6 +1312,44 @@
         }));
     }
 
+    // ------------------------------------------- the bus each unit sits on
+
+    /*
+     * sys_tools already knows the topology, and its grid is on this page: which
+     * bus every unit hangs off, and whether that bus is an IP or a COM port. A
+     * label like "COM1 - 192.168.10.30" is both — a serial port on the plant
+     * server that is itself a gateway at that address, which matters because the
+     * Plant Server holds the COM port and cannot be asked to share it.
+     */
+    async function fetchTopologyBuses() {
+        const grid = pageWin.w2ui && pageWin.w2ui.grid_topology;
+        if (!grid || typeof pageWin.load_grid_data !== 'function') return new Map();
+        if (!grid.records.length) {
+            pageWin.load_grid_data('topology');
+            try { await waitFor(() => grid.records.length || null, 20000, 'the topology grid'); }
+            catch (e) { return new Map(); }
+        }
+        const buses = new Map();
+        const walk = (nodes, bus) => {
+            for (const node of nodes || []) {
+                if (node.unit_id) buses.set(String(node.unit_id).toUpperCase(), bus);
+                walk(node.w2ui && node.w2ui.children, node.unit_id ? bus : node.tree);
+            }
+        };
+        walk(grid.records, '');
+        return buses;
+    }
+
+    /** "COM1 - 192.168.10.30" → both halves; a bare address → just the host. */
+    function readBusLabel(label) {
+        const text = String(label || '').trim();
+        const pair = text.match(/^(COM\d+)\s*-\s*(\S+)$/i);
+        if (pair) return { com: pair[1], gateway: pair[2], serial: true };
+        if (/^COM\d+$/i.test(text)) return { com: text, gateway: '', serial: true };
+        if (/^[\d.]+$/.test(text) || /[a-z]/i.test(text)) return { com: '', gateway: text, serial: false };
+        return { com: '', gateway: '', serial: false };
+    }
+
     // ------------------------------------- names from the plant's own database
 
     /*
@@ -1532,16 +1571,22 @@
             log('Toolbox unit query unavailable (' + e.message + ') — using the plant\'s own list', 'warn');
             rows = await fetchPlantRegulators();
         }
+        const buses = await fetchTopologyBuses();
         _unitsCache = rows.map(r => {
             const preset = presetFor(r.driver_type) || {};
+            const bus = readBusLabel(buses.get(String(r.unit_id || '').toUpperCase()));
+            // The topology decides serial or network, because it is the only
+            // source that says which bus the unit actually hangs off.
+            const serial = bus.serial || /RTU|ASCII/i.test(r.connection_type || '');
             return {
+                bus,
                 unit_id: r.unit_id,
                 unit_name: r.unit_name,
                 driver_type: r.driver_type,
                 driver_addr: r.driver_addr,
-                connection: r.connection_type,
-                mode: /TCP/i.test(r.connection_type || '') ? 'tcp' : (/ASCII/i.test(r.connection_type || '') ? 'ascii' : 'rtu'),
-                host: r.resolved_address || (/TCP/i.test(r.connection_type || '') ? '' : (r.comm_port || '')),
+                connection: r.connection_type || (bus.serial ? 'Modbus RTU' : (bus.gateway ? 'Modbus TCP' : '')),
+                mode: serial ? (/ASCII/i.test(r.connection_type || '') ? 'ascii' : 'rtu') : 'tcp',
+                host: serial ? (bus.com || r.comm_port || '') : (r.resolved_address || bus.gateway || ''),
                 slave: slaveFromDriverAddr(r.driver_addr),
                 baudrate: r.baudrate || preset.baudrate || '9600',
                 parity: (r.parity || preset.parity || 'none').toLowerCase(),
@@ -1731,8 +1776,10 @@
         refreshPreview();
     }
 
+    const isSerialMode = mode => mode === 'rtu' || mode === 'ascii';
+
     function toggleSerial() {
-        const serial = ui.mode.value !== 'tcp';
+        const serial = isSerialMode(ui.mode.value);
         for (const wrap of ui.serialFields) wrap.classList.toggle('mpc-hidden', !serial);
         ui.portWrap.classList.toggle('mpc-hidden', serial);
         // The host field takes the port's two columns when there is no port to show,
@@ -2194,6 +2241,18 @@
         refreshPreview();
         log('Loaded ' + u.unit_id + ' (' + u.driver_type + ', ' + u.connection + ', driver_addr ' + u.driver_addr +
             ' — slave read as ' + u.slave + ', correct it if the plant addresses differently)');
+        // Worth saying before the poll rather than after it fails: the Plant
+        // Server polls the bus continuously and keeps the COM port open.
+        if (u.bus && u.bus.serial) {
+            log('This unit sits on ' + u.bus.com + ', which the Plant Server holds open. modpoll cannot have that port ' +
+                'until the Plant Server is stopped — and stopping it stops temperature logging and alarms, so that is a ' +
+                'decision for whoever owns the plant.', 'warn');
+            if (u.bus.gateway) {
+                log(u.bus.com + ' is a gateway at ' + u.bus.gateway + '. Try mode ENC against that address first — ' +
+                    'RTU framing over TCP reaches the same bus without taking the port from anyone. Port 4001 upwards ' +
+                    'is the usual mapping, one per serial port.', 'warn');
+            }
+        }
     }
 
     function buildPanel() {
@@ -2221,7 +2280,11 @@
         form.appendChild(field(' ', loadBtn, 3));
 
         // --- connection: 2 + 6 + 2 + 2, or 2 + 8 + 2 without a TCP port ---
-        ui.mode = el('select', {}, ['tcp', 'rtu', 'ascii'].map(v => el('option', { value: v, textContent: v.toUpperCase() })));
+        // ENC is Modbus RTU framed inside a TCP connection, which is what a serial
+        // gateway in TCP-server mode expects — and the only way to reach a serial
+        // device without taking the COM port from the Plant Server.
+        ui.mode = el('select', {}, ['tcp', 'rtu', 'enc', 'ascii'].map(v =>
+            el('option', { value: v, textContent: v.toUpperCase(), title: v === 'enc' ? 'RTU framing over TCP, for a serial gateway' : v.toUpperCase() })));
         ui.mode.addEventListener('change', () => { toggleSerial(); ui.cmdDirty = false; refreshPreview(); });
         ui.host = el('input', { placeholder: '10.0.0.5' });
         ui.hostWrap = field('IP address', ui.host, 6);
