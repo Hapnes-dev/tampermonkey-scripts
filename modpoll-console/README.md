@@ -83,9 +83,8 @@ whole, which is why registers 1-20 first read as silence.
 
 Reaching a serial device means taking its COM port, and the Plant Server holds
 every one of them. The console can stop and start it — using the plant's own
-controls, not its own invention: `stop_plant_server`, `start_plant_server_norm`,
-`start_plant_server_nogen` and `restart_driver` posted to `plant_cmd.php` on the
-plant, which is exactly what the sys_tools page does when someone clicks those
+controls, not its own invention: `stop_plant_server`, `start_plant_server_norm` and
+`start_plant_server_nogen` posted to `plant_cmd.php` on the plant, which is exactly what the sys_tools page does when someone clicks those
 buttons, and what IWMAC Escape offers locally.
 
 It is the most consequential thing this panel can do — temperature logging stops,
@@ -102,8 +101,6 @@ and so do alarms, on a live store — so three rules apply:
   when the modules are running again.
 
 *Check* reads which modules are running and needs no permission to do so.
-*Restart driver* bounces one module — GRUNDFOS, EM270, AK3 — and leaves the rest
-of the plant running, which is often all that is needed.
 
 ## Serial devices, and what polling one costs
 

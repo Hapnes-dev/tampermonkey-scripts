@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.14.0
+// @version      1.14.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.14.0';
+    const VERSION = '1.14.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2246,9 +2246,6 @@
             const state = await fetchPlantProcesses();
             const stopped = state.running === 0;
             ui.plantStatus.textContent = 'Plant Server: ' + (stopped ? 'stopped' : state.running + ' of ' + state.total + ' modules running');
-            if (ui.driverSelect.options.length <= 1) {
-                for (const m of state.modules) ui.driverSelect.appendChild(el('option', { value: m.module, textContent: m.module }));
-            }
             let mark = null;
             try { mark = JSON.parse(GM_getValue(STOP_MARK_KEY, 'null')); } catch (e) { /* none */ }
             if (stopped) {
@@ -2564,17 +2561,8 @@
         const startNogenBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Start -nogen', title: 'The second Start button IWMAC Escape offers' });
         startNogenBtn.addEventListener('click', () => runPlantCommand('start_plant_server_nogen', 'Start Plant Server (nogen)', false));
 
-        ui.driverSelect = el('select', {}, [el('option', { value: '', textContent: 'driver module…' })]);
-        const restartDriverBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Restart driver', title: 'Bounce one driver module and leave the rest running' });
-        restartDriverBtn.addEventListener('click', async () => {
-            const module = ui.driverSelect.value;
-            if (!module) return log('Pick a driver module first', 'warn');
-            await runPlantCommand('restart_driver', 'Restart ' + module, false, { process_name: module });
-        });
-
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             statusBtn, ui.stopBtn, startBtn, startNogenBtn,
-            field('Module', ui.driverSelect, 3), restartDriverBtn,
             el('span', { className: 'mpc-spacer' }), ui.plantStatus,
         ]));
 
