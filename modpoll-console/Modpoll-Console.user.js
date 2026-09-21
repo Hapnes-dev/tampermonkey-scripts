@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.17.2
+// @version      1.18.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.17.2';
+    const VERSION = '1.18.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1946,12 +1946,18 @@
     #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;min-width:0;overflow-wrap:anywhere}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
-    #${PANEL_ID} .mpc-log{grid-column:span 12;max-height:120px;overflow-y:auto;overflow-x:hidden;
+    #${PANEL_ID} .mpc-log{grid-column:span 12;height:220px;overflow-y:auto;overflow-x:hidden;
         font:11.5px/1.5 Consolas,ui-monospace,monospace;background:#fafbfc;border:1px solid var(--line);border-radius:3px;
         padding:6px 9px;white-space:pre-wrap;word-break:break-word;color:#3a3f4a}
     #${PANEL_ID} .mpc-log .err{color:#c0392b}#${PANEL_ID} .mpc-log .warn{color:#b9770e}#${PANEL_ID} .mpc-log .ok{color:#1e7e34}
     /* The terminal's own words, set apart from this console's reading of them. */
     #${PANEL_ID} .mpc-log .mirror{color:#5a6070}
+    /* Drag the strip under the log to give it more room; double-click to toggle. */
+    #${PANEL_ID} .mpc-loggrip{grid-column:span 12;height:11px;margin-top:-3px;cursor:ns-resize;
+        display:flex;align-items:center;justify-content:center}
+    #${PANEL_ID} .mpc-loggrip::after{content:'';width:64px;height:3px;border-radius:2px;background:#c8ccd4}
+    #${PANEL_ID} .mpc-loggrip:hover::after{background:#8a9099}
+    #${PANEL_ID} .mpc-loggrip.dragging::after{background:#3f7fbf}
     `;
 
     const ui = {};
@@ -1978,6 +1984,48 @@
      * the terminal text is the only thing that settles it, and going to look at
      * Plant Term to find it is a detour.
      */
+    /**
+     * The strip under the log: drag it down for more room, double-click to swap
+     * between the default height and a tall one. The height is remembered,
+     * because someone reading terminal output wants the same room next time.
+     */
+    const LOG_HEIGHT_KEY = 'mpc.logHeight.v1';
+    const LOG_HEIGHT_DEFAULT = 220;
+    const LOG_HEIGHT_TALL = 520;
+
+    function setLogHeight(pixels, remember) {
+        const height = Math.max(90, Math.min(900, Math.round(pixels)));
+        ui.log.style.height = height + 'px';
+        if (remember !== false) GM_setValue(LOG_HEIGHT_KEY, String(height));
+        return height;
+    }
+
+    function makeLogGrip() {
+        const grip = el('div', { className: 'mpc-loggrip', title: 'Drag to resize the log, double-click to make it tall' });
+        let startY = 0;
+        let startHeight = 0;
+        const onMove = event => setLogHeight(startHeight + (event.clientY - startY), false);
+        const onUp = event => {
+            grip.classList.remove('dragging');
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            setLogHeight(startHeight + (event.clientY - startY));
+        };
+        grip.addEventListener('mousedown', event => {
+            startY = event.clientY;
+            startHeight = ui.log.getBoundingClientRect().height;
+            grip.classList.add('dragging');
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+            event.preventDefault();
+        });
+        grip.addEventListener('dblclick', () => {
+            const current = ui.log.getBoundingClientRect().height;
+            setLogHeight(current < LOG_HEIGHT_TALL - 20 ? LOG_HEIGHT_TALL : LOG_HEIGHT_DEFAULT);
+        });
+        return grip;
+    }
+
     const MIRROR_LINE_CAP = 200;
     function mirrorTerminal(chunk) {
         if (!ui.log || !ui.mirror || !ui.mirror.checked) return;
@@ -2868,6 +2916,7 @@
 
         ui.log = el('div', { className: 'mpc-log' });
         form.appendChild(ui.log);
+        form.appendChild(makeLogGrip());
 
         panel.appendChild(head);
         panel.appendChild(body);
@@ -2877,6 +2926,8 @@
         ui.panel = panel;
 
         toggleSerial();
+        const savedHeight = Number(GM_getValue(LOG_HEIGHT_KEY, 0));
+        if (savedHeight) setLogHeight(savedHeight, false);
         // A stop this console made outlives the tab it was made in, so check on
         // load rather than waiting to be asked.
         try {
