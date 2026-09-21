@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.11.0
+// @version      1.11.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.11.0';
+    const VERSION = '1.11.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1352,8 +1352,14 @@
         });
     }
 
-    const stripTags = html => String(html == null ? '' : html)
-        .replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+    // The plant returns display HTML — tags around an alarm state, and entities
+    // for the units, so a temperature arrives as "&deg;C". Decoding through an
+    // element handles every entity rather than the three worth hard-coding.
+    const entityDecoder = document.createElement('textarea');
+    function stripTags(html) {
+        entityDecoder.innerHTML = String(html == null ? '' : html).replace(/<[^>]*>/g, '');
+        return entityDecoder.value.replace(/ /g, ' ').trim();
+    }
 
     function parseParameterCsvLine(line) {
         const fields = [];
@@ -1850,6 +1856,18 @@
                 ]);
             }
             rows.push(['driver_id', fromPlant[0].driverId]);
+            // The plant shows this register scaled, so the two numbers together
+            // say what the scale is — which is the field a point list has to get
+            // right and the one a document most often leaves out.
+            const shown = Number(String(fromPlant[0].plantValue).replace(',', '.'));
+            if (fromPlant[0].bit === null && !Number.isNaN(shown) && value !== 0) {
+                const ratio = shown / value;
+                const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
+                const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
+                rows.push(['implied scale', near
+                    ? '×' + near + ' — the plant shows ' + shown + ' where the register holds ' + value
+                    : 'plant ' + shown + ' ÷ raw ' + value + ' = ' + ratio.toFixed(4) + ', no common scale']);
+            }
         }
         return rows;
     }
@@ -1940,12 +1958,20 @@
             const plantLabel = fromPlant
                 ? fromPlant[0].name + (fromPlant.length > 1 ? '  (+' + (fromPlant.length - 1) + ' more)' : '')
                 : '';
+            // The plant is already showing this register scaled, which is the
+            // scaled value nobody has to derive.
+            const plantScaled = fromPlant ? Number(String(fromPlant[0].plantValue).replace(',', '.')) : NaN;
             const cells = [
                 { text: String(v.i) },
                 { text: String(v.addr) },
                 { text: point ? point.name : plantLabel, align: 'left' },
                 { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
-                { text: scaled === null ? '' : (point.decimals ? scaled.toFixed(point.decimals) : String(scaled)) },
+                {
+                    text: scaled !== null
+                        ? (point.decimals ? scaled.toFixed(point.decimals) : String(scaled))
+                        : (Number.isNaN(plantScaled) ? '' : String(fromPlant[0].plantValue)),
+                    title: scaled === null && !Number.isNaN(plantScaled) ? 'What the plant itself shows for this parameter' : undefined,
+                },
                 { text: point ? (point.unit || '') : (fromPlant ? fromPlant[0].unit : '') },
                 { text: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') },
                 { text: String(i16) },
@@ -1955,7 +1981,7 @@
             const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
-                    style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
+                    style: c.align === 'left' ? 'text-align:left' : '', title: c.title || c.text,
                 })));
             tr.addEventListener('click', () => toggleDetailRow(tr, v.v, point, previous, fromPlant));
             frag.appendChild(tr);
