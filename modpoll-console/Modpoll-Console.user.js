@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.17.0
+// @version      1.17.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.17.0';
+    const VERSION = '1.17.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -592,11 +592,19 @@
         let lastLength = -1;
         let stableSince = Date.now();
         let grew = false;
+        // The run tag's own echo is not output. Counting it as output starts the
+        // settle window before the device has said anything, which a TCP poll
+        // survives — it answers inside the window — and a serial one does not:
+        // 19200 baud with a second of turnaround looked like a command that
+        // printed nothing at all.
+        const deviceOutput = text => String(text).split('\n')
+            .filter(line => line.trim() && line.trim().indexOf(MARK) !== 0).join('\n');
         while (Date.now() < deadline) {
             await sleep(60);
             const chunk = readChunk();
-            if (chunk.length !== lastLength) { lastLength = chunk.length; stableSince = Date.now(); }
-            if (chunk.length) grew = true;
+            const body = deviceOutput(chunk);
+            if (body.length !== lastLength) { lastLength = body.length; stableSince = Date.now(); }
+            if (body.length) grew = true;
             // Knowing how many values were asked for turns the wait into a real
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
