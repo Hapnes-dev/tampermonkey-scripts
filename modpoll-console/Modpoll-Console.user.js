@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.0.0
+// @version      1.1.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,10 +52,12 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.0.0';
+    const VERSION = '1.1.0';
     const PANEL_ID = 'mpc-panel';
-    const LAUNCH_ID = 'mpc-launch';
+    const HOST_ID = 'mpc-host';
+    const SIDEBAR_ID = 'modpoll_console';
     const IFRAME_ID = 'iframe_plant_term';
+    const PLANT_TERM_URL = '/secure/plant_term/';
     const MODPOLL_EXE = 'c:\\iwmac\\bin\\modpoll.exe';
     const MAX_COUNT = 99;
     const TOOLBOX_SQL_URL = 'http://toolbox.iwmac.local:8505/plant-sql/';
@@ -67,11 +69,13 @@
     // iframe's jQuery) have to be reached through unsafeWindow.
     const pageWin = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
+    // Labelled by Modicon prefix, which is what -t follows. The short label keeps
+    // the select inside its grid cell; the long one is the option's tooltip.
     const REGISTER_TABLES = [
-        { value: '4', label: '4 — Holding register (read/write, 4xxxx)' },
-        { value: '3', label: '3 — Input register (read only, 3xxxx)' },
-        { value: '1', label: '1 — Discrete input (1xxxx)' },
-        { value: '0', label: '0 — Coil (0xxxx)' },
+        { value: '4', label: '4 — Holding 4xxxx', title: 'Holding register, read/write (4xxxx)' },
+        { value: '3', label: '3 — Input 3xxxx', title: 'Input register, read only (3xxxx)' },
+        { value: '1', label: '1 — Discrete 1xxxx', title: 'Discrete input (1xxxx)' },
+        { value: '0', label: '0 — Coil 0xxxx', title: 'Coil (0xxxx)' },
     ];
 
     // Serial defaults per driver family, carried over from the standalone
@@ -314,16 +318,18 @@
     const termState = { win: null, t: null, busy: false };
 
     function terminalOf(win) {
+        const jq = win.jQuery || win.$;
+        if (!jq) return null;
         try {
-            const $el = win.jQuery('#my_top');
+            const $el = jq('#my_top');
             if ($el && $el.length) {
                 // Never construct a terminal here: calling .terminal() on an element
                 // that has none would create an interpreter-less one and break the page.
                 const existing = $el.data('terminal');
                 if (existing) return existing;
             }
-            if (win.jQuery.terminal && typeof win.jQuery.terminal.active === 'function') {
-                return win.jQuery.terminal.active() || null;
+            if (jq.terminal && typeof jq.terminal.active === 'function') {
+                return jq.terminal.active() || null;
             }
         } catch (e) { /* frame not ready yet */ }
         return null;
@@ -335,10 +341,20 @@
         }
         const w2 = pageWin.w2ui;
         if (!w2 || !w2.sidebar) throw new Error('sys_tools sidebar not ready — let the page finish loading');
-        if (!document.getElementById(IFRAME_ID)) w2.sidebar.click('plant_term');
 
-        const ifr = await waitFor(() => document.getElementById(IFRAME_ID), 20000, 'the Plant Term iframe');
-        const win = await waitFor(() => (ifr.contentWindow && ifr.contentWindow.jQuery) ? ifr.contentWindow : null, 20000, 'Plant Term to load');
+        // The shell creates every tool's iframe up front, parked at about:blank, and
+        // navigates it only when that tool is opened. Testing for the element is
+        // therefore not a test for a loaded Plant Term: point the frame at it
+        // directly, which also leaves the main panel on this console.
+        let ifr = document.getElementById(IFRAME_ID);
+        if (!ifr && typeof pageWin.my_do_action === 'function') pageWin.my_do_action('plant_term');
+        ifr = await waitFor(() => document.getElementById(IFRAME_ID), 10000, 'the Plant Term iframe');
+        if (!ifr.src || /about:blank/i.test(ifr.src)) ifr.src = PLANT_TERM_URL;
+
+        const win = await waitFor(() => {
+            const w = ifr.contentWindow;
+            return (w && (w.jQuery || w.$)) ? w : null;
+        }, 25000, 'Plant Term to load');
         const t = await waitFor(() => terminalOf(win), 20000, 'the Plant Term shell');
         termState.win = win;
         termState.t = t;
@@ -577,41 +593,85 @@
 
     // ------------------------------------------------------------------- UI
 
+    /*
+     * Layout rules, in one place because they are the whole reason the panel reads
+     * as a form rather than a pile of controls:
+     *
+     *   - every control is border-box, so a declared width is the width on screen;
+     *   - the form is one 12-column grid, so controls in different rows share
+     *     column edges instead of each row packing itself;
+     *   - labels have a fixed height, so every control in a row starts at the same
+     *     baseline whether its label wraps or not;
+     *   - one control height (--h) for inputs, selects and buttons alike;
+     *   - the body scrolls vertically only. Nothing may cause a sideways scrollbar.
+     */
     const STYLE = `
-    #${LAUNCH_ID}{position:fixed;right:18px;bottom:18px;z-index:99998;background:#8B5CF6;color:#fff;border:0;
-        border-radius:22px;padding:10px 16px;font:600 13px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.35)}
-    #${LAUNCH_ID}:hover{background:#7C4DEF}
-    #${PANEL_ID}{position:fixed;right:18px;bottom:68px;z-index:99999;width:640px;max-height:82vh;display:flex;flex-direction:column;
-        background:#1A1D2E;color:#E7E9F3;border:1px solid #2D3348;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.5);
-        font:13px/1.45 system-ui,sans-serif}
-    #${PANEL_ID} .mpc-head{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#22283A;border-radius:10px 10px 0 0;cursor:move}
-    #${PANEL_ID} .mpc-title{font-weight:700;letter-spacing:.2px}
-    #${PANEL_ID} .mpc-ver{opacity:.55;font-size:11px}
-    #${PANEL_ID} .mpc-dot{width:9px;height:9px;border-radius:50%;background:#5A5A6E;margin-left:auto}
-    #${PANEL_ID} .mpc-dot.ok{background:#10B981}#${PANEL_ID} .mpc-dot.warn{background:#F59E0B}#${PANEL_ID} .mpc-dot.err{background:#EF4444}
-    #${PANEL_ID} .mpc-x{background:none;border:0;color:#9aa0b5;font-size:16px;cursor:pointer;padding:0 2px}
-    #${PANEL_ID} .mpc-body{overflow:auto;padding:10px 12px 12px}
-    #${PANEL_ID} .mpc-row{display:flex;gap:8px;align-items:center;margin-bottom:7px;flex-wrap:wrap}
-    #${PANEL_ID} label{font-size:11px;opacity:.7;display:block;margin-bottom:2px}
-    #${PANEL_ID} .mpc-f{display:flex;flex-direction:column}
-    #${PANEL_ID} input,#${PANEL_ID} select{background:#2D3348;color:#E7E9F3;border:1px solid #3A4159;border-radius:5px;padding:5px 7px;font:12px system-ui,sans-serif}
-    #${PANEL_ID} input:focus,#${PANEL_ID} select:focus{outline:1px solid #8B5CF6}
-    #${PANEL_ID} .mpc-w60{width:60px}#${PANEL_ID} .mpc-w80{width:80px}#${PANEL_ID} .mpc-w130{width:130px}#${PANEL_ID} .mpc-grow{flex:1;min-width:120px}
-    #${PANEL_ID} button.mpc-b{background:#2D3348;color:#E7E9F3;border:1px solid #3A4159;border-radius:5px;padding:6px 11px;font:600 12px system-ui,sans-serif;cursor:pointer}
-    #${PANEL_ID} button.mpc-b:hover{border-color:#8B5CF6}
-    #${PANEL_ID} button.mpc-b.pri{background:#8B5CF6;border-color:#8B5CF6}
+    #${PANEL_ID}{--h:27px;--gap:8px;--line:#c8ccd4;--label:#6a7180;--focus:#5b9dd9;
+        height:100%;display:flex;flex-direction:column;overflow:hidden;
+        font:12px/1.4 Arial,Helvetica,sans-serif;color:#1b1b1b;background:#fff}
+    #${PANEL_ID} *,#${PANEL_ID} *::before,#${PANEL_ID} *::after{box-sizing:border-box}
+    #${PANEL_ID} .mpc-head{display:flex;align-items:center;gap:8px;padding:6px 10px;flex:0 0 auto;
+        background:linear-gradient(#fbfbfb,#f1f1f1);border-bottom:1px solid var(--line)}
+    #${PANEL_ID} .mpc-title{font-weight:bold;font-size:12px}
+    #${PANEL_ID} .mpc-ver{color:var(--label);font-size:11px}
+    #${PANEL_ID} .mpc-dot{width:9px;height:9px;border-radius:50%;background:#c3c7cf;margin-left:auto;flex:0 0 auto;
+        border:1px solid rgba(0,0,0,.15)}
+    #${PANEL_ID} .mpc-dot.ok{background:#4caf50}#${PANEL_ID} .mpc-dot.warn{background:#f0ad4e}#${PANEL_ID} .mpc-dot.err{background:#d9534f}
+    #${PANEL_ID} .mpc-body{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:10px 12px 12px}
+
+    /* The 12-column form grid. A field declares how many columns it takes, so
+       controls in different rows share column edges instead of each row packing
+       itself. Labels have a fixed height, so every control starts at one baseline. */
+    #${PANEL_ID} .mpc-form{display:grid;grid-template-columns:repeat(12,1fr);gap:var(--gap);align-items:end}
+    #${PANEL_ID} .mpc-f{grid-column:span 3;min-width:0;display:flex;flex-direction:column}
+    #${PANEL_ID} .mpc-f>label{font-size:10.5px;color:var(--label);height:15px;line-height:15px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #${PANEL_ID} input,#${PANEL_ID} select{height:var(--h);width:100%;background:#fff;color:#1b1b1b;
+        border:1px solid var(--line);border-radius:3px;font:12px/1 Arial,Helvetica,sans-serif;padding:0 7px}
+    #${PANEL_ID} select{cursor:pointer;padding:0 4px 0 6px}
+    #${PANEL_ID} input::placeholder{color:#a3a8b3}
+    #${PANEL_ID} input:focus,#${PANEL_ID} select:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 2px rgba(91,157,217,.22)}
+    /* Buttons keep w2ui's own look — .w2ui-btn supplies the colours, this only
+       fixes the metrics so they line up with the inputs beside them. */
+    #${PANEL_ID} button.mpc-b{height:var(--h);padding:0 12px;font:12px/1 Arial,Helvetica,sans-serif;
+        white-space:nowrap;cursor:pointer;margin:0}
+    #${PANEL_ID} .mpc-f>button.mpc-b{width:100%}
     #${PANEL_ID} button.mpc-b[disabled]{opacity:.45;cursor:default}
-    #${PANEL_ID} .mpc-cmd{width:100%;font-family:Consolas,monospace;font-size:11.5px}
-    #${PANEL_ID} .mpc-note{font-size:11px;opacity:.65;margin:2px 0 8px}
-    #${PANEL_ID} .mpc-log{margin-top:8px;max-height:110px;overflow:auto;font:11.5px Consolas,monospace;background:#151827;border:1px solid #2D3348;border-radius:6px;padding:6px 8px;white-space:pre-wrap}
-    #${PANEL_ID} .mpc-log .err{color:#FF6B6B}#${PANEL_ID} .mpc-log .warn{color:#F59E0B}#${PANEL_ID} .mpc-log .ok{color:#10B981}
-    #${PANEL_ID} table.mpc-grid{width:100%;border-collapse:collapse;margin-top:8px;font:11.5px Consolas,monospace}
-    #${PANEL_ID} table.mpc-grid th{position:sticky;top:0;background:#22283A;text-align:right;padding:4px 6px;font-weight:600;border-bottom:1px solid #2D3348}
-    #${PANEL_ID} table.mpc-grid td{text-align:right;padding:3px 6px;border-bottom:1px solid #22283A}
-    #${PANEL_ID} table.mpc-grid tr:nth-child(even) td{background:#1E2233}
-    #${PANEL_ID} table.mpc-grid td.zero{opacity:.4}
-    #${PANEL_ID} .mpc-gridwrap{max-height:280px;overflow:auto;border:1px solid #2D3348;border-radius:6px}
-    #${PANEL_ID} .mpc-sum{font-size:11.5px;opacity:.8;margin-top:6px}
+    #${PANEL_ID} button.mpc-b.pri{background:#3f7fbf;border-color:#36699d;color:#fff;font-weight:bold}
+    #${PANEL_ID} button.mpc-b.pri:hover:not([disabled]){background:#356fa8}
+
+    #${PANEL_ID} .mpc-span2{grid-column:span 2}#${PANEL_ID} .mpc-span3{grid-column:span 3}
+    #${PANEL_ID} .mpc-span4{grid-column:span 4}#${PANEL_ID} .mpc-span5{grid-column:span 5}
+    #${PANEL_ID} .mpc-span6{grid-column:span 6}#${PANEL_ID} .mpc-span8{grid-column:span 8}
+    #${PANEL_ID} .mpc-span9{grid-column:span 9}#${PANEL_ID} .mpc-span12{grid-column:span 12}
+    #${PANEL_ID} .mpc-hidden{display:none}
+
+    #${PANEL_ID} .mpc-sep{grid-column:span 12;height:1px;background:#e4e6ea;margin:3px 0 1px}
+    #${PANEL_ID} .mpc-actions{grid-column:span 12;display:flex;gap:var(--gap);align-items:flex-end;flex-wrap:wrap}
+    #${PANEL_ID} .mpc-actions .mpc-f{width:78px}
+    #${PANEL_ID} .mpc-actions .mpc-spacer{flex:1 1 auto}
+    #${PANEL_ID} .mpc-cmd{font-family:Consolas,ui-monospace,monospace;font-size:11.5px}
+    #${PANEL_ID} .mpc-note{grid-column:span 12;font-size:11px;color:var(--label);margin:-3px 0 0;min-height:14px}
+    #${PANEL_ID} .mpc-check{grid-column:span 6;display:flex;align-items:center;gap:6px;font-size:11.5px;
+        color:#3a3f4a;height:var(--h);cursor:pointer}
+    #${PANEL_ID} .mpc-check input{width:14px;height:14px;padding:0;accent-color:#3f7fbf}
+
+    #${PANEL_ID} .mpc-gridwrap{grid-column:span 12;max-height:340px;overflow-y:auto;overflow-x:hidden;
+        border:1px solid var(--line);border-radius:3px;background:#fff}
+    #${PANEL_ID} table.mpc-grid{width:100%;table-layout:fixed;border-collapse:collapse;font:11.5px Consolas,ui-monospace,monospace}
+    #${PANEL_ID} table.mpc-grid th{position:sticky;top:0;z-index:1;background:linear-gradient(#fbfbfb,#eff0f2);
+        text-align:right;padding:5px 8px;font:bold 11px Arial,Helvetica,sans-serif;color:#4a4f5a;
+        border-bottom:1px solid var(--line)}
+    #${PANEL_ID} table.mpc-grid td{text-align:right;padding:3px 8px;border-bottom:1px solid #eceef1;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    #${PANEL_ID} table.mpc-grid tbody tr:nth-child(even) td{background:#f7f8fa}
+    #${PANEL_ID} table.mpc-grid td.zero{color:#a3a8b3}
+    #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
+    #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
+    #${PANEL_ID} .mpc-log{grid-column:span 12;max-height:120px;overflow-y:auto;overflow-x:hidden;
+        font:11.5px/1.5 Consolas,ui-monospace,monospace;background:#fafbfc;border:1px solid var(--line);border-radius:3px;
+        padding:6px 9px;white-space:pre-wrap;word-break:break-word;color:#3a3f4a}
+    #${PANEL_ID} .mpc-log .err{color:#c0392b}#${PANEL_ID} .mpc-log .warn{color:#b9770e}#${PANEL_ID} .mpc-log .ok{color:#1e7e34}
     `;
 
     const ui = {};
@@ -629,8 +689,14 @@
         if (ui.dot) ui.dot.className = 'mpc-dot ' + (state || '');
     }
 
-    function field(labelText, control) {
-        return el('div', { className: 'mpc-f' }, [el('label', { textContent: labelText }), control]);
+    // A labelled control occupying `span` of the form's twelve columns. The label
+    // is always present — a blank one keeps a lone button on the same baseline as
+    // the fields beside it.
+    function field(labelText, control, span) {
+        return el('div', { className: 'mpc-f mpc-span' + (span || 3) }, [
+            el('label', { textContent: labelText, title: labelText.trim() }),
+            control,
+        ]);
     }
 
     function readForm() {
@@ -662,9 +728,13 @@
 
     function toggleSerial() {
         const serial = ui.mode.value !== 'tcp';
-        ui.serialRow.style.display = serial ? '' : 'none';
-        ui.portWrap.style.display = serial ? 'none' : '';
+        for (const wrap of ui.serialFields) wrap.classList.toggle('mpc-hidden', !serial);
+        ui.portWrap.classList.toggle('mpc-hidden', serial);
+        // The host field takes the port's two columns when there is no port to show,
+        // so the row still ends on the grid's right edge.
+        ui.hostWrap.className = 'mpc-f ' + (serial ? 'mpc-span8' : 'mpc-span6');
         ui.hostLabel.textContent = serial ? 'COM port' : 'IP address';
+        ui.host.placeholder = serial ? 'COM3' : '10.0.0.5';
     }
 
     function refreshPreview() {
@@ -682,11 +752,22 @@
         }
     }
 
+    function renderEmptyGrid(message) {
+        if (!ui.gridBody) return;
+        ui.gridBody.textContent = '';
+        ui.gridBody.appendChild(el('tr', {}, [el('td', { className: 'mpc-empty', colSpan: 7, textContent: message })]));
+    }
+
     function renderGrid(result) {
         ui.gridBody.textContent = '';
         const onlyNonZero = ui.filterZero.checked;
         const rows = result.values.filter(v => !onlyNonZero || v.v !== 0);
         const shown = rows.slice(0, 2000);
+        if (!shown.length) {
+            renderEmptyGrid(result.values.length ? 'Every register in this range read 0' : 'No registers returned — see the log');
+            ui.summary.textContent = result.values.length + ' of ' + result.summary.requested + ' registers, all zero';
+            return;
+        }
         const frag = document.createDocumentFragment();
         for (const v of shown) {
             const u16 = v.v < 0 ? v.v + 65536 : v.v;
@@ -822,67 +903,67 @@
         document.head.appendChild(el('style', { textContent: STYLE }));
 
         const panel = el('div', { id: PANEL_ID });
-        panel.style.display = 'none';
 
-        ui.dot = el('span', { className: 'mpc-dot' });
-        const close = el('button', { className: 'mpc-x', textContent: '×', title: 'Close' });
-        close.addEventListener('click', () => { panel.style.display = 'none'; });
+        ui.dot = el('span', { className: 'mpc-dot', title: 'Idle' });
         const head = el('div', { className: 'mpc-head' }, [
-            el('span', { className: 'mpc-title', textContent: 'Modpoll Console' }),
-            el('span', { className: 'mpc-ver', textContent: 'v' + VERSION + ' · plant ' + (plantIdFromHost() || '?') }),
-            ui.dot, close,
+            el('span', { className: 'mpc-title', textContent: 'Modpoll' }),
+            el('span', { className: 'mpc-ver', textContent: 'v' + VERSION + ' · plant ' + (plantIdFromHost() || '?') + ' · read only' }),
+            ui.dot,
         ]);
 
         const body = el('div', { className: 'mpc-body' });
+        const form = el('div', { className: 'mpc-form' });
+        body.appendChild(form);
 
-        // Unit picker
-        ui.units = el('select', { className: 'mpc-grow' }, [el('option', { value: '', textContent: 'Units not loaded' })]);
+        // --- unit picker: 9 + 3 columns ----------------------------------
+        ui.units = el('select', {}, [el('option', { value: '', textContent: 'Units not loaded' })]);
         ui.units.addEventListener('change', () => applyUnit(ui.units.value));
-        const loadBtn = el('button', { className: 'mpc-b', textContent: 'Load units' });
+        const loadBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Load units' });
         loadBtn.addEventListener('click', loadUnits);
-        body.appendChild(el('div', { className: 'mpc-row' }, [field('Unit (from the plant database)', ui.units), field(' ', loadBtn)]));
+        form.appendChild(field('Unit — from the plant database', ui.units, 9));
+        form.appendChild(field(' ', loadBtn, 3));
 
-        // Connection
-        ui.mode = el('select', { className: 'mpc-w80' }, [
-            el('option', { value: 'tcp', textContent: 'TCP' }),
-            el('option', { value: 'rtu', textContent: 'RTU' }),
-            el('option', { value: 'ascii', textContent: 'ASCII' }),
-        ]);
+        // --- connection: 2 + 6 + 2 + 2, or 2 + 8 + 2 without a TCP port ---
+        ui.mode = el('select', {}, ['tcp', 'rtu', 'ascii'].map(v => el('option', { value: v, textContent: v.toUpperCase() })));
         ui.mode.addEventListener('change', () => { toggleSerial(); ui.cmdDirty = false; refreshPreview(); });
-        ui.host = el('input', { className: 'mpc-grow', placeholder: '10.0.0.5' });
-        ui.hostLabel = el('label', { textContent: 'IP address' });
-        const hostWrap = el('div', { className: 'mpc-f mpc-grow' }, [ui.hostLabel, ui.host]);
-        ui.port = el('input', { className: 'mpc-w80', value: '502' });
-        ui.portWrap = field('TCP port', ui.port);
-        ui.slave = el('input', { className: 'mpc-w60', value: '1' });
-        body.appendChild(el('div', { className: 'mpc-row' }, [field('Mode', ui.mode), hostWrap, ui.portWrap, field('Slave (-a)', ui.slave)]));
+        ui.host = el('input', { placeholder: '10.0.0.5' });
+        ui.hostWrap = field('IP address', ui.host, 6);
+        ui.hostLabel = ui.hostWrap.querySelector('label');
+        ui.port = el('input', { value: '502' });
+        ui.portWrap = field('TCP port', ui.port, 2);
+        ui.slave = el('input', { value: '1' });
+        form.appendChild(field('Mode', ui.mode, 2));
+        form.appendChild(ui.hostWrap);
+        form.appendChild(ui.portWrap);
+        form.appendChild(field('Slave (-a)', ui.slave, 2));
 
-        // Serial settings, shown for RTU and ASCII only
-        ui.baudrate = el('select', { className: 'mpc-w80' }, ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200'].map(v => el('option', { value: v, textContent: v })));
+        // --- serial settings: four equal columns, hidden in TCP mode ------
+        ui.baudrate = el('select', {}, ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200'].map(v => el('option', { value: v, textContent: v })));
         ui.baudrate.value = '9600';
-        ui.parity = el('select', { className: 'mpc-w80' }, ['none', 'even', 'odd'].map(v => el('option', { value: v, textContent: v })));
-        ui.databits = el('select', { className: 'mpc-w60' }, ['8', '7'].map(v => el('option', { value: v, textContent: v })));
-        ui.stopbits = el('select', { className: 'mpc-w60' }, ['1', '2'].map(v => el('option', { value: v, textContent: v })));
-        ui.serialRow = el('div', { className: 'mpc-row' }, [
-            field('Baud (-b)', ui.baudrate), field('Parity (-p)', ui.parity),
-            field('Data bits (-d)', ui.databits), field('Stop bits (-s)', ui.stopbits),
-        ]);
-        body.appendChild(ui.serialRow);
+        ui.parity = el('select', {}, ['none', 'even', 'odd'].map(v => el('option', { value: v, textContent: v })));
+        ui.databits = el('select', {}, ['8', '7'].map(v => el('option', { value: v, textContent: v })));
+        ui.stopbits = el('select', {}, ['1', '2'].map(v => el('option', { value: v, textContent: v })));
+        ui.serialFields = [
+            field('Baud (-b)', ui.baudrate, 3), field('Parity (-p)', ui.parity, 3),
+            field('Data bits (-d)', ui.databits, 3), field('Stop bits (-s)', ui.stopbits, 3),
+        ];
+        for (const wrap of ui.serialFields) form.appendChild(wrap);
 
-        // Register range
-        ui.table = el('select', { className: 'mpc-w130' }, REGISTER_TABLES.map(t => el('option', { value: t.value, textContent: t.label })));
+        // --- register range: 3 + 3 + 2 + 2 + 2 ----------------------------
+        ui.table = el('select', {}, REGISTER_TABLES.map(t => el('option', { value: t.value, textContent: t.label, title: t.title })));
         ui.table.value = '4';
-        ui.base = el('select', { className: 'mpc-w130' }, [
-            el('option', { value: 'printed', textContent: 'as modpoll prints it (-r)' }),
-            el('option', { value: 'protocol', textContent: 'protocol address (adds 1)' }),
+        ui.base = el('select', {}, [
+            el('option', { value: 'printed', textContent: 'as modpoll prints' }),
+            el('option', { value: 'protocol', textContent: 'protocol address' }),
         ]);
-        ui.start = el('input', { className: 'mpc-w80', value: '1' });
-        ui.count = el('input', { className: 'mpc-w80', value: '10' });
-        ui.timeout = el('input', { className: 'mpc-w60', value: '25' });
-        body.appendChild(el('div', { className: 'mpc-row' }, [
-            field('Table (-t)', ui.table), field('Start is', ui.base),
-            field('Start (-r)', ui.start), field('Count (-c)', ui.count), field('Timeout s', ui.timeout),
-        ]));
+        ui.start = el('input', { value: '1' });
+        ui.count = el('input', { value: '10' });
+        ui.timeout = el('input', { value: '25' });
+        form.appendChild(field('Table (-t)', ui.table, 3));
+        form.appendChild(field('Start is', ui.base, 3));
+        form.appendChild(field('Start (-r)', ui.start, 2));
+        form.appendChild(field('Count (-c)', ui.count, 2));
+        form.appendChild(field('Timeout s', ui.timeout, 2));
 
         for (const input of [ui.host, ui.port, ui.slave, ui.start, ui.count]) {
             input.addEventListener('input', () => { ui.cmdDirty = false; refreshPreview(); });
@@ -891,71 +972,73 @@
             sel.addEventListener('change', () => { ui.cmdDirty = false; refreshPreview(); });
         }
 
-        // Command preview
-        ui.cmd = el('input', { className: 'mpc-cmd' });
+        // --- command preview ----------------------------------------------
+        ui.cmd = el('input', { className: 'mpc-cmd', spellcheck: false });
         ui.cmdDirty = false;
         ui.cmd.addEventListener('input', () => { ui.cmdDirty = true; ui.blockNote.textContent = 'Hand-edited — run as typed, blocks are not split'; });
         ui.blockNote = el('div', { className: 'mpc-note' });
-        body.appendChild(field('Command (editable; read-only commands only)', ui.cmd));
-        body.appendChild(ui.blockNote);
+        form.appendChild(field('Command — editable, read-only commands only', ui.cmd, 12));
+        form.appendChild(ui.blockNote);
 
-        // Actions
-        ui.run = el('button', { className: 'mpc-b pri', textContent: 'Run' });
+        // --- actions --------------------------------------------------------
+        ui.run = el('button', { className: 'w2ui-btn mpc-b pri', textContent: 'Run' });
         ui.run.addEventListener('click', runOnce);
-        ui.stop = el('button', { className: 'mpc-b', textContent: 'Stop', disabled: true });
+        ui.stop = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Stop', disabled: true });
         ui.stop.addEventListener('click', stopAll);
-        ui.every = el('input', { className: 'mpc-w60', value: '5' });
-        const repeat = el('button', { className: 'mpc-b', textContent: 'Repeat' });
+        ui.every = el('input', { value: '5' });
+        const repeat = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Repeat', title: 'Run again on an interval' });
         repeat.addEventListener('click', startRepeat);
-        const copyBtn = el('button', { className: 'mpc-b', textContent: 'Copy for AI' });
+        const copyBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Copy for AI', title: 'Compact JSON to the clipboard' });
         copyBtn.addEventListener('click', () => {
             if (!lastResult) return log('Nothing to copy yet');
             GM_setClipboard(JSON.stringify(compactResult(lastResult)));
             log('Compact result copied', 'ok');
         });
-        const saveBtn = el('button', { className: 'mpc-b', textContent: 'Download JSON' });
+        const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON', title: 'Download the full result' });
         saveBtn.addEventListener('click', () => {
             if (!lastResult) return log('Nothing to save yet');
             download(resultFilename(), JSON.stringify(lastResult, null, 2));
         });
-        const probeBtn = el('button', { className: 'mpc-b', textContent: 'Probe binary' });
+        const probeBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Probe', title: "Run modpoll -h and report this plant's build" });
         probeBtn.addEventListener('click', async () => {
             try {
                 const info = await probeBinary(true);
                 log('modpoll ' + (info.version || 'version unknown') + ' — ' + (info.hasTcpPortFlag ? '-p carries the TCP port in tcp mode' : 'no TCP port flag found in -h'), 'ok');
             } catch (e) { log('ERROR: ' + e.message, 'err'); }
         });
-        body.appendChild(el('div', { className: 'mpc-row' }, [ui.run, ui.stop, repeat, field('every s', ui.every), copyBtn, saveBtn, probeBtn]));
+        form.appendChild(el('div', { className: 'mpc-actions' }, [
+            ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
+            el('span', { className: 'mpc-spacer' }), copyBtn, saveBtn, probeBtn,
+        ]));
 
-        // Results
-        ui.filterZero = el('input', { type: 'checkbox' });
+        // --- results ---------------------------------------------------------
+        form.appendChild(el('div', { className: 'mpc-sep' }));
+        ui.filterZero = el('input', { type: 'checkbox', id: 'mpc-hidezero' });
         ui.filterZero.addEventListener('change', () => { if (lastResult) renderGrid(lastResult); });
-        const filterLabel = el('label', { style: 'display:flex;align-items:center;gap:5px;opacity:.8' }, [ui.filterZero, document.createTextNode('Hide zero values')]);
-        body.appendChild(el('div', { className: 'mpc-row' }, [filterLabel]));
+        form.appendChild(el('label', { className: 'mpc-check', htmlFor: 'mpc-hidezero' },
+            [ui.filterZero, el('span', { textContent: 'Hide zero values' })]));
+        ui.summary = el('div', { className: 'mpc-sum', textContent: 'No poll run yet' });
+        form.appendChild(el('div', { className: 'mpc-check', style: 'justify-content:flex-end' }, [ui.summary]));
 
         ui.gridBody = el('tbody');
+        const cols = ['13%', '13%', '15%', '15%', '14%', '15%', '15%'];
         const table = el('table', { className: 'mpc-grid' }, [
+            el('colgroup', {}, cols.map(w => el('col', { style: 'width:' + w }))),
             el('thead', {}, [el('tr', {}, ['printed', 'addr', 'value', 'hex', 'int16', '×0.1', '×0.01'].map(h => el('th', { textContent: h })))]),
             ui.gridBody,
         ]);
-        body.appendChild(el('div', { className: 'mpc-gridwrap' }, [table]));
-        ui.summary = el('div', { className: 'mpc-sum' });
-        body.appendChild(ui.summary);
+        form.appendChild(el('div', { className: 'mpc-gridwrap' }, [table]));
+        renderEmptyGrid('No registers polled yet');
 
         ui.log = el('div', { className: 'mpc-log' });
-        body.appendChild(ui.log);
+        form.appendChild(ui.log);
 
         panel.appendChild(head);
         panel.appendChild(body);
-        document.body.appendChild(panel);
-
-        makeDraggable(panel, head);
-
-        const launch = el('button', { id: LAUNCH_ID, textContent: '⚡ Modpoll' });
-        launch.addEventListener('click', () => {
-            panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
-        });
-        document.body.appendChild(launch);
+        // The panel is kept detached until the sidebar item is clicked, and is moved
+        // rather than rebuilt when the user leaves the tool and comes back, so the
+        // form, the last result and a running repeat all survive the round trip.
+        ui.panel = panel;
 
         toggleSerial();
         try { applyForm(JSON.parse(GM_getValue(STORE_KEY, 'null'))); } catch (e) { /* first run */ }
@@ -964,25 +1047,50 @@
         return panel;
     }
 
-    function makeDraggable(panel, handle) {
-        let startX = 0, startY = 0, baseLeft = 0, baseTop = 0, dragging = false;
-        handle.addEventListener('mousedown', e => {
-            if (e.target.classList.contains('mpc-x')) return;
-            const r = panel.getBoundingClientRect();
-            panel.style.left = r.left + 'px';
-            panel.style.top = r.top + 'px';
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-            startX = e.clientX; startY = e.clientY; baseLeft = r.left; baseTop = r.top;
-            dragging = true;
-            e.preventDefault();
-        });
-        window.addEventListener('mousemove', e => {
-            if (!dragging) return;
-            panel.style.left = Math.max(0, baseLeft + e.clientX - startX) + 'px';
-            panel.style.top = Math.max(0, baseTop + e.clientY - startY) + 'px';
-        });
-        window.addEventListener('mouseup', () => { dragging = false; });
+    // ------------------------------------------------- sys_tools integration
+
+    /**
+     * The console is a sys_tools tool, not an overlay: it gets its own item in the
+     * Tools group, under Screen Dump, and renders into the same main panel every
+     * other tool uses.
+     */
+    function addSidebarItem() {
+        const sb = pageWin.w2ui && pageWin.w2ui.sidebar;
+        if (!sb || typeof sb.insert !== 'function') return false;
+        if (sb.get(SIDEBAR_ID)) return true;
+        const sibling = sb.get('screen_dump') || sb.get('plant_term') || {};
+        const node = { id: SIDEBAR_ID, text: 'Modpoll' };
+        // Match whatever the neighbouring items use, so the new one does not stand out.
+        if (sibling.icon) node.icon = sibling.icon;
+        if (sibling.img) node.img = sibling.img;
+        sb.insert('tools', null, node);
+        return true;
+    }
+
+    /**
+     * Sidebar clicks all funnel through the page's own my_do_action. Wrapping it
+     * keeps the shell's routing intact and claims one extra action id.
+     */
+    function hookRouter() {
+        const original = pageWin.my_do_action;
+        if (typeof original !== 'function' || original.__mpcWrapped) return;
+        const wrapped = function (action) {
+            if (action === SIDEBAR_ID) { showConsole(); return undefined; }
+            return original.apply(this, arguments);
+        };
+        wrapped.__mpcWrapped = true;
+        pageWin.my_do_action = wrapped;
+    }
+
+    function showConsole() {
+        const layout = pageWin.w2ui && pageWin.w2ui.layout2;
+        if (!layout || !ui.panel) return;
+        layout.html('main', "<div id='" + HOST_ID + "' style='height:100%;width:100%'></div>");
+        // w2ui swaps the panel's content asynchronously in some versions; retry
+        // briefly rather than dropping the panel on the floor.
+        waitFor(() => document.getElementById(HOST_ID), 4000, 'the main panel')
+            .then(host => { if (ui.panel.parentElement !== host) host.appendChild(ui.panel); })
+            .catch(() => log('Could not attach to the main panel', 'err'));
     }
 
     // ------------------------------------------------------------ AI bridge
@@ -1032,7 +1140,7 @@
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
         stop() { stopAll(); return true; },
-        open() { const p = document.getElementById(PANEL_ID); if (p) p.style.display = 'flex'; return true; },
+        open() { showConsole(); return true; },
     };
 
     // A second route for callers that run in an isolated world and cannot see
@@ -1053,10 +1161,12 @@
     // ------------------------------------------------------------------ init
 
     function init() {
-        if (document.getElementById(PANEL_ID)) return;
+        if (ui.panel) return;
         buildPanel();
+        addSidebarItem();
+        hookRouter();
         try { pageWin.__modpoll = api; } catch (e) { window.__modpoll = api; }
-        console.info('[Modpoll Console ' + VERSION + '] window.__modpoll ready — call __modpoll.help() for the API.');
+        console.info('[Modpoll Console ' + VERSION + '] Tools → Modpoll in the sidebar; window.__modpoll.help() for the API.');
     }
 
     // The sys_tools shell builds its sidebar after load; wait for it rather than
