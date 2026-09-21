@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.19.1
+// @version      1.19.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.19.1';
+    const VERSION = '1.19.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1989,6 +1989,9 @@
     let plantNames = null;
     let lastVerification = null;
     let repeatTimer = null;
+    // True between Repeat and Stop, so a pass can stay quiet about what the first
+    // one already said.
+    let repeating = false;
     // Printed reference -> the value seen on the previous pass, so a repeat run
     // can mark what moved.
     const watchPrevious = new Map();
@@ -2053,7 +2056,10 @@
         if (!ui.log || !ui.mirror || !ui.mirror.checked) return;
         const lines = String(chunk || '').split('\n')
             .map(l => l.replace(/\s+$/, ''))
-            .filter(l => l.trim() && l.trim().indexOf(MARK) !== 0);
+            // A repeat prints the same banner every pass, which says nothing the
+            // first one did not. Only what is new to this pass is worth a line.
+            .filter(l => l.trim() && l.trim().indexOf(MARK) !== 0 && !(repeating && RE_BANNER.test(l)));
+        if (!lines.length) return;
         for (const line of lines.slice(0, MIRROR_LINE_CAP)) log('  ' + line, 'mirror');
         if (lines.length > MIRROR_LINE_CAP) log('  …' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
     }
@@ -2539,7 +2545,10 @@
             } else {
                 const form = readForm();
                 storeSet(STORE_KEY, JSON.stringify(form));
-                result = await readRegisters(form, p => log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : '')));
+                result = await readRegisters(form, p => {
+                    if (repeating) return;   // the command has not changed since the first pass
+                    log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : ''));
+                });
             }
             lastResult = result;
             renderGrid(result);
@@ -2552,7 +2561,7 @@
                 else log('The command printed nothing at all. If a modpoll without -1 was started earlier it is still ' +
                     'polling and holding the port — Reconnect clears it.', 'warn');
             }
-            if (result.ok) { setDot('ok'); log('OK — ' + result.summary.returned + ' registers', 'ok'); }
+            if (result.ok) { setDot('ok'); if (!repeating) log('OK — ' + result.summary.returned + ' registers', 'ok'); }
             else setDot('err');
         } catch (e) {
             setDot('err');
@@ -2567,14 +2576,16 @@
     function startRepeat() {
         const every = Math.max(1, Number(ui.every.value) || 5) * 1000;
         if (repeatTimer) clearInterval(repeatTimer);
+        repeating = true;
         repeatTimer = setInterval(() => { if (!termState.busy) runOnce(); }, every);
         ui.stop.disabled = false;
-        log('Repeating every ' + (every / 1000) + ' s');
+        log('Repeating every ' + (every / 1000) + ' s — only what changes is logged from here; the grid marks the values that move');
     }
 
     function stopAll() {
         abortRequested = true;
         if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
+        repeating = false;
         ui.stop.disabled = true;
         log('Stopped');
     }
