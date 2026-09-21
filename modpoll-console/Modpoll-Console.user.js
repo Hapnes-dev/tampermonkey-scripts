@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.13.1
+// @version      1.13.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.13.1';
+    const VERSION = '1.13.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2009,9 +2009,13 @@
             const i16 = v.v > 32767 ? v.v - 65536 : v.v;
             // While repeating, a value that moved since the last pass is worth
             // seeing at a glance — that is most of what commissioning looks for.
-            const previous = watchPrevious.get(v.i);
+            // Keyed by table and format as well as index: coil 1 and holding
+            // register 1 are different registers, and comparing one against the
+            // other reported changes that never happened.
+            const watchKey = table + '|' + format + '|' + v.i;
+            const previous = watchPrevious.get(watchKey);
             const changed = previous !== undefined && previous !== v.v;
-            watchPrevious.set(v.i, v.v);
+            watchPrevious.set(watchKey, v.v);
             const point = pointForReading(table, format, v.i);
             // A register the point list does not cover may still be named by the
             // plant's own parameter list, and several bits can share one register.
