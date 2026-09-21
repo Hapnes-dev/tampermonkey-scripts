@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.7.0
+// @version      1.8.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.7.0';
+    const VERSION = '1.8.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1019,8 +1019,9 @@
      * the gap is small enough that reading across it is cheaper than a second
      * command. A block never exceeds the count cap.
      */
-    function planPointRanges(points, maxGap) {
+    function planPointRanges(points, maxGap, pad) {
         const gap = maxGap === undefined ? 8 : maxGap;
+        const padding = pad === undefined ? 0 : pad;
         const byKind = {};
         for (const p of points) {
             if (!p.decoded.ok) continue;
@@ -1033,11 +1034,18 @@
             const step = formatOf(format).step;
             const refs = byKind[key].map(p => p.ref).sort((a, b) => a - b);
             let start = refs[0], last = refs[0];
-            const flush = () => ranges.push({
-                table, format,
-                ref: start,
-                count: Math.floor((last - start) / step) + 1,
-            });
+            // Padding buys the neighbours on either side, which is what an offset
+            // check needs: a shifted reading can only be compared against the
+            // registers the shift would land on.
+            const flush = () => {
+                const from = Math.max(1, start - padding * step);
+                const to = last + padding * step;
+                ranges.push({
+                    table, format,
+                    ref: from,
+                    count: Math.min(MAX_COUNT, Math.floor((to - from) / step) + 1),
+                });
+            };
             for (const ref of refs.slice(1)) {
                 const wouldCount = Math.floor((ref - start) / step) + 1;
                 if (ref - last > gap * step || wouldCount > MAX_COUNT) { flush(); start = ref; }
@@ -1056,7 +1064,7 @@
      */
     async function verifyPointList(list, spec, onProgress) {
         const started = performance.now();
-        const ranges = planPointRanges(list.points);
+        const ranges = planPointRanges(list.points, 8, OFFSET_WINDOW);
         const readings = new Map();      // table|format|ref -> value
         const refused = new Set();
         const commands = [];
@@ -1099,25 +1107,36 @@
             return { point: p, status: raw === 0 ? 'zero' : 'read', raw, scaled, flags };
         });
 
-        // Does the whole list sit better one or two references along? Scored only
-        // on points the list gave a range for, since those are the ones where
-        // right and wrong are distinguishable.
-        const withRange = list.points.filter(p => p.decoded.ok && (p.rangeMin !== null || p.rangeMax !== null));
+        /*
+         * Does the whole list sit better one or two references along? Two signals,
+         * because either alone is weak. A declared engineering range rules out a
+         * wildly wrong reading, but plant ranges are wide and a neighbouring
+         * register often fits one too. How many points read non-zero separates
+         * them: a list pointed at the right registers mostly finds values, and one
+         * pointed a register off finds the gaps between them.
+         */
+        const polled = list.points.filter(p => p.decoded.ok);
+        const withRange = polled.filter(p => p.rangeMin !== null || p.rangeMax !== null);
         const offsets = [];
-        for (let shift = -3; shift <= 3; shift++) {
-            let inRange = 0, seen = 0;
-            for (const p of withRange) {
+        for (let shift = -OFFSET_WINDOW; shift <= OFFSET_WINDOW; shift++) {
+            let inRange = 0, scored = 0, nonZero = 0, seen = 0;
+            for (const p of polled) {
                 const key = keyOf(p, shift);
                 if (!readings.has(key)) continue;
                 seen++;
-                const scaled = readings.get(key) * p.scale.factor;
+                const value = readings.get(key);
+                if (value !== 0) nonZero++;
+                if (p.rangeMin === null && p.rangeMax === null) continue;
+                scored++;
+                const scaled = value * p.scale.factor;
                 const okLow = p.rangeMin === null || scaled >= p.rangeMin;
                 const okHigh = p.rangeMax === null || scaled <= p.rangeMax;
                 if (okLow && okHigh) inRange++;
             }
-            offsets.push({ shift, scored: seen, inRange });
+            offsets.push({ shift, seen, scored, inRange, nonZero, score: inRange + nonZero });
         }
-        const best = offsets.slice().sort((a, b) => (b.inRange - a.inRange) || (Math.abs(a.shift) - Math.abs(b.shift)))[0];
+        const zero = offsets.find(o => o.shift === 0) || { score: 0 };
+        const best = offsets.slice().sort((a, b) => (b.score - a.score) || (Math.abs(a.shift) - Math.abs(b.shift)))[0];
 
         return {
             at: new Date().toISOString(),
@@ -1137,10 +1156,10 @@
                 elapsedMs: Math.round(performance.now() - started),
             },
             offsets,
-            // Only worth saying when the list declares ranges and a shift beats
-            // staying put; otherwise the scores are noise.
-            offsetVerdict: (withRange.length >= 5 && best && best.shift !== 0 &&
-                best.inRange > (offsets.find(o => o.shift === 0) || {}).inRange)
+            // Only worth saying when there are enough points to mean anything and
+            // the winning shift beats staying put by more than one point;
+            // otherwise the scores are noise.
+            offsetVerdict: (polled.length >= 5 && best && best.shift !== 0 && best.score >= zero.score + 2)
                 ? best : null,
             commands,
             diagnostics,
@@ -1159,6 +1178,9 @@
      * only read whole.
      */
     const REPORT_CHUNK_LIMIT = 30000;
+    // How far either way an offset check looks, and therefore how many extra
+    // registers each poll range carries so the comparison has something to read.
+    const OFFSET_WINDOW = 3;
 
     function reportHeader(verification, part, parts) {
         const v = verification;
@@ -1193,14 +1215,19 @@
 
     function offsetSection(verification) {
         const lines = ['## Offset check', ''];
-        if (!verification.offsets.some(o => o.scored)) {
-            lines.push('Not scored: the list declares no engineering ranges, so a shifted reading cannot be told from a correct one.');
+        if (!verification.offsets.some(o => o.seen)) {
+            lines.push('Not scored: nothing came back to compare.');
             lines.push('');
             return lines.join('\n');
         }
-        lines.push('Each candidate shift was scored on the points whose list entry declares a range.', '');
-        lines.push('| shift | points scored | inside their range |', '|---|---|---|');
-        for (const o of verification.offsets) lines.push('| ' + (o.shift > 0 ? '+' + o.shift : o.shift) + ' | ' + o.scored + ' | ' + o.inRange + ' |');
+        lines.push('Each candidate shift is scored twice: how many points land inside the engineering range their',
+            'list entry declares, and how many read non-zero at all. Ranges on a plant are wide enough that a',
+            'neighbouring register often fits one too, so the non-zero count is what usually separates them.', '');
+        lines.push('| shift | points read | inside their range (of scored) | non-zero | total |', '|---|---|---|---|---|');
+        for (const o of verification.offsets) {
+            lines.push('| ' + (o.shift > 0 ? '+' + o.shift : o.shift) + ' | ' + o.seen + ' | ' +
+                o.inRange + ' of ' + o.scored + ' | ' + o.nonZero + ' | ' + o.score + ' |');
+        }
         lines.push('');
         lines.push(verification.offsetVerdict
             ? '**A shift of ' + (verification.offsetVerdict.shift > 0 ? '+' : '') + verification.offsetVerdict.shift +
