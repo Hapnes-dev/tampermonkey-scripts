@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.2.2
+// @version      1.3.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.2.2';
+    const VERSION = '1.3.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -60,6 +60,23 @@
     const PLANT_TERM_URL = '/secure/plant_term/';
     const MODPOLL_EXE = 'c:\\iwmac\\bin\\modpoll.exe';
     const MAX_COUNT = 99;
+    // The shell runs chained commands in one round trip: three full blocks came
+    // back in 221 ms against a plant, where three separate runs cost about 3 s.
+    // Four is a deliberate ceiling — roughly 400 lines, which the terminal holds
+    // comfortably.
+    const CHAIN_MAX = 4;
+    const MARK = '#mpc';
+
+    // 32-bit formats consume two registers per value, and -c counts values rather
+    // than registers. The endian flag is per format: -i for integers, -f for floats.
+    const FORMATS = [
+        { value: '', label: '16-bit', step: 1, endianFlag: null },
+        { value: 'int', label: '32-bit int', step: 2, endianFlag: '-i' },
+        { value: 'float', label: '32-bit float', step: 2, endianFlag: '-f' },
+        { value: 'mod', label: '32-bit mod 10000', step: 2, endianFlag: '-i' },
+        { value: 'hex', label: '16-bit hex', step: 1, endianFlag: null },
+    ];
+    const formatOf = value => FORMATS.find(f => f.value === (value || '')) || FORMATS[0];
     const TOOLBOX_SQL_URL = 'http://toolbox.iwmac.local:8505/plant-sql/';
     const X_CALLER = 'Modpoll-Console';
     const STORE_KEY = 'mpc.form.v1';
@@ -163,8 +180,22 @@
      * modpoll has no write flag: it writes when values follow the host argument.
      * So a command is read-only exactly when it carries at most two positional
      * tokens — the executable and the host (or COM port).
+     *
+     * Commands may be chained with '&' to save round trips, so each segment is
+     * checked on its own, and the only non-modpoll segment allowed is the echo
+     * marker that separates one block's output from the next.
      */
     function assertReadOnly(command) {
+        const segments = String(command).split('&').map(s => s.trim()).filter(Boolean);
+        if (segments.length > 1) {
+            for (const segment of segments) assertSegmentReadOnly(segment);
+            return true;
+        }
+        return assertSegmentReadOnly(String(command).trim());
+    }
+
+    function assertSegmentReadOnly(command) {
+        if (new RegExp('^echo\\s+' + MARK + '[\\w:.-]*$').test(command)) return true;
         const tokens = splitTokens(command);
         const positionals = [];
         for (let i = 0; i < tokens.length; i++) {
@@ -194,6 +225,8 @@
             start: 1,
             count: 1,
             base: 'printed',   // 'printed' = -r as typed, 'protocol' = add one
+            format: '',        // '' 16-bit, or int / float / mod / hex
+            bigEndian: false,  // -i for 32-bit integers, -f for 32-bit floats
             baudrate: '9600',
             parity: 'none',
             databits: '8',
@@ -207,6 +240,11 @@
         spec.table = String(spec.table);
         spec.host = String(spec.host || '').trim();
         if (!spec.host) throw new Error(spec.mode === 'tcp' ? 'No IP address given' : 'No COM port given');
+        // The binary answers "Invalid reference parameter!" below 1; say so here
+        // rather than spending a round trip to be told.
+        if (printedRef(spec) < 1) throw new Error('Start reference must be 1 or higher — modpoll counts from 1');
+        // A format suffix only exists for the register tables.
+        if (spec.format && spec.table !== '3' && spec.table !== '4') spec.format = '';
         return spec;
     }
 
@@ -217,10 +255,12 @@
 
     function buildCommand(spec, overrides) {
         const s = Object.assign({}, spec, overrides || {});
+        const fmt = formatOf(s.format);
         const args = [MODPOLL_EXE];
         args.push('-m', s.mode === 'tcp' ? 'tcp' : (s.mode === 'ascii' ? 'ascii' : 'rtu'));
         args.push('-a', String(s.slave));
-        args.push('-t', String(s.table));
+        args.push('-t', String(s.table) + (fmt.value ? ':' + fmt.value : ''));
+        if (s.bigEndian && fmt.endianFlag) args.push(fmt.endianFlag);
         args.push('-r', String(overrides && overrides.ref !== undefined ? overrides.ref : printedRef(s)));
         args.push('-c', String(Math.min(MAX_COUNT, s.count)));
         if (s.mode === 'tcp') {
@@ -239,14 +279,19 @@
         return args.join(' ');
     }
 
+    /**
+     * -c counts values, not registers, and a 32-bit format spends two registers
+     * per value — so the next block starts count * step references along.
+     */
     function planBlocks(spec) {
+        const step = formatOf(spec.format).step;
         const blocks = [];
         let remaining = spec.count;
         let ref = printedRef(spec);
         while (remaining > 0) {
             const count = Math.min(MAX_COUNT, remaining);
             blocks.push({ ref, count });
-            ref += count;
+            ref += count * step;
             remaining -= count;
         }
         return blocks;
@@ -254,7 +299,9 @@
 
     // ------------------------------------------------------- output parsing
 
-    const RE_VALUE = /^\s*\[(\d+)\]\s*:\s*(-?[0-9]+(?:\.[0-9]+)?)\s*$/;
+    // Decimal, float (the 32-bit formats print six decimals) or the hex format's
+    // 0xABCD. Anything else on a value line is left unparsed rather than guessed at.
+    const RE_VALUE = /^\s*\[(\d+)\]\s*:\s*(0x[0-9a-fA-F]+|-?[0-9]+(?:\.[0-9]+)?)\s*$/;
 
     // Patterns worth surfacing. Everything else modpoll prints (banner, copyright,
     // the configuration echo) is noise that would only cost the reader context.
@@ -263,6 +310,10 @@
         { re: /port or socket open error/i, level: 'fatal', text: 'Port or socket open error — check the address and that the device is reachable' },
         { re: /can'?t reach slave/i, level: 'fatal', text: "Can't reach slave — check the IP address" },
         { re: /invalid count parameter/i, level: 'fatal', text: 'Invalid count parameter — the count cap is 99, not 100' },
+        { re: /invalid reference parameter/i, level: 'fatal', text: 'Invalid reference parameter — -r counts from 1, and stops at 65536' },
+        // Both spellings are the binary's own: it prints "Unknwon" and "Progam".
+        { re: /unkn[wo]{2}n error/i, level: 'error', text: 'Unknown error — on TCP this is usually a slave address the gateway does not serve' },
+        { re: /unrecognized option|missing option parameter/i, level: 'fatal', text: 'Unrecognized option — this build does not take that flag' },
         { re: /send time-?out/i, level: 'error', text: 'Send time-out' },
         { re: /time-?out|timeout/i, level: 'error', text: 'No response from device (timeout)' },
         { re: /checksum error/i, level: 'error', text: 'Checksum error — data corruption on the bus' },
@@ -278,10 +329,13 @@
         const diagnostics = [];
         let fatal = false;
         for (const line of lines) {
+            if (line.trim().indexOf(MARK) === 0) continue;   // chain separator
             const m = line.match(RE_VALUE);
             if (m) {
                 const printed = Number(m[1]);
-                values.push({ i: printed, addr: printed - 1, v: Number(m[2]) });
+                const raw = m[2];
+                const value = /^0x/i.test(raw) ? parseInt(raw, 16) : Number(raw);
+                values.push({ i: printed, addr: printed - 1, v: value });
                 continue;
             }
             for (const d of DIAGNOSTICS) {
@@ -393,8 +447,13 @@
      * under a second; the default leaves room for a slow bus without making every
      * block wait on the timeout.
      */
+    // Lines that mean this command is over: a device exception, a rejected
+    // argument, or the process reporting its exit ("Progam" is the binary's typo).
+    const RE_FINAL_ERROR = /exception response|unkn[wo]{2}n error|invalid \w+ parameter|unrecognized option|prog(r)?am stopped with exit code/i;
+    const countValueLines = text => (String(text).match(/\[\d+\]\s*:/g) || []).length;
+
     async function termRun(command, opts) {
-        const options = Object.assign({ timeoutMs: 25000, settleMs: 800 }, opts || {});
+        const options = Object.assign({ timeoutMs: 25000, settleMs: 300 }, opts || {});
         const state = await ensureTerminal();
         const outEl = state.outEl;
         const firstNew = outEl.children.length;
@@ -417,17 +476,23 @@
 
         state.t.exec(command);
         const deadline = Date.now() + options.timeoutMs;
-        let lastSize = -1;
+        let lastLength = -1;
         let stableSince = Date.now();
         let grew = false;
         while (Date.now() < deadline) {
-            await sleep(150);
-            const size = outEl.children.length + ':' + (outEl.lastElementChild ? outEl.lastElementChild.innerText.length : 0);
-            if (size !== lastSize) { lastSize = size; stableSince = Date.now(); }
-            if (outEl.children.length > firstNew) grew = true;
-            if (grew && Date.now() - stableSince > options.settleMs) return readChunk();
+            await sleep(60);
+            const chunk = readChunk();
+            if (chunk.length !== lastLength) { lastLength = chunk.length; stableSince = Date.now(); }
+            if (chunk.length) grew = true;
+            // Knowing how many values were asked for turns the wait into a real
+            // completion signal: a poll answers in about 130 ms, so waiting out a
+            // settle window is most of what a block used to cost.
+            if (options.expect && countValueLines(chunk) >= options.expect) return chunk;
+            if (options.stopOnError !== false && RE_FINAL_ERROR.test(chunk)) return chunk;
+            if (grew && Date.now() - stableSince > options.settleMs) return chunk;
         }
-        if (grew) return readChunk();
+        const chunk = readChunk();
+        if (grew) return chunk;
         throw new Error('Plant Term printed nothing within ' + Math.round(options.timeoutMs / 1000) +
             ' s of running the command.');
     }
@@ -445,16 +510,35 @@
         const commands = [];
         let fatal = false;
 
-        for (let bi = 0; bi < blocks.length; bi++) {
+        for (let bi = 0; bi < blocks.length && !fatal; bi += CHAIN_MAX) {
             if (abortRequested) { diagnostics.push({ level: 'warn', text: 'Stopped by user', line: '' }); break; }
-            const b = blocks[bi];
-            const command = buildCommand(spec, { ref: b.ref, count: b.count });
-            assertReadOnly(command);
-            commands.push(command);
-            if (onProgress) onProgress({ block: bi + 1, blocks: blocks.length, command });
+            const group = blocks.slice(bi, bi + CHAIN_MAX);
+            const parts = [];
+            let expect = 0;
+            for (const b of group) {
+                const command = buildCommand(spec, { ref: b.ref, count: b.count });
+                assertReadOnly(command);
+                commands.push(command);
+                // The marker attributes an error line to the block that caused it;
+                // values carry their own reference, so they need no help.
+                parts.push('echo ' + MARK + ':' + b.ref, command);
+                expect += b.count;
+            }
+            const line = parts.join(' & ');
+            assertReadOnly(line);
+            if (onProgress) {
+                onProgress({
+                    block: Math.min(bi + group.length, blocks.length), blocks: blocks.length,
+                    command: group.length > 1
+                        ? group.length + ' blocks in one run, -r ' + group[0].ref + ' to -r ' + group[group.length - 1].ref
+                        : commands[commands.length - 1],
+                });
+            }
             let raw;
             try {
-                raw = await termRun(command, { timeoutMs: spec.timeoutMs });
+                // One error must not cut a chained run short: the later blocks in
+                // the same line are still coming.
+                raw = await termRun(line, { timeoutMs: spec.timeoutMs, expect, stopOnError: group.length === 1 });
             } catch (e) {
                 diagnostics.push({ level: 'fatal', text: e.message, line: '' });
                 fatal = true;
@@ -479,6 +563,7 @@
             spec: {
                 mode: spec.mode, host: spec.host, port: spec.port, slave: spec.slave,
                 table: spec.table, start: spec.start, count: spec.count, base: spec.base,
+                format: spec.format || '16-bit', registersPerValue: formatOf(spec.format).step,
             },
             // Both numbers are carried per row: the index modpoll printed and the
             // protocol address it corresponds to. Everything downstream reads the
@@ -488,6 +573,76 @@
             diagnostics,
             commands,
         };
+    }
+
+    /**
+     * Ask a list of references one register each, several per round trip, and say
+     * for each whether the device answered. Chaining makes this cheap: thirteen
+     * references came back in 2.5 s on a plant, where one round trip each would
+     * have cost 14.
+     */
+    async function probeRefs(spec, refs) {
+        const results = {};
+        const PER_RUN = CHAIN_MAX * 2;
+        for (let i = 0; i < refs.length; i += PER_RUN) {
+            const group = refs.slice(i, i + PER_RUN);
+            const parts = [];
+            for (const ref of group) {
+                parts.push('echo ' + MARK + ':' + ref, buildCommand(spec, { ref, count: 1 }));
+            }
+            const line = parts.join(' & ');
+            assertReadOnly(line);
+            const raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false });
+            let current = null;
+            for (const rawLine of String(raw).split(/\r?\n/)) {
+                const line2 = rawLine.trim();
+                const mark = line2.match(new RegExp('^' + MARK + ':(\\d+)$'));
+                if (mark) { current = mark[1]; results[current] = { answered: false }; continue; }
+                if (current === null) continue;
+                const value = line2.match(RE_VALUE);
+                if (value) { results[current] = { answered: true, value: Number(value[2]) }; continue; }
+                if (/exception/i.test(line2)) results[current] = { answered: false, reason: 'exception' };
+                else if (RE_FINAL_ERROR.test(line2)) results[current] = { answered: false, reason: line2.slice(0, 60) };
+            }
+        }
+        return results;
+    }
+
+    /**
+     * What does this device actually answer? Which of the four tables respond, and
+     * where the readable range starts — found by doubling until an answer appears,
+     * then halving back. A device that answers 0 for an unmapped register and one
+     * that raises an exception both exist, so the answer is reported as observed
+     * rather than interpreted.
+     */
+    async function scanDevice(input) {
+        const base = normaliseSpec(Object.assign({ count: 1 }, input));
+        const tables = {};
+        for (const table of ['4', '3', '1', '0']) {
+            const spec = Object.assign({}, base, { table, format: '' });
+            const refs = [1, 2, 5, 10, 50, 100, 500, 1000, 5000, 10000];
+            const probes = await probeRefs(spec, refs);
+            const answered = refs.filter(r => probes[r] && probes[r].answered);
+            let firstReadable = null;
+            if (answered.length) {
+                // Halve back between the last silent reference and the first answer.
+                let low = Math.max(1, refs[refs.indexOf(answered[0]) - 1] || 1);
+                let high = answered[0];
+                while (high - low > 1) {
+                    const mid = Math.floor((low + high) / 2);
+                    const probe = await probeRefs(Object.assign({}, spec), [mid]);
+                    if (probe[mid] && probe[mid].answered) high = mid; else low = mid;
+                }
+                firstReadable = high;
+            }
+            tables[table] = {
+                answers: answered.length > 0,
+                firstReadable,
+                sample: answered.slice(0, 3).map(r => r + '=' + probes[r].value),
+                refused: refs.filter(r => probes[r] && !probes[r].answered).slice(0, 3),
+            };
+        }
+        return { host: base.host, slave: base.slave, at: new Date().toISOString(), tables };
     }
 
     /** The same result, shrunk for a caller that pays by the token. */
@@ -720,6 +875,7 @@
 
     const ui = {};
     let lastResult = null;
+    let lastScan = null;
     let repeatTimer = null;
 
     function log(text, level) {
@@ -753,6 +909,8 @@
             start: ui.start.value,
             count: ui.count.value,
             base: ui.base.value,
+            format: ui.format.value,
+            bigEndian: ui.bigEndian.checked,
             baudrate: ui.baudrate.value,
             parity: ui.parity.value,
             databits: ui.databits.value,
@@ -763,9 +921,10 @@
 
     function applyForm(values) {
         if (!values) return;
-        for (const key of ['mode', 'host', 'port', 'slave', 'table', 'start', 'count', 'base', 'baudrate', 'parity', 'databits', 'stopbits']) {
+        for (const key of ['mode', 'host', 'port', 'slave', 'table', 'start', 'count', 'base', 'format', 'baudrate', 'parity', 'databits', 'stopbits']) {
             if (ui[key] && values[key] !== undefined && values[key] !== null) ui[key].value = values[key];
         }
+        ui.bigEndian.checked = !!values.bigEndian;
         toggleSerial();
         refreshPreview();
     }
@@ -1003,16 +1162,23 @@
         ui.start = el('input', { value: '1' });
         ui.count = el('input', { value: '10' });
         ui.timeout = el('input', { value: '25' });
+        ui.format = el('select', {}, FORMATS.map(f => el('option', { value: f.value, textContent: f.label })));
+        ui.bigEndian = el('input', { type: 'checkbox', id: 'mpc-endian' });
         form.appendChild(field('Table (-t)', ui.table, 3));
+        form.appendChild(field('Format', ui.format, 2));
         form.appendChild(field('Start is', ui.base, 3));
         form.appendChild(field('Start (-r)', ui.start, 2));
         form.appendChild(field('Count (-c)', ui.count, 2));
+        // Timeout and the endian switch share the last row, which keeps the
+        // twelve-column rhythm without a lonely field on its own line.
         form.appendChild(field('Timeout s', ui.timeout, 2));
+        form.appendChild(el('label', { className: 'mpc-check mpc-span4', htmlFor: 'mpc-endian', title: 'Adds -i for 32-bit integers, -f for 32-bit floats' },
+            [ui.bigEndian, el('span', { textContent: 'Slave is big-endian (32-bit only)' })]));
 
         for (const input of [ui.host, ui.port, ui.slave, ui.start, ui.count]) {
             input.addEventListener('input', () => { ui.cmdDirty = false; refreshPreview(); });
         }
-        for (const sel of [ui.table, ui.base, ui.baudrate, ui.parity, ui.databits, ui.stopbits]) {
+        for (const sel of [ui.table, ui.base, ui.format, ui.baudrate, ui.parity, ui.databits, ui.stopbits, ui.bigEndian]) {
             sel.addEventListener('change', () => { ui.cmdDirty = false; refreshPreview(); });
         }
 
@@ -1050,9 +1216,27 @@
                 log('modpoll ' + (info.version || 'version unknown') + ' — ' + (info.hasTcpPortFlag ? '-p carries the TCP port in tcp mode' : 'no TCP port flag found in -h'), 'ok');
             } catch (e) { log('ERROR: ' + e.message, 'err'); }
         });
+        const scanBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Scan device', title: 'Which tables answer, and where the readable range starts' });
+        scanBtn.addEventListener('click', async () => {
+            scanBtn.disabled = true;
+            try {
+                log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + '…');
+                const report = await scanDevice(readForm());
+                for (const table of Object.keys(report.tables)) {
+                    const t = report.tables[table];
+                    const name = (REGISTER_TABLES.find(r => r.value === table) || {}).label || table;
+                    log(t.answers
+                        ? name + ': answers from ' + t.firstReadable + ' (' + t.sample.join(', ') + ')'
+                        : name + ': no answer (' + (t.refused.length ? 'refused ' + t.refused.join(', ') : 'silent') + ')',
+                        t.answers ? 'ok' : '');
+                }
+                lastScan = report;
+            } catch (e) { log('ERROR: ' + e.message, 'err'); }
+            finally { scanBtn.disabled = false; }
+        });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
-            el('span', { className: 'mpc-spacer' }), copyBtn, saveBtn, probeBtn,
+            el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, probeBtn,
         ]));
 
         // --- results ---------------------------------------------------------
@@ -1161,7 +1345,10 @@
                 '                                          base:  "printed" (default, -r as given) | "protocol" (adds 1)',
                 '                                          count over 99 is split into blocks automatically',
                 'await __modpoll.readCompact(spec)         same, values as a bare array',
+                '                                          format: "" 16-bit | int | float | mod | hex',
+                '                                          bigEndian: true adds -i (int) or -f (float)',
                 'await __modpoll.raw("modpoll.exe …")      one command, parsed; writes are refused',
+                'await __modpoll.scan({host, slave})       which tables answer, and from which reference',
                 'await __modpoll.probe()                   what this plant\'s modpoll -h reports',
                 '__modpoll.last()                          the last full result',
                 '__modpoll.stop()                          abort a running sweep',
@@ -1186,6 +1373,8 @@
             return { ok: parsed.values.length > 0 && !parsed.fatal, command, values: parsed.values, diagnostics: parsed.diagnostics, raw };
         },
         probe(force) { return probeBinary(!!force); },
+        scan(spec) { return scanDevice(spec).then(report => { lastScan = report; return report; }); },
+        lastScan() { return lastScan; },
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
         stop() { stopAll(); return true; },
