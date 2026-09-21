@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.13.0
+// @version      1.13.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.13.0';
+    const VERSION = '1.13.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1811,7 +1811,7 @@
         { label: 'addr', width: '7%', title: 'Protocol address, the printed index minus one' },
         { label: 'name', width: '25%', align: 'left', title: 'From the loaded point list, matched on this reference' },
         { label: 'value', width: '9%', title: 'The register as the device returned it' },
-        { label: 'scaled', width: '9%', title: "Value multiplied by the list's scale key" },
+        { label: 'scaled', width: '9%', title: "Value multiplied by the list's scale key, or what the plant itself shows — a number or a state text" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
         { label: 'hex', width: '9%', title: 'The same value as unsigned 16-bit hexadecimal' },
         { label: 'int16', width: '8%', title: 'Read as a signed 16-bit integer' },
@@ -2044,10 +2044,12 @@
                 { text: point ? point.name : plantLabel, align: 'left' },
                 { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
                 {
+                    // Whatever the plant shows, number or state text: "Auto" or
+                    // "Alarm" against a raw 1 says more than an empty cell does.
                     text: scaled !== null
                         ? (point.decimals ? scaled.toFixed(point.decimals) : String(scaled))
-                        : (Number.isNaN(plantScaled) ? '' : String(fromPlant[0].plantValue)),
-                    title: scaled === null && !Number.isNaN(plantScaled) ? 'What the plant itself shows for this parameter' : undefined,
+                        : (fromPlant ? String(fromPlant[0].plantValue || '') : ''),
+                    title: scaled === null && fromPlant ? 'What the plant itself shows for this parameter' : undefined,
                 },
                 { text: point ? (point.unit || '') : (fromPlant ? fromPlant[0].unit : '') },
                 { text: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') },

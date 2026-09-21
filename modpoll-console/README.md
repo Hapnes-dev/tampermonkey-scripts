@@ -25,10 +25,15 @@ rebuilt.
   command printed. Opening the console does not switch the main panel away from it.
 - **Splits long ranges.** A count above 99 becomes several commands; the results
   are stitched back into one list.
-- **Parses the output.** `[N]: value` rows become a table with the printed index,
-  the protocol address, the raw value, hex, the int16 reading and ×0.1 / ×0.01
-  scalings. modpoll's error lines become one diagnostic line each instead of a
-  wall of repeated text.
+- **Parses the output into columns that suit the table polled.** Registers get the
+  printed index, the protocol address, the name, the value, the scaled value, the
+  unit, hex, int16, what changed since the last pass, and where the name came
+  from; a 32-bit value says which two registers it spans. Coils and discrete
+  inputs get a shorter set — a bit is 0 or 1, and hexadecimal is noise on it.
+  Clicking any row opens every other reading of that register: binary, unsigned
+  and signed, the two characters it would be as text, and everything the point
+  list or the plant knows about it. modpoll's error lines become one diagnostic
+  line each instead of a wall of repeated text.
 - **Recovers what a refused block still holds.** Modbus refuses a read whole, so
   one unmapped register inside a 99-register block returns nothing. The block is
   halved until the readable part comes back, and the references the device will
@@ -73,6 +78,24 @@ And one thing about the device rather than the binary: **it refuses printed
 reference 1 — protocol address 0 — in every table**, while answering 0 for
 unmapped references higher up. A block containing that one reference was refused
 whole, which is why registers 1-20 first read as silence.
+
+## Serial devices, and what polling one costs
+
+A unit's bus comes from the sys_tools topology, which is already on the page. A
+label like `COM1 - 192.168.10.30` is both a COM port on the plant server and the
+gateway behind it, and the console says which before the poll rather than after
+it fails:
+
+- **The Plant Server holds the COM port.** It polls the bus continuously, so
+  modpoll cannot have that port until the service is stopped — which stops
+  temperature logging and alarms. That is the plant owner's decision, and the
+  console never touches it; it only tells you that is what the port error means.
+- **Try ENC first.** Mode `enc` is Modbus RTU framed inside TCP, which is what a
+  serial gateway in TCP-server mode expects, so the same bus can often be reached
+  at the gateway address with nothing stopped. Port 4001 upwards is the usual
+  mapping, one per serial port. It is worth a try before anything is stopped — on
+  plant 2349 both gateways refused 502, 4001 and 4003, so there it really did come
+  down to the Plant Server.
 
 ## The three traps it handles for you
 
