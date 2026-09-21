@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.16.0
+// @version      1.17.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.16.0';
+    const VERSION = '1.17.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -360,7 +360,12 @@
     ];
 
     // What modpoll prints on every run and nobody needs to read.
-    const RE_BANNER = /^\s*(modpoll\s|Copyright|Getopt|Protocol configuration|Slave configuration|Serial port configuration|TCP\/IP configuration|Data type|Protocol opened|Polling slave|--|C:\\|\s*$)/i;
+    // Banner noise, plus this console's own marks: the run tag, and the tail of a
+    // command line the terminal wrapped onto a second row — which is an echo of
+    // what was sent, not something the device said.
+    const RE_BANNER = new RegExp('^\\s*(modpoll\\s|Copyright|Getopt|Protocol configuration|Slave configuration|' +
+        'Serial port configuration|TCP/IP configuration|Data type|Protocol opened|Polling slave|--|C:\\\\|&\\s|' +
+        MARK + '|\\s*$)', 'i');
 
     function parseModpoll(raw) {
         const lines = String(raw || '').split(/\r?\n/);
@@ -595,7 +600,7 @@
             // Knowing how many values were asked for turns the wait into a real
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
-            if (options.expect && countValueLines(chunk) >= options.expect) return chunk;
+            if (options.expect && countValueLines(chunk) >= options.expect) { mirrorTerminal(chunk); return chunk; }
             // This plant does not resolve a bare "modpoll": say so once, take the
             // full path, and run the same command again.
             if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
@@ -603,11 +608,11 @@
                 log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
                 return termRun(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
             }
-            if (options.stopOnError !== false && RE_FINAL_ERROR.test(chunk)) return chunk;
-            if (grew && Date.now() - stableSince > options.settleMs) return chunk;
+            if (options.stopOnError !== false && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk); return chunk; }
+            if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk); return chunk; }
         }
         const chunk = readChunk();
-        if (grew) return chunk;
+        if (grew) { mirrorTerminal(chunk); return chunk; }
         // A shell that answers nothing at all is usually a dead session rather
         // than a slow device — the page keeps its prompt either way, so silence
         // is the only symptom. Reload the frame once and try again.
@@ -1932,6 +1937,8 @@
         font:11.5px/1.5 Consolas,ui-monospace,monospace;background:#fafbfc;border:1px solid var(--line);border-radius:3px;
         padding:6px 9px;white-space:pre-wrap;word-break:break-word;color:#3a3f4a}
     #${PANEL_ID} .mpc-log .err{color:#c0392b}#${PANEL_ID} .mpc-log .warn{color:#b9770e}#${PANEL_ID} .mpc-log .ok{color:#1e7e34}
+    /* The terminal's own words, set apart from this console's reading of them. */
+    #${PANEL_ID} .mpc-log .mirror{color:#5a6070}
     `;
 
     const ui = {};
@@ -1950,6 +1957,22 @@
         const line = el('div', { className: level || '', textContent: text });
         ui.log.appendChild(line);
         ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    /**
+     * Everything the shell printed, as it printed it. The console's own reading
+     * of the output is an interpretation; when a poll does something unexpected
+     * the terminal text is the only thing that settles it, and going to look at
+     * Plant Term to find it is a detour.
+     */
+    const MIRROR_LINE_CAP = 200;
+    function mirrorTerminal(chunk) {
+        if (!ui.log || !ui.mirror || !ui.mirror.checked) return;
+        const lines = String(chunk || '').split('\n')
+            .map(l => l.replace(/\s+$/, ''))
+            .filter(l => l.trim() && l.trim().indexOf(MARK) !== 0);
+        for (const line of lines.slice(0, MIRROR_LINE_CAP)) log('  ' + line, 'mirror');
+        if (lines.length > MIRROR_LINE_CAP) log('  …' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
     }
 
     function setDot(state) {
@@ -2812,8 +2835,13 @@
         form.appendChild(el('div', { className: 'mpc-sep' }));
         ui.filterZero = el('input', { type: 'checkbox', id: 'mpc-hidezero' });
         ui.filterZero.addEventListener('change', () => { if (lastResult) renderGrid(lastResult); });
-        form.appendChild(el('label', { className: 'mpc-check', htmlFor: 'mpc-hidezero' },
+        ui.mirror = el('input', { type: 'checkbox', id: 'mpc-mirror', checked: true });
+        form.appendChild(el('label', { className: 'mpc-check mpc-span3', htmlFor: 'mpc-hidezero' },
             [ui.filterZero, el('span', { textContent: 'Hide zero values' })]));
+        form.appendChild(el('label', {
+            className: 'mpc-check mpc-span3', htmlFor: 'mpc-mirror',
+            title: 'Print what Plant Term printed, line for line, under each command',
+        }, [ui.mirror, el('span', { textContent: 'Mirror terminal output' })]));
         ui.summary = el('div', { className: 'mpc-sum', textContent: 'No poll run yet' });
         form.appendChild(el('div', { className: 'mpc-check', style: 'justify-content:flex-end' }, [ui.summary]));
 
