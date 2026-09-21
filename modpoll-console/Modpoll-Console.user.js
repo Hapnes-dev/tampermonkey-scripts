@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.9.0
+// @version      1.10.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.9.0';
+    const VERSION = '1.10.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1512,6 +1512,14 @@
     #${PANEL_ID} table.mpc-grid tbody tr:nth-child(even) td{background:#f7f8fa}
     #${PANEL_ID} table.mpc-grid td.zero{color:#a3a8b3}
     #${PANEL_ID} table.mpc-grid td.changed{color:#1b5fa8;font-weight:bold}
+    #${PANEL_ID} table.mpc-grid td.bad{color:#c0392b}
+    #${PANEL_ID} table.mpc-grid tr.mpc-clickable{cursor:pointer}
+    #${PANEL_ID} table.mpc-grid tr.mpc-clickable:hover td{background:#eef4fb}
+    #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#f4f7fb;text-align:left;padding:8px 10px}
+    #${PANEL_ID} .mpc-detailbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:3px 18px}
+    #${PANEL_ID} .mpc-kv{display:flex;gap:8px;font:11.5px Consolas,ui-monospace,monospace}
+    #${PANEL_ID} .mpc-kv .mpc-k{color:#6a7180;min-width:118px;flex:0 0 auto}
+    #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;word-break:break-word}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
     #${PANEL_ID} .mpc-log{grid-column:span 12;max-height:120px;overflow-y:auto;overflow-x:hidden;
@@ -1610,14 +1618,27 @@
     // The grid serves two readings: registers as polled, and points as verified.
     // Columns are declared rather than hard-coded so the two can share one table.
     const REGISTER_COLUMNS = [
-        { label: 'printed', width: '13%' }, { label: 'addr', width: '13%' }, { label: 'value', width: '15%' },
-        { label: 'hex', width: '15%' }, { label: 'int16', width: '14%' }, { label: '×0.1', width: '15%' },
-        { label: '×0.01', width: '15%' },
+        { label: 'printed', width: '7%', title: 'The index modpoll printed — -r counts from 1' },
+        { label: 'addr', width: '7%', title: 'Protocol address, the printed index minus one' },
+        { label: 'name', width: '25%', align: 'left', title: 'From the loaded point list, matched on this reference' },
+        { label: 'value', width: '9%', title: 'The register as the device returned it' },
+        { label: 'scaled', width: '9%', title: "Value multiplied by the list's scale key" },
+        { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
+        { label: 'hex', width: '9%', title: 'The same value as unsigned 16-bit hexadecimal' },
+        { label: 'int16', width: '8%', title: 'Read as a signed 16-bit integer' },
+        { label: 'Δ', width: '8%', title: 'Change since the previous pass of a repeated poll' },
+        { label: 'type', width: '12%', align: 'left', title: 'Datatype from the list' },
     ];
     const POINT_COLUMNS = [
-        { label: 'addr', width: '8%' }, { label: 'ref', width: '8%' }, { label: 'name', width: '30%', align: 'left' },
-        { label: 'raw', width: '10%' }, { label: 'scaled', width: '11%' }, { label: 'unit', width: '8%' },
-        { label: 'status', width: '11%' }, { label: 'note', width: '14%', align: 'left' },
+        { label: 'addr', width: '7%', title: 'The address as the point list prints it' },
+        { label: 'ref', width: '7%', title: "modpoll's 1-based reference for that address" },
+        { label: 'name', width: '24%', align: 'left', title: 'Tag and alias text from the list' },
+        { label: 'type', width: '13%', align: 'left', title: 'Datatype key, which decides the table and the raw type' },
+        { label: 'raw', width: '9%', title: 'The register as the device returned it' },
+        { label: 'scaled', width: '9%', title: "Raw multiplied by the list's scale key" },
+        { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
+        { label: 'status', width: '10%', title: 'read, zero, refused, no answer or not polled' },
+        { label: 'note', width: '15%', align: 'left', title: 'Why a point is flagged, or why it was not polled' },
     ];
 
     function setGridColumns(columns) {
@@ -1626,7 +1647,72 @@
         ui.gridHead.textContent = '';
         for (const c of columns) ui.gridCols.appendChild(el('col', { style: 'width:' + c.width }));
         ui.gridHead.appendChild(el('tr', {}, columns.map(c =>
-            el('th', { textContent: c.label, style: c.align === 'left' ? 'text-align:left' : '' }))));
+            el('th', { textContent: c.label, title: c.title || c.label, style: c.align === 'left' ? 'text-align:left' : '' }))));
+    }
+
+    /*
+     * A register on its own says very little. When a point list is loaded, every
+     * reading it covers can be named, typed and scaled, and that holds for an
+     * ordinary poll as much as for a verification — the list is the only place
+     * that knows what 190 in register 432 means.
+     */
+    function pointForReading(table, format, ref) {
+        if (!pointList) return null;
+        const key = String(table) + '|' + String(format || '') + '|' + ref;
+        if (!pointList.byRef) {
+            pointList.byRef = new Map();
+            for (const p of pointList.points) {
+                if (!p.decoded.ok) continue;
+                pointList.byRef.set(p.decoded.table + '|' + p.decoded.format + '|' + p.ref, p);
+            }
+        }
+        return pointList.byRef.get(key) || null;
+    }
+
+    /** Everything one register can be read as, for the row that expands on click. */
+    function readingDetail(value, point, previous) {
+        const u16 = value < 0 ? value + 65536 : value;
+        const i16 = value > 32767 ? value - 65536 : value;
+        const bits = (u16 >>> 0).toString(2).padStart(16, '0').replace(/(.{4})(?=.)/g, '$1 ');
+        const chars = [u16 >> 8, u16 & 0xff]
+            .map(code => (code >= 32 && code < 127) ? String.fromCharCode(code) : '·').join('');
+        const rows = [
+            ['raw', String(value)],
+            ['hex', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0')],
+            ['binary', bits],
+            ['unsigned / signed', u16 + ' / ' + i16],
+            ['as two characters', chars],
+            ['×0.1 / ×0.01', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2)],
+        ];
+        if (previous !== undefined && previous !== value) rows.push(['previous pass', previous + ' (changed by ' + (value - previous > 0 ? '+' : '') + (value - previous) + ')']);
+        if (point) {
+            rows.push(['point', point.name]);
+            if (point.group) rows.push(['group', point.group]);
+            rows.push(['datatype', point.datatype + (point.decoded.ok ? ' — table ' + point.decoded.table + ', ' + point.decoded.rawType + (point.decoded.step === 2 ? ', two registers' : '') : '')]);
+            if (point.scaleKey) rows.push(['scale', point.scaleKey + (point.scale.known ? ' (×' + point.scale.factor + ')' : ' — not understood')]);
+            if (point.unit) rows.push(['unit', point.unit]);
+            if (point.rw) rows.push(['access', point.rw === 'rw' ? 'read/write in the list' : 'read only in the list']);
+            if (point.rangeMin !== null || point.rangeMax !== null) {
+                rows.push(['declared range', (point.rangeMin === null ? '…' : point.rangeMin) + ' to ' + (point.rangeMax === null ? '…' : point.rangeMax)]);
+            }
+            rows.push(['addresses', 'list ' + point.addr + ' · protocol ' + point.protocol + ' · modpoll ' + point.ref]);
+        }
+        return rows;
+    }
+
+    function toggleDetailRow(tr, value, point, previous) {
+        const next = tr.nextElementSibling;
+        if (next && next.classList.contains('mpc-detail')) { next.remove(); return; }
+        for (const open of ui.gridBody.querySelectorAll('tr.mpc-detail')) open.remove();
+        const cells = readingDetail(value, point, previous).map(([label, text]) =>
+            el('div', { className: 'mpc-kv' }, [
+                el('span', { className: 'mpc-k', textContent: label }),
+                el('span', { className: 'mpc-v', textContent: text }),
+            ]));
+        const detail = el('tr', { className: 'mpc-detail' }, [
+            el('td', { colSpan: (ui.gridColumns || REGISTER_COLUMNS).length }, [el('div', { className: 'mpc-detailbox' }, cells)]),
+        ]);
+        tr.parentNode.insertBefore(detail, tr.nextSibling);
     }
 
     function renderEmptyGrid(message) {
@@ -1644,18 +1730,22 @@
         for (const row of verification.rows) {
             const p = row.point;
             const cells = [
-                String(p.addr), String(p.ref), p.name,
+                String(p.addr), String(p.ref), p.name, p.datatype,
                 row.raw === undefined ? '' : String(row.raw),
                 row.scaled === undefined ? '' : (p.decimals ? row.scaled.toFixed(p.decimals) : String(row.scaled)),
                 p.unit || '', row.status,
-                (row.flags && row.flags.length ? row.flags[0] : (row.note || '')),
+                (row.flags && row.flags.length ? row.flags.join('; ') : (row.note || '')),
             ];
-            const tr = el('tr', {}, cells.map((text, i) => el('td', {
-                textContent: text,
-                className: (i === 3 && row.raw === 0) ? 'zero' : '',
-                style: POINT_COLUMNS[i].align === 'left' ? 'text-align:left' : '',
-                title: text,
-            })));
+            const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
+                cells.map((text, i) => el('td', {
+                    textContent: text,
+                    className: (i === 4 && row.raw === 0) ? 'zero' : (i === 7 && (row.status === 'refused' || row.status === 'no answer') ? 'bad' : ''),
+                    style: POINT_COLUMNS[i].align === 'left' ? 'text-align:left' : '',
+                    title: text,
+                })));
+            if (row.raw !== undefined) {
+                tr.addEventListener('click', () => toggleDetailRow(tr, row.raw, p, undefined));
+            }
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
@@ -1676,6 +1766,9 @@
             return;
         }
         const frag = document.createDocumentFragment();
+        const table = (result.spec && result.spec.table) || '4';
+        const format = (result.spec && result.spec.format === '16-bit') ? '' : ((result.spec && result.spec.format) || '');
+        let named = 0;
         for (const v of shown) {
             const u16 = v.v < 0 ? v.v + 65536 : v.v;
             const i16 = v.v > 32767 ? v.v - 65536 : v.v;
@@ -1684,22 +1777,36 @@
             const previous = watchPrevious.get(v.i);
             const changed = previous !== undefined && previous !== v.v;
             watchPrevious.set(v.i, v.v);
-            const tr = el('tr', {}, [
-                el('td', { textContent: String(v.i) }),
-                el('td', { textContent: String(v.addr) }),
-                el('td', { textContent: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') }),
-                el('td', { textContent: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') }),
-                el('td', { textContent: String(i16) }),
-                el('td', { textContent: (v.v / 10).toFixed(1) }),
-                el('td', { textContent: (v.v / 100).toFixed(2) }),
-            ]);
+            const point = pointForReading(table, format, v.i);
+            if (point) named++;
+            const scaled = point ? (point.scale.invert ? (v.v ? 0 : 1) : v.v * point.scale.factor) : null;
+            const cells = [
+                { text: String(v.i) },
+                { text: String(v.addr) },
+                { text: point ? point.name : '', align: 'left' },
+                { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
+                { text: scaled === null ? '' : (point.decimals ? scaled.toFixed(point.decimals) : String(scaled)) },
+                { text: point ? (point.unit || '') : '' },
+                { text: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') },
+                { text: String(i16) },
+                { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
+                { text: point ? point.datatype : '', align: 'left' },
+            ];
+            const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
+                cells.map(c => el('td', {
+                    textContent: c.text, className: c.className || '',
+                    style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
+                })));
+            tr.addEventListener('click', () => toggleDetailRow(tr, v.v, point, previous));
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
         const s = result.summary;
         ui.summary.textContent = s.returned + ' of ' + s.requested + ' registers, ' + s.nonZero + ' non-zero, ' +
             (s.returned ? 'range ' + s.min + '…' + s.max + ', ' : '') + s.blocks + ' command' + (s.blocks === 1 ? '' : 's') +
-            ', ' + s.elapsedMs + ' ms' + (rows.length > shown.length ? ' — showing the first 2000 rows' : '');
+            ', ' + s.elapsedMs + ' ms' +
+            (named ? ' · ' + named + ' named from the list' : (pointList ? ' · none matched the loaded list' : '')) +
+            (rows.length > shown.length ? ' — showing the first 2000 rows' : '');
     }
 
     async function runOnce() {
