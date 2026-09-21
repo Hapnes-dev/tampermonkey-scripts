@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.19.2
+// @version      1.20.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.19.2';
+    const VERSION = '1.20.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1683,9 +1683,13 @@
      * reads. Several parameters can share a register — one per bit — so the index
      * holds a list per reference rather than a single name.
      */
+    const _namesCache = new Map();
+
     async function fetchPlantNames(unitId, plantOverride) {
         const plantId = Number(plantOverride || plantIdFromHost());
         if (!plantId) throw new Error('Could not read a plant id from the hostname');
+        const cacheKey = plantId + '|' + unitId;
+        if (_namesCache.has(cacheKey)) return _namesCache.get(cacheKey);
         const groups = (await plantRpc('get_groups', { plant: plantId, unit_id: unitId })) || [];
         const byRef = new Map();
         let rows = 0;
@@ -1724,7 +1728,9 @@
                 }
             }
         }
-        return { unitId, byRef, groups: groups.length, rows, undecodable, at: new Date().toISOString() };
+        const names = { unitId, byRef, groups: groups.length, rows, undecodable, at: new Date().toISOString() };
+        _namesCache.set(cacheKey, names);
+        return names;
     }
 
     // --------------------------------------------- unit list from the plant DB
@@ -2341,8 +2347,15 @@
         setGridColumns(FIND_COLUMNS);
         ui.gridBody.textContent = '';
         if (!matches.length) {
-            renderEmptyGrid('Nothing matches "' + query + '" in ' +
-                (pointList || plantNames ? 'the names that are loaded' : 'anything — load a point list or the plant names first'));
+            // Two different answers wear the same face: nothing matched, and
+            // nothing could have matched because no names are loaded.
+            const sources = [];
+            if (pointList) sources.push(pointList.points.length + ' points from the list');
+            if (plantNames) sources.push(plantNames.rows + ' parameters from the plant for ' + plantNames.unitId);
+            renderEmptyGrid(sources.length
+                ? 'Nothing called "' + query + '" in ' + sources.join(' and ') +
+                    '. The plant names things in its own words — try part of one, or a reference number.'
+                : 'No names are loaded yet. Pick a unit above, or press Names from plant, and the search has something to look in.');
             ui.summary.textContent = '';
             return;
         }
@@ -2552,6 +2565,12 @@
             }
             lastResult = result;
             renderGrid(result);
+            // Polled an address nobody named? If a unit on this plant answers at
+            // that address, its names belong to this reading.
+            if (!pointList && !plantNames) {
+                const match = (_unitsCache || []).find(u => u.host && u.host === String(readForm().host).trim());
+                if (match) { await loadNamesFor(match.unit_id, true); renderGrid(result); }
+            }
             for (const d of result.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : (d.level === 'fatal' || d.level === 'error' ? 'err' : ''));
             // Nothing came back and nothing explained it: show what the shell
             // actually printed, rather than leaving an empty grid to interpret.
@@ -2674,6 +2693,23 @@
         }
     }
 
+    /** The plant's names for one unit, fetched once and kept. */
+    async function loadNamesFor(unitId, quiet) {
+        if (!unitId) return null;
+        if (plantNames && plantNames.unitId === unitId) return plantNames;
+        try {
+            if (!quiet) log('Reading the plant\'s parameter names for ' + unitId + '…');
+            plantNames = await fetchPlantNames(unitId);
+            log(unitId + ': ' + plantNames.rows + ' parameters on ' + plantNames.byRef.size + ' registers, ' +
+                plantNames.groups + ' groups' + (plantNames.undecodable ? ', ' + plantNames.undecodable + ' without a decodable driver_id' : ''), 'ok');
+            if (lastResult) renderGrid(lastResult);
+            return plantNames;
+        } catch (e) {
+            log('Could not read the parameter names for ' + unitId + ': ' + e.message, 'warn');
+            return null;
+        }
+    }
+
     async function runVerification() {
         if (!pointList || termState.busy) return;
         termState.busy = true;
@@ -2732,6 +2768,10 @@
                 ui.units.appendChild(el('option', { value: u.unit_id, textContent: label }));
             }
             log('Loaded ' + units.length + ' units', 'ok');
+            // If the form already points at one of them, that is the unit in hand.
+            const host = String(ui.host.value || '').trim();
+            const current = host && units.find(u => u.host === host);
+            if (current && !ui.units.value) { ui.units.value = current.unit_id; loadNamesFor(current.unit_id); }
         } catch (e) {
             log('ERROR: ' + e.message, 'err');
         } finally {
@@ -2756,6 +2796,10 @@
             ' — slave read as ' + u.slave + ', correct it if the plant addresses differently)');
         // Worth saying before the poll rather than after it fails: the Plant
         // Server polls the bus continuously and keeps the COM port open.
+        // Picking a unit is the point at which its names become useful — for the
+        // grid, and for searching by what things are called. Asking for them then
+        // is one round trip nobody has to remember to make.
+        loadNamesFor(u.unit_id);
         if (u.bus && u.bus.serial) {
             log('This unit sits on ' + u.bus.com + ', which the Plant Server holds open. modpoll cannot have that port ' +
                 'until the Plant Server is stopped — and stopping it stops temperature logging and alarms, so that is a ' +
@@ -3003,14 +3047,9 @@
             const unitId = ui.units.value;
             if (!unitId) return log('Pick a unit first — load the unit list, then choose one', 'warn');
             plantNamesBtn.disabled = true;
-            try {
-                log('Reading the plant\'s parameters for ' + unitId + '…');
-                plantNames = await fetchPlantNames(unitId);
-                log('Plant database: ' + plantNames.rows + ' parameters across ' + plantNames.groups +
-                    ' groups, on ' + plantNames.byRef.size + ' registers' +
-                    (plantNames.undecodable ? ' (' + plantNames.undecodable + ' without a decodable driver_id)' : ''), 'ok');
-                if (lastResult) renderGrid(lastResult);
-            } catch (e) { log('ERROR: ' + e.message, 'err'); }
+            // Pressing it for the unit already loaded means refresh, not nothing.
+            if (plantNames && plantNames.unitId === unitId) { plantNames = null; _namesCache.clear(); }
+            try { await loadNamesFor(unitId); }
             finally { plantNamesBtn.disabled = false; }
         });
         ui.listNote = el('span', { className: 'mpc-sum', textContent: 'No point list loaded' });
@@ -3023,13 +3062,16 @@
         ui.find = el('input', { placeholder: 'tilluft, setpunkt, 432 …', className: 'mpc-cmd' });
         let findTimer = null;
         let findMatches = [];
-        const runFind = announce => {
+        const runFind = async announce => {
             const query = ui.find.value.trim();
             if (!query) {
                 // Back to whatever was on screen before the search started.
                 if (lastResult) renderGrid(lastResult); else renderEmptyGrid('No registers polled yet');
                 return;
             }
+            // Searching with nothing to search is the commonest way to see an
+            // empty result. If a unit is chosen, fetch its names and carry on.
+            if (!pointList && !plantNames && ui.units.value) await loadNamesFor(ui.units.value);
             findMatches = findByName(query);
             renderFindResults(findMatches, query);
             if (announce) {
@@ -3153,6 +3195,9 @@
     function showConsole() {
         const layout = pageWin.w2ui && pageWin.w2ui.layout2;
         if (!layout || !ui.panel) return;
+        // Opening the tool is enough of an instruction: fetch the unit list, and
+        // with it the names, so nothing here waits to be asked twice.
+        if (!ui.unitsRequested) { ui.unitsRequested = true; setTimeout(() => loadUnits(), 50); }
         layout.html('main', "<div id='" + HOST_ID + "' style='height:100%;width:100%'></div>");
         // w2ui swaps the panel's content asynchronously in some versions; retry
         // briefly rather than dropping the panel on the floor.
