@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.21.0
+// @version      1.22.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.21.0';
+    const VERSION = '1.22.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2453,13 +2453,16 @@
                 { text: r.unit || '' },
                 { text: r.source || '', align: 'left' },
             ];
-            const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
+            const tr = el('tr', { className: 'mpc-clickable', title: 'Click to put this register in the command box, and to see every reading of it' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
                 })));
-            tr.addEventListener('click', () => toggleDetailRow(tr, r.raw,
-                pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref)));
+            tr.addEventListener('click', () => {
+                const command = aimAtRegister({ table: r.table, ref: r.ref, format: '' });
+                log('> ' + command + '   ← ' + (r.name || 'reference ' + r.ref) + ', ready to run');
+                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref));
+            });
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
@@ -2509,15 +2512,25 @@
             ' for "' + query + '" — click one to poll it';
     }
 
-    /** Point the form at a match and read it, so a search ends in a value. */
-    async function pollMatch(match) {
-        ui.table.value = match.table;
-        ui.format.value = match.format || '';
+    /**
+     * Point the form at one register and build its command. Clicking a row in any
+     * list means "this one": the command box then holds exactly the command for
+     * it, ready to run, edit or copy into a ticket.
+     */
+    function aimAtRegister(register) {
+        ui.table.value = register.table;
+        ui.format.value = register.format || '';
         ui.base.value = 'printed';
-        ui.start.value = String(match.ref);
+        ui.start.value = String(register.ref);
         ui.count.value = '1';
         ui.cmdDirty = false;
         refreshPreview();
+        return ui.cmd.value;
+    }
+
+    /** The same, and read it, so a search ends in a value. */
+    async function pollMatch(match) {
+        aimAtRegister(match);
         log('Polling ' + match.name + ' — ' + (REGISTER_TABLES.find(t => t.value === match.table) || {}).label +
             ', reference ' + match.ref + ' (protocol ' + match.addr + ')');
         await runOnce();
@@ -2630,12 +2643,15 @@
                 { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
                 { text: sourceLabel, align: 'left' },
             ];
-            const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
+            const tr = el('tr', { className: 'mpc-clickable', title: 'Click to put this register in the command box, and to see every reading of it' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.title || c.text,
                 })));
-            tr.addEventListener('click', () => toggleDetailRow(tr, v.v, point, previous, fromPlant));
+            tr.addEventListener('click', () => {
+                aimAtRegister({ table, ref: v.i, format });
+                toggleDetailRow(tr, v.v, point, previous, fromPlant);
+            });
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
