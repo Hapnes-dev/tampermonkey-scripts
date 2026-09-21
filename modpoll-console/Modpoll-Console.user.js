@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.19.0
+// @version      1.19.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.19.0';
+    const VERSION = '1.19.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -3010,17 +3010,44 @@
 
         // --- find a register by what it is called -----------------------------
         ui.find = el('input', { placeholder: 'tilluft, setpunkt, 432 …', className: 'mpc-cmd' });
-        const runFind = () => {
+        let findTimer = null;
+        let findMatches = [];
+        const runFind = announce => {
             const query = ui.find.value.trim();
-            if (!query) return;
-            const matches = findByName(query);
-            renderFindResults(matches, query);
-            log(matches.length + ' match' + (matches.length === 1 ? '' : 'es') + ' for "' + query + '"',
-                matches.length ? 'ok' : 'warn');
+            if (!query) {
+                // Back to whatever was on screen before the search started.
+                if (lastResult) renderGrid(lastResult); else renderEmptyGrid('No registers polled yet');
+                return;
+            }
+            findMatches = findByName(query);
+            renderFindResults(findMatches, query);
+            if (announce) {
+                log(findMatches.length + ' match' + (findMatches.length === 1 ? '' : 'es') + ' for "' + query + '"',
+                    findMatches.length ? 'ok' : 'warn');
+            }
         };
-        ui.find.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runFind(); } });
+        // Searching while typing, after a pause short enough not to be noticed and
+        // long enough not to run on every keystroke. A single letter matches half
+        // the plant, so it waits for two — unless it is a digit, which is already
+        // a reference.
+        ui.find.addEventListener('input', () => {
+            clearTimeout(findTimer);
+            findTimer = setTimeout(() => {
+                const query = ui.find.value.trim();
+                if (query.length === 1 && !/^\d$/.test(query)) return;
+                runFind(false);
+            }, 150);
+        });
+        ui.find.addEventListener('keydown', e => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            clearTimeout(findTimer);
+            runFind(true);
+            // One match and Enter means poll it: the search is finished either way.
+            if (findMatches.length === 1) pollMatch(findMatches[0]);
+        });
         const findBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Find register' });
-        findBtn.addEventListener('click', runFind);
+        findBtn.addEventListener('click', () => runFind(true));
         form.appendChild(field('Find by alias text, or by a reference', ui.find, 9));
         form.appendChild(field(' ', findBtn, 3));
 
