@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.14.1
+// @version      1.14.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.14.1';
+    const VERSION = '1.14.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2244,8 +2244,11 @@
     async function refreshPlantStatus(verbose) {
         try {
             const state = await fetchPlantProcesses();
-            const stopped = state.running === 0;
-            ui.plantStatus.textContent = 'Plant Server: ' + (stopped ? 'stopped' : state.running + ' of ' + state.total + ' modules running');
+            // Running or not, nothing finer. MASTER is the plant server itself; a
+            // driver module being down is a different question from this one.
+            const master = state.modules.find(m => m.module === 'MASTER');
+            const stopped = master ? !master.running : state.running === 0;
+            ui.plantStatus.textContent = 'Plant Server: ' + (stopped ? 'stopped' : 'running');
             let mark = null;
             try { mark = JSON.parse(GM_getValue(STOP_MARK_KEY, 'null')); } catch (e) { /* none */ }
             if (stopped) {
@@ -2258,11 +2261,7 @@
                 showPlantBanner('');
                 if (mark) GM_setValue(STOP_MARK_KEY, 'null');
             }
-            if (verbose) {
-                const down = state.modules.filter(m => !m.running).map(m => m.module);
-                log('Plant Server: ' + state.running + ' of ' + state.total + ' modules running' +
-                    (down.length ? ' — stopped: ' + down.join(', ') : ''), down.length ? 'warn' : 'ok');
-            }
+            if (verbose) log('Plant Server is ' + (stopped ? 'stopped' : 'running'), stopped ? 'warn' : 'ok');
             return state;
         } catch (e) {
             ui.plantStatus.textContent = 'Plant Server: status unavailable';
