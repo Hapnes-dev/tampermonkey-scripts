@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.17.1
+// @version      1.17.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.17.1';
+    const VERSION = '1.17.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -525,6 +525,11 @@
 
     async function termRun(command, opts) {
         const options = Object.assign({ timeoutMs: 25000, settleMs: 300 }, opts || {});
+        // modpoll writes its errors to stderr at once and flushes its banner only
+        // when the process exits, so a run that stops at the first error line has
+        // the truth but not the whole of it. A command run as typed is read for
+        // what it printed, not only for its values, and waits for all of it.
+        if (options.fullOutput) options.settleMs = Math.max(options.settleMs, 1500);
         const state = await ensureTerminal();
         const outEl = state.outEl;
         // The terminal renders every space as a non-breaking one, so innerText hands
@@ -616,7 +621,7 @@
                 log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
                 return termRun(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
             }
-            if (options.stopOnError !== false && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk); return chunk; }
+            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk); return chunk; }
             if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk); return chunk; }
         }
         const chunk = readChunk();
@@ -2353,7 +2358,7 @@
                 }
                 assertReadOnly(command);
                 log('> ' + command);
-                const raw = await termRun(command, { timeoutMs: readForm().timeoutMs });
+                const raw = await termRun(command, { timeoutMs: readForm().timeoutMs, fullOutput: true });
                 const parsed = parseModpoll(raw);
                 if (!parsed.values.length && !parsed.diagnostics.length) {
                     for (const line of parsed.notes.slice(0, 3)) log('  ' + line);
@@ -2990,7 +2995,7 @@
             const command = ensurePollOnce(typed);
             if (command !== typed) log('Added -1 so it polls once — without it modpoll polls every second until the session is reconnected', 'warn');
             assertReadOnly(command);
-            const raw = await termRun(command, { timeoutMs: 25000 });
+            const raw = await termRun(command, { timeoutMs: 25000, fullOutput: true });
             const parsed = parseModpoll(raw);
             return { ok: parsed.values.length > 0 && !parsed.fatal, command, values: parsed.values, diagnostics: parsed.diagnostics, raw };
         },
