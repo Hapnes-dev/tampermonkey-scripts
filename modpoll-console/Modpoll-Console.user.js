@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.22.1
+// @version      1.23.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.22.1';
+    const VERSION = '1.23.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2037,12 +2037,19 @@
     /* The grid's own cells are nowrap, and white-space inherits — without this the
        detail view cannot wrap a single line of it. */
     #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#f4f7fb;text-align:left;padding:8px 10px;white-space:normal}
-    #${PANEL_ID} .mpc-detailbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 22px}
+    /* Sections read downwards; the flat grid this replaced read across. */
+    #${PANEL_ID} .mpc-detailbox{display:flex;flex-direction:column;gap:2px;padding:2px 2px 6px;max-width:1120px}
+    #${PANEL_ID} .mpc-dhead{font:bold 13px Arial,Helvetica,sans-serif;color:#1b1b1b}
+    #${PANEL_ID} .mpc-dlead{font:13px Consolas,ui-monospace,monospace;color:#1b5fa8;margin-bottom:6px}
+    #${PANEL_ID} .mpc-dsec{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:3px 26px;margin-bottom:4px}
+    #${PANEL_ID} .mpc-dsec h5{grid-column:1/-1;margin:6px 0 1px;font:bold 10.5px Arial,Helvetica,sans-serif;
+        letter-spacing:.4px;text-transform:uppercase;color:#8a9099}
     /* min-width:0 on both, or a long value refuses to wrap and runs over the
        column beside it. */
-    #${PANEL_ID} .mpc-kv{display:flex;gap:8px;align-items:baseline;min-width:0;font:11.5px/1.5 Consolas,ui-monospace,monospace}
-    #${PANEL_ID} .mpc-kv .mpc-k{color:#6a7180;width:118px;flex:0 0 118px}
+    #${PANEL_ID} .mpc-kv{display:flex;gap:10px;align-items:baseline;min-width:0;font:12px/1.55 Arial,Helvetica,sans-serif}
+    #${PANEL_ID} .mpc-kv .mpc-k{color:#6a7180;width:122px;flex:0 0 122px}
     #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;min-width:0;overflow-wrap:anywhere}
+    #${PANEL_ID} .mpc-kv .mpc-v.mono{font-family:Consolas,ui-monospace,monospace}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
     #${PANEL_ID} .mpc-log{grid-column:span 12;height:220px;overflow-y:auto;overflow-x:hidden;
@@ -2331,6 +2338,97 @@
         return pointList.byRef.get(key) || null;
     }
 
+    /**
+     * What one register is, in the order someone asks it: what it is called and
+     * what that value means, then how to reach it, then the number read every
+     * other way, then whatever the plant or the list knows about it. Sections
+     * rather than one flat grid, because a flat grid is read across when it wants
+     * to be read down.
+     */
+    function readingDetailSections(value, point, previous, fromPlant, table, ref) {
+        const u16 = value < 0 ? value + 65536 : value;
+        const i16 = value > 32767 ? value - 65536 : value;
+        const entry = fromPlant && fromPlant[0];
+        const sections = [];
+
+        const name = (point && point.name) || (entry && entry.name) || '';
+        const unit = (point && point.unit) || (entry && entry.unit) || '';
+        const meaning = point
+            ? (point.scale.invert ? (value ? 'off' : 'on') : roundScaled(value * point.scale.factor, point.decimals))
+            : (entry ? entry.plantValue : '');
+        sections.push({
+            headline: name || ('Reference ' + ref),
+            lead: (meaning === '' || meaning === null ? String(value) : meaning + (unit ? ' ' + unit : '')) +
+                (meaning === '' || meaning === null ? '' : '   (register holds ' + value + ')'),
+        });
+
+        const tableName = (REGISTER_TABLES.find(t => t.value === String(table)) || {}).title || ('table ' + table);
+        const reach = [
+            ['table', tableName],
+            ['reference', String(ref) + '  — what modpoll prints, and what -r takes'],
+            ['protocol address', String(ref - 1) + '  — what a document usually means'],
+        ];
+        if (point) reach.push(['address in the list', String(point.addr) + (point.protocol !== point.addr ? ' (protocol ' + point.protocol + ')' : '')]);
+        reach.push(['command', ui.cmd ? ui.cmd.value : '', true]);
+        sections.push({ title: 'Where it is', rows: reach });
+
+        const chars = [u16 >> 8, u16 & 0xff]
+            .map(code => (code >= 32 && code < 127) ? String.fromCharCode(code) : '·').join('');
+        const asNumbers = [
+            ['raw', String(value), true],
+            ['hexadecimal', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0'), true],
+            ['binary', (u16 >>> 0).toString(2).padStart(16, '0').replace(/(.{4})(?=.)/g, '$1 '), true],
+            ['unsigned / signed', u16 + ' / ' + i16, true],
+            ['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true],
+            ['as two characters', chars, true],
+        ];
+        if (previous !== undefined && previous !== value) {
+            asNumbers.push(['since last pass', previous + ' → ' + value + '  (' + (value - previous > 0 ? '+' : '') + (value - previous) + ')', true]);
+        }
+        sections.push({ title: 'The number, read every way', rows: asNumbers });
+
+        if (point) {
+            const fromList = [
+                ['name', point.name],
+                ['datatype', point.datatype + (point.decoded.ok
+                    ? '  — ' + tableName.toLowerCase() + ', ' + point.decoded.rawType + (point.decoded.step === 2 ? ', two registers per value' : '')
+                    : '  — not decoded')],
+            ];
+            if (point.group) fromList.push(['group', point.group]);
+            if (point.scaleKey) fromList.push(['scale', point.scaleKey + (point.scale.known ? '  (×' + point.scale.factor + ')' : '  — key not understood')]);
+            if (point.unit) fromList.push(['unit', point.unit]);
+            if (point.rw) fromList.push(['access', point.rw === 'rw' ? 'read and write' : 'read only']);
+            if (point.rangeMin !== null || point.rangeMax !== null) {
+                fromList.push(['declared range', (point.rangeMin === null ? '…' : point.rangeMin) + ' to ' + (point.rangeMax === null ? '…' : point.rangeMax)]);
+            }
+            sections.push({ title: 'What the point list says', rows: fromList });
+        }
+
+        if (fromPlant && fromPlant.length) {
+            const fromPlantRows = [];
+            for (const p of fromPlant) {
+                const label = p.bit === null ? 'parameter' : 'bit ' + p.bit;
+                const bitState = p.bit === null ? '' : '  — reads ' + ((u16 >> p.bit) & 1);
+                fromPlantRows.push([label, p.name + (p.plantValue ? ': ' + p.plantValue : '') + (p.unit ? ' ' + p.unit : '') + bitState]);
+            }
+            const first = fromPlant[0];
+            if (first.group) fromPlantRows.push(['group', first.group]);
+            fromPlantRows.push(['access', fromPlant.some(p => p.access === 'rw') ? 'the plant holds it writable' : 'read only in the plant']);
+            const shown = Number(String(first.plantValue).replace(',', '.'));
+            if (first.bit === null && !Number.isNaN(shown) && value !== 0) {
+                const ratio = shown / value;
+                const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
+                const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
+                fromPlantRows.push(['implied scale', near
+                    ? '×' + near + '  — the plant shows ' + shown + ' where the register holds ' + value
+                    : 'plant ' + shown + ' ÷ raw ' + value + ' = ' + ratio.toFixed(4) + ', no common scale']);
+            }
+            fromPlantRows.push(['driver_id', first.driverId, true]);
+            sections.push({ title: 'What the plant says', rows: fromPlantRows });
+        }
+        return sections;
+    }
+
     /** Everything one register can be read as, for the row that expands on click. */
     function readingDetail(value, point, previous, fromPlant) {
         const u16 = value < 0 ? value + 65536 : value;
@@ -2390,17 +2488,29 @@
         return rows;
     }
 
-    function toggleDetailRow(tr, value, point, previous, fromPlant) {
+    function toggleDetailRow(tr, value, point, previous, fromPlant, table, ref) {
         const next = tr.nextElementSibling;
         if (next && next.classList.contains('mpc-detail')) { next.remove(); return; }
         for (const open of ui.gridBody.querySelectorAll('tr.mpc-detail')) open.remove();
-        const cells = readingDetail(value, point, previous, fromPlant).map(([label, text]) =>
-            el('div', { className: 'mpc-kv' }, [
-                el('span', { className: 'mpc-k', textContent: label }),
-                el('span', { className: 'mpc-v', textContent: text }),
-            ]));
+
+        const box = el('div', { className: 'mpc-detailbox' });
+        for (const section of readingDetailSections(value, point, previous, fromPlant, table, ref)) {
+            if (section.headline !== undefined) {
+                box.appendChild(el('div', { className: 'mpc-dhead', textContent: section.headline }));
+                box.appendChild(el('div', { className: 'mpc-dlead', textContent: section.lead }));
+                continue;
+            }
+            const grid = el('div', { className: 'mpc-dsec' }, [el('h5', { textContent: section.title })]);
+            for (const [label, text, mono] of section.rows) {
+                grid.appendChild(el('div', { className: 'mpc-kv' }, [
+                    el('span', { className: 'mpc-k', textContent: label }),
+                    el('span', { className: 'mpc-v' + (mono ? ' mono' : ''), textContent: String(text) }),
+                ]));
+            }
+            box.appendChild(grid);
+        }
         const detail = el('tr', { className: 'mpc-detail' }, [
-            el('td', { colSpan: (ui.gridColumns || REGISTER_COLUMNS).length }, [el('div', { className: 'mpc-detailbox' }, cells)]),
+            el('td', { colSpan: (ui.gridColumns || REGISTER_COLUMNS).length }, [box]),
         ]);
         tr.parentNode.insertBefore(detail, tr.nextSibling);
     }
@@ -2461,7 +2571,7 @@
             tr.addEventListener('click', () => {
                 const command = aimAtRegister({ table: r.table, ref: r.ref, format: '' });
                 log('> ' + command + '   ← ' + (r.name || 'reference ' + r.ref) + ', ready to run');
-                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref));
+                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref);
             });
             frag.appendChild(tr);
         }
@@ -2557,7 +2667,7 @@
                     title: text,
                 })));
             if (row.raw !== undefined) {
-                tr.addEventListener('click', () => toggleDetailRow(tr, row.raw, p, undefined));
+                tr.addEventListener('click', () => toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref));
             }
             frag.appendChild(tr);
         }
@@ -2650,7 +2760,7 @@
                 })));
             tr.addEventListener('click', () => {
                 aimAtRegister({ table, ref: v.i, format });
-                toggleDetailRow(tr, v.v, point, previous, fromPlant);
+                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i);
             });
             frag.appendChild(tr);
         }
