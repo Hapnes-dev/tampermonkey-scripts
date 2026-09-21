@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.4.0
+// @version      1.4.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.4.0';
+    const VERSION = '1.4.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -585,12 +585,14 @@
             if (parsed.fatal) { fatal = true; break; }
 
             // A block containing one unmapped register is refused whole, so note
-            // which blocks came back empty against an exception.
+            // which blocks came back empty. Emptiness is the signal rather than a
+            // nearby exception line: modpoll writes exceptions to stderr, which
+            // the shell flushes ahead of the matching stdout, so an error line
+            // cannot be tied to the command that produced it. Values can —
+            // stdout is flushed when each process exits, in order.
             for (const segment of splitByMarker(raw)) {
                 const block = group.find(b => b.ref === segment.ref);
-                if (!block) continue;
-                const seen = parseModpoll(segment.text);
-                if (!seen.values.length && /exception/i.test(segment.text)) refused.push(block);
+                if (block && !parseModpoll(segment.text).values.length) refused.push(block);
             }
         }
 
@@ -620,7 +622,7 @@
                 if (!half) continue;
                 const seen = parseModpoll(segment.text);
                 mergeValues(seen.values);
-                if (!seen.values.length && /exception/i.test(segment.text)) queue.push(half);
+                if (!seen.values.length) queue.push(half);
             }
         }
         if (unreadable.length) {
@@ -691,9 +693,9 @@
                 if (mark) { current = mark[1]; results[current] = { answered: false }; continue; }
                 if (current === null) continue;
                 const value = line2.match(RE_VALUE);
-                if (value) { results[current] = { answered: true, value: Number(value[2]) }; continue; }
-                if (/exception/i.test(line2)) results[current] = { answered: false, reason: 'exception' };
-                else if (RE_FINAL_ERROR.test(line2)) results[current] = { answered: false, reason: line2.slice(0, 60) };
+                // Only a value counts as an answer. An error line's position in the
+                // transcript says nothing about which probe produced it.
+                if (value) results[current] = { answered: true, value: Number(value[2]) };
             }
         }
         return results;
