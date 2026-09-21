@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.3.2
+// @version      1.4.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.3.2';
+    const VERSION = '1.4.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -501,6 +501,35 @@
 
     let abortRequested = false;
 
+    /**
+     * Chained blocks are separated by echo markers, so an exception can be
+     * attributed to the block that caused it rather than to the whole run.
+     */
+    function splitByMarker(raw) {
+        const segments = [];
+        let current = null;
+        for (const rawLine of String(raw).split(/\r?\n/)) {
+            const line = rawLine.trim();
+            const mark = line.match(new RegExp('^' + MARK + ':(\\d+)$'));
+            if (mark) { current = { ref: Number(mark[1]), lines: [] }; segments.push(current); continue; }
+            if (current) current.lines.push(rawLine);
+        }
+        return segments.map(s => ({ ref: s.ref, text: s.lines.join('\n') }));
+    }
+
+    /** One command line for a set of blocks, each preceded by its marker. */
+    function chainBlocks(spec, blocks) {
+        const parts = [];
+        for (const b of blocks) {
+            const command = buildCommand(spec, { ref: b.ref, count: b.count });
+            assertReadOnly(command);
+            parts.push('echo ' + MARK + ':' + b.ref, command);
+        }
+        const line = parts.join(' & ');
+        assertReadOnly(line);
+        return line;
+    }
+
     async function readRegisters(input, onProgress) {
         const spec = normaliseSpec(input);
         const blocks = planBlocks(spec);
@@ -510,22 +539,25 @@
         const commands = [];
         let fatal = false;
 
+        const refused = [];      // blocks the device answered with an exception
+        const unreadable = [];   // single references it refuses, found by halving
+
+        const mergeValues = list => {
+            for (const v of list) {
+                const at = values.findIndex(x => x.i === v.i);
+                if (at >= 0) values[at] = v; else values.push(v);
+            }
+        };
+
         for (let bi = 0; bi < blocks.length && !fatal; bi += CHAIN_MAX) {
             if (abortRequested) { diagnostics.push({ level: 'warn', text: 'Stopped by user', line: '' }); break; }
             const group = blocks.slice(bi, bi + CHAIN_MAX);
-            const parts = [];
             let expect = 0;
             for (const b of group) {
-                const command = buildCommand(spec, { ref: b.ref, count: b.count });
-                assertReadOnly(command);
-                commands.push(command);
-                // The marker attributes an error line to the block that caused it;
-                // values carry their own reference, so they need no help.
-                parts.push('echo ' + MARK + ':' + b.ref, command);
+                commands.push(buildCommand(spec, { ref: b.ref, count: b.count }));
                 expect += b.count;
             }
-            const line = parts.join(' & ');
-            assertReadOnly(line);
+            const line = chainBlocks(spec, group);
             if (onProgress) {
                 onProgress({
                     block: Math.min(bi + group.length, blocks.length), blocks: blocks.length,
@@ -548,13 +580,62 @@
             // Keyed by printed index: if the terminal trimmed its buffer mid-sweep,
             // a chunk can start earlier than its own block did, and no register may
             // appear twice in the result.
-            for (const v of parsed.values) {
-                const at = values.findIndex(x => x.i === v.i);
-                if (at >= 0) values[at] = v; else values.push(v);
-            }
+            mergeValues(parsed.values);
             for (const d of parsed.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
             if (parsed.fatal) { fatal = true; break; }
+
+            // A block containing one unmapped register is refused whole, so note
+            // which blocks came back empty against an exception.
+            for (const segment of splitByMarker(raw)) {
+                const block = group.find(b => b.ref === segment.ref);
+                if (!block) continue;
+                const seen = parseModpoll(segment.text);
+                if (!seen.values.length && /exception/i.test(segment.text)) refused.push(block);
+            }
         }
+
+        // Halve each refused block until the readable part comes back and the
+        // references the device will not serve are isolated. A refusal costs
+        // about half a second on the wire, so the budget is a hard stop rather
+        // than a suggestion.
+        let budget = spec.recover === false ? 0 : 32;
+        let queue = refused.slice();
+        const step = formatOf(spec.format).step;
+        while (queue.length && budget > 0 && !abortRequested && !fatal) {
+            const halves = [];
+            for (const b of queue.splice(0, CHAIN_MAX)) {
+                if (b.count <= 1) { unreadable.push(b.ref); continue; }
+                const left = Math.floor(b.count / 2);
+                halves.push({ ref: b.ref, count: left }, { ref: b.ref + left * step, count: b.count - left });
+            }
+            if (!halves.length) continue;
+            budget -= halves.length;
+            if (onProgress) onProgress({ recovering: halves.length, command: 'recovering ' + halves.length + ' part-blocks' });
+            let raw;
+            try {
+                raw = await termRun(chainBlocks(spec, halves), { timeoutMs: spec.timeoutMs, stopOnError: false });
+            } catch (e) { diagnostics.push({ level: 'warn', text: 'Recovery stopped: ' + e.message, line: '' }); break; }
+            for (const segment of splitByMarker(raw)) {
+                const half = halves.find(h => h.ref === segment.ref);
+                if (!half) continue;
+                const seen = parseModpoll(segment.text);
+                mergeValues(seen.values);
+                if (!seen.values.length && /exception/i.test(segment.text)) queue.push(half);
+            }
+        }
+        if (unreadable.length) {
+            diagnostics.push({
+                level: 'warn',
+                text: unreadable.length + ' reference' + (unreadable.length === 1 ? '' : 's') +
+                    ' the device refuses: ' + unreadable.slice(0, 8).join(', ') +
+                    (unreadable.length > 8 ? '…' : '') + ' (printed index)',
+                line: '',
+            });
+        }
+        if (queue.length && budget <= 0) {
+            diagnostics.push({ level: 'warn', text: 'Gave up isolating refused registers after 32 attempts', line: '' });
+        }
+        values.sort((a, b) => a.i - b.i);
 
         return {
             ok: values.length > 0 && !fatal,
@@ -569,6 +650,9 @@
             // protocol address it corresponds to. Everything downstream reads the
             // one it means rather than assuming.
             values,
+            // References the device refuses outright, isolated by halving a
+            // refused block. An empty list means nothing was refused.
+            unreadable,
             summary: summarise(values, spec.count, performance.now() - started, blocks.length),
             diagnostics,
             commands,
@@ -684,6 +768,7 @@
             firstPrinted: first ? first.i : null,
             firstAddr: first ? first.addr : null,
             contiguous: result.values.every((v, idx) => !idx || v.i === result.values[idx - 1].i + 1),
+            unreadable: result.unreadable || [],
             v: result.values.map(v => v.v),
             diagnostics: result.diagnostics.map(d => d.level + ': ' + d.text),
         };
