@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.14.2
+// @version      1.15.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.14.2';
+    const VERSION = '1.15.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -780,7 +780,19 @@
             // Both numbers are carried per row: the index modpoll printed and the
             // protocol address it corresponds to. Everything downstream reads the
             // one it means rather than assuming.
-            values,
+            // Each reading carries whatever is known about it — name, unit, what
+            // the plant shows, whether it is writable — so a caller reading the
+            // JSON does not have to join it against anything.
+            values: values.map(v => Object.assign({}, v, (() => {
+                const named = enrichValue(v, spec.table, spec.format);
+                const extra = {};
+                if (named.name) { extra.name = named.name; extra.source = named.source; }
+                if (named.unit) extra.unit = named.unit;
+                if (named.shown !== '' && named.shown !== null) extra.shown = named.shown;
+                if (named.type) extra.type = named.type;
+                if (named.writable) extra.writable = true;
+                return extra;
+            })())),
             // References the device refuses outright, isolated by halving a
             // refused block. An empty list means nothing was refused.
             unreadable,
@@ -895,6 +907,119 @@
         return { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
     }
 
+    /*
+     * What an agent needs to improve a point list is not the grid and not the raw
+     * JSON: it is every reading with its name, both address bases, what the plant
+     * shows for it and what that implies about the scale — plus the shape of the
+     * answer, which ranges answered, which were refused, where the zeros are.
+     * Dense lines carry that in a fraction of the tokens a JSON array would, and
+     * a header makes the block self-describing when it is pasted somewhere else.
+     */
+    function enrichValue(value, table, format) {
+        const point = pointForReading(table, format, value.i);
+        const fromPlant = point ? null : plantNamesFor(table, format, value.i);
+        const entry = fromPlant && fromPlant[0];
+        const scaled = point
+            ? (point.scale.invert ? (value.v ? 0 : 1) : roundScaled(value.v * point.scale.factor, point.decimals))
+            : null;
+        return {
+            ref: value.i,
+            addr: value.addr,
+            raw: value.v,
+            name: point ? point.name : (entry ? entry.name : ''),
+            unit: point ? (point.unit || '') : (entry ? entry.unit : ''),
+            shown: scaled !== null ? scaled : (entry ? entry.plantValue : ''),
+            type: point ? point.datatype : (entry ? 'plant:' + entry.group : ''),
+            writable: point ? point.rw === 'rw' : !!(fromPlant && fromPlant.some(e => e.access === 'rw')),
+            bits: fromPlant ? fromPlant.filter(e => e.bit !== null).length : 0,
+            source: point ? 'list' : (entry ? 'plant' : ''),
+        };
+    }
+
+    /** Runs of consecutive numbers as "430-445, 448". */
+    function asRanges(numbers) {
+        const sorted = [...new Set(numbers)].sort((a, b) => a - b);
+        const parts = [];
+        let start = null, previous = null;
+        for (const n of sorted) {
+            if (start === null) { start = previous = n; continue; }
+            if (n === previous + 1) { previous = n; continue; }
+            parts.push(start === previous ? String(start) : start + '-' + previous);
+            start = previous = n;
+        }
+        if (start !== null) parts.push(start === previous ? String(start) : start + '-' + previous);
+        return parts.join(',');
+    }
+
+    function impliedScale(raw, shown) {
+        const value = Number(String(shown).replace(',', '.'));
+        if (!raw || Number.isNaN(value) || value === 0) return null;
+        const ratio = value / raw;
+        const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
+        const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
+        return near ? 'x' + near : null;
+    }
+
+    /**
+     * One block of text describing a poll, meant to be read by whoever has to
+     * decide what the point list should say.
+     */
+    function describeForAI(result, limit) {
+        if (!result) return 'No poll has been run.';
+        const spec = result.spec || {};
+        const table = String(spec.table || '4');
+        const format = spec.format === '16-bit' ? '' : (spec.format || '');
+        const rows = result.values.map(v => enrichValue(v, table, format));
+        const cap = limit || 250;
+        const shown = rows.slice(0, cap);
+
+        const tableName = (REGISTER_TABLES.find(t => t.value === table) || {}).title || ('table ' + table);
+        const head = [
+            'MODPOLL plant ' + (result.plant || '?') + ' ' + (spec.host || '?') +
+                (spec.port && spec.port !== 502 ? ':' + spec.port : '') + ' slave ' + spec.slave +
+                ' -t' + table + (format ? ':' + format : '') + '  ' + result.at,
+            tableName + '. ref is what modpoll prints, addr is the protocol address, ref = addr + 1.' +
+                (formatOf(format).step === 2 ? ' Each value spans two registers.' : ''),
+            'raw is the register as read; shown is what the plant or the list makes of it.',
+            'names: ' + (rows.some(r => r.source === 'list') ? 'point list' : (rows.some(r => r.source === 'plant') ? 'plant database' : 'none loaded')),
+        ];
+
+        const body = shown.map(r => {
+            const bits = [
+                r.ref, r.addr, r.raw,
+                r.shown === '' || r.shown === null ? '-' : r.shown + (r.unit ? r.unit : ''),
+                r.name || '-',
+            ];
+            const flags = [];
+            if (r.writable) flags.push('rw');
+            if (r.bits) flags.push(r.bits + 'bits');
+            if (r.type) flags.push(r.type);
+            const scale = impliedScale(r.raw, r.shown);
+            if (scale && r.source === 'plant') flags.push('implies ' + scale);
+            return bits.join(' ') + (flags.length ? '  [' + flags.join('|') + ']' : '');
+        });
+
+        const zeros = rows.filter(r => r.raw === 0).map(r => r.ref);
+        const unnamed = rows.filter(r => !r.name).map(r => r.ref);
+        const scales = {};
+        for (const r of rows) {
+            const scale = r.source === 'plant' ? impliedScale(r.raw, r.shown) : null;
+            if (scale) scales[scale] = (scales[scale] || 0) + 1;
+        }
+        const tail = [
+            'answered: ' + asRanges(rows.map(r => r.ref)) + ' (' + rows.length + ' of ' + (result.summary ? result.summary.requested : rows.length) + ')',
+        ];
+        if (result.unreadable && result.unreadable.length) tail.push('refused by the device: ' + asRanges(result.unreadable));
+        if (zeros.length) tail.push('read zero: ' + asRanges(zeros));
+        if (unnamed.length) tail.push('no name known: ' + asRanges(unnamed));
+        if (Object.keys(scales).length) tail.push('scales implied by the plant: ' + Object.keys(scales).map(k => k + ' x' + scales[k]).join(', '));
+        for (const d of result.diagnostics || []) tail.push(d.level + ': ' + d.text);
+        for (const command of (result.commands || []).slice(0, 3)) tail.push('cmd: ' + command);
+        if (rows.length > shown.length) tail.push('(' + (rows.length - shown.length) + ' further rows not shown)');
+
+        return head.join('\n') + '\n\n' + body.join('\n') + '\n\n' + tail.join('\n');
+    }
+
     /** The same result, shrunk for a caller that pays by the token. */
     function compactResult(result) {
         if (!result) return null;
@@ -970,6 +1095,19 @@
             bigEndian: spec.swap === 'R',
             rawType: spec.raw,
         };
+    }
+
+    /**
+     * 434 × 0.1 is 43.400000000000006 in binary floating point, and a reading
+     * printed like that is noise pretending to be precision. The list's own
+     * decimals decide when it states them; twelve significant digits is enough
+     * to clean up the rest without inventing any.
+     */
+    function roundScaled(value, decimals) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return value;
+        return decimals === null || decimals === undefined
+            ? Number(value.toPrecision(12))
+            : Number(value.toFixed(decimals));
     }
 
     /** "x0.1" and friends. A key this does not know leaves the value unscaled. */
@@ -1117,7 +1255,7 @@
             if (refused.has(key)) return { point: p, status: 'refused', note: 'the device refuses this reference' };
             if (!readings.has(key)) return { point: p, status: 'no answer', note: 'no value came back for this reference' };
             const raw = readings.get(key);
-            const scaled = p.scale.invert ? (raw ? 0 : 1) : raw * p.scale.factor;
+            const scaled = p.scale.invert ? (raw ? 0 : 1) : roundScaled(raw * p.scale.factor, p.decimals);
             const flags = [];
             if (!p.scale.known) flags.push('scale key "' + p.scaleKey + '" not understood, value shown raw');
             if (p.rangeMin !== null && scaled < p.rangeMin) flags.push('below the list range (' + p.rangeMin + ')');
@@ -2069,7 +2207,7 @@
             // plant's own parameter list, and several bits can share one register.
             const fromPlant = point ? null : plantNamesFor(table, format, v.i);
             if (point || fromPlant) named++;
-            const scaled = point ? (point.scale.invert ? (v.v ? 0 : 1) : v.v * point.scale.factor) : null;
+            const scaled = point ? (point.scale.invert ? (v.v ? 0 : 1) : roundScaled(v.v * point.scale.factor, point.decimals)) : null;
             const plantLabel = fromPlant
                 ? fromPlant[0].name + (fromPlant.length > 1 ? '  (+' + (fromPlant.length - 1) + ' more)' : '')
                 : '';
@@ -2466,11 +2604,12 @@
         ui.every = el('input', { value: '5' });
         const repeat = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Repeat', title: 'Run again on an interval' });
         repeat.addEventListener('click', startRepeat);
-        const copyBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Copy for AI', title: 'Compact JSON to the clipboard' });
+        const copyBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Copy for AI', title: 'Every reading with its name and both address bases, as text to paste into a conversation' });
         copyBtn.addEventListener('click', () => {
             if (!lastResult) return log('Nothing to copy yet');
-            GM_setClipboard(JSON.stringify(compactResult(lastResult)));
-            log('Compact result copied', 'ok');
+            const text = describeForAI(lastResult);
+            GM_setClipboard(text);
+            log('Copied ' + lastResult.values.length + ' readings as text (' + text.length + ' characters)', 'ok');
         });
         const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON', title: 'Download the full result' });
         saveBtn.addEventListener('click', () => {
@@ -2748,6 +2887,14 @@
             return result;
         },
         async readCompact(spec) { return compactResult(await api.read(spec)); },
+        /**
+         * The same poll as a block of text meant to be read: every reading with
+         * its name, both address bases, what the plant shows, and the shape of
+         * the answer — which references were refused, which read zero, which have
+         * no name, and what the plant's own values imply about the scale.
+         */
+        async describe(spec) { return describeForAI(spec ? await api.read(spec) : lastResult); },
+        lastDescribed() { return describeForAI(lastResult); },
         async raw(command) {
             assertReadOnly(command);
             const raw = await termRun(command, { timeoutMs: 25000 });
