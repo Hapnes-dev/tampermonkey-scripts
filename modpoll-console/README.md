@@ -79,6 +79,32 @@ reference 1 — protocol address 0 — in every table**, while answering 0 for
 unmapped references higher up. A block containing that one reference was refused
 whole, which is why registers 1-20 first read as silence.
 
+## Stopping and starting the Plant Server
+
+Reaching a serial device means taking its COM port, and the Plant Server holds
+every one of them. The console can stop and start it — using the plant's own
+controls, not its own invention: `stop_plant_server`, `start_plant_server_norm`,
+`start_plant_server_nogen` and `restart_driver` posted to `plant_cmd.php` on the
+plant, which is exactly what the sys_tools page does when someone clicks those
+buttons, and what IWMAC Escape offers locally.
+
+It is the most consequential thing this panel can do — temperature logging stops,
+and so do alarms, on a live store — so three rules apply:
+
+- **Stopping takes two clicks.** The first arms the button, which then reads
+  *Confirm: stop 2349 — logging and alarms off*. Only the second sends anything,
+  and walking away for eight seconds disarms it.
+- **Nothing restarts by itself.** No timer, no watchdog. The console stops and
+  starts only when told.
+- **A stop stays visible.** While the modules are down the panel carries a red
+  banner naming the plant, and since a stop outlives the tab it was made in, the
+  banner returns on the next load saying how long ago it happened. It clears only
+  when the modules are running again.
+
+*Check* reads which modules are running and needs no permission to do so.
+*Restart driver* bounces one module — GRUNDFOS, EM270, AK3 — and leaves the rest
+of the plant running, which is often all that is needed.
+
 ## Serial devices, and what polling one costs
 
 A unit's bus comes from the sys_tools topology, which is already on the page. A
