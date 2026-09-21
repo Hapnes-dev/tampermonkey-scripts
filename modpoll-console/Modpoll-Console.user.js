@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.3.1
+// @version      1.3.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.3.1';
+    const VERSION = '1.3.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -583,7 +583,9 @@
      */
     async function probeRefs(spec, probes) {
         const results = {};
-        const PER_RUN = CHAIN_MAX * 2;
+        // Single-register probes print little, so more of them fit in one run than
+        // a block poll would.
+        const PER_RUN = CHAIN_MAX * 3;
         // Each probe is a table and a reference, so one run can ask all four
         // tables at once instead of one table at a time.
         const list = probes.map(p => (typeof p === 'object' ? p : { table: spec.table, ref: p }));
@@ -623,7 +625,11 @@
     async function scanDevice(input) {
         const spec = normaliseSpec(Object.assign({ count: 1 }, input, { format: '' }));
         const TABLES = ['4', '3', '1', '0'];
-        const REFS = [1, 2, 5, 10, 50, 100, 500, 1000, 5000, 10000];
+        // Every invocation costs about 190 ms of process start, so the probe list
+        // is short and the halving does the precision. Decades of range, not a
+        // dense grid: 1 is included because a device whose map starts at protocol
+        // address 0 refuses exactly that one reference.
+        const REFS = [1, 2, 10, 100, 1000, 10000];
 
         // One pass over every table and reference, chained.
         const first = await probeRefs(spec, [].concat.apply([], TABLES.map(t => REFS.map(ref => ({ table: t, ref })))));
