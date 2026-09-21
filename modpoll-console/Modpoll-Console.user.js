@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.18.1
+// @version      1.19.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.18.1';
+    const VERSION = '1.19.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2167,6 +2167,53 @@
         { label: 'note', width: '15%', align: 'left', title: 'Why a point is flagged, or why it was not polled' },
     ];
 
+    const FIND_COLUMNS = [
+        { label: 'ref', width: '8%', title: "modpoll's 1-based reference — what to put in Start" },
+        { label: 'addr', width: '8%', title: 'Protocol address' },
+        { label: 'name', width: '40%', align: 'left', title: 'Alias text that matched' },
+        { label: 'table', width: '14%', title: 'Which table it lives in' },
+        { label: 'value now', width: '14%', title: 'What the plant currently shows for it' },
+        { label: 'where from', width: '16%', align: 'left', title: 'Point list or plant database, and the group' },
+    ];
+
+    /**
+     * Going the other way: from a name to a register. A number goes straight
+     * through as a reference, so pasting either half of what you know works.
+     */
+    function findByName(query) {
+        const text = String(query || '').trim().toLowerCase();
+        if (!text) return [];
+        const matches = [];
+        const add = m => { if (matches.length < 200) matches.push(m); };
+
+        if (pointList) {
+            for (const p of pointList.points) {
+                if (!p.decoded.ok) continue;
+                const hay = (p.name + ' ' + p.group + ' ' + p.datatype).toLowerCase();
+                if (hay.indexOf(text) < 0 && String(p.ref) !== text && String(p.addr) !== text) continue;
+                add({
+                    ref: p.ref, addr: p.protocol, name: p.name, table: p.decoded.table, format: p.decoded.format,
+                    group: p.group, unit: p.unit, value: '', source: 'list', writable: p.rw === 'rw',
+                });
+            }
+        }
+        if (plantNames) {
+            for (const [key, entries] of plantNames.byRef) {
+                const [table, , ref] = key.split('|');
+                for (const entry of entries) {
+                    const hay = (entry.name + ' ' + entry.group).toLowerCase();
+                    if (hay.indexOf(text) < 0 && String(ref) !== text && String(entry.protocol) !== text) continue;
+                    add({
+                        ref: Number(ref), addr: entry.protocol, name: entry.name + (entry.bit === null ? '' : ' (bit ' + entry.bit + ')'),
+                        table, format: '', group: entry.group, unit: entry.unit,
+                        value: entry.plantValue, source: 'plant', writable: entry.access === 'rw',
+                    });
+                }
+            }
+        }
+        return matches.sort((a, b) => a.table.localeCompare(b.table) || a.ref - b.ref);
+    }
+
     function setGridColumns(columns) {
         ui.gridColumns = columns;
         ui.gridCols.textContent = '';
@@ -2281,6 +2328,53 @@
         ui.gridBody.appendChild(el('tr', {}, [
             el('td', { className: 'mpc-empty', colSpan: (ui.gridColumns || REGISTER_COLUMNS).length, textContent: message }),
         ]));
+    }
+
+    /** Matches in the grid, each one a click away from being polled. */
+    function renderFindResults(matches, query) {
+        setGridColumns(FIND_COLUMNS);
+        ui.gridBody.textContent = '';
+        if (!matches.length) {
+            renderEmptyGrid('Nothing matches "' + query + '" in ' +
+                (pointList || plantNames ? 'the names that are loaded' : 'anything — load a point list or the plant names first'));
+            ui.summary.textContent = '';
+            return;
+        }
+        const frag = document.createDocumentFragment();
+        for (const m of matches) {
+            const tableName = (REGISTER_TABLES.find(t => t.value === m.table) || {}).label || m.table;
+            const cells = [
+                { text: String(m.ref) },
+                { text: String(m.addr) },
+                { text: m.name, align: 'left' },
+                { text: tableName },
+                { text: m.value ? m.value + (m.unit ? ' ' + m.unit : '') : '' },
+                { text: m.source + (m.group ? ' · ' + m.group : '') + (m.writable ? ' · writable' : ''), align: 'left' },
+            ];
+            const tr = el('tr', { className: 'mpc-clickable', title: 'Click to poll this register' },
+                cells.map(c => el('td', {
+                    textContent: c.text, style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
+                })));
+            tr.addEventListener('click', () => pollMatch(m));
+            frag.appendChild(tr);
+        }
+        ui.gridBody.appendChild(frag);
+        ui.summary.textContent = matches.length + ' match' + (matches.length === 1 ? '' : 'es') +
+            ' for "' + query + '" — click one to poll it';
+    }
+
+    /** Point the form at a match and read it, so a search ends in a value. */
+    async function pollMatch(match) {
+        ui.table.value = match.table;
+        ui.format.value = match.format || '';
+        ui.base.value = 'printed';
+        ui.start.value = String(match.ref);
+        ui.count.value = '1';
+        ui.cmdDirty = false;
+        refreshPreview();
+        log('Polling ' + match.name + ' — ' + (REGISTER_TABLES.find(t => t.value === match.table) || {}).label +
+            ', reference ' + match.ref + ' (protocol ' + match.addr + ')');
+        await runOnce();
     }
 
     function renderVerification(verification) {
@@ -2914,6 +3008,22 @@
             el('span', { className: 'mpc-spacer' }), ui.listNote, ui.listFile,
         ]));
 
+        // --- find a register by what it is called -----------------------------
+        ui.find = el('input', { placeholder: 'tilluft, setpunkt, 432 …', className: 'mpc-cmd' });
+        const runFind = () => {
+            const query = ui.find.value.trim();
+            if (!query) return;
+            const matches = findByName(query);
+            renderFindResults(matches, query);
+            log(matches.length + ' match' + (matches.length === 1 ? '' : 'es') + ' for "' + query + '"',
+                matches.length ? 'ok' : 'warn');
+        };
+        ui.find.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runFind(); } });
+        const findBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Find register' });
+        findBtn.addEventListener('click', runFind);
+        form.appendChild(field('Find by alias text, or by a reference', ui.find, 9));
+        form.appendChild(field(' ', findBtn, 3));
+
         // --- results ---------------------------------------------------------
         form.appendChild(el('div', { className: 'mpc-sep' }));
         ui.filterZero = el('input', { type: 'checkbox', id: 'mpc-hidezero' });
@@ -3083,6 +3193,13 @@
             plantNames = await fetchPlantNames(unitId, plantId);
             try { if (lastResult) renderGrid(lastResult); } catch (e) { /* panel not built */ }
             return { unit: unitId, parameters: plantNames.rows, registers: plantNames.byRef.size, groups: plantNames.groups, undecodable: plantNames.undecodable };
+        },
+        /** Which registers are called this, from whichever names are loaded. */
+        find(query) {
+            return findByName(query).map(m => ({
+                ref: m.ref, addr: m.addr, name: m.name, table: m.table, group: m.group,
+                unit: m.unit, plantValue: m.value, writable: m.writable, source: m.source,
+            }));
         },
         nameFor(table, ref) {
             const found = plantNamesFor(String(table), '', Number(ref));
