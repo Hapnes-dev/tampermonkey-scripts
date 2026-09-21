@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.15.1
+// @version      1.16.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.15.1';
+    const VERSION = '1.16.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -204,6 +204,22 @@
         return assertSegmentReadOnly(String(command).trim());
     }
 
+    /**
+     * Put -1 into a command that lacks it. Without it modpoll polls every second
+     * for ever: the output drowns the shell, the COM port stays taken, and every
+     * later command appears to return nothing at all. A hand-typed command is
+     * exactly where that happens, so it is added rather than refused — and said
+     * out loud.
+     */
+    function ensurePollOnce(command) {
+        return String(command).split('&').map(segment => {
+            const text = segment.trim();
+            if (!/modpoll/i.test(text)) return segment;
+            if (/(^|\s)-1(\s|$)/.test(text) || /(^|\s)-h(\s|$)/.test(text)) return segment;
+            return segment.replace(/(modpoll(?:\.exe)?)/i, '$1 -1');
+        }).join('&');
+    }
+
     function assertSegmentReadOnly(command) {
         if (new RegExp('^echo\\s+' + MARK + '[\\w:.-]*$').test(command)) return true;
         const tokens = splitTokens(command);
@@ -343,10 +359,17 @@
         { re: /is not recognized as an internal or external command|cannot find the path/i, level: 'fatal', text: 'modpoll not found — neither on the PATH nor at ' + EXE_FULL },
     ];
 
+    // What modpoll prints on every run and nobody needs to read.
+    const RE_BANNER = /^\s*(modpoll\s|Copyright|Getopt|Protocol configuration|Slave configuration|Serial port configuration|TCP\/IP configuration|Data type|Protocol opened|Polling slave|--|C:\\|\s*$)/i;
+
     function parseModpoll(raw) {
         const lines = String(raw || '').split(/\r?\n/);
         const values = [];
         const diagnostics = [];
+        // Anything that is neither a value, a known error nor banner noise. When a
+        // poll comes back empty these are the only clue there is, so they are kept
+        // rather than dropped.
+        const notes = [];
         let fatal = false;
         for (const line of lines) {
             if (line.trim().indexOf(MARK) === 0) continue;   // chain separator
@@ -358,15 +381,18 @@
                 values.push({ i: printed, addr: printed - 1, v: value });
                 continue;
             }
+            let matched = false;
             for (const d of DIAGNOSTICS) {
                 if (d.re.test(line)) {
                     if (!diagnostics.some(x => x.text === d.text)) diagnostics.push({ level: d.level, text: d.text, line: line.trim() });
                     if (d.level === 'fatal') fatal = true;
+                    matched = true;
                     break;
                 }
             }
+            if (!matched && line.trim() && !RE_BANNER.test(line) && notes.indexOf(line.trim()) < 0) notes.push(line.trim());
         }
-        return { values, diagnostics, fatal };
+        return { values, diagnostics, notes, fatal };
     }
 
     function summarise(values, requested, elapsedMs, blocks) {
@@ -651,6 +677,7 @@
         const step = formatOf(spec.format).step;
         const missingRuns = [];  // parts of a block that did not come back
         const unreadable = [];   // single references the device refuses
+        const notes = [];        // anything printed that was neither a value nor a known error
 
         // What a block asked for, against what arrived. A gap can mean the device
         // refused the read or that the terminal dropped the line before it could
@@ -708,6 +735,7 @@
             // appear twice in the result.
             mergeValues(parsed.values);
             for (const d of parsed.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
+            for (const note of parsed.notes) if (notes.indexOf(note) < 0 && notes.length < 6) notes.push(note);
             if (parsed.fatal) { fatal = true; break; }
 
             // Which references actually came back. Absence is the signal rather
@@ -796,6 +824,9 @@
             // References the device refuses outright, isolated by halving a
             // refused block. An empty list means nothing was refused.
             unreadable,
+            // Kept for the case that matters most: a poll that returned nothing and
+            // said nothing this code recognises.
+            notes,
             summary: summarise(values, spec.count, performance.now() - started, blocks.length),
             diagnostics,
             commands,
@@ -2185,8 +2216,11 @@
         const rows = result.values.filter(v => !onlyNonZero || v.v !== 0);
         const shown = rows.slice(0, 2000);
         if (!shown.length) {
-            renderEmptyGrid(result.values.length ? 'Every register in this range read 0' : 'No registers returned — see the log');
-            ui.summary.textContent = result.values.length + ' of ' + result.summary.requested + ' registers, all zero';
+            const allZero = result.values.length > 0;
+            renderEmptyGrid(allZero ? 'Every register in this range read 0' : 'Nothing came back — see the log');
+            ui.summary.textContent = allZero
+                ? result.values.length + ' of ' + result.summary.requested + ' registers, all zero'
+                : 'No values returned for the ' + result.summary.requested + ' register(s) asked for';
             return;
         }
         const frag = document.createDocumentFragment();
@@ -2277,12 +2311,22 @@
         try {
             let result;
             if (ui.cmdDirty) {
-                // A hand-edited command is run verbatim, after the same write check.
-                const command = ui.cmd.value.trim();
+                // A hand-edited command is run as typed, after the same write check
+                // and with -1 put back if it was left out.
+                const typed = ui.cmd.value.trim();
+                const command = ensurePollOnce(typed);
+                if (command !== typed) {
+                    log('Added -1 so it polls once. Without it modpoll polls every second for ever: the shell fills up, ' +
+                        'the port stays taken, and everything after it looks like it returned nothing.', 'warn');
+                    ui.cmd.value = command;
+                }
                 assertReadOnly(command);
                 log('> ' + command);
                 const raw = await termRun(command, { timeoutMs: readForm().timeoutMs });
                 const parsed = parseModpoll(raw);
+                if (!parsed.values.length && !parsed.diagnostics.length) {
+                    for (const line of parsed.notes.slice(0, 3)) log('  ' + line);
+                }
                 result = {
                     ok: parsed.values.length > 0 && !parsed.fatal,
                     plant: plantIdFromHost(), at: new Date().toISOString(),
@@ -2295,11 +2339,19 @@
             } else {
                 const form = readForm();
                 GM_setValue(STORE_KEY, JSON.stringify(form));
-                result = await readRegisters(form, p => log('> ' + p.command + '   [' + p.block + '/' + p.blocks + ']'));
+                result = await readRegisters(form, p => log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : '')));
             }
             lastResult = result;
             renderGrid(result);
             for (const d of result.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : (d.level === 'fatal' || d.level === 'error' ? 'err' : ''));
+            // Nothing came back and nothing explained it: show what the shell
+            // actually printed, rather than leaving an empty grid to interpret.
+            if (!result.values.length && !result.diagnostics.length) {
+                const notes = result.notes || [];
+                if (notes.length) for (const line of notes.slice(0, 3)) log('  ' + line, 'warn');
+                else log('The command printed nothing at all. If a modpoll without -1 was started earlier it is still ' +
+                    'polling and holding the port — Reconnect clears it.', 'warn');
+            }
             if (result.ok) { setDot('ok'); log('OK — ' + result.summary.returned + ' registers', 'ok'); }
             else setDot('err');
         } catch (e) {
@@ -2898,7 +2950,9 @@
          */
         async describe(spec) { return describeForAI(spec ? await api.read(spec) : lastResult); },
         lastDescribed() { return describeForAI(lastResult); },
-        async raw(command) {
+        async raw(typed) {
+            const command = ensurePollOnce(typed);
+            if (command !== typed) log('Added -1 so it polls once — without it modpoll polls every second until the session is reconnected', 'warn');
             assertReadOnly(command);
             const raw = await termRun(command, { timeoutMs: 25000 });
             const parsed = parseModpoll(raw);
