@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.15.0
+// @version      1.15.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.15.0';
+    const VERSION = '1.15.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1012,7 +1012,10 @@
         if (result.unreadable && result.unreadable.length) tail.push('refused by the device: ' + asRanges(result.unreadable));
         if (zeros.length) tail.push('read zero: ' + asRanges(zeros));
         if (unnamed.length) tail.push('no name known: ' + asRanges(unnamed));
-        if (Object.keys(scales).length) tail.push('scales implied by the plant: ' + Object.keys(scales).map(k => k + ' x' + scales[k]).join(', '));
+        if (Object.keys(scales).length) {
+            tail.push('scales implied by the plant: ' +
+                Object.keys(scales).map(k => k + ' on ' + scales[k] + ' point' + (scales[k] === 1 ? '' : 's')).join(', '));
+        }
         for (const d of result.diagnostics || []) tail.push(d.level + ': ' + d.text);
         for (const command of (result.commands || []).slice(0, 3)) tail.push('cmd: ' + command);
         if (rows.length > shown.length) tail.push('(' + (rows.length - shown.length) + ' further rows not shown)');
