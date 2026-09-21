@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.18.0
+// @version      1.18.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.18.0';
+    const VERSION = '1.18.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -139,6 +139,28 @@
     // ---------------------------------------------------------------- helpers
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    /*
+     * Settings go through the userscript manager when it is there. It is not
+     * always there: the script is also evaluated straight into a page — by an
+     * agent driving the console, or while testing a change — and a bare
+     * GM_getValue then throws where it stands. Losing a remembered window height
+     * is not worth losing the panel over, so storage degrades quietly.
+     */
+    function storeGet(key, fallback) {
+        try { if (typeof GM_getValue === 'function') return GM_getValue(key, fallback); } catch (e) { /* no manager */ }
+        try { const raw = localStorage.getItem(key); return raw === null ? fallback : raw; } catch (e) { return fallback; }
+    }
+
+    function storeSet(key, value) {
+        try { if (typeof GM_setValue === 'function') { GM_setValue(key, value); return; } } catch (e) { /* no manager */ }
+        try { localStorage.setItem(key, String(value)); } catch (e) { /* nowhere to keep it */ }
+    }
+
+    function copyToClipboard(text) {
+        try { if (typeof GM_setClipboard === 'function') { GM_setClipboard(text); return true; } } catch (e) { /* no manager */ }
+        try { navigator.clipboard.writeText(text); return true; } catch (e) { return false; }
+    }
 
     function waitFor(probe, timeoutMs, what) {
         const deadline = Date.now() + timeoutMs;
@@ -1996,7 +2018,7 @@
     function setLogHeight(pixels, remember) {
         const height = Math.max(90, Math.min(900, Math.round(pixels)));
         ui.log.style.height = height + 'px';
-        if (remember !== false) GM_setValue(LOG_HEIGHT_KEY, String(height));
+        if (remember !== false) storeSet(LOG_HEIGHT_KEY, String(height));
         return height;
     }
 
@@ -2422,7 +2444,7 @@
                 };
             } else {
                 const form = readForm();
-                GM_setValue(STORE_KEY, JSON.stringify(form));
+                storeSet(STORE_KEY, JSON.stringify(form));
                 result = await readRegisters(form, p => log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : '')));
             }
             lastResult = result;
@@ -2503,7 +2525,7 @@
             log(label + ' — sending ' + cmd + ' to the plant…', isStop ? 'warn' : '');
             const answer = await plantCommand(cmd, extra);
             log(label + ': plant answered ' + (answer || '(nothing)'), 'ok');
-            if (isStop) GM_setValue(STOP_MARK_KEY, JSON.stringify({ plant: plantIdFromHost(), at: Date.now() }));
+            if (isStop) storeSet(STOP_MARK_KEY, JSON.stringify({ plant: plantIdFromHost(), at: Date.now() }));
             // The modules take a moment to settle either way.
             setTimeout(() => refreshPlantStatus(false), 1500);
             setTimeout(() => refreshPlantStatus(false), 6000);
@@ -2527,7 +2549,7 @@
             const stopped = master ? !master.running : state.running === 0;
             ui.plantStatus.textContent = 'Plant Server: ' + (stopped ? 'stopped' : 'running');
             let mark = null;
-            try { mark = JSON.parse(GM_getValue(STOP_MARK_KEY, 'null')); } catch (e) { /* none */ }
+            try { mark = JSON.parse(storeGet(STOP_MARK_KEY, 'null')); } catch (e) { /* none */ }
             if (stopped) {
                 const since = mark && mark.plant === plantIdFromHost()
                     ? ' — stopped from this console ' + Math.round((Date.now() - mark.at) / 60000) + ' minutes ago'
@@ -2536,7 +2558,7 @@
                     '. Temperature logging and alarms are off until it is started again. Nothing here will start it for you.', 'danger');
             } else {
                 showPlantBanner('');
-                if (mark) GM_setValue(STOP_MARK_KEY, 'null');
+                if (mark) storeSet(STOP_MARK_KEY, 'null');
             }
             if (verbose) log('Plant Server is ' + (stopped ? 'stopped' : 'running'), stopped ? 'warn' : 'ok');
             return state;
@@ -2747,7 +2769,7 @@
         copyBtn.addEventListener('click', () => {
             if (!lastResult) return log('Nothing to copy yet');
             const text = describeForAI(lastResult);
-            GM_setClipboard(text);
+            copyToClipboard(text);
             log('Copied ' + lastResult.values.length + ' readings as text (' + text.length + ' characters)', 'ok');
         });
         const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON', title: 'Download the full result' });
@@ -2926,15 +2948,15 @@
         ui.panel = panel;
 
         toggleSerial();
-        const savedHeight = Number(GM_getValue(LOG_HEIGHT_KEY, 0));
+        const savedHeight = Number(storeGet(LOG_HEIGHT_KEY, 0));
         if (savedHeight) setLogHeight(savedHeight, false);
         // A stop this console made outlives the tab it was made in, so check on
         // load rather than waiting to be asked.
         try {
-            const mark = JSON.parse(GM_getValue(STOP_MARK_KEY, 'null'));
+            const mark = JSON.parse(storeGet(STOP_MARK_KEY, 'null'));
             if (mark && mark.plant === plantIdFromHost()) refreshPlantStatus(false);
         } catch (e) { /* nothing recorded */ }
-        try { applyForm(JSON.parse(GM_getValue(STORE_KEY, 'null'))); } catch (e) { /* first run */ }
+        try { applyForm(JSON.parse(storeGet(STORE_KEY, 'null'))); } catch (e) { /* first run */ }
         refreshPreview();
         log('Ready. Registers are read only; a value after the host is refused.');
         return panel;
