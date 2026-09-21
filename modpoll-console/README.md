@@ -86,6 +86,34 @@ Registers outside the device's map answer with 0 rather than an exception, so a
 block may span gaps safely — a row of zeros is not by itself evidence of a
 missing device.
 
+## Names from the plant's own database
+
+*Names from plant* asks the plant what it calls the registers it is polling — no
+file involved. The plant serves its configuration over JSON-RPC at
+`/services/iwmac_plant/settings.php`, on the same origin as the sys_tools page:
+`get_regulators` lists the units, `get_groups` and `get_parameters` give every
+parameter for one of them, with its alias text, engineering unit, current value
+and `driver_id`.
+
+The `driver_id` ties a parameter to a register. modbusgen writes it as
+`0_<read function>_<protocol address>`, with `.<bit>` for a bit inside a
+register, behind a prefix naming plant, driver and table — so
+`2313_VENT_vent_1_1_0_3_431` is read function 3, protocol address 431, which is
+modpoll's reference 432 on table 4.
+
+What that buys, on any plant, with nothing loaded:
+
+- the grid names what it polled, with the unit and the value the plant itself
+  shows — and since the plant shows the register already scaled, the detail row
+  states the scale those two numbers imply (`×0.1 — the plant shows 19 where the
+  register holds 190`), which is the field a vendor document most often omits;
+- a register carrying several bit parameters lists all of them, each with what
+  its bit currently reads, so a status word does not have to be counted out in
+  binary;
+- the unit list works without the Toolbox query, which is the only part that
+  needs a cross-origin helper. The Toolbox is still asked first, because it alone
+  knows the resolved IP, baud rate and parity.
+
 ## Verifying a modbusgen list
 
 *Load point list* takes a modbusgen project file. From it the console reads the
@@ -145,6 +173,10 @@ await __modpoll.read({                     // full result
   recover: true                            // halve a refused block, default on
 });
 await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // which tables answer
+
+await __modpoll.units();                  // the plant's own unit list
+await __modpoll.names('ID01');            // name registers from the plant database
+__modpoll.nameFor('4', 432);              // what the plant calls that register
 
 __modpoll.loadList(projectJson);          // a modbusgen project: points and system.comm
 await __modpoll.verify();                 // poll every point in it and judge the answers
