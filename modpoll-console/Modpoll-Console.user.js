@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.1.0
+// @version      1.2.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -62,7 +62,6 @@
     const MAX_COUNT = 99;
     const TOOLBOX_SQL_URL = 'http://toolbox.iwmac.local:8505/plant-sql/';
     const X_CALLER = 'Modpoll-Console';
-    const PROMPT_RE = /plant_term>\s*$/;
     const STORE_KEY = 'mpc.form.v1';
 
     // With any @grant set the script runs sandboxed, so page globals (w2ui, the
@@ -137,10 +136,6 @@
     function plantIdFromHost() {
         const m = (location.hostname || '').match(/^(\d+)\./);
         return m ? m[1] : '';
-    }
-
-    function tail(text, n) {
-        return String(text || '').slice(-(n || 400));
     }
 
     function nowStamp() {
@@ -315,29 +310,43 @@
 
     // ---------------------------------------------------- Plant Term driver
 
-    const termState = { win: null, t: null, busy: false };
+    const termState = { win: null, t: null, outEl: null, busy: false };
 
+    /*
+     * Reading the shell is not what jQuery Terminal's API suggests. get_output()
+     * returns only what the terminal itself echoed — on Plant Term that is the two
+     * connect lines and nothing else, 56 characters that never contain a command's
+     * result or the prompt. Everything the shell sends is rendered as one div per
+     * line inside #my_top .terminal-output, so that element is the transcript and
+     * its child count is the cursor into it.
+     */
     function terminalOf(win) {
         const jq = win.jQuery || win.$;
         if (!jq) return null;
         try {
             const $el = jq('#my_top');
+            let t = null;
             if ($el && $el.length) {
                 // Never construct a terminal here: calling .terminal() on an element
                 // that has none would create an interpreter-less one and break the page.
-                const existing = $el.data('terminal');
-                if (existing) return existing;
+                t = $el.data('terminal') || null;
             }
-            if (jq.terminal && typeof jq.terminal.active === 'function') {
-                return jq.terminal.active() || null;
-            }
+            if (!t && jq.terminal && typeof jq.terminal.active === 'function') t = jq.terminal.active() || null;
+            if (!t) return null;
+            const outEl = win.document.querySelector('#my_top .terminal-output');
+            if (!outEl) return null;
+            return { t, outEl };
         } catch (e) { /* frame not ready yet */ }
         return null;
     }
 
+    function isConnected(t) {
+        try { return /plant_term>/i.test(String(t.get_prompt() || '')); } catch (e) { return false; }
+    }
+
     async function ensureTerminal() {
-        if (termState.t && termState.win && !termState.win.closed) {
-            try { termState.t.get_output(); return termState.t; } catch (e) { termState.t = null; }
+        if (termState.t && termState.outEl && termState.outEl.isConnected) {
+            try { termState.t.get_prompt(); return termState; } catch (e) { termState.t = null; }
         }
         const w2 = pageWin.w2ui;
         if (!w2 || !w2.sidebar) throw new Error('sys_tools sidebar not ready — let the page finish loading');
@@ -355,18 +364,19 @@
             const w = ifr.contentWindow;
             return (w && (w.jQuery || w.$)) ? w : null;
         }, 25000, 'Plant Term to load');
-        const t = await waitFor(() => terminalOf(win), 20000, 'the Plant Term shell');
+        const parts = await waitFor(() => terminalOf(win), 20000, 'the Plant Term shell');
         termState.win = win;
-        termState.t = t;
-        await connectShell(t);
-        return t;
+        termState.t = parts.t;
+        termState.outEl = parts.outEl;
+        await connectShell(parts.t);
+        return termState;
     }
 
     async function connectShell(t) {
-        if (PROMPT_RE.test(tail(t.get_output()))) return;
+        if (isConnected(t)) return;
         t.exec('');   // the page's own "Press enter to connect"
         try {
-            await waitFor(() => PROMPT_RE.test(tail(t.get_output())) || null, 20000, 'Plant Term to connect');
+            await waitFor(() => isConnected(t) || null, 20000, 'Plant Term to connect');
         } catch (e) {
             throw new Error('Plant Term did not reach a prompt. This is usually the HTTP login for ' +
                 location.hostname + '/secure/ having expired — open the plant in a normal tab, log in once, then retry.');
@@ -374,26 +384,38 @@
     }
 
     /**
-     * Run one command and return only what it printed. Output is read as the
-     * difference against the buffer length captured before the command, so a
-     * long-lived terminal does not have to be cleared between runs.
+     * Run one command and return only the lines it printed. The transcript is read
+     * by child index rather than by string length, so nothing has to be cleared
+     * between runs and a line rewritten in place cannot shift the cursor.
+     *
+     * A remote shell gives no completion signal, so a command counts as finished
+     * when its output has stopped growing for settleMs. modpoll answers in well
+     * under a second; the default leaves room for a slow bus without making every
+     * block wait on the timeout.
      */
     async function termRun(command, opts) {
-        const options = Object.assign({ timeoutMs: 25000, settleMs: 1500 }, opts || {});
-        const t = await ensureTerminal();
-        const before = t.get_output().length;
-        t.exec(command);
+        const options = Object.assign({ timeoutMs: 25000, settleMs: 800 }, opts || {});
+        const state = await ensureTerminal();
+        const outEl = state.outEl;
+        const firstNew = outEl.children.length;
+        const readChunk = () => Array.prototype.slice.call(outEl.children, firstNew)
+            .map(d => d.innerText).join('\n');
+
+        state.t.exec(command);
         const deadline = Date.now() + options.timeoutMs;
-        let last = '';
+        let lastSize = -1;
         let stableSince = Date.now();
+        let grew = false;
         while (Date.now() < deadline) {
-            await sleep(200);
-            const chunk = t.get_output().slice(before);
-            if (chunk !== last) { last = chunk; stableSince = Date.now(); }
-            if (chunk.trim() && PROMPT_RE.test(chunk)) return chunk;
-            if (chunk.trim() && Date.now() - stableSince > options.settleMs) return chunk;
+            await sleep(150);
+            const size = outEl.children.length + ':' + (outEl.lastElementChild ? outEl.lastElementChild.innerText.length : 0);
+            if (size !== lastSize) { lastSize = size; stableSince = Date.now(); }
+            if (outEl.children.length > firstNew) grew = true;
+            if (grew && Date.now() - stableSince > options.settleMs) return readChunk();
         }
-        throw new Error('Plant Term did not finish within ' + Math.round(options.timeoutMs / 1000) + ' s. Partial output kept.');
+        if (grew) return readChunk();
+        throw new Error('Plant Term printed nothing within ' + Math.round(options.timeoutMs / 1000) +
+            ' s of running the command.');
     }
 
     // -------------------------------------------------------- polling engine
@@ -622,7 +644,9 @@
     /* The 12-column form grid. A field declares how many columns it takes, so
        controls in different rows share column edges instead of each row packing
        itself. Labels have a fixed height, so every control starts at one baseline. */
-    #${PANEL_ID} .mpc-form{display:grid;grid-template-columns:repeat(12,1fr);gap:var(--gap);align-items:end}
+    /* Capped: the main panel is as wide as the browser window, and a form stretched
+       across 2300 px stops reading as a form. */
+    #${PANEL_ID} .mpc-form{display:grid;grid-template-columns:repeat(12,1fr);gap:var(--gap);align-items:end;max-width:1120px}
     #${PANEL_ID} .mpc-f{grid-column:span 3;min-width:0;display:flex;flex-direction:column}
     #${PANEL_ID} .mpc-f>label{font-size:10.5px;color:var(--label);height:15px;line-height:15px;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
