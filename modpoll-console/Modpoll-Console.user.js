@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.2.0
+// @version      1.2.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.2.0';
+    const VERSION = '1.2.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -398,8 +398,22 @@
         const state = await ensureTerminal();
         const outEl = state.outEl;
         const firstNew = outEl.children.length;
-        const readChunk = () => Array.prototype.slice.call(outEl.children, firstNew)
-            .map(d => d.innerText).join('\n');
+        // The terminal renders every space as a non-breaking one, so innerText hands
+        // back U+00A0. Left alone, no pattern containing a space can match, and a
+        // device answering "Illegal Data Address exception response!" reads as a
+        // silent empty result instead of an answer. Split/join rather than a regex,
+        // so the character is stated once and cannot be mangled by an editor.
+        const NBSP = String.fromCharCode(160);
+        const clean = text => String(text).split(NBSP).join(' ').split('\r').join('');
+        // Anchored to an element rather than an index: jQuery Terminal trims its
+        // oldest lines once its buffer is full, which would slide an index.
+        const anchor = outEl.lastElementChild;
+        const readChunk = () => {
+            let node = (anchor && anchor.isConnected) ? anchor.nextElementSibling : outEl.firstElementChild;
+            const parts = [];
+            while (node) { parts.push(node.innerText); node = node.nextElementSibling; }
+            return clean(parts.join('\n'));
+        };
 
         state.t.exec(command);
         const deadline = Date.now() + options.timeoutMs;
@@ -447,7 +461,13 @@
                 break;
             }
             const parsed = parseModpoll(raw);
-            for (const v of parsed.values) values.push(v);
+            // Keyed by printed index: if the terminal trimmed its buffer mid-sweep,
+            // a chunk can start earlier than its own block did, and no register may
+            // appear twice in the result.
+            for (const v of parsed.values) {
+                const at = values.findIndex(x => x.i === v.i);
+                if (at >= 0) values[at] = v; else values.push(v);
+            }
             for (const d of parsed.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
             if (parsed.fatal) { fatal = true; break; }
         }
