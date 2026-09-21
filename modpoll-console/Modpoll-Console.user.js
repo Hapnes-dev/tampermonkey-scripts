@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.3.0
+// @version      1.3.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.3.0';
+    const VERSION = '1.3.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -581,14 +581,19 @@
      * references came back in 2.5 s on a plant, where one round trip each would
      * have cost 14.
      */
-    async function probeRefs(spec, refs) {
+    async function probeRefs(spec, probes) {
         const results = {};
         const PER_RUN = CHAIN_MAX * 2;
-        for (let i = 0; i < refs.length; i += PER_RUN) {
-            const group = refs.slice(i, i + PER_RUN);
+        // Each probe is a table and a reference, so one run can ask all four
+        // tables at once instead of one table at a time.
+        const list = probes.map(p => (typeof p === 'object' ? p : { table: spec.table, ref: p }));
+        for (let i = 0; i < list.length; i += PER_RUN) {
+            const group = list.slice(i, i + PER_RUN);
             const parts = [];
-            for (const ref of group) {
-                parts.push('echo ' + MARK + ':' + ref, buildCommand(spec, { ref, count: 1 }));
+            for (const probe of group) {
+                const key = probe.table + ':' + probe.ref;
+                parts.push('echo ' + MARK + ':' + key,
+                    buildCommand(Object.assign({}, spec, { table: probe.table }), { ref: probe.ref, count: 1 }));
             }
             const line = parts.join(' & ');
             assertReadOnly(line);
@@ -596,7 +601,7 @@
             let current = null;
             for (const rawLine of String(raw).split(/\r?\n/)) {
                 const line2 = rawLine.trim();
-                const mark = line2.match(new RegExp('^' + MARK + ':(\\d+)$'));
+                const mark = line2.match(new RegExp('^' + MARK + ':([\\d:]+)$'));
                 if (mark) { current = mark[1]; results[current] = { answered: false }; continue; }
                 if (current === null) continue;
                 const value = line2.match(RE_VALUE);
@@ -616,33 +621,50 @@
      * rather than interpreted.
      */
     async function scanDevice(input) {
-        const base = normaliseSpec(Object.assign({ count: 1 }, input));
-        const tables = {};
-        for (const table of ['4', '3', '1', '0']) {
-            const spec = Object.assign({}, base, { table, format: '' });
-            const refs = [1, 2, 5, 10, 50, 100, 500, 1000, 5000, 10000];
-            const probes = await probeRefs(spec, refs);
-            const answered = refs.filter(r => probes[r] && probes[r].answered);
-            let firstReadable = null;
-            if (answered.length) {
-                // Halve back between the last silent reference and the first answer.
-                let low = Math.max(1, refs[refs.indexOf(answered[0]) - 1] || 1);
-                let high = answered[0];
-                while (high - low > 1) {
-                    const mid = Math.floor((low + high) / 2);
-                    const probe = await probeRefs(Object.assign({}, spec), [mid]);
-                    if (probe[mid] && probe[mid].answered) high = mid; else low = mid;
-                }
-                firstReadable = high;
+        const spec = normaliseSpec(Object.assign({ count: 1 }, input, { format: '' }));
+        const TABLES = ['4', '3', '1', '0'];
+        const REFS = [1, 2, 5, 10, 50, 100, 500, 1000, 5000, 10000];
+
+        // One pass over every table and reference, chained.
+        const first = await probeRefs(spec, [].concat.apply([], TABLES.map(t => REFS.map(ref => ({ table: t, ref })))));
+        const answeredBy = {};
+        for (const table of TABLES) answeredBy[table] = REFS.filter(ref => (first[table + ':' + ref] || {}).answered);
+
+        // Narrow each table's lower edge together, one chained run per halving.
+        const bounds = {};
+        for (const table of TABLES) {
+            const hits = answeredBy[table];
+            if (!hits.length) continue;
+            bounds[table] = { low: Math.max(1, REFS[REFS.indexOf(hits[0]) - 1] || 1), high: hits[0] };
+        }
+        while (Object.keys(bounds).some(t => bounds[t].high - bounds[t].low > 1)) {
+            const step = [];
+            for (const table of Object.keys(bounds)) {
+                const b = bounds[table];
+                if (b.high - b.low > 1) step.push({ table, ref: Math.floor((b.low + b.high) / 2) });
             }
+            const probed = await probeRefs(spec, step);
+            for (const probe of step) {
+                const hit = (probed[probe.table + ':' + probe.ref] || {}).answered;
+                if (hit) bounds[probe.table].high = probe.ref; else bounds[probe.table].low = probe.ref;
+            }
+        }
+
+        const tables = {};
+        for (const table of TABLES) {
+            const hits = answeredBy[table];
+            const firstReadable = bounds[table] ? bounds[table].high : null;
             tables[table] = {
-                answers: answered.length > 0,
+                answers: hits.length > 0,
                 firstReadable,
-                sample: answered.slice(0, 3).map(r => r + '=' + probes[r].value),
-                refused: refs.filter(r => probes[r] && !probes[r].answered).slice(0, 3),
+                // Stated in both bases, since that is the distinction this whole
+                // tool exists to keep straight.
+                firstReadableAddr: firstReadable === null ? null : firstReadable - 1,
+                sample: hits.slice(0, 3).map(ref => ref + '=' + first[table + ':' + ref].value),
+                refused: REFS.filter(ref => first[table + ':' + ref] && !first[table + ':' + ref].answered).slice(0, 4),
             };
         }
-        return { host: base.host, slave: base.slave, at: new Date().toISOString(), tables };
+        return { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
     }
 
     /** The same result, shrunk for a caller that pays by the token. */
