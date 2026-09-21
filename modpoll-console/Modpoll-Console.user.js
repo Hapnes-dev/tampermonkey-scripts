@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.11.1
+// @version      1.12.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.11.1';
+    const VERSION = '1.12.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -322,7 +322,11 @@
     // the configuration echo) is noise that would only cost the reader context.
     const DIAGNOSTICS = [
         { re: /serial port already open/i, level: 'fatal', text: 'Serial port already open — another process holds the COM port' },
-        { re: /port or socket open error/i, level: 'fatal', text: 'Port or socket open error — check the address and that the device is reachable' },
+        // On a serial port this nearly always means the Plant Server has the port
+        // open, since it polls the bus continuously. Freeing it means stopping the
+        // Plant Server, which also stops temperature logging and alarms — the
+        // operator's call, never the tool's.
+        { re: /port or socket open error/i, level: 'fatal', text: 'Port or socket open error — on a COM port the Plant Server is usually holding it (stopping it stops logging and alarms); on TCP, check the address' },
         { re: /can'?t reach slave/i, level: 'fatal', text: "Can't reach slave — check the IP address" },
         { re: /invalid count parameter/i, level: 'fatal', text: 'Invalid count parameter — the count cap is 99, not 100' },
         { re: /invalid reference parameter/i, level: 'fatal', text: 'Invalid reference parameter — -r counts from 1, and stops at 65536' },
@@ -1767,6 +1771,17 @@
         { label: 'Δ', width: '8%', title: 'Change since the previous pass of a repeated poll' },
         { label: 'type', width: '12%', align: 'left', title: 'Datatype from the list' },
     ];
+    // Coils and discrete inputs answer 0 or 1. Hexadecimal, a signed reading and a
+    // scale are all noise on a bit, so that table gets its own, shorter set.
+    const BIT_COLUMNS = [
+        { label: 'printed', width: '8%', title: 'The index modpoll printed — -r counts from 1' },
+        { label: 'addr', width: '8%', title: 'Protocol address, the printed index minus one' },
+        { label: 'name', width: '38%', align: 'left', title: 'From the loaded point list or the plant database' },
+        { label: 'bit', width: '8%', title: 'The value as returned: 1 or 0' },
+        { label: 'state', width: '12%', title: 'The same bit as words' },
+        { label: 'Δ', width: '10%', title: 'Change since the previous pass of a repeated poll' },
+        { label: 'source', width: '16%', align: 'left', title: 'Datatype from a point list, or the plant group' },
+    ];
     const POINT_COLUMNS = [
         { label: 'addr', width: '7%', title: 'The address as the point list prints it' },
         { label: 'ref', width: '7%', title: "modpoll's 1-based reference for that address" },
@@ -1927,7 +1942,8 @@
     }
 
     function renderGrid(result) {
-        setGridColumns(REGISTER_COLUMNS);
+        const isBitTable = result.spec && (result.spec.table === '0' || result.spec.table === '1');
+        setGridColumns(isBitTable ? BIT_COLUMNS : REGISTER_COLUMNS);
         ui.gridBody.textContent = '';
         const onlyNonZero = ui.filterZero.checked;
         const rows = result.values.filter(v => !onlyNonZero || v.v !== 0);
@@ -1961,9 +1977,23 @@
             // The plant is already showing this register scaled, which is the
             // scaled value nobody has to derive.
             const plantScaled = fromPlant ? Number(String(fromPlant[0].plantValue).replace(',', '.')) : NaN;
-            const cells = [
+            const step = point ? point.decoded.step : 1;
+            const sourceLabel = point
+                ? point.datatype
+                : (fromPlant ? fromPlant[0].group + (fromPlant.some(e => e.access === 'rw') ? ' · writable' : '') : '');
+            const cells = isBitTable ? [
                 { text: String(v.i) },
                 { text: String(v.addr) },
+                { text: point ? point.name : plantLabel, align: 'left' },
+                { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
+                { text: v.v ? 'ON' : 'OFF', className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
+                { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
+                { text: sourceLabel, align: 'left' },
+            ] : [
+                { text: String(v.i) },
+                // A 32-bit value is read out of two registers, and saying which two
+                // is the difference between a list that lines up and one that does not.
+                { text: step === 2 ? v.addr + '–' + (v.addr + 1) : String(v.addr) },
                 { text: point ? point.name : plantLabel, align: 'left' },
                 { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
                 {
@@ -1976,7 +2006,7 @@
                 { text: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') },
                 { text: String(i16) },
                 { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
-                { text: point ? point.datatype : (fromPlant ? 'plant: ' + fromPlant[0].group : ''), align: 'left' },
+                { text: sourceLabel, align: 'left' },
             ];
             const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
                 cells.map(c => el('td', {
