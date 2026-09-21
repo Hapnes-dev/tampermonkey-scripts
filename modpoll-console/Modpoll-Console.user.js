@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.5.0
+// @version      1.5.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.5.0';
+    const VERSION = '1.5.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -853,12 +853,19 @@
         if (!doc || !Array.isArray(doc.points)) throw new Error('Not a modbusgen project: no points array');
         const subtractOne = !!(doc.options && doc.options.subtract_one);
         const points = doc.points.map((p, index) => {
-            const decoded = decodeDatatype(p.datatype);
+            let decoded = decodeDatatype(p.datatype);
             const scale = scaleFactorOf(p.scale);
             // The list prints an address; subtract_one says whether that counts
             // from one. modpoll counts from one too, so the reference is the
             // protocol address plus one either way.
             const protocol = subtractOne ? Number(p.addr) - 1 : Number(p.addr);
+            // A point can be unpollable without its datatype being at fault: an
+            // address that maps below protocol 0 has nowhere to be read from.
+            // Saying so per point beats failing the whole verification, which is
+            // what a list written one register too low would otherwise do.
+            if (decoded.ok && protocol < 0) {
+                decoded = { ok: false, reason: 'address ' + p.addr + ' maps to protocol ' + protocol + ', below the first register' };
+            }
             return {
                 index,
                 addr: Number(p.addr),
@@ -942,10 +949,17 @@
             if (abortRequested) { diagnostics.push({ level: 'warn', text: 'Stopped by user', line: '' }); break; }
             const range = ranges[i];
             if (onProgress) onProgress({ range: i + 1, ranges: ranges.length, ref: range.ref, count: range.count });
-            const result = await readRegisters(Object.assign({}, spec, {
-                table: range.table, format: range.format, base: 'printed',
-                start: range.ref, count: range.count,
-            }));
+            let result;
+            try {
+                result = await readRegisters(Object.assign({}, spec, {
+                    table: range.table, format: range.format, base: 'printed',
+                    start: range.ref, count: range.count,
+                }));
+            } catch (e) {
+                // One unreadable range must not cost the verification of the rest.
+                diagnostics.push({ level: 'error', text: 'Range -r ' + range.ref + ' -c ' + range.count + ': ' + e.message, line: '' });
+                continue;
+            }
             for (const value of result.values) readings.set(range.table + '|' + range.format + '|' + value.i, value.v);
             for (const ref of result.unreadable || []) refused.add(range.table + '|' + range.format + '|' + ref);
             for (const command of result.commands) commands.push(command);
