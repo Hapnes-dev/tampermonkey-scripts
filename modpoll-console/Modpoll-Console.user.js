@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.4.1
+// @version      1.5.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.4.1';
+    const VERSION = '1.5.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -776,6 +776,365 @@
         };
     }
 
+    // ------------------------------------------------ modbusgen point lists
+
+    /*
+     * A modbusgen project file already says everything a verification needs: how
+     * the documentation numbered the addresses (options.subtract_one), which
+     * register table and raw type each point uses (datatype), what it should be
+     * called, what it is scaled by, and often how to reach the device
+     * (system.comm). Reading it here turns "poll some registers" into "check this
+     * list against this device".
+     *
+     * The datatype name is decoded by its grammar, which covers all but a handful
+     * of the shipped keys; the rest are named below. A key that decodes to
+     * nothing is reported as undecodable rather than guessed at — a wrong table
+     * would quietly poll the wrong half of the device.
+     */
+    const DATATYPE_EXCEPTIONS = {
+        Bit_Hold: { func: 3, raw: 'X', swap: 'N' },
+        Bit_Input: { func: 4, raw: 'X', swap: 'N' },
+        Nibble_Hold: { func: 3, raw: 'U16', swap: 'N' },
+        Nibble_Input: { func: 4, raw: 'U16', swap: 'N' },
+        FLOAT: { func: 3, raw: 'I16', swap: 'N' },
+        BYTE: { func: 3, raw: 'U16', swap: 'N' },
+        WORD: { func: 3, raw: 'U16', swap: 'N' },
+        Virt: { func: 0, raw: '', swap: 'N' },
+    };
+
+    // modpoll's -t follows the Modicon prefix, the function code does not.
+    const FUNC_TO_TABLE = { 1: '0', 2: '1', 3: '4', 4: '3' };
+    const RAW_TO_FORMAT = {
+        I16: { format: '', step: 1 }, U16: { format: '', step: 1 },
+        rI16: { format: '', step: 1 }, rU16: { format: '', step: 1 },
+        X: { format: '', step: 1 }, D: { format: '', step: 1 },
+        I32: { format: 'int', step: 2 }, U32: { format: 'int', step: 2 },
+        F: { format: 'float', step: 2 },
+    };
+
+    function decodeDatatype(name) {
+        const key = String(name || '').trim();
+        let spec = DATATYPE_EXCEPTIONS[key];
+        if (!spec) {
+            const parts = key.split('_');
+            const family = (parts[0] === 'Coil' || parts[0] === 'Digital') ? parts[0] : parts[1];
+            const func = { Coil: 1, Digital: 2, Hold: 3, Inp: 4, Input: 4 }[family];
+            if (func) spec = { func, raw: parts.length > 2 ? parts[parts.length - 2] : 'X', swap: parts[parts.length - 1] };
+        }
+        if (!spec || !FUNC_TO_TABLE[spec.func]) return { ok: false, reason: 'datatype "' + key + '" not decoded' };
+        const raw = RAW_TO_FORMAT[spec.raw];
+        if (!raw) return { ok: false, reason: 'raw type "' + spec.raw + '" cannot be polled directly', table: FUNC_TO_TABLE[spec.func] };
+        return {
+            ok: true,
+            table: FUNC_TO_TABLE[spec.func],
+            format: raw.format,
+            step: raw.step,
+            // Word order R means the slave presents 32-bit values the other way
+            // round. Mapping that onto -i/-f is an assumption the report states.
+            bigEndian: spec.swap === 'R',
+            rawType: spec.raw,
+        };
+    }
+
+    /** "x0.1" and friends. A key this does not know leaves the value unscaled. */
+    function scaleFactorOf(key) {
+        const text = String(key == null ? '' : key).trim();
+        if (!text) return { factor: 1, known: true };
+        const m = text.match(/^x([0-9.]+)$/i);
+        if (m) return { factor: Number(m[1]), known: true };
+        if (/^inv$/i.test(text)) return { factor: 1, known: true, invert: true };
+        const plain = Number(text);
+        if (!Number.isNaN(plain) && text !== '') return { factor: plain, known: true };
+        return { factor: 1, known: false };
+    }
+
+    function parsePointList(json) {
+        const doc = typeof json === 'string' ? JSON.parse(json) : json;
+        if (!doc || !Array.isArray(doc.points)) throw new Error('Not a modbusgen project: no points array');
+        const subtractOne = !!(doc.options && doc.options.subtract_one);
+        const points = doc.points.map((p, index) => {
+            const decoded = decodeDatatype(p.datatype);
+            const scale = scaleFactorOf(p.scale);
+            // The list prints an address; subtract_one says whether that counts
+            // from one. modpoll counts from one too, so the reference is the
+            // protocol address plus one either way.
+            const protocol = subtractOne ? Number(p.addr) - 1 : Number(p.addr);
+            return {
+                index,
+                addr: Number(p.addr),
+                protocol,
+                ref: protocol + 1,
+                bit: p.bit === undefined || p.bit === null ? null : Number(p.bit),
+                name: [p.tag, p.text].filter(Boolean).join(' ') || ('point ' + index),
+                group: p.group || '',
+                datatype: p.datatype || '',
+                decoded,
+                scaleKey: p.scale || '',
+                scale,
+                unit: p.unit || '',
+                decimals: p.decimals === undefined ? null : p.decimals,
+                rw: p.rw || '',
+                rangeMin: p.range_min === undefined || p.range_min === null || p.range_min === '' ? null : Number(p.range_min),
+                rangeMax: p.range_max === undefined || p.range_max === null || p.range_max === '' ? null : Number(p.range_max),
+            };
+        });
+        const comm = (doc.system && doc.system.comm) || null;
+        return {
+            table: doc.table || '',
+            plant: doc.plant == null ? '' : String(doc.plant),
+            driver: doc.driver || null,
+            subtractOne,
+            comm,
+            points,
+            undecodable: points.filter(p => !p.decoded.ok).length,
+        };
+    }
+
+    /**
+     * Points become poll ranges: same table and format, sorted, and merged while
+     * the gap is small enough that reading across it is cheaper than a second
+     * command. A block never exceeds the count cap.
+     */
+    function planPointRanges(points, maxGap) {
+        const gap = maxGap === undefined ? 8 : maxGap;
+        const byKind = {};
+        for (const p of points) {
+            if (!p.decoded.ok) continue;
+            const key = p.decoded.table + '|' + p.decoded.format;
+            (byKind[key] = byKind[key] || []).push(p);
+        }
+        const ranges = [];
+        for (const key of Object.keys(byKind)) {
+            const [table, format] = key.split('|');
+            const step = formatOf(format).step;
+            const refs = byKind[key].map(p => p.ref).sort((a, b) => a - b);
+            let start = refs[0], last = refs[0];
+            const flush = () => ranges.push({
+                table, format,
+                ref: start,
+                count: Math.floor((last - start) / step) + 1,
+            });
+            for (const ref of refs.slice(1)) {
+                const wouldCount = Math.floor((ref - start) / step) + 1;
+                if (ref - last > gap * step || wouldCount > MAX_COUNT) { flush(); start = ref; }
+                last = ref;
+            }
+            flush();
+        }
+        return ranges;
+    }
+
+    /**
+     * Poll every point in a list and say, per point, what the device answered.
+     * The judgements stay mechanical: a point is suspicious when the device
+     * refuses it, or when its scaled value falls outside a range the list itself
+     * declares. Anything softer is left to the reader.
+     */
+    async function verifyPointList(list, spec, onProgress) {
+        const started = performance.now();
+        const ranges = planPointRanges(list.points);
+        const readings = new Map();      // table|format|ref -> value
+        const refused = new Set();
+        const commands = [];
+        const diagnostics = [];
+
+        for (let i = 0; i < ranges.length; i++) {
+            if (abortRequested) { diagnostics.push({ level: 'warn', text: 'Stopped by user', line: '' }); break; }
+            const range = ranges[i];
+            if (onProgress) onProgress({ range: i + 1, ranges: ranges.length, ref: range.ref, count: range.count });
+            const result = await readRegisters(Object.assign({}, spec, {
+                table: range.table, format: range.format, base: 'printed',
+                start: range.ref, count: range.count,
+            }));
+            for (const value of result.values) readings.set(range.table + '|' + range.format + '|' + value.i, value.v);
+            for (const ref of result.unreadable || []) refused.add(range.table + '|' + range.format + '|' + ref);
+            for (const command of result.commands) commands.push(command);
+            for (const d of result.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
+        }
+
+        const keyOf = (p, shift) => p.decoded.table + '|' + p.decoded.format + '|' + (p.ref + (shift || 0));
+        const rows = list.points.map(p => {
+            if (!p.decoded.ok) return { point: p, status: 'not polled', note: p.decoded.reason };
+            const key = keyOf(p, 0);
+            if (refused.has(key)) return { point: p, status: 'refused', note: 'the device refuses this reference' };
+            if (!readings.has(key)) return { point: p, status: 'no answer', note: 'no value came back for this reference' };
+            const raw = readings.get(key);
+            const scaled = p.scale.invert ? (raw ? 0 : 1) : raw * p.scale.factor;
+            const flags = [];
+            if (!p.scale.known) flags.push('scale key "' + p.scaleKey + '" not understood, value shown raw');
+            if (p.rangeMin !== null && scaled < p.rangeMin) flags.push('below the list range (' + p.rangeMin + ')');
+            if (p.rangeMax !== null && scaled > p.rangeMax) flags.push('above the list range (' + p.rangeMax + ')');
+            if (p.decoded.step === 2) flags.push('32-bit word order assumed ' + (p.decoded.bigEndian ? 'big-endian (-i/-f)' : 'little-endian'));
+            return { point: p, status: raw === 0 ? 'zero' : 'read', raw, scaled, flags };
+        });
+
+        // Does the whole list sit better one or two references along? Scored only
+        // on points the list gave a range for, since those are the ones where
+        // right and wrong are distinguishable.
+        const withRange = list.points.filter(p => p.decoded.ok && (p.rangeMin !== null || p.rangeMax !== null));
+        const offsets = [];
+        for (let shift = -3; shift <= 3; shift++) {
+            let inRange = 0, seen = 0;
+            for (const p of withRange) {
+                const key = keyOf(p, shift);
+                if (!readings.has(key)) continue;
+                seen++;
+                const scaled = readings.get(key) * p.scale.factor;
+                const okLow = p.rangeMin === null || scaled >= p.rangeMin;
+                const okHigh = p.rangeMax === null || scaled <= p.rangeMax;
+                if (okLow && okHigh) inRange++;
+            }
+            offsets.push({ shift, scored: seen, inRange });
+        }
+        const best = offsets.slice().sort((a, b) => (b.inRange - a.inRange) || (Math.abs(a.shift) - Math.abs(b.shift)))[0];
+
+        return {
+            at: new Date().toISOString(),
+            plant: plantIdFromHost(),
+            list: { table: list.table, plant: list.plant, subtractOne: list.subtractOne, points: list.points.length, undecodable: list.undecodable },
+            device: { mode: spec.mode, host: spec.host, port: spec.port, slave: spec.slave },
+            rows,
+            summary: {
+                points: rows.length,
+                read: rows.filter(r => r.status === 'read').length,
+                zero: rows.filter(r => r.status === 'zero').length,
+                refused: rows.filter(r => r.status === 'refused').length,
+                noAnswer: rows.filter(r => r.status === 'no answer').length,
+                notPolled: rows.filter(r => r.status === 'not polled').length,
+                flagged: rows.filter(r => r.flags && r.flags.length).length,
+                ranges: ranges.length,
+                elapsedMs: Math.round(performance.now() - started),
+            },
+            offsets,
+            // Only worth saying when the list declares ranges and a shift beats
+            // staying put; otherwise the scores are noise.
+            offsetVerdict: (withRange.length >= 5 && best && best.shift !== 0 &&
+                best.inRange > (offsets.find(o => o.shift === 0) || {}).inRange)
+                ? best : null,
+            commands,
+            diagnostics,
+        };
+    }
+
+    // ------------------------------------------- a report an agent can read
+
+    /*
+     * The point of polling a list is usually to correct it, and the correcting is
+     * increasingly done by an agent reading a knowledge file rather than by
+     * someone scrolling a grid. So the report is written for that reader: every
+     * row states all three address bases, the status is a fixed vocabulary, the
+     * conventions are spelled out at the top of every part, and each part stands
+     * alone under the 36 000-character ceiling a SharePoint-backed agent will
+     * only read whole.
+     */
+    const REPORT_CHUNK_LIMIT = 30000;
+
+    function reportHeader(verification, part, parts) {
+        const v = verification;
+        const s = v.summary;
+        return [
+            '# Modbus verification — ' + (v.list.table || 'point list') + ' against ' + v.device.host +
+                ' slave ' + v.device.slave + (parts > 1 ? ' (part ' + part + ' of ' + parts + ')' : ''),
+            '',
+            'Polled ' + v.at + ' from IWMAC plant ' + v.plant + ' with Modpoll Console ' + VERSION + '.',
+            'Every reading below was taken with modpoll against the live device. Nothing here was written to it.',
+            '',
+            '## How to read this',
+            '',
+            '- **addr** is the address as the point list prints it. **protocol** is the Modbus protocol address',
+            '  (addr − 1 where the list counts from one: subtract_one is ' + v.list.subtractOne + ').',
+            '  **ref** is the 1-based reference modpoll prints, always protocol + 1.',
+            '- **raw** is the register as the device returned it; **scaled** is raw multiplied by the list\'s scale key.',
+            '- **status** is one of: `read` (a non-zero value came back), `zero` (the device answered 0),',
+            '  `refused` (the device refuses that reference — it is outside its map), `no answer`',
+            '  (nothing came back), `not polled` (the datatype could not be decoded).',
+            '- A device answering `zero` is not proof of a wrong address: many devices answer 0 for',
+            '  anything unmapped, and many mapped registers legitimately read 0.',
+            '',
+            '## Summary',
+            '',
+            '| points | read | zero | refused | no answer | not polled | flagged | poll commands | elapsed |',
+            '|---|---|---|---|---|---|---|---|---|',
+            '| ' + [s.points, s.read, s.zero, s.refused, s.noAnswer, s.notPolled, s.flagged, s.ranges, s.elapsedMs + ' ms'].join(' | ') + ' |',
+            '',
+        ].join('\n');
+    }
+
+    function offsetSection(verification) {
+        const lines = ['## Offset check', ''];
+        if (!verification.offsets.some(o => o.scored)) {
+            lines.push('Not scored: the list declares no engineering ranges, so a shifted reading cannot be told from a correct one.');
+            lines.push('');
+            return lines.join('\n');
+        }
+        lines.push('Each candidate shift was scored on the points whose list entry declares a range.', '');
+        lines.push('| shift | points scored | inside their range |', '|---|---|---|');
+        for (const o of verification.offsets) lines.push('| ' + (o.shift > 0 ? '+' + o.shift : o.shift) + ' | ' + o.scored + ' | ' + o.inRange + ' |');
+        lines.push('');
+        lines.push(verification.offsetVerdict
+            ? '**A shift of ' + (verification.offsetVerdict.shift > 0 ? '+' : '') + verification.offsetVerdict.shift +
+              ' registers scores better than the list as written.** Treat this as a lead, not a conclusion: confirm against a ' +
+              'setpoint whose value is already known before moving every address.'
+            : 'No shift scores better than the list as written.');
+        lines.push('');
+        return lines.join('\n');
+    }
+
+    function pointRow(row) {
+        const p = row.point;
+        const cell = value => (value === undefined || value === null || value === '') ? '' : String(value);
+        return '| ' + [
+            p.addr, p.protocol, p.ref,
+            p.name.replace(/\|/g, '/'),
+            p.datatype,
+            p.scaleKey,
+            cell(row.raw),
+            row.scaled === undefined ? '' : (p.decimals ? row.scaled.toFixed(p.decimals) : cell(row.scaled)),
+            p.unit,
+            row.status,
+            (row.flags && row.flags.length ? row.flags.join('; ') : (row.note || '')).replace(/\|/g, '/'),
+        ].join(' | ') + ' |';
+    }
+
+    /** One markdown file per part, each complete on its own. */
+    function buildCopilotReport(verification) {
+        const tableHead = [
+            '## Points',
+            '',
+            '| addr | protocol | ref | name | datatype | scale | raw | scaled | unit | status | notes |',
+            '|---|---|---|---|---|---|---|---|---|---|---|',
+        ].join('\n');
+
+        const attention = verification.rows.filter(r => r.status === 'refused' || r.status === 'no answer' ||
+            r.status === 'not polled' || (r.flags && r.flags.some(f => /range/.test(f))));
+        const attentionSection = ['', '## Points needing attention', ''].concat(
+            attention.length
+                ? attention.map(r => '- **' + r.point.name + '** (addr ' + r.point.addr + ', ref ' + r.point.ref + '): ' +
+                    r.status + (r.note ? ' — ' + r.note : '') + (r.flags && r.flags.length ? ' — ' + r.flags.join('; ') : ''))
+                : ['None: every point was polled and every value sits inside the range its list entry declares.']
+        ).join('\n');
+
+        const rows = verification.rows.map(pointRow);
+        const fixed = offsetSection(verification) + tableHead + '\n';
+        const parts = [];
+        let current = [];
+        let size = 0;
+        for (const row of rows) {
+            if (size + row.length + fixed.length + attentionSection.length > REPORT_CHUNK_LIMIT && current.length) {
+                parts.push(current); current = []; size = 0;
+            }
+            current.push(row); size += row.length + 1;
+        }
+        if (current.length) parts.push(current);
+
+        return parts.map((chunk, index) => ({
+            name: 'modpoll-verify_' + (verification.list.table || 'list') + '_' + verification.device.host.replace(/\./g, '-') +
+                '_' + nowStamp() + (parts.length > 1 ? '_part' + (index + 1) : '') + '.md',
+            text: reportHeader(verification, index + 1, parts.length) + offsetSection(verification) +
+                tableHead + '\n' + chunk.join('\n') + '\n' + (index === parts.length - 1 ? attentionSection + '\n' : ''),
+        }));
+    }
+
     // --------------------------------------------- unit list from the plant DB
 
     let _runId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
@@ -980,6 +1339,7 @@
         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     #${PANEL_ID} table.mpc-grid tbody tr:nth-child(even) td{background:#f7f8fa}
     #${PANEL_ID} table.mpc-grid td.zero{color:#a3a8b3}
+    #${PANEL_ID} table.mpc-grid td.changed{color:#1b5fa8;font-weight:bold}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
     #${PANEL_ID} .mpc-log{grid-column:span 12;max-height:120px;overflow-y:auto;overflow-x:hidden;
@@ -991,7 +1351,12 @@
     const ui = {};
     let lastResult = null;
     let lastScan = null;
+    let pointList = null;
+    let lastVerification = null;
     let repeatTimer = null;
+    // Printed reference -> the value seen on the previous pass, so a repeat run
+    // can mark what moved.
+    const watchPrevious = new Map();
 
     function log(text, level) {
         if (!ui.log) return;
@@ -1070,13 +1435,65 @@
         }
     }
 
+    // The grid serves two readings: registers as polled, and points as verified.
+    // Columns are declared rather than hard-coded so the two can share one table.
+    const REGISTER_COLUMNS = [
+        { label: 'printed', width: '13%' }, { label: 'addr', width: '13%' }, { label: 'value', width: '15%' },
+        { label: 'hex', width: '15%' }, { label: 'int16', width: '14%' }, { label: '×0.1', width: '15%' },
+        { label: '×0.01', width: '15%' },
+    ];
+    const POINT_COLUMNS = [
+        { label: 'addr', width: '8%' }, { label: 'ref', width: '8%' }, { label: 'name', width: '30%', align: 'left' },
+        { label: 'raw', width: '10%' }, { label: 'scaled', width: '11%' }, { label: 'unit', width: '8%' },
+        { label: 'status', width: '11%' }, { label: 'note', width: '14%', align: 'left' },
+    ];
+
+    function setGridColumns(columns) {
+        ui.gridColumns = columns;
+        ui.gridCols.textContent = '';
+        ui.gridHead.textContent = '';
+        for (const c of columns) ui.gridCols.appendChild(el('col', { style: 'width:' + c.width }));
+        ui.gridHead.appendChild(el('tr', {}, columns.map(c =>
+            el('th', { textContent: c.label, style: c.align === 'left' ? 'text-align:left' : '' }))));
+    }
+
     function renderEmptyGrid(message) {
         if (!ui.gridBody) return;
         ui.gridBody.textContent = '';
-        ui.gridBody.appendChild(el('tr', {}, [el('td', { className: 'mpc-empty', colSpan: 7, textContent: message })]));
+        ui.gridBody.appendChild(el('tr', {}, [
+            el('td', { className: 'mpc-empty', colSpan: (ui.gridColumns || REGISTER_COLUMNS).length, textContent: message }),
+        ]));
+    }
+
+    function renderVerification(verification) {
+        setGridColumns(POINT_COLUMNS);
+        ui.gridBody.textContent = '';
+        const frag = document.createDocumentFragment();
+        for (const row of verification.rows) {
+            const p = row.point;
+            const cells = [
+                String(p.addr), String(p.ref), p.name,
+                row.raw === undefined ? '' : String(row.raw),
+                row.scaled === undefined ? '' : (p.decimals ? row.scaled.toFixed(p.decimals) : String(row.scaled)),
+                p.unit || '', row.status,
+                (row.flags && row.flags.length ? row.flags[0] : (row.note || '')),
+            ];
+            const tr = el('tr', {}, cells.map((text, i) => el('td', {
+                textContent: text,
+                className: (i === 3 && row.raw === 0) ? 'zero' : '',
+                style: POINT_COLUMNS[i].align === 'left' ? 'text-align:left' : '',
+                title: text,
+            })));
+            frag.appendChild(tr);
+        }
+        ui.gridBody.appendChild(frag);
+        const s = verification.summary;
+        ui.summary.textContent = s.points + ' points · ' + s.read + ' read, ' + s.zero + ' zero, ' +
+            s.refused + ' refused, ' + s.noAnswer + ' no answer · ' + s.ranges + ' poll commands · ' + s.elapsedMs + ' ms';
     }
 
     function renderGrid(result) {
+        setGridColumns(REGISTER_COLUMNS);
         ui.gridBody.textContent = '';
         const onlyNonZero = ui.filterZero.checked;
         const rows = result.values.filter(v => !onlyNonZero || v.v !== 0);
@@ -1090,10 +1507,15 @@
         for (const v of shown) {
             const u16 = v.v < 0 ? v.v + 65536 : v.v;
             const i16 = v.v > 32767 ? v.v - 65536 : v.v;
+            // While repeating, a value that moved since the last pass is worth
+            // seeing at a glance — that is most of what commissioning looks for.
+            const previous = watchPrevious.get(v.i);
+            const changed = previous !== undefined && previous !== v.v;
+            watchPrevious.set(v.i, v.v);
             const tr = el('tr', {}, [
                 el('td', { textContent: String(v.i) }),
                 el('td', { textContent: String(v.addr) }),
-                el('td', { textContent: String(v.v), className: v.v === 0 ? 'zero' : '' }),
+                el('td', { textContent: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') }),
                 el('td', { textContent: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') }),
                 el('td', { textContent: String(i16) }),
                 el('td', { textContent: (v.v / 10).toFixed(1) }),
@@ -1168,8 +1590,70 @@
         log('Stopped');
     }
 
-    function download(filename, text) {
-        const blob = new Blob([text], { type: 'application/json' });
+    /**
+     * Take a parsed list into the panel: fill in whatever the file already knows
+     * about reaching the device, and say what was understood and what was not.
+     */
+    function adoptPointList(list, filename) {
+        pointList = list;
+        const comm = list.comm || {};
+        if (comm.mode) ui.mode.value = /tcp/i.test(comm.mode) ? 'tcp' : (/ascii/i.test(comm.mode) ? 'ascii' : 'rtu');
+        if (comm.ip) ui.host.value = comm.ip;
+        else if (comm.com_port) ui.host.value = comm.com_port;
+        if (comm.port) ui.port.value = comm.port;
+        if (comm.baudrate) ui.baudrate.value = String(comm.baudrate);
+        if (comm.parity) ui.parity.value = String(comm.parity).toLowerCase();
+        if (comm.stop_bits) ui.stopbits.value = String(comm.stop_bits);
+        if (comm.data_bits) ui.databits.value = String(comm.data_bits);
+        toggleSerial();
+        refreshPreview();
+
+        const refs = list.points.filter(p => p.decoded.ok).map(p => p.ref);
+        ui.listNote.textContent = list.points.length + ' points' +
+            (refs.length ? ', ref ' + Math.min.apply(null, refs) + '–' + Math.max.apply(null, refs) : '') +
+            (list.undecodable ? ', ' + list.undecodable + ' undecodable' : '');
+        ui.verifyBtn.disabled = false;
+        log('Loaded ' + (filename || 'point list') + ': ' + list.points.length + ' points, addresses count from ' +
+            (list.subtractOne ? 'one (subtract_one)' : 'zero') +
+            (list.undecodable ? ' — ' + list.undecodable + ' datatype(s) not decoded, those points are not polled' : ''), 'ok');
+        if (list.comm && (list.comm.ip || list.comm.com_port)) log('Connection taken from the list: ' + (list.comm.ip || list.comm.com_port));
+    }
+
+    async function runVerification() {
+        if (!pointList || termState.busy) return;
+        termState.busy = true;
+        abortRequested = false;
+        ui.verifyBtn.disabled = true;
+        ui.stop.disabled = false;
+        setDot('warn');
+        try {
+            const verification = await verifyPointList(pointList, readForm(),
+                p => log('> range ' + p.range + '/' + p.ranges + ': -r ' + p.ref + ' -c ' + p.count));
+            lastVerification = verification;
+            renderVerification(verification);
+            for (const d of verification.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : 'err');
+            const s = verification.summary;
+            log(s.read + ' read, ' + s.zero + ' zero, ' + s.refused + ' refused, ' + s.noAnswer + ' no answer, ' +
+                s.flagged + ' flagged — ' + s.elapsedMs + ' ms', s.refused || s.noAnswer ? 'warn' : 'ok');
+            if (verification.offsetVerdict) {
+                log('An offset of ' + (verification.offsetVerdict.shift > 0 ? '+' : '') + verification.offsetVerdict.shift +
+                    ' scores better than the list as written — confirm against a known setpoint before moving anything', 'warn');
+            }
+            ui.reportBtn.disabled = false;
+            ui.verifyJsonBtn.disabled = false;
+            setDot(s.read ? 'ok' : 'err');
+        } catch (e) {
+            setDot('err');
+            log('ERROR: ' + e.message, 'err');
+        } finally {
+            termState.busy = false;
+            ui.verifyBtn.disabled = false;
+            ui.stop.disabled = !repeatTimer;
+        }
+    }
+
+    function download(filename, text, mime) {
+        const blob = new Blob([text], { type: mime || 'application/json' });
         const a = el('a', { href: URL.createObjectURL(blob), download: filename });
         document.body.appendChild(a);
         a.click();
@@ -1292,6 +1776,8 @@
 
         for (const input of [ui.host, ui.port, ui.slave, ui.start, ui.count]) {
             input.addEventListener('input', () => { ui.cmdDirty = false; refreshPreview(); });
+            // Enter runs, the way a terminal would.
+            input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runOnce(); } });
         }
         for (const sel of [ui.table, ui.base, ui.format, ui.baudrate, ui.parity, ui.databits, ui.stopbits, ui.bigEndian]) {
             sel.addEventListener('change', () => { ui.cmdDirty = false; refreshPreview(); });
@@ -1324,6 +1810,17 @@
             if (!lastResult) return log('Nothing to save yet');
             download(resultFilename(), JSON.stringify(lastResult, null, 2));
         });
+        const csvBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'CSV', title: 'The grid as it stands, for a spreadsheet' });
+        csvBtn.addEventListener('click', () => {
+            const rows = [(ui.gridColumns || REGISTER_COLUMNS).map(c => c.label)];
+            for (const tr of ui.gridBody.querySelectorAll('tr')) {
+                const cells = [...tr.children].map(td => td.textContent);
+                if (cells.length === rows[0].length) rows.push(cells);
+            }
+            if (rows.length < 2) return log('Nothing in the grid to export');
+            const csv = rows.map(r => r.map(c => /[",;\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c).join(';')).join('\r\n');
+            download('modpoll_' + nowStamp() + '.csv', csv, 'text/csv');
+        });
         const probeBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Probe', title: "Run modpoll -h and report this plant's build" });
         probeBtn.addEventListener('click', async () => {
             try {
@@ -1351,7 +1848,41 @@
         });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
-            el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, probeBtn,
+            el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, csvBtn, probeBtn,
+        ]));
+
+        // --- point list ------------------------------------------------------
+        form.appendChild(el('div', { className: 'mpc-sep' }));
+        ui.listFile = el('input', { type: 'file', accept: '.json,application/json', className: 'mpc-hidden' });
+        ui.listFile.addEventListener('change', () => {
+            const file = ui.listFile.files && ui.listFile.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try { adoptPointList(parsePointList(String(reader.result)), file.name); }
+                catch (e) { log('ERROR: ' + e.message, 'err'); }
+            };
+            reader.readAsText(file);
+            ui.listFile.value = '';
+        });
+        const loadListBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Load point list', title: 'A modbusgen project JSON' });
+        loadListBtn.addEventListener('click', () => ui.listFile.click());
+        ui.verifyBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Verify list', disabled: true, title: 'Poll every point the list declares' });
+        ui.verifyBtn.addEventListener('click', runVerification);
+        ui.reportBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save report', disabled: true, title: 'Markdown for a Copilot knowledge file' });
+        ui.reportBtn.addEventListener('click', () => {
+            if (!lastVerification) return;
+            for (const part of buildCopilotReport(lastVerification)) download(part.name, part.text, 'text/markdown');
+        });
+        ui.verifyJsonBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save verification', disabled: true });
+        ui.verifyJsonBtn.addEventListener('click', () => {
+            if (!lastVerification) return;
+            download('modpoll-verify_' + nowStamp() + '.json', JSON.stringify(lastVerification, null, 2));
+        });
+        ui.listNote = el('span', { className: 'mpc-sum', textContent: 'No point list loaded' });
+        form.appendChild(el('div', { className: 'mpc-actions' }, [
+            loadListBtn, ui.verifyBtn, ui.reportBtn, ui.verifyJsonBtn,
+            el('span', { className: 'mpc-spacer' }), ui.listNote, ui.listFile,
         ]));
 
         // --- results ---------------------------------------------------------
@@ -1364,12 +1895,10 @@
         form.appendChild(el('div', { className: 'mpc-check', style: 'justify-content:flex-end' }, [ui.summary]));
 
         ui.gridBody = el('tbody');
-        const cols = ['13%', '13%', '15%', '15%', '14%', '15%', '15%'];
-        const table = el('table', { className: 'mpc-grid' }, [
-            el('colgroup', {}, cols.map(w => el('col', { style: 'width:' + w }))),
-            el('thead', {}, [el('tr', {}, ['printed', 'addr', 'value', 'hex', 'int16', '×0.1', '×0.01'].map(h => el('th', { textContent: h })))]),
-            ui.gridBody,
-        ]);
+        ui.gridCols = el('colgroup');
+        ui.gridHead = el('thead');
+        const table = el('table', { className: 'mpc-grid' }, [ui.gridCols, ui.gridHead, ui.gridBody]);
+        setGridColumns(REGISTER_COLUMNS);
         form.appendChild(el('div', { className: 'mpc-gridwrap' }, [table]));
         renderEmptyGrid('No registers polled yet');
 
@@ -1464,6 +1993,9 @@
                 '                                          bigEndian: true adds -i (int) or -f (float)',
                 'await __modpoll.raw("modpoll.exe …")      one command, parsed; writes are refused',
                 'await __modpoll.scan({host, slave})       which tables answer, and from which reference',
+                '__modpoll.loadList(projectJson)           adopt a modbusgen project: points and system.comm',
+                'await __modpoll.verify()                  poll every point in that list and judge the answers',
+                '__modpoll.report()                        the verification as markdown parts, ready to upload',
                 'await __modpoll.probe()                   what this plant\'s modpoll -h reports',
                 '__modpoll.last()                          the last full result',
                 '__modpoll.stop()                          abort a running sweep',
@@ -1489,6 +2021,23 @@
         },
         probe(force) { return probeBinary(!!force); },
         scan(spec) { return scanDevice(spec).then(report => { lastScan = report; return report; }); },
+        /** Adopt a modbusgen project file: its points, and how to reach the device. */
+        loadList(json, name) {
+            const list = parsePointList(json);
+            adoptPointList(list, name || 'list from the API');
+            return { points: list.points.length, undecodable: list.undecodable, subtractOne: list.subtractOne, comm: list.comm };
+        },
+        /** Poll every point the loaded list declares and judge the answers. */
+        async verify(spec) {
+            if (!pointList) throw new Error('No point list loaded — call loadList first');
+            const verification = await verifyPointList(pointList, normaliseSpec(Object.assign(readForm(), spec || {})));
+            lastVerification = verification;
+            try { renderVerification(verification); ui.reportBtn.disabled = false; ui.verifyJsonBtn.disabled = false; } catch (e) { /* panel not built */ }
+            return verification;
+        },
+        /** The same verification as markdown parts, each under the 36 000-character ceiling. */
+        report() { return lastVerification ? buildCopilotReport(lastVerification) : null; },
+        lastVerification() { return lastVerification; },
         lastScan() { return lastScan; },
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
