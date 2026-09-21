@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.5.1
+// @version      1.6.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.5.1';
+    const VERSION = '1.6.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -451,12 +451,12 @@
     // argument, or the process reporting its exit ("Progam" is the binary's typo).
     const RE_FINAL_ERROR = /exception response|unkn[wo]{2}n error|invalid \w+ parameter|unrecognized option|prog(r)?am stopped with exit code/i;
     const countValueLines = text => (String(text).match(/\[\d+\]\s*:/g) || []).length;
+    let runCounter = 0;
 
     async function termRun(command, opts) {
         const options = Object.assign({ timeoutMs: 25000, settleMs: 300 }, opts || {});
         const state = await ensureTerminal();
         const outEl = state.outEl;
-        const firstNew = outEl.children.length;
         // The terminal renders every space as a non-breaking one, so innerText hands
         // back U+00A0. Left alone, no pattern containing a space can match, and a
         // device answering "Illegal Data Address exception response!" reads as a
@@ -464,17 +464,60 @@
         // so the character is stated once and cannot be mangled by an editor.
         const NBSP = String.fromCharCode(160);
         const clean = text => String(text).split(NBSP).join(' ').split('\r').join('');
-        // Anchored to an element rather than an index: jQuery Terminal trims its
-        // oldest lines once its buffer is full, which would slide an index.
-        const anchor = outEl.lastElementChild;
-        const readChunk = () => {
-            let node = (anchor && anchor.isConnected) ? anchor.nextElementSibling : outEl.firstElementChild;
+
+        /*
+         * Where this run's output starts has to be marked in the transcript
+         * itself. Anchoring on the element that was last before the command
+         * fails once jQuery Terminal trims its oldest lines — the anchor is gone,
+         * and reading "everything" then returns values from earlier commands as
+         * if they were this command's answer. Echoing a tag unique to this run
+         * and reading after its last occurrence cannot be confused that way.
+         */
+        const runTag = MARK + ':r' + (++runCounter);
+        const readAll = () => {
             const parts = [];
+            let node = outEl.firstElementChild;
             while (node) { parts.push(node.innerText); node = node.nextElementSibling; }
             return clean(parts.join('\n'));
         };
 
-        state.t.exec(command);
+        /*
+         * Output is accumulated as it arrives, not read once at the end. A long
+         * chained run prints more lines than the terminal keeps, so by the time
+         * it finishes its first block may already have scrolled out of the
+         * buffer — and on a plant that is exactly the sweep worth doing. Lines
+         * are collected on every poll and deduplicated, so trimming costs
+         * nothing as long as a line survives one polling interval.
+         */
+        const before = new Set(readAll().split('\n').map(l => l.trim()).filter(Boolean));
+        let collected = '';
+        let previous = '';
+        const absorbNewLines = text => {
+            // Degraded path: keep whatever was not on screen when the run began.
+            // Two commands in one run can legitimately print the same line, so
+            // this is only used when growth can no longer be tracked.
+            const kept = String(text).split('\n').filter(line => {
+                const key = line.trim();
+                return key && !before.has(key) && collected.indexOf(line) < 0;
+            });
+            if (kept.length) collected += (collected ? '\n' : '') + kept.join('\n');
+        };
+        const harvest = () => {
+            const all = readAll();
+            const at = all.lastIndexOf(runTag);
+            if (at < 0) { absorbNewLines(all); return; }
+            const chunk = all.slice(at + runTag.length);
+            if (chunk.indexOf(previous) === 0) {
+                // Normal path: the run's own output, still whole, has grown.
+                collected += chunk.slice(previous.length);
+            } else {
+                absorbNewLines(chunk);
+            }
+            previous = chunk;
+        };
+        const readChunk = () => { harvest(); return collected; };
+
+        state.t.exec('echo ' + runTag + ' & ' + command);
         const deadline = Date.now() + options.timeoutMs;
         let lastLength = -1;
         let stableSince = Date.now();
@@ -539,8 +582,24 @@
         const commands = [];
         let fatal = false;
 
-        const refused = [];      // blocks the device answered with an exception
-        const unreadable = [];   // single references it refuses, found by halving
+        const step = formatOf(spec.format).step;
+        const missingRuns = [];  // parts of a block that did not come back
+        const unreadable = [];   // single references the device refuses
+
+        // What a block asked for, against what arrived. A gap can mean the device
+        // refused the read or that the terminal dropped the line before it could
+        // be collected; either way the answer is to ask again for the gap.
+        const gapsOf = (block, have) => {
+            const runs = [];
+            let run = null;
+            for (let n = 0; n < block.count; n++) {
+                const ref = block.ref + n * step;
+                if (have.has(ref)) { run = null; continue; }
+                if (run && run.ref + run.count * step === ref) run.count++;
+                else { run = { ref, count: 1 }; runs.push(run); }
+            }
+            return runs;
+        };
 
         const mergeValues = list => {
             for (const v of list) {
@@ -584,45 +643,48 @@
             for (const d of parsed.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
             if (parsed.fatal) { fatal = true; break; }
 
-            // A block containing one unmapped register is refused whole, so note
-            // which blocks came back empty. Emptiness is the signal rather than a
-            // nearby exception line: modpoll writes exceptions to stderr, which
-            // the shell flushes ahead of the matching stdout, so an error line
-            // cannot be tied to the command that produced it. Values can —
+            // Which references actually came back. Absence is the signal rather
+            // than a nearby exception line: modpoll writes exceptions to stderr,
+            // which the shell flushes ahead of the matching stdout, so an error
+            // line cannot be tied to the command that produced it. Values can —
             // stdout is flushed when each process exits, in order.
-            for (const segment of splitByMarker(raw)) {
-                const block = group.find(b => b.ref === segment.ref);
-                if (block && !parseModpoll(segment.text).values.length) refused.push(block);
-            }
+            const have = new Set(parsed.values.map(v => v.i));
+            for (const b of group) for (const gap of gapsOf(b, have)) missingRuns.push(gap);
         }
 
-        // Halve each refused block until the readable part comes back and the
-        // references the device will not serve are isolated. A refusal costs
-        // about half a second on the wire, so the budget is a hard stop rather
-        // than a suggestion.
-        let budget = spec.recover === false ? 0 : 32;
-        let queue = refused.slice();
-        const step = formatOf(spec.format).step;
+        /*
+         * Ask again for whatever is missing. A gap that comes back on the second
+         * attempt was a dropped line; a gap that stays empty is the device
+         * refusing, and halving isolates which references it refuses. Modbus
+         * refuses a read whole, so a single unmapped register otherwise costs its
+         * entire 99-register block. Each refusal costs about half a second on the
+         * wire, so the budget is a hard stop rather than a suggestion.
+         */
+        let budget = spec.recover === false ? 0 : 40;
+        let queue = missingRuns.slice();
         while (queue.length && budget > 0 && !abortRequested && !fatal) {
-            const halves = [];
-            for (const b of queue.splice(0, CHAIN_MAX)) {
-                if (b.count <= 1) { unreadable.push(b.ref); continue; }
-                const left = Math.floor(b.count / 2);
-                halves.push({ ref: b.ref, count: left }, { ref: b.ref + left * step, count: b.count - left });
-            }
-            if (!halves.length) continue;
-            budget -= halves.length;
-            if (onProgress) onProgress({ recovering: halves.length, command: 'recovering ' + halves.length + ' part-blocks' });
+            const attempt = queue.splice(0, CHAIN_MAX);
+            budget -= attempt.length;
+            if (onProgress) onProgress({ recovering: attempt.length, command: 're-asking for ' + attempt.length + ' gap(s)' });
             let raw;
             try {
-                raw = await termRun(chainBlocks(spec, halves), { timeoutMs: spec.timeoutMs, stopOnError: false });
+                raw = await termRun(chainBlocks(spec, attempt), { timeoutMs: spec.timeoutMs, stopOnError: false });
             } catch (e) { diagnostics.push({ level: 'warn', text: 'Recovery stopped: ' + e.message, line: '' }); break; }
-            for (const segment of splitByMarker(raw)) {
-                const half = halves.find(h => h.ref === segment.ref);
-                if (!half) continue;
-                const seen = parseModpoll(segment.text);
-                mergeValues(seen.values);
-                if (!seen.values.length) queue.push(half);
+            const parsed = parseModpoll(raw);
+            mergeValues(parsed.values);
+            const have = new Set(parsed.values.map(v => v.i));
+            for (const run of attempt) {
+                const stillMissing = gapsOf(run, have);
+                if (!stillMissing.length) continue;
+                if (run.count === 1) { unreadable.push(run.ref); continue; }
+                // Nothing at all came back: halve, so a single refused reference
+                // inside the run can be found. Otherwise chase the gaps.
+                if (stillMissing.length === 1 && stillMissing[0].count === run.count) {
+                    const left = Math.floor(run.count / 2);
+                    queue.push({ ref: run.ref, count: left }, { ref: run.ref + left * step, count: run.count - left });
+                } else {
+                    for (const gap of stillMissing) queue.push(gap);
+                }
             }
         }
         if (unreadable.length) {
@@ -635,7 +697,7 @@
             });
         }
         if (queue.length && budget <= 0) {
-            diagnostics.push({ level: 'warn', text: 'Gave up isolating refused registers after 32 attempts', line: '' });
+            diagnostics.push({ level: 'warn', text: 'Gave up chasing missing references after 40 attempts', line: '' });
         }
         values.sort((a, b) => a.i - b.i);
 
@@ -685,7 +747,11 @@
             }
             const line = parts.join(' & ');
             assertReadOnly(line);
-            const raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false });
+            let raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false });
+            // Every probe echoes its own marker, so a missing marker means output
+            // was lost rather than refused. One retry settles which it was.
+            const markers = (raw.match(new RegExp(MARK + ':\\d+:\\d+', 'g')) || []).length;
+            if (markers < group.length) raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false });
             let current = null;
             for (const rawLine of String(raw).split(/\r?\n/)) {
                 const line2 = rawLine.trim();
