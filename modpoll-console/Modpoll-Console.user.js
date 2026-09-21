@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.2.1
+// @version      1.2.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.2.1';
+    const VERSION = '1.2.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1116,13 +1116,18 @@
      * keeps the shell's routing intact and claims one extra action id.
      */
     function hookRouter() {
-        const original = pageWin.my_do_action;
-        if (typeof original !== 'function' || original.__mpcWrapped) return;
+        const current = pageWin.my_do_action;
+        if (typeof current !== 'function') return;
+        // Unwrap first: a re-run — an agent re-evaluating the script into a live
+        // page — must replace the previous hook rather than stack on it, or the
+        // sidebar keeps opening the panel belonging to the copy that is gone.
+        const original = current.__mpcOriginal || current;
         const wrapped = function (action) {
             if (action === SIDEBAR_ID) { showConsole(); return undefined; }
             return original.apply(this, arguments);
         };
         wrapped.__mpcWrapped = true;
+        wrapped.__mpcOriginal = original;
         pageWin.my_do_action = wrapped;
     }
 
