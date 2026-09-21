@@ -86,12 +86,50 @@ Registers outside the device's map answer with 0 rather than an exception, so a
 block may span gaps safely — a row of zeros is not by itself evidence of a
 missing device.
 
+## Verifying a modbusgen list
+
+*Load point list* takes a modbusgen project file. From it the console reads the
+addressing convention (`options.subtract_one`), the connection (`system.comm`)
+and the points themselves. Each `datatype` is decoded by the grammar of the
+shipped keys: `read_func` gives the Modicon prefix `-t` actually wants, `raw_type`
+gives a 16- or 32-bit format, word order gives the endian flag. A key that does
+not decode is reported as undecodable rather than guessed at — a wrong table
+polls the wrong half of a device in silence.
+
+*Verify list* polls every point, grouping them into ranges that merge across
+small gaps and split at the count cap, then judges each answer with a fixed
+vocabulary: `read`, `zero`, `refused`, `no answer`, `not polled`. A value outside
+the range the list itself declares is flagged.
+
+**The offset check** scores the whole list at shifts of −3 to +3, on two signals:
+how many points land inside their declared range, and how many read non-zero.
+Ranges on a plant are wide — a neighbouring register usually fits one too — so
+the non-zero count is what separates a correct list from a shifted one. On the
+VENT controller this identifies a list written one register low as `+1`, one
+written two high as `−2`, and passes a correct list with no verdict. Treat a
+verdict as a lead: confirm against a setpoint whose value is already known
+before moving every address.
+
+*Save report* writes markdown for the Copilot kit — every part states the three
+address bases and the status vocabulary up front, stands alone, and stays under
+the 36 000-character ceiling a SharePoint-backed agent reads whole. *Save
+verification* writes the same thing as JSON.
+
 ## Read-only by construction
 
 modpoll has no write flag: it writes when a value follows the host argument. Every
-command — including one typed by hand into the preview box — is tokenised first,
-and a second positional argument is refused with the reason stated. Nothing in the
-panel can set a register.
+command — including one typed by hand into the preview box, and every segment of a
+chained one — is tokenised first, and a second positional argument is refused with
+the reason stated. Nothing in the panel can set a register.
+
+There is a second hazard that is not about writing. Without `-1`, modpoll polls
+every second forever, and a command that loses its tail on the way through Plant
+Term can leave exactly that: a process flooding the shell until someone
+reconnects, for everyone using it. So `-1` is the *first* argument rather than the
+last — truncation then costs the host argument and modpoll refuses to start — and
+chained lines are capped at 420 characters. If a session ever does go quiet with
+its prompt still showing, *Reconnect* takes a fresh one; the console does it
+automatically when a run prints nothing at all.
 
 ## The API for an agent
 
@@ -107,6 +145,10 @@ await __modpoll.read({                     // full result
   recover: true                            // halve a refused block, default on
 });
 await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // which tables answer
+
+__modpoll.loadList(projectJson);          // a modbusgen project: points and system.comm
+await __modpoll.verify();                 // poll every point in it and judge the answers
+__modpoll.report();                       // [{name, text}] markdown parts, ready to upload
 await __modpoll.readCompact(spec);         // same, values as a bare array
 await __modpoll.raw('c:\\iwmac\\bin\\modpoll.exe -m tcp -a 1 -t 4 -r 430 -c 99 -1 10.0.0.5');
 await __modpoll.probe();                   // what this plant's modpoll -h reports
@@ -165,7 +207,12 @@ Plant 2313, the VENT controller at 192.168.10.100 over Modbus TCP:
 - slave 2, which the gateway does not serve, produced one diagnostic rather than
   a wait;
 - reading references 1-20 returned 19 values and named printed reference 1 as the
-  only one the device refuses.
+  only one the device refuses;
+- a nine-point modbusgen list verified against the device in 265 ms, with the
+  values it reports matching the plant (19,0 °C supply, 14,0 °C extract, −5,0 °C
+  outdoor, 800 and 400 Pa);
+- the same list written one register low was identified as `+1`, and written two
+  high as `−2`, while the correct list produced no verdict.
 
 ## Related
 
