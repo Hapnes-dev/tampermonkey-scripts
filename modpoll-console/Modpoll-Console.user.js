@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.13.2
+// @version      1.14.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.13.2';
+    const VERSION = '1.14.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1312,6 +1312,50 @@
         }));
     }
 
+    // ----------------------------------------------- the Plant Server itself
+
+    /*
+     * Reaching a serial device means taking its COM port, and the Plant Server
+     * holds every one of them because it polls the buses continuously. Stopping
+     * it is therefore part of the job — and it is also the most consequential
+     * thing anyone does from this page: temperature logging stops, and so do
+     * alarms, on a live store.
+     *
+     * So the console uses the plant's own controls rather than inventing any: the
+     * same plant_cmd.php commands the sys_tools page posts when someone clicks
+     * Stop or Start there, which are the same ones IWMAC Escape offers locally.
+     * Nothing here fires without a second, explicit click, nothing restarts by
+     * itself, and a stop this console performed stays on the screen — including
+     * after a reload — until the Plant Server is running again.
+     */
+    const PLANT_CMD_URL = 'plant_cmd.php';
+    const PROCESS_INFO_URL = 'plant_data.php?cmd=process_info';
+    const STOP_MARK_KEY = 'mpc.plantStoppedAt.v1';
+
+    async function plantCommand(cmd, extra) {
+        const response = await fetch(PLANT_CMD_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ cmd }, extra || {})),
+            cache: 'no-cache',
+        });
+        const text = await response.text();
+        if (!response.ok) throw new Error('plant_cmd.php answered HTTP ' + response.status + ': ' + text.slice(0, 120));
+        return text.trim();
+    }
+
+    /** Which plant modules are running, from the page's own status endpoint. */
+    async function fetchPlantProcesses() {
+        const response = await fetch(PROCESS_INFO_URL, { cache: 'no-cache' });
+        const body = await response.json();
+        const records = (body && body.records) || [];
+        return {
+            modules: records.map(r => ({ module: r.module, running: Number(r.status) === 1, since: r.statetime })),
+            running: records.filter(r => Number(r.status) === 1).length,
+            total: records.length,
+        };
+    }
+
     // ------------------------------------------- the bus each unit sits on
 
     /*
@@ -1674,6 +1718,10 @@
     #${PANEL_ID} .mpc-hidden{display:none}
 
     #${PANEL_ID} .mpc-sep{grid-column:span 12;height:1px;background:#e4e6ea;margin:3px 0 1px}
+    #${PANEL_ID} .mpc-banner{grid-column:span 12;padding:7px 10px;border-radius:4px;font-size:12px;
+        background:#fdecea;border:1px solid #f0b4ae;color:#8a2a20}
+    #${PANEL_ID} button.mpc-b.danger{background:#c0392b;border-color:#a5301f;color:#fff;font-weight:bold}
+    #${PANEL_ID} button.mpc-b.danger:hover:not([disabled]){background:#a5301f}
     #${PANEL_ID} .mpc-actions{grid-column:span 12;display:flex;gap:var(--gap);align-items:flex-end;flex-wrap:wrap}
     #${PANEL_ID} .mpc-actions .mpc-f{width:78px}
     #${PANEL_ID} .mpc-actions .mpc-spacer{flex:1 1 auto}
@@ -2167,6 +2215,65 @@
         if (list.comm && (list.comm.ip || list.comm.com_port)) log('Connection taken from the list: ' + (list.comm.ip || list.comm.com_port));
     }
 
+    /**
+     * Run one of the plant's own commands, then show what the plant reports back.
+     * A stop is remembered across reloads: the banner stays until the modules are
+     * running again, because the worst outcome here is a plant left quiet by
+     * someone who closed the tab and forgot.
+     */
+    async function runPlantCommand(cmd, label, isStop, extra) {
+        try {
+            log(label + ' — sending ' + cmd + ' to the plant…', isStop ? 'warn' : '');
+            const answer = await plantCommand(cmd, extra);
+            log(label + ': plant answered ' + (answer || '(nothing)'), 'ok');
+            if (isStop) GM_setValue(STOP_MARK_KEY, JSON.stringify({ plant: plantIdFromHost(), at: Date.now() }));
+            // The modules take a moment to settle either way.
+            setTimeout(() => refreshPlantStatus(false), 1500);
+            setTimeout(() => refreshPlantStatus(false), 6000);
+        } catch (e) {
+            log('ERROR: ' + label + ' failed: ' + e.message, 'err');
+        }
+    }
+
+    function showPlantBanner(text, tone) {
+        if (!ui.plantBanner) return;
+        ui.plantBanner.textContent = text || '';
+        ui.plantBanner.className = 'mpc-banner' + (text ? '' : ' mpc-hidden') + (tone ? ' ' + tone : '');
+    }
+
+    async function refreshPlantStatus(verbose) {
+        try {
+            const state = await fetchPlantProcesses();
+            const stopped = state.running === 0;
+            ui.plantStatus.textContent = 'Plant Server: ' + (stopped ? 'stopped' : state.running + ' of ' + state.total + ' modules running');
+            if (ui.driverSelect.options.length <= 1) {
+                for (const m of state.modules) ui.driverSelect.appendChild(el('option', { value: m.module, textContent: m.module }));
+            }
+            let mark = null;
+            try { mark = JSON.parse(GM_getValue(STOP_MARK_KEY, 'null')); } catch (e) { /* none */ }
+            if (stopped) {
+                const since = mark && mark.plant === plantIdFromHost()
+                    ? ' — stopped from this console ' + Math.round((Date.now() - mark.at) / 60000) + ' minutes ago'
+                    : '';
+                showPlantBanner('Plant Server is stopped on plant ' + plantIdFromHost() + since +
+                    '. Temperature logging and alarms are off until it is started again. Nothing here will start it for you.', 'danger');
+            } else {
+                showPlantBanner('');
+                if (mark) GM_setValue(STOP_MARK_KEY, 'null');
+            }
+            if (verbose) {
+                const down = state.modules.filter(m => !m.running).map(m => m.module);
+                log('Plant Server: ' + state.running + ' of ' + state.total + ' modules running' +
+                    (down.length ? ' — stopped: ' + down.join(', ') : ''), down.length ? 'warn' : 'ok');
+            }
+            return state;
+        } catch (e) {
+            ui.plantStatus.textContent = 'Plant Server: status unavailable';
+            if (verbose) log('ERROR: could not read the plant status: ' + e.message, 'err');
+            return null;
+        }
+    }
+
     async function runVerification() {
         if (!pointList || termState.busy) return;
         termState.busy = true;
@@ -2422,6 +2529,55 @@
             el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, csvBtn, probeBtn, reconnectBtn,
         ]));
 
+        // --- the Plant Server ------------------------------------------------
+        form.appendChild(el('div', { className: 'mpc-sep' }));
+        ui.plantBanner = el('div', { className: 'mpc-banner mpc-hidden' });
+        form.appendChild(ui.plantBanner);
+
+        ui.plantStatus = el('span', { className: 'mpc-sum', textContent: 'Plant Server: not checked' });
+        const statusBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Check', title: 'Which plant modules are running' });
+        statusBtn.addEventListener('click', () => refreshPlantStatus(true));
+
+        // Two clicks, never one: the first arms, the second fires, and walking
+        // away disarms it again.
+        ui.stopBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Stop Plant Server' });
+        let armed = null;
+        const disarm = () => {
+            clearTimeout(armed);
+            armed = null;
+            ui.stopBtn.textContent = 'Stop Plant Server';
+            ui.stopBtn.classList.remove('danger');
+        };
+        ui.stopBtn.addEventListener('click', async () => {
+            if (!armed) {
+                ui.stopBtn.textContent = 'Confirm: stop ' + (plantIdFromHost() || 'this plant') + ' — logging and alarms off';
+                ui.stopBtn.classList.add('danger');
+                armed = setTimeout(disarm, 8000);
+                return;
+            }
+            disarm();
+            await runPlantCommand('stop_plant_server', 'Stop Plant Server', true);
+        });
+
+        const startBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Start Plant Server' });
+        startBtn.addEventListener('click', () => runPlantCommand('start_plant_server_norm', 'Start Plant Server', false));
+        const startNogenBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Start -nogen', title: 'The second Start button IWMAC Escape offers' });
+        startNogenBtn.addEventListener('click', () => runPlantCommand('start_plant_server_nogen', 'Start Plant Server (nogen)', false));
+
+        ui.driverSelect = el('select', {}, [el('option', { value: '', textContent: 'driver module…' })]);
+        const restartDriverBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Restart driver', title: 'Bounce one driver module and leave the rest running' });
+        restartDriverBtn.addEventListener('click', async () => {
+            const module = ui.driverSelect.value;
+            if (!module) return log('Pick a driver module first', 'warn');
+            await runPlantCommand('restart_driver', 'Restart ' + module, false, { process_name: module });
+        });
+
+        form.appendChild(el('div', { className: 'mpc-actions' }, [
+            statusBtn, ui.stopBtn, startBtn, startNogenBtn,
+            field('Module', ui.driverSelect, 3), restartDriverBtn,
+            el('span', { className: 'mpc-spacer' }), ui.plantStatus,
+        ]));
+
         // --- point list ------------------------------------------------------
         form.appendChild(el('div', { className: 'mpc-sep' }));
         ui.listFile = el('input', { type: 'file', accept: '.json,application/json', className: 'mpc-hidden' });
@@ -2499,6 +2655,12 @@
         ui.panel = panel;
 
         toggleSerial();
+        // A stop this console made outlives the tab it was made in, so check on
+        // load rather than waiting to be asked.
+        try {
+            const mark = JSON.parse(GM_getValue(STOP_MARK_KEY, 'null'));
+            if (mark && mark.plant === plantIdFromHost()) refreshPlantStatus(false);
+        } catch (e) { /* nothing recorded */ }
         try { applyForm(JSON.parse(GM_getValue(STORE_KEY, 'null'))); } catch (e) { /* first run */ }
         refreshPreview();
         log('Ready. Registers are read only; a value after the host is refused.');
