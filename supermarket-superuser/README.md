@@ -4,6 +4,13 @@ Power-user overlay for the **IWMAC Supermarket parameters page** (`…/supermark
 
 By ØTS / MATS / Hapnes. Console tag: `[Supermarket Parameters POC]`, CSS/id prefix `sm-poc-`.
 
+> **v5.0 rebased on the ØTS/MATS upstream.** The script body is now the upstream
+> `Supermarket-superuser-merged` build (Norwegian UI, graphics-panel lookup,
+> native-tab context menus, scaling helpers) with this fork's Excel export
+> re-applied on top. Only the export UI is in English, matching the export's own
+> column names. The sections below still describe the pre-5.0 feature set; the
+> graphics-panel features the upstream added are not documented here yet.
+
 ## Install
 
 [**Install Supermarket-superuser.user.js**](https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/supermarket-superuser/Supermarket-superuser.user.js)
