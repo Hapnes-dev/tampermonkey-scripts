@@ -30,10 +30,28 @@ rebuilt.
   unit, hex, int16, what changed since the last pass, and where the name came
   from; a 32-bit value says which two registers it spans. Coils and discrete
   inputs get a shorter set — a bit is 0 or 1, and hexadecimal is noise on it.
-  Clicking any row opens every other reading of that register: binary, unsigned
-  and signed, the two characters it would be as text, and everything the point
-  list or the plant knows about it. modpoll's error lines become one diagnostic
-  line each instead of a wall of repeated text.
+  modpoll's error lines become one diagnostic line each instead of a wall of
+  repeated text.
+- **Opens a register as a card.** Clicking any row opens the register under
+  it, on a white card with a blue edge that the grid row stays marked for: the
+  name and, large, what its value means — 20.3 °C, with *register holds 2031*
+  under it; a status word says which bits are set — then a row of badges with
+  the facts that decide a point: table, reference and protocol address, access,
+  the scale the plant implies, the 32-bit reading when the register and the
+  next decode to what the plant shows, whether it moved on the second read,
+  and the modbusgen datatype all of that suggests. Below, in columns that each
+  read downwards: where it is (table, both address bases, `driver_id`, the
+  command); the number read every way that applies — hex, binary, signed
+  against unsigned only when they differ, the pair decoded when its region is
+  32-bit, the second read; what the plant says, parameter by parameter and bit
+  by bit; what the list says; and the point the plant and the device suggest,
+  with the reason for every field. Where the sides disagree — the list scales
+  by x0.1 and the plant implies x0.01, a value outside the declared range, a
+  16-bit datatype on a register that decodes as a float with its neighbour —
+  the card says so in a callout of its own. Explanations live in tooltips, not
+  beside the values. Three buttons act on it: *Poll this register* reads it on
+  its own at its region's width, *Watch* reads it every second, *Copy command*
+  puts the modpoll line on the clipboard.
 - **Recovers what a refused block still holds.** Modbus refuses a read whole, so
   one unmapped register inside a 99-register block returns nothing. The block is
   halved until the readable part comes back, and the references the device will

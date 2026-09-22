@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.44.0
+// @version      1.45.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.44.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.45.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -3514,24 +3514,51 @@
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable:hover td{background:#eef4fb}
     /* The grid's own cells are nowrap, and white-space inherits — without this the
        detail view cannot wrap a single line of it. */
-    #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#f4f7fb;text-align:left;padding:8px 10px;white-space:normal}
-    /* Sections read downwards; the flat grid this replaced read across. */
-    #${PANEL_ID} .mpc-detailbox{display:flex;flex-direction:column;gap:2px;padding:2px 2px 6px;max-width:1120px}
-    #${PANEL_ID} .mpc-dhead{font:bold 13px Arial,Helvetica,sans-serif;color:#1b1b1b}
-    #${PANEL_ID} .mpc-dlead{font:13px Consolas,ui-monospace,monospace;color:#1b5fa8;margin-bottom:6px}
+    #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#e9eef6;text-align:left;padding:8px 10px;white-space:normal}
+    /* The row the detail belongs to stays marked while it is open. */
+    #${PANEL_ID} table.mpc-grid tbody tr.mpc-selected td{background:#dbe8f8}
+    /* One card: the name and the value it means at the top, in a size that can
+       be read from across the desk; the facts below in columns that each read
+       downwards; anything the sides disagree on called out on its own. A blue
+       edge and a shadow lift it off the grid it sits in. */
+    #${PANEL_ID} .mpc-detailbox{display:flex;flex-direction:column;gap:9px;padding:10px 12px 11px 14px;max-width:1120px;
+        background:#fff;border:1px solid #c9d6e8;border-left:4px solid #3f7fbf;border-radius:5px;box-shadow:0 2px 8px rgba(30,60,100,.12)}
+    #${PANEL_ID} .mpc-dtop{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+    #${PANEL_ID} .mpc-dname{flex:1 1 320px;min-width:0}
+    #${PANEL_ID} .mpc-dhead{font:bold 14px/1.3 Arial,Helvetica,sans-serif;color:#1b1b1b;overflow-wrap:anywhere}
+    #${PANEL_ID} .mpc-dbadges{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+    #${PANEL_ID} .mpc-badge{display:inline-block;padding:1px 8px;border-radius:10px;font:11px/1.6 Arial,Helvetica,sans-serif;
+        background:#eef0f4;color:#4a4f5a;border:1px solid #dfe3e9;white-space:nowrap}
+    #${PANEL_ID} .mpc-badge.blue{background:#e6f0fb;color:#1b5fa8;border-color:#c5d9f1}
+    #${PANEL_ID} .mpc-badge.green{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
+    #${PANEL_ID} .mpc-badge.amber{background:#fff4e0;color:#9a5b00;border-color:#f3d9a4}
+    #${PANEL_ID} .mpc-badge.mono{font-family:Consolas,ui-monospace,monospace}
+    #${PANEL_ID} .mpc-dvalue{flex:0 0 auto;text-align:right;min-width:160px}
+    #${PANEL_ID} .mpc-dlead{font:bold 26px/1.1 Consolas,ui-monospace,monospace;color:#1b5fa8;margin:0;white-space:nowrap}
+    #${PANEL_ID} .mpc-dlead small{display:block;margin-top:4px;font:12px/1.3 Arial,Helvetica,sans-serif;font-weight:normal;color:#79808c;white-space:normal}
+    #${PANEL_ID} .mpc-dactions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
+    #${PANEL_ID} .mpc-dactions .mpc-spacer{flex:1 1 auto}
+    #${PANEL_ID} .mpc-dcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:10px;align-items:start}
     /* A 1px gap over a grey backing reads as gridlines, which is what separates
        one pair from the next without drawing a border around each of them. */
-    #${PANEL_ID} .mpc-dsec{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:1px;
-        margin-bottom:8px;background:#e3e6ec;border:1px solid #dfe3e9;border-radius:4px;overflow:hidden}
-    #${PANEL_ID} .mpc-dsec h5{grid-column:1/-1;margin:0;padding:4px 10px;background:#eef0f4;
+    #${PANEL_ID} .mpc-dsec{display:flex;flex-direction:column;gap:1px;min-width:0;
+        background:#e3e6ec;border:1px solid #dfe3e9;border-radius:4px;overflow:hidden}
+    #${PANEL_ID} .mpc-dsec h5{margin:0;padding:4px 10px;background:#eef0f4;
         font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;text-transform:uppercase;color:#79808c}
     /* min-width:0 on both, or a long value refuses to wrap and runs over the
        column beside it. */
     #${PANEL_ID} .mpc-kv{display:flex;gap:10px;align-items:baseline;min-width:0;padding:5px 10px;background:#fcfdfe;
         font:12px/1.55 Arial,Helvetica,sans-serif}
-    #${PANEL_ID} .mpc-kv .mpc-k{color:#79808c;width:122px;flex:0 0 122px}
+    #${PANEL_ID} .mpc-kv .mpc-k{color:#79808c;width:108px;flex:0 0 108px}
     #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;min-width:0;overflow-wrap:anywhere}
     #${PANEL_ID} .mpc-kv .mpc-v.mono{font-family:Consolas,ui-monospace,monospace}
+    #${PANEL_ID} .mpc-kv .mpc-v.hl{color:#1b5fa8;font-weight:bold}
+    #${PANEL_ID} .mpc-kv .mpc-v.dim{color:#79808c}
+    #${PANEL_ID} .mpc-dnotes{display:flex;flex-direction:column;gap:4px}
+    #${PANEL_ID} .mpc-dnote{padding:5px 10px;border-radius:4px;font:12px/1.45 Arial,Helvetica,sans-serif;
+        background:#fff4e0;border:1px solid #f3d9a4;color:#6b4300}
+    #${PANEL_ID} .mpc-dnote.blue{background:#e6f0fb;border-color:#c5d9f1;color:#1b5fa8}
+    #${PANEL_ID} .mpc-dnote.green{background:#e8f5e9;border-color:#c8e6c9;color:#2e7d32}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
     #${PANEL_ID} .mpc-log{grid-column:span 12;height:220px;overflow-y:auto;overflow-x:hidden;
@@ -4108,140 +4135,308 @@
     }
 
     /**
-     * What one register is, in the order someone asks it: what it is called and
-     * what that value means, then how to reach it, then the number read every
-     * other way, then whatever the plant or the list knows about it. Sections
-     * rather than one flat grid, because a flat grid is read across when it wants
-     * to be read down.
+     * What one register is, in the order someone asks it: what it is called
+     * and what its value means — large, since that is the answer — then a
+     * row of badges with the facts that decide a point (where, access, scale,
+     * the datatype it suggests, whether it moved); then the facts in columns
+     * that each read downwards: how to reach it, the number read every way
+     * that applies, what the plant says, what the list says, and the point
+     * the two together suggest; and last, on their own, the places where
+     * the sides disagree. Explanations sit in tooltips rather than beside
+     * the values, so a reader who knows them is not made to read them.
+     *
+     * `extra` carries what a scan row knows and a poll row does not: the
+     * second read, the region's width verdict, the next register's value for
+     * the 32-bit reading, and what modpoll's -f means on this plant.
      */
-    function readingDetailSections(value, point, previous, fromPlant, table, ref, format) {
+    function readingDetailSections(value, point, previous, fromPlant, table, ref, format, extra) {
+        const x = extra || {};
         const fmt = formatOf(format);
         const wide = fmt.step === 2;
         const u16 = value < 0 ? value + 65536 : value;
         const i16 = value > 32767 ? value - 65536 : value;
         const entry = fromPlant && fromPlant[0];
+        const first = entry && entry.bit === null ? entry : null;
+        const bits = (fromPlant || []).filter(p => p.bit !== null);
+        const tableInfo = REGISTER_TABLES.find(t => t.value === String(table)) || {};
+        const tableName = tableInfo.title || ('table ' + table);
+        const tableShort = (tableInfo.label || ('table ' + table)).replace(/^\d+ — /, '');
         const sections = [];
+        const badges = [];
+        const notes = [];
 
+        // --- the answer: what it is called, and what its value means ---------
         const name = (point && point.name) || (entry && entry.name) || '';
         const unit = (point && point.unit) || (entry && entry.unit) || '';
         const meaning = point
             ? (point.scale.invert ? (value ? 'off' : 'on') : roundScaled(value * point.scale.factor, point.decimals))
-            : (entry ? entry.plantValue : '');
+            : (first ? first.plantValue : '');
+        const hasMeaning = !(meaning === '' || meaning === null || meaning === undefined);
+        const implied = first && !wide ? impliedScale(value, first.plantValue) : null;
+        const wideFound = !wide && !implied && typeof x.nextRaw === 'number' ? wideReading(value, x.nextRaw, first ? first.plantValue : null) : null;
+        const confirmedWide = pickWide(wideFound);
+        const region = x.region && x.region.format !== '16-bit' ? x.region : null;
+        const regionWide = region && (region.format === 'float32' || region.format === 'int32' || region.format === 'uint32');
+        const aligned = region ? (ref - region.alignStart) % 2 === 0 : true;
+        // What the pair reads as, in the region's order, when the scan judged
+        // the region 32-bit and this register starts a pair.
+        let pairValue = null;
+        if (regionWide && aligned && typeof x.nextRaw === 'number') {
+            const d = decodePair(value, x.nextRaw)[region.wordOrder === 'low word first' ? 'lowFirst' : 'highFirst'];
+            pairValue = region.format === 'float32' ? (plausibleFloat(d.float) ? roundScaled(d.float, 4) : null) : (region.format === 'int32' ? d.int32 : d.uint32);
+        }
+        const changed = typeof x.again === 'number' && x.again !== value;
+        // A status word means its bits, not its number: say which are set.
+        const setBits = [];
+        if (!wide) for (let b = 0; b < 16; b++) if ((u16 >> b) & 1) setBits.push(b);
+        const bitNote = bits.length
+            ? (setBits.length ? 'bit' + (setBits.length === 1 ? ' ' : 's ') + setBits.join(', ') + ' set' : 'no bit set') + ' — 0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0')
+            : null;
         sections.push({
-            headline: name || ('Reference ' + ref),
-            lead: (meaning === '' || meaning === null ? String(value) : meaning + (unit ? ' ' + unit : '')) +
-                (meaning === '' || meaning === null ? '' : '   (register holds ' + value + ')'),
+            headline: name || ('Reference ' + ref + (tableShort ? ' — ' + tableShort.toLowerCase() : '')),
+            lead: hasMeaning ? meaning + (unit ? ' ' + unit : '') : (pairValue !== null ? String(pairValue) : String(value)),
+            leadNote: hasMeaning ? 'register holds ' + value
+                : (pairValue !== null ? region.format + ' over ' + ref + '-' + (ref + 1) + ', register holds ' + value : (bitNote || 'raw, as modpoll printed it')),
         });
 
-        const tableName = (REGISTER_TABLES.find(t => t.value === String(table)) || {}).title || ('table ' + table);
+        // --- badges: the facts that decide a point --------------------------
+        badges.push({ text: tableShort, tone: 'grey', title: tableName });
+        badges.push({ text: 'ref ' + ref, tone: 'grey', mono: true, title: 'What modpoll prints, and what -r takes' });
+        badges.push({ text: 'addr ' + (ref - 1), tone: 'grey', mono: true, title: 'The protocol address — what a document usually means, and what a modbusgen list prints' });
+        if (fromPlant && fromPlant.length) {
+            badges.push({ text: fromPlant.some(p => p.access === 'rw') ? 'writable in the plant' : 'read only in the plant', tone: fromPlant.some(p => p.access === 'rw') ? 'green' : 'grey' });
+        } else if (point && point.rw) {
+            badges.push({ text: point.rw === 'rw' ? 'read/write in the list' : 'read only in the list', tone: point.rw === 'rw' ? 'green' : 'grey' });
+        }
+        if (implied) badges.push({ text: 'scale ' + implied.replace(/^x/, '×'), tone: 'blue', title: 'Implied by the plant: it shows ' + first.plantValue + ' where the register holds ' + value });
+        if (point && point.scaleKey) badges.push({ text: 'list ' + point.scaleKey, tone: 'grey', title: 'The scale key in the loaded list' });
+        if (bits.length) badges.push({ text: bits.length + ' bit' + (bits.length === 1 ? '' : 's') + ' read by the plant', tone: 'blue' });
+        if (confirmedWide) badges.push({ text: confirmedWide.as + ' with ' + (ref + 1), tone: 'blue', mono: true, title: 'The plant shows ' + first.plantValue + ', which this register and the next decode to, ' + confirmedWide.wordOrder });
+        else if (region) badges.push({ text: region.format + (region.wordOrder ? ', ' + region.wordOrder.replace(' word first', ' first') : ''), tone: region.confidence === 'wire' || region.confidence === 'plant' ? 'blue' : 'grey', title: 'The scan\'s verdict for registers ' + region.from + '-' + region.to + ' (' + region.confidence + '): ' + region.evidence });
+        if (typeof x.again === 'number') {
+            badges.push(changed
+                ? { text: 'moved: ' + value + ' → ' + x.again, tone: 'amber', mono: true, title: 'Read again after the sweep and different — a value being measured' }
+                : { text: 'same on 2nd read', tone: 'grey', title: 'Read again after the sweep and unchanged — a setpoint, a configuration word, or a measurement that held still' });
+        }
+        const suggest = !wide ? suggestPoint(String(table), ref - 1, value, fromPlant, wideFound, changed) : null;
+        if (suggest) badges.push({ text: suggest.datatype, tone: 'blue', mono: true, title: 'The modbusgen datatype the plant and the device suggest — see the point below' });
+        badges.push({ text: point ? 'named by the list' : (entry ? 'named by the plant' : 'no name known'), tone: 'grey' });
+
+        // --- where it is ------------------------------------------------------
         const reach = [
-            ['table', tableName],
-            ['reference', String(ref) + '  — what modpoll prints, and what -r takes'],
-            ['protocol address', String(ref - 1) + '  — what a document usually means'],
+            ['table', tableName, false, 'modpoll\'s -t follows the Modicon prefix: 4 holding, 3 input, 1 discrete, 0 coil'],
+            ['reference', String(ref), true, 'What modpoll prints, and what -r takes — one more than the protocol address'],
+            ['protocol address', String(ref - 1), true, 'What a document usually means, and what a modbusgen list prints (or one more, with subtract_one)'],
         ];
-        if (point) reach.push(['address in the list', String(point.addr) + (point.protocol !== point.addr ? ' (protocol ' + point.protocol + ')' : '')]);
-        reach.push(['command', ui.cmd ? ui.cmd.value : '', true]);
+        if (point) reach.push(['in the list', String(point.addr) + (point.protocol !== point.addr ? '  (protocol ' + point.protocol + ')' : ''), true, 'The address as the loaded list writes it']);
+        if (entry) reach.push(['driver_id', entry.driverId, true, 'IWMAC\'s own key for the parameter: …_0_<read function>_<protocol address>[.<bit>]']);
+        reach.push(['command', ui.cmd ? ui.cmd.value : '', true, 'What Run would send — one register, read only']);
         sections.push({ title: 'Where it is', rows: reach });
 
-        // Every way that applies. modpoll prints a 32-bit value already decoded:
-        // an integer can still be shown at its full width, while a float's bit
-        // pattern is gone and only the decimal remains — reading it as sixteen
-        // bits printed the hex of whatever integer it happened to round to.
-        const grouped = bits => bits.replace(/(.{4})(?=.)/g, '$1 ');
-        const asNumbers = [['raw', String(value), true]];
+        // --- the number, read every way that applies --------------------------
+        // modpoll prints a 32-bit value already decoded: an integer can still
+        // be shown at its full width, while a float's bit pattern is gone and
+        // only the decimal remains. Signed against unsigned is only worth a
+        // line when they differ, and a guessed division only when nothing
+        // better is known about the scale.
+        const grouped = b => b.replace(/(.{4})(?=.)/g, '$1 ');
+        const asNumbers = [['raw', String(value), true, 'As modpoll printed it']];
         if (!wide) {
-            const chars = [u16 >> 8, u16 & 0xff]
-                .map(code => (code >= 32 && code < 127) ? String.fromCharCode(code) : '·').join('');
-            asNumbers.push(
-                ['hexadecimal', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0'), true],
-                ['binary', grouped((u16 >>> 0).toString(2).padStart(16, '0')), true],
-                ['unsigned / signed', u16 + ' / ' + i16, true],
-                ['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true],
-                ['as two characters', chars, true],
-            );
+            asNumbers.push(['hexadecimal', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0'), true]);
+            asNumbers.push(['binary', grouped((u16 >>> 0).toString(2).padStart(16, '0')), true, 'Bit 15 first; a status word is read from the right, bit 0 last']);
+            if (u16 !== i16 || value < 0) asNumbers.push(['unsigned / signed', u16 + ' / ' + i16, true, 'The same bits as a U16 and as an I16 — they differ above 32767']);
+            if (!implied && !point && !bits.length && !confirmedWide && !regionWide && value !== 0) {
+                asNumbers.push(['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true, 'The two commonest scales, for a register nothing names']);
+            }
+            const chars = [u16 >> 8, u16 & 0xff];
+            if (chars.every(code => code >= 32 && code < 127)) asNumbers.push(['as two characters', chars.map(code => String.fromCharCode(code)).join(''), true, 'A string point spends two characters per register']);
         } else if (fmt.value === 'int' && Number.isInteger(value)) {
             const u32 = value >>> 0;
             asNumbers.push(
                 ['hexadecimal', '0x' + u32.toString(16).toUpperCase().padStart(8, '0'), true],
                 ['binary', grouped(u32.toString(2).padStart(32, '0')), true],
                 ['unsigned / signed', u32 + ' / ' + (value | 0), true],
-                ['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true],
             );
         } else {
-            asNumbers.push(['read as', fmt.label + ', decoded by modpoll from two registers — the bit pattern is not in what it printed']);
+            asNumbers.push(['read as', fmt.label + ', decoded by modpoll from two registers', false, 'The bit pattern is not in what modpoll printed']);
         }
-        if (previous !== undefined && previous !== value) {
-            asNumbers.push(['since last pass', previous + ' → ' + value + '  (' + (value - previous > 0 ? '+' : '') + (value - previous) + ')', true]);
+        if (regionWide) {
+            asNumbers.push(aligned
+                ? ['with ' + (ref + 1), pairValue === null ? 'not a ' + region.format.replace('32', '') + ' — ?' : String(pairValue) + '  as ' + region.format + ', ' + region.wordOrder, true,
+                    'This register and the next decoded as one, in the order the scan judged for registers ' + region.from + '-' + region.to]
+                : ['pair', 'the second half of ' + (ref - 1) + '-' + ref + ' — click ' + (ref - 1) + ' for the value', false]);
+        } else if (wideFound) {
+            for (const w of wideFound.slice(0, 2)) {
+                asNumbers.push(['with ' + (ref + 1), w.value + '  as ' + w.as + ', ' + w.wordOrder + (w.confirmed ? '  — ' + w.confirmed : '  — a candidate from the bits alone'), true,
+                    'This register and the next decoded as one 32-bit value; nothing on the wire proves a width']);
+            }
         }
-        sections.push({ title: 'The number, read every way', rows: asNumbers });
+        if (typeof x.again === 'number') {
+            asNumbers.push(['second read', changed ? value + ' → ' + x.again + '  (' + (x.again - value > 0 ? '+' : '') + roundScaled(x.again - value) + ')' : x.again + '  — unchanged', true,
+                'Read again once the sweep was done' + (x.secondsAfter ? ', about ' + x.secondsAfter + ' s after the scan began' : '')]);
+        } else if (previous !== undefined && previous !== value) {
+            asNumbers.push(['since last pass', previous + ' → ' + value + '  (' + (value - previous > 0 ? '+' : '') + roundScaled(value - previous) + ')', true, 'Watch mode: what the same register read the pass before']);
+        }
+        sections.push({ title: 'The number', rows: asNumbers });
 
+        // --- what the plant says ------------------------------------------------
+        if (fromPlant && fromPlant.length) {
+            const rows = [];
+            for (const p of fromPlant) {
+                if (p.bit === null) rows.push(['parameter', p.name + (p.plantValue ? ':  ' + p.plantValue : '') + (p.unit ? ' ' + p.unit : ''), false, 'The value the plant showed when its names were read']);
+                else rows.push(['bit ' + p.bit, p.name + '  — reads ' + ((u16 >> p.bit) & 1) + (p.plantValue ? '  (plant showed ' + p.plantValue + ')' : ''), false, 'This bit of the register, as read now']);
+            }
+            if (entry.group) rows.push(['group', entry.group]);
+            if (entry.unit) rows.push(['unit', entry.unit]);
+            rows.push(['access', fromPlant.some(p => p.access === 'rw') ? 'the plant holds it writable' : 'read only in the plant']);
+            if (first) {
+                const shown = Number(String(first.plantValue).replace(',', '.'));
+                if (implied) rows.push(['implied scale', implied.replace(/^x/, '×') + '  — shows ' + first.plantValue + ' where the register holds ' + value, false, 'The field a vendor document most often leaves out']);
+                else if (!Number.isNaN(shown) && value !== 0 && !confirmedWide) rows.push(['implied scale', 'none common: ' + first.plantValue + ' ÷ ' + value + ' = ' + (shown / value).toFixed(4), false]);
+            }
+            sections.push({ title: 'What the plant says', rows });
+        }
+
+        // --- what the point list says ------------------------------------------
         if (point) {
-            const fromList = [
-                ['name', point.name],
+            const rows = [
                 ['datatype', point.datatype + (point.decoded.ok
                     ? '  — ' + tableName.toLowerCase() + ', ' + point.decoded.rawType + (point.decoded.step === 2 ? ', two registers per value' : '')
-                    : '  — not decoded')],
+                    : '  — not decoded'), true],
             ];
-            if (point.group) fromList.push(['group', point.group]);
-            if (point.scaleKey) fromList.push(['scale', point.scaleKey + (point.scale.known ? '  (×' + point.scale.factor + ')' : '  — key not understood')]);
-            if (point.unit) fromList.push(['unit', point.unit]);
-            if (point.rw) fromList.push(['access', point.rw === 'rw' ? 'read and write' : 'read only']);
+            if (point.group) rows.push(['group', point.group]);
+            if (point.scaleKey) rows.push(['scale', point.scaleKey + (point.scale.known ? '  (×' + point.scale.factor + ')' : '  — key not understood')]);
+            if (point.unit) rows.push(['unit', point.unit]);
+            if (point.rw) rows.push(['access', point.rw === 'rw' ? 'read and write' : 'read only']);
             if (point.rangeMin !== null || point.rangeMax !== null) {
-                fromList.push(['declared range', (point.rangeMin === null ? '…' : point.rangeMin) + ' to ' + (point.rangeMax === null ? '…' : point.rangeMax)]);
+                rows.push(['declared range', (point.rangeMin === null ? '…' : point.rangeMin) + ' to ' + (point.rangeMax === null ? '…' : point.rangeMax)]);
             }
-            sections.push({ title: 'What the point list says', rows: fromList });
+            sections.push({ title: 'What the point list says', rows });
         }
 
-        if (fromPlant && fromPlant.length) {
-            const fromPlantRows = [];
-            for (const p of fromPlant) {
-                const label = p.bit === null ? 'parameter' : 'bit ' + p.bit;
-                const bitState = p.bit === null ? '' : '  — reads ' + ((u16 >> p.bit) & 1);
-                fromPlantRows.push([label, p.name + (p.plantValue ? ': ' + p.plantValue : '') + (p.unit ? ' ' + p.unit : '') + bitState]);
-            }
-            const first = fromPlant[0];
-            if (first.group) fromPlantRows.push(['group', first.group]);
-            fromPlantRows.push(['access', fromPlant.some(p => p.access === 'rw') ? 'the plant holds it writable' : 'read only in the plant']);
-            const shown = Number(String(first.plantValue).replace(',', '.'));
-            if (first.bit === null && !Number.isNaN(shown) && value !== 0) {
-                const ratio = shown / value;
-                const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
-                const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
-                fromPlantRows.push(['implied scale', near
-                    ? '×' + near + '  — the plant shows ' + shown + ' where the register holds ' + value
-                    : 'plant ' + shown + ' ÷ raw ' + value + ' = ' + ratio.toFixed(4) + ', no common scale']);
-            }
-            fromPlantRows.push(['driver_id', first.driverId, true]);
-            sections.push({ title: 'What the plant says', rows: fromPlantRows });
+        // --- the point the plant and the device suggest ------------------------
+        if (suggest) {
+            const rows = [['datatype', suggest.datatype, true, 'From the shipped datatypes table']];
+            rows.push(['addr', String(suggest.addr), true, 'The protocol address a modbusgen list prints']);
+            if (suggest.scale) rows.push(['scale', suggest.scale, true]);
+            if (suggest.unit) rows.push(['unit', suggest.unit]);
+            rows.push(['rw', suggest.rw, true]);
+            if (suggest.group) rows.push(['group', suggest.group]);
+            if (suggest.bits) for (const b of suggest.bits) rows.push(['bit ' + b.bit, b.name + '  (' + b.rw + ')']);
+            for (const why of suggest.basis) rows.push(['because', why, false]);
+            sections.push({ title: 'Suggested point — a lead, not a conclusion', rows });
         }
-        return sections;
+
+        // --- where the sides disagree ------------------------------------------
+        if (point && implied && point.scale.known && ('x' + point.scale.factor) !== implied) {
+            notes.push({ text: 'The list scales by x' + point.scale.factor + '; the plant implies ' + implied + ' — it shows ' + first.plantValue + ' where the register holds ' + value + '.', tone: 'amber' });
+        }
+        if (point && first && point.unit && first.unit && point.unit.trim().toLowerCase() !== first.unit.trim().toLowerCase()) {
+            notes.push({ text: 'The list says unit "' + point.unit + '", the plant "' + first.unit + '".', tone: 'amber' });
+        }
+        if (confirmedWide) {
+            notes.push({ text: 'A 32-bit point: registers ' + ref + ' and ' + (ref + 1) + ' read as ' + confirmedWide.as + ', ' + confirmedWide.wordOrder + ', give ' + confirmedWide.value + ' — ' + confirmedWide.confirmed + '.' +
+                (point && point.decoded.ok && point.decoded.step !== 2 ? ' The list declares ' + point.datatype + ', one register.' : ''), tone: point && point.decoded.ok && point.decoded.step !== 2 ? 'amber' : 'blue' });
+        } else if (region) {
+            notes.push({ text: 'The scan judged registers ' + region.from + '-' + region.to + ' ' + region.format + (region.wordOrder && region.format !== '16-bit' ? ', ' + region.wordOrder : '') + ' (' + region.confidence + '): ' + region.evidence + '.', tone: 'blue' });
+        }
+        if (point && typeof meaning === 'number') {
+            if (point.rangeMin !== null && meaning < point.rangeMin) notes.push({ text: 'Below the range the list declares, ' + point.rangeMin + '.', tone: 'amber' });
+            if (point.rangeMax !== null && meaning > point.rangeMax) notes.push({ text: 'Above the range the list declares, ' + point.rangeMax + '.', tone: 'amber' });
+        }
+        if (first && value === 0) {
+            const shown = Number(String(first.plantValue).replace(',', '.'));
+            if (!Number.isNaN(shown) && shown !== 0) notes.push({ text: 'Reads 0 now; the plant showed ' + first.plantValue + ' when its names were read.', tone: 'amber' });
+        }
+        if (changed) notes.push({ text: 'Moved between the sweep and the second read (' + value + ' → ' + x.again + '): a value being measured, not a setpoint.', tone: 'green' });
+
+        // What the actions poll: this register, at the width its region has.
+        const aim = regionWide
+            ? { table: String(table), ref: aligned ? ref : ref - 1, format: region.format === 'float32' ? 'float' : 'int', bigEndian: region.wordOrder === (x.flagMeans || 'high word first') }
+            : { table: String(table), ref, format: format || '' };
+        return { sections, badges, notes, aim };
     }
 
-    function toggleDetailRow(tr, value, point, previous, fromPlant, table, ref, format) {
+    function toggleDetailRow(tr, value, point, previous, fromPlant, table, ref, format, extra) {
         const next = tr.nextElementSibling;
-        if (next && next.classList.contains('mpc-detail')) { next.remove(); return; }
-        for (const open of ui.gridBody.querySelectorAll('tr.mpc-detail')) open.remove();
+        const close = () => {
+            for (const open of ui.gridBody.querySelectorAll('tr.mpc-detail')) open.remove();
+            for (const marked of ui.gridBody.querySelectorAll('tr.mpc-selected')) marked.classList.remove('mpc-selected');
+        };
+        if (next && next.classList.contains('mpc-detail')) { close(); return; }
+        close();
 
+        const model = readingDetailSections(value, point, previous, fromPlant, table, ref, format, extra);
+        const head = model.sections[0];
         const box = el('div', { className: 'mpc-detailbox' });
-        for (const section of readingDetailSections(value, point, previous, fromPlant, table, ref, format)) {
-            if (section.headline !== undefined) {
-                box.appendChild(el('div', { className: 'mpc-dhead', textContent: section.headline }));
-                box.appendChild(el('div', { className: 'mpc-dlead', textContent: section.lead }));
-                continue;
+
+        // The top: name and badges on the left, the value large on the right,
+        // and the actions under both.
+        const nameBlock = el('div', { className: 'mpc-dname' }, [el('div', { className: 'mpc-dhead', textContent: head.headline })]);
+        const badgeRow = el('div', { className: 'mpc-dbadges' });
+        for (const b of model.badges) badgeRow.appendChild(el('span', { className: 'mpc-badge ' + (b.tone || 'grey') + (b.mono ? ' mono' : ''), textContent: b.text, title: b.title || '' }));
+        nameBlock.appendChild(badgeRow);
+        const valueBlock = el('div', { className: 'mpc-dvalue' }, [
+            el('div', { className: 'mpc-dlead', textContent: head.lead }, [el('small', { textContent: head.leadNote || '' })]),
+        ]);
+        const actions = el('div', { className: 'mpc-dactions' });
+        const command = ui.cmd ? ui.cmd.value : '';
+        const pollBtn = el('button', { className: 'w2ui-btn mpc-b pri', textContent: 'Poll this register', title: 'Read it now, on its own, at this width' });
+        pollBtn.addEventListener('click', ev => {
+            ev.stopPropagation();
+            aimAtRegister(model.aim);
+            if (typeof runOnce === 'function') runOnce();
+        });
+        const watchBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Watch', title: 'Read it every second until Stop' });
+        watchBtn.addEventListener('click', ev => {
+            ev.stopPropagation();
+            aimAtRegister(model.aim);
+            if (typeof startRepeat === 'function') startRepeat();
+        });
+        const copyBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Copy command', title: command });
+        copyBtn.addEventListener('click', ev => {
+            ev.stopPropagation();
+            const text = ui.cmd ? ui.cmd.value : command;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => log('Copied: ' + text, 'ok'), () => log('Could not copy — the command is in the box above', 'warn'));
+            } else {
+                log('Could not copy — the command is in the box above', 'warn');
             }
-            const grid = el('div', { className: 'mpc-dsec' }, [el('h5', { textContent: section.title })]);
-            for (const [label, text, mono] of section.rows) {
-                grid.appendChild(el('div', { className: 'mpc-kv' }, [
+        });
+        const closeBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Close', title: 'Close this card' });
+        closeBtn.addEventListener('click', ev => { ev.stopPropagation(); close(); });
+        for (const b of [pollBtn, watchBtn, copyBtn, el('span', { className: 'mpc-spacer' }), closeBtn]) actions.appendChild(b);
+        box.appendChild(el('div', { className: 'mpc-dtop' }, [nameBlock, valueBlock, actions]));
+
+        // The facts, in columns.
+        const cols = el('div', { className: 'mpc-dcols' });
+        for (const section of model.sections.slice(1)) {
+            const sec = el('div', { className: 'mpc-dsec' }, [el('h5', { textContent: section.title })]);
+            for (const [label, text, mono, tip] of section.rows) {
+                sec.appendChild(el('div', { className: 'mpc-kv', title: tip || '' }, [
                     el('span', { className: 'mpc-k', textContent: label }),
-                    el('span', { className: 'mpc-v' + (mono ? ' mono' : ''), textContent: String(text) }),
+                    el('span', { className: 'mpc-v' + (mono ? ' mono' : '') + (label === 'because' ? ' dim' : ''), textContent: String(text) }),
                 ]));
             }
-            box.appendChild(grid);
+            cols.appendChild(sec);
         }
+        box.appendChild(cols);
+
+        if (model.notes.length) {
+            const notes = el('div', { className: 'mpc-dnotes' });
+            for (const n of model.notes) notes.appendChild(el('div', { className: 'mpc-dnote ' + (n.tone || 'amber'), textContent: n.text }));
+            box.appendChild(notes);
+        }
+
         const detail = el('tr', { className: 'mpc-detail' }, [
             el('td', { colSpan: (ui.gridColumns || REGISTER_COLUMNS).length }, [box]),
         ]);
+        // A click inside the card must not fall through to the row and close it.
+        detail.addEventListener('click', ev => ev.stopPropagation());
+        tr.classList.add('mpc-selected');
         tr.parentNode.insertBefore(detail, tr.nextSibling);
+        // Opened near the bottom of the grid, the card would sit out of sight.
+        try { detail.scrollIntoView({ block: 'nearest' }); } catch (e) { /* older engines */ }
     }
 
     function renderEmptyGrid(message) {
@@ -4332,7 +4527,10 @@
                     ? aimAtRegister({ table: r.table, ref: decoded.aligned ? r.ref : r.ref - 1, format: region.format === 'float32' ? 'float' : 'int', bigEndian: region.wordOrder === flagMeans })
                     : aimAtRegister({ table: r.table, ref: r.ref, format: '' });
                 log('> ' + command + '   ← ' + (r.name || 'reference ' + r.ref) + ', ready to run');
-                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref, '');
+                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref, '', {
+                    again: r.again, region: decoded.region, nextRaw: rawAt.get(r.table + '|' + (r.ref + 1)), flagMeans,
+                    secondsAfter: report.reread ? report.reread.secondsAfterStart : null,
+                });
             });
             frag.appendChild(tr);
         }
@@ -4454,7 +4652,10 @@
                     title: text,
                 })));
             if (row.raw !== undefined) {
-                tr.addEventListener('click', () => toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format));
+                tr.addEventListener('click', () => {
+                    aimAtRegister({ table: p.decoded.table, ref: p.ref, format: p.decoded.format, bigEndian: p.decoded.bigEndian });
+                    toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format);
+                });
             }
             frag.appendChild(tr);
         }
@@ -4589,7 +4790,10 @@
                 })));
             tr.addEventListener('click', () => {
                 aimAtRegister({ table, ref: v.i, format });
-                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i, format);
+                // The next register's value, for the 32-bit reading — only a
+                // 16-bit poll has one to offer.
+                const neighbour = wide ? undefined : result.values.find(o => o.i === v.i + 1);
+                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i, format, { nextRaw: neighbour ? neighbour.v : undefined });
             });
             frag.appendChild(tr);
         }
