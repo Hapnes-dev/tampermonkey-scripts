@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.35.0
+// @version      1.36.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.35.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.36.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1167,25 +1167,71 @@
     }
 
     /**
-     * The result as a file that stands on its own — what Save JSON writes.
+     * Everything the console knows, as a document an agent can be handed cold —
+     * what Save JSON writes.
      *
-     * Every reading is enriched here, at save time, not taken from the result
-     * as it was read: the names are often loaded after the poll (a unit on this
-     * plant answering at that host has its names adopted once the grid is up),
-     * and the grid re-reads them live while the raw result never did. The shape
-     * of the answer that describeForAI puts in prose — which references were
-     * refused, which read zero, which have no name, what the plant's own values
-     * imply about the scale — is here as fields, and the conventions are spelled
-     * out inside the file, because the reader is as likely to be an agent handed
-     * the file cold as the person who ran the poll.
+     * The reader is a Copilot agent asked to check or correct a modbusgen point
+     * list, so every register carries every side of itself the console has:
+     * what the device answered just now and what it answered the time before;
+     * what the loaded list says it is; what IWMAC maps there and showed for it,
+     * driver_id and all. The plant's parameters come whole — every one the unit
+     * has, polled or not — because what the plant reads is the other half of
+     * what a list has to match. The last verification comes with its offset
+     * check, and the last scan with what answered where. Where two sides of a
+     * register disagree, the reading carries a note saying so: an observation
+     * for the reader to judge, never a conclusion.
+     *
+     * Every reading is enriched at save time, not taken from the result as it
+     * was read: the names are often loaded after the poll, and the grid
+     * re-reads them live while the raw result never did. The conventions are
+     * spelled out inside the document, and exportParts splits it into files
+     * under the knowledge-file ceiling, each repeating the header so it stands
+     * alone.
      */
     function exportResult(result) {
-        if (!result) return null;
-        const spec = result.spec || {};
+        const spec = (result && result.spec) || {};
         const table = String(spec.table || '4');
         const format = spec.format === '16-bit' ? '' : (spec.format || '');
-        const wide = formatOf(format).step === 2;
-        const readings = result.values.map(v => {
+        const polledStep = formatOf(format).step;
+        const wide = polledStep === 2;
+        const tableLabel = t => (REGISTER_TABLES.find(x => x.value === String(t)) || {}).label || ('table ' + t);
+        const asNumber = shown => Number(String(shown == null ? '' : shown).replace(',', '.'));
+
+        const plantRow = e => {
+            const row = { name: e.name, shown: e.plantValue, unit: e.unit, group: e.group, access: e.access, driverId: e.driverId };
+            if (e.bit !== null) row.bit = e.bit;
+            return row;
+        };
+        const listRow = p => {
+            const row = {
+                addr: p.addr, protocol: p.protocol, ref: p.ref, name: p.name, datatype: p.datatype,
+                scale: p.scaleKey || '', unit: p.unit, decimals: p.decimals, rw: p.rw, group: p.group,
+            };
+            if (p.bit !== null) row.bit = p.bit;
+            if (p.rangeMin !== null || p.rangeMax !== null) row.range = [p.rangeMin, p.rangeMax];
+            if (p.decoded.ok) { row.table = p.decoded.table; row.format = p.decoded.format || '16-bit'; row.registers = p.decoded.step; }
+            else row.notPolled = p.decoded.reason;
+            return row;
+        };
+
+        // pointForReading matches the width of the poll on purpose, which is right
+        // for naming a reading and wrong for noticing that the list and the poll
+        // disagree about the width: a point declared 32-bit would be invisible to
+        // a 16-bit poll, and so would the note saying so. This index is blind to
+        // the width, and the notes read from it.
+        const listedAt = new Map();
+        for (const p of (pointList ? pointList.points : [])) {
+            if (p.decoded.ok && !listedAt.has(p.decoded.table + '|' + p.ref)) listedAt.set(p.decoded.table + '|' + p.ref, p);
+        }
+
+        // Registers whose plant parameters ride on a reading, so the whole-unit
+        // section can leave them out without the unit losing them.
+        const carried = new Set();
+        const readings = (result ? result.values : []).map(v => {
+            const point = pointForReading(table, format, v.i);
+            const listed = point || listedAt.get(table + '|' + v.i) || null;
+            const fromPlant = plantNamesFor(table, format, v.i);
+            if (fromPlant) carried.add(table + '|' + v.i);
             const r = enrichValue(v, table, format);
             const out = { ref: r.ref, addr: r.addr, raw: r.raw };
             // The number read every way, as the detail view shows it — only for a
@@ -1193,59 +1239,211 @@
             if (!wide) {
                 const u16 = r.raw < 0 ? r.raw + 65536 : r.raw;
                 out.hex = '0x' + u16.toString(16).toUpperCase().padStart(4, '0');
-                out.int16 = r.raw > 32767 ? r.raw - 65536 : r.raw;
+                if (r.raw > 32767) out.int16 = r.raw - 65536;
+            }
+            // What it answered the time before, when it has been read twice.
+            const key = table + '|' + format + '|' + v.i;
+            if (watchDelta.has(key) && watchDelta.get(key) !== null) {
+                out.delta = watchDelta.get(key);
+                out.previous = roundScaled(r.raw - out.delta);
             }
             if (r.name) { out.name = r.name; out.source = r.source; }
             if (r.unit) out.unit = r.unit;
             if (r.shown !== '' && r.shown !== null) out.shown = r.shown;
             if (r.type) out.type = r.type;
             if (r.writable) out.writable = true;
-            if (r.bits) out.bits = r.bits;
-            const scale = r.source === 'plant' ? impliedScale(r.raw, r.shown) : null;
-            if (scale) out.impliedScale = scale;
+            if (listed) out.list = listRow(listed);
+            if (fromPlant) out.plant = fromPlant.map(plantRow);
+            const first = fromPlant && fromPlant[0];
+            const implied = first && first.bit === null ? impliedScale(r.raw, first.plantValue) : null;
+            if (implied) out.impliedScale = implied;
+
+            // Where two sides disagree. Observations, not conclusions.
+            const notes = [];
+            if (listed && implied && listed.scale.known && ('x' + listed.scale.factor) !== implied) {
+                notes.push('the list scales by x' + listed.scale.factor + ', the plant implies ' + implied);
+            }
+            if (listed && first && listed.unit && first.unit && listed.unit.trim().toLowerCase() !== first.unit.trim().toLowerCase()) {
+                notes.push('the list says unit "' + listed.unit + '", the plant "' + first.unit + '"');
+            }
+            if (listed && !fromPlant && plantNames) {
+                const elsewhere = REGISTER_TABLES.map(t => t.value).filter(t => t !== table && plantNames.byRef.has(t + '||' + v.i));
+                if (elsewhere.length) {
+                    notes.push('the plant maps protocol address ' + r.addr + ' in ' + elsewhere.map(tableLabel).join(' and ') +
+                        ', the list has it in ' + tableLabel(table));
+                }
+            }
+            if (listed && listed.decoded.step !== polledStep) {
+                notes.push('polled as ' + (wide ? '32-bit' : '16-bit') + ', the list declares ' + listed.datatype +
+                    (listed.decoded.step === 2 ? ' (two registers)' : ' (one register)'));
+            }
+            if (point && typeof out.shown === 'number') {
+                if (point.rangeMin !== null && out.shown < point.rangeMin) notes.push('below the list range, ' + point.rangeMin);
+                if (point.rangeMax !== null && out.shown > point.rangeMax) notes.push('above the list range, ' + point.rangeMax);
+            }
+            const plantNumber = first && first.bit === null ? asNumber(first.plantValue) : NaN;
+            if (r.raw === 0 && !Number.isNaN(plantNumber) && plantNumber !== 0) {
+                notes.push('reads 0 now; the plant showed ' + first.plantValue + ' when its names were read');
+            }
+            if (notes.length) out.notes = notes;
             return out;
         });
         const scales = {};
         for (const r of readings) if (r.impliedScale) scales[r.impliedScale] = (scales[r.impliedScale] || 0) + 1;
+
+        // Every parameter IWMAC holds for the unit that is not already on a
+        // reading. Said once: with the poll covering the unit, this is empty and
+        // the file is half the size it would be saying everything twice.
+        const plantParameters = [];
+        if (plantNames) {
+            for (const [key, entries] of plantNames.byRef) {
+                const [t, , ref] = key.split('|');
+                if (carried.has(t + '|' + ref)) continue;
+                for (const e of entries) plantParameters.push(Object.assign({ table: t, ref: Number(ref), addr: e.protocol }, plantRow(e)));
+            }
+            const bitOf = row => (row.bit === undefined ? -1 : row.bit);
+            plantParameters.sort((a, b) => a.table.localeCompare(b.table) || a.ref - b.ref || bitOf(a) - bitOf(b));
+        }
+        const unitInfo = plantNames ? (_unitsCache || []).find(u => u.unit_id === plantNames.unitId) : null;
         const tableInfo = REGISTER_TABLES.find(t => t.value === table) || {};
+        const verification = lastVerification;
+
         return {
-            format: 'modpoll-console/result',
+            format: 'modpoll-console/export',
             version: VERSION,
-            plant: result.plant || plantIdFromHost() || null,
-            at: result.at || null,
+            plant: (result && result.plant) || plantIdFromHost() || null,
+            at: (result && result.at) || new Date().toISOString(),
+            howToUse: [
+                'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
+                    'agent checking or correcting a modbusgen point list.',
+                'Files named _partNofM share this header. Each carries one slice of one section (part.section, part.rows, ' +
+                    'part.firstRef to part.lastRef) and part.contents maps every section to its parts. Given more than 20 files, ' +
+                    'take the readings parts covering the registers in question.',
+                'readings: one register per line as the device answered just now. ref is what modpoll prints and what -r takes; ' +
+                    'addr is the protocol address, ref - 1; a modbusgen list prints addr, or addr + 1 when options.subtract_one is ' +
+                    'true. previous and delta are the answer the time before. list is the entry the loaded list has for the ' +
+                    'register; plant is every IWMAC parameter reading it, one per bit where several share it; impliedScale is ' +
+                    'shown divided by raw when that is a common factor; notes are where two sides disagree — the list, the plant, ' +
+                    'the device — and are leads, never conclusions.',
+                'plantParameters: every parameter IWMAC holds for this unit that is not already on a reading; the two sections ' +
+                    'together are the whole unit. driverId ends in _0_<function>_<protocol address>[.<bit>]: function 1 reads coils ' +
+                    '(table 0), 2 discrete inputs (table 1), 3 holding registers (table 4), 4 input registers (table 3). shown is ' +
+                    'the value IWMAC displayed when its names were read (unit.namesReadAt), not now.',
+                'listPoints: the loaded modbusgen list as parsed, with the table and width each datatype decodes to.',
+                'verification and verificationRows: the last Verify list run. Per point: read, zero, refused (the device has no such ' +
+                    'register), no answer, not polled (the datatype did not decode); the offset check scores whether the whole list ' +
+                    'sits better a register or two along. Ranges anywhere are runs of ref, as "430-445,448".',
+            ],
             device: {
                 host: spec.host || null, port: spec.port || null, slave: spec.slave || null, mode: spec.mode || null,
                 table, tableName: tableInfo.title || null,
                 valueFormat: format || '16-bit', registersPerValue: wide ? 2 : 1,
                 command: spec.raw || null,
             },
+            unit: plantNames ? Object.assign(
+                { id: plantNames.unitId },
+                unitInfo ? {
+                    name: unitInfo.unit_name, driverType: unitInfo.driver_type, driverAddr: unitInfo.driver_addr,
+                    connection: unitInfo.connection, host: unitInfo.host, slave: unitInfo.slave,
+                } : {},
+                { parameters: plantNames.rows, groups: plantNames.groups, undecodable: plantNames.undecodable, namesReadAt: plantNames.at }
+            ) : null,
             names: readings.some(r => r.source === 'list') ? 'point list'
                 : (readings.some(r => r.source === 'plant') ? 'plant database' : 'none'),
-            list: pointList ? { file: pointList.file || null, points: pointList.points.length } : null,
-            unit: plantNames ? { id: plantNames.unitId, parameters: plantNames.rows, namesReadAt: plantNames.at } : null,
-            conventions: {
-                ref: 'what modpoll prints and what -r takes; 1-based',
-                addr: 'the protocol address, what a document usually means; addr = ref - 1',
-                raw: 'the register as read' + (wide ? ', decoded from two registers' : ''),
-                shown: 'what the plant or the point list makes of raw',
-                impliedScale: 'shown divided by raw for a plant-named register, when that is a common factor',
-                ranges: 'runs of ref, as "430-445,448"',
-            },
-            readings,
+            list: pointList ? {
+                file: pointList.file || null, points: pointList.points.length, undecodable: pointList.undecodable,
+                subtractOne: pointList.subtractOne, table: pointList.table || null, plant: pointList.plant || null, comm: pointList.comm || null,
+            } : null,
             answered: {
                 count: readings.length,
-                requested: result.summary ? result.summary.requested : readings.length,
+                requested: result && result.summary ? result.summary.requested : readings.length,
                 ranges: asRanges(readings.map(r => r.ref)),
             },
-            refused: asRanges(result.unreadable || []),
+            refused: asRanges((result && result.unreadable) || []),
             readZero: asRanges(readings.filter(r => r.raw === 0).map(r => r.ref)),
             unnamed: asRanges(readings.filter(r => !r.name).map(r => r.ref)),
             impliedScales: scales,
-            summary: result.summary || null,
-            diagnostics: result.diagnostics || [],
-            notes: result.notes || [],
-            commands: result.commands || [],
+            summary: (result && result.summary) || null,
+            diagnostics: (result && result.diagnostics) || [],
+            notes: (result && result.notes) || [],
+            commands: (result && result.commands) || [],
+            scan: lastScan ? { at: lastScan.at, host: lastScan.host, slave: lastScan.slave, tables: lastScan.tables, sweep: lastScan.sweep || null } : null,
+            verification: verification ? {
+                at: verification.at, device: verification.device, list: verification.list, summary: verification.summary,
+                offsets: verification.offsets, offsetVerdict: verification.offsetVerdict, diagnostics: verification.diagnostics,
+            } : null,
+            readings,
+            plantParameters,
+            listPoints: pointList ? pointList.points.map(listRow) : [],
+            verificationRows: verification ? verification.rows.map(row => {
+                const p = row.point;
+                const out = { addr: p.addr, ref: p.ref, name: p.name, datatype: p.datatype, status: row.status };
+                if (row.raw !== undefined) out.raw = row.raw;
+                if (row.scaled !== undefined) out.scaled = row.scaled;
+                if (row.flags && row.flags.length) out.flags = row.flags;
+                if (row.note) out.note = row.note;
+                return out;
+            }) : [],
         };
+    }
+
+    /**
+     * The document as files, each under the knowledge-file ceiling and each
+     * complete on its own. The header — everything but the four big sections —
+     * repeats in every part; a part carries one slice of one section, one row
+     * per line, so a reader can count rows and cite them.
+     */
+    const EXPORT_SECTIONS = ['readings', 'plantParameters', 'listPoints', 'verificationRows'];
+    // The knowledge-file ceiling is 36 000 characters. The markdown report keeps
+    // 6 000 of headroom because it estimates; this measures the assembled part,
+    // so it can go closer — and every 2 000 characters is six more readings a
+    // part, which on a unit of a thousand registers is two files fewer against
+    // a cap of twenty.
+    const EXPORT_CHUNK_LIMIT = 34000;
+
+    function exportParts(doc, baseName) {
+        const header = {};
+        for (const key of Object.keys(doc)) if (EXPORT_SECTIONS.indexOf(key) < 0) header[key] = doc[key];
+        // What a part costs before its rows: the header, the part block at its
+        // widest, and the section's brackets — measured on the assembled text.
+        const frameOf = section => JSON.stringify(Object.assign(
+            { part: { n: 999, of: 999, section, rows: 99999, contents: {}, firstRef: 999999, lastRef: 999999 } },
+            header, { [section]: '@@ROWS@@' }), null, 1).length + 300;
+        const slices = [];
+        for (const section of EXPORT_SECTIONS) {
+            const rows = (doc[section] || []).map(row => JSON.stringify(row));
+            const frame = frameOf(section);
+            let chunk = [];
+            let size = 0;
+            const flush = () => { if (chunk.length) slices.push({ section, rows: chunk }); chunk = []; size = 0; };
+            for (const line of rows) {
+                if (chunk.length && frame + size + line.length + 2 > EXPORT_CHUNK_LIMIT) flush();
+                chunk.push(line);
+                size += line.length + 2;
+            }
+            flush();
+        }
+        if (!slices.length) slices.push({ section: null, rows: [] });
+        const contents = {};
+        slices.forEach((slice, index) => { if (slice.section) (contents[slice.section] = contents[slice.section] || []).push(index + 1); });
+        const base = baseName || resultFilename().replace(/\.json$/, '');
+        return slices.map((slice, index) => {
+            const part = { n: index + 1, of: slices.length, section: slice.section, rows: slice.rows.length, contents };
+            if (slice.rows.length) {
+                const firstRef = JSON.parse(slice.rows[0]).ref;
+                const lastRef = JSON.parse(slice.rows[slice.rows.length - 1]).ref;
+                if (firstRef !== undefined) { part.firstRef = firstRef; part.lastRef = lastRef; }
+            }
+            const body = Object.assign({ part }, header);
+            if (slice.section) body[slice.section] = '@@ROWS@@';
+            const text = JSON.stringify(body, null, 1).replace('"@@ROWS@@"', '[\n' + slice.rows.join(',\n') + '\n]');
+            return {
+                name: base + (slices.length > 1 ? '_part' + (index + 1) + 'of' + slices.length : '') + '.json',
+                section: slice.section,
+                rows: slice.rows.length,
+                text,
+            };
+        });
     }
 
     /*
@@ -3544,18 +3742,22 @@
         ui.every = el('input', { value: '1' });
         const repeat = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Repeat', title: 'Run again on an interval' });
         repeat.addEventListener('click', startRepeat);
-        // The one export. What Copy for AI and CSV carried is in this file too:
-        // every reading named, both address bases, what the plant shows, and the
-        // shape of the answer — see exportResult.
+        // The one export: everything known, as files an agent can read — see
+        // exportResult for what goes in and exportParts for how it is split.
         const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON',
-            title: 'Every reading with its name, both address bases and what the plant shows — a file that explains itself' });
+            title: 'Everything known about these registers, as files a Copilot agent can read: the readings now and before, ' +
+                'the list, every parameter the plant maps and shows, the verification, the scan — split under the knowledge-file ceiling' });
         saveBtn.addEventListener('click', () => {
-            if (!lastResult) return log('Nothing to save yet');
+            if (!lastResult && !plantNames && !pointList && !lastVerification && !lastScan) {
+                return log('Nothing to save yet — run a poll, a scan or a verification, or load a list or a unit\'s names');
+            }
             const doc = exportResult(lastResult);
-            const filename = resultFilename();
-            download(filename, JSON.stringify(doc, null, 2));
-            log('Saved ' + doc.readings.length + ' readings to ' + filename +
-                (doc.names === 'none' ? ' — no names loaded, so none in the file' : ' with names from the ' + doc.names), 'ok');
+            const parts = exportParts(doc);
+            for (const part of parts) download(part.name, part.text);
+            const sections = EXPORT_SECTIONS.filter(s => doc[s].length).map(s => doc[s].length + ' ' + s);
+            log('Saved ' + parts.length + ' file' + (parts.length === 1 ? '' : 's') +
+                (sections.length ? ' — ' + sections.join(', ') : '') +
+                (parts.length > 1 ? ' — each under ' + EXPORT_CHUNK_LIMIT + ' characters with the full header, for a knowledge set' : ''), 'ok');
         });
         const reconnectBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Reconnect', title: 'Throw away the Plant Term session and take a fresh one' });
         reconnectBtn.addEventListener('click', async () => {
@@ -3869,7 +4071,8 @@
                 '__modpoll.report()                        the verification as markdown parts, ready to upload',
                 'await __modpoll.probe()                   what this plant\'s modpoll -h reports',
                 '__modpoll.last()                          the last full result',
-                '__modpoll.lastExport()                    the same as Save JSON writes: readings named now, answer shape, conventions',
+                '__modpoll.lastExport()                    everything known, as one document: readings now and before, list, plant map, verification, scan',
+                '__modpoll.exportParts()                   the same split into files under the knowledge-file ceiling, [{name, text}]',
                 '__modpoll.stop()                          abort a running sweep',
                 '',
                 'Every value row carries i (the index modpoll printed) and addr (i - 1, the protocol address).',
@@ -3957,6 +4160,7 @@
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
         lastExport() { return exportResult(lastResult); },
+        exportParts(baseName) { return exportParts(exportResult(lastResult), baseName); },
         stop() { stopAll(); return true; },
         open() { showConsole(); return true; },
     };

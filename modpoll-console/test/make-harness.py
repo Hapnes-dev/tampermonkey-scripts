@@ -51,7 +51,14 @@ tables = between("    const REGISTER_TABLES = [", "\n    // Serial defaults per 
 detail = between("    function readingDetailSections(", "\n    function renderEmptyGrid(")
 # log(), so whether the log follows its tail is tested as shipped.
 logfn = between("    function log(text, level) {", "\n    /**\n     * Everything the shell printed")
-rounding = between("    function roundScaled(value, decimals) {", "\n    /** \"x0.1\" and friends.")
+# The point-list parser and everything it decodes with, so a list in a test is
+# parsed by the real parser rather than hand-built.
+pointlist = between("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * Points become poll ranges")
+# The real lookups from a reading to its list point and its plant parameters.
+names = between("    /** What the plant itself calls this register", "\n    /**\n     * What one register is, in the order someone asks it")
+# enrichValue, asRanges, impliedScale, describeForAI, exportResult, exportParts.
+exporting = between("    function enrichValue(", "\n    /*\n     * Where does this device actually keep anything?")
+stamp = between("    function nowStamp() {", "\n    // ------------------------------------------------- command model")
 columns = between("    const REGISTER_COLUMNS = [", "\n    const POINT_COLUMNS = [")
 watch = between("    // Printed reference -> the value seen on the previous poll",
                 "\n    function log(text, level) {")
@@ -82,11 +89,13 @@ const plantIdFromHost = () => '2313';
 let pointList = null;
 let plantNames = null;
 let redrawGrid = null;
-// Overridable per test: a point list or a plant name for a given reference.
-window.__points = new Map();
-window.__plantNames = new Map();
-const pointForReading = (table, format, ref) => window.__points.get(table + '|' + format + '|' + ref) || null;
-const plantNamesFor = (table, format, ref) => window.__plantNames.get(table + '|' + format + '|' + ref) || null;
+// State the rest of the script would hold.
+let lastResult = null;
+let lastVerification = null;
+let lastScan = null;
+let _unitsCache = null;
+const REPORT_CHUNK_LIMIT = 30000;
+const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';
 function el(tag, props, kids) {{
     const node = Object.assign(document.createElement(tag), props || {{}});
@@ -99,7 +108,13 @@ function el(tag, props, kids) {{
 
 {tables}
 
-{rounding}
+{stamp}
+
+{pointlist}
+
+{names}
+
+{exporting}
 
 {logfn}
 
@@ -256,6 +271,7 @@ window.__poll = (pairs, opts) => {{
             blocks: 1, elapsedMs: 120,
         }},
     }};
+    lastResult = result;
     renderGrid(result);
     return window.__grid();
 }};
@@ -275,6 +291,31 @@ window.__grid = () => {{
     return {{ heads, rows, summary: ui.summary.textContent }};
 }};
 window.__toggleZeroFilter = on => {{ ui.filterZero.checked = on; ui.filterZero.dispatchEvent(new Event('change')); return window.__grid(); }};
+// A modbusgen list through the real parser, and plant names in the shape
+// fetchPlantNames builds — one entry per parameter, several per register when
+// they share it bit by bit.
+window.__loadList = (json, file) => {{
+    pointList = parsePointList(json);
+    pointList.file = file || 'test-list.json';
+    return {{ points: pointList.points.length, undecodable: pointList.undecodable, subtractOne: pointList.subtractOne }};
+}};
+window.__setPlantNames = (unitId, entries) => {{
+    const byRef = new Map();
+    for (const e of entries) {{
+        const key = e.table + '||' + e.ref;
+        if (!byRef.has(key)) byRef.set(key, []);
+        byRef.get(key).push({{
+            name: e.name, plantValue: e.plantValue, unit: e.unit || '', bit: e.bit === undefined ? null : e.bit,
+            group: e.group || '', access: e.access || 'r',
+            driverId: e.driverId || ('2313_VENT_vent_1_1_0_' + ({{ '0': 1, '1': 2, '4': 3, '3': 4 }})[e.table] + '_' + (e.ref - 1) + (e.bit === undefined ? '' : '.' + e.bit)),
+            table: e.table, ref: e.ref, protocol: e.ref - 1,
+        }});
+    }}
+    plantNames = {{ unitId, byRef, groups: 1, rows: entries.length, undecodable: 0, at: new Date().toISOString() }};
+    return plantNames.byRef.size;
+}};
+window.__export = () => exportResult(lastResult);
+window.__exportParts = base => exportParts(exportResult(lastResult), base);
 // Click the n-th data row and read the detail it opens, section by section.
 window.__detail = n => {{
     ui.cmd = ui.cmd || {{ value: 'modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100' }};

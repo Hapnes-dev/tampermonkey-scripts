@@ -42,14 +42,25 @@ rebuilt.
 - **Scans a device.** *Scan device* asks all four tables where they start
   answering — doubling, then halving back — and reports the first readable
   reference in both bases. Useful before blaming a point list.
-- **One export.** *Save JSON* writes a file that explains itself: every reading
-  with its name, both address bases, the raw register read every way and what
-  the plant shows; the shape of the answer as fields — which references were
-  refused, read zero, or have no name, and what the plant's own values imply
-  about the scale; and the conventions spelled out inside the file. Names are
-  looked up when the file is written, not when the poll ran, so a unit whose
-  names were adopted after the poll is named in the file. The same document is
-  `__modpoll.lastExport()`.
+- **One export, written for an agent.** *Save JSON* writes everything the
+  console knows, as files a Copilot agent can be handed cold to check or correct
+  a modbusgen list. Per register: the answer now and the answer before, both
+  address bases, the raw value read every way, the list's own entry (datatype,
+  scale, decimals, range), every IWMAC parameter reading that register with its
+  `driver_id`, and the value the plant showed. Whole sections for every parameter
+  the plant holds for the unit (polled or not — what IWMAC reads), the list as
+  parsed, the last verification with its offset check, and the last scan. Where
+  two sides of a register disagree the reading carries a note — a scale the plant
+  implies that the list does not apply, a unit that differs, an address the plant
+  maps in another table, a width that differs — stated as an observation. A
+  `howToUse` block at the top tells the agent how to read it. The document is
+  split into files of at most 34 000 characters — under the 36 000-character
+  knowledge-file ceiling, measured on the assembled text — each repeating the
+  header so it stands alone, one row per line; the plant's parameters are said
+  once, on the reading where there is one, so a poll covering the unit does not
+  double the file. Names are looked up
+  when the file is written, not when the poll ran. `__modpoll.lastExport()` is the
+  document, `__modpoll.exportParts()` the files.
 
 ## What a deep dive on plant 2313 established
 
