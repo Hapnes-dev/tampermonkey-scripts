@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.31.0
+// @version      1.32.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2257,16 +2257,36 @@
         return height;
     }
 
+    /**
+     * Keep the grip where the hand is. The body is itself a scroll container, so
+     * growing a pane pushes its bottom edge — and the grip with it — past the
+     * visible area: the drag then continues blind, and the room just made is
+     * below the fold. Scrolling the body by however far the grip has gone over
+     * the edge holds it still under the cursor while the pane grows above it.
+     */
+    function keepGripInView(grip) {
+        const body = ui.body;
+        if (!body || !grip) return;
+        const edge = body.getBoundingClientRect();
+        const strip = grip.getBoundingClientRect();
+        if (strip.bottom > edge.bottom) body.scrollTop += strip.bottom - edge.bottom;
+        else if (strip.top < edge.top) body.scrollTop -= edge.top - strip.top;
+    }
+
     function makeGrip(spec) {
         const grip = el('div', { className: 'mpc-grip', title: spec.title });
         let startY = 0;
         let startHeight = 0;
-        const onMove = event => setPaneHeight(spec, startHeight + (event.clientY - startY), false);
+        const resize = (event, remember) => {
+            setPaneHeight(spec, startHeight + (event.clientY - startY), remember);
+            keepGripInView(grip);
+        };
+        const onMove = event => resize(event, false);
         const onUp = event => {
             grip.classList.remove('dragging');
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
-            setPaneHeight(spec, startHeight + (event.clientY - startY));
+            resize(event, true);
         };
         grip.addEventListener('mousedown', event => {
             startY = event.clientY;
@@ -2279,6 +2299,7 @@
         grip.addEventListener('dblclick', () => {
             const current = paneHeight(spec);
             setPaneHeight(spec, current < spec.tall - 20 ? spec.tall : spec.def);
+            keepGripInView(grip);
         });
         return grip;
     }
@@ -3332,7 +3353,7 @@
             ui.dot,
         ]);
 
-        const body = el('div', { className: 'mpc-body' });
+        const body = ui.body = el('div', { className: 'mpc-body' });
         const form = el('div', { className: 'mpc-form' });
         body.appendChild(form);
 
