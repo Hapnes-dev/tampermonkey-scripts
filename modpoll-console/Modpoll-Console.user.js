@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.24.0
+// @version      1.25.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2081,12 +2081,12 @@
     #${PANEL_ID} .mpc-log .err{color:#c0392b}#${PANEL_ID} .mpc-log .warn{color:#b9770e}#${PANEL_ID} .mpc-log .ok{color:#1e7e34}
     /* The terminal's own words, set apart from this console's reading of them. */
     #${PANEL_ID} .mpc-log .mirror{color:#5a6070}
-    /* Drag the strip under the log to give it more room; double-click to toggle. */
-    #${PANEL_ID} .mpc-loggrip{grid-column:span 12;height:11px;margin-top:-3px;cursor:ns-resize;
+    /* Drag the strip under a pane to give it more room; double-click to toggle. */
+    #${PANEL_ID} .mpc-grip{grid-column:span 12;height:11px;margin-top:-3px;cursor:ns-resize;
         display:flex;align-items:center;justify-content:center}
-    #${PANEL_ID} .mpc-loggrip::after{content:'';width:64px;height:3px;border-radius:2px;background:#c8ccd4}
-    #${PANEL_ID} .mpc-loggrip:hover::after{background:#8a9099}
-    #${PANEL_ID} .mpc-loggrip.dragging::after{background:#3f7fbf}
+    #${PANEL_ID} .mpc-grip::after{content:'';width:64px;height:3px;border-radius:2px;background:#c8ccd4}
+    #${PANEL_ID} .mpc-grip:hover::after{background:#8a9099}
+    #${PANEL_ID} .mpc-grip.dragging::after{background:#3f7fbf}
     `;
 
     const ui = {};
@@ -2117,43 +2117,67 @@
      * Plant Term to find it is a detour.
      */
     /**
-     * The strip under the log: drag it down for more room, double-click to swap
-     * between the default height and a tall one. The height is remembered,
-     * because someone reading terminal output wants the same room next time.
+     * The strip under the table and under the log: drag it down for more room,
+     * double-click to swap between the default height and a tall one. Both
+     * heights are remembered, because someone who made room to read a long list
+     * or a long reply wants the same room next time.
+     *
+     * The table is capped rather than fixed, so three rows still take only the
+     * room three rows need — which is why the drag moves `max-height` there and
+     * `height` on the log.
      */
-    const LOG_HEIGHT_KEY = 'mpc.logHeight.v1';
-    const LOG_HEIGHT_DEFAULT = 220;
-    const LOG_HEIGHT_TALL = 520;
+    const PANES = {
+        log: {
+            node: 'log', key: 'mpc.logHeight.v1', prop: 'height',
+            def: 220, tall: 520, min: 90, max: 900,
+            title: 'Drag to resize the log, double-click to make it tall',
+        },
+        grid: {
+            node: 'gridWrap', key: 'mpc.gridHeight.v1', prop: 'maxHeight',
+            def: 340, tall: 760, min: 120, max: 1400,
+            title: 'Drag to resize the table, double-click to make it tall',
+        },
+    };
 
-    function setLogHeight(pixels, remember) {
-        const height = Math.max(90, Math.min(900, Math.round(pixels)));
-        ui.log.style.height = height + 'px';
-        if (remember !== false) storeSet(LOG_HEIGHT_KEY, String(height));
+    // The property is what the drag moves, not the rendered box: a table shorter
+    // than its cap would otherwise make the first drag jump to the row count.
+    function paneHeight(spec) {
+        const node = ui[spec.node];
+        if (!node) return spec.def;
+        return parseFloat(getComputedStyle(node)[spec.prop]) || spec.def;
+    }
+
+    function setPaneHeight(spec, pixels, remember) {
+        const node = ui[spec.node];
+        if (!node) return 0;
+        const height = Math.max(spec.min, Math.min(spec.max, Math.round(pixels)));
+        node.style[spec.prop] = height + 'px';
+        if (remember !== false) storeSet(spec.key, String(height));
         return height;
     }
 
-    function makeLogGrip() {
-        const grip = el('div', { className: 'mpc-loggrip', title: 'Drag to resize the log, double-click to make it tall' });
+    function makeGrip(spec) {
+        const grip = el('div', { className: 'mpc-grip', title: spec.title });
         let startY = 0;
         let startHeight = 0;
-        const onMove = event => setLogHeight(startHeight + (event.clientY - startY), false);
+        const onMove = event => setPaneHeight(spec, startHeight + (event.clientY - startY), false);
         const onUp = event => {
             grip.classList.remove('dragging');
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
-            setLogHeight(startHeight + (event.clientY - startY));
+            setPaneHeight(spec, startHeight + (event.clientY - startY));
         };
         grip.addEventListener('mousedown', event => {
             startY = event.clientY;
-            startHeight = ui.log.getBoundingClientRect().height;
+            startHeight = paneHeight(spec);
             grip.classList.add('dragging');
             window.addEventListener('mousemove', onMove);
             window.addEventListener('mouseup', onUp);
             event.preventDefault();
         });
         grip.addEventListener('dblclick', () => {
-            const current = ui.log.getBoundingClientRect().height;
-            setLogHeight(current < LOG_HEIGHT_TALL - 20 ? LOG_HEIGHT_TALL : LOG_HEIGHT_DEFAULT);
+            const current = paneHeight(spec);
+            setPaneHeight(spec, current < spec.tall - 20 ? spec.tall : spec.def);
         });
         return grip;
     }
@@ -3413,12 +3437,14 @@
         ui.gridHead = el('thead');
         const table = el('table', { className: 'mpc-grid' }, [ui.gridCols, ui.gridHead, ui.gridBody]);
         setGridColumns(REGISTER_COLUMNS);
-        form.appendChild(el('div', { className: 'mpc-gridwrap' }, [table]));
+        ui.gridWrap = el('div', { className: 'mpc-gridwrap' }, [table]);
+        form.appendChild(ui.gridWrap);
+        form.appendChild(makeGrip(PANES.grid));
         renderEmptyGrid('No registers polled yet');
 
         ui.log = el('div', { className: 'mpc-log' });
         form.appendChild(ui.log);
-        form.appendChild(makeLogGrip());
+        form.appendChild(makeGrip(PANES.log));
 
         panel.appendChild(head);
         panel.appendChild(body);
@@ -3428,8 +3454,10 @@
         ui.panel = panel;
 
         toggleSerial();
-        const savedHeight = Number(storeGet(LOG_HEIGHT_KEY, 0));
-        if (savedHeight) setLogHeight(savedHeight, false);
+        for (const spec of Object.values(PANES)) {
+            const savedHeight = Number(storeGet(spec.key, 0));
+            if (savedHeight) setPaneHeight(spec, savedHeight, false);
+        }
         // A stop this console made outlives the tab it was made in, so check on
         // load rather than waiting to be asked.
         try {
