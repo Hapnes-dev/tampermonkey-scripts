@@ -39,9 +39,19 @@ rebuilt.
   halved until the readable part comes back, and the references the device will
   not serve are listed as `result.unreadable`. Capped at 40 attempts, since every
   refusal is paid for on the wire; `read({recover: false})` turns it off.
-- **Scans a device.** *Scan device* asks all four tables where they start
-  answering — doubling, then halving back — and reports the first readable
-  reference in both bases. Useful before blaming a point list.
+- **Scans a device.** *Scan device* asks all four tables a ladder of references
+  placed where maps actually begin — 1, the round hundreds and thousands, and one
+  past each, since "address 1000" in a document is reference 1001 — then treats
+  every run of answering rungs as a region, halves down to each region's exact
+  first readable reference, and sweeps each region until its answers run out, up
+  to reference 65536. A strict device refuses a block whole, so a chunk that
+  comes back short is read again with recovery on and the holes are isolated
+  instead of costing their blocks; a chunk that comes back empty is told apart
+  from a hole in every block by two single reads before recovery is paid for. A
+  lenient device answers 0 for everything and never goes empty, so its sweep
+  stops after two thousand registers of zeros past the last value. The report
+  says, per table and per region, what answered, what held a value, and why the
+  sweep stopped. Useful before blaming a point list.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both
@@ -302,6 +312,13 @@ quietly stop being the thing under test.
   port, table, count and serial preset) and confirms each passes, then confirms
   twenty attack shapes are refused and nine parity spellings normalise. Exits
   non-zero on any miss.
+- `python test/scan-simulation.py` — *Scan device* against simulated devices, in
+  Node, with Plant Term replaced by a device model: a strict one that refuses a
+  block touching anything unmapped, a lenient one that answers 0 for whatever is
+  not mapped, and a strict one whose map starts at protocol address 1000. The
+  scan as committed at HEAD runs on the same maps (`--old-ref` picks another),
+  so a change is measured against what it replaces: what each finds, what each
+  misses, and what each costs in modpoll runs and refusals.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the

@@ -1,0 +1,145 @@
+"""Scan device against simulated devices, the shipped scan and the previous one.
+
+Lifts the command model, the polling engine and the scan out of the userscript
+and runs them in Node with Plant Term replaced by a simulated device: a strict
+one that refuses any block touching an unmapped register, and a lenient one
+that answers 0 for whatever is not mapped. The same is done for the script as
+committed at HEAD, so a change to the scan is measured against what it
+replaces on the same maps: what each finds, what each misses, and what each
+costs in modpoll invocations.
+
+Lives beside the script it tests. Run: python scan-simulation.py [--old-ref REF]
+"""
+
+import io
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SRC = HERE.parent / "Modpoll-Console.user.js"
+REL = "modpoll-console/Modpoll-Console.user.js"
+
+old_ref = "HEAD"
+if "--old-ref" in sys.argv:
+    old_ref = sys.argv[sys.argv.index("--old-ref") + 1]
+
+
+def lift(src, start, end):
+    return src[src.index(start):src.index(end)]
+
+
+def bundle(src, label):
+    js = "(async () => {\n"
+    js += "globalThis.window = globalThis; globalThis.location = { hostname: '2349.plants.iwmac.local' };\n"
+    js += "const isSerialMode = mode => mode === 'rtu' || mode === 'ascii';\n"
+    js += "const log = () => {}; const mirrorTerminal = () => {};\n"
+    js += "const enrichValue = () => ({}); const pointForReading = () => null; const plantNamesFor = () => null;\n"
+    js += lift(src, "    const EXE_BARE", "    // ---------------------------------------------------- Plant Term driver")
+    js += lift(src, "    /** Runs of consecutive numbers", "    function impliedScale")
+    js += "const COST = { lines: 0, invocations: 0, refusals: 0 };\n"
+    js += "let DEVICE = null;\n"
+    js += r"""
+    // Plant Term, replaced: one chained command line in, what modpoll would
+    // have printed out, and a count of what it cost.
+    async function termRun(command) {
+        COST.lines++;
+        const out = [];
+        for (const segment of String(command).split('&').map(s => s.trim()).filter(Boolean)) {
+            if (segment.startsWith('echo ')) { out.push(segment.slice(5)); continue; }
+            COST.invocations++;
+            const tokens = splitTokens(segment);
+            const arg = flag => { const at = tokens.indexOf(flag); return at >= 0 ? tokens[at + 1] : undefined; };
+            const table = String(arg('-t') || '4').split(':')[0];
+            const ref = Number(arg('-r') || 1);
+            const count = Number(arg('-c') || 1);
+            const answer = DEVICE.read(table, ref, count);
+            if (answer === null) { COST.refusals++; out.push('Illegal Data Address exception response!'); continue; }
+            answer.forEach((v, n) => out.push('[' + (ref + n) + ']: ' + v));
+        }
+        return out.join('\n');
+    }
+"""
+    js += lift(src, "    let abortRequested = false;", "    /*\n     * What an agent needs to improve a point list")
+    js += lift(src, "    const SWEEP_CEILING", "    /** The same result, shrunk")
+    js += r"""
+    const ranges = list => asRanges(list) || '-';
+    const expand = spec => { const s = new Set(); for (const [a, b] of spec) for (let r = a; r <= b; r++) s.add(r); return s; };
+    // Strict: refuses a block touching anything unmapped. Lenient: answers 0 for
+    // anything unmapped, on every reference modpoll can ask for.
+    const devices = {
+        'strict, three areas and a hole': {
+            maps: { '4': expand([[1, 50], [1001, 1049], [1051, 1100], [8192, 8200]]), '3': new Set(), '1': new Set(), '0': expand([[1, 16]]) },
+            read(table, ref, count) {
+                const map = this.maps[table];
+                const values = [];
+                for (let r = ref; r < ref + count; r++) { if (!map.has(r)) return null; values.push(table === '0' || table === '1' ? (r % 2) : r); }
+                return values;
+            },
+        },
+        'lenient, values at 1-300, zeros elsewhere': {
+            maps: { '4': expand([[1, 300]]), '3': new Set(), '1': new Set(), '0': new Set() },
+            read(table, ref, count) {
+                if (table !== '4') return null;
+                if (ref + count - 1 > 65536) return null;
+                const values = [];
+                for (let r = ref; r < ref + count; r++) values.push(this.maps[table].has(r) ? r : 0);
+                return values;
+            },
+        },
+        'strict, one map starting at protocol 1000': {
+            maps: { '4': expand([[1001, 1120]]), '3': expand([[1001, 1040]]), '1': new Set(), '0': new Set() },
+            read(table, ref, count) {
+                const map = this.maps[table];
+                const values = [];
+                for (let r = ref; r < ref + count; r++) { if (!map.has(r)) return null; values.push(r); }
+                return values;
+            },
+        },
+    };
+    const lines = [];
+    for (const [name, device] of Object.entries(devices)) {
+        DEVICE = device;
+        COST.lines = 0; COST.invocations = 0; COST.refusals = 0;
+        const started = Date.now();
+        const report = await scanDevice({ mode: 'tcp', host: '10.0.0.5', slave: 1 }, true);
+        lines.push('');
+        lines.push('== ' + name + ' ==');
+        for (const table of ['4', '3', '1', '0']) {
+            const expected = device.maps[table];
+            const expectNonZero = new Set([...expected].filter(r => (table === '0' || table === '1') ? (r % 2) : true));
+            const found = new Set((report.values || []).filter(v => v.table === table).map(v => v.i));
+            const foundNonZero = new Set((report.values || []).filter(v => v.table === table && v.v !== 0).map(v => v.i));
+            const target = name.startsWith('lenient') ? expectNonZero : expected;
+            const got = name.startsWith('lenient') ? foundNonZero : found;
+            const missing = [...target].filter(r => !got.has(r));
+            const extra = [...got].filter(r => !target.has(r));
+            const swept = report.sweep && report.sweep[table];
+            const label = name.startsWith('lenient') ? 'values' : 'registers';
+            lines.push('  table ' + table + ': ' + label + ' expected ' + target.size + ', found ' + got.size +
+                (missing.length ? ' — MISSING ' + ranges(missing) : '') + (extra.length ? ' — EXTRA ' + ranges(extra) : '') +
+                (swept && swept.regions ? '  [' + swept.regions.length + ' region(s): ' + swept.regions.map(r => r.from + ' → ' + r.stoppedBecause).join('; ') + ']' : ''));
+        }
+        lines.push('  cost: ' + COST.lines + ' shell lines, ' + COST.invocations + ' modpoll runs, ' + COST.refusals + ' refusals, ' + (Date.now() - started) + ' ms of simulation');
+    }
+    console.log(lines.join('\n'));
+})().catch(e => { console.error('FAILED: ' + (e && e.stack || e)); process.exit(1); });
+"""
+    return js
+
+
+new_src = io.open(SRC, encoding="utf-8", newline="").read()
+old_src = subprocess.run(["git", "-C", str(HERE.parent.parent), "show", old_ref + ":" + REL],
+                         capture_output=True, text=True, encoding="utf-8").stdout
+
+for label, src in (("PREVIOUS (" + old_ref + ")", old_src), ("SHIPPED (working copy)", new_src)):
+    print("#" * 72)
+    print("# " + label)
+    print("#" * 72)
+    out = Path(os.environ.get("TEMP", ".")) / ("mpc-scan-" + label.split()[0].lower() + ".js")
+    io.open(out, "w", encoding="utf-8").write(bundle(src, label))
+    r = subprocess.run(["node", str(out)], capture_output=True, text=True, encoding="utf-8")
+    print(r.stdout)
+    if r.stderr:
+        print(r.stderr[:2000])

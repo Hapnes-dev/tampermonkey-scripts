@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.39.0
+// @version      1.40.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.39.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.40.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -971,80 +971,149 @@
         return results;
     }
 
+    /*
+     * Which references to ask first. Sparse, because every refusal costs about
+     * 630 ms on the wire — but placed where maps actually begin: at 1, at the
+     * round hundreds and thousands a document counts from, and one past each,
+     * since "address 1000" in a document is reference 1001. The ladder this
+     * replaces was six decades, and a map beginning at protocol address 1000 —
+     * as common a start as there is — fell between 1000 and 10000 and was never
+     * found. The bit tables get the short ladder; coil and discrete-input maps
+     * sit low.
+     */
+    const SCAN_LADDER = [1, 2, 10, 100, 101, 200, 500, 1000, 1001, 2000, 2001, 3000, 4000, 4001, 5000, 8192, 10000, 10001, 20000, 32768, 40001];
+    const SCAN_LADDER_BITS = [1, 2, 10, 100, 1000, 1001, 10000];
+    const SCAN_TABLES = ['4', '3', '1', '0'];
+    const scanLadderOf = table => (table === '0' || table === '1') ? SCAN_LADDER_BITS : SCAN_LADDER;
+
     /**
-     * What does this device actually answer? Which of the four tables respond, and
-     * where the readable range starts — found by doubling until an answer appears,
-     * then halving back. A device that answers 0 for an unmapped register and one
-     * that raises an exception both exist, so the answer is reported as observed
-     * rather than interpreted.
+     * What does this device actually answer? Which of the four tables respond,
+     * and where — as regions, because a map is often several areas with nothing
+     * between them, and a sweep that starts at the lowest and stops at the first
+     * stretch of nothing never reaches the second. A run of ladder probes that
+     * answer is one region; the refused probe before it bounds the region from
+     * below, and halving between the two finds the exact first readable
+     * reference, where that region's sweep starts. A device that answers 0 for
+     * an unmapped register and one that raises an exception both exist, so what
+     * is reported is what was observed.
      */
     async function scanDevice(input, deep, onProgress) {
         // A new scan is a new action: a Stop that ended the last one must not end
         // this one before it starts.
         abortRequested = false;
-        const spec = normaliseSpec(Object.assign({ count: 1 }, input, { format: '' }));
-        const TABLES = ['4', '3', '1', '0'];
-        // Every invocation costs about 190 ms of process start, so the probe list
-        // is short and the halving does the precision. Decades of range, not a
-        // dense grid: 1 is included because a device whose map starts at protocol
-        // address 0 refuses exactly that one reference.
-        const REFS = [1, 2, 10, 100, 1000, 10000];
+        const spec = normaliseSpec(Object.assign({}, input, { count: 1, format: '' }));
 
-        // One pass over every table and reference, chained.
-        const first = await probeRefs(spec, [].concat.apply([], TABLES.map(t => REFS.map(ref => ({ table: t, ref })))));
-        const answeredBy = {};
-        for (const table of TABLES) answeredBy[table] = REFS.filter(ref => (first[table + ':' + ref] || {}).answered);
-
-        // Narrow each table's lower edge together, one chained run per halving.
-        const bounds = {};
-        for (const table of TABLES) {
-            const hits = answeredBy[table];
-            if (!hits.length) continue;
-            bounds[table] = { low: Math.max(1, REFS[REFS.indexOf(hits[0]) - 1] || 1), high: hits[0] };
-        }
-        while (Object.keys(bounds).some(t => bounds[t].high - bounds[t].low > 1)) {
-            const step = [];
-            for (const table of Object.keys(bounds)) {
-                const b = bounds[table];
-                if (b.high - b.low > 1) step.push({ table, ref: Math.floor((b.low + b.high) / 2) });
+        // One chained pass over every table and every rung of its ladder. Every
+        // answer is kept, value and all: the sweep uses them to know a chunk is
+        // not empty, and they are readings in their own right.
+        const probes = [];
+        for (const table of SCAN_TABLES) for (const ref of scanLadderOf(table)) probes.push({ table, ref });
+        const first = await probeRefs(spec, probes);
+        const answered = (table, ref) => !!((first[table + ':' + ref] || {}).answered);
+        const known = {};
+        for (const table of SCAN_TABLES) known[table] = new Map();
+        const learn = results => {
+            for (const key of Object.keys(results)) {
+                if (!results[key].answered) continue;
+                const [table, ref] = key.split(':');
+                known[table].set(Number(ref), results[key].value);
             }
-            const probed = await probeRefs(spec, step);
-            for (const probe of step) {
-                const hit = (probed[probe.table + ':' + probe.ref] || {}).answered;
-                if (hit) bounds[probe.table].high = probe.ref; else bounds[probe.table].low = probe.ref;
+        };
+        learn(first);
+
+        const regions = {};
+        for (const table of SCAN_TABLES) {
+            const ladder = scanLadderOf(table);
+            regions[table] = [];
+            let open = null;
+            ladder.forEach((ref, i) => {
+                if (answered(table, ref)) {
+                    // Below reference 1 there is nothing, so the first rung has 0
+                    // as its refused neighbour and settles at once.
+                    if (!open) open = { low: i ? ladder[i - 1] : 0, high: ref, probes: [ref], until: null };
+                    else open.probes.push(ref);
+                } else if (open) {
+                    open.until = ref;
+                    regions[table].push(open);
+                    open = null;
+                }
+            });
+            if (open) regions[table].push(open);
+        }
+
+        // Narrow every region's lower edge together, one chained run per halving.
+        const edges = [];
+        for (const table of SCAN_TABLES) for (const region of regions[table]) edges.push({ table, region });
+        const unsettled = () => edges.filter(e => e.region.high - e.region.low > 1);
+        while (unsettled().length && !abortRequested) {
+            const step = unsettled().map(e => ({ table: e.table, ref: Math.floor((e.region.low + e.region.high) / 2), edge: e }));
+            const probed = await probeRefs(spec, step.map(s => ({ table: s.table, ref: s.ref })));
+            learn(probed);
+            for (const s of step) {
+                if ((probed[s.table + ':' + s.ref] || {}).answered) s.edge.region.high = s.ref; else s.edge.region.low = s.ref;
             }
         }
 
         const tables = {};
-        for (const table of TABLES) {
-            const hits = answeredBy[table];
-            const firstReadable = bounds[table] ? bounds[table].high : null;
+        for (const table of SCAN_TABLES) {
+            const ladder = scanLadderOf(table);
+            const rs = regions[table];
+            const hits = ladder.filter(ref => answered(table, ref));
+            const firstReadable = rs.length ? rs[0].high : null;
             tables[table] = {
-                answers: hits.length > 0,
+                answers: rs.length > 0,
                 firstReadable,
                 // Stated in both bases, since that is the distinction this whole
                 // tool exists to keep straight.
                 firstReadableAddr: firstReadable === null ? null : firstReadable - 1,
+                regions: rs.map(r => ({ from: r.high, fromAddr: r.high - 1, probesAnswering: r.probes, nextRefusedProbe: r.until })),
                 sample: hits.slice(0, 3).map(ref => ref + '=' + first[table + ':' + ref].value),
-                refused: REFS.filter(ref => first[table + ':' + ref] && !first[table + ':' + ref].answered).slice(0, 4),
+                refused: ladder.filter(ref => first[table + ':' + ref] && !answered(table, ref)).slice(0, 6),
             };
         }
         const report = { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
 
-        // Then read each answering table until its answers stop, so the scan ends
-        // with the registers themselves rather than only their starting point.
+        // Then read each region until its answers stop, so the scan ends with the
+        // registers themselves rather than only where they start.
         if (deep) {
             report.sweep = {};
             report.values = [];
-            for (const table of TABLES) {
+            const lowest = refs => refs.reduce((m, r) => (m === null || r < m ? r : m), null);
+            const highest = refs => refs.reduce((m, r) => (m === null || r > m ? r : m), null);
+            for (const table of SCAN_TABLES) {
                 if (!tables[table].answers || abortRequested) continue;
-                const swept = await sweepForValues(spec, table, tables[table].firstReadable, onProgress);
+                const total = { answered: 0, nonZero: 0, refs: [], withValues: [], regions: [], chunks: 0 };
+                const seen = new Set();
+                for (const region of regions[table]) {
+                    if (abortRequested) break;
+                    // A sweep that ran on through the next region found its start
+                    // already — found, not merely passed over.
+                    if (seen.has(region.high)) continue;
+                    const swept = await sweepForValues(spec, table, region.high, known[table], onProgress);
+                    total.chunks += swept.chunks;
+                    let inRegion = 0;
+                    let nonZeroInRegion = 0;
+                    for (const value of swept.values) {
+                        if (seen.has(value.i)) continue;
+                        seen.add(value.i);
+                        inRegion++;
+                        total.refs.push(value.i);
+                        if (value.v !== 0) { nonZeroInRegion++; total.withValues.push(value.i); }
+                        report.values.push(Object.assign({ table }, value));
+                    }
+                    total.answered += inRegion;
+                    total.nonZero += nonZeroInRegion;
+                    total.regions.push({
+                        from: region.high, first: swept.first, last: swept.last, answered: inRegion, nonZero: nonZeroInRegion,
+                        stoppedAt: swept.stoppedAt, stoppedBecause: swept.stoppedBecause,
+                    });
+                }
                 report.sweep[table] = {
-                    answered: swept.answered, nonZero: swept.nonZero,
-                    first: swept.first, last: swept.last,
-                    ranges: swept.ranges, withValues: swept.withValues,
+                    answered: total.answered, nonZero: total.nonZero,
+                    first: lowest(total.refs), last: highest(total.refs),
+                    ranges: asRanges(total.refs), withValues: asRanges(total.withValues),
+                    regions: total.regions, chunks: total.chunks,
                 };
-                for (const value of swept.values) report.values.push(Object.assign({ table }, value));
             }
         }
         return report;
@@ -1464,52 +1533,214 @@
     }
 
     /*
-     * Where does this device actually keep anything? Probing which tables answer
-     * says where to start; this reads onwards until the answers run out. Blocks
-     * that come back empty are the signal to stop — three in a row means the map
-     * has ended, which is cheaper than reading to some arbitrary ceiling and far
-     * cheaper than isolating every refused reference on the way.
+     * Where does this device actually keep anything? Probing says where a region
+     * starts; this reads onwards until the answers run out.
+     *
+     * A strict device refuses a block whole, so one unmapped register inside 99
+     * cost the whole block — and three such blocks in a row used to end the
+     * sweep, which on a map with holes ended it almost at once. Now every
+     * missing run of a chunk is judged before it is chased: a run holding a
+     * reference already known to answer — a ladder rung, a halving probe — has
+     * holes in it, and a run touching an answered register on either side is
+     * the map's edge; both are chased with recovery, which halves them until
+     * the holes and the edge are isolated, each run on its own budget. A run
+     * touching nothing is empty space, and halving it would only confirm that
+     * at a refusal per level — which is what used to spend the budget before
+     * the edges got theirs. A chunk that comes back with nothing and holds
+     * nothing known gets three single reads inside it first, so an island the
+     * ladder missed still has a chance.
+     *
+     * Stopping: three consecutive empty chunks means the region has ended. A
+     * lenient device answers 0 for everything unmapped and never goes empty, so
+     * it stops after five consecutive chunks of nothing but zeros past the last
+     * value seen — about two thousand registers of nothing — or at the chunk
+     * budget. Nothing stops at 6000 any more: a map at 8192 is a map, and
+     * modpoll reads to 65536.
      */
-    const SWEEP_CEILING = 6000;
-    const SWEEP_MAX_BLOCKS = 80;
+    const SWEEP_CEILING = 65536;
+    const SWEEP_CHUNK = MAX_COUNT * CHAIN_MAX;
+    const SWEEP_MAX_CHUNKS = 60;
     const SWEEP_EMPTY_STOP = 3;
+    const SWEEP_ZERO_STOP = 5;
 
-    async function sweepForValues(spec, table, from, onProgress) {
-        const found = [];
+    async function sweepForValues(spec, table, from, known, onProgress) {
+        const found = new Map();                       // ref -> value row
+        const answers = new Set((known || new Map()).keys());
+        for (const [ref, value] of (known || new Map())) found.set(ref, { i: ref, addr: ref - 1, v: value });
         let ref = Math.max(1, from);
         let emptyRuns = 0;
-        let blocks = 0;
+        let zeroRuns = 0;
+        let chunks = 0;
         let refused = 0;
-        while (ref <= SWEEP_CEILING && blocks < SWEEP_MAX_BLOCKS && emptyRuns < SWEEP_EMPTY_STOP && !abortRequested) {
-            const count = Math.min(MAX_COUNT * CHAIN_MAX, SWEEP_CEILING - ref + 1);
-            if (onProgress) onProgress({ table, ref, count, found: found.length });
-            const result = await readRegisters(Object.assign({}, spec, {
-                table, format: '', base: 'printed', start: ref, count, recover: false,
-            }));
-            if (result.values.length) {
+        let fresh = 0;
+        let fatal = null;
+        let stoppedBecause = 'reached the end of the address space';
+        const read = (start, count) => readRegisters(Object.assign({}, spec, {
+            table, format: '', base: 'printed', start, count, recover: false,
+        }));
+        const take = result => {
+            for (const value of result.values) {
+                if (!found.has(value.i)) fresh++;
+                found.set(value.i, value);
+                answers.add(value.i);
+            }
+            const dead = result.diagnostics.find(d => d.level === 'fatal');
+            if (dead) fatal = dead.text;
+        };
+        // One question: does the device answer all of [start, start + count)?
+        // Whatever it did answer is kept either way.
+        const asks = async (start, count) => {
+            if (count <= 0 || abortRequested || fatal) return false;
+            const result = await read(start, count);
+            take(result);
+            return result.values.length === count;
+        };
+        /*
+         * The map's edge, from an anchor that answers. Rightwards: how many
+         * registers past the anchor still answer, found by halving the
+         * extension — each question asks only the part not yet known to answer,
+         * so a strict device that refuses whole is asked about seven times for
+         * a block, not dozens. Leftwards is the mirror, for an island found
+         * from its far side.
+         */
+        const extendRight = async (start, limit) => {
+            if (await asks(start, limit)) return limit;
+            let lo = 0, hi = limit;                    // [start, start + lo) answers; [start, start + hi) does not
+            while (hi - lo > 1 && !abortRequested && !fatal) {
+                const mid = Math.floor((lo + hi) / 2);
+                if (await asks(start + lo, mid - lo)) lo = mid; else hi = mid;
+            }
+            return lo;
+        };
+        const extendLeft = async (anchor, limit) => {
+            if (await asks(anchor - limit, limit)) return limit;
+            let lo = 0, hi = limit;                    // [anchor - lo, anchor) answers
+            while (hi - lo > 1 && !abortRequested && !fatal) {
+                const mid = Math.floor((lo + hi) / 2);
+                if (await asks(anchor - mid, mid - lo)) lo = mid; else hi = mid;
+            }
+            return lo;
+        };
+        // Past a refusal, before calling the map ended: single reads at doubling
+        // distances, one chained line. A reserved register or a short gap is
+        // crossed; the first answer says where to search back for the resumption.
+        const lookAhead = async (x, end) => {
+            const at = [1, 2, 4, 8, 16, 32, 64, 128].map(d => x + d).filter(r => r <= end);
+            if (!at.length || abortRequested || fatal) return null;
+            const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })));
+            for (const r of at) {
+                const hit = inside[table + ':' + r];
+                if (hit && hit.answered) {
+                    if (!found.has(r)) fresh++;
+                    found.set(r, { i: r, addr: r - 1, v: hit.value });
+                    answers.add(r);
+                    return r;
+                }
+            }
+            return null;
+        };
+        // Runs of consecutive references inside a chunk that nothing has answered for.
+        const gapsIn = (start, count) => {
+            const runs = [];
+            let run = null;
+            for (let r = start; r < start + count; r++) {
+                if (answers.has(r)) { run = null; continue; }
+                if (run && run.ref + run.count === r) run.count++;
+                else { run = { ref: r, count: 1 }; runs.push(run); }
+            }
+            return runs;
+        };
+        const knownInside = run => { for (let r = run.ref; r < run.ref + run.count; r++) if (known && known.has(r)) return r; return null; };
+        /*
+         * A missing run is judged before it is chased. One touching an answered
+         * register on its left is the map continuing: extend from there. One
+         * holding a reference known to answer has the map somewhere inside:
+         * search back to where that stretch starts, then extend from it. One
+         * touching an answered register on its right is an island's tail: search
+         * back from that side. One touching nothing is empty space, which the
+         * chunk's own blind reads have already tested, and is left alone.
+         */
+        const chaseRun = async run => {
+            const start = run.ref;
+            const end = run.ref + run.count - 1;
+            let cursor = null;
+            const inside = knownInside(run);
+            if (answers.has(start - 1)) cursor = start;
+            else if (inside !== null) { await extendLeft(inside, inside - start); cursor = inside + 1; }
+            else if (answers.has(end + 1)) { await extendLeft(end + 1, run.count); return; }
+            else return;
+            while (cursor <= end && !abortRequested && !fatal) {
+                const got = await extendRight(cursor, end - cursor + 1);
+                const x = cursor + got;                // the first reference that did not answer
+                if (x > end) return;
+                const resumed = await lookAhead(x, end);
+                if (resumed === null) {
+                    if (answers.has(end + 1)) await extendLeft(end + 1, end - x + 1);
+                    return;
+                }
+                await extendLeft(resumed, resumed - x - 1);
+                cursor = resumed + 1;
+            }
+        };
+        while (ref <= SWEEP_CEILING && !abortRequested) {
+            if (chunks >= SWEEP_MAX_CHUNKS) { stoppedBecause = 'chunk budget spent'; break; }
+            const count = Math.min(SWEEP_CHUNK, SWEEP_CEILING - ref + 1);
+            if (onProgress) onProgress({ table, ref, count, found: found.size });
+            fresh = 0;
+            const first = await read(ref, count);
+            chunks++;
+            take(first);
+            if (fatal) { stoppedBecause = fatal; break; }
+            if (!first.values.length && !gapsIn(ref, count).some(run => knownInside(run) !== null)) {
+                const at = [ref + 5, ref + Math.floor(count / 2), ref + count - 6].filter(r => r >= ref && r < ref + count);
+                const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })));
+                for (const r of at) {
+                    const hit = inside[table + ':' + r];
+                    if (hit && hit.answered && !found.has(r)) { found.set(r, { i: r, addr: r - 1, v: hit.value }); answers.add(r); fresh++; }
+                }
+            }
+            for (const run of gapsIn(ref, count)) {
+                if (abortRequested || fatal) break;
+                if (knownInside(run) !== null || answers.has(run.ref - 1) || answers.has(run.ref + run.count)) await chaseRun(run);
+            }
+            if (fatal) { stoppedBecause = fatal; break; }
+            ref += count;
+            if (fresh) {
                 emptyRuns = 0;
-                for (const value of result.values) found.push(value);
+                let anyValue = false;
+                for (const [r, value] of found) if (r >= ref - count && r < ref && value.v !== 0) { anyValue = true; break; }
+                zeroRuns = anyValue ? 0 : zeroRuns + 1;
+                if (zeroRuns >= SWEEP_ZERO_STOP) { stoppedBecause = SWEEP_ZERO_STOP * SWEEP_CHUNK + ' registers of zeros in a row'; break; }
             } else {
                 emptyRuns++;
-                refused += result.diagnostics.some(d => /exception/i.test(d.text)) ? 1 : 0;
+                zeroRuns = 0;
+                refused += first.diagnostics.some(d => /exception/i.test(d.text)) ? 1 : 0;
+                if (emptyRuns >= SWEEP_EMPTY_STOP) { stoppedBecause = 'no answer for ' + SWEEP_EMPTY_STOP * SWEEP_CHUNK + ' registers in a row'; break; }
             }
-            if (result.diagnostics.some(d => d.level === 'fatal')) break;
-            blocks += Math.ceil(count / MAX_COUNT);
-            ref += count;
         }
-        const refs = found.map(v => v.i);
-        const nonZero = found.filter(v => v.v !== 0);
+        if (abortRequested) stoppedBecause = 'stopped by user';
+        // Only what lies inside the range this sweep covered is its own. The
+        // known answers it was seeded with reach beyond that — a ladder rung in
+        // the next region — and claiming one would have that region skipped as
+        // already found, with everything past its rung never read.
+        const values = [...found.values()].filter(v => v.i >= Math.max(1, from) && v.i < ref).sort((a, b) => a.i - b.i);
+        const refs = values.map(v => v.i);
+        const nonZero = values.filter(v => v.v !== 0);
+        const lowest = list => list.reduce((m, r) => (m === null || r < m ? r : m), null);
+        const highest = list => list.reduce((m, r) => (m === null || r > m ? r : m), null);
         return {
             table,
             answered: found.length,
             nonZero: nonZero.length,
-            first: refs.length ? Math.min.apply(null, refs) : null,
-            last: refs.length ? Math.max.apply(null, refs) : null,
+            first: lowest(refs),
+            last: highest(refs),
             ranges: asRanges(refs),
             withValues: asRanges(nonZero.map(v => v.i)),
-            values: found,
+            values,
             refusedBlocks: refused,
             stoppedAt: ref,
+            stoppedBecause,
+            chunks,
         };
     }
 
@@ -3858,7 +4089,8 @@
             ui.stop.disabled = false;
             setDot('warn');
             try {
-                log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — Stop ends it early');
+                log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — every table, every region it answers in, ' +
+                    'holes isolated, up to reference ' + SWEEP_CEILING + '. Stop ends it early');
                 const report = await scanDevice(readForm(), true,
                     p => log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
                         ' from ' + p.ref + ' (' + p.found + ' found so far)'));
@@ -3870,8 +4102,14 @@
                     if (!t.answers) { log(name + ': no answer'); continue; }
                     log(name + ': answers from ' + t.firstReadable +
                         (swept ? ' — ' + swept.answered + ' registers, ' + swept.nonZero + ' holding a value' +
-                            (swept.first !== null ? ', ' + swept.first + '–' + swept.last : '') : ''), 'ok');
+                            (swept.first !== null ? ', ' + swept.first + '–' + swept.last : '') +
+                            (swept.regions.length > 1 ? ', in ' + swept.regions.length + ' regions' : '') : ''), 'ok');
                     if (swept && swept.withValues) log('    with values: ' + swept.withValues);
+                    for (const region of (swept ? swept.regions : [])) {
+                        log('    from ' + region.from + ': ' + region.answered + ' registers' +
+                            (region.first !== null ? ' (' + region.first + '–' + region.last + ')' : '') + ', ' + region.nonZero + ' holding a value — ' +
+                            region.stoppedBecause);
+                    }
                 }
                 renderScan(report);
                 setDot('ok');
