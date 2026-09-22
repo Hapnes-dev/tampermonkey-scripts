@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.32.0
+// @version      1.33.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2198,9 +2198,15 @@
     // True between Repeat and Stop, so a pass can stay quiet about what the first
     // one already said.
     let repeating = false;
-    // Printed reference -> the value seen on the previous pass, so a repeat run
-    // can mark what moved.
+    // Printed reference -> the value seen on the previous poll, so a re-read can
+    // mark what moved. The delta is kept alongside rather than recomputed,
+    // because the grid is also redrawn without a new poll — a filter toggle —
+    // and recomputing then would compare a value against itself and report
+    // every register as steady.
     const watchPrevious = new Map();
+    const watchDelta = new Map();
+    // The result whose values are already in watchPrevious.
+    let deltaSource = null;
 
     function log(text, level) {
         if (!ui.log) return;
@@ -2482,9 +2488,9 @@
         { label: 'value', width: '9%', title: 'The register as the device returned it' },
         { label: 'scaled', width: '9%', title: "Value multiplied by the list's scale key, or what the plant itself shows — a number or a state text" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
-        { label: 'hex', width: '9%', title: 'The same value as unsigned 16-bit hexadecimal' },
-        { label: 'int16', width: '8%', title: 'Read as a signed 16-bit integer' },
-        { label: 'Δ', width: '8%', title: 'Change since the previous pass of a repeated poll' },
+        { label: 'hex', width: '9%', title: 'The register as hexadecimal — four digits for a 16-bit read, eight for a 32-bit integer. Blank where the bit pattern cannot be recovered from what modpoll printed, which is every float' },
+        { label: 'int16', width: '8%', title: 'Filled only when the register reads differently as a signed 16-bit integer, which means it came back above 32767' },
+        { label: 'Δ', width: '8%', title: 'Change since this register was last polled. Blank until it has been read twice, 0 when it was read again and held still' },
         { label: 'type', width: '12%', align: 'left', title: 'Datatype from the list' },
     ];
     // Coils and discrete inputs answer 0 or 1. Hexadecimal, a signed reading and a
@@ -2495,7 +2501,7 @@
         { label: 'name', width: '38%', align: 'left', title: 'From the loaded point list or the plant database' },
         { label: 'bit', width: '8%', title: 'The value as returned: 1 or 0' },
         { label: 'state', width: '12%', title: 'The same bit as words' },
-        { label: 'Δ', width: '10%', title: 'Change since the previous pass of a repeated poll' },
+        { label: 'Δ', width: '10%', title: 'Change since this bit was last polled. Blank until it has been read twice, 0 when it was read again and held still' },
         { label: 'source', width: '16%', align: 'left', title: 'Datatype from a point list, or the plant group' },
     ];
     const POINT_COLUMNS = [
@@ -2955,6 +2961,26 @@
         const isBitTable = result.spec && (result.spec.table === '0' || result.spec.table === '1');
         setGridColumns(isBitTable ? BIT_COLUMNS : REGISTER_COLUMNS);
         ui.gridBody.textContent = '';
+        const table = (result.spec && result.spec.table) || '4';
+        const format = (result.spec && result.spec.format === '16-bit') ? '' : ((result.spec && result.spec.format) || '');
+        // How wide a reading is follows the format it was polled with, not
+        // whatever a loaded list says: -t4:int returns 32-bit values whether or
+        // not a point list is loaded to agree about it.
+        const wide = formatOf(format).step === 2;
+        // Measured against the poll, not against what the filter left on screen:
+        // a pass whose every value was hidden is still what the next one has to
+        // be compared with. Done once per result, so a redraw — a filter toggle —
+        // shows the deltas that poll produced instead of comparing the values it
+        // has already recorded against themselves.
+        if (result !== deltaSource) {
+            for (const v of result.values) {
+                const key = table + '|' + format + '|' + v.i;
+                const previous = watchPrevious.get(key);
+                watchDelta.set(key, previous === undefined ? null : roundScaled(v.v - previous));
+                watchPrevious.set(key, v.v);
+            }
+            deltaSource = result;
+        }
         const onlyNonZero = ui.filterZero.checked;
         const rows = result.values.filter(v => !onlyNonZero || v.v !== 0);
         const shown = rows.slice(0, 2000);
@@ -2967,8 +2993,6 @@
             return;
         }
         const frag = document.createDocumentFragment();
-        const table = (result.spec && result.spec.table) || '4';
-        const format = (result.spec && result.spec.format === '16-bit') ? '' : ((result.spec && result.spec.format) || '');
         let named = 0;
         for (const v of shown) {
             const u16 = v.v < 0 ? v.v + 65536 : v.v;
@@ -2979,9 +3003,20 @@
             // register 1 are different registers, and comparing one against the
             // other reported changes that never happened.
             const watchKey = table + '|' + format + '|' + v.i;
-            const previous = watchPrevious.get(watchKey);
-            const changed = previous !== undefined && previous !== v.v;
-            watchPrevious.set(watchKey, v.v);
+            const delta = watchDelta.has(watchKey) ? watchDelta.get(watchKey) : null;
+            const changed = delta !== null && delta !== 0;
+            // The detail view reports what it moved from, and the delta is now
+            // what survives a redraw, so the earlier value is derived from it.
+            const previous = delta === null ? undefined : v.v - delta;
+            // Three different things, and a blank cell used to be all three: this
+            // register has not been read before, it has been and held still, it
+            // moved. Only the last was ever shown, so on a plant where nothing
+            // moves the column never said anything at all.
+            const deltaCell = delta === null
+                ? { text: '', title: 'First reading of this register — nothing to compare it against yet' }
+                : (delta === 0
+                    ? { text: '0', className: 'zero', title: 'Read again and unchanged' }
+                    : { text: (delta > 0 ? '+' : '') + delta, className: 'changed', title: 'Moved since the previous poll' });
             const point = pointForReading(table, format, v.i);
             // A register the point list does not cover may still be named by the
             // plant's own parameter list, and several bits can share one register.
@@ -2994,7 +3029,18 @@
             // The plant is already showing this register scaled, which is the
             // scaled value nobody has to derive.
             const plantScaled = fromPlant ? Number(String(fromPlant[0].plantValue).replace(',', '.')) : NaN;
-            const step = point ? point.decoded.step : 1;
+            // modpoll prints a 32-bit value already decoded, so neither 16-bit
+            // reading applies to it: four hex digits of a 32-bit integer is a
+            // different number, and a float's bit pattern cannot be recovered
+            // from the decimal at all. Both were being shown regardless.
+            const hexText = !wide
+                ? '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0')
+                : (format === 'int' && Number.isInteger(v.v)
+                    ? '0x' + (v.v >>> 0).toString(16).toUpperCase().padStart(8, '0')
+                    : '');
+            // Only when it says something the value column does not, which is
+            // when the register came back above 32767.
+            const i16Text = wide || i16 === v.v ? '' : String(i16);
             const sourceLabel = point
                 ? point.datatype
                 : (fromPlant ? fromPlant[0].group + (fromPlant.some(e => e.access === 'rw') ? ' · writable' : '') : '');
@@ -3004,13 +3050,13 @@
                 { text: point ? point.name : plantLabel, align: 'left' },
                 { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
                 { text: v.v ? 'ON' : 'OFF', className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
-                { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
+                deltaCell,
                 { text: sourceLabel, align: 'left' },
             ] : [
                 { text: String(v.i) },
                 // A 32-bit value is read out of two registers, and saying which two
                 // is the difference between a list that lines up and one that does not.
-                { text: step === 2 ? v.addr + '–' + (v.addr + 1) : String(v.addr) },
+                { text: wide ? v.addr + '–' + (v.addr + 1) : String(v.addr) },
                 { text: point ? point.name : plantLabel, align: 'left' },
                 { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
                 {
@@ -3022,9 +3068,9 @@
                     title: scaled === null && fromPlant ? 'What the plant itself shows for this parameter' : undefined,
                 },
                 { text: point ? (point.unit || '') : (fromPlant ? fromPlant[0].unit : '') },
-                { text: '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0') },
-                { text: String(i16) },
-                { text: changed ? ((v.v - previous > 0 ? '+' : '') + (v.v - previous)) : '', className: changed ? 'changed' : '' },
+                { text: hexText },
+                { text: i16Text },
+                deltaCell,
                 { text: sourceLabel, align: 'left' },
             ];
             const tr = el('tr', { className: 'mpc-clickable', title: 'Click to put this register in the command box, and to see every reading of it' },
