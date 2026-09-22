@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.23.1
+// @version      1.23.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.23.1';
+    const VERSION = '1.23.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1616,7 +1616,7 @@
     const STOP_MARK_KEY = 'mpc.plantStoppedAt.v1';
 
     async function plantCommand(cmd, extra) {
-        const response = await fetch(PLANT_CMD_URL, {
+        const response = await fetch(plantUrl(PLANT_CMD_URL), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(Object.assign({ cmd }, extra || {})),
@@ -1629,7 +1629,7 @@
 
     /** Which plant modules are running, from the page's own status endpoint. */
     async function fetchPlantProcesses() {
-        const response = await fetch(PROCESS_INFO_URL, { cache: 'no-cache' });
+        const response = await fetch(plantUrl(PROCESS_INFO_URL), { cache: 'no-cache' });
         const body = await response.json();
         const records = (body && body.records) || [];
         return {
@@ -1692,11 +1692,30 @@
      * "2313_VENT_vent_1_1_0_1_100" is read function 1 — coils — at protocol
      * address 100, which is modpoll's reference 101.
      */
+    /**
+     * A relative URL resolves against the document's, credentials and all, and
+     * fetch refuses to build a request from one that carries them:
+     * "Request cannot be constructed from a URL that includes credentials". A
+     * plant opened as http://user:pass@2349.plants… therefore cannot call its own
+     * endpoints, and Chrome hides that part of the address bar, so the page looks
+     * ordinary while every call fails. Resolve and strip.
+     */
+    function plantUrl(path) {
+        try {
+            const url = new URL(path, location.href);
+            url.username = '';
+            url.password = '';
+            return url.toString();
+        } catch (e) {
+            return path;
+        }
+    }
+
     const PLANT_RPC_URL = '/services/iwmac_plant/settings.php';
     const RE_DRIVER_ID = /_0_(\d+)_(\d+)(?:\.(\d+))?$/;
 
     async function plantRpc(method, params) {
-        const response = await fetch(PLANT_RPC_URL, {
+        const response = await fetch(plantUrl(PLANT_RPC_URL), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 }),
