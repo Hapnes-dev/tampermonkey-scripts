@@ -279,6 +279,27 @@ Both cost a version to find, and both are invisible from the code alone.
   containing a space can match and a device answering "Illegal Data Address
   exception response!" reads as an empty result rather than an answer.
 
+## Tests
+
+Two scripts in `test/`, both of which lift the code they test **out of
+`Modpoll-Console.user.js` on every run**, so a change to the script cannot
+quietly stop being the thing under test.
+
+- `python test/security-matrix.py` — the command guard, in Node. Builds every
+  command the form can produce (2 880 lines across mode, format, endianness,
+  port, table, count and serial preset) and confirms each passes, then confirms
+  twenty attack shapes are refused and nine parity spellings normalise. Exits
+  non-zero on any miss.
+- `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
+  the panel chrome with everything the IWMAC page would supply stubbed: the
+  grid, the detail view, the resize grips, the corner expand control and the
+  log. Serve the directory (`python -m http.server 8791` from `test/`) and drive
+  it from a browser; `window.__poll`, `__detail`, `__dragGrip`, `__toggleZeroFilter`
+  and `__probe` are the hooks.
+
+Neither touches a plant. What only a plant can prove — Plant Term, the unit
+list, the names — is still proven on a plant.
+
 ## Requirements
 
 - Plant Term must be reachable. If connecting throws, it is nearly always the HTTP
