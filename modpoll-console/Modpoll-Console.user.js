@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.23.0
+// @version      1.23.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -52,7 +52,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.23.0';
+    const VERSION = '1.23.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2041,13 +2041,17 @@
     #${PANEL_ID} .mpc-detailbox{display:flex;flex-direction:column;gap:2px;padding:2px 2px 6px;max-width:1120px}
     #${PANEL_ID} .mpc-dhead{font:bold 13px Arial,Helvetica,sans-serif;color:#1b1b1b}
     #${PANEL_ID} .mpc-dlead{font:13px Consolas,ui-monospace,monospace;color:#1b5fa8;margin-bottom:6px}
-    #${PANEL_ID} .mpc-dsec{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:3px 26px;margin-bottom:4px}
-    #${PANEL_ID} .mpc-dsec h5{grid-column:1/-1;margin:6px 0 1px;font:bold 10.5px Arial,Helvetica,sans-serif;
-        letter-spacing:.4px;text-transform:uppercase;color:#8a9099}
+    /* A 1px gap over a grey backing reads as gridlines, which is what separates
+       one pair from the next without drawing a border around each of them. */
+    #${PANEL_ID} .mpc-dsec{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:1px;
+        margin-bottom:8px;background:#e3e6ec;border:1px solid #dfe3e9;border-radius:4px;overflow:hidden}
+    #${PANEL_ID} .mpc-dsec h5{grid-column:1/-1;margin:0;padding:4px 10px;background:#eef0f4;
+        font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;text-transform:uppercase;color:#79808c}
     /* min-width:0 on both, or a long value refuses to wrap and runs over the
        column beside it. */
-    #${PANEL_ID} .mpc-kv{display:flex;gap:10px;align-items:baseline;min-width:0;font:12px/1.55 Arial,Helvetica,sans-serif}
-    #${PANEL_ID} .mpc-kv .mpc-k{color:#6a7180;width:122px;flex:0 0 122px}
+    #${PANEL_ID} .mpc-kv{display:flex;gap:10px;align-items:baseline;min-width:0;padding:5px 10px;background:#fcfdfe;
+        font:12px/1.55 Arial,Helvetica,sans-serif}
+    #${PANEL_ID} .mpc-kv .mpc-k{color:#79808c;width:122px;flex:0 0 122px}
     #${PANEL_ID} .mpc-kv .mpc-v{color:#1b1b1b;min-width:0;overflow-wrap:anywhere}
     #${PANEL_ID} .mpc-kv .mpc-v.mono{font-family:Consolas,ui-monospace,monospace}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
