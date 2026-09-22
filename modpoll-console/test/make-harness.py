@@ -331,6 +331,24 @@ window.__detail = n => {{
     }}
     return out;
 }};
+// Press a grip and hold, the hand where it landed, for a while: does the pane
+// keep growing on its own when that is the bottom edge, and stay put when it
+// is not? Resolves with the heights before, during and after letting go.
+window.__holdGrip = (which, ms, atEdge) => new Promise(resolve => {{
+    const spec = which === 'grid' ? PANES.grid : PANES.log;
+    const grip = document.querySelectorAll('#mpc-panel .mpc-grip')[which === 'grid' ? 0 : 1];
+    const r = grip.getBoundingClientRect();
+    const b = ui.body.getBoundingClientRect();
+    const y = atEdge === false ? r.y + r.height / 2 : b.bottom - 6;
+    const fire = (type, node, clientY) => node.dispatchEvent(new MouseEvent(type, {{ bubbles: true, clientX: r.x + r.width / 2, clientY }}));
+    const before = paneHeight(spec);
+    fire('mousedown', grip, y);
+    setTimeout(() => {{
+        const during = paneHeight(spec);
+        fire('mouseup', window, y);
+        setTimeout(() => resolve({{ before, during, after: paneHeight(spec), grew: during > before, keptAfterRelease: paneHeight(spec) === during, bodyScrollTop: Math.round(ui.body.scrollTop), gripSlack: Math.round(ui.body.getBoundingClientRect().bottom - grip.getBoundingClientRect().bottom) }}), 50);
+    }}, ms);
+}});
 window.__bodyScroll = () => ({{
     scrollTop: Math.round(ui.body.scrollTop),
     scrollHeight: Math.round(ui.body.scrollHeight),

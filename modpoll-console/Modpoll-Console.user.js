@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.36.0
+// @version      1.37.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.36.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.37.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2494,12 +2494,12 @@
         log: {
             node: 'log', key: 'mpc.logHeight.v1', prop: 'height',
             def: 220, tall: 520, min: 90, max: 900,
-            title: 'Drag to resize the log, double-click to make it tall',
+            title: 'Drag to resize the log; hold at the bottom to keep it growing; double-click to make it tall',
         },
         grid: {
             node: 'gridWrap', key: 'mpc.gridHeight.v1', prop: 'maxHeight',
             def: 340, tall: 760, min: 120, max: 1400,
-            title: 'Drag to resize the table, double-click to make it tall',
+            title: 'Drag to resize the table; hold at the bottom to keep it growing; double-click to make it tall',
         },
     };
 
@@ -2538,27 +2538,70 @@
         else if (strip.top < edge.top) body.scrollTop -= edge.top - strip.top;
     }
 
+    /*
+     * Growing a pane pushes its grip toward the bottom of the body, and once the
+     * cursor is there the hand has nowhere further to go. So a drag held in the
+     * bottom edge zone keeps growing on its own, at a steady rate, until the hand
+     * moves back up or the pane reaches its ceiling — the edge-scroll a file
+     * manager does when a drag reaches the end of the list. The lowest grip sits
+     * inside that zone whenever the body is scrolled to the bottom, so pressing
+     * it and holding is enough.
+     */
+    const EDGE_ZONE = 28;    // pixels above the body's bottom edge that count as the edge
+    const EDGE_SPEED = 0.3;  // pixels per millisecond while the hand is held there — by the clock, not the frame, so a fast monitor does not creep faster
+
     function makeGrip(spec) {
         const grip = el('div', { className: 'mpc-grip', title: spec.title });
         let startY = 0;
         let startHeight = 0;
-        const resize = (event, remember) => {
-            setPaneHeight(spec, startHeight + (event.clientY - startY), remember);
+        let lastY = 0;
+        let crept = 0;      // growth the edge added beyond where the hand went
+        let timer = null;
+        let lastTick = 0;
+        const resize = remember => {
+            setPaneHeight(spec, startHeight + (lastY - startY) + crept, remember);
             keepGripInView(grip);
         };
-        const onMove = event => resize(event, false);
-        const onUp = event => {
+        // On a timer rather than an animation frame: there is no paint to keep
+        // in step with, and a frame callback starves wherever the page is not
+        // being painted, which a timer does not.
+        const creep = () => {
+            const now = performance.now();
+            const elapsed = lastTick ? now - lastTick : 0;
+            lastTick = now;
+            if (ui.body && lastY >= ui.body.getBoundingClientRect().bottom - EDGE_ZONE) {
+                const before = paneHeight(spec);
+                const step = EDGE_SPEED * Math.min(elapsed, 100);
+                crept += step;
+                resize(false);
+                // At the ceiling the pane stops, so the count must too — or letting
+                // go would snap it by however long the hand kept pressing.
+                if (paneHeight(spec) === before) crept -= step;
+            }
+        };
+        const stop = () => {
             grip.classList.remove('dragging');
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
-            resize(event, true);
+            window.removeEventListener('blur', onBlur);
+            if (timer) clearInterval(timer);
+            timer = null;
         };
+        const onMove = event => { lastY = event.clientY; resize(false); };
+        const onUp = event => { stop(); lastY = event.clientY; resize(true); };
+        // A window losing focus mid-drag never sees the mouseup; the pane would
+        // otherwise creep to its ceiling on its own.
+        const onBlur = () => { stop(); resize(true); };
         grip.addEventListener('mousedown', event => {
-            startY = event.clientY;
+            startY = lastY = event.clientY;
             startHeight = paneHeight(spec);
+            crept = 0;
+            lastTick = 0;
             grip.classList.add('dragging');
             window.addEventListener('mousemove', onMove);
             window.addEventListener('mouseup', onUp);
+            window.addEventListener('blur', onBlur);
+            timer = setInterval(creep, 16);
             event.preventDefault();
         });
         grip.addEventListener('dblclick', () => {
