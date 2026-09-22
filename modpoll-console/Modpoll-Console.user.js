@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.26.0
+// @version      1.27.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1999,10 +1999,8 @@
         font:11px/1 Arial,Helvetica,sans-serif;color:#3a3f4a;background:#fff;
         border:1px solid var(--line);border-radius:3px}
     #${PANEL_ID} .mpc-expand:hover{background:#eef4fb;border-color:#8a9099}
-    /* Expanded. Native fullscreen sizes the element itself, so that rule only has
-       to supply a background — without one the browser paints it black. The
-       overlay is the fallback, and has to place itself. */
-    #${PANEL_ID}:fullscreen{width:100vw;height:100vh;background:#fff}
+    /* Expanded: the whole page inside this tab, over the shell's header and
+       sidebar. Not the browser's fullscreen — the chrome and the desktop stay. */
     #${PANEL_ID}.mpc-full{position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483000;
         border:0;box-shadow:0 0 0 1px rgba(0,0,0,.18)}
     #${PANEL_ID} .mpc-body{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:10px 12px 12px}
@@ -2196,25 +2194,24 @@
     }
 
     /**
-     * The console takes the whole window. Native fullscreen is the better of the
-     * two routes, because it reclaims the browser's own chrome as well as the
-     * shell's sidebar and header; a browser that refuses it — a permissions
-     * policy, or no API at all — gets a fixed overlay instead, which reclaims
-     * everything but the chrome.
+     * The console takes the whole page and nothing more: a fixed overlay over
+     * the shell's header and sidebar, inside this browser tab. The native
+     * Fullscreen API would also swallow the browser's own chrome and the desktop
+     * behind it, which is more than was wanted here — the console is a tool in a
+     * tab, not a presentation.
      *
-     * Growing the table is what makes the room useful: going fullscreen without
-     * it just gives a 340-pixel table a wider page to sit in. The heights in
-     * force beforehand are stashed and put back on the way out, and a drag made
-     * while expanded is deliberately not remembered — a cap chosen against the
-     * whole window is the wrong cap for a panel sharing the page with a sidebar.
+     * Growing the table is what makes the room useful: expanding without it just
+     * gives a 340-pixel table a wider page to sit in. The heights in force
+     * beforehand are stashed and put back on the way out, and a drag made while
+     * expanded is deliberately not remembered — a cap chosen against the whole
+     * window is the wrong cap for a panel sharing the page with a sidebar.
      */
     // The two grips, the summary line and the body's own padding.
     const EXPAND_RESERVE = 34;
     let preExpandHeights = null;
 
     function isExpanded() {
-        if (!ui.panel) return false;
-        return ui.panel.classList.contains('mpc-full') || document.fullscreenElement === ui.panel;
+        return !!ui.panel && ui.panel.classList.contains('mpc-full');
     }
 
     function fitTableToWindow() {
@@ -2229,10 +2226,10 @@
     function syncExpandButton() {
         if (!ui.expand) return;
         const on = isExpanded();
-        ui.expand.textContent = on ? 'Exit full screen' : 'Full screen';
+        ui.expand.textContent = on ? 'Exit full page' : 'Full page';
         ui.expand.title = on
             ? 'Back to the tool panel — Escape does the same'
-            : 'Take the whole window, and give the table the room it frees';
+            : 'Take the whole page, and give the table the room it frees';
         if (on) fitTableToWindow();
     }
 
@@ -2246,20 +2243,9 @@
                     log: ui.log ? ui.log.style.height : '',
                 };
             }
-            // The overlay goes on first because it is the one route that cannot
-            // fail, and native fullscreen replaces it only once the browser has
-            // actually granted it. Waiting on that promise instead would leave
-            // the button doing nothing at all wherever the request is left
-            // pending rather than resolved or refused — which is what a real
-            // click was observed to do.
             panel.classList.add('mpc-full');
-            const native = panel.requestFullscreen && panel.requestFullscreen();
-            if (native && typeof native.then === 'function') {
-                native.then(() => { panel.classList.remove('mpc-full'); syncExpandButton(); }, () => { /* the overlay stands */ });
-            }
         } else {
             panel.classList.remove('mpc-full');
-            if (document.fullscreenElement === panel) document.exitFullscreen();
             if (preExpandHeights) {
                 if (ui.gridWrap) ui.gridWrap.style.maxHeight = preExpandHeights.grid;
                 if (ui.log) ui.log.style.height = preExpandHeights.log;
@@ -2270,16 +2256,9 @@
     }
 
     function watchExpanded() {
-        // Escape leaves native fullscreen without passing through the button, so
-        // the heights have to be put back from here as well.
-        document.addEventListener('fullscreenchange', () => {
-            if (!ui.panel) return;
-            if (document.fullscreenElement !== ui.panel && !ui.panel.classList.contains('mpc-full')) setExpanded(false);
-            else syncExpandButton();
-        });
-        // The overlay is not the browser's fullscreen, so Escape is ours to honour.
+        // This is not the browser's own fullscreen, so Escape is ours to honour.
         document.addEventListener('keydown', event => {
-            if (event.key === 'Escape' && ui.panel && ui.panel.classList.contains('mpc-full')) setExpanded(false);
+            if (event.key === 'Escape' && isExpanded()) setExpanded(false);
         });
         window.addEventListener('resize', () => { if (isExpanded()) fitTableToWindow(); });
     }
