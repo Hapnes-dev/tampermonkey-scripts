@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.11
+// @version      9.12
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -262,6 +262,7 @@
           <div class="actions">
             <button id="seii-gen" class="primary">Generate SQL</button>
             <button id="seii-copy">Copy</button>
+            <button id="seii-dl" title="Save the generated SQL as a .sql file">Download</button>
             <button id="seii-edit" title="Open large editor">Edit ⛶</button>
           </div>
           <div id="seii-status" class="status"></div>
@@ -284,6 +285,7 @@
           <b>SQL editor</b>
           <span>
             <button id="seii-mcopy">Copy</button>
+            <button id="seii-mdl">Download</button>
             <button id="seii-mclose">Close</button>
           </span>
         </div>
@@ -1425,6 +1427,52 @@
         return out;
     }
 
+    // ---------- Download ----------
+    // The generated SQL is normally pasted into the phpMyAdmin SQL tab, but a
+    // big template is easier to keep as a file — and phpMyAdmin's Import tab
+    // takes a .sql directly. The name comes from the loaded template, so
+    // "plant 3299 · EKC202D1 · ekc_202d" saves as
+    // plant_3299_EKC202D1_ekc_202d.sql and a file loaded from disk keeps its
+    // own name. Anything outside [A-Za-z0-9._-] becomes '_' so the name is
+    // safe on Windows as well.
+    function sqlFileName() {
+        const base = String((CURRENT && CURRENT.name) || 'sql-equipment-import')
+            .replace(/\.sql$/i, '')
+            .replace(/[^A-Za-z0-9._-]+/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^[._-]+|[._-]+$/g, '');
+        return (base || 'sql-equipment-import').slice(0, 80) + '.sql';
+    }
+
+    // UTF-8 without a BOM: the script's own file reader decodes UTF-8 first,
+    // and a BOM would land inside the first statement when the file is loaded
+    // back in. No GM grant is needed — a blob URL plus a synthetic click is
+    // enough, and the anchor goes on <html> because the frameset top page can
+    // have no <body>.
+    function downloadSql(text) {
+        const name = sqlFileName();
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/sql;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.style.display = 'none';
+        document.documentElement.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        return name;
+    }
+
+    $('seii-dl').onclick = () => {
+        try {
+            let s = $('seii-out').value;
+            if (!s) { s = buildOutput(); $('seii-out').value = s; }
+            $('seii-status').innerHTML = `<span class="ok">Downloaded ${escapeHtml(downloadSql(s))}</span>`;
+        } catch (e) {
+            $('seii-status').innerHTML = `<span class="err">${escapeHtml(e.message)}</span>`;
+        }
+    };
+
     $('seii-gen').onclick = () => {
         try {
             const sql = buildOutput();
@@ -1472,6 +1520,12 @@
         GM_setClipboard(getEditorValue());
         $('seii-mcopy').textContent = 'Copied!';
         setTimeout(() => $('seii-mcopy').textContent = 'Copy', 1200);
+    };
+    // Downloads what is in the editor, edits included — not the panel's copy.
+    $('seii-mdl').onclick = () => {
+        downloadSql(getEditorValue());
+        $('seii-mdl').textContent = 'Saved!';
+        setTimeout(() => $('seii-mdl').textContent = 'Download', 1200);
     };
     // Close on backdrop click — but only when BOTH mousedown AND mouseup happen
     // on the backdrop itself. Without this, a text-selection drag that starts
