@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.27.0
+// @version      1.28.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1994,11 +1994,17 @@
     #${PANEL_ID} .mpc-dot{width:9px;height:9px;border-radius:50%;background:#c3c7cf;margin-left:auto;flex:0 0 auto;
         border:1px solid rgba(0,0,0,.15)}
     #${PANEL_ID} .mpc-dot.ok{background:#4caf50}#${PANEL_ID} .mpc-dot.warn{background:#f0ad4e}#${PANEL_ID} .mpc-dot.err{background:#d9534f}
-    /* Top right of the head, beside the status dot. */
-    #${PANEL_ID} .mpc-expand{flex:0 0 auto;height:19px;padding:0 8px;cursor:pointer;
-        font:11px/1 Arial,Helvetica,sans-serif;color:#3a3f4a;background:#fff;
-        border:1px solid var(--line);border-radius:3px}
-    #${PANEL_ID} .mpc-expand:hover{background:#eef4fb;border-color:#8a9099}
+    /* The table's own corner control, past the last column heading. The zone is
+       only there to give it something to be pinned to: absolute inside the
+       scrolling table would scroll away with the rows. The right offset is set
+       from script, because the scrollbar it has to clear comes and goes. */
+    #${PANEL_ID} .mpc-gridzone{grid-column:span 12;position:relative;min-width:0}
+    #${PANEL_ID} .mpc-expand{position:absolute;top:3px;right:4px;z-index:2;
+        width:20px;height:19px;padding:0;line-height:0;cursor:pointer;color:#79808c;
+        display:flex;align-items:center;justify-content:center;
+        background:#f6f7f9;border:1px solid var(--line);border-radius:3px}
+    #${PANEL_ID} .mpc-expand:hover{color:#1b5fa8;background:#eef4fb;border-color:#8a9099}
+    #${PANEL_ID} .mpc-expand svg{width:12px;height:12px;display:block}
     /* Expanded: the whole page inside this tab, over the shell's header and
        sidebar. Not the browser's fullscreen — the chrome and the desktop stay. */
     #${PANEL_ID}.mpc-full{position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483000;
@@ -2048,7 +2054,7 @@
         color:#3a3f4a;height:var(--h);cursor:pointer}
     #${PANEL_ID} .mpc-check input{width:14px;height:14px;padding:0;accent-color:#3f7fbf}
 
-    #${PANEL_ID} .mpc-gridwrap{grid-column:span 12;max-height:340px;overflow-y:auto;overflow-x:hidden;
+    #${PANEL_ID} .mpc-gridwrap{max-height:340px;overflow-y:auto;overflow-x:hidden;
         border:1px solid var(--line);border-radius:3px;background:#fff}
     #${PANEL_ID} table.mpc-grid{width:100%;table-layout:fixed;border-collapse:collapse;font:11.5px Consolas,ui-monospace,monospace}
     #${PANEL_ID} table.mpc-grid th{position:sticky;top:0;z-index:1;background:linear-gradient(#fbfbfb,#eff0f2);
@@ -2162,6 +2168,8 @@
         const height = Math.max(spec.min, Math.min(spec.max, Math.round(pixels)));
         node.style[spec.prop] = height + 'px';
         if (remember !== false) storeSet(spec.key, String(height));
+        // A shorter table may have gained a scrollbar, or a taller one lost it.
+        placeExpandButton();
         return height;
     }
 
@@ -2223,14 +2231,40 @@
         setPaneHeight(PANES.grid, window.innerHeight - above - logRoom - EXPAND_RESERVE, false);
     }
 
+    /*
+     * Four corner brackets, pointing out to expand and in to come back. Drawn
+     * rather than set in a glyph, because the corner has room for about twelve
+     * pixels and no font is guaranteed to have ⛶ in it.
+     */
+    const ICON_SIDES = 'fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round';
+    const ICON_EXPAND = '<svg viewBox="0 0 12 12" aria-hidden="true"><path style="' + ICON_SIDES +
+        '" d="M1 4.3V1h3.3M7.7 1H11v3.3M11 7.7V11H7.7M4.3 11H1V7.7"/></svg>';
+    const ICON_CONTRACT = '<svg viewBox="0 0 12 12" aria-hidden="true"><path style="' + ICON_SIDES +
+        '" d="M1 4.3h3.3V1M7.7 1v3.3H11M11 7.7H7.7V11M4.3 11V7.7H1"/></svg>';
+
+    /**
+     * The control sits in the table's top right corner, past the last heading.
+     * Clear of the table's own scrollbar, or it would land on top of it: what
+     * offsetWidth has and clientWidth does not is the scrollbar plus the two
+     * borders, which is exactly the gap to leave.
+     */
+    // The button is 20 wide and offset 4; the rest is the gap to the heading.
+    const EXPAND_CORNER_ROOM = 28;
+
+    function placeExpandButton() {
+        if (!ui.expand || !ui.gridWrap) return;
+        ui.expand.style.right = (ui.gridWrap.offsetWidth - ui.gridWrap.clientWidth + 2) + 'px';
+    }
+
     function syncExpandButton() {
         if (!ui.expand) return;
         const on = isExpanded();
-        ui.expand.textContent = on ? 'Exit full page' : 'Full page';
+        ui.expand.innerHTML = on ? ICON_CONTRACT : ICON_EXPAND;
         ui.expand.title = on
             ? 'Back to the tool panel — Escape does the same'
-            : 'Take the whole page, and give the table the room it frees';
+            : 'Read the table on the whole page';
         if (on) fitTableToWindow();
+        placeExpandButton();
     }
 
     function setExpanded(on) {
@@ -2439,8 +2473,17 @@
         ui.gridCols.textContent = '';
         ui.gridHead.textContent = '';
         for (const c of columns) ui.gridCols.appendChild(el('col', { style: 'width:' + c.width }));
-        ui.gridHead.appendChild(el('tr', {}, columns.map(c =>
-            el('th', { textContent: c.label, title: c.title || c.label, style: c.align === 'left' ? 'text-align:left' : '' }))));
+        ui.gridHead.appendChild(el('tr', {}, columns.map((c, i) => {
+            const rules = [];
+            if (c.align === 'left') rules.push('text-align:left');
+            // The corner control is pinned over the end of this row, so the last
+            // heading makes room for it instead of being covered by it.
+            if (i === columns.length - 1) rules.push('padding-right:' + EXPAND_CORNER_ROOM + 'px');
+            return el('th', { textContent: c.label, title: c.title || c.label, style: rules.join(';') });
+        })));
+        // A different column set is a different row count, so the scrollbar the
+        // corner control has to clear may have come or gone with it.
+        placeExpandButton();
     }
 
     /*
@@ -2651,6 +2694,7 @@
         ui.gridBody.appendChild(el('tr', {}, [
             el('td', { className: 'mpc-empty', colSpan: (ui.gridColumns || REGISTER_COLUMNS).length, textContent: message }),
         ]));
+        placeExpandButton();
     }
 
     const SCAN_COLUMNS = [
@@ -2901,6 +2945,7 @@
             ', ' + s.elapsedMs + ' ms' +
             (named ? ' · ' + named + ' named from the list' : (pointList ? ' · none matched the loaded list' : '')) +
             (rows.length > shown.length ? ' — showing the first 2000 rows' : '');
+        placeExpandButton();
     }
 
     async function runOnce() {
@@ -3201,13 +3246,10 @@
         const panel = el('div', { id: PANEL_ID });
 
         ui.dot = el('span', { className: 'mpc-dot', title: 'Idle' });
-        ui.expand = el('button', { className: 'mpc-expand', type: 'button' });
-        ui.expand.addEventListener('click', () => setExpanded(!isExpanded()));
         const head = el('div', { className: 'mpc-head' }, [
             el('span', { className: 'mpc-title', textContent: 'Modpoll' }),
             el('span', { className: 'mpc-ver', textContent: 'v' + VERSION + ' · plant ' + (plantIdFromHost() || '?') + ' · read only' }),
             ui.dot,
-            ui.expand,
         ]);
 
         const body = el('div', { className: 'mpc-body' });
@@ -3521,8 +3563,13 @@
         ui.gridHead = el('thead');
         const table = el('table', { className: 'mpc-grid' }, [ui.gridCols, ui.gridHead, ui.gridBody]);
         setGridColumns(REGISTER_COLUMNS);
+        // The corner control is pinned to the zone rather than added to the header
+        // row: the header is rebuilt from scratch every time the column set
+        // changes, and a th of its own would take width from the columns.
+        ui.expand = el('button', { className: 'mpc-expand', type: 'button' });
+        ui.expand.addEventListener('click', () => setExpanded(!isExpanded()));
         ui.gridWrap = el('div', { className: 'mpc-gridwrap' }, [table]);
-        form.appendChild(ui.gridWrap);
+        form.appendChild(el('div', { className: 'mpc-gridzone' }, [ui.gridWrap, ui.expand]));
         form.appendChild(makeGrip(PANES.grid));
         renderEmptyGrid('No registers polled yet');
 
