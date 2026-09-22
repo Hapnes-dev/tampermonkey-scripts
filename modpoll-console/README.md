@@ -37,7 +37,7 @@ rebuilt.
 - **Recovers what a refused block still holds.** Modbus refuses a read whole, so
   one unmapped register inside a 99-register block returns nothing. The block is
   halved until the readable part comes back, and the references the device will
-  not serve are listed as `result.unreadable`. Capped at 32 attempts, since every
+  not serve are listed as `result.unreadable`. Capped at 40 attempts, since every
   refusal is paid for on the wire; `read({recover: false})` turns it off.
 - **Scans a device.** *Scan device* asks all four tables where they start
   answering — doubling, then halving back — and reports the first readable

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.33.0
+// @version      1.34.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -51,7 +51,11 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.23.2';
+    // The installed copy answers with the version its manager sees, so the head,
+    // the export file, the report and the API can never say one number while the
+    // header says another — which they did, for ten releases. The literal is
+    // only for a copy evaluated straight into a page.
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.34.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -192,7 +196,8 @@
     // next token. Anything outside both sets is treated as a positional argument,
     // which is how the write guard below spots a value being passed to a device.
     const FLAGS_WITH_VALUE = new Set(['-m', '-a', '-r', '-c', '-t', '-b', '-d', '-s', '-p', '-o', '-l']);
-    const FLAGS_BOOLEAN = new Set(['-1', '-0', '-e', '-f', '-h', '-4', '-5', '-u']);
+    // -i and -f are the endian flags; this build has no -0.
+    const FLAGS_BOOLEAN = new Set(['-1', '-i', '-e', '-f', '-h', '-4', '-5', '-u']);
 
     function splitTokens(command) {
         const out = [];
@@ -243,6 +248,12 @@
         for (let i = 0; i < tokens.length; i++) {
             const t = tokens[i];
             if (FLAGS_WITH_VALUE.has(t)) { i++; continue; }
+            // Behind the host, a token that looks like a number is a value modpoll
+            // would write — "-7" every bit as much as "7", and "-1" too. Ahead of
+            // the host "-1" is the poll-once flag; the position tells them apart,
+            // so it is settled before the flag sets get a say. Without this, any
+            // negative value slipped through as an unknown flag.
+            if (positionals.length >= 2 && /^-?(\d|\.\d)/.test(t)) { positionals.push(t); continue; }
             if (FLAGS_BOOLEAN.has(t)) continue;
             if (t.startsWith('-') && t.length > 1) continue; // unknown flag, not a value
             positionals.push(t);
@@ -747,7 +758,8 @@
             const line = chainBlocks(spec, group);
             if (onProgress) {
                 onProgress({
-                    block: Math.min(bi + group.length, blocks.length), blocks: blocks.length,
+                    // bi has already moved past this group, so it is the count done.
+                    block: bi, blocks: blocks.length,
                     command: group.length > 1
                         ? group.length + ' blocks in one run, -r ' + group[0].ref + ' to -r ' + group[group.length - 1].ref
                         : commands[commands.length - 1],
@@ -2210,9 +2222,13 @@
 
     function log(text, level) {
         if (!ui.log) return;
+        // Follow the tail unless the reader has scrolled up to look at something.
+        // A repeat adds a line a second, and yanking the view back down on each
+        // one made the log unreadable for exactly as long as it was interesting.
+        const following = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 4;
         const line = el('div', { className: level || '', textContent: text });
         ui.log.appendChild(line);
-        ui.log.scrollTop = ui.log.scrollHeight;
+        if (following) ui.log.scrollTop = ui.log.scrollHeight;
     }
 
     /**
@@ -2613,7 +2629,9 @@
      * rather than one flat grid, because a flat grid is read across when it wants
      * to be read down.
      */
-    function readingDetailSections(value, point, previous, fromPlant, table, ref) {
+    function readingDetailSections(value, point, previous, fromPlant, table, ref, format) {
+        const fmt = formatOf(format);
+        const wide = fmt.step === 2;
         const u16 = value < 0 ? value + 65536 : value;
         const i16 = value > 32767 ? value - 65536 : value;
         const entry = fromPlant && fromPlant[0];
@@ -2640,16 +2658,33 @@
         reach.push(['command', ui.cmd ? ui.cmd.value : '', true]);
         sections.push({ title: 'Where it is', rows: reach });
 
-        const chars = [u16 >> 8, u16 & 0xff]
-            .map(code => (code >= 32 && code < 127) ? String.fromCharCode(code) : '·').join('');
-        const asNumbers = [
-            ['raw', String(value), true],
-            ['hexadecimal', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0'), true],
-            ['binary', (u16 >>> 0).toString(2).padStart(16, '0').replace(/(.{4})(?=.)/g, '$1 '), true],
-            ['unsigned / signed', u16 + ' / ' + i16, true],
-            ['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true],
-            ['as two characters', chars, true],
-        ];
+        // Every way that applies. modpoll prints a 32-bit value already decoded:
+        // an integer can still be shown at its full width, while a float's bit
+        // pattern is gone and only the decimal remains — reading it as sixteen
+        // bits printed the hex of whatever integer it happened to round to.
+        const grouped = bits => bits.replace(/(.{4})(?=.)/g, '$1 ');
+        const asNumbers = [['raw', String(value), true]];
+        if (!wide) {
+            const chars = [u16 >> 8, u16 & 0xff]
+                .map(code => (code >= 32 && code < 127) ? String.fromCharCode(code) : '·').join('');
+            asNumbers.push(
+                ['hexadecimal', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0'), true],
+                ['binary', grouped((u16 >>> 0).toString(2).padStart(16, '0')), true],
+                ['unsigned / signed', u16 + ' / ' + i16, true],
+                ['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true],
+                ['as two characters', chars, true],
+            );
+        } else if (fmt.value === 'int' && Number.isInteger(value)) {
+            const u32 = value >>> 0;
+            asNumbers.push(
+                ['hexadecimal', '0x' + u32.toString(16).toUpperCase().padStart(8, '0'), true],
+                ['binary', grouped(u32.toString(2).padStart(32, '0')), true],
+                ['unsigned / signed', u32 + ' / ' + (value | 0), true],
+                ['÷10 / ÷100', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2), true],
+            );
+        } else {
+            asNumbers.push(['read as', fmt.label + ', decoded by modpoll from two registers — the bit pattern is not in what it printed']);
+        }
         if (previous !== undefined && previous !== value) {
             asNumbers.push(['since last pass', previous + ' → ' + value + '  (' + (value - previous > 0 ? '+' : '') + (value - previous) + ')', true]);
         }
@@ -2697,72 +2732,13 @@
         return sections;
     }
 
-    /** Everything one register can be read as, for the row that expands on click. */
-    function readingDetail(value, point, previous, fromPlant) {
-        const u16 = value < 0 ? value + 65536 : value;
-        const i16 = value > 32767 ? value - 65536 : value;
-        const bits = (u16 >>> 0).toString(2).padStart(16, '0').replace(/(.{4})(?=.)/g, '$1 ');
-        const chars = [u16 >> 8, u16 & 0xff]
-            .map(code => (code >= 32 && code < 127) ? String.fromCharCode(code) : '·').join('');
-        const rows = [
-            ['raw', String(value)],
-            ['hex', '0x' + (u16 >>> 0).toString(16).toUpperCase().padStart(4, '0')],
-            ['binary', bits],
-            ['unsigned / signed', u16 + ' / ' + i16],
-            ['as two characters', chars],
-            ['×0.1 / ×0.01', (value / 10).toFixed(1) + ' / ' + (value / 100).toFixed(2)],
-        ];
-        if (previous !== undefined && previous !== value) rows.push(['previous pass', previous + ' (changed by ' + (value - previous > 0 ? '+' : '') + (value - previous) + ')']);
-        if (point) {
-            rows.push(['point', point.name]);
-            if (point.group) rows.push(['group', point.group]);
-            rows.push(['datatype', point.datatype + (point.decoded.ok ? ' — table ' + point.decoded.table + ', ' + point.decoded.rawType + (point.decoded.step === 2 ? ', two registers' : '') : '')]);
-            if (point.scaleKey) rows.push(['scale', point.scaleKey + (point.scale.known ? ' (×' + point.scale.factor + ')' : ' — not understood')]);
-            if (point.unit) rows.push(['unit', point.unit]);
-            if (point.rw) rows.push(['access', point.rw === 'rw' ? 'read/write in the list' : 'read only in the list']);
-            if (point.rangeMin !== null || point.rangeMax !== null) {
-                rows.push(['declared range', (point.rangeMin === null ? '…' : point.rangeMin) + ' to ' + (point.rangeMax === null ? '…' : point.rangeMax)]);
-            }
-            rows.push(['addresses', 'list ' + point.addr + ' · protocol ' + point.protocol + ' · modpoll ' + point.ref]);
-        }
-        if (fromPlant && fromPlant.length) {
-            const u16 = value < 0 ? value + 65536 : value;
-            rows.push(['plant parameters', fromPlant.length + ' on this register']);
-            for (const entry of fromPlant) {
-                // A bit parameter is worth showing against the bit it reads, so a
-                // status word can be read off without counting in binary.
-                const bitNote = entry.bit === null ? '' : ' — bit ' + entry.bit + ' is ' + ((u16 >> entry.bit) & 1);
-                rows.push([
-                    entry.bit === null ? 'plant says' : 'bit ' + entry.bit,
-                    entry.name + (entry.plantValue ? ': ' + entry.plantValue : '') +
-                        (entry.unit ? ' ' + entry.unit : '') + bitNote +
-                        (entry.group ? '  [' + entry.group + ']' : ''),
-                ]);
-            }
-            rows.push(['driver_id', fromPlant[0].driverId]);
-            // The plant shows this register scaled, so the two numbers together
-            // say what the scale is — which is the field a point list has to get
-            // right and the one a document most often leaves out.
-            const shown = Number(String(fromPlant[0].plantValue).replace(',', '.'));
-            if (fromPlant[0].bit === null && !Number.isNaN(shown) && value !== 0) {
-                const ratio = shown / value;
-                const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
-                const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
-                rows.push(['implied scale', near
-                    ? '×' + near + ' — the plant shows ' + shown + ' where the register holds ' + value
-                    : 'plant ' + shown + ' ÷ raw ' + value + ' = ' + ratio.toFixed(4) + ', no common scale']);
-            }
-        }
-        return rows;
-    }
-
-    function toggleDetailRow(tr, value, point, previous, fromPlant, table, ref) {
+    function toggleDetailRow(tr, value, point, previous, fromPlant, table, ref, format) {
         const next = tr.nextElementSibling;
         if (next && next.classList.contains('mpc-detail')) { next.remove(); return; }
         for (const open of ui.gridBody.querySelectorAll('tr.mpc-detail')) open.remove();
 
         const box = el('div', { className: 'mpc-detailbox' });
-        for (const section of readingDetailSections(value, point, previous, fromPlant, table, ref)) {
+        for (const section of readingDetailSections(value, point, previous, fromPlant, table, ref, format)) {
             if (section.headline !== undefined) {
                 box.appendChild(el('div', { className: 'mpc-dhead', textContent: section.headline }));
                 box.appendChild(el('div', { className: 'mpc-dlead', textContent: section.lead }));
@@ -2843,7 +2819,7 @@
             tr.addEventListener('click', () => {
                 const command = aimAtRegister({ table: r.table, ref: r.ref, format: '' });
                 log('> ' + command + '   ← ' + (r.name || 'reference ' + r.ref) + ', ready to run');
-                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref);
+                toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref, '');
             });
             frag.appendChild(tr);
         }
@@ -2945,7 +2921,7 @@
                     title: text,
                 })));
             if (row.raw !== undefined) {
-                tr.addEventListener('click', () => toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref));
+                tr.addEventListener('click', () => toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format));
             }
             frag.appendChild(tr);
         }
@@ -3080,7 +3056,7 @@
                 })));
             tr.addEventListener('click', () => {
                 aimAtRegister({ table, ref: v.i, format });
-                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i);
+                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i, format);
             });
             frag.appendChild(tr);
         }
@@ -3120,10 +3096,24 @@
                 if (!parsed.values.length && !parsed.diagnostics.length) {
                     for (const line of parsed.notes.slice(0, 3)) log('  ' + line);
                 }
+                // What the typed command asked for, read off its own tokens, so the
+                // grid, the detail view and the export take the table and the
+                // width from the command instead of assuming a 16-bit holding
+                // register — which put a float's hex in the grid and looked its
+                // names up in the wrong table.
+                const tokens = splitTokens(command);
+                const argOf = flag => { const at = tokens.indexOf(flag); return at >= 0 ? String(tokens[at + 1] || '') : ''; };
+                const [tableArg, formatArg] = argOf('-t').split(':');
+                const hosts = tokens.filter((t, k) => !t.startsWith('-') && !(k > 0 && FLAGS_WITH_VALUE.has(tokens[k - 1])));
                 result = {
                     ok: parsed.values.length > 0 && !parsed.fatal,
                     plant: plantIdFromHost(), at: new Date().toISOString(),
-                    spec: { raw: command },
+                    spec: {
+                        raw: command,
+                        table: /^[0134]$/.test(tableArg) ? tableArg : '4',
+                        format: formatOf(formatArg).value || '16-bit',
+                        mode: argOf('-m') || 'tcp', slave: Number(argOf('-a')) || 1, host: hosts[1] || '',
+                    },
                     values: parsed.values,
                     summary: summarise(parsed.values, parsed.values.length, 0, 1),
                     diagnostics: parsed.diagnostics,
@@ -3142,7 +3132,7 @@
             // Polled an address nobody named? If a unit on this plant answers at
             // that address, its names belong to this reading.
             if (!pointList && !plantNames) {
-                const match = (_unitsCache || []).find(u => u.host && u.host === String(readForm().host).trim());
+                const match = unitAtForm(_unitsCache || [], readForm());
                 if (match) { await loadNamesFor(match.unit_id, true); renderGrid(result); }
             }
             for (const d of result.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : (d.level === 'fatal' || d.level === 'error' ? 'err' : ''));
@@ -3344,14 +3334,27 @@
             }
             log('Loaded ' + units.length + ' units', 'ok');
             // If the form already points at one of them, that is the unit in hand.
-            const host = String(ui.host.value || '').trim();
-            const current = host && units.find(u => u.host === host);
+            const current = unitAtForm(units, readForm());
             if (current && !ui.units.value) { ui.units.value = current.unit_id; loadNamesFor(current.unit_id); }
         } catch (e) {
             log('ERROR: ' + e.message, 'err');
         } finally {
             ui.units.disabled = false;
         }
+    }
+
+    /**
+     * The unit the form is pointed at. Several units can share a host — a TCP
+     * gateway carries one per slave — so the slave decides between them, and the
+     * host alone is trusted only when it names exactly one unit. Matching on the
+     * host alone attached the first unit's names to whichever slave was polled.
+     */
+    function unitAtForm(units, form) {
+        const host = String(form.host || '').trim();
+        if (!host) return null;
+        const atHost = units.filter(u => u.host && u.host === host);
+        const slave = Number(form.slave) || 1;
+        return atHost.find(u => Number(u.slave) === slave) || (atHost.length === 1 ? atHost[0] : null);
     }
 
     function applyUnit(unitId) {
