@@ -64,6 +64,28 @@ rebuilt.
   measurement that held still — half of what deciding a datatype needs, for a
   few seconds of polling. The grid shows the second read beside the first,
   what moved first.
+- **Judges the width, proves it on the wire, and sets the form.** Reading a
+  float map as 16-bit registers prints the halves of every number, so the
+  scan ends by judging what each region holds. Every aligned pair of
+  registers is decoded both ways from the values already read: a region of
+  floats decodes plausibly in one word order at one alignment and badly in the
+  other three, a region of 16-bit values badly in all four. Where the unit's
+  names are loaded the plant's own displayed values settle it — a value a pair
+  decodes to is a 32-bit point, a value the register's own scale explains is
+  not — and since any two words make *some* integer, a 32-bit integer verdict
+  only ever comes from the plant. A region holding both kinds is called
+  *mixed*, and the export's per-row decoding is the finer answer. For the
+  best float region the console then reads a few pairs as floats with `-f`
+  and without, and whichever read prints the numbers the words decode to says
+  what the flag means on this plant — measured, not taken from a manual —
+  while proving the region on the wire. Then the form is set: the table
+  holding the most values, its densest run of them — small gaps bridged,
+  empty stretches left out, since a strict device would refuse those block by
+  block — at that width, word order, start and count, with the reasons in the
+  log, so *Run* is the next click and prints the numbers rather than the
+  halves of them. The grid shows the
+  decoded 32-bit value beside each pair, and clicking a row in a 32-bit
+  region aims the command at the pair, as a float or an integer.
 - **Shows progress the whole time.** Plant Term hands output back as it
   arrives, and the console reads it as it arrives: a chained line of probes
   ticks on every marker the shell reaches — one refusal at a time, about
@@ -377,18 +399,24 @@ quietly stop being the thing under test.
 - `python test/scan-simulation.py` — *Scan device* against simulated devices, in
   Node, with Plant Term replaced by a device model: a strict one that refuses a
   block touching anything unmapped, a lenient one that answers 0 for whatever is
-  not mapped, and a strict one whose map starts at protocol address 1000. Two
-  of them carry live registers that never answer the same twice, which the
-  second read has to catch and nothing else may. The scan as committed at HEAD
-  runs on the same maps (`--old-ref` picks another), so a change is measured
-  against what it replaces: what each finds, what each misses, what each tells
-  apart, and what each costs in modpoll runs and refusals.
+  not mapped, a strict one whose map starts at protocol address 1000, and a
+  strict one whose whole map is floats. Two of them carry live registers that
+  never answer the same twice, which the second read has to catch and nothing
+  else may; three carry float maps, high word first and low, whose width and
+  order the verdict has to name and the wire check has to prove, and each
+  declares the poll the form should end up set to. The scan as committed at
+  HEAD runs on the same maps (`--old-ref` picks another), so a change is
+  measured against what it replaces: what each finds, what each misses, what
+  each tells apart, what each judges, and what each costs in modpoll runs and
+  refusals.
 - `python test/export-check.py` — *Save JSON* with a scan in hand and no poll,
   against a unit whose parameters cover the shapes a list has to get right: a
   scaled 16-bit register, a float over two registers, a 32-bit counter, a status
   word read by bits, a negative writable setpoint, a register that moved between
-  the two reads, and parameters on registers the scan did not find. Twenty-four
-  expectations, each printed PASS or FAIL; exits non-zero on any FAIL.
+  the two reads, parameters on registers the scan did not find, and a scan that
+  judged one region mixed and proved another to be floats on the wire.
+  Twenty-nine expectations, each printed PASS or FAIL; exits non-zero on any
+  FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the

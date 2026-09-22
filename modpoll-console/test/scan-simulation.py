@@ -51,15 +51,42 @@ def bundle(src, label):
             COST.invocations++;
             const tokens = splitTokens(segment);
             const arg = flag => { const at = tokens.indexOf(flag); return at >= 0 ? tokens[at + 1] : undefined; };
-            const table = String(arg('-t') || '4').split(':')[0];
+            const [table, fmt] = String(arg('-t') || '4').split(':');
             const ref = Number(arg('-r') || 1);
             const count = Number(arg('-c') || 1);
-            const answer = DEVICE.read(table, ref, count);
+            const wide = fmt === 'float' || fmt === 'int';
+            const answer = DEVICE.read(table, ref, wide ? count * 2 : count);
             if (answer === null) { COST.refusals++; out.push('Illegal Data Address exception response!'); continue; }
-            answer.forEach((v, n) => out.push('[' + (ref + n) + ']: ' + v));
+            if (!wide) { answer.forEach((v, n) => out.push('[' + (ref + n) + ']: ' + v)); continue; }
+            // 32-bit, as the plants' modpoll prints it: one line per value, two
+            // registers each, and the high word first only with -f / -i — the
+            // documented meaning, which the console measures rather than trusts.
+            const big = tokens.indexOf('-f') >= 0 || tokens.indexOf('-i') >= 0;
+            const view = new DataView(new ArrayBuffer(4));
+            const word = v => ((v < 0 ? v + 65536 : v) & 0xFFFF);
+            for (let n = 0; n + 1 < answer.length; n += 2) {
+                const [hi, lo] = big ? [answer[n], answer[n + 1]] : [answer[n + 1], answer[n]];
+                view.setUint16(0, word(hi));
+                view.setUint16(2, word(lo));
+                out.push('[' + (ref + n) + ']: ' + (fmt === 'float' ? view.getFloat32(0).toFixed(6) : String(view.getInt32(0))));
+            }
         }
         return out.join('\n');
     }
+    // A float as the two 16-bit words modpoll prints for its registers, signed
+    // as modpoll prints them; and a map of registers holding a run of floats.
+    const floatWords = (x, highFirst) => {
+        const view = new DataView(new ArrayBuffer(4));
+        view.setFloat32(0, x);
+        const hi = view.getInt16(0), lo = view.getInt16(2);
+        return highFirst ? [hi, lo] : [lo, hi];
+    };
+    const floatMap = (from, values, highFirst) => {
+        const m = new Map();
+        values.forEach((x, n) => { const [a, b] = floatWords(x, highFirst); m.set(from + 2 * n, a); m.set(from + 2 * n + 1, b); });
+        return m;
+    };
+    const series = (n, first, step) => Array.from({ length: n }, (_, k) => first + k * step);
 """
     js += lift(src, "    let abortRequested = false;", "    /*\n     * What an agent needs to improve a point list")
     js += lift(src, "    const SWEEP_CEILING", "    /** The same result, shrunk")
@@ -70,26 +97,46 @@ def bundle(src, label):
     // anything unmapped, on every reference modpoll can ask for. A live
     // register counts the device's reads, so it never answers the same twice —
     // what the second pass over everything found has to notice.
+    // A strict device's registers: bits in the bit tables, a live counter
+    // where one is declared, the words of a float where a float map is, and
+    // the reference itself everywhere else.
+    function strictRead(table, ref, count) {
+        this.reads++;
+        const map = this.maps[table];
+        const floats = this.floats && this.floats[table];
+        const values = [];
+        for (let r = ref; r < ref + count; r++) {
+            if (!map.has(r)) return null;
+            const live = this.live && this.live[table] && this.live[table].has(r);
+            values.push(table === '0' || table === '1' ? (r % 2) : (live ? r + this.reads : (floats && floats.has(r) ? floats.get(r) : r)));
+        }
+        return values;
+    }
     const devices = {
         'strict, three areas and a hole': {
-            maps: { '4': expand([[1, 50], [1001, 1049], [1051, 1100], [8192, 8200]]), '3': new Set(), '1': new Set(), '0': expand([[1, 16]]) },
+            maps: { '4': expand([[1, 50], [1001, 1049], [1051, 1100], [8192, 8200]]), '3': expand([[2001, 2040]]), '1': new Set(), '0': expand([[1, 16]]) },
             live: { '4': new Set([1010, 8195]) },
+            // Twenty floats, high word first, on the input registers.
+            floats: { '3': floatMap(2001, series(20, 20.5, 0.25), true) },
+            expectFormats: { '3|2001': 'float32, high word first', '4|1': '16-bit', '4|1001': '16-bit', '4|8192': '16-bit' },
+            expectForm: '-t 4 -r 1001 -c 100',
             reads: 0,
-            read(table, ref, count) {
-                this.reads++;
-                const map = this.maps[table];
-                const values = [];
-                for (let r = ref; r < ref + count; r++) {
-                    if (!map.has(r)) return null;
-                    const live = this.live[table] && this.live[table].has(r);
-                    values.push(table === '0' || table === '1' ? (r % 2) : (live ? r + this.reads : r));
-                }
-                return values;
-            },
+            read: strictRead,
+        },
+        'strict, a float map': {
+            maps: { '4': expand([[1001, 1200]]), '3': new Set(), '1': new Set(), '0': new Set() },
+            // A hundred floats, high word first: the whole map is 32-bit.
+            floats: { '4': floatMap(1001, series(100, 100, 1.5), true) },
+            expectFormats: { '4|1001': 'float32, high word first' },
+            expectForm: '-t 4:float -f -r 1001 -c 100',
+            reads: 0,
+            read: strictRead,
         },
         'lenient, values at 1-300, zeros elsewhere': {
             maps: { '4': expand([[1, 300]]), '3': new Set(), '1': new Set(), '0': new Set() },
             live: { '4': new Set([7]) },
+            expectFormats: { '4|1': '16-bit' },
+            expectForm: '-t 4 -r 1 -c 300',
             reads: 0,
             read(table, ref, count) {
                 this.reads++;
@@ -102,12 +149,13 @@ def bundle(src, label):
         },
         'strict, one map starting at protocol 1000': {
             maps: { '4': expand([[1001, 1120]]), '3': expand([[1001, 1040]]), '1': new Set(), '0': new Set() },
-            read(table, ref, count) {
-                const map = this.maps[table];
-                const values = [];
-                for (let r = ref; r < ref + count; r++) { if (!map.has(r)) return null; values.push(r); }
-                return values;
-            },
+            // Twenty floats, low word first, on the input registers — the
+            // other order, which the wire check has to tell apart.
+            floats: { '3': floatMap(1001, series(20, -5, 2.5), false) },
+            expectFormats: { '4|1001': '16-bit', '3|1001': 'float32, low word first' },
+            expectForm: '-t 4 -r 1001 -c 120',
+            reads: 0,
+            read: strictRead,
         },
     };
     const lines = [];
@@ -169,6 +217,33 @@ def bundle(src, label):
                 (!missed.length && !spurious.length ? ' — every live register and nothing else' : ''));
         } else {
             lines.push('  reread: none (this scan read everything once)' + (liveExpected.length ? ' — ' + liveExpected.length + ' live register(s) not told apart' : ''));
+        }
+        // The width verdicts, against what each map was built to hold; the
+        // measured meaning of -f; and the poll the form is set to.
+        if (report.formats) {
+            const verdicts = [];
+            const wrong = [];
+            for (const table of Object.keys(report.formats)) {
+                for (const r of report.formats[table].regions) {
+                    const said = r.format + (r.wordOrder && r.format !== '16-bit' ? ', ' + r.wordOrder : '');
+                    const want = (device.expectFormats || {})[table + '|' + r.from];
+                    verdicts.push('table ' + table + ' ' + r.from + '-' + r.to + ': ' + said + ' (' + r.confidence +
+                        (r.pairs ? ', ' + r.pairs.plausible + '/' + r.pairs.tested + ' float pairs' : '') + ')');
+                    if (want && want !== said) wrong.push('table ' + table + ' from ' + r.from + ' expected ' + want + ', got ' + said);
+                }
+            }
+            lines.push('  formats: ' + (verdicts.join('; ') || 'no regions') + (wrong.length ? ' — WRONG: ' + wrong.join('; ') : ''));
+            if (report.modpoll) {
+                lines.push('  modpoll -f: ' + (report.modpoll.measured
+                    ? report.modpoll.bigEndianFlag + ' — measured on table ' + report.modpoll.table + ' from ' + report.modpoll.ref + ', ' + report.modpoll.compared + ' pair(s) compared'
+                    : 'not measured' + (report.modpoll.error ? ' (' + report.modpoll.error + ')' : '')));
+            }
+            const s = report.suggestedSpec;
+            const form = s ? '-t ' + s.table + (s.format ? ':' + s.format : '') + (s.bigEndian ? ' ' + (s.format === 'float' ? '-f' : '-i') : '') + ' -r ' + s.start + ' -c ' + s.count : 'none';
+            lines.push('  form: ' + form + (s && s.assumedFlag ? ' (flag assumed)' : '') +
+                (device.expectForm && device.expectForm !== form ? ' — WRONG: expected ' + device.expectForm : (device.expectForm ? ' — as expected' : '')));
+        } else {
+            lines.push('  formats: none (this scan did not judge widths)');
         }
         lines.push('  cost: ' + COST.lines + ' shell lines, ' + COST.invocations + ' modpoll runs, ' + COST.refusals + ' refusals, ' + (Date.now() - started) + ' ms of simulation');
     }

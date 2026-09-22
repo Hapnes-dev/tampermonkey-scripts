@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.43.0
+// @version      1.44.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.43.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.44.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1056,7 +1056,7 @@
          * last few hundredths. Every fraction is monotone, and none is 1 before
          * the scan is.
          */
-        const SWEEP_FROM = 0.3, SWEEP_TO = 0.94;
+        const SWEEP_FROM = 0.3, SWEEP_TO = 0.92;
         const tell = (fraction, text, extra) => { if (onProgress) onProgress(Object.assign({ fraction, text }, extra || {})); };
         const tableLabel = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
 
@@ -1233,12 +1233,38 @@
             // only what answered is asked, in its own runs, so nothing is refused.
             if (report.values.length && !abortRequested) {
                 report.reread = await rereadFound(spec, report.values, (done, total, t) =>
-                    tell(SWEEP_TO + (1 - SWEEP_TO) * (done / Math.max(1, total)),
+                    tell(SWEEP_TO + 0.06 * (done / Math.max(1, total)),
                         'Reading every found register again — run ' + Math.min(done + 1, total) + ' of ' + total +
                             (t && t.changed ? ', ' + t.changed + ' changed so far' : ''),
                         { phase: 'reread', partial: !!(t && t.partial) }));
                 report.reread.secondsAfterStart = Math.round((performance.now() - started) / 1000);
             }
+
+            // Then judge what each region holds, prove the word order on the
+            // wire where a region reads as floats, and say what the form
+            // should poll — so Run, straight after this, gets the numbers out.
+            report.formats = judgeFormats(report);
+            const floatRegions = [];
+            for (const table of Object.keys(report.formats)) {
+                for (const r of report.formats[table].regions) if (r.format === 'float32') floatRegions.push({ table, verdict: r });
+            }
+            if (floatRegions.length && !abortRequested) {
+                floatRegions.sort((a, b) => b.verdict.pairs.plausible - a.verdict.pairs.plausible);
+                const best = floatRegions[0];
+                const vals = new Map(report.values.filter(v => v.table === best.table).map(v => [v.i, v.v]));
+                try {
+                    report.modpoll = await checkWordOrderOnWire(spec, best.table, best.verdict, vals, bigEndian =>
+                        tell(bigEndian ? 0.98 : 0.99, 'Reading ' + tableLabel(best.table) + ' from ' + best.verdict.alignStart + ' as floats ' +
+                            (bigEndian ? 'with -f' : 'without -f') + ' to settle the word order', { phase: 'format' }));
+                } catch (e) {
+                    report.modpoll = { bigEndianFlag: null, measured: false, error: e.message };
+                }
+                if (report.modpoll && report.modpoll.matchedInOrder) {
+                    best.verdict.confidence = 'wire';
+                    best.verdict.evidence += '; a float read printed the same numbers';
+                }
+            }
+            report.suggestedSpec = suggestSpec(report);
         }
         report.elapsedMs = Math.round(performance.now() - started);
         tell(1, abortRequested ? 'Scan stopped' : 'Scan complete', { phase: 'done' });
@@ -1289,15 +1315,6 @@
         return parts.join(',');
     }
 
-    function impliedScale(raw, shown) {
-        const value = Number(String(shown).replace(',', '.'));
-        if (!raw || Number.isNaN(value) || value === 0) return null;
-        const ratio = value / raw;
-        const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
-        const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
-        return near ? 'x' + near : null;
-    }
-
     /*
      * Two 16-bit registers read as one 32-bit value, every way a driver could:
      * high word first — modbusgen's `_N`, modpoll's -i/-f — and low word first,
@@ -1327,6 +1344,15 @@
         const size = Math.abs(x);
         if (size < 1e-3 || size >= 1e6) return false;
         return Math.abs(x - Number(x.toPrecision(5))) <= size * 2e-6;
+    }
+
+    function impliedScale(raw, shown) {
+        const value = Number(String(shown).replace(',', '.'));
+        if (!raw || Number.isNaN(value) || value === 0) return null;
+        const ratio = value / raw;
+        const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
+        const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
+        return near ? 'x' + near : null;
     }
 
     /** How many decimals a displayed number states: "21,5" one, "850" none. */
@@ -1400,6 +1426,12 @@
         if (float) return float;
         const unsigned = confirmed.find(w => w.as === 'uint32' && confirmed.some(o => o.as === 'int32' && o.wordOrder === w.wordOrder && o.value === w.value));
         return unsigned || confirmed[0];
+    }
+
+    /** The scan's verdict for the region one register sits in, if the scan judged any. */
+    function scanRegionAt(report, table, ref) {
+        const regions = (report && report.formats && report.formats[table] && report.formats[table].regions) || [];
+        return regions.find(r => ref >= r.from && ref <= r.to) || null;
     }
 
     /**
@@ -1684,6 +1716,29 @@
             }
             const suggest = suggestPoint(rowTable, r.addr, r.raw, fromPlant, wideFound, !!v.changed);
             if (suggest) out.suggest = suggest;
+            // The scan's verdict for the region this register sits in — and, for
+            // a register with no plant parameter at the start of a pair in a
+            // region the plant or the wire proved 32-bit, the datatype that
+            // verdict alone implies. No name, no scale, no access: those need
+            // the plant or the document.
+            const region = withDelta ? null : scanRegionAt(lastScan, rowTable, v.i);
+            if (region && region.format !== '16-bit') {
+                out.regionFormat = region.format + (region.wordOrder ? ', ' + region.wordOrder : '') + ' (' + region.confidence + ')';
+                const wideRegion = region.format === 'float32' || region.format === 'int32' || region.format === 'uint32';
+                const aligned = (v.i - region.alignStart) % 2 === 0;
+                if (!out.suggest && wideRegion && aligned && (region.confidence === 'wire' || region.confidence === 'plant')) {
+                    const family = rowTable === '4' ? 'Hold' : 'Input';
+                    const rawType = region.format === 'float32' ? 'F' : (region.format === 'int32' ? 'I32' : 'U32');
+                    out.suggest = {
+                        addr: r.addr,
+                        datatype: (region.format === 'float32' ? 'A_' : 'I_') + family + '_' + rawType + (region.wordOrder === 'low word first' ? '_W' : '_N'),
+                        basis: [
+                            'region ' + region.from + '-' + region.to + ' reads as ' + region.format + ', ' + region.wordOrder + ' (' + region.confidence + '): ' + region.evidence,
+                            'no plant parameter on this register — name, scale and access are not known from here',
+                        ],
+                    };
+                }
+            }
 
             // Where two sides disagree. Observations, not conclusions.
             const notes = [];
@@ -1867,6 +1922,11 @@
                     'shipped datatypes table, scale key, unit, rw, group, addr — with basis stating every inference behind it. ' +
                     'plant[].reads is the state of that bit in the register as read. Check suggest against the vendor document; ' +
                     'it is what the plant and the device showed, not what the device is.',
+                'scan.formats: per table and region, whether it holds 16-bit or 32-bit values and in which word order — judged ' +
+                    'from the bits (pattern), settled by the plant\'s displayed values (plant), or proved by a float read that ' +
+                    'printed the same numbers (wire); mixed means both kinds, see each row\'s wide. scan.modpoll says what -f/-i ' +
+                    'produce on this plant, measured. scan.suggestedSpec is the poll the console set the form to afterwards. ' +
+                    'regionFormat on a row names its region\'s verdict; a suggest without a name comes from that verdict alone.',
                 'plantParameters: every parameter IWMAC holds for this unit that is not already on a readings or scanReadings row; ' +
                     'those two sections plus this one are the whole unit. driverId ends in _0_<function>_<protocol address>[.<bit>]: ' +
                     'function 1 reads coils (table 0), 2 discrete inputs (table 1), 3 holding registers (table 4), 4 input ' +
@@ -1917,6 +1977,7 @@
             scan: lastScan ? {
                 at: lastScan.at, host: lastScan.host, slave: lastScan.slave, elapsedMs: lastScan.elapsedMs || null,
                 tables: lastScan.tables, sweep: lastScan.sweep || null, reread: lastScan.reread || null,
+                formats: lastScan.formats || null, modpoll: lastScan.modpoll || null, suggestedSpec: lastScan.suggestedSpec || null,
             } : null,
             verification: verification ? {
                 at: verification.at, device: verification.device, list: verification.list, summary: verification.summary,
@@ -2313,6 +2374,229 @@
             elapsedMs: Math.round(performance.now() - startedAt),
             stopped: abortRequested,
         };
+    }
+
+    /*
+     * What a region holds — 16-bit values, or 32-bit ones, and in which word
+     * order — judged from the values already read, without touching the wire.
+     * Every aligned pair is decoded both ways: a region of floats decodes
+     * plausibly in one order at one alignment and badly in the other three,
+     * while a region of 16-bit values decodes badly in all four. The plant's
+     * own displayed values, when the unit's names are loaded, settle it
+     * outright: a value a pair decodes to is a 32-bit point, a value the
+     * register's own scale explains is a 16-bit one. Integers cannot be told
+     * from the bits — any two words make some integer — so a 32-bit integer
+     * verdict only ever comes from the plant. A verdict is per region, and a
+     * region can hold both kinds; then it is called mixed, and the export's
+     * per-row decoding is the finer answer.
+     */
+    function judgeFormats(report) {
+        const formats = {};
+        for (const table of Object.keys(report.sweep || {})) {
+            const vals = new Map();
+            for (const v of report.values || []) if (v.table === table) vals.set(v.i, v.v);
+            formats[table] = { regions: [] };
+            for (const region of report.sweep[table].regions || []) {
+                if (region.first === null || region.first === undefined) continue;
+                formats[table].regions.push(Object.assign({ from: region.first, to: region.last }, judgeRegion(table, region.first, region.last, vals)));
+            }
+        }
+        return formats;
+    }
+
+    function judgeRegion(table, first, last, vals) {
+        if (table === '0' || table === '1') {
+            return { format: '16-bit', wordOrder: null, alignStart: first, confidence: 'table', pairs: null, plant: null, evidence: 'a bit table' };
+        }
+        // What the plant says, register by register, where its names are loaded.
+        const plant = { confirmed16: 0, confirmed32: {}, refs32: [] };
+        const shownAt = ref => {
+            try {
+                const entries = typeof plantNamesFor === 'function' ? plantNamesFor(table, '', ref) : null;
+                const e = entries && entries[0];
+                return e && e.bit === null ? e.plantValue : null;
+            } catch (e) { return null; }
+        };
+        for (let r = first; r <= last; r++) {
+            if (!vals.has(r)) continue;
+            const shown = shownAt(r);
+            if (shown === null || shown === undefined || shown === '') continue;
+            if (impliedScale(vals.get(r), shown)) { plant.confirmed16++; continue; }
+            if (!vals.has(r + 1)) continue;
+            const wide = pickWide(wideReading(vals.get(r), vals.get(r + 1), shown));
+            if (!wide) continue;
+            const key = wide.as + '|' + wide.wordOrder;
+            plant.confirmed32[key] = (plant.confirmed32[key] || 0) + 1;
+            plant.refs32.push({ ref: r, as: wide.as, wordOrder: wide.wordOrder });
+        }
+        // What the bits say: every alignment and order, floats only.
+        const trials = [];
+        for (const align of [0, 1]) {
+            for (const [wordOrder, key] of [['high word first', 'highFirst'], ['low word first', 'lowFirst']]) {
+                let plausible = 0, tested = 0;
+                for (let r = first + align; r + 1 <= last; r += 2) {
+                    if (!vals.has(r) || !vals.has(r + 1)) continue;
+                    const a = vals.get(r), b = vals.get(r + 1);
+                    if (a === 0 && b === 0) continue;
+                    tested++;
+                    if (plausibleFloat(decodePair(a, b)[key].float)) plausible++;
+                }
+                trials.push({ align, wordOrder, plausible, tested, score: tested ? plausible / tested : 0 });
+            }
+        }
+        trials.sort((x, y) => (y.plausible - x.plausible) || (y.score - x.score));
+        const best = trials[0];
+        const pairs = { plausible: best.plausible, tested: best.tested, wordOrder: best.wordOrder, alignStart: first + best.align };
+        const s = n => (n === 1 ? '' : 's');
+        const floats = best.plausible + ' of ' + best.tested + ' pair' + s(best.tested) + ' from ' + (first + best.align) + ' read as floats, ' + best.wordOrder;
+
+        const total32 = Object.values(plant.confirmed32).reduce((sum, n) => sum + n, 0);
+        if (total32 && !plant.confirmed16) {
+            // The plant confirms 32-bit points and nothing 16-bit: its word.
+            const top = Object.keys(plant.confirmed32).sort((x, y) => plant.confirmed32[y] - plant.confirmed32[x])[0];
+            const [as, wordOrder] = top.split('|');
+            const refs = plant.refs32.filter(p => p.as === as && p.wordOrder === wordOrder).map(p => p.ref);
+            const even = refs.filter(r => (r - first) % 2 === 0).length;
+            return {
+                format: as, wordOrder, alignStart: first + (even >= refs.length / 2 ? 0 : 1), confidence: 'plant', pairs, plant,
+                evidence: 'the plant shows ' + plant.confirmed32[top] + ' value' + s(plant.confirmed32[top]) + ' that a pair of registers decodes to as ' + as + ', ' + wordOrder +
+                    (best.plausible ? '; ' + floats : ''),
+            };
+        }
+        if (total32 && plant.confirmed16) {
+            return {
+                format: 'mixed', wordOrder: best.wordOrder, alignStart: first + best.align, confidence: 'plant', pairs, plant,
+                evidence: 'the plant reads ' + plant.confirmed16 + ' register' + s(plant.confirmed16) + ' here at a 16-bit scale and ' + total32 + ' pair' + s(total32) + ' as 32-bit — see each row',
+            };
+        }
+        if (plant.confirmed16 && best.score < 0.6) {
+            return {
+                format: '16-bit', wordOrder: null, alignStart: first, confidence: 'plant', pairs, plant,
+                evidence: 'the plant shows ' + plant.confirmed16 + ' register' + s(plant.confirmed16) + ' here at a 16-bit scale' + (best.plausible ? '; ' + best.plausible + ' pair' + s(best.plausible) + ' would read as floats' : ''),
+            };
+        }
+        if (best.plausible >= 3 && best.score >= 0.6) {
+            return {
+                format: 'float32', wordOrder: best.wordOrder, alignStart: first + best.align, confidence: 'pattern', pairs, plant,
+                evidence: floats + (plant.confirmed16 ? ' — but the plant shows ' + plant.confirmed16 + ' register' + s(plant.confirmed16) + ' at a 16-bit scale' : ''),
+            };
+        }
+        if (best.plausible >= 2 && best.score >= 0.3) {
+            return {
+                format: 'mixed', wordOrder: best.wordOrder, alignStart: first + best.align, confidence: 'pattern', pairs, plant,
+                evidence: floats + ' — some 32-bit values among 16-bit ones, or coincidence; see each row',
+            };
+        }
+        return {
+            format: '16-bit', wordOrder: null, alignStart: first, confidence: 'pattern', pairs, plant,
+            evidence: best.plausible ? best.plausible + ' of ' + best.tested + ' pair' + s(best.tested) + ' would read as floats, too few for a float map' : 'no pair of registers reads as a float',
+        };
+    }
+
+    /*
+     * Which word order modpoll's -f produces on this plant, measured rather
+     * than assumed: the first few pairs of a float region are read as floats
+     * with the flag and without, and whichever read prints the numbers the
+     * words decode to says what the flag means. Two short reads. The same
+     * pass proves the region on the wire — the printed floats are the ones
+     * the console decoded, so polling it that way is what gets the values out.
+     */
+    async function checkWordOrderOnWire(spec, table, verdict, vals, onProgress) {
+        const pairs = [];
+        for (let r = verdict.alignStart; pairs.length < 4 && r + 1 <= verdict.to; r += 2) {
+            if (!vals.has(r) || !vals.has(r + 1)) break;
+            pairs.push({ ref: r, d: decodePair(vals.get(r), vals.get(r + 1)) });
+        }
+        if (!pairs.length) return null;
+        const readAs = async bigEndian => {
+            if (onProgress) onProgress(bigEndian);
+            const result = await readRegisters(Object.assign({}, spec, {
+                table, format: 'float', bigEndian, base: 'printed', start: pairs[0].ref, count: pairs.length, recover: false,
+            }));
+            return new Map(result.values.map(v => [v.i, v.v]));
+        };
+        const withFlag = await readAs(true);
+        const without = await readAs(false);
+        const near = (x, y) => typeof x === 'number' && Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= Math.max(Math.abs(y) * 1e-4, 1e-5);
+        const hits = { flagHigh: 0, flagLow: 0, plainHigh: 0, plainLow: 0 };
+        let compared = 0;
+        for (const p of pairs) {
+            const high = p.d.highFirst.float, low = p.d.lowFirst.float;
+            if (!plausibleFloat(high) && !plausibleFloat(low)) continue;
+            compared++;
+            if (near(withFlag.get(p.ref), high)) hits.flagHigh++;
+            if (near(withFlag.get(p.ref), low)) hits.flagLow++;
+            if (near(without.get(p.ref), high)) hits.plainHigh++;
+            if (near(without.get(p.ref), low)) hits.plainLow++;
+        }
+        let bigEndianFlag = null;
+        if (hits.flagHigh && !hits.flagLow) bigEndianFlag = 'high word first';
+        else if (hits.flagLow && !hits.flagHigh) bigEndianFlag = 'low word first';
+        else if (hits.plainLow && !hits.plainHigh) bigEndianFlag = 'high word first';
+        else if (hits.plainHigh && !hits.plainLow) bigEndianFlag = 'low word first';
+        // Did a float read, in the region's own order, print what the words decode to?
+        const matchedInOrder = verdict.wordOrder === 'high word first' ? Math.max(hits.flagHigh, hits.plainHigh) : Math.max(hits.flagLow, hits.plainLow);
+        return {
+            bigEndianFlag, measured: bigEndianFlag !== null, table, ref: pairs[0].ref, pairs: pairs.length, compared, matchedInOrder,
+            printedWithFlag: pairs.map(p => (withFlag.has(p.ref) ? withFlag.get(p.ref) : null)),
+            printedWithout: pairs.map(p => (without.has(p.ref) ? without.get(p.ref) : null)),
+        };
+    }
+
+    /*
+     * The poll to set the form to once a scan is done: the table holding the
+     * most values, its densest run of them — values in a row, small gaps
+     * bridged, rather than a whole region with its empty stretches, which on
+     * a strict device would be refused block by block — read at the width and
+     * word order the region was judged to have. So Run, straight after Scan
+     * device, prints the numbers rather than the halves of them.
+     */
+    function suggestSpec(report) {
+        const sweep = report.sweep || {};
+        const tables = Object.keys(sweep).filter(t => sweep[t].answered > 0);
+        if (!tables.length) return null;
+        tables.sort((a, b) => (sweep[b].nonZero - sweep[a].nonZero) || (SCAN_TABLES.indexOf(a) - SCAN_TABLES.indexOf(b)));
+        const table = tables[0];
+        const values = (report.values || []).filter(v => v.table === table);
+        let refs = values.filter(v => v.v !== 0).map(v => v.i);
+        if (!refs.length) refs = values.map(v => v.i);
+        refs.sort((a, b) => a - b);
+        // Runs of values, a gap of up to eight registers bridged — the same
+        // bridging a verification uses, and enough for a float's zero low
+        // words and the odd reserved register.
+        const runs = [];
+        let run = null;
+        for (const ref of refs) {
+            if (run && ref - run.last <= 9) { run.last = ref; run.count++; }
+            else { run = { first: ref, last: ref, count: 1 }; runs.push(run); }
+        }
+        runs.sort((a, b) => (b.count - a.count) || (a.first - b.first));
+        const best = runs[0];
+        if (!best) return null;
+        const verdict = ((report.formats && report.formats[table] && report.formats[table].regions) || [])
+            .find(r => best.first >= r.from && best.first <= r.to) || { format: '16-bit' };
+        const wide = verdict.format === 'float32' || verdict.format === 'int32' || verdict.format === 'uint32';
+        const format = verdict.format === 'float32' ? 'float' : (wide ? 'int' : '');
+        const measured = !!(report.modpoll && report.modpoll.measured);
+        const flagMeans = measured ? report.modpoll.bigEndianFlag : 'high word first';
+        // A 32-bit read starts on a pair boundary and ends on one.
+        let start = best.first;
+        let end = best.last;
+        if (wide) {
+            start = best.first > verdict.alignStart ? verdict.alignStart + Math.ceil((best.first - verdict.alignStart) / 2) * 2 : verdict.alignStart;
+            if ((end - start + 1) % 2) end++;
+        }
+        const registers = Math.max(1, end - start + 1);
+        const count = wide ? Math.max(1, Math.min(990, Math.floor(registers / 2))) : Math.min(1980, registers);
+        const label = (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
+        const why = [
+            label + ' holds the most values (' + sweep[table].nonZero + ')',
+            'references ' + best.first + '-' + best.last + ' hold ' + best.count + ' of them in a row' + (runs.length > 1 ? ', the densest of ' + runs.length + ' runs' : ''),
+            wide ? verdict.format + ', ' + verdict.wordOrder + ' — ' + verdict.evidence
+                : 'read as 16-bit — ' + (verdict.evidence || 'no verdict on the width'),
+        ];
+        if (wide) why.push(measured ? 'modpoll\'s -f/-i flag gives ' + flagMeans + ' on this plant, measured' : 'modpoll\'s -f/-i flag assumed to give high word first — not measured');
+        return { table, format, bigEndian: wide && verdict.wordOrder === flagMeans, base: 'printed', start, count, assumedFlag: wide && !measured, why };
     }
 
     /** The same result, shrunk for a caller that pays by the token. */
@@ -3970,16 +4254,31 @@
     }
 
     const SCAN_COLUMNS = [
-        { label: 'table', width: '12%', title: 'Which table the register lives in' },
-        { label: 'ref', width: '7%', title: "modpoll's 1-based reference" },
-        { label: 'addr', width: '7%', title: 'Protocol address' },
-        { label: 'name', width: '30%', align: 'left', title: 'From the plant database or the loaded list' },
-        { label: 'value', width: '9%', title: 'What the register held during the sweep' },
-        { label: '2nd read', width: '9%', title: 'The same register read again once the sweep was done — a value that moved is being measured' },
-        { label: 'shown', width: '11%', title: 'What the plant makes of it' },
-        { label: 'unit', width: '6%' },
+        { label: 'table', width: '11%', title: 'Which table the register lives in' },
+        { label: 'ref', width: '6%', title: "modpoll's 1-based reference" },
+        { label: 'addr', width: '6%', title: 'Protocol address' },
+        { label: 'name', width: '27%', align: 'left', title: 'From the plant database or the loaded list' },
+        { label: 'value', width: '8%', title: 'What the register held during the sweep' },
+        { label: '2nd read', width: '8%', title: 'The same register read again once the sweep was done — a value that moved is being measured' },
+        { label: 'as 32-bit', width: '10%', title: 'In a region judged to hold 32-bit values: this register and the next decoded as one, in the region\'s word order; ↑ marks the second half of a pair' },
+        { label: 'shown', width: '10%', title: 'What the plant makes of it' },
+        { label: 'unit', width: '5%' },
         { label: 'where from', width: '9%', align: 'left' },
     ];
+
+    /** What a scanned register decodes to inside its region's verdict, if that verdict is 32-bit. */
+    function decodedInRegion(report, table, ref, raw, nextRaw) {
+        const region = scanRegionAt(report, table, ref);
+        if (!region || region.format === '16-bit') return { region, text: '', aligned: true };
+        const aligned = (ref - region.alignStart) % 2 === 0;
+        if (!aligned) return { region, text: '↑', aligned };
+        if (typeof nextRaw !== 'number') return { region, text: '', aligned };
+        const d = decodePair(raw, nextRaw)[region.wordOrder === 'low word first' ? 'lowFirst' : 'highFirst'];
+        if (region.format === 'int32') return { region, text: String(d.int32), aligned };
+        if (region.format === 'uint32') return { region, text: String(d.uint32), aligned };
+        // float32, or mixed: the float where it is one, a question mark where it is not.
+        return { region, text: plausibleFloat(d.float) ? String(roundScaled(d.float, 4)) : (region.format === 'float32' ? '?' : ''), aligned };
+    }
 
     /** Everything a scan found, most interesting first: the registers holding data. */
     function renderScan(report) {
@@ -4001,9 +4300,12 @@
         const onlyNonZero = ui.filterZero.checked;
         const rows = all.filter(r => !onlyNonZero || r.raw !== 0 || r.changed);
         const shown = rows.slice(0, 2000);
+        const rawAt = new Map(values.map(v => [v.table + '|' + v.i, v.v]));
+        const flagMeans = (report.modpoll && report.modpoll.measured) ? report.modpoll.bigEndianFlag : 'high word first';
         const frag = document.createDocumentFragment();
         for (const r of shown) {
             const tableName = (REGISTER_TABLES.find(t => t.value === r.table) || {}).label || r.table;
+            const decoded = decodedInRegion(report, r.table, r.ref, r.raw, rawAt.get(r.table + '|' + (r.ref + 1)));
             const cells = [
                 { text: tableName },
                 { text: String(r.ref) },
@@ -4011,6 +4313,7 @@
                 { text: r.name || '', align: 'left' },
                 { text: String(r.raw), className: r.raw === 0 ? 'zero' : '' },
                 { text: typeof r.again === 'number' ? String(r.again) : '', className: r.changed ? 'changed' : (r.again === 0 ? 'zero' : '') },
+                { text: decoded.text, className: decoded.text === '↑' || decoded.text === '?' ? 'zero' : '' },
                 { text: r.shown === '' || r.shown === null ? '' : String(r.shown) },
                 { text: r.unit || '' },
                 { text: r.source || '', align: 'left' },
@@ -4021,7 +4324,13 @@
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
                 })));
             tr.addEventListener('click', () => {
-                const command = aimAtRegister({ table: r.table, ref: r.ref, format: '' });
+                // Aimed at the region's width: a float is read as a float, from
+                // the first register of its pair.
+                const region = decoded.region;
+                const wide = region && (region.format === 'float32' || region.format === 'int32' || region.format === 'uint32');
+                const command = wide
+                    ? aimAtRegister({ table: r.table, ref: decoded.aligned ? r.ref : r.ref - 1, format: region.format === 'float32' ? 'float' : 'int', bigEndian: region.wordOrder === flagMeans })
+                    : aimAtRegister({ table: r.table, ref: r.ref, format: '' });
                 log('> ' + command + '   ← ' + (r.name || 'reference ' + r.ref) + ', ready to run');
                 toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref, '');
             });
@@ -4087,12 +4396,30 @@
     function aimAtRegister(register) {
         ui.table.value = register.table;
         ui.format.value = register.format || '';
+        if (register.bigEndian !== undefined) ui.bigEndian.checked = !!register.bigEndian;
         ui.base.value = 'printed';
         ui.start.value = String(register.ref);
         ui.count.value = '1';
         ui.cmdDirty = false;
         refreshPreview();
         return ui.cmd.value;
+    }
+
+    /**
+     * The form, set to the poll the scan judged right — table, width, word
+     * order, start and count — and the command box with it, so Run is the
+     * next click. Said in the log with the reasons, so a wrong guess can be
+     * seen for one.
+     */
+    function applyScanToForm(report) {
+        const s = report.suggestedSpec;
+        if (!s) { log('The scan found nothing to point the form at', 'warn'); return; }
+        applyForm({ table: s.table, format: s.format, bigEndian: s.bigEndian, base: s.base, start: s.start, count: s.count });
+        ui.cmdDirty = false;
+        log('Form set from the scan: ' + ui.cmd.value, 'ok');
+        for (const line of s.why) log('    ' + line);
+        if (s.assumedFlag) log('    the word-order flag was not measured on this plant — if Run prints nonsense, toggle "Slave is big-endian"', 'warn');
+        log('    Run polls it; a click on a scan row aims at that register instead, at its region\'s width');
     }
 
     /** The same, and read it, so a search ends in a value. */
@@ -4831,9 +5158,22 @@
                             (REGISTER_TABLES.find(r => r.value === t) || {}).label + ' ' + rr.changedRanges[t]).join('; ') : '') +
                         (rr.stopped ? ' (stopped before the end)' : ''), rr.changed ? 'ok' : '');
                 }
+                for (const table of Object.keys(report.formats || {})) {
+                    for (const r of report.formats[table].regions) {
+                        log('    ' + (REGISTER_TABLES.find(t => t.value === table) || {}).label + ' ' + r.from + '-' + r.to + ': ' + r.format +
+                            (r.wordOrder && r.format !== '16-bit' ? ', ' + r.wordOrder : '') + ' (' + r.confidence + ') — ' + r.evidence);
+                    }
+                }
+                if (report.modpoll) {
+                    log(report.modpoll.measured
+                        ? 'modpoll\'s -f flag gives ' + report.modpoll.bigEndianFlag + ' on this plant — measured on ' +
+                            (REGISTER_TABLES.find(t => t.value === report.modpoll.table) || {}).label + ' from ' + report.modpoll.ref
+                        : 'Could not measure what modpoll\'s -f flag means here' + (report.modpoll.error ? ': ' + report.modpoll.error : ' — the float reads printed neither order'), report.modpoll.measured ? '' : 'warn');
+                }
                 log('Scan finished in ' + Math.round(report.elapsedMs / 1000) + ' s' +
                     (plantNames ? ' — Save JSON now carries ' + plantNames.rows + ' IWMAC parameters and a suggestion per named register' : ''), 'ok');
                 renderScan(report);
+                applyScanToForm(report);
                 setDot('ok');
                 hideProgress(2500);
             } catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); hideProgress(); }

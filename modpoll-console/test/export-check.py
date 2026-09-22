@@ -90,12 +90,23 @@ lastScan = {
     tables: { '4': { answers: true }, '3': { answers: true }, '1': { answers: false }, '0': { answers: false } },
     sweep: { '4': { answered: 900, first: 1001, last: 1921 }, '3': { answered: 486, first: 1, last: 486 } },
     reread: { at: new Date().toISOString(), runs: 2, reread: 1386, changed: 1, changedRanges: { '4': '1010' }, commands: 16, elapsedMs: 1200, secondsAfterStart: 60 },
+    // The width verdicts a scan ends with: the holding map holds both kinds,
+    // the input map reads as floats from 101 and a float read proved it.
+    formats: {
+        '4': { regions: [{ from: 1001, to: 1921, format: 'mixed', wordOrder: 'high word first', alignStart: 1001, confidence: 'plant',
+            pairs: { plausible: 2, tested: 440 }, evidence: 'the plant reads 3 registers here at a 16-bit scale and 2 pairs as 32-bit — see each row' }] },
+        '3': { regions: [{ from: 1, to: 486, format: 'float32', wordOrder: 'high word first', alignStart: 101, confidence: 'wire',
+            pairs: { plausible: 190, tested: 240 }, evidence: '190 of 240 pairs from 101 read as floats, high word first; a float read printed the same numbers' }] },
+    },
+    modpoll: { bigEndianFlag: 'high word first', measured: true, table: '3', ref: 101, pairs: 4, compared: 4, matchedInOrder: 4 },
+    suggestedSpec: { table: '4', format: '', bigEndian: false, base: 'printed', start: 1001, count: 921, assumedFlag: false, why: ['holding registers hold the most values'] },
     values,
 };
 
 const doc = exportResult(lastResult);
 const text = exportText(doc);
 const row = ref => doc.scanReadings.find(r => r.table === '4' && r.ref === ref);
+const row3 = ref => doc.scanReadings.find(r => r.table === '3' && r.ref === ref);
 const param = (table, ref) => doc.plantParameters.find(r => r.table === table && r.ref === ref);
 const point = tag => doc.listPoints.find(r => r.name.indexOf(tag) === 0);
 const checks = [];
@@ -139,10 +150,22 @@ check('listPoints: a point the scan answered carries its raw value', point('T1')
 check('listPoints: a point in a hole says so', point('T2') && /hole/.test(point('T2').scan), point('T2') && point('T2').scan);
 check('listPoints: a point in a silent table says so', point('T3') && /no answer at all/.test(point('T3').scan), point('T3') && point('T3').scan);
 check('scan block carries the second read', doc.scan && doc.scan.reread && doc.scan.reread.changed === 1, JSON.stringify(doc.scan && doc.scan.reread));
+check('scan block carries the width verdicts, the measured flag and the poll the form was set to',
+    doc.scan.formats && doc.scan.formats['3'] && doc.scan.modpoll && doc.scan.modpoll.measured && doc.scan.suggestedSpec && doc.scan.suggestedSpec.table === '4',
+    JSON.stringify({ modpoll: doc.scan.modpoll, suggestedSpec: doc.scan.suggestedSpec }));
+check('a row in a wire-proved float region: regionFormat, and a datatype suggested from the verdict alone at the start of a pair',
+    row3(101).regionFormat === 'float32, high word first (wire)' && row3(101).suggest && row3(101).suggest.datatype === 'A_Input_F_N' && !row3(101).suggest.name,
+    JSON.stringify({ regionFormat: row3(101).regionFormat, suggest: row3(101).suggest }));
+check('... the second half of a pair carries the verdict and no suggestion', row3(102).regionFormat === 'float32, high word first (wire)' && row3(102).suggest === undefined,
+    JSON.stringify({ regionFormat: row3(102).regionFormat, suggest: row3(102).suggest }));
+check('a row in a mixed region carries the verdict and no suggestion from it', row(1002).regionFormat === 'mixed, high word first (plant)' && row(1002).suggest === undefined,
+    JSON.stringify({ regionFormat: row(1002).regionFormat, suggest: row(1002).suggest }));
+check('... while a plant-named row in it keeps its own suggestion', row(1003).suggest && row(1003).suggest.datatype === 'A_Hold_F_N' && row(1003).suggest.name === 'Romtemp',
+    JSON.stringify(row(1003).suggest));
 check('summary from the scan says how many changed', doc.summary && doc.summary.source === 'scan' && doc.summary.changed === 1, JSON.stringify(doc.summary));
 check('device rests on the scan', doc.device.readingSource === 'scan' && doc.device.host === '192.168.10.30', JSON.stringify(doc.device));
 check('names: the list names the row it covers, so the list is the source named', doc.names === 'point list', doc.names);
-check('howToUse explains reread, wide and suggest', ['reread', 'wide', 'suggest'].every(k => doc.howToUse.some(line => line.indexOf(k) === 0)), '');
+check('howToUse explains reread, wide, suggest and scan.formats', ['reread', 'wide', 'suggest', 'scan.formats'].every(k => doc.howToUse.some(line => line.indexOf(k) === 0)), '');
 check('the file parses', (() => { try { JSON.parse(text); return true; } catch (e) { return false; } })(), text.length + ' chars');
 
 let failed = 0;
