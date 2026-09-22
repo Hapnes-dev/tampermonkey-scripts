@@ -331,6 +331,37 @@ window.__detail = n => {{
     }}
     return out;
 }};
+// Drag a grip up from the bottom of a scrolled body: does the grip stay under
+// the hand and the pane shrink from its bottom edge, or does the content shift
+// and the pane shrink from its top?
+window.__dragUpFromBottom = (which, up) => {{
+    const spec = which === 'grid' ? PANES.grid : PANES.log;
+    const node = ui[spec.node];
+    const grip = document.querySelectorAll('#mpc-panel .mpc-grip')[which === 'grid' ? 0 : 1];
+    ui.body.scrollTop = ui.body.scrollHeight;
+    const r = grip.getBoundingClientRect();
+    const x = r.x + r.width / 2;
+    const y0 = r.y + r.height / 2;
+    const fire = (type, target, clientY) => target.dispatchEvent(new MouseEvent(type, {{ bubbles: true, clientX: x, clientY }}));
+    const before = {{ height: paneHeight(spec), top: Math.round(node.getBoundingClientRect().top), bottom: Math.round(node.getBoundingClientRect().bottom) }};
+    fire('mousedown', grip, y0);
+    const runwayOn = ui.body.style.paddingBottom !== '';
+    fire('mousemove', window, y0 - up);
+    const g = grip.getBoundingClientRect();
+    const n = node.getBoundingClientRect();
+    const during = {{ height: paneHeight(spec), top: Math.round(n.top), bottom: Math.round(n.bottom), gripCentreY: Math.round(g.top + g.height / 2), handY: Math.round(y0 - up) }};
+    fire('mouseup', window, y0 - up);
+    return {{
+        before, during,
+        shrankBy: before.height - during.height,
+        gripUnderHand: Math.abs(during.gripCentreY - during.handY) <= 6,
+        bottomEdgeRoseBy: before.bottom - during.bottom,
+        topEdgeMovedBy: during.top - before.top,
+        runwayOnDuringDrag: runwayOn,
+        runwayGoneAfter: ui.body.style.paddingBottom === '',
+        heightAfter: paneHeight(spec),
+    }};
+}};
 // Press a grip and hold, the hand where it landed, for a while: does the pane
 // keep growing on its own when that is the bottom edge, and stay put when it
 // is not? Resolves with the heights before, during and after letting go.

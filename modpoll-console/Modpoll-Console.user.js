@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.37.0
+// @version      1.38.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.37.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.38.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2558,9 +2558,29 @@
         let crept = 0;      // growth the edge added beyond where the hand went
         let timer = null;
         let lastTick = 0;
+        /*
+         * The grip stays under the hand, both ways. Growing pushes it down;
+         * shrinking is the subtler case: with the body scrolled to its end the
+         * grip is the end of the content, so shortening the pane shortens the
+         * content, the scroll position is clamped, and everything shifts down —
+         * the pane shrinks from its top edge while the grip stays pinned at the
+         * bottom and the hand rises away from it. A runway of blank padding
+         * below the content, for the duration of the drag, gives the scroll the
+         * room it needs, and the body is then scrolled by exactly the distance
+         * between the grip and the hand.
+         */
+        const follow = () => {
+            const body = ui.body;
+            if (!body) return;
+            const edge = body.getBoundingClientRect();
+            const strip = grip.getBoundingClientRect();
+            const target = Math.min(Math.max(lastY, edge.top + 6), edge.bottom - 6);
+            body.scrollTop += (strip.top + strip.height / 2) - target;
+        };
+        const runway = on => { if (ui.body) ui.body.style.paddingBottom = on ? ui.body.clientHeight + 'px' : ''; };
         const resize = remember => {
             setPaneHeight(spec, startHeight + (lastY - startY) + crept, remember);
-            keepGripInView(grip);
+            follow();
         };
         // On a timer rather than an animation frame: there is no paint to keep
         // in step with, and a frame callback starves wherever the page is not
@@ -2586,18 +2606,20 @@
             window.removeEventListener('blur', onBlur);
             if (timer) clearInterval(timer);
             timer = null;
+            runway(false);
         };
         const onMove = event => { lastY = event.clientY; resize(false); };
-        const onUp = event => { stop(); lastY = event.clientY; resize(true); };
+        const onUp = event => { lastY = event.clientY; resize(true); stop(); };
         // A window losing focus mid-drag never sees the mouseup; the pane would
         // otherwise creep to its ceiling on its own.
-        const onBlur = () => { stop(); resize(true); };
+        const onBlur = () => { resize(true); stop(); };
         grip.addEventListener('mousedown', event => {
             startY = lastY = event.clientY;
             startHeight = paneHeight(spec);
             crept = 0;
             lastTick = 0;
             grip.classList.add('dragging');
+            runway(true);
             window.addEventListener('mousemove', onMove);
             window.addEventListener('mouseup', onUp);
             window.addEventListener('blur', onBlur);
