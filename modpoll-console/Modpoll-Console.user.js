@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.29.0
+// @version      1.30.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9,7 +9,6 @@
 // @match        *://*.plants.iwmac.local:8080/secure/sys_tools/*
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      toolbox.iwmac.local
@@ -155,11 +154,6 @@
     function storeSet(key, value) {
         try { if (typeof GM_setValue === 'function') { GM_setValue(key, value); return; } } catch (e) { /* no manager */ }
         try { localStorage.setItem(key, String(value)); } catch (e) { /* nowhere to keep it */ }
-    }
-
-    function copyToClipboard(text) {
-        try { if (typeof GM_setClipboard === 'function') { GM_setClipboard(text); return true; } } catch (e) { /* no manager */ }
-        try { navigator.clipboard.writeText(text); return true; } catch (e) { return false; }
     }
 
     function waitFor(probe, timeoutMs, what) {
@@ -1113,6 +1107,88 @@
         if (rows.length > shown.length) tail.push('(' + (rows.length - shown.length) + ' further rows not shown)');
 
         return head.join('\n') + '\n\n' + body.join('\n') + '\n\n' + tail.join('\n');
+    }
+
+    /**
+     * The result as a file that stands on its own — what Save JSON writes.
+     *
+     * Every reading is enriched here, at save time, not taken from the result
+     * as it was read: the names are often loaded after the poll (a unit on this
+     * plant answering at that host has its names adopted once the grid is up),
+     * and the grid re-reads them live while the raw result never did. The shape
+     * of the answer that describeForAI puts in prose — which references were
+     * refused, which read zero, which have no name, what the plant's own values
+     * imply about the scale — is here as fields, and the conventions are spelled
+     * out inside the file, because the reader is as likely to be an agent handed
+     * the file cold as the person who ran the poll.
+     */
+    function exportResult(result) {
+        if (!result) return null;
+        const spec = result.spec || {};
+        const table = String(spec.table || '4');
+        const format = spec.format === '16-bit' ? '' : (spec.format || '');
+        const wide = formatOf(format).step === 2;
+        const readings = result.values.map(v => {
+            const r = enrichValue(v, table, format);
+            const out = { ref: r.ref, addr: r.addr, raw: r.raw };
+            // The number read every way, as the detail view shows it — only for a
+            // value that is one register, since a 32-bit one is already decoded.
+            if (!wide) {
+                const u16 = r.raw < 0 ? r.raw + 65536 : r.raw;
+                out.hex = '0x' + u16.toString(16).toUpperCase().padStart(4, '0');
+                out.int16 = r.raw > 32767 ? r.raw - 65536 : r.raw;
+            }
+            if (r.name) { out.name = r.name; out.source = r.source; }
+            if (r.unit) out.unit = r.unit;
+            if (r.shown !== '' && r.shown !== null) out.shown = r.shown;
+            if (r.type) out.type = r.type;
+            if (r.writable) out.writable = true;
+            if (r.bits) out.bits = r.bits;
+            const scale = r.source === 'plant' ? impliedScale(r.raw, r.shown) : null;
+            if (scale) out.impliedScale = scale;
+            return out;
+        });
+        const scales = {};
+        for (const r of readings) if (r.impliedScale) scales[r.impliedScale] = (scales[r.impliedScale] || 0) + 1;
+        const tableInfo = REGISTER_TABLES.find(t => t.value === table) || {};
+        return {
+            format: 'modpoll-console/result',
+            version: VERSION,
+            plant: result.plant || plantIdFromHost() || null,
+            at: result.at || null,
+            device: {
+                host: spec.host || null, port: spec.port || null, slave: spec.slave || null, mode: spec.mode || null,
+                table, tableName: tableInfo.title || null,
+                valueFormat: format || '16-bit', registersPerValue: wide ? 2 : 1,
+                command: spec.raw || null,
+            },
+            names: readings.some(r => r.source === 'list') ? 'point list'
+                : (readings.some(r => r.source === 'plant') ? 'plant database' : 'none'),
+            list: pointList ? { file: pointList.file || null, points: pointList.points.length } : null,
+            unit: plantNames ? { id: plantNames.unitId, parameters: plantNames.rows, namesReadAt: plantNames.at } : null,
+            conventions: {
+                ref: 'what modpoll prints and what -r takes; 1-based',
+                addr: 'the protocol address, what a document usually means; addr = ref - 1',
+                raw: 'the register as read' + (wide ? ', decoded from two registers' : ''),
+                shown: 'what the plant or the point list makes of raw',
+                impliedScale: 'shown divided by raw for a plant-named register, when that is a common factor',
+                ranges: 'runs of ref, as "430-445,448"',
+            },
+            readings,
+            answered: {
+                count: readings.length,
+                requested: result.summary ? result.summary.requested : readings.length,
+                ranges: asRanges(readings.map(r => r.ref)),
+            },
+            refused: asRanges(result.unreadable || []),
+            readZero: asRanges(readings.filter(r => r.raw === 0).map(r => r.ref)),
+            unnamed: asRanges(readings.filter(r => !r.name).map(r => r.ref)),
+            impliedScales: scales,
+            summary: result.summary || null,
+            diagnostics: result.diagnostics || [],
+            notes: result.notes || [],
+            commands: result.commands || [],
+        };
     }
 
     /*
@@ -3030,6 +3106,7 @@
      */
     function adoptPointList(list, filename) {
         pointList = list;
+        pointList.file = filename || null;
         const comm = list.comm || {};
         if (comm.mode) ui.mode.value = /tcp/i.test(comm.mode) ? 'tcp' : (/ascii/i.test(comm.mode) ? 'ascii' : 'rtu');
         if (comm.ip) ui.host.value = comm.ip;
@@ -3331,28 +3408,18 @@
         ui.every = el('input', { value: '1' });
         const repeat = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Repeat', title: 'Run again on an interval' });
         repeat.addEventListener('click', startRepeat);
-        const copyBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Copy for AI', title: 'Every reading with its name and both address bases, as text to paste into a conversation' });
-        copyBtn.addEventListener('click', () => {
-            if (!lastResult) return log('Nothing to copy yet');
-            const text = describeForAI(lastResult);
-            copyToClipboard(text);
-            log('Copied ' + lastResult.values.length + ' readings as text (' + text.length + ' characters)', 'ok');
-        });
-        const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON', title: 'Download the full result' });
+        // The one export. What Copy for AI and CSV carried is in this file too:
+        // every reading named, both address bases, what the plant shows, and the
+        // shape of the answer — see exportResult.
+        const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON',
+            title: 'Every reading with its name, both address bases and what the plant shows — a file that explains itself' });
         saveBtn.addEventListener('click', () => {
             if (!lastResult) return log('Nothing to save yet');
-            download(resultFilename(), JSON.stringify(lastResult, null, 2));
-        });
-        const csvBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'CSV', title: 'The grid as it stands, for a spreadsheet' });
-        csvBtn.addEventListener('click', () => {
-            const rows = [(ui.gridColumns || REGISTER_COLUMNS).map(c => c.label)];
-            for (const tr of ui.gridBody.querySelectorAll('tr')) {
-                const cells = [...tr.children].map(td => td.textContent);
-                if (cells.length === rows[0].length) rows.push(cells);
-            }
-            if (rows.length < 2) return log('Nothing in the grid to export');
-            const csv = rows.map(r => r.map(c => /[",;\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c).join(';')).join('\r\n');
-            download('modpoll_' + nowStamp() + '.csv', csv, 'text/csv');
+            const doc = exportResult(lastResult);
+            const filename = resultFilename();
+            download(filename, JSON.stringify(doc, null, 2));
+            log('Saved ' + doc.readings.length + ' readings to ' + filename +
+                (doc.names === 'none' ? ' — no names loaded, so none in the file' : ' with names from the ' + doc.names), 'ok');
         });
         const reconnectBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Reconnect', title: 'Throw away the Plant Term session and take a fresh one' });
         reconnectBtn.addEventListener('click', async () => {
@@ -3360,13 +3427,6 @@
             try { await reconnectTerminal(); log('Plant Term reconnected', 'ok'); setDot(''); }
             catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); }
             finally { reconnectBtn.disabled = false; }
-        });
-        const probeBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Probe', title: "Run modpoll -h and report this plant's build" });
-        probeBtn.addEventListener('click', async () => {
-            try {
-                const info = await probeBinary(true);
-                log('modpoll ' + (info.version || 'version unknown') + ' — ' + (info.hasTcpPortFlag ? '-p carries the TCP port in tcp mode' : 'no TCP port flag found in -h'), 'ok');
-            } catch (e) { log('ERROR: ' + e.message, 'err'); }
         });
         const scanBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Scan device', title: 'Find every register this device answers with, table by table' });
         scanBtn.addEventListener('click', async () => {
@@ -3403,7 +3463,7 @@
         });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
-            el('span', { className: 'mpc-spacer' }), scanBtn, copyBtn, saveBtn, csvBtn, probeBtn, reconnectBtn,
+            el('span', { className: 'mpc-spacer' }), scanBtn, saveBtn, reconnectBtn,
         ]));
 
         // --- the Plant Server ------------------------------------------------
@@ -3673,6 +3733,7 @@
                 '__modpoll.report()                        the verification as markdown parts, ready to upload',
                 'await __modpoll.probe()                   what this plant\'s modpoll -h reports',
                 '__modpoll.last()                          the last full result',
+                '__modpoll.lastExport()                    the same as Save JSON writes: readings named now, answer shape, conventions',
                 '__modpoll.stop()                          abort a running sweep',
                 '',
                 'Every value row carries i (the index modpoll printed) and addr (i - 1, the protocol address).',
@@ -3759,6 +3820,7 @@
         lastScan() { return lastScan; },
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
+        lastExport() { return exportResult(lastResult); },
         stop() { stopAll(); return true; },
         open() { showConsole(); return true; },
     };

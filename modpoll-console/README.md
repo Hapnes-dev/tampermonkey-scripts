@@ -42,8 +42,14 @@ rebuilt.
 - **Scans a device.** *Scan device* asks all four tables where they start
   answering — doubling, then halving back — and reports the first readable
   reference in both bases. Useful before blaming a point list.
-- **Exports.** *Save JSON* writes the full result; *Copy for AI* puts a compact
-  form on the clipboard (values as a bare array, addresses as two anchors).
+- **One export.** *Save JSON* writes a file that explains itself: every reading
+  with its name, both address bases, the raw register read every way and what
+  the plant shows; the shape of the answer as fields — which references were
+  refused, read zero, or have no name, and what the plant's own values imply
+  about the scale; and the conventions spelled out inside the file. Names are
+  looked up when the file is written, not when the poll ran, so a unit whose
+  names were adopted after the poll is named in the file. The same document is
+  `__modpoll.lastExport()`.
 
 ## What a deep dive on plant 2313 established
 
@@ -269,8 +275,8 @@ Both cost a version to find, and both are invisible from the code alone.
   normal tab, log in once, then retry.
 - modpoll must be on the plant server. Commands are written as plain `modpoll`,
   which Plant Term resolves; a plant that does not falls back to
-  `c:\iwmac\bin\modpoll.exe` by itself, saying so once. *Probe* runs `modpoll -h`
-  and reports what that plant's build supports.
+  `c:\iwmac\bin\modpoll.exe` by itself, saying so once. `__modpoll.probe()` runs
+  `modpoll -h` and reports what that plant's build supports.
 - The Toolbox plant-SQL API (`toolbox.iwmac.local:8505`) is needed for the unit
   list only; the rest of the panel works without it if you fill the fields yourself.
 
