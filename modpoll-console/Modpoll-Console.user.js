@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.28.0
+// @version      1.29.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2005,10 +2005,13 @@
         background:#f6f7f9;border:1px solid var(--line);border-radius:3px}
     #${PANEL_ID} .mpc-expand:hover{color:#1b5fa8;background:#eef4fb;border-color:#8a9099}
     #${PANEL_ID} .mpc-expand svg{width:12px;height:12px;display:block}
-    /* Expanded: the whole page inside this tab, over the shell's header and
-       sidebar. Not the browser's fullscreen — the chrome and the desktop stay. */
-    #${PANEL_ID}.mpc-full{position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483000;
-        border:0;box-shadow:0 0 0 1px rgba(0,0,0,.18)}
+    /* Expanded: the table's zone is the whole page inside this tab, over the
+       shell and the rest of the console. Not the browser's fullscreen — the
+       chrome and the desktop stay. The table fills the zone by flex; the grip's
+       inline cap is lifted by script while this rule is in force. */
+    #${PANEL_ID} .mpc-gridzone.mpc-full{position:fixed;inset:0;z-index:2147483000;
+        display:flex;flex-direction:column;background:#fff}
+    #${PANEL_ID} .mpc-gridzone.mpc-full .mpc-gridwrap{flex:1 1 auto;min-height:0;max-height:none;border-radius:0}
     #${PANEL_ID} .mpc-body{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:10px 12px 12px}
 
     /* The 12-column form grid. A field declares how many columns it takes, so
@@ -2182,9 +2185,7 @@
             grip.classList.remove('dragging');
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
-            // Expanded, the height belongs to the window rather than to the
-            // panel, so it is applied but not remembered.
-            setPaneHeight(spec, startHeight + (event.clientY - startY), !isExpanded());
+            setPaneHeight(spec, startHeight + (event.clientY - startY));
         };
         grip.addEventListener('mousedown', event => {
             startY = event.clientY;
@@ -2202,33 +2203,25 @@
     }
 
     /**
-     * The console takes the whole page and nothing more: a fixed overlay over
-     * the shell's header and sidebar, inside this browser tab. The native
-     * Fullscreen API would also swallow the browser's own chrome and the desktop
-     * behind it, which is more than was wanted here — the console is a tool in a
-     * tab, not a presentation.
+     * The table takes the whole page and nothing more: its zone becomes a fixed
+     * overlay over the shell's header and sidebar and over the rest of the
+     * console, inside this browser tab. Not the form, not the log — expanding
+     * is done in order to read a long register list, and those only take rows
+     * from it. Not the native Fullscreen API either: that would swallow the
+     * browser's own chrome and the desktop behind it, and the console is a tool
+     * in a tab, not a presentation.
      *
-     * Growing the table is what makes the room useful: expanding without it just
-     * gives a 340-pixel table a wider page to sit in. The heights in force
-     * beforehand are stashed and put back on the way out, and a drag made while
-     * expanded is deliberately not remembered — a cap chosen against the whole
-     * window is the wrong cap for a panel sharing the page with a sidebar.
+     * The zone's height is the viewport's, so the table fills it by flex rather
+     * than by measurement, and a resize is the browser's problem. The one thing
+     * in the way is the grip's cap, which is an inline style and would beat the
+     * expanded rule: it is lifted for the duration and put back exactly on the
+     * way out. The grip itself is under the overlay, so nothing can change the
+     * cap while it is lifted.
      */
-    // The two grips, the summary line and the body's own padding.
-    const EXPAND_RESERVE = 34;
-    let preExpandHeights = null;
+    let preExpandCap = null;
 
     function isExpanded() {
-        return !!ui.panel && ui.panel.classList.contains('mpc-full');
-    }
-
-    function fitTableToWindow() {
-        if (!ui.gridWrap || !ui.log) return;
-        // Measured, not guessed: what sits above the table depends on which rows
-        // the current mode is showing.
-        const above = ui.gridWrap.getBoundingClientRect().top;
-        const logRoom = Math.min(paneHeight(PANES.log), 200);
-        setPaneHeight(PANES.grid, window.innerHeight - above - logRoom - EXPAND_RESERVE, false);
+        return !!ui.gridZone && ui.gridZone.classList.contains('mpc-full');
     }
 
     /*
@@ -2261,29 +2254,24 @@
         const on = isExpanded();
         ui.expand.innerHTML = on ? ICON_CONTRACT : ICON_EXPAND;
         ui.expand.title = on
-            ? 'Back to the tool panel — Escape does the same'
+            ? 'Back to the console — Escape does the same'
             : 'Read the table on the whole page';
-        if (on) fitTableToWindow();
+        // A table that fills the page may have lost its scrollbar, or gained one.
         placeExpandButton();
     }
 
     function setExpanded(on) {
-        const panel = ui.panel;
-        if (!panel) return;
+        const zone = ui.gridZone;
+        if (!zone || !ui.gridWrap) return;
         if (on) {
-            if (!preExpandHeights) {
-                preExpandHeights = {
-                    grid: ui.gridWrap ? ui.gridWrap.style.maxHeight : '',
-                    log: ui.log ? ui.log.style.height : '',
-                };
-            }
-            panel.classList.add('mpc-full');
+            if (preExpandCap === null) preExpandCap = ui.gridWrap.style.maxHeight;
+            ui.gridWrap.style.maxHeight = '';
+            zone.classList.add('mpc-full');
         } else {
-            panel.classList.remove('mpc-full');
-            if (preExpandHeights) {
-                if (ui.gridWrap) ui.gridWrap.style.maxHeight = preExpandHeights.grid;
-                if (ui.log) ui.log.style.height = preExpandHeights.log;
-                preExpandHeights = null;
+            zone.classList.remove('mpc-full');
+            if (preExpandCap !== null) {
+                ui.gridWrap.style.maxHeight = preExpandCap;
+                preExpandCap = null;
             }
         }
         syncExpandButton();
@@ -2294,7 +2282,6 @@
         document.addEventListener('keydown', event => {
             if (event.key === 'Escape' && isExpanded()) setExpanded(false);
         });
-        window.addEventListener('resize', () => { if (isExpanded()) fitTableToWindow(); });
     }
 
     const MIRROR_LINE_CAP = 200;
@@ -3569,7 +3556,8 @@
         ui.expand = el('button', { className: 'mpc-expand', type: 'button' });
         ui.expand.addEventListener('click', () => setExpanded(!isExpanded()));
         ui.gridWrap = el('div', { className: 'mpc-gridwrap' }, [table]);
-        form.appendChild(el('div', { className: 'mpc-gridzone' }, [ui.gridWrap, ui.expand]));
+        ui.gridZone = el('div', { className: 'mpc-gridzone' }, [ui.gridWrap, ui.expand]);
+        form.appendChild(ui.gridZone);
         form.appendChild(makeGrip(PANES.grid));
         renderEmptyGrid('No registers polled yet');
 
