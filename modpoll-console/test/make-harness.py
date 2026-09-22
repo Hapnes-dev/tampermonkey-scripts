@@ -315,6 +315,7 @@ window.__setPlantNames = (unitId, entries) => {{
     return plantNames.byRef.size;
 }};
 window.__export = () => exportResult(lastResult);
+window.__exportText = () => exportText(exportResult(lastResult));
 window.__exportParts = base => exportParts(exportResult(lastResult), base);
 // Click the n-th data row and read the detail it opens, section by section.
 window.__detail = n => {{

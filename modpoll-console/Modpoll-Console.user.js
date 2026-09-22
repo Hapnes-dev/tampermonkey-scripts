@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.38.0
+// @version      1.39.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.38.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.39.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1316,9 +1316,9 @@
             howToUse: [
                 'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
                     'agent checking or correcting a modbusgen point list.',
-                'Files named _partNofM share this header. Each carries one slice of one section (part.section, part.rows, ' +
-                    'part.firstRef to part.lastRef) and part.contents maps every section to its parts. Given more than 20 files, ' +
-                    'take the readings parts covering the registers in question.',
+                'Four sections, one row per line: readings, plantParameters, listPoints, verificationRows. When split into files ' +
+                    'named _partNofM for a knowledge set, each file repeats this header and carries one slice of one section ' +
+                    '(part.section, part.rows, part.firstRef to part.lastRef), and part.contents maps every section to its parts.',
                 'readings: one register per line as the device answered just now. ref is what modpoll prints and what -r takes; ' +
                     'addr is the protocol address, ref - 1; a modbusgen list prints addr, or addr + 1 when options.subtract_one is ' +
                     'true. previous and delta are the answer the time before. list is the entry the loaded list has for the ' +
@@ -1400,6 +1400,23 @@
     // part, which on a unit of a thousand registers is two files fewer against
     // a cap of twenty.
     const EXPORT_CHUNK_LIMIT = 34000;
+
+    /**
+     * The whole document as one file — what Save JSON writes: the header
+     * pretty-printed, each section one row per line so a reader can count and
+     * cite rows, nothing split. Splitting is for a knowledge set with a
+     * per-file ceiling, and exportParts does it on request.
+     */
+    function exportText(doc) {
+        const body = {};
+        for (const key of Object.keys(doc)) body[key] = EXPORT_SECTIONS.indexOf(key) < 0 ? doc[key] : '@@' + key + '@@';
+        let text = JSON.stringify(body, null, 1);
+        for (const section of EXPORT_SECTIONS) {
+            const rows = (doc[section] || []).map(row => JSON.stringify(row));
+            text = text.replace('"@@' + section + '@@"', rows.length ? '[\n' + rows.join(',\n') + '\n]' : '[]');
+        }
+        return text;
+    }
 
     function exportParts(doc, baseName) {
         const header = {};
@@ -3807,22 +3824,23 @@
         ui.every = el('input', { value: '1' });
         const repeat = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Repeat', title: 'Run again on an interval' });
         repeat.addEventListener('click', startRepeat);
-        // The one export: everything known, as files an agent can read — see
-        // exportResult for what goes in and exportParts for how it is split.
+        // The one export: everything known, as one file an agent can read — see
+        // exportResult for what goes in. Splitting for a knowledge set is the
+        // API's job, __modpoll.exportParts().
         const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON',
-            title: 'Everything known about these registers, as files a Copilot agent can read: the readings now and before, ' +
-                'the list, every parameter the plant maps and shows, the verification, the scan — split under the knowledge-file ceiling' });
+            title: 'Everything known about these registers, as one file a Copilot agent can read: the readings now and before, ' +
+                'the list, every parameter the plant maps and shows, the verification, the scan' });
         saveBtn.addEventListener('click', () => {
             if (!lastResult && !plantNames && !pointList && !lastVerification && !lastScan) {
                 return log('Nothing to save yet — run a poll, a scan or a verification, or load a list or a unit\'s names');
             }
             const doc = exportResult(lastResult);
-            const parts = exportParts(doc);
-            for (const part of parts) download(part.name, part.text);
+            const text = exportText(doc);
+            const filename = resultFilename();
+            download(filename, text);
             const sections = EXPORT_SECTIONS.filter(s => doc[s].length).map(s => doc[s].length + ' ' + s);
-            log('Saved ' + parts.length + ' file' + (parts.length === 1 ? '' : 's') +
-                (sections.length ? ' — ' + sections.join(', ') : '') +
-                (parts.length > 1 ? ' — each under ' + EXPORT_CHUNK_LIMIT + ' characters with the full header, for a knowledge set' : ''), 'ok');
+            log('Saved ' + filename + (sections.length ? ' — ' + sections.join(', ') : '') + ', ' + Math.round(text.length / 1000) + ' k characters' +
+                (text.length > 36000 ? ' — over the 36 000 a knowledge file may hold; __modpoll.exportParts() splits it' : ''), 'ok');
         });
         const reconnectBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Reconnect', title: 'Throw away the Plant Term session and take a fresh one' });
         reconnectBtn.addEventListener('click', async () => {
@@ -4137,6 +4155,7 @@
                 'await __modpoll.probe()                   what this plant\'s modpoll -h reports',
                 '__modpoll.last()                          the last full result',
                 '__modpoll.lastExport()                    everything known, as one document: readings now and before, list, plant map, verification, scan',
+                '__modpoll.exportText()                    the same as the one file Save JSON writes',
                 '__modpoll.exportParts()                   the same split into files under the knowledge-file ceiling, [{name, text}]',
                 '__modpoll.stop()                          abort a running sweep',
                 '',
@@ -4225,6 +4244,7 @@
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
         lastExport() { return exportResult(lastResult); },
+        exportText() { return exportText(exportResult(lastResult)); },
         exportParts(baseName) { return exportParts(exportResult(lastResult), baseName); },
         stop() { stopAll(); return true; },
         open() { showConsole(); return true; },

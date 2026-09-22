@@ -53,14 +53,15 @@ rebuilt.
   two sides of a register disagree the reading carries a note — a scale the plant
   implies that the list does not apply, a unit that differs, an address the plant
   maps in another table, a width that differs — stated as an observation. A
-  `howToUse` block at the top tells the agent how to read it. The document is
-  split into files of at most 34 000 characters — under the 36 000-character
-  knowledge-file ceiling, measured on the assembled text — each repeating the
-  header so it stands alone, one row per line; the plant's parameters are said
-  once, on the reading where there is one, so a poll covering the unit does not
-  double the file. Names are looked up
-  when the file is written, not when the poll ran. `__modpoll.lastExport()` is the
-  document, `__modpoll.exportParts()` the files.
+  `howToUse` block at the top tells the agent how to read it. One file, the
+  header pretty-printed and each section one row per line; the plant's
+  parameters are said once, on the reading where there is one, so a poll
+  covering the unit does not double the file. Names are looked up when the file
+  is written, not when the poll ran. For a knowledge set with its
+  36 000-character ceiling per file, `__modpoll.exportParts()` splits the same
+  document into files of at most 34 000 characters, each repeating the header so
+  it stands alone. `__modpoll.lastExport()` is the document,
+  `__modpoll.exportText()` the file.
 
 ## What a deep dive on plant 2313 established
 
