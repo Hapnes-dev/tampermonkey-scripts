@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.30.0
+// @version      1.31.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2185,6 +2185,11 @@
 
     const ui = {};
     let lastResult = null;
+    // Redraws whatever the grid is showing — a poll, a scan, a verification —
+    // so a filter change applies to that and not to the last poll. The zero
+    // filter used to redraw the poll grid whichever view was up, which after a
+    // scan meant nothing happened, or the poll grid came back over the scan.
+    let redrawGrid = null;
     let lastScan = null;
     let pointList = null;
     let plantNames = null;
@@ -2773,6 +2778,7 @@
 
     /** Everything a scan found, most interesting first: the registers holding data. */
     function renderScan(report) {
+        redrawGrid = () => renderScan(report);
         setGridColumns(SCAN_COLUMNS);
         ui.gridBody.textContent = '';
         const values = (report.values || []).slice();
@@ -2781,11 +2787,13 @@
             ui.summary.textContent = '';
             return;
         }
-        const onlyNonZero = ui.filterZero.checked;
-        const rows = values
+        // Counted before the filter: hiding the zeros must not make the scan
+        // look as if fewer registers answered.
+        const all = values
             .map(v => Object.assign({ table: v.table }, enrichValue(v, v.table, '')))
-            .filter(r => !onlyNonZero || r.raw !== 0)
             .sort((a, b) => (a.raw === 0) - (b.raw === 0) || a.table.localeCompare(b.table) || a.ref - b.ref);
+        const onlyNonZero = ui.filterZero.checked;
+        const rows = all.filter(r => !onlyNonZero || r.raw !== 0);
         const shown = rows.slice(0, 2000);
         const frag = document.createDocumentFragment();
         for (const r of shown) {
@@ -2813,14 +2821,17 @@
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
-        const nonZero = rows.filter(r => r.raw !== 0).length;
-        const named = rows.filter(r => r.name).length;
-        ui.summary.textContent = rows.length + ' registers answered, ' + nonZero + ' holding a value, ' +
-            named + ' named' + (rows.length > shown.length ? ' — showing the first 2000' : '');
+        const nonZero = all.filter(r => r.raw !== 0).length;
+        const named = all.filter(r => r.name).length;
+        ui.summary.textContent = all.length + ' registers answered, ' + nonZero + ' holding a value, ' +
+            named + ' named' + (onlyNonZero ? ' — zeros hidden' : '') +
+            (rows.length > shown.length ? ' — showing the first 2000' : '');
     }
 
     /** Matches in the grid, each one a click away from being polled. */
     function renderFindResults(matches, query) {
+        // Names, not readings: the zero filter has nothing to apply to here.
+        redrawGrid = null;
         setGridColumns(FIND_COLUMNS);
         ui.gridBody.textContent = '';
         if (!matches.length) {
@@ -2884,10 +2895,13 @@
     }
 
     function renderVerification(verification) {
+        redrawGrid = () => renderVerification(verification);
         setGridColumns(POINT_COLUMNS);
         ui.gridBody.textContent = '';
+        const onlyNonZero = ui.filterZero.checked;
         const frag = document.createDocumentFragment();
         for (const row of verification.rows) {
+            if (onlyNonZero && row.raw === 0) continue;
             const p = row.point;
             const cells = [
                 String(p.addr), String(p.ref), p.name, p.datatype,
@@ -2910,11 +2924,13 @@
         }
         ui.gridBody.appendChild(frag);
         const s = verification.summary;
-        ui.summary.textContent = s.points + ' points · ' + s.read + ' read, ' + s.zero + ' zero, ' +
+        ui.summary.textContent = s.points + ' points · ' + s.read + ' read, ' + s.zero + ' zero' +
+            (onlyNonZero ? ' (hidden)' : '') + ', ' +
             s.refused + ' refused, ' + s.noAnswer + ' no answer · ' + s.ranges + ' poll commands · ' + s.elapsedMs + ' ms';
     }
 
     function renderGrid(result) {
+        redrawGrid = () => renderGrid(result);
         const isBitTable = result.spec && (result.spec.table === '0' || result.spec.table === '1');
         setGridColumns(isBitTable ? BIT_COLUMNS : REGISTER_COLUMNS);
         ui.gridBody.textContent = '';
@@ -3599,7 +3615,7 @@
         // --- results ---------------------------------------------------------
         form.appendChild(el('div', { className: 'mpc-sep' }));
         ui.filterZero = el('input', { type: 'checkbox', id: 'mpc-hidezero' });
-        ui.filterZero.addEventListener('change', () => { if (lastResult) renderGrid(lastResult); });
+        ui.filterZero.addEventListener('change', () => { if (redrawGrid) redrawGrid(); });
         form.appendChild(el('label', { className: 'mpc-check mpc-span3', htmlFor: 'mpc-hidezero' },
             [ui.filterZero, el('span', { textContent: 'Hide zero values' })]));
         ui.summary = el('div', { className: 'mpc-sum', textContent: 'No poll run yet' });
