@@ -67,24 +67,36 @@ def bundle(src, label):
     const ranges = list => asRanges(list) || '-';
     const expand = spec => { const s = new Set(); for (const [a, b] of spec) for (let r = a; r <= b; r++) s.add(r); return s; };
     // Strict: refuses a block touching anything unmapped. Lenient: answers 0 for
-    // anything unmapped, on every reference modpoll can ask for.
+    // anything unmapped, on every reference modpoll can ask for. A live
+    // register counts the device's reads, so it never answers the same twice —
+    // what the second pass over everything found has to notice.
     const devices = {
         'strict, three areas and a hole': {
             maps: { '4': expand([[1, 50], [1001, 1049], [1051, 1100], [8192, 8200]]), '3': new Set(), '1': new Set(), '0': expand([[1, 16]]) },
+            live: { '4': new Set([1010, 8195]) },
+            reads: 0,
             read(table, ref, count) {
+                this.reads++;
                 const map = this.maps[table];
                 const values = [];
-                for (let r = ref; r < ref + count; r++) { if (!map.has(r)) return null; values.push(table === '0' || table === '1' ? (r % 2) : r); }
+                for (let r = ref; r < ref + count; r++) {
+                    if (!map.has(r)) return null;
+                    const live = this.live[table] && this.live[table].has(r);
+                    values.push(table === '0' || table === '1' ? (r % 2) : (live ? r + this.reads : r));
+                }
                 return values;
             },
         },
         'lenient, values at 1-300, zeros elsewhere': {
             maps: { '4': expand([[1, 300]]), '3': new Set(), '1': new Set(), '0': new Set() },
+            live: { '4': new Set([7]) },
+            reads: 0,
             read(table, ref, count) {
+                this.reads++;
                 if (table !== '4') return null;
                 if (ref + count - 1 > 65536) return null;
                 const values = [];
-                for (let r = ref; r < ref + count; r++) values.push(this.maps[table].has(r) ? r : 0);
+                for (let r = ref; r < ref + count; r++) values.push(this.maps[table].has(r) ? (this.live[table].has(r) ? r + this.reads : r) : 0);
                 return values;
             },
         },
@@ -141,6 +153,22 @@ def bundle(src, label):
             lines.push('  table ' + table + ': ' + label + ' expected ' + target.size + ', found ' + got.size +
                 (missing.length ? ' — MISSING ' + ranges(missing) : '') + (extra.length ? ' — EXTRA ' + ranges(extra) : '') +
                 (swept && swept.regions ? '  [' + swept.regions.length + ' region(s): ' + swept.regions.map(r => r.from + ' → ' + r.stoppedBecause).join('; ') + ']' : ''));
+        }
+        // The second pass: every live register the device has must come back
+        // as changed, and nothing else may.
+        const liveExpected = [];
+        for (const table of Object.keys(device.live || {})) for (const r of device.live[table]) if (device.maps[table].has(r)) liveExpected.push(table + ':' + r);
+        if (report.reread) {
+            const rr = report.reread;
+            const changedFound = (report.values || []).filter(v => v.changed).map(v => v.table + ':' + v.i);
+            const missed = liveExpected.filter(k => changedFound.indexOf(k) < 0);
+            const spurious = changedFound.filter(k => liveExpected.indexOf(k) < 0);
+            lines.push('  reread: ' + rr.runs + ' run(s), ' + rr.reread + ' registers read again, ' + rr.changed + ' changed' +
+                (Object.keys(rr.changedRanges).length ? ' [' + Object.entries(rr.changedRanges).map(([t, s]) => 'table ' + t + ': ' + s).join('; ') + ']' : '') +
+                (missed.length ? ' — MISSED live ' + missed.join(', ') : '') + (spurious.length ? ' — SPURIOUS ' + spurious.join(', ') : '') +
+                (!missed.length && !spurious.length ? ' — every live register and nothing else' : ''));
+        } else {
+            lines.push('  reread: none (this scan read everything once)' + (liveExpected.length ? ' — ' + liveExpected.length + ' live register(s) not told apart' : ''));
         }
         lines.push('  cost: ' + COST.lines + ' shell lines, ' + COST.invocations + ' modpoll runs, ' + COST.refusals + ' refusals, ' + (Date.now() - started) + ' ms of simulation');
     }

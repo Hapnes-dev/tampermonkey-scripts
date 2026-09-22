@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.42.0
+// @version      1.43.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.42.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.43.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -593,6 +593,12 @@
     const RE_FINAL_ERROR = /exception response|unkn[wo]{2}n error|invalid \w+ parameter|unrecognized option|prog(r)?am stopped with exit code/i;
     const RE_NOT_FOUND = /is not recognized as an internal or external command|cannot find the path/i;
     const countValueLines = text => (String(text).match(/\[\d+\]\s*:/g) || []).length;
+    // Refusals as they land, for progress: each is a block the device has just
+    // spent ~630 ms saying no to, which is exactly the stretch a bar goes still.
+    const countRefusalLines = text => (String(text).match(/exception response/gi) || []).length;
+    // Probe markers, whole lines only — the echoed command line carries every
+    // marker of a chained run at once, and must not count as any of them.
+    const countMarkerLines = text => (String(text).match(new RegExp('^\\s*' + MARK + ':\\d+:\\d+\\s*$', 'gm')) || []).length;
     let runCounter = 0;
 
     async function termRun(command, opts) {
@@ -676,12 +682,21 @@
         // printed nothing at all.
         const deviceOutput = text => String(text).split('\n')
             .filter(line => line.trim() && line.trim().indexOf(MARK) !== 0).join('\n');
+        let lastChunkLength = -1;
         while (Date.now() < deadline) {
             await sleep(60);
             const chunk = readChunk();
             const body = deviceOutput(chunk);
             if (body.length !== lastLength) { lastLength = body.length; stableSince = Date.now(); }
             if (body.length) grew = true;
+            // Whoever is waiting can watch the output arrive. A chained line of
+            // probes on a strict device is several refusals at ~630 ms each,
+            // and the markers between them say which one the shell is on — a
+            // caller showing progress gets that instead of one update per line.
+            if (options.onOutput && chunk.length !== lastChunkLength) {
+                lastChunkLength = chunk.length;
+                try { options.onOutput(chunk); } catch (e) { /* a progress callback must not stop a poll */ }
+            }
             // Knowing how many values were asked for turns the wait into a real
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
@@ -801,20 +816,26 @@
                 expect += b.count;
             }
             const line = chainBlocks(spec, group);
-            if (onProgress) {
-                onProgress({
-                    // bi has already moved past this group, so it is the count done.
-                    block: bi, blocks: blocks.length,
-                    command: group.length > 1
-                        ? group.length + ' blocks in one run, -r ' + group[0].ref + ' to -r ' + group[group.length - 1].ref
-                        : commands[commands.length - 1],
-                });
-            }
+            const announced = {
+                // bi has already moved past this group, so it is the count done.
+                block: bi, blocks: blocks.length,
+                command: group.length > 1
+                    ? group.length + ' blocks in one run, -r ' + group[0].ref + ' to -r ' + group[group.length - 1].ref
+                    : commands[commands.length - 1],
+            };
+            if (onProgress) onProgress(announced);
             let raw;
             try {
                 // One error must not cut a chained run short: the later blocks in
-                // the same line are still coming.
-                raw = await termRun(line, { timeoutMs: spec.timeoutMs, expect, stopOnError: group.length === 1 });
+                // the same line are still coming. While it runs, the same caller
+                // hears what has arrived so far — marked partial, so it is
+                // progress to show and not a new command to count.
+                raw = await termRun(line, {
+                    timeoutMs: spec.timeoutMs, expect, stopOnError: group.length === 1,
+                    onOutput: onProgress ? chunk => onProgress(Object.assign({}, announced, {
+                        partial: true, arriving: countValueLines(chunk), refusals: countRefusalLines(chunk),
+                    })) : undefined,
+                });
             } catch (e) {
                 diagnostics.push({ level: 'fatal', text: e.message, line: '' });
                 fatal = true;
@@ -851,10 +872,16 @@
         while (queue.length && budget > 0 && !abortRequested && !fatal) {
             const attempt = queue.splice(0, chainableCount(spec, queue));
             budget -= attempt.length;
-            if (onProgress) onProgress({ recovering: attempt.length, command: 're-asking for ' + attempt.length + ' gap(s)' });
+            const announced = { recovering: attempt.length, command: 're-asking for ' + attempt.length + ' gap(s)' };
+            if (onProgress) onProgress(announced);
             let raw;
             try {
-                raw = await termRun(chainBlocks(spec, attempt), { timeoutMs: spec.timeoutMs, stopOnError: false });
+                raw = await termRun(chainBlocks(spec, attempt), {
+                    timeoutMs: spec.timeoutMs, stopOnError: false,
+                    onOutput: onProgress ? chunk => onProgress(Object.assign({}, announced, {
+                        partial: true, arriving: countValueLines(chunk), refusals: countRefusalLines(chunk),
+                    })) : undefined,
+                });
             } catch (e) { diagnostics.push({ level: 'warn', text: 'Recovery stopped: ' + e.message, line: '' }); break; }
             const parsed = parseModpoll(raw);
             mergeValues(parsed.values);
@@ -936,8 +963,10 @@
         // tables at once instead of one table at a time — as many as fit inside
         // the character budget for a single command line.
         const list = probes.map(p => (typeof p === 'object' ? p : { table: spec.table, ref: p }));
+        let answered = 0;
         for (let i = 0; i < list.length;) {
-            if (onProgress) onProgress(i, list.length);
+            if (onProgress) onProgress(i, list.length, { answered });
+            const from = i;
             const parts = [];
             const group = [];
             while (i < list.length) {
@@ -952,11 +981,23 @@
             }
             const line = parts.join(' & ');
             assertReadOnly(line);
-            let raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false });
+            // The shell runs the line in order and each probe echoes its marker
+            // before its modpoll starts, so the markers on screen say how many
+            // of this line's probes are finished — one fewer than the markers —
+            // and the value lines say how many of those answered. On a strict
+            // device that is a tick every ~630 ms instead of one per line.
+            let finished = -1;
+            const watch = onProgress ? chunk => {
+                const done = Math.max(0, Math.min(group.length, countMarkerLines(chunk) - 1));
+                if (done === finished) return;
+                finished = done;
+                onProgress(from + done, list.length, { answered: answered + countValueLines(chunk), partial: true });
+            } : undefined;
+            let raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false, onOutput: watch });
             // Every probe echoes its own marker, so a missing marker means output
             // was lost rather than refused. One retry settles which it was.
             const markers = (raw.match(new RegExp(MARK + ':\\d+:\\d+', 'g')) || []).length;
-            if (markers < group.length) raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false });
+            if (markers < group.length) raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false, onOutput: watch });
             let current = null;
             for (const rawLine of String(raw).split(/\r?\n/)) {
                 const line2 = rawLine.trim();
@@ -968,6 +1009,7 @@
                 // transcript says nothing about which probe produced it.
                 if (value) results[current] = { answered: true, value: Number(value[2]) };
             }
+            answered = Object.keys(results).filter(key => results[key].answered).length;
         }
         return results;
     }
@@ -1003,13 +1045,18 @@
         // this one before it starts.
         abortRequested = false;
         const spec = normaliseSpec(Object.assign({}, input, { count: 1, format: '' }));
+        const started = performance.now();
         /*
          * Progress, as a fraction and a line of text. The ladder and the
          * narrowing are countable and take the first three tenths; the sweep is
-         * not — it runs until a region's answers stop — so it takes the rest,
-         * shared across the tables that answered, each table's share advancing
-         * with every chunk and completing when its sweep ends.
+         * not — it runs until a region's answers stop — so it takes most of the
+         * rest, shared across the tables that answered, each table's share
+         * advancing with every command and completing when its sweep ends; the
+         * second read of what was found, which is countable again, takes the
+         * last few hundredths. Every fraction is monotone, and none is 1 before
+         * the scan is.
          */
+        const SWEEP_FROM = 0.3, SWEEP_TO = 0.94;
         const tell = (fraction, text, extra) => { if (onProgress) onProgress(Object.assign({ fraction, text }, extra || {})); };
         const tableLabel = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
 
@@ -1018,8 +1065,9 @@
         // not empty, and they are readings in their own right.
         const probes = [];
         for (const table of SCAN_TABLES) for (const ref of scanLadderOf(table)) probes.push({ table, ref });
-        const first = await probeRefs(spec, probes, (done, total) =>
-            tell(0.2 * (done / total), 'Probing reference ' + (done + 1) + ' of ' + total + ' across the four tables', { phase: 'probe' }));
+        const first = await probeRefs(spec, probes, (done, total, info) =>
+            tell(0.2 * (done / total), 'Probing reference ' + Math.min(done + 1, total) + ' of ' + total + ' across the four tables' +
+                (info && info.answered ? ' — ' + info.answered + ' answering' : ''), { phase: 'probe' }));
         const answered = (table, ref) => !!((first[table + ':' + ref] || {}).answered);
         const known = {};
         for (const table of SCAN_TABLES) known[table] = new Map();
@@ -1053,19 +1101,27 @@
         }
 
         // Narrow every region's lower edge together, one chained run per halving.
+        // How many halvings that takes is known from the widest gap before the
+        // first one is sent, so this phase can say how far along it is rather
+        // than how many edges are left — which on a single edge was 0 % until
+        // it was 100 %.
         const edges = [];
         for (const table of SCAN_TABLES) for (const region of regions[table]) edges.push({ table, region });
         const unsettled = () => edges.filter(e => e.region.high - e.region.low > 1);
-        const edgesToSettle = unsettled().length;
+        const widest = edges.reduce((m, e) => Math.max(m, e.region.high - e.region.low), 0);
+        const rounds = Math.max(1, Math.ceil(Math.log2(Math.max(2, widest))));
+        let round = 0;
         while (unsettled().length && !abortRequested) {
             const step = unsettled().map(e => ({ table: e.table, ref: Math.floor((e.region.low + e.region.high) / 2), edge: e }));
-            tell(0.2 + 0.1 * (1 - step.length / Math.max(1, edgesToSettle)),
-                'Finding where each region starts — ' + step.length + ' edge' + (step.length === 1 ? '' : 's') + ' still to settle', { phase: 'narrow' });
-            const probed = await probeRefs(spec, step.map(s => ({ table: s.table, ref: s.ref })));
+            const say = (done, total) => tell(0.2 + 0.1 * Math.min(1, (round + done / Math.max(1, total)) / rounds),
+                'Finding where each region starts — halving ' + Math.min(round + 1, rounds) + ' of about ' + rounds + ', ' +
+                    step.length + ' edge' + (step.length === 1 ? '' : 's') + ' still to settle', { phase: 'narrow' });
+            const probed = await probeRefs(spec, step.map(s => ({ table: s.table, ref: s.ref })), (done, total) => say(done, total));
             learn(probed);
             for (const s of step) {
                 if ((probed[s.table + ':' + s.ref] || {}).answered) s.edge.region.high = s.ref; else s.edge.region.low = s.ref;
             }
+            round++;
         }
 
         const tables = {};
@@ -1100,7 +1156,8 @@
             // sweepForValues previously reporting back only once the whole chunk
             // was settled. That is what froze the bar for minutes. Ticking on
             // every command sweepForValues issues, not once it is done with a
-            // chunk, is what makes it move the whole time instead.
+            // chunk, is what makes it move the whole time instead — and inside
+            // a command, on every value or refusal that lands.
             let commandsSoFar = 0;
             // Ticks, not chunks, are what "how much of this share is spent" is
             // measured in now; a strict chunk's dozens of ticks would have blown
@@ -1110,21 +1167,25 @@
                 if (!tables[table].answers || abortRequested) continue;
                 const total = { answered: 0, nonZero: 0, refs: [], withValues: [], regions: [], chunks: 0 };
                 const seen = new Set();
-                const share = 0.7 / sweeping.length;
-                const before = 0.3 + share * sweeping.indexOf(table);
+                const share = (SWEEP_TO - SWEEP_FROM) / sweeping.length;
+                const before = SWEEP_FROM + share * sweeping.indexOf(table);
                 // Total work left in a table's sweep is unknowable until it stops
                 // — so the share only ever creeps towards its end, asymptotically,
                 // and is snapped to exactly once the table's last region actually
                 // finishes (below), rather than trusting the creep to arrive there
-                // on its own.
+                // on its own. A partial tick — output landing mid-command — moves
+                // the text, not the count: it is the same command still running.
                 let workSoFar = 0;
-                const sweepTick = (ref, found, chunkStart) => {
-                    commandsSoFar++;
-                    workSoFar++;
+                const sweepTick = t => {
+                    if (!t.partial) { commandsSoFar++; workSoFar++; }
+                    const landing = t.partial && (t.arriving || t.refusals)
+                        ? ' (' + (t.arriving ? '+' + t.arriving + ' arriving' : '') + (t.arriving && t.refusals ? ', ' : '') +
+                            (t.refusals ? t.refusals + ' refused' : '') + ')'
+                        : '';
                     tell(before + share * (workSoFar / (workSoFar + SWEEP_TICK_HALF_LIFE)),
-                        'Sweeping ' + tableLabel(table) + ' near ' + ref + ' — ' + found + ' found, ' + commandsSoFar +
+                        'Sweeping ' + tableLabel(table) + ' near ' + t.ref + ' — ' + t.found + ' found' + landing + ', ' + commandsSoFar +
                             ' command' + (commandsSoFar === 1 ? '' : 's') + ' sent',
-                        { phase: 'sweep', table, ref, found, commands: commandsSoFar, chunkStart: !!chunkStart });
+                        { phase: 'sweep', table, ref: t.ref, found: t.found, commands: commandsSoFar, chunkStart: !!t.chunkStart, partial: !!t.partial });
                 };
                 for (const region of regions[table]) {
                     if (abortRequested) break;
@@ -1154,13 +1215,32 @@
                     answered: total.answered, nonZero: total.nonZero,
                     first: lowest(total.refs), last: highest(total.refs),
                     ranges: asRanges(total.refs), withValues: asRanges(total.withValues),
+                    // The same runs in the other base, since a modbusgen list
+                    // prints protocol addresses and the reader will be writing one.
+                    addrRanges: asRanges(total.refs.map(r => r - 1)), withValuesAddr: asRanges(total.withValues.map(r => r - 1)),
                     regions: total.regions, chunks: total.chunks,
                 };
                 // The table is actually done now, rather than merely close by
                 // whatever the asymptote last happened to reach.
                 tell(before + share, tableLabel(table) + ' swept — ' + total.answered + ' registers found', { phase: 'sweep', table });
             }
+
+            // Then everything found, once more. A register that reads
+            // differently a minute later is being measured; one that reads the
+            // same is a setpoint, a configuration word, or a measurement that
+            // happened to hold still — and telling the two kinds apart is half
+            // of what a reader deciding on a datatype and a scale needs. Cheap:
+            // only what answered is asked, in its own runs, so nothing is refused.
+            if (report.values.length && !abortRequested) {
+                report.reread = await rereadFound(spec, report.values, (done, total, t) =>
+                    tell(SWEEP_TO + (1 - SWEEP_TO) * (done / Math.max(1, total)),
+                        'Reading every found register again — run ' + Math.min(done + 1, total) + ' of ' + total +
+                            (t && t.changed ? ', ' + t.changed + ' changed so far' : ''),
+                        { phase: 'reread', partial: !!(t && t.partial) }));
+                report.reread.secondsAfterStart = Math.round((performance.now() - started) / 1000);
+            }
         }
+        report.elapsedMs = Math.round(performance.now() - started);
         tell(1, abortRequested ? 'Scan stopped' : 'Scan complete', { phase: 'done' });
         return report;
     }
@@ -1216,6 +1296,173 @@
         const common = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001];
         const near = common.find(k => Math.abs(ratio - k) <= Math.abs(k) * 0.02);
         return near ? 'x' + near : null;
+    }
+
+    /*
+     * Two 16-bit registers read as one 32-bit value, every way a driver could:
+     * high word first — modbusgen's `_N`, modpoll's -i/-f — and low word first,
+     * `_W`; as an IEEE float and as an integer, signed and unsigned. modpoll
+     * printed each register on its own, so nothing here touches the wire: it
+     * is the same bits, rearranged.
+     */
+    function decodePair(first, second) {
+        const word = v => ((v < 0 ? v + 65536 : v) & 0xFFFF);
+        const view = new DataView(new ArrayBuffer(4));
+        const as = (hi, lo) => {
+            view.setUint16(0, hi);
+            view.setUint16(2, lo);
+            return { float: view.getFloat32(0), int32: view.getInt32(0), uint32: view.getUint32(0) };
+        };
+        return { highFirst: as(word(first), word(second)), lowFirst: as(word(second), word(first)) };
+    }
+
+    /**
+     * Is this float the kind a register holds? Finite, of a size an
+     * engineering value has, and round at five significant digits — 21.5 or
+     * 850 passes; two unrelated 16-bit registers read together give 1.2e-38 or
+     * 3.4e+25, or a mantissa using every digit it has.
+     */
+    function plausibleFloat(x) {
+        if (!Number.isFinite(x) || x === 0) return false;
+        const size = Math.abs(x);
+        if (size < 1e-3 || size >= 1e6) return false;
+        return Math.abs(x - Number(x.toPrecision(5))) <= size * 2e-6;
+    }
+
+    /** How many decimals a displayed number states: "21,5" one, "850" none. */
+    function decimalsOf(shown) {
+        const m = String(shown == null ? '' : shown).trim().match(/[.,](\d+)$/);
+        return m ? m[1].length : 0;
+    }
+
+    /**
+     * What a register and its neighbour decode to as one 32-bit value, and how
+     * far that can be trusted. Confirmed when the plant shows the number the
+     * pair decodes to — the plant displays the register through its driver, so
+     * the number it shows is the number the driver made of these bits — and a
+     * candidate when only the bit pattern is plausible, floats only, since any
+     * two words make some integer. Nothing when neither. A 16-bit reading the
+     * plant's own scale already explains is not brought here at all: the
+     * simplest reading that fits is the one to report.
+     */
+    function wideReading(raw, nextRaw, plantShown) {
+        if (typeof raw !== 'number' || typeof nextRaw !== 'number') return null;
+        const pair = decodePair(raw, nextRaw);
+        const orders = [
+            { wordOrder: 'high word first', suffix: '_N', d: pair.highFirst },
+            { wordOrder: 'low word first', suffix: '_W', d: pair.lowFirst },
+        ];
+        const findings = [];
+        const shownText = plantShown == null ? '' : String(plantShown).trim();
+        const shown = Number(shownText.replace(',', '.'));
+        if (shownText && !Number.isNaN(shown) && shown !== 0) {
+            const tolerance = Math.max(Math.abs(shown) * 1e-4, 0.5 * Math.pow(10, -decimalsOf(shownText)));
+            const u16 = raw < 0 ? raw + 65536 : raw;
+            for (const o of orders) {
+                if (Number.isFinite(o.d.float) && Math.abs(o.d.float - shown) <= tolerance) {
+                    findings.push({ as: 'float32', wordOrder: o.wordOrder, suffix: o.suffix, value: roundScaled(o.d.float, decimalsOf(shownText) + 2), confirmed: 'the plant shows ' + shownText });
+                }
+                for (const [as, n] of [['int32', o.d.int32], ['uint32', o.d.uint32]]) {
+                    // A 32-bit value equal to the register's own 16-bit reading
+                    // is the neighbour being zero, not a 32-bit point.
+                    if (n === raw || n === u16) continue;
+                    const scale = impliedScale(n, shownText);
+                    if (scale) findings.push({ as, wordOrder: o.wordOrder, suffix: o.suffix, value: n, scale, confirmed: 'the plant shows ' + shownText });
+                }
+            }
+        }
+        if (findings.length) return findings;
+        for (const o of orders) {
+            if (plausibleFloat(o.d.float)) findings.push({ as: 'float32', wordOrder: o.wordOrder, suffix: o.suffix, value: roundScaled(o.d.float, 4), candidate: true });
+        }
+        return findings.length ? findings : null;
+    }
+
+    // Engineering units the plant prints on an analog value. Energy (Wh, kWh)
+    // is left out on purpose: it is a counter, integral. A unit outside this
+    // list is not evidence either way; the scale and the decimals still are.
+    const ANALOG_UNITS = new Set(['°c', 'c', '°f', 'f', 'k', 'deg', '°', 'bar', 'mbar', 'bar(g)', 'pa', 'kpa', 'mpa', 'psi', '%', '%rh', 'rh',
+        'w', 'kw', 'mw', 'va', 'kva', 'mva', 'var', 'kvar', 'mvar', 'v', 'kv', 'mv', 'a', 'ma', 'ka', 'hz', 'ohm',
+        'm3', 'm3/h', 'l/s', 'l/min', 'l/h', 'm/s', 'ppm', 'ppb', 'lux', 'kg', 'mm', 'm', 'meter', 'rpm', 'deci-celsius', 'percent']);
+
+    /**
+     * The one 32-bit reading to build a suggestion on, when several are
+     * confirmed: a float over an integer, since an integer that happens to be
+     * the plant's value at some scale is the weaker coincidence; and unsigned
+     * over signed when both give the same number, since a value that has not
+     * gone negative is a counter more often than not, and U32 holds twice as
+     * much of one.
+     */
+    function pickWide(wide) {
+        const confirmed = (wide || []).filter(w => w.confirmed);
+        if (!confirmed.length) return null;
+        const float = confirmed.find(w => w.as === 'float32');
+        if (float) return float;
+        const unsigned = confirmed.find(w => w.as === 'uint32' && confirmed.some(o => o.as === 'int32' && o.wordOrder === w.wordOrder && o.value === w.value));
+        return unsigned || confirmed[0];
+    }
+
+    /**
+     * The point a modbusgen list would carry for this register, in the list's
+     * own vocabulary — datatype key, scale key, unit, rw, group, addr — from
+     * what the plant and the device have shown, with the basis of every choice
+     * stated, since each one is an inference a reader may overrule. Only where
+     * the plant has a parameter on the register: a value alone says nothing
+     * about what it is.
+     */
+    function suggestPoint(table, addr, raw, fromPlant, wide, changed) {
+        const first = fromPlant && fromPlant[0];
+        if (!first) return null;
+        const basis = [];
+        const bits = fromPlant.filter(e => e.bit !== null);
+        const rw = fromPlant.some(e => e.access === 'rw') ? 'rw' : 'r';
+        const shownText = first.bit === null ? String(first.plantValue == null ? '' : first.plantValue).trim() : '';
+        const shown = Number(shownText.replace(',', '.'));
+        const hasShown = shownText !== '' && !Number.isNaN(shown);
+        const unit = String(first.unit || '').trim();
+        let datatype;
+        let scale = '';
+        if (table === '0') { datatype = 'Coil_X_N'; basis.push('a coil'); }
+        else if (table === '1') { datatype = 'Digital_X_N'; basis.push('a discrete input'); }
+        else {
+            const family = table === '4' ? 'Hold' : 'Input';
+            const confirmed = pickWide(wide);
+            if (bits.length) {
+                datatype = 'Bit_' + family;
+                basis.push('the plant reads ' + bits.length + ' bit' + (bits.length === 1 ? '' : 's') + ' of this register — one point per bit, each with its bit');
+            } else if (confirmed) {
+                const rawType = confirmed.as === 'float32' ? 'F' : (confirmed.as === 'int32' ? 'I32' : 'U32');
+                if (confirmed.scale && confirmed.scale !== 'x1') scale = confirmed.scale;
+                // A float is analog by nature; a 32-bit integer is a counter
+                // unless a scale or the unit says otherwise.
+                const analog32 = confirmed.as === 'float32' || !!scale || ANALOG_UNITS.has(unit.toLowerCase());
+                datatype = (analog32 ? 'A_' : 'I_') + family + '_' + rawType + confirmed.suffix;
+                basis.push('protocol addresses ' + addr + ' and ' + (addr + 1) + ' read as ' + confirmed.as + ', ' + confirmed.wordOrder +
+                    ', give ' + confirmed.value + (confirmed.scale ? ' (' + confirmed.scale + ')' : '') + ' — ' + confirmed.confirmed + '; one point at the lower address');
+            } else {
+                const implied = hasShown ? impliedScale(raw, shownText) : null;
+                if (implied && implied !== 'x1') { scale = implied; basis.push('the plant shows ' + shownText + ' where the register holds ' + raw + ', so ' + implied); }
+                else if (implied) basis.push('the plant shows the register unscaled');
+                const unsigned = hasShown && shown > 32767 && raw < 0;
+                const negative = raw < 0 || (hasShown && shown < 0);
+                const width = unsigned ? 'U16' : 'I16';
+                basis.push(unsigned ? 'the plant shows ' + shownText + ' where the register reads ' + raw + ' signed, so it is unsigned'
+                    : (negative ? 'a negative value was seen, so signed' : 'no negative value seen; I16 also covers 0 to 32767 and is the safer default'));
+                const analog = (implied && implied !== 'x1') || (hasShown && !Number.isInteger(shown)) || ANALOG_UNITS.has(unit.toLowerCase());
+                datatype = (analog ? 'A_' : 'I_') + family + '_' + width + '_N';
+                basis.push(analog
+                    ? 'analog: ' + (implied && implied !== 'x1' ? 'scaled' : (hasShown && !Number.isInteger(shown) ? 'shown with decimals' : 'unit ' + unit))
+                    : 'integral: a whole number with no scale' + (unit ? ', unit ' + unit : ''));
+            }
+        }
+        if (changed) basis.push('the value changed between the sweep and the second read — being measured, not a setpoint');
+        const out = { addr, datatype, rw, basis };
+        if (bits.length) out.bits = bits.map(e => ({ bit: e.bit, name: e.name, rw: e.access }));
+        else out.name = first.name;
+        if (scale) out.scale = scale;
+        if (unit) out.unit = unit;
+        if (first.group) out.group = first.group;
+        return out;
     }
 
     /**
@@ -1317,10 +1564,37 @@
         const tableLabel = t => (REGISTER_TABLES.find(x => x.value === String(t)) || {}).label || ('table ' + t);
         const asNumber = shown => Number(String(shown == null ? '' : shown).replace(',', '.'));
 
-        const plantRow = e => {
+        // With the register's value in hand, a bit parameter also says what its
+        // bit reads — the detail view counts that out, the file should too.
+        const plantRow = (e, raw) => {
             const row = { name: e.name, shown: e.plantValue, unit: e.unit, group: e.group, access: e.access, driverId: e.driverId };
-            if (e.bit !== null) row.bit = e.bit;
+            if (e.bit !== null) {
+                row.bit = e.bit;
+                if (typeof raw === 'number') row.reads = ((raw < 0 ? raw + 65536 : raw) >> e.bit) & 1;
+            }
             return row;
+        };
+
+        // Every 16-bit reading in hand, by table and reference, so a row can
+        // see its neighbour: a 32-bit value is two of them, and the file is the
+        // one place that can say which two.
+        const rawAt = new Map();
+        const scanAt = new Map();
+        for (const v of (lastScan && lastScan.values ? lastScan.values : [])) { rawAt.set(v.table + '|' + v.i, v); scanAt.set(v.table + '|' + v.i, v); }
+        if (result && !wide) for (const v of result.values) if (!rawAt.has(table + '|' + v.i)) rawAt.set(table + '|' + v.i, Object.assign({ table }, v));
+        const nextRawOf = (t, ref) => { const n = rawAt.get(t + '|' + (ref + 1)); return n ? n.v : undefined; };
+
+        // Why a register the plant reads was not among what the scan found —
+        // each one an address for the reader to check.
+        const scanStatusOf = (t, ref) => {
+            if (!lastScan || !lastScan.tables) return undefined;
+            const scanned = lastScan.tables[t];
+            if (!scanned) return 'table not scanned';
+            if (!scanned.answers) return 'the table gave no answer at all';
+            const swept = lastScan.sweep && lastScan.sweep[t];
+            if (!swept || swept.first === null) return 'the table was not swept';
+            if (ref >= swept.first && ref <= swept.last) return 'no answer inside the swept map (' + swept.first + '-' + swept.last + ') — a hole, or the wrong address';
+            return ref < swept.first ? 'below the first register the scan found, ' + swept.first : 'beyond the last register the scan found, ' + swept.last;
         };
         const listRow = p => {
             const row = {
@@ -1389,13 +1663,38 @@
             if (r.type) out.type = r.type;
             if (r.writable) out.writable = true;
             if (listed) out.list = listRow(listed);
-            if (fromPlant) out.plant = fromPlant.map(plantRow);
+            if (fromPlant) out.plant = fromPlant.map(e => plantRow(e, r.raw));
             const first = fromPlant && fromPlant[0];
             const implied = first && first.bit === null ? impliedScale(r.raw, first.plantValue) : null;
             if (implied) out.impliedScale = implied;
+            // The register and its neighbour as one 32-bit value, where the
+            // plant's own scale does not already explain the register — a
+            // 16-bit reading that fits is the simplest reading, and wins.
+            let wideFound = null;
+            if (!rowWide && !implied) {
+                wideFound = wideReading(r.raw, nextRawOf(rowTable, v.i), first && first.bit === null ? first.plantValue : null);
+                if (wideFound) out.wide = wideFound;
+            }
+            // A scan reads everything it found a second time; what moved is
+            // being measured. Only a scan row has this — a poll's second
+            // reading is watch mode's, above.
+            if (typeof v.again === 'number') {
+                out.reread = v.again;
+                if (v.changed) { out.changed = true; out.delta = roundScaled(v.again - v.v); }
+            }
+            const suggest = suggestPoint(rowTable, r.addr, r.raw, fromPlant, wideFound, !!v.changed);
+            if (suggest) out.suggest = suggest;
 
             // Where two sides disagree. Observations, not conclusions.
             const notes = [];
+            const confirmedWide = pickWide(wideFound);
+            if (confirmedWide) {
+                notes.push('a 32-bit point: protocol addresses ' + r.addr + ' and ' + (r.addr + 1) + ' read as ' + confirmedWide.as + ', ' +
+                    confirmedWide.wordOrder + ', give ' + confirmedWide.value + ' — ' + confirmedWide.confirmed);
+                if (listed && listed.decoded.ok && listed.decoded.step !== 2) {
+                    notes.push('the list declares ' + listed.datatype + ' (one register) where the plant\'s value fits a 32-bit ' + confirmedWide.as);
+                }
+            }
             if (listed && implied && listed.scale.known && ('x' + listed.scale.factor) !== implied) {
                 notes.push('the list scales by x' + listed.scale.factor + ', the plant implies ' + implied);
             }
@@ -1431,6 +1730,31 @@
         // reads a table one register at a time to find the map, never wide.
         const scanReadings = (lastScan && lastScan.values ? lastScan.values : []).map(v =>
             Object.assign({ table: v.table }, buildReadingRow(v, v.table, '', 1, false)));
+
+        /*
+         * A float's high word makes a candidate twice: high word first on its
+         * own row, and low word first on the row below, where it is the high
+         * word of that pair too. One high word, one candidate: where two
+         * readings share it, the one the plant confirmed stands, and failing
+         * that the rounder value — 21.5 over 21.5000038.
+         */
+        const byHighWord = new Map();
+        for (const r of readings.concat(scanReadings)) {
+            for (const w of (r.wide || [])) {
+                const key = (r.table || table) + '|' + (w.wordOrder === 'high word first' ? r.ref : r.ref + 1);
+                if (!byHighWord.has(key)) byHighWord.set(key, []);
+                byHighWord.get(key).push({ row: r, w });
+            }
+        }
+        for (const claims of byHighWord.values()) {
+            if (claims.length < 2) continue;
+            const keep = claims.slice().sort((a, b) => (!!b.w.confirmed - !!a.w.confirmed) || (String(a.w.value).length - String(b.w.value).length))[0];
+            for (const c of claims) {
+                if (c === keep || c.w.confirmed) continue;
+                c.row.wide = c.row.wide.filter(w => w !== c.w);
+                if (!c.row.wide.length) delete c.row.wide;
+            }
+        }
         const scales = {};
         for (const r of readings) if (r.impliedScale) scales[r.impliedScale] = (scales[r.impliedScale] || 0) + 1;
 
@@ -1443,7 +1767,14 @@
             for (const [key, entries] of plantNames.byRef) {
                 const [t, , ref] = key.split('|');
                 if (carried.has(t + '|' + ref)) continue;
-                for (const e of entries) plantParameters.push(Object.assign({ table: t, ref: Number(ref), addr: e.protocol }, plantRow(e)));
+                // After a scan, a parameter here is a register IWMAC reads that
+                // the device did not answer for — say where it fell.
+                const scan = scanStatusOf(t, Number(ref));
+                for (const e of entries) {
+                    const row = Object.assign({ table: t, ref: Number(ref), addr: e.protocol }, plantRow(e));
+                    if (scan) row.scan = scan;
+                    plantParameters.push(row);
+                }
             }
             const bitOf = row => (row.bit === undefined ? -1 : row.bit);
             plantParameters.sort((a, b) => a.table.localeCompare(b.table) || a.ref - b.ref || bitOf(a) - bitOf(b));
@@ -1479,10 +1810,27 @@
             const nums = lastScan.values.map(v => v.v);
             summary = {
                 requested: null, returned: nums.length, nonZero: nums.filter(n => n !== 0).length,
+                changed: lastScan.reread ? lastScan.reread.changed : null,
                 min: Math.min.apply(null, nums), max: Math.max.apply(null, nums),
-                blocks: null, elapsedMs: null, source: 'scan',
+                blocks: null, elapsedMs: lastScan.elapsedMs || null, source: 'scan',
             };
         }
+        // The loaded list against the scan: whether the device answered for
+        // each point's register, and what it held — a verification's answer
+        // without a verification, for whatever the sweep covered.
+        const listWithScan = p => {
+            const row = listRow(p);
+            if (!lastScan || !p.decoded.ok) return row;
+            const found = scanAt.get(p.decoded.table + '|' + p.ref);
+            if (found) {
+                row.scan = 'answered';
+                row.scanRaw = found.v;
+                if (typeof found.again === 'number' && found.changed) row.scanChanged = true;
+            } else {
+                row.scan = scanStatusOf(p.decoded.table, p.ref) || 'not scanned';
+            }
+            return row;
+        };
 
         return {
             format: 'modpoll-console/export',
@@ -1508,11 +1856,25 @@
                     'scanReadings row is exactly as live an answer as a readings row — both are the device responding just now — ' +
                     'but it proves the same and no more: a value, nothing about a datatype or a scale by itself. Read its ' +
                     'impliedScale and notes with the same caution as a poll\'s.',
+                'reread, changed and delta on a scanReadings row: the same register read again once the sweep was done ' +
+                    '(scan.reread says how long after the scan began and how many moved). changed marks a value being measured; ' +
+                    'unchanged is a setpoint, a configuration word, or a measurement that held still for that long.',
+                'wide on a 16-bit row: the register and the next one decoded as one 32-bit value, high word first (modbusgen _N) ' +
+                    'and low word first (_W), as a float and as an integer. confirmed names the plant value the pair decodes to; ' +
+                    'candidate means only the bit pattern looks like a float. Nothing on the wire proves a width — this is the ' +
+                    'same bits rearranged — so a candidate on its own is a lead to poll with -t 4:float, not a datatype.',
+                'suggest: the point a modbusgen list would carry for a register the plant has a parameter on — datatype from the ' +
+                    'shipped datatypes table, scale key, unit, rw, group, addr — with basis stating every inference behind it. ' +
+                    'plant[].reads is the state of that bit in the register as read. Check suggest against the vendor document; ' +
+                    'it is what the plant and the device showed, not what the device is.',
                 'plantParameters: every parameter IWMAC holds for this unit that is not already on a readings or scanReadings row; ' +
                     'those two sections plus this one are the whole unit. driverId ends in _0_<function>_<protocol address>[.<bit>]: ' +
                     'function 1 reads coils (table 0), 2 discrete inputs (table 1), 3 holding registers (table 4), 4 input ' +
-                    'registers (table 3). shown is the value IWMAC displayed when its names were read (unit.namesReadAt), not now.',
-                'listPoints: the loaded modbusgen list as parsed, with the table and width each datatype decodes to.',
+                    'registers (table 3). shown is the value IWMAC displayed when its names were read (unit.namesReadAt), not now. ' +
+                    'After a scan, scan on a row says why the device did not answer for that register — a hole inside the swept ' +
+                    'map, below or beyond it, or a table that gave no answer — each one an address to check against the list.',
+                'listPoints: the loaded modbusgen list as parsed, with the table and width each datatype decodes to. After a ' +
+                    'scan, scan and scanRaw say whether the sweep found the point\'s register and what it held.',
                 'verification and verificationRows: the last Verify list run. Per point: read, zero, refused (the device has no such ' +
                     'register), no answer, not polled (the datatype did not decode); the offset check scores whether the whole list ' +
                     'sits better a register or two along. Ranges anywhere are runs of ref, as "430-445,448".',
@@ -1552,7 +1914,10 @@
             diagnostics: (result && result.diagnostics) || [],
             notes: (result && result.notes) || [],
             commands: (result && result.commands) || [],
-            scan: lastScan ? { at: lastScan.at, host: lastScan.host, slave: lastScan.slave, tables: lastScan.tables, sweep: lastScan.sweep || null } : null,
+            scan: lastScan ? {
+                at: lastScan.at, host: lastScan.host, slave: lastScan.slave, elapsedMs: lastScan.elapsedMs || null,
+                tables: lastScan.tables, sweep: lastScan.sweep || null, reread: lastScan.reread || null,
+            } : null,
             verification: verification ? {
                 at: verification.at, device: verification.device, list: verification.list, summary: verification.summary,
                 offsets: verification.offsets, offsetVerdict: verification.offsetVerdict, diagnostics: verification.diagnostics,
@@ -1560,7 +1925,7 @@
             readings,
             scanReadings,
             plantParameters,
-            listPoints: pointList ? pointList.points.map(listRow) : [],
+            listPoints: pointList ? pointList.points.map(listWithScan) : [],
             verificationRows: verification ? verification.rows.map(row => {
                 const p = row.point;
                 const out = { addr: p.addr, ref: p.ref, name: p.name, datatype: p.datatype, status: row.status };
@@ -1679,7 +2044,9 @@
      * — not once the chunk is settled. A chunk that comes back whole is one
      * tick; a chunk on a strict device with a hole in it can be dozens, each
      * one a refusal paid for on the wire, and it is exactly that stretch a
-     * caller watching only chunk boundaries would see nothing from.
+     * caller watching only chunk boundaries would see nothing from. Between
+     * commands it is called again, marked partial, as values and refusals
+     * land on the terminal, so even one command is not a silence.
      */
     const SWEEP_CEILING = 65536;
     const SWEEP_CHUNK = MAX_COUNT * CHAIN_MAX;
@@ -1704,12 +2071,23 @@
         // look-aheads — is work the chunk caused, not a new chunk starting, so
         // only the opening read is flagged as one; every call still ticks.
         let chunkStart = false;
+        // One tick per command sent, and a partial one for every value or
+        // refusal that lands while it runs — the latter says "still alive"
+        // without counting as a second command.
+        const note = (ref, atChunkStart, partial) => {
+            if (!tick) return;
+            tick({
+                ref, found: found.size, chunkStart: !!atChunkStart, partial: !!partial,
+                arriving: partial ? (partial.arriving || 0) : 0, refusals: partial ? (partial.refusals || 0) : 0,
+            });
+        };
+        const probeNote = ref => (done, total, info) => note(ref, false, info && info.partial ? { arriving: info.answered } : null);
         const read = (start, count) => {
-            if (tick) tick(start, found.size, chunkStart);
+            note(start, chunkStart);
             chunkStart = false;
             return readRegisters(Object.assign({}, spec, {
                 table, format: '', base: 'printed', start, count, recover: false,
-            }));
+            }), p => { if (p.partial) note(start, false, p); });
         };
         const take = result => {
             for (const value of result.values) {
@@ -1760,7 +2138,7 @@
         const lookAhead = async (x, end) => {
             const at = [1, 2, 4, 8, 16, 32, 64, 128].map(d => x + d).filter(r => r <= end);
             if (!at.length || abortRequested || fatal) return null;
-            const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), () => { if (tick) tick(x, found.size, false); });
+            const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), probeNote(x));
             for (const r of at) {
                 const hit = inside[table + ':' + r];
                 if (hit && hit.answered) {
@@ -1826,7 +2204,7 @@
             if (fatal) { stoppedBecause = fatal; break; }
             if (!first.values.length && !gapsIn(ref, count).some(run => knownInside(run) !== null)) {
                 const at = [ref + 5, ref + Math.floor(count / 2), ref + count - 6].filter(r => r >= ref && r < ref + count);
-                const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), () => { if (tick) tick(ref, found.size, false); });
+                const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), probeNote(ref));
                 for (const r of at) {
                     const hit = inside[table + ':' + r];
                     if (hit && hit.answered && !found.has(r)) { found.set(r, { i: r, addr: r - 1, v: hit.value }); answers.add(r); fresh++; }
@@ -1874,6 +2252,66 @@
             stoppedAt: ref,
             stoppedBecause,
             chunks,
+        };
+    }
+
+    /*
+     * Everything a sweep found, read once more, so a reading that moved can be
+     * told from one that held still. Only the registers that answered are
+     * asked, run by run — a strict device refuses a block whole, so a run never
+     * spans a hole — and recovery stays off, since nothing here should be
+     * refused. The values are annotated in place: `again` is the second
+     * reading, `changed` says it differed from the first.
+     */
+    async function rereadFound(spec, values, onProgress) {
+        const startedAt = performance.now();
+        const original = new Map();
+        const byTable = {};
+        for (const v of values) {
+            original.set(v.table + '|' + v.i, v);
+            (byTable[v.table] = byTable[v.table] || []).push(v.i);
+        }
+        const runs = [];
+        for (const table of Object.keys(byTable)) {
+            let run = null;
+            for (const ref of [...new Set(byTable[table])].sort((a, b) => a - b)) {
+                if (run && run.ref + run.count === ref) run.count++;
+                else { run = { table, ref, count: 1 }; runs.push(run); }
+            }
+        }
+        let reread = 0;
+        let changed = 0;
+        let commands = 0;
+        const changedRefs = {};
+        for (let i = 0; i < runs.length && !abortRequested; i++) {
+            const run = runs[i];
+            if (onProgress) onProgress(i, runs.length, { changed });
+            let result;
+            try {
+                result = await readRegisters(Object.assign({}, spec, {
+                    table: run.table, format: '', base: 'printed', start: run.ref, count: run.count, recover: false,
+                }), p => { if (p.partial && onProgress) onProgress(i, runs.length, { changed, partial: true, arriving: p.arriving }); });
+            } catch (e) { break; }
+            commands += result.commands.length;
+            for (const v of result.values) {
+                const was = original.get(run.table + '|' + v.i);
+                if (!was) continue;
+                reread++;
+                was.again = v.v;
+                if (v.v !== was.v) {
+                    was.changed = true;
+                    changed++;
+                    (changedRefs[run.table] = changedRefs[run.table] || []).push(v.i);
+                }
+            }
+        }
+        const changedRanges = {};
+        for (const table of Object.keys(changedRefs)) changedRanges[table] = asRanges(changedRefs[table]);
+        return {
+            at: new Date().toISOString(),
+            runs: runs.length, reread, changed, changedRanges, commands,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            stopped: abortRequested,
         };
     }
 
@@ -3125,16 +3563,63 @@
      * moment at 100 %, so an eye that was elsewhere sees that it ended.
      */
     let progressHideTimer = null;
+    // Between two real updates the bar keeps moving on a timer — a timer, not
+    // a frame callback, since frames stop wherever the page is not painted —
+    // towards where the next update is likely to land: one more step of the
+    // size the last one took, slowing as it gets there. A device saying no
+    // for a second at a time then reads as slow rather than dead. The creep
+    // never crosses the next real update, never reaches the end on its own,
+    // and the bar never goes backwards: a real update behind the creep is
+    // caught up to, not shown. The elapsed time beside the text is the other
+    // sign of life, and it costs nothing to be honest about.
+    let progressTimer = null;
+    let progressActive = false;
+    let progressShownAt = 0;
+    let progressTarget = 0;      // the last fraction reported
+    let progressDrawn = 0;       // what the bar shows
+    let progressStep = 0.02;     // how far the last real update moved it
+    let progressLabel = '';
+    function progressElapsed() {
+        const s = Math.max(0, Math.floor((Date.now() - progressShownAt) / 1000));
+        return s >= 60 ? Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') : s + ' s';
+    }
+    function drawProgress() {
+        ui.progressFill.style.width = (Math.max(0, Math.min(1, progressDrawn)) * 100).toFixed(1) + '%';
+        ui.progressText.textContent = (progressLabel ? progressLabel + ' · ' : '') + progressElapsed();
+    }
+    function creepProgress() {
+        if (!progressActive) return;
+        if (progressTarget < 1) {
+            const ceiling = Math.min(0.985, progressTarget + progressStep);
+            if (progressDrawn < ceiling) progressDrawn += (ceiling - progressDrawn) * 0.05;
+        }
+        drawProgress();
+    }
     function showProgress(fraction, text) {
         if (!ui.progress) return;
         clearTimeout(progressHideTimer);
-        ui.progress.classList.remove('mpc-hidden');
-        ui.progressFill.style.width = Math.round(Math.max(0, Math.min(1, fraction)) * 100) + '%';
-        ui.progressText.textContent = text || '';
+        const f = Math.max(0, Math.min(1, Number(fraction) || 0));
+        if (!progressActive) {
+            progressActive = true;
+            progressShownAt = Date.now();
+            progressTarget = 0;
+            progressDrawn = 0;
+            progressStep = 0.02;
+            ui.progress.classList.remove('mpc-hidden');
+        }
+        if (f > progressTarget) progressStep = Math.max(0.004, Math.min(0.06, f - progressTarget));
+        progressTarget = Math.max(progressTarget, f);
+        progressDrawn = Math.max(progressDrawn, progressTarget);
+        progressLabel = text || '';
+        drawProgress();
+        if (!progressTimer) progressTimer = setInterval(creepProgress, 100);
     }
     function hideProgress(afterMs) {
         if (!ui.progress) return;
         clearTimeout(progressHideTimer);
+        clearInterval(progressTimer);
+        progressTimer = null;
+        progressActive = false;
         if (afterMs) progressHideTimer = setTimeout(() => ui.progress.classList.add('mpc-hidden'), afterMs);
         else ui.progress.classList.add('mpc-hidden');
     }
@@ -3485,13 +3970,14 @@
     }
 
     const SCAN_COLUMNS = [
-        { label: 'table', width: '13%', title: 'Which table the register lives in' },
-        { label: 'ref', width: '8%', title: "modpoll's 1-based reference" },
-        { label: 'addr', width: '8%', title: 'Protocol address' },
-        { label: 'name', width: '33%', align: 'left', title: 'From the plant database or the loaded list' },
-        { label: 'value', width: '10%', title: 'What the register held during the scan' },
-        { label: 'shown', width: '12%', title: 'What the plant makes of it' },
-        { label: 'unit', width: '7%' },
+        { label: 'table', width: '12%', title: 'Which table the register lives in' },
+        { label: 'ref', width: '7%', title: "modpoll's 1-based reference" },
+        { label: 'addr', width: '7%', title: 'Protocol address' },
+        { label: 'name', width: '30%', align: 'left', title: 'From the plant database or the loaded list' },
+        { label: 'value', width: '9%', title: 'What the register held during the sweep' },
+        { label: '2nd read', width: '9%', title: 'The same register read again once the sweep was done — a value that moved is being measured' },
+        { label: 'shown', width: '11%', title: 'What the plant makes of it' },
+        { label: 'unit', width: '6%' },
         { label: 'where from', width: '9%', align: 'left' },
     ];
 
@@ -3507,12 +3993,13 @@
             return;
         }
         // Counted before the filter: hiding the zeros must not make the scan
-        // look as if fewer registers answered.
+        // look as if fewer registers answered. What moved between the two
+        // reads comes first — it is what a reader is looking for.
         const all = values
-            .map(v => Object.assign({ table: v.table }, enrichValue(v, v.table, '')))
-            .sort((a, b) => (a.raw === 0) - (b.raw === 0) || a.table.localeCompare(b.table) || a.ref - b.ref);
+            .map(v => Object.assign({ table: v.table, again: v.again, changed: !!v.changed }, enrichValue(v, v.table, '')))
+            .sort((a, b) => (b.changed - a.changed) || ((a.raw === 0) - (b.raw === 0)) || a.table.localeCompare(b.table) || a.ref - b.ref);
         const onlyNonZero = ui.filterZero.checked;
-        const rows = all.filter(r => !onlyNonZero || r.raw !== 0);
+        const rows = all.filter(r => !onlyNonZero || r.raw !== 0 || r.changed);
         const shown = rows.slice(0, 2000);
         const frag = document.createDocumentFragment();
         for (const r of shown) {
@@ -3523,6 +4010,7 @@
                 { text: String(r.addr) },
                 { text: r.name || '', align: 'left' },
                 { text: String(r.raw), className: r.raw === 0 ? 'zero' : '' },
+                { text: typeof r.again === 'number' ? String(r.again) : '', className: r.changed ? 'changed' : (r.again === 0 ? 'zero' : '') },
                 { text: r.shown === '' || r.shown === null ? '' : String(r.shown) },
                 { text: r.unit || '' },
                 { text: r.source || '', align: 'left' },
@@ -3542,8 +4030,10 @@
         ui.gridBody.appendChild(frag);
         const nonZero = all.filter(r => r.raw !== 0).length;
         const named = all.filter(r => r.name).length;
+        const changed = all.filter(r => r.changed).length;
+        const reread = all.filter(r => typeof r.again === 'number').length;
         ui.summary.textContent = all.length + ' registers answered, ' + nonZero + ' holding a value, ' +
-            named + ' named' + (onlyNonZero ? ' — zeros hidden' : '') +
+            named + ' named' + (reread ? ', ' + changed + ' changed on the second read' : '') + (onlyNonZero ? ' — zeros hidden' : '') +
             (rows.length > shown.length ? ' — showing the first 2000' : '');
     }
 
@@ -3840,9 +4330,14 @@
                 storeSet(STORE_KEY, JSON.stringify(form));
                 result = await readRegisters(form, p => {
                     // A poll of several blocks is long enough to watch; one block is not.
-                    if (p.blocks > 1) showProgress(p.block / p.blocks, 'Block ' + p.block + ' of ' + p.blocks);
-                    else if (p.recovering) showProgress(1, 'Re-asking for ' + p.recovering + ' gap' + (p.recovering === 1 ? '' : 's'));
-                    if (repeating) return;   // the command has not changed since the first pass
+                    // Output landing mid-run moves the text, not the log.
+                    const landing = p.partial && (p.arriving || p.refusals)
+                        ? ' — ' + (p.arriving ? p.arriving + ' value' + (p.arriving === 1 ? '' : 's') + ' in' : '') +
+                            (p.arriving && p.refusals ? ', ' : '') + (p.refusals ? p.refusals + ' refused' : '')
+                        : '';
+                    if (p.blocks > 1) showProgress(p.block / p.blocks, 'Block ' + p.block + ' of ' + p.blocks + landing);
+                    else if (p.recovering) showProgress(1, 'Re-asking for ' + p.recovering + ' gap' + (p.recovering === 1 ? '' : 's') + landing);
+                    if (p.partial || repeating) return;   // still the same command, or the command has not changed since the first pass
                     log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : ''));
                 });
                 hideProgress(1500);
@@ -3992,12 +4487,44 @@
             plantNames = await fetchPlantNames(unitId);
             log(unitId + ': ' + plantNames.rows + ' parameters on ' + plantNames.byRef.size + ' registers, ' +
                 plantNames.groups + ' groups' + (plantNames.undecodable ? ', ' + plantNames.undecodable + ' without a decodable driver_id' : ''), 'ok');
+            // Whichever grid is up gets its names.
             if (lastResult) renderGrid(lastResult);
+            else if (lastScan && lastScan.values) renderScan(lastScan);
             return plantNames;
         } catch (e) {
             log('Could not read the parameter names for ' + unitId + ': ' + e.message, 'warn');
             return null;
         }
+    }
+
+    /**
+     * The names for whatever the form points at, found rather than asked for:
+     * the unit chosen in the picker, or failing that the unit the plant
+     * database has at this host and slave. A scan or an export without the
+     * plant's parameters says what the device holds and nothing about what
+     * IWMAC makes of it, which is half of what the export exists to say — so
+     * this runs before a scan, and says so when it comes back empty-handed.
+     */
+    async function ensureNamesFor(form) {
+        let unitId = ui.units ? ui.units.value : '';
+        if (!unitId) {
+            let units = _unitsCache;
+            if (!units) {
+                try { units = await fetchUnits(false); }
+                catch (e) { units = null; log('Could not list the plant\'s units: ' + e.message, 'warn'); }
+            }
+            const unit = units ? unitAtForm(units, form) : null;
+            if (unit) {
+                unitId = unit.unit_id;
+                log('The plant database has ' + unitId + ' (' + (unit.unit_name || unit.driver_type) + ') at ' + form.host + ' slave ' + form.slave);
+            }
+        }
+        if (!unitId) {
+            log('No unit in the plant database is at ' + form.host + ' slave ' + form.slave + ' — the scan will not be named and the ' +
+                'export will carry no IWMAC parameters. Pick a unit from the list to attach them.', 'warn');
+            return null;
+        }
+        return loadNamesFor(unitId);
     }
 
     async function runVerification() {
@@ -4048,7 +4575,11 @@
 
     function resultFilename() {
         const s = lastResult && lastResult.spec || {};
-        return 'modpoll_' + (plantIdFromHost() || 'plant') + '_' + (s.host || 'raw') + '_' + nowStamp() + '.json';
+        // A scan without a poll is still a device: name the file after it, and
+        // after the unit when its names are loaded.
+        const host = s.host || (lastScan && lastScan.host) || 'raw';
+        const unit = plantNames && plantNames.unitId ? String(plantNames.unitId).replace(/[^\w.-]+/g, '-') + '_' : '';
+        return 'modpoll_' + (plantIdFromHost() || 'plant') + '_' + unit + host + '_' + nowStamp() + '.json';
     }
 
     async function loadUnits() {
@@ -4259,8 +4790,13 @@
             setDot('warn');
             try {
                 log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — every table, every region it answers in, ' +
-                    'holes isolated, up to reference ' + SWEEP_CEILING + '. Stop ends it early');
+                    'holes isolated, up to reference ' + SWEEP_CEILING + ', then everything found read once more. Stop ends it early');
                 showProgress(0, 'Starting the scan');
+                // The unit's own parameters first, so what the scan finds is
+                // named as it lands and the export can say what IWMAC reads —
+                // without a separate click nobody remembers to make.
+                showProgress(0, 'Reading the plant\'s parameter names for this unit');
+                await ensureNamesFor(readForm());
                 const report = await scanDevice(readForm(), true, p => {
                     // The bar moves on every tick sweepForValues makes, several
                     // times inside one chunk on a strict device; the log stays at
@@ -4288,6 +4824,15 @@
                             region.stoppedBecause);
                     }
                 }
+                if (report.reread) {
+                    const rr = report.reread;
+                    log('Read everything found again ' + rr.secondsAfterStart + ' s after the scan began: ' + rr.changed + ' of ' + rr.reread +
+                        ' registers changed' + (rr.changed ? ' — ' + Object.keys(rr.changedRanges).map(t =>
+                            (REGISTER_TABLES.find(r => r.value === t) || {}).label + ' ' + rr.changedRanges[t]).join('; ') : '') +
+                        (rr.stopped ? ' (stopped before the end)' : ''), rr.changed ? 'ok' : '');
+                }
+                log('Scan finished in ' + Math.round(report.elapsedMs / 1000) + ' s' +
+                    (plantNames ? ' — Save JSON now carries ' + plantNames.rows + ' IWMAC parameters and a suggestion per named register' : ''), 'ok');
                 renderScan(report);
                 setDot('ok');
                 hideProgress(2500);
@@ -4570,7 +5115,7 @@
                 '                                          format: "" 16-bit | int | float | mod | hex',
                 '                                          bigEndian: true adds -i (int) or -f (float)',
                 'await __modpoll.raw("modpoll.exe …")      one command, parsed; writes are refused',
-                'await __modpoll.scan({host, slave})       which tables answer, and from which reference',
+                'await __modpoll.scan({host, slave})       every register the device answers for, read twice; names the unit first',
                 '__modpoll.loadList(projectJson)           adopt a modbusgen project: points and system.comm',
                 'await __modpoll.verify()                  poll every point in that list and judge the answers',
                 '__modpoll.report()                        the verification as markdown parts, ready to upload',
@@ -4615,12 +5160,15 @@
          * Which tables answer and where they start; with deep, also every register
          * they answer with, read on until the answers stop.
          */
-        scan(spec, deep) {
-            return scanDevice(spec, deep !== false).then(report => {
-                lastScan = report;
-                try { renderScan(report); } catch (e) { /* panel not built */ }
-                return report;
-            });
+        async scan(spec, deep) {
+            // The unit's names first, as the button does, so the report and the
+            // export that follows carry what IWMAC reads — unless the caller
+            // has loaded names itself.
+            if (!plantNames) { try { await ensureNamesFor(Object.assign(readForm(), spec || {})); } catch (e) { /* the scan stands without names */ } }
+            const report = await scanDevice(spec, deep !== false);
+            lastScan = report;
+            try { renderScan(report); } catch (e) { /* panel not built */ }
+            return report;
         },
         /**
          * Name registers from the plant's own parameter list for a unit — alias

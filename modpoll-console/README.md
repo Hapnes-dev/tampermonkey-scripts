@@ -51,12 +51,30 @@ rebuilt.
   lenient device answers 0 for everything and never goes empty, so its sweep
   stops after two thousand registers of zeros past the last value. The report
   says, per table and per region, what answered, what held a value, and why the
-  sweep stopped. Useful before blaming a point list. The progress bar ticks on
-  every command the sweep sends rather than once a chunk finally settles, since
-  one chunk on a strict device with a hole in it can be dozens of refusals deep
-  before it does; the log still gets one line per chunk opened, not one per
-  tick. Every register the scan reads is kept, not only where each region
-  starts — see *Save JSON* below.
+  sweep stopped. Useful before blaming a point list. Every register the scan
+  reads is kept, not only where each region starts — see *Save JSON* below.
+  Two things happen around the sweep. Before it, the console looks up the unit
+  the form points at — the one chosen in the picker, or the one the plant
+  database has at that host and slave — and loads its parameters, so what the
+  scan finds is named as it lands and the export can say what IWMAC reads
+  without a separate click; when no unit matches it says so and scans anyway.
+  After it, everything found is read once more, run by run so nothing is
+  refused: a register that reads differently the second time is being
+  measured, one that reads the same is a setpoint, a configuration word or a
+  measurement that held still — half of what deciding a datatype needs, for a
+  few seconds of polling. The grid shows the second read beside the first,
+  what moved first.
+- **Shows progress the whole time.** Plant Term hands output back as it
+  arrives, and the console reads it as it arrives: a chained line of probes
+  ticks on every marker the shell reaches — one refusal at a time, about
+  630 ms apart on a strict device — and a block read ticks on every value or
+  refusal that lands, instead of once per line. The narrowing phase knows its
+  number of halvings from the widest gap and says which it is on. Between real
+  updates the bar creeps towards where the next one is likely to land, on a
+  timer rather than a frame callback, slowing as it gets there and never
+  crossing it, and the elapsed time sits beside the text — so a device saying
+  no for a second at a time reads as slow rather than dead. The log still gets
+  one line per chunk opened, not one per tick.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both
@@ -86,6 +104,36 @@ rebuilt.
   `__modpoll.exportParts()` splits the same document into files of at most
   34 000 characters, each repeating the header so it stands alone.
   `__modpoll.lastExport()` is the document, `__modpoll.exportText()` the file.
+
+  Four more things a scan reading carries, each an inference stated as one:
+
+  - `reread`, `changed` and `delta` — the second read, and whether it moved.
+  - `wide` — the register and the next one decoded as one 32-bit value, high
+    word first (modbusgen `_N`) and low word first (`_W`), as a float and as an
+    integer, from the same bits modpoll already printed. *Confirmed* when the
+    plant shows the number the pair decodes to — 21,5 °C where the two
+    registers hold `0x41AC 0x0000` is a float, whatever the list says —
+    *candidate* when only the bit pattern looks like a float. A 16-bit reading
+    the plant's own scale explains is never brought here: the simplest reading
+    that fits wins, and a float's high word is claimed by one pair only, so the
+    row below a real float does not grow a spurious low-word-first twin.
+  - `suggest` — the point a modbusgen list would carry for a register the
+    plant has a parameter on: `datatype` from the shipped table
+    (`A_Hold_I16_N`, `I_Hold_U32_N`, `A_Input_F_N`, `Bit_Hold` with one entry
+    per bit, `Coil_X_N`, `Digital_X_N`), the scale key, unit, `rw`, group and
+    `addr`, with `basis` stating every choice — why signed, why analog, which
+    plant value confirmed the width. A lead to check against the vendor
+    document, never a conclusion; the file says so itself.
+  - `plant[].reads` — for a parameter that is a bit of the register, what that
+    bit reads now.
+
+  And two things the other sections say after a scan: a `plantParameters` row
+  — a register IWMAC reads that the scan did not find — says where it fell, a
+  hole inside the swept map, below or beyond it, or a table that gave no
+  answer; and a `listPoints` row says whether the scan answered for its
+  register and what it held. Both are the verification's answer for whatever
+  the sweep covered, without a verification. The file is named after the unit
+  and the scanned host when there is no poll.
 
 ## What a deep dive on plant 2313 established
 
@@ -271,7 +319,7 @@ await __modpoll.read({                     // full result
   bigEndian: true,                         // adds -i (int) or -f (float)
   recover: true                            // halve a refused block, default on
 });
-await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // which tables answer
+await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // every register that answers, read twice; names the unit first
 
 await __modpoll.units();                  // the plant's own unit list
 await __modpoll.names('ID01');            // name registers from the plant database
@@ -329,10 +377,18 @@ quietly stop being the thing under test.
 - `python test/scan-simulation.py` — *Scan device* against simulated devices, in
   Node, with Plant Term replaced by a device model: a strict one that refuses a
   block touching anything unmapped, a lenient one that answers 0 for whatever is
-  not mapped, and a strict one whose map starts at protocol address 1000. The
-  scan as committed at HEAD runs on the same maps (`--old-ref` picks another),
-  so a change is measured against what it replaces: what each finds, what each
-  misses, and what each costs in modpoll runs and refusals.
+  not mapped, and a strict one whose map starts at protocol address 1000. Two
+  of them carry live registers that never answer the same twice, which the
+  second read has to catch and nothing else may. The scan as committed at HEAD
+  runs on the same maps (`--old-ref` picks another), so a change is measured
+  against what it replaces: what each finds, what each misses, what each tells
+  apart, and what each costs in modpoll runs and refusals.
+- `python test/export-check.py` — *Save JSON* with a scan in hand and no poll,
+  against a unit whose parameters cover the shapes a list has to get right: a
+  scaled 16-bit register, a float over two registers, a 32-bit counter, a status
+  word read by bits, a negative writable setpoint, a register that moved between
+  the two reads, and parameters on registers the scan did not find. Twenty-four
+  expectations, each printed PASS or FAIL; exits non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the
