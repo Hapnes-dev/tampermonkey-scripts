@@ -200,7 +200,18 @@ verification* writes the same thing as JSON.
 modpoll has no write flag: it writes when a value follows the host argument. Every
 command — including one typed by hand into the preview box, and every segment of a
 chained one — is tokenised first, and a second positional argument is refused with
-the reason stated. Nothing in the panel can set a register.
+the reason stated, whatever it starts with: `-7` behind the host is a value, not a
+flag. Nothing in the panel can set a register.
+
+The same pass keeps the command a poll and nothing more, because it runs in a
+shell on the plant server. The executable must be `modpoll`, `modpoll.exe` or
+`c:\iwmac\bin\modpoll.exe` — a path that merely contains the word is not run —
+and every token must be made of the characters a modpoll argument can contain.
+A quote, a space inside an argument, a pipe, a redirect, a `%variable%` or a line
+break is refused with the token named. The API's `read()` checks its serial
+settings the same way, in the words of the field: a baud rate is a number, parity
+is `none`, `even` or `odd` in any of the spellings a list writes (`N`, `E`, `O`,
+`0`, `1`, `2`), data bits are 7 or 8, stop bits 1 or 2.
 
 There is a second hazard that is not about writing. Without `-1`, modpoll polls
 every second forever, and a command that loses its tail on the way through Plant

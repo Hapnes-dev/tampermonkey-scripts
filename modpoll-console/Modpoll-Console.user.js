@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.34.0
+// @version      1.35.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -45,7 +45,10 @@
  * Polling is read-only by construction. modpoll writes when values are supplied
  * after the host argument, so every command — including one typed by hand into
  * the preview box — is tokenised and rejected if it carries a second positional
- * argument.
+ * argument. The same pass admits only the three spellings of the executable the
+ * tool itself emits, and only tokens made of the characters a modpoll argument
+ * can contain: the command runs in a shell on the plant server, and a quote, a
+ * pipe, a redirect or a line break inside an argument is not a poll.
  */
 
 (function () {
@@ -55,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.34.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.35.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -198,6 +201,16 @@
     const FLAGS_WITH_VALUE = new Set(['-m', '-a', '-r', '-c', '-t', '-b', '-d', '-s', '-p', '-o', '-l']);
     // -i and -f are the endian flags; this build has no -0.
     const FLAGS_BOOLEAN = new Set(['-1', '-i', '-e', '-f', '-h', '-4', '-5', '-u']);
+    // Every argument modpoll takes is one bare word: a flag, a number, a table
+    // with its format, a mode, a parity, an address or a path. None needs a
+    // quote, a space, a pipe, a redirect or a variable, so a token carrying any
+    // of those is not an argument — it is an attempt on the shell the command
+    // runs in, which is a shell on the plant server.
+    const RE_TOKEN = /^[\w.:\\\/-]+$/;
+    // The executable is one of the three spellings the tool itself emits. A
+    // path that merely contains "modpoll" — a UNC share, a copy left somewhere
+    // else on the plant — is not run.
+    const EXE_ALLOWED = new Set(['modpoll', 'modpoll.exe', EXE_FULL.toLowerCase()]);
 
     function splitTokens(command) {
         const out = [];
@@ -243,7 +256,16 @@
 
     function assertSegmentReadOnly(command) {
         if (new RegExp('^echo\\s+' + MARK + '[\\w:.-]*$').test(command)) return true;
+        // A line break or a control character has no place in a command line at
+        // all; a shell reading one may well take what follows as the next line.
+        if (/[\x00-\x1f\x7f]/.test(command)) throw new Error('Refused: the command contains a line break or a control character.');
         const tokens = splitTokens(command);
+        for (const t of tokens) {
+            if (!RE_TOKEN.test(t)) {
+                throw new Error('Refused: "' + t + '" is not something modpoll takes — quotes, spaces inside an argument, ' +
+                    'pipes, redirects and variables are never part of a poll.');
+            }
+        }
         const positionals = [];
         for (let i = 0; i < tokens.length; i++) {
             const t = tokens[i];
@@ -262,10 +284,19 @@
             throw new Error('Refused: a value after the host makes modpoll write to the device. ' +
                 'Unexpected argument "' + positionals[2] + '".');
         }
-        if (!/modpoll/i.test(positionals[0] || '')) {
-            throw new Error('Refused: the command does not start with modpoll.exe.');
+        if (!EXE_ALLOWED.has(String(positionals[0] || '').toLowerCase())) {
+            throw new Error('Refused: the command must start with modpoll, modpoll.exe or ' + EXE_FULL + ' — nothing else is run.');
         }
         return true;
+    }
+
+    /** none, even or odd from whatever spelling arrived: n/e/o, N/E/O, 0/1/2. */
+    function normaliseParity(value) {
+        const text = String(value == null ? '' : value).trim().toLowerCase();
+        // The digits follow the plant database, where 0 is none, 1 odd, 2 even.
+        const known = { '': 'none', none: 'none', n: 'none', 0: 'none', even: 'even', e: 'even', 2: 'even', odd: 'odd', o: 'odd', 1: 'odd' };
+        if (known[text] === undefined) throw new Error('Parity must be none, even or odd, not "' + value + '"');
+        return known[text];
     }
 
     function normaliseSpec(input) {
@@ -291,8 +322,22 @@
         spec.count = Math.max(1, Number(spec.count) || 1);
         spec.port = Number(spec.port) || 502;
         spec.table = String(spec.table);
+        spec.mode = String(spec.mode || 'tcp').trim().toLowerCase();
+        if (['tcp', 'rtu', 'enc', 'ascii'].indexOf(spec.mode) < 0) throw new Error('Mode must be tcp, rtu, enc or ascii, not "' + spec.mode + '"');
         spec.host = String(spec.host || '').trim();
         if (!spec.host) throw new Error(isSerialMode(spec.mode) ? 'No COM port given' : 'No IP address given');
+        // Said here, in the words of the field, rather than by the command guard
+        // in the words of the shell. The form's selects can only produce valid
+        // serial settings; the API and a point list's comm block can produce
+        // anything, and an empty -p value would swallow the host token after it.
+        if (!RE_TOKEN.test(spec.host)) throw new Error('"' + spec.host + '" contains characters that cannot be part of an address or a port name');
+        spec.baudrate = String(spec.baudrate == null ? '9600' : spec.baudrate).trim();
+        if (!/^\d+$/.test(spec.baudrate)) throw new Error('Baud rate must be a number, not "' + spec.baudrate + '"');
+        spec.parity = normaliseParity(spec.parity);
+        spec.databits = String(spec.databits == null ? '8' : spec.databits).trim();
+        if (spec.databits !== '7' && spec.databits !== '8') throw new Error('Data bits must be 7 or 8, not "' + spec.databits + '"');
+        spec.stopbits = String(spec.stopbits == null ? '1' : spec.stopbits).trim();
+        if (spec.stopbits !== '1' && spec.stopbits !== '2') throw new Error('Stop bits must be 1 or 2, not "' + spec.stopbits + '"');
         // The binary answers "Invalid reference parameter!" below 1; say so here
         // rather than spending a round trip to be told.
         if (printedRef(spec) < 1) throw new Error('Start reference must be 1 or higher — modpoll counts from 1');
@@ -3186,7 +3231,12 @@
         else if (comm.com_port) ui.host.value = comm.com_port;
         if (comm.port) ui.port.value = comm.port;
         if (comm.baudrate) ui.baudrate.value = String(comm.baudrate);
-        if (comm.parity) ui.parity.value = String(comm.parity).toLowerCase();
+        // A list writes parity as N, E or O as often as by name; the select only
+        // knows the names, and a value it does not know leaves it blank.
+        if (comm.parity) {
+            try { ui.parity.value = normaliseParity(comm.parity); }
+            catch (e) { log('The list says parity "' + comm.parity + '", which is not a parity — left as it was', 'warn'); }
+        }
         if (comm.stop_bits) ui.stopbits.value = String(comm.stop_bits);
         if (comm.data_bits) ui.databits.value = String(comm.data_bits);
         toggleSerial();
@@ -3910,6 +3960,9 @@
         stop() { stopAll(); return true; },
         open() { showConsole(); return true; },
     };
+    // The page can see this object; it should not be able to swap a method on
+    // it for one that skips the guard — every route to the shell stays inside.
+    Object.freeze(api);
 
     // A second route for callers that run in an isolated world and cannot see
     // page globals: post a request, listen for the matching response.
