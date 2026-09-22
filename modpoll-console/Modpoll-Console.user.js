@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.41.0
+// @version      1.42.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.41.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.42.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1095,27 +1095,43 @@
             const lowest = refs => refs.reduce((m, r) => (m === null || r < m ? r : m), null);
             const highest = refs => refs.reduce((m, r) => (m === null || r > m ? r : m), null);
             const sweeping = SCAN_TABLES.filter(table => tables[table].answers);
+            // A chunk is not one round trip on a strict device, it is dozens —
+            // chaseRun halves its way around every gap at ~630 ms a refusal, with
+            // sweepForValues previously reporting back only once the whole chunk
+            // was settled. That is what froze the bar for minutes. Ticking on
+            // every command sweepForValues issues, not once it is done with a
+            // chunk, is what makes it move the whole time instead.
+            let commandsSoFar = 0;
+            // Ticks, not chunks, are what "how much of this share is spent" is
+            // measured in now; a strict chunk's dozens of ticks would have blown
+            // past a chunk-scaled half-life in one step.
+            const SWEEP_TICK_HALF_LIFE = 24;
             for (const table of SCAN_TABLES) {
                 if (!tables[table].answers || abortRequested) continue;
                 const total = { answered: 0, nonZero: 0, refs: [], withValues: [], regions: [], chunks: 0 };
                 const seen = new Set();
                 const share = 0.7 / sweeping.length;
                 const before = 0.3 + share * sweeping.indexOf(table);
-                let chunksSoFar = 0;
-                const sweepProgress = p => {
-                    chunksSoFar++;
-                    // Never done until the table is: the share creeps towards its
-                    // end with every chunk and the next table starts at it.
-                    tell(before + share * (chunksSoFar / (chunksSoFar + 3)),
-                        'Sweeping ' + tableLabel(table) + ' from ' + p.ref + ' — ' + p.found + ' registers found',
-                        Object.assign({ phase: 'sweep' }, p));
+                // Total work left in a table's sweep is unknowable until it stops
+                // — so the share only ever creeps towards its end, asymptotically,
+                // and is snapped to exactly once the table's last region actually
+                // finishes (below), rather than trusting the creep to arrive there
+                // on its own.
+                let workSoFar = 0;
+                const sweepTick = (ref, found, chunkStart) => {
+                    commandsSoFar++;
+                    workSoFar++;
+                    tell(before + share * (workSoFar / (workSoFar + SWEEP_TICK_HALF_LIFE)),
+                        'Sweeping ' + tableLabel(table) + ' near ' + ref + ' — ' + found + ' found, ' + commandsSoFar +
+                            ' command' + (commandsSoFar === 1 ? '' : 's') + ' sent',
+                        { phase: 'sweep', table, ref, found, commands: commandsSoFar, chunkStart: !!chunkStart });
                 };
                 for (const region of regions[table]) {
                     if (abortRequested) break;
                     // A sweep that ran on through the next region found its start
                     // already — found, not merely passed over.
                     if (seen.has(region.high)) continue;
-                    const swept = await sweepForValues(spec, table, region.high, known[table], sweepProgress);
+                    const swept = await sweepForValues(spec, table, region.high, known[table], sweepTick);
                     total.chunks += swept.chunks;
                     let inRegion = 0;
                     let nonZeroInRegion = 0;
@@ -1140,6 +1156,9 @@
                     ranges: asRanges(total.refs), withValues: asRanges(total.withValues),
                     regions: total.regions, chunks: total.chunks,
                 };
+                // The table is actually done now, rather than merely close by
+                // whatever the asymptote last happened to reach.
+                tell(before + share, tableLabel(table) + ' swept — ' + total.answered + ' registers found', { phase: 'sweep', table });
             }
         }
         tell(1, abortRequested ? 'Scan stopped' : 'Scan complete', { phase: 'done' });
@@ -1273,16 +1292,21 @@
      * driver_id and all. The plant's parameters come whole — every one the unit
      * has, polled or not — because what the plant reads is the other half of
      * what a list has to match. The last verification comes with its offset
-     * check, and the last scan with what answered where. Where two sides of a
-     * register disagree, the reading carries a note saying so: an observation
-     * for the reader to judge, never a conclusion.
+     * check. The last scan comes two ways: the shape of it — which tables
+     * answered, the regions, the sweep summary — in `scan`, as before, and
+     * every register it actually read in `scanReadings`, which used to be
+     * thrown away entirely; a device only ever scanned, never polled, used to
+     * export the shape of its map and none of its data, which is the one thing
+     * this file exists to hand over. Where two sides of a register disagree,
+     * the reading carries a note saying so: an observation for the reader to
+     * judge, never a conclusion.
      *
-     * Every reading is enriched at save time, not taken from the result as it
-     * was read: the names are often loaded after the poll, and the grid
-     * re-reads them live while the raw result never did. The conventions are
-     * spelled out inside the document, and exportParts splits it into files
-     * under the knowledge-file ceiling, each repeating the header so it stands
-     * alone.
+     * Every reading — a poll's or a scan's — is enriched at save time, not
+     * taken from the result as it was read: the names are often loaded after
+     * the poll, and the grid re-reads them live while the raw result never
+     * did. The conventions are spelled out inside the document, and
+     * exportParts splits it into files under the knowledge-file ceiling, each
+     * repeating the header so it stands alone.
      */
     function exportResult(result) {
         const spec = (result && result.spec) || {};
@@ -1320,28 +1344,44 @@
             if (p.decoded.ok && !listedAt.has(p.decoded.table + '|' + p.ref)) listedAt.set(p.decoded.table + '|' + p.ref, p);
         }
 
-        // Registers whose plant parameters ride on a reading, so the whole-unit
-        // section can leave them out without the unit losing them.
+        // Registers whose plant parameters ride on a reading — a poll's or a
+        // scan's — so the whole-unit section can leave them out without the
+        // unit losing them.
         const carried = new Set();
-        const readings = (result ? result.values : []).map(v => {
-            const point = pointForReading(table, format, v.i);
-            const listed = point || listedAt.get(table + '|' + v.i) || null;
-            const fromPlant = plantNamesFor(table, format, v.i);
-            if (fromPlant) carried.add(table + '|' + v.i);
-            const r = enrichValue(v, table, format);
+
+        /*
+         * One reading, enriched exactly the way an agent needs it: what it is
+         * named, what the list and the plant say, and where those disagree.
+         * readings and scanReadings share this instead of each keeping their
+         * own copy, because everything here generalises across a poll and a
+         * scan cleanly except two things a poll has that a scan does not — one
+         * fixed table and format for every row (`step`, in place of reading
+         * the closed-over polledStep/wide directly), and the chance that it
+         * has been read before (`withDelta`, watch mode's own bookkeeping).
+         */
+        const buildReadingRow = (v, rowTable, rowFormat, step, withDelta) => {
+            const rowWide = step === 2;
+            const point = pointForReading(rowTable, rowFormat, v.i);
+            const listed = point || listedAt.get(rowTable + '|' + v.i) || null;
+            const fromPlant = plantNamesFor(rowTable, rowFormat, v.i);
+            if (fromPlant) carried.add(rowTable + '|' + v.i);
+            const r = enrichValue(v, rowTable, rowFormat);
             const out = { ref: r.ref, addr: r.addr, raw: r.raw };
             // The number read every way, as the detail view shows it — only for a
             // value that is one register, since a 32-bit one is already decoded.
-            if (!wide) {
+            if (!rowWide) {
                 const u16 = r.raw < 0 ? r.raw + 65536 : r.raw;
                 out.hex = '0x' + u16.toString(16).toUpperCase().padStart(4, '0');
                 if (r.raw > 32767) out.int16 = r.raw - 65536;
             }
-            // What it answered the time before, when it has been read twice.
-            const key = table + '|' + format + '|' + v.i;
-            if (watchDelta.has(key) && watchDelta.get(key) !== null) {
-                out.delta = watchDelta.get(key);
-                out.previous = roundScaled(r.raw - out.delta);
+            // What it answered the time before, when it has been read twice —
+            // only a poll takes part in watch mode's delta bookkeeping.
+            if (withDelta) {
+                const key = rowTable + '|' + rowFormat + '|' + v.i;
+                if (watchDelta.has(key) && watchDelta.get(key) !== null) {
+                    out.delta = watchDelta.get(key);
+                    out.previous = roundScaled(r.raw - out.delta);
+                }
             }
             if (r.name) { out.name = r.name; out.source = r.source; }
             if (r.unit) out.unit = r.unit;
@@ -1363,14 +1403,14 @@
                 notes.push('the list says unit "' + listed.unit + '", the plant "' + first.unit + '"');
             }
             if (listed && !fromPlant && plantNames) {
-                const elsewhere = REGISTER_TABLES.map(t => t.value).filter(t => t !== table && plantNames.byRef.has(t + '||' + v.i));
+                const elsewhere = REGISTER_TABLES.map(t => t.value).filter(t => t !== rowTable && plantNames.byRef.has(t + '||' + v.i));
                 if (elsewhere.length) {
                     notes.push('the plant maps protocol address ' + r.addr + ' in ' + elsewhere.map(tableLabel).join(' and ') +
-                        ', the list has it in ' + tableLabel(table));
+                        ', the list has it in ' + tableLabel(rowTable));
                 }
             }
-            if (listed && listed.decoded.step !== polledStep) {
-                notes.push('polled as ' + (wide ? '32-bit' : '16-bit') + ', the list declares ' + listed.datatype +
+            if (listed && listed.decoded.step !== step) {
+                notes.push((withDelta ? 'polled' : 'scanned') + ' as ' + (rowWide ? '32-bit' : '16-bit') + ', the list declares ' + listed.datatype +
                     (listed.decoded.step === 2 ? ' (two registers)' : ' (one register)'));
             }
             if (point && typeof out.shown === 'number') {
@@ -1383,13 +1423,21 @@
             }
             if (notes.length) out.notes = notes;
             return out;
-        });
+        };
+
+        const readings = (result ? result.values : []).map(v => buildReadingRow(v, table, format, polledStep, true));
+        // A scan reading carries its own table — a scan crosses all four, a
+        // poll never does — and is always one 16-bit register: scanDevice
+        // reads a table one register at a time to find the map, never wide.
+        const scanReadings = (lastScan && lastScan.values ? lastScan.values : []).map(v =>
+            Object.assign({ table: v.table }, buildReadingRow(v, v.table, '', 1, false)));
         const scales = {};
         for (const r of readings) if (r.impliedScale) scales[r.impliedScale] = (scales[r.impliedScale] || 0) + 1;
 
         // Every parameter IWMAC holds for the unit that is not already on a
-        // reading. Said once: with the poll covering the unit, this is empty and
-        // the file is half the size it would be saying everything twice.
+        // readings or scanReadings row. Said once: with the poll or the scan
+        // covering the unit, this is empty and the file is half the size it
+        // would be saying everything twice.
         const plantParameters = [];
         if (plantNames) {
             for (const [key, entries] of plantNames.byRef) {
@@ -1404,6 +1452,38 @@
         const tableInfo = REGISTER_TABLES.find(t => t.value === table) || {};
         const verification = lastVerification;
 
+        // device and summary read the last poll's spec and result — fine while
+        // either exists, even a stale one next to a fresher scan, but with no
+        // poll at all they used to say nothing and say it silently: every
+        // device field null or defaulted (valueFormat '16-bit' as if one had
+        // run), summary null, no hint that the document's only evidence is a
+        // scan sitting a few keys down. readingSource names which it is;
+        // host/slave fall back to the scan's own; table/format/command stay
+        // null rather than claiming table 4 for a scan that covered all four.
+        const readingSource = result ? 'poll' : (lastScan ? 'scan' : 'none');
+        const device = result ? {
+            host: spec.host || null, port: spec.port || null, slave: spec.slave || null, mode: spec.mode || null,
+            table, tableName: tableInfo.title || null,
+            valueFormat: format || '16-bit', registersPerValue: wide ? 2 : 1,
+            command: spec.raw || null, readingSource,
+        } : {
+            host: (lastScan && lastScan.host) || null, port: null, slave: (lastScan && lastScan.slave) || null, mode: null,
+            table: null, tableName: null, valueFormat: null, registersPerValue: null, command: null, readingSource,
+        };
+        // summary's fields are a poll's own — requested, blocks, elapsedMs mean
+        // nothing for a scan — so a scan does not get a fake one of those; it
+        // gets its own, honestly labelled, rather than leaving a reader to
+        // wonder why a document full of scanReadings has no summary at all.
+        let summary = result ? result.summary : null;
+        if (!result && lastScan && lastScan.values && lastScan.values.length) {
+            const nums = lastScan.values.map(v => v.v);
+            summary = {
+                requested: null, returned: nums.length, nonZero: nums.filter(n => n !== 0).length,
+                min: Math.min.apply(null, nums), max: Math.max.apply(null, nums),
+                blocks: null, elapsedMs: null, source: 'scan',
+            };
+        }
+
         return {
             format: 'modpoll-console/export',
             version: VERSION,
@@ -1412,30 +1492,35 @@
             howToUse: [
                 'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
                     'agent checking or correcting a modbusgen point list.',
-                'Four sections, one row per line: readings, plantParameters, listPoints, verificationRows. When split into files ' +
-                    'named _partNofM for a knowledge set, each file repeats this header and carries one slice of one section ' +
-                    '(part.section, part.rows, part.firstRef to part.lastRef), and part.contents maps every section to its parts.',
-                'readings: one register per line as the device answered just now. ref is what modpoll prints and what -r takes; ' +
-                    'addr is the protocol address, ref - 1; a modbusgen list prints addr, or addr + 1 when options.subtract_one is ' +
-                    'true. previous and delta are the answer the time before. list is the entry the loaded list has for the ' +
-                    'register; plant is every IWMAC parameter reading it, one per bit where several share it; impliedScale is ' +
-                    'shown divided by raw when that is a common factor; notes are where two sides disagree — the list, the plant, ' +
-                    'the device — and are leads, never conclusions.',
-                'plantParameters: every parameter IWMAC holds for this unit that is not already on a reading; the two sections ' +
-                    'together are the whole unit. driverId ends in _0_<function>_<protocol address>[.<bit>]: function 1 reads coils ' +
-                    '(table 0), 2 discrete inputs (table 1), 3 holding registers (table 4), 4 input registers (table 3). shown is ' +
-                    'the value IWMAC displayed when its names were read (unit.namesReadAt), not now.',
+                'Five sections, one row per line: readings, scanReadings, plantParameters, listPoints, verificationRows. When ' +
+                    'split into files named _partNofM for a knowledge set, each file repeats this header and carries one slice of ' +
+                    'one section (part.section, part.rows, part.firstRef to part.lastRef), and part.contents maps every section to ' +
+                    'its parts.',
+                'readings: one register per line as the device answered just now, for a range someone asked for — a poll. ref is ' +
+                    'what modpoll prints and what -r takes; addr is the protocol address, ref - 1; a modbusgen list prints addr, or ' +
+                    'addr + 1 when options.subtract_one is true. previous and delta are the answer the time before. list is the ' +
+                    'entry the loaded list has for the register; plant is every IWMAC parameter reading it, one per bit where ' +
+                    'several share it; impliedScale is shown divided by raw when that is a common factor; notes are where two ' +
+                    'sides disagree — the list, the plant, the device — and are leads, never conclusions.',
+                'scanReadings: what Scan device found while it was discovering the map, not a range anyone chose — every register ' +
+                    'between the first one a table answers and wherever the sweep stopped, table included since one scan crosses ' +
+                    'all four. Enriched the same way as readings, minus previous/delta, which only a repeated poll has. A ' +
+                    'scanReadings row is exactly as live an answer as a readings row — both are the device responding just now — ' +
+                    'but it proves the same and no more: a value, nothing about a datatype or a scale by itself. Read its ' +
+                    'impliedScale and notes with the same caution as a poll\'s.',
+                'plantParameters: every parameter IWMAC holds for this unit that is not already on a readings or scanReadings row; ' +
+                    'those two sections plus this one are the whole unit. driverId ends in _0_<function>_<protocol address>[.<bit>]: ' +
+                    'function 1 reads coils (table 0), 2 discrete inputs (table 1), 3 holding registers (table 4), 4 input ' +
+                    'registers (table 3). shown is the value IWMAC displayed when its names were read (unit.namesReadAt), not now.',
                 'listPoints: the loaded modbusgen list as parsed, with the table and width each datatype decodes to.',
                 'verification and verificationRows: the last Verify list run. Per point: read, zero, refused (the device has no such ' +
                     'register), no answer, not polled (the datatype did not decode); the offset check scores whether the whole list ' +
                     'sits better a register or two along. Ranges anywhere are runs of ref, as "430-445,448".',
+                'device.readingSource says what evidence this document actually rests on: "poll" when readings came from one just ' +
+                    'now, "scan" when only scanReadings does, "none" when neither ran. summary.source says the same for summary ' +
+                    'when it was built from a scan rather than a poll.',
             ],
-            device: {
-                host: spec.host || null, port: spec.port || null, slave: spec.slave || null, mode: spec.mode || null,
-                table, tableName: tableInfo.title || null,
-                valueFormat: format || '16-bit', registersPerValue: wide ? 2 : 1,
-                command: spec.raw || null,
-            },
+            device,
             unit: plantNames ? Object.assign(
                 { id: plantNames.unitId },
                 unitInfo ? {
@@ -1444,8 +1529,12 @@
                 } : {},
                 { parameters: plantNames.rows, groups: plantNames.groups, undecodable: plantNames.undecodable, namesReadAt: plantNames.at }
             ) : null,
-            names: readings.some(r => r.source === 'list') ? 'point list'
-                : (readings.some(r => r.source === 'plant') ? 'plant database' : 'none'),
+            // Both reading sections count: a device only ever scanned still has
+            // names on its scanReadings rows, and saying 'none' over that would
+            // be exactly the silently-describes-nothing failure this export
+            // used to have.
+            names: readings.concat(scanReadings).some(r => r.source === 'list') ? 'point list'
+                : (readings.concat(scanReadings).some(r => r.source === 'plant') ? 'plant database' : 'none'),
             list: pointList ? {
                 file: pointList.file || null, points: pointList.points.length, undecodable: pointList.undecodable,
                 subtractOne: pointList.subtractOne, table: pointList.table || null, plant: pointList.plant || null, comm: pointList.comm || null,
@@ -1459,7 +1548,7 @@
             readZero: asRanges(readings.filter(r => r.raw === 0).map(r => r.ref)),
             unnamed: asRanges(readings.filter(r => !r.name).map(r => r.ref)),
             impliedScales: scales,
-            summary: (result && result.summary) || null,
+            summary,
             diagnostics: (result && result.diagnostics) || [],
             notes: (result && result.notes) || [],
             commands: (result && result.commands) || [],
@@ -1469,6 +1558,7 @@
                 offsets: verification.offsets, offsetVerdict: verification.offsetVerdict, diagnostics: verification.diagnostics,
             } : null,
             readings,
+            scanReadings,
             plantParameters,
             listPoints: pointList ? pointList.points.map(listRow) : [],
             verificationRows: verification ? verification.rows.map(row => {
@@ -1485,11 +1575,11 @@
 
     /**
      * The document as files, each under the knowledge-file ceiling and each
-     * complete on its own. The header — everything but the four big sections —
+     * complete on its own. The header — everything but the big sections below —
      * repeats in every part; a part carries one slice of one section, one row
      * per line, so a reader can count rows and cite them.
      */
-    const EXPORT_SECTIONS = ['readings', 'plantParameters', 'listPoints', 'verificationRows'];
+    const EXPORT_SECTIONS = ['readings', 'scanReadings', 'plantParameters', 'listPoints', 'verificationRows'];
     // The knowledge-file ceiling is 36 000 characters. The markdown report keeps
     // 6 000 of headroom because it estimates; this measures the assembled part,
     // so it can go closer — and every 2 000 characters is six more readings a
@@ -1583,6 +1673,13 @@
      * value seen — about two thousand registers of nothing — or at the chunk
      * budget. Nothing stops at 6000 any more: a map at 8192 is a map, and
      * modpoll reads to 65536.
+     *
+     * `tick` is called around every command this function issues — the chunk's
+     * own read, and every read and probeRefs call chaseRun makes chasing a gap
+     * — not once the chunk is settled. A chunk that comes back whole is one
+     * tick; a chunk on a strict device with a hole in it can be dozens, each
+     * one a refusal paid for on the wire, and it is exactly that stretch a
+     * caller watching only chunk boundaries would see nothing from.
      */
     const SWEEP_CEILING = 65536;
     const SWEEP_CHUNK = MAX_COUNT * CHAIN_MAX;
@@ -1590,7 +1687,7 @@
     const SWEEP_EMPTY_STOP = 3;
     const SWEEP_ZERO_STOP = 5;
 
-    async function sweepForValues(spec, table, from, known, onProgress) {
+    async function sweepForValues(spec, table, from, known, tick) {
         const found = new Map();                       // ref -> value row
         const answers = new Set((known || new Map()).keys());
         for (const [ref, value] of (known || new Map())) found.set(ref, { i: ref, addr: ref - 1, v: value });
@@ -1602,9 +1699,18 @@
         let fresh = 0;
         let fatal = null;
         let stoppedBecause = 'reached the end of the address space';
-        const read = (start, count) => readRegisters(Object.assign({}, spec, {
-            table, format: '', base: 'printed', start, count, recover: false,
-        }));
+        // True only for a chunk's own opening read. Everything chaseRun does in
+        // response to what that read found — the binary searches, the
+        // look-aheads — is work the chunk caused, not a new chunk starting, so
+        // only the opening read is flagged as one; every call still ticks.
+        let chunkStart = false;
+        const read = (start, count) => {
+            if (tick) tick(start, found.size, chunkStart);
+            chunkStart = false;
+            return readRegisters(Object.assign({}, spec, {
+                table, format: '', base: 'printed', start, count, recover: false,
+            }));
+        };
         const take = result => {
             for (const value of result.values) {
                 if (!found.has(value.i)) fresh++;
@@ -1654,7 +1760,7 @@
         const lookAhead = async (x, end) => {
             const at = [1, 2, 4, 8, 16, 32, 64, 128].map(d => x + d).filter(r => r <= end);
             if (!at.length || abortRequested || fatal) return null;
-            const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })));
+            const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), () => { if (tick) tick(x, found.size, false); });
             for (const r of at) {
                 const hit = inside[table + ':' + r];
                 if (hit && hit.answered) {
@@ -1712,7 +1818,7 @@
         while (ref <= SWEEP_CEILING && !abortRequested) {
             if (chunks >= SWEEP_MAX_CHUNKS) { stoppedBecause = 'chunk budget spent'; break; }
             const count = Math.min(SWEEP_CHUNK, SWEEP_CEILING - ref + 1);
-            if (onProgress) onProgress({ table, ref, count, found: found.size });
+            chunkStart = true;
             fresh = 0;
             const first = await read(ref, count);
             chunks++;
@@ -1720,7 +1826,7 @@
             if (fatal) { stoppedBecause = fatal; break; }
             if (!first.values.length && !gapsIn(ref, count).some(run => knownInside(run) !== null)) {
                 const at = [ref + 5, ref + Math.floor(count / 2), ref + count - 6].filter(r => r >= ref && r < ref + count);
-                const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })));
+                const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), () => { if (tick) tick(ref, found.size, false); });
                 for (const r of at) {
                     const hit = inside[table + ':' + r];
                     if (hit && hit.answered && !found.has(r)) { found.set(r, { i: r, addr: r - 1, v: hit.value }); answers.add(r); fresh++; }
@@ -4156,8 +4262,11 @@
                     'holes isolated, up to reference ' + SWEEP_CEILING + '. Stop ends it early');
                 showProgress(0, 'Starting the scan');
                 const report = await scanDevice(readForm(), true, p => {
+                    // The bar moves on every tick sweepForValues makes, several
+                    // times inside one chunk on a strict device; the log stays at
+                    // one line per chunk opened, or it would scroll past reading.
                     showProgress(p.fraction, p.text);
-                    if (p.phase === 'sweep') {
+                    if (p.phase === 'sweep' && p.chunkStart) {
                         log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
                             ' from ' + p.ref + ' (' + p.found + ' found so far)');
                     }

@@ -117,6 +117,13 @@ def bundle(src, label):
             lines.push('  progress: ' + events.length + ' updates, phases ' + phases.join(' > ') +
                 ', ends at ' + Math.round(last.fraction * 100) + ' % "' + last.text + '"' +
                 (backwards ? ' — WENT BACKWARDS ' + backwards + ' time(s)' : ', never backwards'));
+            // Per phase, since 1.42.0's whole point is that the sweep phase no
+            // longer reports back once per chunk: on a strict device with a hole,
+            // one chunk alone used to be the entire sweep update and is now
+            // dozens of ticks, one per command chaseRun issued chasing it.
+            const perPhase = {};
+            for (const e of events) perPhase[e.phase] = (perPhase[e.phase] || 0) + 1;
+            lines.push('  by phase: ' + Object.entries(perPhase).map(([k, v]) => k + ' ' + v).join(', '));
         } else {
             lines.push('  progress: ' + events.length + ' updates, no fractions (the previous scan reported chunks only)');
         }

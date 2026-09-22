@@ -51,7 +51,12 @@ rebuilt.
   lenient device answers 0 for everything and never goes empty, so its sweep
   stops after two thousand registers of zeros past the last value. The report
   says, per table and per region, what answered, what held a value, and why the
-  sweep stopped. Useful before blaming a point list.
+  sweep stopped. Useful before blaming a point list. The progress bar ticks on
+  every command the sweep sends rather than once a chunk finally settles, since
+  one chunk on a strict device with a hole in it can be dozens of refusals deep
+  before it does; the log still gets one line per chunk opened, not one per
+  tick. Every register the scan reads is kept, not only where each region
+  starts — see *Save JSON* below.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both
@@ -59,19 +64,28 @@ rebuilt.
   scale, decimals, range), every IWMAC parameter reading that register with its
   `driver_id`, and the value the plant showed. Whole sections for every parameter
   the plant holds for the unit (polled or not — what IWMAC reads), the list as
-  parsed, the last verification with its offset check, and the last scan. Where
-  two sides of a register disagree the reading carries a note — a scale the plant
-  implies that the list does not apply, a unit that differs, an address the plant
-  maps in another table, a width that differs — stated as an observation. A
-  `howToUse` block at the top tells the agent how to read it. One file, the
-  header pretty-printed and each section one row per line; the plant's
-  parameters are said once, on the reading where there is one, so a poll
-  covering the unit does not double the file. Names are looked up when the file
-  is written, not when the poll ran. For a knowledge set with its
-  36 000-character ceiling per file, `__modpoll.exportParts()` splits the same
-  document into files of at most 34 000 characters, each repeating the header so
-  it stands alone. `__modpoll.lastExport()` is the document,
-  `__modpoll.exportText()` the file.
+  parsed, and the last verification with its offset check. The last scan comes
+  two ways: its shape — which tables answered, the regions, the sweep summary —
+  in `scan`, and, since a scan is itself hundreds or thousands of live readings,
+  every register it actually found in `scanReadings`, enriched the same way a
+  poll's readings are. The two reading sections are kept apart because they are
+  different evidence: `readings` answers a range someone asked for, a poll;
+  `scanReadings` reports whatever a sweep turned up while it was discovering
+  the map. Both are the device answering just now, and neither says more than
+  that — a value, not a datatype and not a scale. With no poll at all, `device`
+  and `summary` fall back to the scan's own host, slave and readings rather
+  than describing nothing. Where two sides of a register disagree the reading
+  carries a note — a scale the plant implies that the list does not apply, a
+  unit that differs, an address the plant maps in another table, a width that
+  differs — stated as an observation. A `howToUse` block at the top tells the
+  agent how to read it. One file, the header pretty-printed and each section
+  one row per line; the plant's parameters are said once, on the reading or
+  scan reading where there is one, so covering the unit does not double the
+  file. Names are looked up when the file is written, not when the poll or scan
+  ran. For a knowledge set with its 36 000-character ceiling per file,
+  `__modpoll.exportParts()` splits the same document into files of at most
+  34 000 characters, each repeating the header so it stands alone.
+  `__modpoll.lastExport()` is the document, `__modpoll.exportText()` the file.
 
 ## What a deep dive on plant 2313 established
 
