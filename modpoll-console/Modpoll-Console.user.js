@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.23.2
+// @version      1.24.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2159,8 +2159,10 @@
     }
 
     const MIRROR_LINE_CAP = 200;
+    // Always on: what Plant Term printed is the evidence behind every row in the
+    // grid, so there is no reading of a poll that is better off without it.
     function mirrorTerminal(chunk) {
-        if (!ui.log || !ui.mirror || !ui.mirror.checked) return;
+        if (!ui.log) return;
         const lines = String(chunk || '').split('\n')
             .map(l => l.replace(/\s+$/, ''))
             // A repeat prints the same banner every pass, which says nothing the
@@ -3401,15 +3403,10 @@
         form.appendChild(el('div', { className: 'mpc-sep' }));
         ui.filterZero = el('input', { type: 'checkbox', id: 'mpc-hidezero' });
         ui.filterZero.addEventListener('change', () => { if (lastResult) renderGrid(lastResult); });
-        ui.mirror = el('input', { type: 'checkbox', id: 'mpc-mirror', checked: true });
         form.appendChild(el('label', { className: 'mpc-check mpc-span3', htmlFor: 'mpc-hidezero' },
             [ui.filterZero, el('span', { textContent: 'Hide zero values' })]));
-        form.appendChild(el('label', {
-            className: 'mpc-check mpc-span3', htmlFor: 'mpc-mirror',
-            title: 'Print what Plant Term printed, line for line, under each command',
-        }, [ui.mirror, el('span', { textContent: 'Mirror terminal output' })]));
         ui.summary = el('div', { className: 'mpc-sum', textContent: 'No poll run yet' });
-        form.appendChild(el('div', { className: 'mpc-check', style: 'justify-content:flex-end' }, [ui.summary]));
+        form.appendChild(el('div', { className: 'mpc-check mpc-span9', style: 'justify-content:flex-end' }, [ui.summary]));
 
         ui.gridBody = el('tbody');
         ui.gridCols = el('colgroup');
