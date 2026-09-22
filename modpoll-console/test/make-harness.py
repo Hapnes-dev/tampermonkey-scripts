@@ -51,6 +51,8 @@ tables = between("    const REGISTER_TABLES = [", "\n    // Serial defaults per 
 detail = between("    function readingDetailSections(", "\n    function renderEmptyGrid(")
 # log(), so whether the log follows its tail is tested as shipped.
 logfn = between("    function log(text, level) {", "\n    /**\n     * Everything the shell printed")
+# The progress strip: show, fill, hide.
+progress = between("    let progressHideTimer = null;", "\n    function setDot(state) {")
 # The point-list parser and everything it decodes with, so a list in a test is
 # parsed by the real parser rather than hand-built.
 pointlist = between("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * Points become poll ranges")
@@ -118,6 +120,8 @@ function el(tag, props, kids) {{
 
 {logfn}
 
+{progress}
+
 {detail}
 
 {columns}
@@ -164,6 +168,11 @@ body.appendChild(form);
 form.appendChild(el('div', {{ style: 'grid-column:span 12;height:150px;background:#f4f6f9;border:1px dashed #c8ccd4', textContent: ' the form rows' }}));
 ui.expand = el('button', {{ className: 'mpc-expand', type: 'button' }});
 ui.expand.addEventListener('click', () => setExpanded(!isExpanded()));
+// The progress strip, built the way buildPanel builds it.
+ui.progressFill = el('div');
+ui.progressText = el('span', {{ className: 'mpc-ptext' }});
+ui.progress = el('div', {{ className: 'mpc-progress mpc-hidden' }}, [el('div', {{ className: 'mpc-bar' }}, [ui.progressFill]), ui.progressText]);
+form.appendChild(ui.progress);
 ui.filterZero = el('input', {{ type: 'checkbox', id: 'mpc-hidezero' }});
 ui.filterZero.addEventListener('change', () => {{ if (redrawGrid) redrawGrid(); }});
 form.appendChild(el('label', {{ className: 'mpc-check mpc-span3', htmlFor: 'mpc-hidezero' }},
@@ -314,6 +323,14 @@ window.__setPlantNames = (unitId, entries) => {{
     plantNames = {{ unitId, byRef, groups: 1, rows: entries.length, undecodable: 0, at: new Date().toISOString() }};
     return plantNames.byRef.size;
 }};
+window.__progress = () => ({{
+    hidden: ui.progress.classList.contains('mpc-hidden'),
+    visible: ui.progress.getBoundingClientRect().height > 0,
+    fill: ui.progressFill.style.width,
+    fillPx: Math.round(ui.progressFill.getBoundingClientRect().width),
+    barPx: Math.round(ui.progressFill.parentElement.getBoundingClientRect().width),
+    text: ui.progressText.textContent,
+}});
 window.__export = () => exportResult(lastResult);
 window.__exportText = () => exportText(exportResult(lastResult));
 window.__exportParts = base => exportParts(exportResult(lastResult), base);

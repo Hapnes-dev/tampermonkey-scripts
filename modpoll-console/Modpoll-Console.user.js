@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.40.0
+// @version      1.41.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.40.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.41.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -930,13 +930,14 @@
      * references came back in 2.5 s on a plant, where one round trip each would
      * have cost 14.
      */
-    async function probeRefs(spec, probes) {
+    async function probeRefs(spec, probes, onProgress) {
         const results = {};
         // Each probe is a table and a reference, so one run can ask all four
         // tables at once instead of one table at a time — as many as fit inside
         // the character budget for a single command line.
         const list = probes.map(p => (typeof p === 'object' ? p : { table: spec.table, ref: p }));
         for (let i = 0; i < list.length;) {
+            if (onProgress) onProgress(i, list.length);
             const parts = [];
             const group = [];
             while (i < list.length) {
@@ -1002,13 +1003,23 @@
         // this one before it starts.
         abortRequested = false;
         const spec = normaliseSpec(Object.assign({}, input, { count: 1, format: '' }));
+        /*
+         * Progress, as a fraction and a line of text. The ladder and the
+         * narrowing are countable and take the first three tenths; the sweep is
+         * not — it runs until a region's answers stop — so it takes the rest,
+         * shared across the tables that answered, each table's share advancing
+         * with every chunk and completing when its sweep ends.
+         */
+        const tell = (fraction, text, extra) => { if (onProgress) onProgress(Object.assign({ fraction, text }, extra || {})); };
+        const tableLabel = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
 
         // One chained pass over every table and every rung of its ladder. Every
         // answer is kept, value and all: the sweep uses them to know a chunk is
         // not empty, and they are readings in their own right.
         const probes = [];
         for (const table of SCAN_TABLES) for (const ref of scanLadderOf(table)) probes.push({ table, ref });
-        const first = await probeRefs(spec, probes);
+        const first = await probeRefs(spec, probes, (done, total) =>
+            tell(0.2 * (done / total), 'Probing reference ' + (done + 1) + ' of ' + total + ' across the four tables', { phase: 'probe' }));
         const answered = (table, ref) => !!((first[table + ':' + ref] || {}).answered);
         const known = {};
         for (const table of SCAN_TABLES) known[table] = new Map();
@@ -1045,8 +1056,11 @@
         const edges = [];
         for (const table of SCAN_TABLES) for (const region of regions[table]) edges.push({ table, region });
         const unsettled = () => edges.filter(e => e.region.high - e.region.low > 1);
+        const edgesToSettle = unsettled().length;
         while (unsettled().length && !abortRequested) {
             const step = unsettled().map(e => ({ table: e.table, ref: Math.floor((e.region.low + e.region.high) / 2), edge: e }));
+            tell(0.2 + 0.1 * (1 - step.length / Math.max(1, edgesToSettle)),
+                'Finding where each region starts — ' + step.length + ' edge' + (step.length === 1 ? '' : 's') + ' still to settle', { phase: 'narrow' });
             const probed = await probeRefs(spec, step.map(s => ({ table: s.table, ref: s.ref })));
             learn(probed);
             for (const s of step) {
@@ -1080,16 +1094,28 @@
             report.values = [];
             const lowest = refs => refs.reduce((m, r) => (m === null || r < m ? r : m), null);
             const highest = refs => refs.reduce((m, r) => (m === null || r > m ? r : m), null);
+            const sweeping = SCAN_TABLES.filter(table => tables[table].answers);
             for (const table of SCAN_TABLES) {
                 if (!tables[table].answers || abortRequested) continue;
                 const total = { answered: 0, nonZero: 0, refs: [], withValues: [], regions: [], chunks: 0 };
                 const seen = new Set();
+                const share = 0.7 / sweeping.length;
+                const before = 0.3 + share * sweeping.indexOf(table);
+                let chunksSoFar = 0;
+                const sweepProgress = p => {
+                    chunksSoFar++;
+                    // Never done until the table is: the share creeps towards its
+                    // end with every chunk and the next table starts at it.
+                    tell(before + share * (chunksSoFar / (chunksSoFar + 3)),
+                        'Sweeping ' + tableLabel(table) + ' from ' + p.ref + ' — ' + p.found + ' registers found',
+                        Object.assign({ phase: 'sweep' }, p));
+                };
                 for (const region of regions[table]) {
                     if (abortRequested) break;
                     // A sweep that ran on through the next region found its start
                     // already — found, not merely passed over.
                     if (seen.has(region.high)) continue;
-                    const swept = await sweepForValues(spec, table, region.high, known[table], onProgress);
+                    const swept = await sweepForValues(spec, table, region.high, known[table], sweepProgress);
                     total.chunks += swept.chunks;
                     let inRegion = 0;
                     let nonZeroInRegion = 0;
@@ -1116,6 +1142,7 @@
                 };
             }
         }
+        tell(1, abortRequested ? 'Scan stopped' : 'Scan complete', { phase: 'done' });
         return report;
     }
 
@@ -2627,6 +2654,13 @@
         background:#fdecea;border:1px solid #f0b4ae;color:#8a2a20}
     #${PANEL_ID} button.mpc-b.danger{background:#c0392b;border-color:#a5301f;color:#fff;font-weight:bold}
     #${PANEL_ID} button.mpc-b.danger:hover:not([disabled]){background:#a5301f}
+    /* Under the action row while something long runs: a thin bar and one line
+       saying what is happening. Hidden the rest of the time. */
+    #${PANEL_ID} .mpc-progress{grid-column:span 12;display:flex;align-items:center;gap:10px;font-size:11px;color:#4a4f5a;min-height:16px}
+    #${PANEL_ID} .mpc-progress.mpc-hidden{display:none}
+    #${PANEL_ID} .mpc-bar{flex:1 1 auto;height:6px;border-radius:3px;background:#e4e6ea;overflow:hidden}
+    #${PANEL_ID} .mpc-bar>div{height:100%;width:0;background:#3f7fbf;transition:width .15s linear}
+    #${PANEL_ID} .mpc-ptext{flex:0 0 auto;max-width:62%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #${PANEL_ID} .mpc-actions{grid-column:span 12;display:flex;gap:var(--gap);align-items:flex-end;flex-wrap:wrap}
     #${PANEL_ID} .mpc-actions .mpc-f{width:78px}
     #${PANEL_ID} .mpc-actions .mpc-spacer{flex:1 1 auto}
@@ -2977,6 +3011,26 @@
         if (!lines.length) return;
         for (const line of lines.slice(0, MIRROR_LINE_CAP)) log('  ' + line, 'mirror');
         if (lines.length > MIRROR_LINE_CAP) log('  …' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
+    }
+
+    /**
+     * The progress strip: a fraction and a line of text while something long
+     * runs, gone when it is over. Whatever is finished stays on the strip for a
+     * moment at 100 %, so an eye that was elsewhere sees that it ended.
+     */
+    let progressHideTimer = null;
+    function showProgress(fraction, text) {
+        if (!ui.progress) return;
+        clearTimeout(progressHideTimer);
+        ui.progress.classList.remove('mpc-hidden');
+        ui.progressFill.style.width = Math.round(Math.max(0, Math.min(1, fraction)) * 100) + '%';
+        ui.progressText.textContent = text || '';
+    }
+    function hideProgress(afterMs) {
+        if (!ui.progress) return;
+        clearTimeout(progressHideTimer);
+        if (afterMs) progressHideTimer = setTimeout(() => ui.progress.classList.add('mpc-hidden'), afterMs);
+        else ui.progress.classList.add('mpc-hidden');
     }
 
     function setDot(state) {
@@ -3679,9 +3733,13 @@
                 const form = readForm();
                 storeSet(STORE_KEY, JSON.stringify(form));
                 result = await readRegisters(form, p => {
+                    // A poll of several blocks is long enough to watch; one block is not.
+                    if (p.blocks > 1) showProgress(p.block / p.blocks, 'Block ' + p.block + ' of ' + p.blocks);
+                    else if (p.recovering) showProgress(1, 'Re-asking for ' + p.recovering + ' gap' + (p.recovering === 1 ? '' : 's'));
                     if (repeating) return;   // the command has not changed since the first pass
                     log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : ''));
                 });
+                hideProgress(1500);
             }
             lastResult = result;
             renderGrid(result);
@@ -3844,9 +3902,13 @@
         ui.stop.disabled = false;
         setDot('warn');
         try {
-            const verification = await verifyPointList(pointList, readForm(),
-                p => log('> range ' + p.range + '/' + p.ranges + ': -r ' + p.ref + ' -c ' + p.count));
+            const verification = await verifyPointList(pointList, readForm(), p => {
+                showProgress(p.range / p.ranges, 'Verifying range ' + p.range + ' of ' + p.ranges + ' — -r ' + p.ref + ' -c ' + p.count);
+                log('> range ' + p.range + '/' + p.ranges + ': -r ' + p.ref + ' -c ' + p.count);
+            });
             lastVerification = verification;
+            showProgress(1, 'Verification complete');
+            hideProgress(2500);
             renderVerification(verification);
             for (const d of verification.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : 'err');
             const s = verification.summary;
@@ -3862,6 +3924,7 @@
         } catch (e) {
             setDot('err');
             log('ERROR: ' + e.message, 'err');
+            hideProgress();
         } finally {
             termState.busy = false;
             ui.verifyBtn.disabled = false;
@@ -4091,9 +4154,14 @@
             try {
                 log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — every table, every region it answers in, ' +
                     'holes isolated, up to reference ' + SWEEP_CEILING + '. Stop ends it early');
-                const report = await scanDevice(readForm(), true,
-                    p => log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
-                        ' from ' + p.ref + ' (' + p.found + ' found so far)'));
+                showProgress(0, 'Starting the scan');
+                const report = await scanDevice(readForm(), true, p => {
+                    showProgress(p.fraction, p.text);
+                    if (p.phase === 'sweep') {
+                        log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
+                            ' from ' + p.ref + ' (' + p.found + ' found so far)');
+                    }
+                });
                 lastScan = report;
                 for (const table of Object.keys(report.tables)) {
                     const t = report.tables[table];
@@ -4113,7 +4181,8 @@
                 }
                 renderScan(report);
                 setDot('ok');
-            } catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); }
+                hideProgress(2500);
+            } catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); hideProgress(); }
             finally {
                 scanBtn.disabled = false;
                 termState.busy = false;
@@ -4124,6 +4193,12 @@
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
             el('span', { className: 'mpc-spacer' }), scanBtn, saveBtn, reconnectBtn,
         ]));
+        ui.progressFill = el('div');
+        ui.progressText = el('span', { className: 'mpc-ptext' });
+        ui.progress = el('div', { className: 'mpc-progress mpc-hidden' }, [
+            el('div', { className: 'mpc-bar' }, [ui.progressFill]), ui.progressText,
+        ]);
+        form.appendChild(ui.progress);
 
         // --- the Plant Server ------------------------------------------------
         form.appendChild(el('div', { className: 'mpc-sep' }));

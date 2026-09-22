@@ -103,9 +103,23 @@ def bundle(src, label):
         DEVICE = device;
         COST.lines = 0; COST.invocations = 0; COST.refusals = 0;
         const started = Date.now();
-        const report = await scanDevice({ mode: 'tcp', host: '10.0.0.5', slave: 1 }, true);
+        // Progress, where the scan reports it: the bar must never go backwards
+        // and must end at 100 %, and every phase must have been announced.
+        const events = [];
+        const report = await scanDevice({ mode: 'tcp', host: '10.0.0.5', slave: 1 }, true, p => events.push(p));
         lines.push('');
         lines.push('== ' + name + ' ==');
+        if (events.length && events[0].fraction !== undefined) {
+            let backwards = 0;
+            for (let i = 1; i < events.length; i++) if (events[i].fraction < events[i - 1].fraction - 1e-9) backwards++;
+            const phases = [...new Set(events.map(e => e.phase))];
+            const last = events[events.length - 1];
+            lines.push('  progress: ' + events.length + ' updates, phases ' + phases.join(' > ') +
+                ', ends at ' + Math.round(last.fraction * 100) + ' % "' + last.text + '"' +
+                (backwards ? ' — WENT BACKWARDS ' + backwards + ' time(s)' : ', never backwards'));
+        } else {
+            lines.push('  progress: ' + events.length + ' updates, no fractions (the previous scan reported chunks only)');
+        }
         for (const table of ['4', '3', '1', '0']) {
             const expected = device.maps[table];
             const expectNonZero = new Set([...expected].filter(r => (table === '0' || table === '1') ? (r % 2) : true));
