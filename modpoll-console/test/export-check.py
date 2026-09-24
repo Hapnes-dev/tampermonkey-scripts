@@ -47,6 +47,10 @@ js += lift("    /**\n     * Everything the console knows, as a document", "\n   
 js += lift("    // What a driver's log line reports, by the wording", "\n    /** \"3_0_F_W_")
 js += lift("    /** \"3_0_F_W_", "\n    async function collectIwmacContext")
 js += lift("    /** A driver's settings read as the connection they describe. */", "\n    // ------------------------------------------------------- binary self-probe")
+# What a verification looks like on its way out.
+js += lift("    /**\n     * A verification as it may leave the browser", "\n    /** One markdown file per part")
+# What may be put into SQL.
+js += lift("    const RE_SQL_NAME = ", "\n    async function plantSql")
 js += "const plantIdFromHost = () => '2349';\n"
 js += "const watchDelta = new Map();\n"
 js += r"""
@@ -310,6 +314,77 @@ const dt = parseDriverIdExtra('3_44101_I16_W_-_-_-_-');
 check('driver_id_extra: 3_44101_I16_W — function 3, address 44101, I16 word-swapped, no write', dt.readFunction === 3 && dt.readAddr === 44101 && dt.rawType === 'I16' &&
     dt.swap === 'W' && dt.writeFunction === null, JSON.stringify(dt));
 check('the IWMAC-side file parses', (() => { try { JSON.parse(text2); return true; } catch (e) { return false; } })(), text2.length + ' chars');
+
+// --- what may leave the browser ---------------------------------------------------
+// The clean fixture first: the sanitizer must not touch a thing in it. Only the two
+// lines that explain [redacted] may carry the word.
+const outside = d => JSON.stringify(Object.assign({}, d, { privacy: null, howToUse: null }));
+check('a clean export carries no redaction outside the lines that explain it', outside(doc).indexOf('[redacted]') < 0 && outside(doc2).indexOf('[redacted]') < 0,
+    (outside(doc2).match(/.{60}\[redacted\].{20}/) || [''])[0]);
+check('text that only looks like a secret passes untouched', [
+    'http://2349.plants.iwmac.local:8080/secure/sys_tools/', '2026-09-24T10:00:00.000Z', 'Open ok, (IP address: 192.168.10.100, ID: 1, 1000)',
+    'Block (norm, 0) item 3694_TIANJINEX3_tianjin_sure_inst_ex3_0_11_0_3_62 >> Modbus read error >> Time Out Error',
+    'modpoll -m tcp -a 1 -r 1 -c 99 -t 4 -p 502 192.168.10.100', 'Bypass damper', 'Passive defrost', 'Feilkode 3', 'key: value count 5',
+].every(s => redactText(s) === s), '');
+check('URL logins, Authorization and Cookie headers and key=value secrets are redacted', [
+    ['GET http://admin:hunter2@10.0.0.5/cgi', 'GET http://[redacted]@10.0.0.5/cgi'],
+    ['http://someone:s3cret@2349.plants.iwmac.local:8080/secure/', 'http://[redacted]@2349.plants.iwmac.local:8080/secure/'],
+    ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: [redacted]'],
+    ['Cookie: PHPSESSID=abc123; w2ui=1', 'Cookie: [redacted]'],
+    ['login failed, password=hunter2 user=admin', 'login failed, password=[redacted] user=[redacted]'],
+    ['token: "eyJhbGciOi"', 'token: [redacted]'],
+].every(([a, b]) => redactText(a) === b), [
+    'GET http://admin:hunter2@10.0.0.5/cgi', 'Authorization: Basic dXNlcjpwYXNz', 'login failed, password=hunter2 user=admin',
+].map(redactText).join(' | '));
+
+// IWMAC's side as it would arrive from an older collection, secrets and all: a
+// driver's login in its settings, a log line with a URL login, a list whose comm
+// block carries a password, and a register the plant names as a password.
+iwmacContext.driver.settings = Object.assign({}, iwmacContext.driver.settings, { username: 'svc', password: 'hunter2', auth_key_service: 'k'.repeat(32) });
+iwmacContext.log.recent = ['2026-09-24T10:00:00.000Z [error, other] GET http://admin:hunter2@10.0.0.5/cgi failed', '2026-09-24T10:01:00.000Z [info, other] password=hunter2'];
+pointList.comm = { host: '192.168.10.30', port: 502, password: 'hunter2' };
+put('4', 1100, { name: 'Passord service', plantValue: '1234' });
+at('4', 1100).v = 1234; at('4', 1100).again = 1234;
+const doc3 = exportResult(null);
+const text3 = exportText(doc3);
+const r3 = ref => doc3.scanReadings.find(r => r.table === '4' && r.ref === ref);
+check('driver settings: username, password and API key withheld, the polling settings kept', doc3.iwmac.driver.settings.password === '[redacted]' &&
+    doc3.iwmac.driver.settings.username === '[redacted]' && doc3.iwmac.driver.settings.auth_key_service === '[redacted]' &&
+    doc3.iwmac.driver.settings.comm_baudrate === '19200' && doc3.iwmac.driver.settings.comm_port === '16', JSON.stringify(doc3.iwmac.driver.settings));
+check('the driver log\'s lines lose the URL login and the password', doc3.iwmac.log.recent.join(' ').indexOf('hunter2') < 0 && /\[redacted\]@10\.0\.0\.5/.test(doc3.iwmac.log.recent[0]),
+    doc3.iwmac.log.recent.join(' | '));
+check('a list\'s comm block keeps host and port and loses its password', doc3.list.comm.password === '[redacted]' && doc3.list.comm.host === '192.168.10.30' && doc3.list.comm.port === 502,
+    JSON.stringify(doc3.list.comm));
+check('a register named as a password keeps its address and name, never its value', r3(1100) && r3(1100).raw === '[redacted]' && r3(1100).plant[0].shown === '[redacted]' &&
+    r3(1100).withheld && r3(1100).addr === 1099 && r3(1100).plant[0].name === 'Passord service' && JSON.stringify(r3(1100)).indexOf('1234') < 0,
+    JSON.stringify(r3(1100)));
+check('privacy says how many registers were withheld', doc3.privacy && doc3.privacy.withheldRegisters === 1, JSON.stringify(doc3.privacy));
+check('no secret of the fixture survives anywhere in the file', ['hunter2', 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk', '"svc"'].every(s => text3.indexOf(s) < 0), '');
+check('the file with secrets withheld still parses', (() => { try { JSON.parse(text3); return true; } catch (e) { return false; } })(), text3.length + ' chars');
+
+// Save verification and Save report take the same road.
+const vf = verificationForExport({
+    at: 'x', device: { host: '10.0.0.5', slave: 1, raw: 'modpoll http://u:p@h' }, list: { table: 't' },
+    rows: [{ point: { name: 'Service password', ref: 5 }, status: 'read', raw: 4321, scaled: 4321 }, { point: { name: 'Supply temp', ref: 6 }, status: 'read', raw: 215, scaled: 21.5 }],
+});
+check('a verification leaves with the password point\'s value withheld and the rest intact', vf.rows[0].raw === '[redacted]' && vf.rows[0].scaled === '[redacted]' &&
+    vf.rows[1].raw === 215 && vf.rows[1].scaled === 21.5 && vf.device.raw === 'modpoll http://[redacted]@h', JSON.stringify(vf));
+
+// What reaches SQL: a unit id any page script can choose through __modpoll.names().
+// The Toolbox API splits statements on a literal semicolon, so quoting is not enough.
+const refusedSql = v => { try { sqlText(v); return false; } catch (e) { return true; } };
+check('a unit id with a semicolon, a quote or a space is not a plain token', ["A'; SELECT * FROM mysql.user; -- ", 'ID01;', 'ID 01', "ID'01"].every(v => !RE_SQL_VALUE.test(v)) &&
+    ['V01', 'ID01', 'VV_1', 'EM270-2', 'A.1'].every(v => RE_SQL_VALUE.test(v)), '');
+check('sqlText refuses a semicolon or a control character outright, and still doubles a quote', refusedSql('a;b') && refusedSql('a\nb') && sqlText("O'Brien") === "O''Brien", '');
+
+// The sanitizer on hostile shapes: nesting without end, a Map, a Date.
+let deep = { v: 'x' };
+for (let i = 0; i < 200; i++) deep = { next: deep };
+const deepOut = (() => { try { return JSON.stringify(sanitizeDeep(deep)); } catch (e) { return 'threw ' + e.message; } })();
+check('a document nested 200 deep is cut, not a stack overflow', deepOut.indexOf('nested too deep') >= 0, deepOut.slice(0, 80));
+const kept = sanitizeDeep({ m: new Map([['password', 'x'], ['a', 'http://u:p@h/']]), d: new Date(0) });
+check('Maps and Dates keep their shape through the sanitizer', kept.m instanceof Map && kept.m.get('password') === '[redacted]' && kept.m.get('a') === 'http://[redacted]@h/' &&
+    kept.d instanceof Date, '');
 
 let failed = 0;
 for (const c of checks) {
