@@ -6,8 +6,11 @@ all, the case the button is most likely to meet, against a unit whose plant
 parameters cover the shapes a point list has to get right: a scaled 16-bit
 register, a float over two registers, a 32-bit counter, a status word read by
 bits, a register that moved between the sweep and the second read, and
-parameters on registers the scan did not find. Each expectation is printed as
-PASS or FAIL and the script exits non-zero on any FAIL.
+parameters on registers the scan did not find. Then the same scan with IWMAC's
+own side of the unit in hand - its driver set differently from how the device
+answered, its definitions, its log - for the comparisons and the findings; and
+the driver log's reader on lines as plant 3694's driver wrote them. Each
+expectation is printed as PASS or FAIL and the script exits non-zero on any FAIL.
 
 Lives beside the script it tests. Run: python export-check.py
 """
@@ -28,7 +31,7 @@ def lift(start, end):
 js = "globalThis.window = globalThis; globalThis.location = { hostname: '2349.plants.iwmac.local' };\n"
 js += "const VERSION = 'test'; const REPORT_CHUNK_LIMIT = 30000;\n"
 js += "let lastVerification = null, _unitsCache = null;\n"
-js += "let lastResult = null, lastScan = null, pointList = null, plantNames = null;\n"
+js += "let lastResult = null, lastScan = null, pointList = null, plantNames = null, iwmacContext = null;\n"
 js += "const resultFilename = () => 'modpoll_test.json';\n"
 js += lift("    const REGISTER_TABLES = [", "\n    // Serial defaults per driver family")
 js += lift("    const FORMATS = [", "\n    const TOOLBOX_SQL_URL")
@@ -40,6 +43,10 @@ js += lift("    function plantNamesFor(table, format, ref) {", "\n    /**\n     
 # enrichValue, asRanges, impliedScale, the 32-bit decoding, the suggestion, and the export itself.
 js += lift("    function enrichValue(value, table, format) {", "\n    /**\n     * One block of text describing a poll")
 js += lift("    /**\n     * Everything the console knows, as a document", "\n    /*\n     * Where does this device actually keep anything?")
+# The driver log's reader and the two parsers of IWMAC's own settings.
+js += lift("    // What a driver's log line reports, by the wording", "\n    /** \"3_0_F_W_")
+js += lift("    /** \"3_0_F_W_", "\n    async function collectIwmacContext")
+js += lift("    /** A driver's settings read as the connection they describe. */", "\n    // ------------------------------------------------------- binary self-probe")
 js += "const plantIdFromHost = () => '2349';\n"
 js += "const watchDelta = new Map();\n"
 js += r"""
@@ -167,6 +174,142 @@ check('device rests on the scan', doc.device.readingSource === 'scan' && doc.dev
 check('names: the list names the row it covers, so the list is the source named', doc.names === 'point list', doc.names);
 check('howToUse explains reread, wide, suggest and scan.formats', ['reread', 'wide', 'suggest', 'scan.formats'].every(k => doc.howToUse.some(line => line.indexOf(k) === 0)), '');
 check('the file parses', (() => { try { JSON.parse(text); return true; } catch (e) { return false; } })(), text.length + ' chars');
+
+// --- the same scan, now with IWMAC's own side of the unit read -----------------
+// The driver is set to 19200 where modpoll got answers at 9600; the unit is in
+// ERROR with timeouts in its log; another driver claims the same COM port; two
+// units share an address; and one parameter is defined unsigned where the
+// device holds a negative number.
+// The parameter table keys a definition by the short driver_id; the unit's
+// parameters and the driver log carry the whole one.
+const did = (ref, bit) => '0_3_' + (ref - 1) + (bit === undefined ? '' : '.' + bit);
+const fullId = (ref, bit) => '2349_EKC_ekc_0_9_' + did(ref, bit);
+const def = (rawType, scaleKey, extra) => Object.assign({
+    elementId: 'e' + Math.random(), access: 'r', unit: '', format: '',
+    scale: scaleKey === 'x0.1' ? { mode: '1', rawMin: '0', rawMax: '1000', engMin: '0', engMax: '100' } : { mode: '', rawMin: '', rawMax: '', engMin: '', engMax: '' },
+    datatype: { readFunction: 3, readAddr: 0, rawType, swap: 'N', writeFunction: null }, active: true,
+}, extra || {});
+const definitions = {};
+definitions[did(1001)] = def('I16', 'x0.1');
+definitions[did(1003)] = def('F', '');
+definitions[did(1006, 0)] = def('U16', ''); definitions[did(1006, 3)] = def('U16', '');
+definitions[did(1008)] = def('U32', '');
+definitions[did(1012)] = def('U16', 'x0.1');                       // wrong: the device holds -50
+definitions[did(1500)] = def('I16', '', { onlineIndicator: true });   // the online indicator, in the hole
+lastScan.spec = { mode: 'rtu', host: '\\\\.\\COM16', port: null, slave: 9, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1' };
+lastScan.tables['0'] = { answers: true };
+for (let i = 1; i <= 40; i++) values.push({ table: '0', i, addr: i - 1, v: 0, again: 0 });   // coils that answer and hold nothing
+iwmacContext = {
+    unitId: 'ID01', collectedAt: new Date().toISOString(), unavailable: [],
+    status: { unitStatus: 'ERROR', lastComm: '', unitAddr: '0_9', table: 'ekc' },
+    registration: { unitId: 'ID01', unitName: 'EKC 1', driver: 'EKC', driverAddr: '0_9', table: 'ekc', active: true },
+    driver: {
+        owner: 'EKC', module: { running: true, secondsInState: 300 }, plantServerRunning: true, process: { name: 'EKC', path: 'iw_mb.exe', manualStart: false },
+        settings: { mb_mode: '0', comm_port: '16', comm_baudrate: '19200', comm_parity: '0', comm_data_bits: '8', comm_stop_bits: '1' },
+        connection: { mode: 'rtu', serial: true, slave: 9, serverKey: '0', comPort: 'COM16', comPortRaw: '16', baudrate: '19200', parity: 'none', databits: '8', stopbits: '1' },
+    },
+    parameters: { table: 'ekc', definitions, count: 7, inactive: 0 },
+    bus: {
+        unitsOnDriver: [{ unitId: 'ID01', driverAddr: '0_9', active: true }, { unitId: 'ID02', driverAddr: '0_9', active: true }],
+        driversOnSamePort: [{ owner: 'OTHER', mbMode: '0', activeUnits: 2 }],
+    },
+    log: {
+        source: 'test', owner: 'EKC', lines: 12, lastStart: '2026-09-24T10:00:00.000Z', counts: { timeout: 9, offline: 2, started: 1 },
+        current: { since: '2026-09-24T10:00:00.000Z', after: 'the driver last started', counts: { timeout: 6, offline: 1 } },
+        otherUnits: { ID07: { lines: 4, kinds: { offline: 2, online: 2 } } },
+        byDriverId: {
+            [fullId(1001)]: { errors: 3, kinds: { timeout: 3 }, last: { at: '2026-09-24T11:00:00.000Z', text: 'Time Out Error' } },
+            [fullId(1012)]: { errors: 1, kinds: { timeout: 1 }, last: { at: '2026-09-23T11:00:00.000Z', text: 'Time Out Error' } },   // before the start
+        },
+        recent: ['a', 'b'],
+    },
+};
+plantNames.system = [{ name: 'Communication error', shown: '1', unit: '', group: 'System', driverId: '2349_EKC_ekc_0_9_0_COM_ERR' }];
+const doc2 = exportResult(null);
+const text2 = exportText(doc2);
+const r2 = ref => doc2.scanReadings.find(r => r.table === '4' && r.ref === ref);
+const finding = id => doc2.findings.find(f => f.id === id);
+check('schemaVersion 2, with overview, findings, fieldGuide, communication and iwmac',
+    doc2.schemaVersion === 2 && doc2.overview && Array.isArray(doc2.findings) && doc2.fieldGuide && doc2.communication && doc2.iwmac, Object.keys(doc2).join(','));
+check('empty coils leave scanReadings for scanEmpty as ranges; the one the plant and the list name keeps its row',
+    doc2.scanReadings.filter(r => r.table === '0').map(r => r.ref).join() === '3' &&
+    doc2.scanEmpty.some(e => e.table === '0' && e.count === 39 && e.ranges === '1-2,4-40'), JSON.stringify(doc2.scanEmpty));
+check('overview counts the registers that answered, empty ones included', doc2.overview.device.registersAnswering === 1386 + 40, JSON.stringify(doc2.overview.device));
+check('IWMAC decodes 1001 as I16 x0.1 = 3.4 and agrees with its 3.4', r2(1001).plant[0].iwmac.expected === 3.4 && r2(1001).plant[0].iwmac.agrees === true,
+    JSON.stringify(r2(1001).plant[0].iwmac));
+check('IWMAC decodes 1003-1004 as a float = 21.5 and agrees with its "21,5"', r2(1003).plant[0].iwmac.expected === 21.5 && r2(1003).plant[0].iwmac.agrees === true,
+    JSON.stringify(r2(1003).plant[0].iwmac));
+check('a bit parameter decodes to its bit', r2(1006).plant[1].iwmac.expected === 1, JSON.stringify(r2(1006).plant[1].iwmac));
+check('a parameter defined unsigned where the device holds -50 disagrees', r2(1012).plant[0].iwmac.agrees === false && r2(1012).plant[0].iwmac.expected === 6548.6,
+    JSON.stringify(r2(1012).plant[0].iwmac));
+check('the log\'s errors for a parameter ride on it', r2(1001).plant[0].iwmac.logErrors && r2(1001).plant[0].iwmac.logErrors.count === 3, JSON.stringify(r2(1001).plant[0].iwmac.logErrors));
+check('communication compares field by field: baud differs, COM16 matches \\\\.\\COM16',
+    doc2.communication.comparison.find(c => c.field === 'baudrate').same === false && doc2.communication.comparison.find(c => c.field === 'comPort').same === true,
+    JSON.stringify(doc2.communication.comparison));
+check('finding: connection settings differ, and it is an error', finding('connection-settings-differ') && finding('connection-settings-differ').severity === 'error',
+    JSON.stringify(finding('connection-settings-differ')));
+check('finding: the device answers but IWMAC is not receiving', !!finding('iwmac-not-receiving'), doc2.findings.map(f => f.id).join(','));
+check('finding: another driver on the same COM port', !!finding('port-shared-by-drivers'), doc2.findings.map(f => f.id).join(','));
+check('finding: two units at one address', !!finding('duplicate-unit-address'), doc2.findings.map(f => f.id).join(','));
+// Coil 3 answers now, so of the three unanswered before, 1500 and 5000 are left.
+check('finding: IWMAC polls registers the device did not answer', finding('mapped-registers-not-answering') && finding('mapped-registers-not-answering').evidence.count === 2,
+    JSON.stringify(finding('mapped-registers-not-answering')));
+check('finding: IWMAC shows a value its own definition does not give', finding('iwmac-value-differs') && finding('iwmac-value-differs').evidence.count === 1,
+    JSON.stringify(finding('iwmac-value-differs')));
+check('findings are sorted errors first', doc2.findings.every((f, i, a) => i === 0 || ['error', 'warning', 'info'].indexOf(a[i - 1].severity) <= ['error', 'warning', 'info'].indexOf(f.severity)),
+    doc2.findings.map(f => f.severity).join(','));
+check('definitions keyed 0_3_1000 are found for the unit\'s 2349_EKC_ekc_0_9_0_3_1000', r2(1001).plant[0].iwmac.datatype === 'I16' && r2(1001).plant[0].iwmac.scale === 'x0.1',
+    JSON.stringify(r2(1001).plant[0].iwmac));
+check('finding: the online indicator sits on a register the device does not answer', finding('online-indicator-not-answering') &&
+    finding('online-indicator-not-answering').evidence.parameters[0].ref === 1500, JSON.stringify(finding('online-indicator-not-answering')));
+check('finding: other units on the driver fail too', !!finding('other-units-failing'), doc2.findings.map(f => f.id).join(','));
+check('parameters-with-driver-errors counts only errors since the driver last started', finding('parameters-with-driver-errors') &&
+    finding('parameters-with-driver-errors').evidence.count === 1, JSON.stringify(finding('parameters-with-driver-errors')));
+check('iwmac-not-receiving quotes the log since the last start', /6 timeout, 1 offline in the driver log since the driver last started/.test(finding('iwmac-not-receiving').detail),
+    finding('iwmac-not-receiving').detail);
+check('overview names the unit\'s table from its registration', doc2.overview.unit.table === 'ekc', JSON.stringify(doc2.overview.unit));
+
+// --- the driver log, read for one unit -----------------------------------------
+// Lines as plant 3694's TIANJINEX3 wrote them, newest first: this unit's items
+// at 0_11 and another unit's at 0_13 on the same driver, both units' OFFLINE,
+// a start, and this unit coming back online after an old timeout.
+const ms = m => new Date(Date.UTC(2026, 8, 24, 10, m)).toISOString();
+const entries = [
+    { at: ms(50), level: 3, text: 'Block (norm, 0) item 3694_TIANJINEX3_tianjin_sure_inst_ex3_0_11_0_3_62 >> Modbus read error >> Time Out Error' },
+    { at: ms(49), level: 3, text: 'Block (norm, 0) item 3694_TIANJINEX3_tianjin_sure_inst_ex3_0_13_0_3_62 >> Modbus read error >> Time Out Error' },
+    { at: ms(48), level: 3, text: 'Unit ID02 is OFFLINE' },
+    { at: ms(47), level: 3, text: 'Block (norm, 0) item 3694_TIANJINEX3_tianjin_sure_inst_ex3_0_11_0_3_40001 >> Modbus read error >> Time Out Error' },
+    { at: ms(40), level: 0, text: 'Unit ID01 is ONLINE' },
+    { at: ms(30), level: 3, text: 'Block (norm, 0) item 3694_TIANJINEX3_tianjin_sure_inst_ex3_0_11_0_3_30 >> Modbus read error >> Time Out Error' },
+    { at: ms(20), level: 0, text: 'Open ok, (IP address: 192.168.10.100, ID: 1, 1000)' },
+    { at: ms(10), level: 0, text: 'Application TIANJINEX3 started.' },
+    { at: ms(5), level: 1, text: 'Write failed 19423 = 1.00' },
+];
+const read = readDriverLog({ source: 'test', entries }, {
+    owner: 'TIANJINEX3', unitId: 'ID01', table: 'tianjin_sure_inst_ex3',
+    tablePrefix: '3694_TIANJINEX3_tianjin_sure_inst_ex3_', unitPrefix: '3694_TIANJINEX3_tianjin_sure_inst_ex3_0_11_',
+});
+check('driver log: another unit\'s items and OFFLINE are counted apart, by unit and by address',
+    read.otherUnits && read.otherUnits.ID02 && read.otherUnits.ID02.kinds.offline === 1 && read.otherUnits['address 0_13'] && read.otherUnits['address 0_13'].kinds.timeout === 1,
+    JSON.stringify(read.otherUnits));
+check('driver log: current starts where this unit last came back online, after the start', read.current.since === ms(40) &&
+    read.current.after === 'this unit last came back online' && read.current.counts.timeout === 2, JSON.stringify(read.current));
+check('driver log: the whole window keeps the earlier timeout, the start, the connection and the failed write',
+    read.counts.timeout === 3 && read.counts.started === 1 && read.counts.portOpened === 1 && read.counts.writeFailed === 1 && read.lastStart === ms(10), JSON.stringify(read.counts));
+check('driver log: failed items are this unit\'s only, by full driver_id', Object.keys(read.byDriverId).length === 3 &&
+    read.byDriverId['3694_TIANJINEX3_tianjin_sure_inst_ex3_0_11_0_3_40001'].kinds.timeout === 1, Object.keys(read.byDriverId).join(', '));
+check('shortDriverId drops the unit prefix, even at unit address 0_9', shortDriverId('2349_EKC_ekc_0_9_0_3_1000') === '0_3_1000' &&
+    shortDriverId('2349_OJEXHAUST_exhausto_OJ_v610_1_1_0_4_11') === '0_4_11' && shortDriverId('x_0_1_0_3_5.2') === '0_3_5.2' && shortDriverId('0_4_0') === '0_4_0',
+    [shortDriverId('2349_EKC_ekc_0_9_0_3_1000'), shortDriverId('x_0_1_0_3_5.2')].join());
+const tcp = describeDriverConnection({ mb_mode: '2', mb_tcp_servers: '1;192.168.10.100;502;1000;2;1000\r\n', mb_request_timeout: '1000', mb_request_retries: '2', comm_port: '3' }, '1_1');
+check('a TCP driver: the server the unit\'s address names, and no COM port', tcp.mode === 'tcp' && tcp.host === '192.168.10.100' && tcp.port === 502 && tcp.slave === 1 &&
+    tcp.serial === false && tcp.comPort === undefined && tcp.requestTimeoutMs === 1000, JSON.stringify(tcp));
+const rtu = describeDriverConnection({ mb_mode: '0', comm_port: '16', comm_baudrate: '9600', comm_parity: '2', comm_data_bits: '8', comm_stop_bits: '1', packet_timeout: '1' }, '0_11');
+check('a serial driver: COM16, 9600 even, slave 11', rtu.comPort === 'COM16' && rtu.parity === 'even' && rtu.slave === 11 && rtu.packetTimeout === 1, JSON.stringify(rtu));
+const dt = parseDriverIdExtra('3_44101_I16_W_-_-_-_-');
+check('driver_id_extra: 3_44101_I16_W — function 3, address 44101, I16 word-swapped, no write', dt.readFunction === 3 && dt.readAddr === 44101 && dt.rawType === 'I16' &&
+    dt.swap === 'W' && dt.writeFunction === null, JSON.stringify(dt));
+check('the IWMAC-side file parses', (() => { try { JSON.parse(text2); return true; } catch (e) { return false; } })(), text2.length + ' chars');
 
 let failed = 0;
 for (const c of checks) {

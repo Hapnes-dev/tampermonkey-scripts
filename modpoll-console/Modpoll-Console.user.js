@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.45.1
+// @version      1.46.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.45.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.46.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -626,7 +626,60 @@
     const countMarkerLines = text => (String(text).match(new RegExp('^\\s*' + MARK + ':\\d+:\\d+\\s*$', 'gm')) || []).length;
     let runCounter = 0;
 
+    /*
+     * What a scan costs, counted where every command passes: one entry per
+     * command line sent to Plant Term, with how many modpoll runs it held, how
+     * long it took and how it ended. Null except while something measures —
+     * a scan starts it and hangs the totals on its report as `cost`, which is
+     * how a reader can tell a slow device (refusals at a second or more each)
+     * from a slow shell, and what an optimisation actually saved.
+     */
+    let costLedger = null;
+
+    function startCostLedger() {
+        costLedger = {
+            startedAt: new Date().toISOString(), commandLines: 0, modpollRuns: 0, ms: 0, valuesRead: 0,
+            exceptions: 0, timeouts: 0, portErrors: 0, otherErrors: 0, slowestLineMs: 0,
+        };
+        return costLedger;
+    }
+
+    function finishCostLedger() {
+        const l = costLedger;
+        costLedger = null;
+        if (!l) return null;
+        l.ms = Math.round(l.ms);
+        l.slowestLineMs = Math.round(l.slowestLineMs);
+        l.msPerModpollRun = l.modpollRuns ? Math.round(l.ms / l.modpollRuns) : null;
+        return l;
+    }
+
+    function recordCost(ledger, command, output, ms) {
+        const text = String(output || '');
+        const count = re => (text.match(re) || []).length;
+        ledger.commandLines++;
+        ledger.modpollRuns += (String(command).match(/modpoll(\.exe)?\s+-/gi) || []).length;
+        ledger.ms += ms;
+        ledger.slowestLineMs = Math.max(ledger.slowestLineMs, ms);
+        ledger.valuesRead += countValueLines(text);
+        ledger.exceptions += count(/exception response/gi);
+        ledger.timeouts += count(/time-?out/gi);
+        ledger.portErrors += count(/Port or socket open error|Serial port already open/gi);
+        ledger.otherErrors += count(/Unkn[wo]{2}n error|Can'?t reach slave|CRC|Invalid frame|checksum/gi);
+    }
+
     async function termRun(command, opts) {
+        const started = performance.now();
+        let output;
+        try {
+            output = await termRunInner(command, opts);
+            return output;
+        } finally {
+            if (costLedger) recordCost(costLedger, command, output, performance.now() - started);
+        }
+    }
+
+    async function termRunInner(command, opts) {
         const options = Object.assign({ timeoutMs: 25000, settleMs: 300 }, opts || {});
         // modpoll writes its errors to stderr at once and flushes its banner only
         // when the process exits, so a run that stops at the first error line has
@@ -731,7 +784,7 @@
             if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
                 exePath = EXE_FULL;
                 log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
-                return termRun(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
+                return termRunInner(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
             }
             if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk); return chunk; }
             if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk); return chunk; }
@@ -744,7 +797,7 @@
         if (options.reconnect !== false) {
             log('Plant Term answered nothing — reconnecting', 'warn');
             await reconnectTerminal();
-            return termRun(command, Object.assign({}, options, { reconnect: false }));
+            return termRunInner(command, Object.assign({}, options, { reconnect: false }));
         }
         throw new Error('Plant Term printed nothing within ' + Math.round(options.timeoutMs / 1000) +
             ' s of running the command, before and after reconnecting. Another session may be flooding it.');
@@ -1071,6 +1124,11 @@
         abortRequested = false;
         const spec = normaliseSpec(Object.assign({}, input, { count: 1, format: '' }));
         const started = performance.now();
+        // Where the time went, phase by phase — the numbers any speed-up is
+        // judged by, carried on the report as `phases`.
+        const phases = [];
+        let phaseAt = started;
+        const mark = name => { const now = performance.now(); phases.push({ phase: name, ms: Math.round(now - phaseAt) }); phaseAt = now; };
         /*
          * Progress, as a fraction and a line of text. The ladder and the
          * narrowing are countable and take the first three tenths; the sweep is
@@ -1104,6 +1162,7 @@
             }
         };
         learn(first);
+        mark('ladder');
 
         const regions = {};
         for (const table of SCAN_TABLES) {
@@ -1148,6 +1207,7 @@
             }
             round++;
         }
+        mark('narrow');
 
         const tables = {};
         for (const table of SCAN_TABLES) {
@@ -1249,6 +1309,7 @@
                 // whatever the asymptote last happened to reach.
                 tell(before + share, tableLabel(table) + ' swept — ' + total.answered + ' registers found', { phase: 'sweep', table });
             }
+            mark('sweep');
 
             // Then everything found, once more. A register that reads
             // differently a minute later is being measured; one that reads the
@@ -1263,6 +1324,7 @@
                             (t && t.changed ? ', ' + t.changed + ' changed so far' : ''),
                         { phase: 'reread', partial: !!(t && t.partial) }));
                 report.reread.secondsAfterStart = Math.round((performance.now() - started) / 1000);
+                mark('reread');
             }
 
             // Then judge what each region holds, prove the word order on the
@@ -1289,9 +1351,20 @@
                     best.verdict.evidence += '; a float read printed the same numbers';
                 }
             }
+            mark('format');
             report.suggestedSpec = suggestSpec(report);
         }
         report.elapsedMs = Math.round(performance.now() - started);
+        report.phases = phases;
+        // The connection exactly as this scan used it — the half of a
+        // communication fault the device side can prove: these settings got
+        // answers (or did not). The export sets them beside IWMAC's own.
+        const serialScan = spec.mode === 'rtu' || spec.mode === 'ascii';
+        report.spec = {
+            mode: spec.mode, host: spec.host, port: serialScan ? null : spec.port, slave: spec.slave,
+            baudrate: serialScan ? spec.baudrate : null, parity: serialScan ? spec.parity : null,
+            databits: serialScan ? spec.databits : null, stopbits: serialScan ? spec.stopbits : null,
+        };
         tell(1, abortRequested ? 'Scan stopped' : 'Scan complete', { phase: 'done' });
         return report;
     }
@@ -1621,14 +1694,31 @@
         const tableLabel = t => (REGISTER_TABLES.find(x => x.value === String(t)) || {}).label || ('table ' + t);
         const asNumber = shown => Number(String(shown == null ? '' : shown).replace(',', '.'));
 
+        // IWMAC's own view of the unit — its driver, how it defines each
+        // parameter, its health — when it was collected for the last scan
+        // (collectIwmacContext). Every comparison that needs it is skipped when
+        // it was not, and the findings say which parts are missing.
+        const iwCandidate = (typeof iwmacContext !== 'undefined' && iwmacContext) || (lastScan && lastScan.iwmac) || null;
+        // Never another unit's: names loaded for a different unit since make it stale.
+        const iw = iwCandidate && (!plantNames || iwCandidate.unitId === plantNames.unitId) ? iwCandidate : null;
+        const defs = iw && iw.parameters ? iw.parameters.definitions : null;
+        const logByDriverId = iw && iw.log ? (iw.log.byDriverId || {}) : {};
+
         // With the register's value in hand, a bit parameter also says what its
-        // bit reads — the detail view counts that out, the file should too.
-        const plantRow = (e, raw) => {
+        // bit reads — the detail view counts that out, the file should too — and
+        // every parameter says what IWMAC's own definition makes of the register.
+        const plantRow = (e, raw, nextRaw, moving) => {
             const row = { name: e.name, shown: e.plantValue, unit: e.unit, group: e.group, access: e.access, driverId: e.driverId };
             if (e.bit !== null) {
                 row.bit = e.bit;
                 if (typeof raw === 'number') row.reads = ((raw < 0 ? raw + 65536 : raw) >> e.bit) & 1;
             }
+            // The table defines a parameter by its short driver_id, 0_4_11; the
+            // unit's parameters carry the whole one, plant, driver, table and
+            // address first — and so does the driver's log.
+            const def = defs ? (defs[shortDriverId(e.driverId)] || defs[e.driverId]) : null;
+            if (def) row.iwmac = compareWithIwmac(def, e, raw, nextRaw, !!moving, logByDriverId[e.driverId]);
+            else if (defs) row.iwmac = { defined: false };
             return row;
         };
 
@@ -1720,7 +1810,7 @@
             if (r.type) out.type = r.type;
             if (r.writable) out.writable = true;
             if (listed) out.list = listRow(listed);
-            if (fromPlant) out.plant = fromPlant.map(e => plantRow(e, r.raw));
+            if (fromPlant) out.plant = fromPlant.map(e => plantRow(e, r.raw, rowWide ? undefined : nextRawOf(rowTable, v.i), !!v.changed));
             const first = fromPlant && fromPlant[0];
             const implied = first && first.bit === null ? impliedScale(r.raw, first.plantValue) : null;
             if (implied) out.impliedScale = implied;
@@ -1808,8 +1898,18 @@
         // A scan reading carries its own table — a scan crosses all four, a
         // poll never does — and is always one 16-bit register: scanDevice
         // reads a table one register at a time to find the map, never wide.
-        const scanReadings = (lastScan && lastScan.values ? lastScan.values : []).map(v =>
+        const allScanRows = (lastScan && lastScan.values ? lastScan.values : []).map(v =>
             Object.assign({ table: v.table }, buildReadingRow(v, v.table, '', 1, false)));
+        // A register that answered 0, that nothing names, that did not move and
+        // that nothing else was said about is evidence of one thing — the address
+        // answers — and a row each made a lenient device's file hundreds of
+        // kilobytes of that. Such registers are listed as ranges in scanEmpty
+        // instead; every other scanned register keeps its row.
+        const informative = r => r.raw !== 0 || r.plant || r.list || r.changed || r.suggest || r.regionFormat || r.notes || r.wide;
+        const scanReadings = allScanRows.filter(informative);
+        const emptyByTable = {};
+        for (const r of allScanRows) if (!informative(r)) (emptyByTable[r.table] = emptyByTable[r.table] || []).push(r.ref);
+        const scanEmpty = Object.keys(emptyByTable).sort().map(t => ({ table: t, tableName: tableLabel(t), count: emptyByTable[t].length, ranges: asRanges(emptyByTable[t]) }));
 
         /*
          * A float's high word makes a candidate twice: high word first on its
@@ -1851,7 +1951,7 @@
                 // the device did not answer for — say where it fell.
                 const scan = scanStatusOf(t, Number(ref));
                 for (const e of entries) {
-                    const row = Object.assign({ table: t, ref: Number(ref), addr: e.protocol }, plantRow(e));
+                    const row = Object.assign({ table: t, ref: Number(ref), addr: e.protocol }, plantRow(e, undefined, undefined, false));
                     if (scan) row.scan = scan;
                     plantParameters.push(row);
                 }
@@ -1878,7 +1978,10 @@
             valueFormat: format || '16-bit', registersPerValue: wide ? 2 : 1,
             command: spec.raw || null, readingSource,
         } : {
-            host: (lastScan && lastScan.host) || null, port: null, slave: (lastScan && lastScan.slave) || null, mode: null,
+            host: (lastScan && lastScan.host) || null,
+            port: (lastScan && lastScan.spec && lastScan.spec.port) || null,
+            slave: (lastScan && lastScan.slave) || null,
+            mode: (lastScan && lastScan.spec && lastScan.spec.mode) || null,
             table: null, tableName: null, valueFormat: null, registersPerValue: null, command: null, readingSource,
         };
         // summary's fields are a poll's own — requested, blocks, elapsedMs mean
@@ -1912,12 +2015,69 @@
             return row;
         };
 
+        // The connection modpoll used beside the one IWMAC's driver is set to.
+        const used = result ? {
+            mode: spec.mode || null, host: spec.host || null, port: spec.mode === 'tcp' || spec.mode === 'enc' ? spec.port || 502 : null, slave: spec.slave || null,
+            baudrate: spec.baudrate || null, parity: spec.parity || null, databits: spec.databits || null, stopbits: spec.stopbits || null,
+        } : (lastScan && lastScan.spec) || null;
+        const configured = iw && iw.driver ? iw.driver.connection || null : null;
+        const comparison = compareConnections(used, configured);
+        const deviceAnswered = readings.length > 0 || allScanRows.length > 0;
+        const findings = buildFindings({
+            iw, rows: readings.concat(scanReadings), plantParameters, comparison, scan: lastScan, names: plantNames, deviceAnswered,
+        });
+        const plantCompared = [];
+        for (const r of readings.concat(scanReadings)) for (const p of (r.plant || [])) if (p.iwmac && p.iwmac.agrees !== undefined) plantCompared.push(p.iwmac.agrees);
+        const count = sev => findings.filter(x => x.severity === sev).length;
+
         return {
             format: 'modpoll-console/export',
             version: VERSION,
+            schemaVersion: 2,
             plant: (result && result.plant) || plantIdFromHost() || null,
             at: (result && result.at) || new Date().toISOString(),
+            // Read these two first: what the evidence below adds up to.
+            overview: {
+                unit: plantNames ? {
+                    id: plantNames.unitId,
+                    name: unitInfo ? unitInfo.unit_name : (iw && iw.registration ? iw.registration.unitName : null),
+                    driver: iw && iw.driver ? iw.driver.owner : (unitInfo ? unitInfo.driver_type : null),
+                    table: iw && iw.registration ? iw.registration.table : (iw && iw.parameters ? iw.parameters.table : null),
+                } : null,
+                device: {
+                    answeredModpoll: deviceAnswered,
+                    connectionUsed: used,
+                    registersAnswering: readings.length + allScanRows.length,
+                    registersHoldingValues: readings.concat(allScanRows).filter(r => r.raw !== 0).length,
+                    tablesAnswering: lastScan && lastScan.tables ? Object.keys(lastScan.tables).filter(t => lastScan.tables[t].answers).map(tableLabel) : null,
+                },
+                iwmac: plantNames ? {
+                    parameters: plantNames.rows,
+                    comparedWithDevice: plantCompared.length,
+                    agree: plantCompared.filter(x => x === true).length,
+                    disagree: plantCompared.filter(x => x === false).length,
+                    withoutValue: plantCompared.filter(x => x === null).length,
+                    notAnsweredByDevice: plantParameters.filter(p => p.scan && p.scan !== 'answered').length,
+                    unitStatus: iw && iw.status ? iw.status.unitStatus : null,
+                    driverRunning: iw && iw.driver && iw.driver.module ? iw.driver.module.running : null,
+                    contextCollected: !!iw,
+                } : null,
+                findings: { errors: count('error'), warnings: count('warning'), info: count('info'), ids: findings.map(x => x.id) },
+            },
+            findings,
             howToUse: [
+                'Start with overview and findings: findings are the problems the evidence shows, most serious first, each with what ' +
+                    'proves it and a suggested action. Every other section is the evidence they are drawn from.',
+                'communication sets the connection modpoll used (and got answers with, or not) beside the one IWMAC\'s driver is set ' +
+                    'to, field by field. iwmac is IWMAC\'s own side of the unit: its registration and table, every driver setting, ' +
+                    'whether the driver module runs, the unit\'s status and last contact, and the Plant Server log lines of its driver: ' +
+                    'log.current counts only what came after the driver last started or this unit last came back online, and ' +
+                    'log.otherUnits holds the lines of other units on the same driver, never counted against this one.',
+                'plant[].iwmac on a reading row is one IWMAC parameter\'s own definition — datatype (raw type and swap: _W low word ' +
+                    'first, _R bytes swapped), scale, format, access — and expected, what that definition makes of the register ' +
+                    'modpoll just read. agrees compares expected with shown, the value IWMAC displayed. false on a register that did ' +
+                    'not move is a definition reading the register differently from the device, or an old value; null means IWMAC ' +
+                    'shows nothing for it.',
                 'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
                     'agent checking or correcting a modbusgen point list.',
                 'Five sections, one row per line: readings, scanReadings, plantParameters, listPoints, verificationRows. When ' +
@@ -1966,7 +2126,53 @@
                 'device.readingSource says what evidence this document actually rests on: "poll" when readings came from one just ' +
                     'now, "scan" when only scanReadings does, "none" when neither ran. summary.source says the same for summary ' +
                     'when it was built from a scan rather than a poll.',
+                'scanEmpty: registers the scan found answering 0 with nothing else to say about them — no IWMAC parameter, no list ' +
+                    'point, no change between the two reads — as ranges per table instead of one row each. They answer; they hold nothing.',
+                'scan.spec is the connection the scan used, scan.phases how long each phase took, scan.cost what the commands cost: ' +
+                    'modpoll runs, refusals (exceptions), timeouts and the time per run — a device slow to refuse makes a scan slow.',
             ],
+            fieldGuide: {
+                ref: 'the register as modpoll prints it and -r takes it: 1-based',
+                addr: 'the protocol address, ref - 1: what a Modbus frame carries and what IWMAC\'s driver_id ends in',
+                table: '4 holding registers (function 3), 3 input registers (function 4), 1 discrete inputs (function 2), 0 coils (function 1)',
+                raw: 'the 16-bit value modpoll printed, signed; hex is the same bits',
+                shown: 'the value IWMAC displayed for a parameter when the unit\'s parameters were read',
+                'plant[].driverId': 'IWMAC\'s parameter id: <plant>_<driver>_<table>_<unit address>_0_<function>_<addr>[.<bit>]',
+                'plant[].iwmac.expected': 'the register decoded with IWMAC\'s own datatype and scale for that parameter',
+                'plant[].iwmac.agrees': 'expected against shown: true, false, or null when IWMAC shows nothing',
+                'plant[].iwmac.onlineIndicator': 'IWMAC judges the unit online by this parameter (iw_set onl_ind): if its register does not answer, the unit goes OFFLINE',
+                'iwmac.log.current': 'the driver log\'s counts since the driver last started or this unit last came back online — the present, not history',
+                'list': 'the loaded modbusgen list\'s point for the register; its addr is ref when subtract_one is true, addr when false',
+                suggest: 'the modbusgen point the device and IWMAC together suggest — a lead to check against the vendor document',
+                'communication.comparison[].same': 'true when modpoll and IWMAC use the same value for that setting; null when one side is unknown',
+            },
+            communication: {
+                usedByModpoll: used,
+                configuredInIwmac: configured,
+                comparison,
+                note: configured ? 'modpoll\'s settings are the ones the device just answered (or did not) with; IWMAC\'s are its driver\'s.'
+                    : 'IWMAC\'s driver settings were not read — see iwmac.unavailable.',
+            },
+            iwmac: iw ? {
+                collectedAt: iw.collectedAt,
+                registration: iw.registration || null,
+                status: iw.status || null,
+                system: plantNames && plantNames.system ? plantNames.system : null,
+                driver: iw.driver ? {
+                    owner: iw.driver.owner, connection: iw.driver.connection || null, process: iw.driver.process || null,
+                    module: iw.driver.module || null, plantServerRunning: iw.driver.plantServerRunning === undefined ? null : iw.driver.plantServerRunning,
+                    settings: iw.driver.settings || null,
+                } : null,
+                parameters: iw.parameters ? { table: iw.parameters.table, defined: iw.parameters.count || 0, inactive: iw.parameters.inactive || 0 } : null,
+                bus: iw.bus || null,
+                log: iw.log ? {
+                    source: iw.log.source || null, owner: iw.log.owner, lines: iw.log.lines, from: iw.log.from, to: iw.log.to,
+                    lastStart: iw.log.lastStart || null, counts: iw.log.counts, current: iw.log.current || null,
+                    otherUnits: iw.log.otherUnits || null,
+                    parametersWithErrors: Object.keys(iw.log.byDriverId || {}).length, recent: (iw.log.recent || []).slice(0, 25),
+                } : null,
+                unavailable: iw.unavailable || [],
+            } : null,
             device,
             unit: plantNames ? Object.assign(
                 { id: plantNames.unitId },
@@ -2001,9 +2207,11 @@
             commands: (result && result.commands) || [],
             scan: lastScan ? {
                 at: lastScan.at, host: lastScan.host, slave: lastScan.slave, elapsedMs: lastScan.elapsedMs || null,
+                spec: lastScan.spec || null, phases: lastScan.phases || null, cost: lastScan.cost || null,
                 tables: lastScan.tables, sweep: lastScan.sweep || null, reread: lastScan.reread || null,
                 formats: lastScan.formats || null, modpoll: lastScan.modpoll || null, suggestedSpec: lastScan.suggestedSpec || null,
             } : null,
+            scanEmpty,
             verification: verification ? {
                 at: verification.at, device: verification.device, list: verification.list, summary: verification.summary,
                 offsets: verification.offsets, offsetVerdict: verification.offsetVerdict, diagnostics: verification.diagnostics,
@@ -2022,6 +2230,265 @@
                 return out;
             }) : [],
         };
+    }
+
+    // ---------------------------------- the device against IWMAC's own setup
+
+    // The kinds of driver log line that mean the driver did not get its answer.
+    const LOG_TROUBLE = ['timeout', 'invalidResponse', 'exception', 'readError', 'offline', 'portFailed', 'tcpError'];
+
+    /** A driver_id as the parameter table has it: 0_<function>_<address>[.<bit>], the unit's prefix dropped. */
+    function shortDriverId(id) {
+        const m = String(id == null ? '' : id).match(/(?:^|_)(0_\d+_\d+(?:\.\d+)?)$/);
+        return m ? m[1] : String(id == null ? '' : id);
+    }
+
+    /** IWMAC's scale columns in words: '' (none), 'x0.1', or the linear map it stores. */
+    function describeIwmacScale(scale) {
+        if (!scale || scale.mode === '' || scale.mode === null || scale.mode === undefined || scale.mode === '0') return '';
+        if (String(scale.mode) === '2') return 'driver factor 2';
+        const rmin = Number(scale.rawMin), rmax = Number(scale.rawMax), emin = Number(scale.engMin), emax = Number(scale.engMax);
+        if ([rmin, rmax, emin, emax].some(Number.isNaN) || rmax === rmin) return 'scale ' + scale.mode;
+        if (rmin === 0 && emin === 0) return 'x' + roundScaled(emax / rmax, 8);
+        return 'linear raw ' + rmin + '..' + rmax + ' -> ' + emin + '..' + emax;
+    }
+
+    /**
+     * The register as IWMAC's own parameter definition reads it: its raw type,
+     * its byte or word swap, its bit, its linear scale. What that gives is what
+     * IWMAC should be showing for the value modpoll just read — so where the two
+     * differ, either IWMAC's value is old, or IWMAC decodes the register
+     * differently from how the device means it.
+     */
+    function decodeLikeIwmac(def, raw, nextRaw, bit) {
+        if (!def || !def.datatype || !def.datatype.rawType) return { ok: false, why: 'no datatype in the definition' };
+        if (typeof raw !== 'number') return { ok: false, why: 'no reading' };
+        const u16 = x => (x < 0 ? x + 65536 : x) & 0xFFFF;
+        const type = String(def.datatype.rawType).toUpperCase();
+        const swap = String(def.datatype.swap || 'N').toUpperCase();
+        let value;
+        if (bit !== null && bit !== undefined) {
+            value = (u16(raw) >> bit) & 1;
+        } else if (type === 'I16' || type === 'U16') {
+            let w = u16(raw);
+            if (swap === 'R') w = ((w & 0xFF) << 8) | (w >> 8);
+            value = type === 'I16' && w > 32767 ? w - 65536 : w;
+        } else if (type === 'I32' || type === 'U32' || type === 'F') {
+            if (typeof nextRaw !== 'number') return { ok: false, why: 'the next register was not read, and this is a 32-bit ' + type };
+            const hi = swap === 'W' ? u16(nextRaw) : u16(raw);
+            const lo = swap === 'W' ? u16(raw) : u16(nextRaw);
+            const bits = ((hi << 16) >>> 0) + lo;
+            if (type === 'U32') value = bits >>> 0;
+            else if (type === 'I32') value = bits | 0;
+            else {
+                const view = new DataView(new ArrayBuffer(4));
+                view.setUint32(0, bits >>> 0);
+                value = view.getFloat32(0);
+                if (!Number.isFinite(value)) return { ok: false, why: 'the two registers do not decode to a finite float', bits: '0x' + (bits >>> 0).toString(16).toUpperCase().padStart(8, '0') };
+            }
+        } else {
+            return { ok: false, why: 'raw type ' + type + ' is not decoded here' };
+        }
+        const s = def.scale || {};
+        if (String(s.mode) === '1') {
+            const rmin = Number(s.rawMin), rmax = Number(s.rawMax), emin = Number(s.engMin), emax = Number(s.engMax);
+            if (![rmin, rmax, emin, emax].some(Number.isNaN) && rmax !== rmin) value = emin + (value - rmin) * (emax - emin) / (rmax - rmin);
+        } else if (String(s.mode) === '2') {
+            return { ok: false, why: 'driver factor 2 is applied inside the driver' };
+        }
+        return { ok: true, value: roundScaled(value, 6) };
+    }
+
+    /** One IWMAC parameter's definition beside the register as read, compared. */
+    function compareWithIwmac(def, entry, raw, nextRaw, moving, logEntry) {
+        const dt = def.datatype || {};
+        const out = {
+            datatype: dt.rawType ? dt.rawType + (dt.swap && dt.swap !== 'N' ? '_' + dt.swap : '') : (def.datatypeText || null),
+            scale: describeIwmacScale(def.scale), format: def.format || '', access: def.access || '',
+        };
+        if (dt.writeFunction) out.writeFunction = dt.writeFunction;
+        if (def.active === false) out.active = false;
+        if (def.onlineIndicator) out.onlineIndicator = true;
+        if (def.updateFreq) out.updateFreq = def.updateFreq;
+        if (def.alarmType) out.alarmType = def.alarmType;
+        if (logEntry) out.logErrors = { count: logEntry.errors, kinds: logEntry.kinds, last: logEntry.last };
+        if (typeof raw !== 'number') return out;
+        const decoded = decodeLikeIwmac(def, raw, nextRaw, entry.bit);
+        if (!decoded.ok) { out.expected = null; out.why = decoded.why; return out; }
+        out.expected = decoded.value;
+        const shownText = String(entry.plantValue == null ? '' : entry.plantValue).trim();
+        const shownNumber = Number(shownText.replace(',', '.'));
+        if (!shownText) {
+            out.agrees = null;
+            out.note = 'IWMAC shows no value — it has not received this parameter';
+        } else if (Number.isNaN(shownNumber)) {
+            out.note = 'IWMAC shows a word; ' + decoded.value + ' is the state it stands for';
+        } else {
+            const tolerance = Math.max(0.5 * Math.pow(10, -decimalsOf(shownText)), Math.abs(decoded.value) * 1e-6);
+            out.agrees = Math.abs(shownNumber - decoded.value) <= tolerance + 1e-9;
+            if (!out.agrees && moving) out.note = 'the register moved during the scan — a live value, so a difference is expected';
+        }
+        return out;
+    }
+
+    /** modpoll's connection beside IWMAC's driver, field by field. */
+    function compareConnections(used, configured) {
+        if (!used || !configured) return [];
+        const bare = v => String(v == null ? '' : v).replace(/^\\\\\.\\/, '').trim().toLowerCase();
+        const fields = configured.serial
+            ? [['mode', used.mode, configured.mode], ['comPort', used.host, configured.comPort], ['slave', used.slave, configured.slave],
+                ['baudrate', used.baudrate, configured.baudrate], ['parity', used.parity, configured.parity],
+                ['databits', used.databits, configured.databits], ['stopbits', used.stopbits, configured.stopbits]]
+            : [['mode', used.mode === 'enc' ? 'tcp' : used.mode, configured.mode], ['host', used.host, configured.host],
+                ['port', used.port, configured.port], ['slave', used.slave, configured.slave]];
+        return fields.map(([field, a, b]) => ({
+            field, modpoll: a === undefined ? null : a, iwmac: b === undefined ? null : b,
+            same: a === null || a === undefined || b === null || b === undefined ? null : bare(a) === bare(b),
+        }));
+    }
+
+    /**
+     * Problems the evidence shows, each stated once with what proves it and what
+     * to do — the part of the file an agent should read first. Every finding is
+     * an inference from the sections below it, and names them.
+     */
+    function buildFindings(input) {
+        const f = [];
+        const add = (severity, id, title, detail, evidence, action) => f.push({ id, severity, title, detail, evidence: evidence || {}, suggestedAction: action || '' });
+        const { iw, rows, plantParameters, comparison, scan, names, deviceAnswered } = input;
+        if (!names) {
+            add('warning', 'unit-not-identified', 'No IWMAC unit matched this device',
+                'The export has no IWMAC parameters, so nothing here compares the device with IWMAC.',
+                {}, 'Pick the unit in the unit list, or check that host and slave match the unit\'s driver address, then scan again.');
+        }
+        if (iw && iw.unavailable && iw.unavailable.length) {
+            add('info', 'iwmac-context-partial', 'Part of IWMAC\'s setup could not be read',
+                'These parts are missing from iwmac and every comparison that needs them is skipped.', { unavailable: iw.unavailable },
+                'Run the scan from the installed userscript with GM_xmlhttpRequest granted and the Toolbox reachable.');
+        }
+        if (iw && iw.driver && iw.driver.plantServerRunning === false) {
+            add('info', 'plant-server-stopped', 'The Plant Server was stopped',
+                'No driver polls while it is stopped, so IWMAC\'s values and status are from before the stop.', {},
+                'Start the Plant Server before judging IWMAC\'s values.');
+        } else if (iw && iw.driver && iw.driver.module && iw.driver.module.running === false) {
+            add('error', 'driver-not-running', 'The unit\'s driver is not running',
+                'Driver ' + iw.driver.owner + ' is not among the running Plant Server modules, so IWMAC polls nothing on this unit.',
+                { module: iw.driver.module, process: iw.driver.process || null }, 'Check the driver\'s process registration and restart the Plant Server.');
+        }
+        const differ = (comparison || []).filter(c => c.same === false);
+        if (differ.length && deviceAnswered) {
+            add('error', 'connection-settings-differ', 'IWMAC\'s driver is not set up the way the device answered',
+                differ.map(c => c.field + ': the device answered modpoll at ' + c.modpoll + ', IWMAC is set to ' + c.iwmac).join('; ') + '.',
+                { differences: differ }, 'Change the driver setting to the value modpoll used, or confirm the device\'s own setting, then restart the Plant Server.');
+        }
+        if (iw && iw.bus) {
+            const conflicts = (iw.bus.driversOnSamePort || []).filter(d => d.activeUnits > 0 && (d.mbMode === null || String(d.mbMode) === '0' || String(d.mbMode) === '1'));
+            if (conflicts.length) {
+                add('error', 'port-shared-by-drivers', 'Another driver is set to the same COM port',
+                    'Only one process can hold a COM port, so one of these drivers cannot open it: ' + conflicts.map(d => d.owner + ' (' + d.activeUnits + ' active units)').join(', ') + '.',
+                    { port: iw.driver && iw.driver.connection ? iw.driver.connection.comPort : null, drivers: conflicts },
+                    'Put every unit on that bus under one driver, or move one driver to its own port.');
+            }
+            const seen = {};
+            for (const u of (iw.bus.unitsOnDriver || []).filter(x => x.active)) (seen[u.driverAddr] = seen[u.driverAddr] || []).push(u.unitId);
+            const dupes = Object.keys(seen).filter(k => seen[k].length > 1).map(k => ({ driverAddr: k, units: seen[k] }));
+            if (dupes.length) {
+                add('error', 'duplicate-unit-address', 'Two active units share one driver address',
+                    dupes.map(d => d.units.join(' and ') + ' at ' + d.driverAddr).join('; ') + ' — both are polled at the same slave.',
+                    { duplicates: dupes }, 'Deactivate the unit that is not installed, or correct its address.');
+            }
+        }
+        const status = iw && iw.status ? iw.status.unitStatus : null;
+        // Only what the log says since the driver last started, or since this
+        // unit last came back online: an error from before either is history.
+        const current = iw && iw.log ? (iw.log.current || { counts: iw.log.counts || {} }) : { counts: {} };
+        const log = current.counts || {};
+        const logTrouble = LOG_TROUBLE.filter(k => log[k]);
+        const commErr = names && names.system ? names.system.find(s => /COM_ERR$/.test(s.driverId)) : null;
+        const commErrOn = commErr && /^[1-9]/.test(String(commErr.shown || '').trim());
+        const plantRows = [];
+        for (const r of rows) for (const p of (r.plant || [])) plantRows.push({ r, p });
+        const blank = plantRows.filter(x => String(x.p.shown == null ? '' : x.p.shown).trim() === '');
+        const troubled = (status && status !== 'OK') || commErrOn || logTrouble.length > 0 ||
+            (plantRows.length >= 5 && blank.length >= plantRows.length * 0.8);
+        if (deviceAnswered && troubled && !(iw && iw.driver && iw.driver.plantServerRunning === false)) {
+            add('error', 'iwmac-not-receiving', 'The device answers modpoll, but IWMAC\'s driver is not getting answers',
+                'modpoll read the device during this scan, while IWMAC shows ' +
+                    [status && status !== 'OK' ? 'unit status ' + status : '', commErrOn ? 'a communication error' : '',
+                        logTrouble.length ? logTrouble.map(k => log[k] + ' ' + k).join(', ') + ' in the driver log since ' + (current.after || 'the log began') : '',
+                        blank.length ? blank.length + ' of ' + plantRows.length + ' parameters without a value' : '']
+                        .filter(Boolean).join(', ') + '.',
+                { unitStatus: status, communicationError: commErr ? commErr.shown : null, log: current, blankParameters: blank.length, parameters: plantRows.length },
+                'Compare communication.comparison first. If every setting matches, the difference is in how the driver talks: try its request timeout and packet_timeout, check whether another process or driver holds the port, and check the RS-485 adapter.');
+        }
+        const otherTrouble = iw && iw.log && iw.log.otherUnits ? Object.keys(iw.log.otherUnits).filter(u => LOG_TROUBLE.some(k => iw.log.otherUnits[u].kinds[k])) : [];
+        if (otherTrouble.length) {
+            add('info', 'other-units-failing', 'Other units on the same driver have errors in its log',
+                otherTrouble.length + ' other units or addresses on driver ' + iw.log.owner + ' have timeouts, errors or went offline in the log window. Errors on every unit of a bus point at the bus — port, settings, wiring, adapter; errors on one unit only point at that unit — its address, its settings, its list.',
+                { units: otherTrouble.slice(0, 12).map(u => Object.assign({ unit: u }, iw.log.otherUnits[u])) }, 'Weigh this unit\'s own findings against it.');
+        }
+        const indicators = (plantParameters || []).filter(p => p.scan && p.scan !== 'answered' && p.iwmac && p.iwmac.onlineIndicator);
+        if (indicators.length) {
+            add('error', 'online-indicator-not-answering', 'IWMAC judges the unit online by a register the device does not answer',
+                indicators.length + ' parameters marked as the unit\'s online indicator (iw_set onl_ind) point at registers the scan found no answer for, so the driver can take the unit OFFLINE while the device is answering everything else.',
+                { parameters: indicators.slice(0, 8).map(p => ({ table: p.table, ref: p.ref, addr: p.addr, name: p.name, driverId: p.driverId, scan: p.scan })) },
+                'Correct the address of that parameter, or move the online indicator to a register the device answers.');
+        }
+        const notAnswering = (plantParameters || []).filter(p => p.scan && p.scan !== 'answered');
+        if (notAnswering.length) {
+            add('error', 'mapped-registers-not-answering', 'IWMAC polls registers the device did not answer',
+                notAnswering.length + ' IWMAC parameters point at registers the scan found no answer for — a wrong address, table or base, or equipment that is not fitted.',
+                { count: notAnswering.length, sample: notAnswering.slice(0, 12).map(p => ({ table: p.table, ref: p.ref, addr: p.addr, name: p.name, scan: p.scan })) },
+                'Check these addresses against the vendor document; if they are all one register off, correct the list\'s base rather than each point.');
+        }
+        const mismatched = plantRows.filter(x => x.p.iwmac && x.p.iwmac.agrees === false && !/moved/.test(x.p.iwmac.note || ''));
+        if (mismatched.length) {
+            add('warning', 'iwmac-value-differs', 'IWMAC shows a different value from what its own definition gives',
+                mismatched.length + ' parameters: the register decoded with IWMAC\'s datatype and scale does not give the value IWMAC displays — an old value, or a definition that reads the register differently from the device.',
+                { count: mismatched.length, sample: mismatched.slice(0, 12).map(x => ({ table: x.r.table || null, ref: x.r.ref, name: x.p.name, raw: x.r.raw, shown: x.p.shown, expected: x.p.iwmac.expected, datatype: x.p.iwmac.datatype, scale: x.p.iwmac.scale })) },
+                'Poll one of these registers twice; if the raw value is stable and IWMAC still differs, check the datatype, word order and scale in the list.');
+        }
+        const undecodable = plantRows.filter(x => x.p.iwmac && x.p.iwmac.expected === null && /finite float/.test(x.p.iwmac.why || ''));
+        if (undecodable.length) {
+            add('warning', 'float-does-not-decode', 'Registers IWMAC reads as floats do not hold floats in that word order',
+                undecodable.length + ' parameters are defined as 32-bit floats, and their two registers do not decode to a number.',
+                { count: undecodable.length, sample: undecodable.slice(0, 8).map(x => ({ ref: x.r.ref, name: x.p.name, datatype: x.p.iwmac.datatype })) },
+                'Check the word order (_N against _W) and whether the register is a float at all.');
+        }
+        const inactive = iw && iw.parameters ? iw.parameters.inactive : 0;
+        if (inactive) {
+            add('info', 'inactive-parameters', 'Parameters IWMAC does not poll', inactive + ' parameters of the table are inactive (iw_set active = 0) and are never read.',
+                { count: inactive }, 'Only a concern if one of them should be showing a value.');
+        }
+        const errored = iw && iw.log ? Object.keys(iw.log.byDriverId || {})
+            .filter(id => !current.since || !iw.log.byDriverId[id].last || iw.log.byDriverId[id].last.at >= current.since) : [];
+        if (errored.length) {
+            add('warning', 'parameters-with-driver-errors', 'The driver log names parameters of this unit that failed',
+                errored.length + ' parameters of this unit appear in the driver log with read errors since ' + (current.after || 'the log began') + '.',
+                { count: errored.length, sample: errored.slice(0, 12).map(id => Object.assign({ driverId: id }, iw.log.byDriverId[id])) },
+                'Read these registers with modpoll; an exception means the address is wrong, a timeout means the device did not answer the driver.');
+        }
+        const unread = rows.filter(r => r.raw !== 0 && !(r.plant && r.plant.length) && typeof r.ref === 'number');
+        if (unread.length) {
+            add('info', 'values-iwmac-does-not-read', 'Registers holding values that IWMAC does not read',
+                unread.length + ' registers answered with a non-zero value and have no IWMAC parameter — points the list may be missing, or ones deliberately left out.',
+                { count: unread.length, ranges: rangesByTable(unread) }, 'Look these up in the vendor document before adding any.');
+        }
+        if (scan && scan.cost && scan.cost.exceptions && scan.cost.msPerModpollRun && scan.cost.msPerModpollRun > 900) {
+            add('info', 'slow-refusals', 'The device is slow to refuse',
+                'The scan averaged ' + scan.cost.msPerModpollRun + ' ms per modpoll run over ' + scan.cost.exceptions + ' refusals — most of the scan\'s time.',
+                { cost: scan.cost }, 'Nothing to fix; it is why a scan of this device takes minutes.');
+        }
+        const order = { error: 0, warning: 1, info: 2 };
+        return f.sort((a, b) => order[a.severity] - order[b.severity]);
+    }
+
+    function rangesByTable(rows) {
+        const by = {};
+        for (const r of rows) (by[r.table || 'poll'] = by[r.table || 'poll'] || []).push(r.ref);
+        const out = {};
+        for (const t of Object.keys(by)) out[t] = asRanges(by[t]);
+        return out;
     }
 
     /**
@@ -2118,7 +2585,11 @@
      * nothing known gets three single reads inside it first, so an island the
      * ladder missed still has a chance.
      *
-     * Stopping: three consecutive empty chunks means the region has ended. A
+     * Stopping: two consecutive empty chunks means the region has ended — it
+     * was three until 1.46.0, and on plant 2349's OJ exhaust, where a refusal
+     * costs ~1.8 s more than an answer, the third chunk and its three single
+     * reads were ~13 s per table spent re-confirming what the look-ahead past
+     * the edge (up to 128 registers) and the second chunk had already said. A
      * lenient device answers 0 for everything unmapped and never goes empty, so
      * it stops after five consecutive chunks of nothing but zeros past the last
      * value seen — about two thousand registers of nothing — or at the chunk
@@ -2137,7 +2608,7 @@
     const SWEEP_CEILING = 65536;
     const SWEEP_CHUNK = MAX_COUNT * CHAIN_MAX;
     const SWEEP_MAX_CHUNKS = 60;
-    const SWEEP_EMPTY_STOP = 3;
+    const SWEEP_EMPTY_STOP = 2;
     const SWEEP_ZERO_STOP = 5;
 
     async function sweepForValues(spec, table, from, known, tick) {
@@ -3243,6 +3714,10 @@
         const byRef = new Map();
         let rows = 0;
         let undecodable = 0;
+        // A parameter whose driver_id names no register is the driver's own —
+        // Communication error, Communication status — and is the unit's health
+        // as IWMAC sees it: kept, not only counted.
+        const system = [];
         for (const group of groups) {
             const result = await plantRpc('get_parameters', {
                 plant: plantId, unit_id: unitId, group: group.id, preffered_group: '',
@@ -3255,9 +3730,12 @@
                     const fields = parseParameterCsvLine(text);
                     const driverId = fields[3] || '';
                     const match = driverId.match(RE_DRIVER_ID);
-                    if (!match) { undecodable++; continue; }
-                    const table = FUNC_TO_TABLE[Number(match[1])];
-                    if (!table) { undecodable++; continue; }
+                    const table = match ? FUNC_TO_TABLE[Number(match[1])] : null;
+                    if (!match || !table) {
+                        undecodable++;
+                        system.push({ name: fields[0] || '', shown: stripTags(fields[1]), unit: stripTags(fields[2]), group: group.alias_text || '', driverId });
+                        continue;
+                    }
                     const ref = Number(match[2]) + 1;
                     const key = table + '||' + ref;
                     const entry = {
@@ -3277,7 +3755,7 @@
                 }
             }
         }
-        const names = { unitId, byRef, groups: groups.length, rows, undecodable, at: new Date().toISOString() };
+        const names = { unitId, byRef, groups: groups.length, rows, undecodable, system, at: new Date().toISOString() };
         _namesCache.set(cacheKey, names);
         return names;
     }
@@ -3406,6 +3884,326 @@
             };
         });
         return _unitsCache;
+    }
+
+    // ------------------------------------------ the IWMAC side of one unit
+
+    /*
+     * What IWMAC itself knows about the unit a scan is for — the other half of
+     * every comparison the export makes. modpoll says what the device answers;
+     * this says how IWMAC is set up to ask and what it made of the answers:
+     *
+     *   registration   unit id, name, driver, driver address, parameter table, active
+     *   driver         every setting of the driver (serial or TCP, timeouts, retries),
+     *                  its process and whether that module is running now
+     *   parameters     how IWMAC defines each parameter: raw type, word swap, scale,
+     *                  format, access, and whether it is polled at all
+     *   health         the unit's status and last contact, its Communication error and
+     *                  status parameters, and the Plant Server log lines of its driver
+     *   bus            the other units on the same driver, and other drivers set to
+     *                  the same COM port
+     *
+     * Each part is read on its own and may fail on its own. The plant's own pages
+     * always answer; the Toolbox plant-SQL API needs GM_xmlhttpRequest. A part that
+     * could not be read is named in `unavailable`, never silently left out.
+     */
+    let iwmacContext = null;
+    const RE_SQL_NAME = /^[A-Za-z0-9_]+$/;
+    const sqlText = value => String(value == null ? '' : value).replace(/\\/g, '\\\\').replace(/'/g, "''");
+
+    async function plantSql(sql) {
+        const res = await gmPostJson(TOOLBOX_SQL_URL, { plant_id: plantIdFromHost(), sql_command: sql });
+        if (!res.body || !res.body.success) throw new Error((res.body && (res.body.error || res.body.message)) || ('HTTP ' + res.status));
+        return (res.body.results && res.body.results[0] && res.body.results[0].data) || [];
+    }
+
+    /** The Plant Server log, the same text sys_tools shows under Logs, newest line first. */
+    async function fetchPlantLog() {
+        const response = await fetch(plantUrl('plant_files.php'), {
+            method: 'POST', body: JSON.stringify({ category: 'sql', cmd: 'sql_plant_log' }), cache: 'no-cache',
+        });
+        if (!response.ok) throw new Error('plant_files.php answered HTTP ' + response.status);
+        return String(await response.text());
+    }
+
+    /*
+     * One driver's lines of the Plant Server log, newest first. The plant keeps
+     * the log in a table per month — ix_dyn_plant_log_YYYY_MM (row_msec, owner,
+     * msg_type, value), the current month in iw_plant_server3 and older ones in
+     * iw_dyn_logs_archive — so a driver's lines can be asked for by owner.
+     * plant_files.php, which the Logs view shows, is the last 500 lines of every
+     * module together, and on plant 2349 PHP-APP's line per virtual value filled
+     * all 500 within ninety minutes: not one driver line was left in it. It is
+     * the fallback for when the Toolbox is out of reach, and says so.
+     */
+    const DRIVER_LOG_LINES = 400;
+
+    async function fetchDriverLog(owner) {
+        const month = d => d.getFullYear() + '_' + String(d.getMonth() + 1).padStart(2, '0');
+        const now = new Date();
+        const select = (table, limit) => plantSql('SELECT row_msec, msg_type, value FROM ' + table + " WHERE owner = '" + owner + "' ORDER BY row_msec DESC LIMIT " + limit);
+        try {
+            const current = 'iw_plant_server3.ix_dyn_plant_log_' + month(now);
+            const rows = await select(current, DRIVER_LOG_LINES);
+            const sources = [current];
+            if (rows.length < DRIVER_LOG_LINES / 2) {
+                // Early in a month the driver's last start may be in the previous one.
+                const previous = 'iw_dyn_logs_archive.ix_dyn_plant_log_' + month(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+                try { rows.push(...await select(previous, DRIVER_LOG_LINES - rows.length)); sources.push(previous); } catch (e) { /* not archived yet */ }
+            }
+            return {
+                source: sources.join(' + '),
+                entries: rows.map(r => ({ at: new Date(Number(r.row_msec)).toISOString(), level: Number(r.msg_type) || 0, text: String(r.value == null ? '' : r.value).trim() })),
+            };
+        } catch (e) {
+            const entries = [];
+            for (const line of (await fetchPlantLog()).split(/\r?\n/)) {
+                const f = line.split('\t');
+                if (f.length < 4 || String(f[1] || '').trim() !== owner) continue;
+                const local = new Date(String(f[0]).trim().replace(' ', 'T').replace(/(\.\d{3})\d*$/, '$1'));
+                entries.push({ at: Number.isNaN(local.getTime()) ? String(f[0]).trim() : local.toISOString(), level: Number(String(f[2]).trim()) || 0, text: f.slice(3).join(' ').trim() });
+            }
+            return { source: 'plant_files.php, the last 500 lines of the whole Plant Server log — the log table was out of reach (' + e.message + ')', entries };
+        }
+    }
+
+    // What a driver's log line reports, by the wording the IWMAC drivers use —
+    // "Block (norm, 0) item <driver_id> >> Modbus read error >> Time Out Error",
+    // "Unit ID01 is OFFLINE", "Open ok, (IP address: …)", "Write failed 19423 = 1.00".
+    // The first that matches names the line.
+    const LOG_KINDS = [
+        { kind: 'timeout', re: /time ?out/i },
+        { kind: 'invalidResponse', re: /invalid returned device response|invalid (frame|response)|crc/i },
+        { kind: 'exception', re: /exception|illegal data|illegal function/i },
+        { kind: 'readError', re: /read error/i },
+        { kind: 'offline', re: /is OFFLINE/i },
+        { kind: 'online', re: /is ONLINE/i },
+        { kind: 'writeFailed', re: /write failed/i },
+        { kind: 'write', re: /param write:/i },
+        { kind: 'portOpened', re: /Open comm port.*SUCCESS|^Open ok/i },
+        { kind: 'portFailed', re: /Open comm port.*(FAIL|ERROR)|could not open|open (failed|error)/i },
+        { kind: 'tcpError', re: /TCP\/IP connection error|connect(ion)? (failed|refused|error)/i },
+        { kind: 'serverLinkLost', re: /WS: Server lost/i },
+        { kind: 'started', re: /Application \S+ started/i },
+        { kind: 'closed', re: /Close OK/i },
+    ];
+    const LOG_LEVELS = { 0: 'info', 1: 'warning', 2: 'warning', 3: 'error' };
+
+    /**
+     * The driver's log read for one unit. A driver serves every unit on its bus,
+     * so a line naming another unit — its OFFLINE, a failed item at its address
+     * — is counted apart, under otherUnits, and never against this one. `current`
+     * counts only what came after the driver last started or this unit last came
+     * back online, whichever is later: errors from before either are history.
+     */
+    function readDriverLog(log, who) {
+        const { owner, unitId, table, unitPrefix, tablePrefix } = who;
+        const mine = [];
+        const otherUnits = {};
+        const byDriverId = {};
+        for (const e of (log.entries || [])) {
+            const hit = LOG_KINDS.find(k => k.re.test(e.text));
+            const entry = Object.assign({ kind: hit ? hit.kind : 'other' }, e);
+            const unitLine = entry.text.match(/\bUnit (\S+) is (?:OFFLINE|ONLINE)/i);
+            const item = (entry.text.match(/\bitem (\S+)/) || [])[1] || null;
+            let other = null;
+            if (unitLine && unitId && unitLine[1] !== unitId) other = unitLine[1];
+            else if (item && unitPrefix && item.indexOf(unitPrefix) !== 0) {
+                other = tablePrefix && item.indexOf(tablePrefix) === 0
+                    ? 'address ' + item.slice(tablePrefix.length).replace(/_0_\d+_\d+(?:\.\d+)?$/, '')
+                    : item.replace(/_0_\d+_\d+(?:\.\d+)?$/, '');
+            } else if (item && !unitPrefix && table && item.indexOf('_' + table + '_') < 0) other = item.replace(/_0_\d+_\d+(?:\.\d+)?$/, '');
+            if (other) {
+                const o = otherUnits[other] || (otherUnits[other] = { lines: 0, kinds: {} });
+                o.lines++;
+                o.kinds[entry.kind] = (o.kinds[entry.kind] || 0) + 1;
+                continue;
+            }
+            mine.push(entry);
+            if (item && LOG_TROUBLE.indexOf(entry.kind) >= 0) {
+                const agg = byDriverId[item] || (byDriverId[item] = { errors: 0, kinds: {}, last: null });
+                agg.errors++;
+                agg.kinds[entry.kind] = (agg.kinds[entry.kind] || 0) + 1;
+                if (!agg.last || entry.at > agg.last.at) agg.last = { at: entry.at, text: entry.text.replace(/.*>>\s*/, '') };
+            }
+        }
+        const count = list => list.reduce((c, e) => { c[e.kind] = (c[e.kind] || 0) + 1; return c; }, {});
+        // Newest first: the first start and the first online met are the latest.
+        const lastStart = (mine.find(e => e.kind === 'started') || {}).at || null;
+        const lastOnline = (mine.find(e => e.kind === 'online') || {}).at || null;
+        const since = lastOnline && (!lastStart || lastOnline > lastStart) ? lastOnline : lastStart;
+        const current = since ? mine.filter(e => e.at >= since) : mine;
+        return {
+            source: log.source, owner, lines: mine.length,
+            from: mine.length ? mine[mine.length - 1].at : null, to: mine.length ? mine[0].at : null,
+            lastStart, counts: count(mine),
+            current: {
+                since, after: !since ? 'the whole window' : (since === lastStart ? 'the driver last started' : 'this unit last came back online'),
+                counts: count(current),
+            },
+            otherUnits: Object.keys(otherUnits).length ? otherUnits : null,
+            byDriverId,
+            // Newest first, as the log itself is — enough to see the last start,
+            // the connection opening and the errors after it, not the month.
+            recent: mine.slice(0, 40).map(e => e.at + ' [' + (LOG_LEVELS[e.level] || e.level) + ', ' + e.kind + '] ' + e.text.replace(/\s+/g, ' ').slice(0, 180)),
+        };
+    }
+
+    /** "3_0_F_W_-_-_-_-" — read function, address, raw type, swap, then the same for writes. */
+    function parseDriverIdExtra(extra) {
+        const p = String(extra || '').split('_');
+        if (p.length < 4) return null;
+        const num = v => (v === '-' || v === '' || v === undefined ? null : Number(v));
+        return {
+            readFunction: num(p[0]), readAddr: num(p[1]), rawType: p[2] === '-' ? null : p[2], swap: p[3] === '-' ? null : p[3],
+            writeFunction: num(p[4]), writeAddr: num(p[5]), writeRawType: p[6] && p[6] !== '-' ? p[6] : null,
+        };
+    }
+
+    async function collectIwmacContext(unitId) {
+        const ctx = { unitId, collectedAt: new Date().toISOString(), unavailable: [] };
+        const miss = (what, e) => ctx.unavailable.push(what + ': ' + (e && e.message ? e.message : String(e)));
+        const plantId = Number(plantIdFromHost());
+
+        // Status and last contact, from the plant's own list — no permission needed.
+        try {
+            const regs = ((await plantRpc('get_regulators', { plant: plantId })) || {}).regulators || {};
+            const r = Object.values(regs).find(x => x.unit_id === unitId);
+            // unit_type is the regulator family ("OJ"), not the parameter table.
+            if (r) ctx.status = { unitStatus: r.unit_status || null, lastComm: r.last_comm || null, unitAddr: r.unit_addr || null, unitType: r.unit_type || null, order: r.unit_order };
+        } catch (e) { miss('unit status (get_regulators)', e); }
+
+        // Registration, and through it the driver and the parameter table.
+        let owner = null, table = null;
+        try {
+            const rows = await plantSql("SELECT unit_id, unit_name, driver_type, driver_addr, grp_name, active, regulator_type, order_no FROM iw_plant_server3.iw_sys_plant_units WHERE unit_id = '" + sqlText(unitId) + "'");
+            if (rows[0]) {
+                const u = rows[0];
+                owner = RE_SQL_NAME.test(u.driver_type || '') ? u.driver_type : null;
+                table = RE_SQL_NAME.test(u.grp_name || '') ? u.grp_name : null;
+                ctx.registration = { unitId: u.unit_id, unitName: u.unit_name, driver: u.driver_type, driverAddr: u.driver_addr, table: u.grp_name, active: String(u.active) === '1', regulatorType: u.regulator_type || '', orderNo: u.order_no || '' };
+            } else ctx.registration = null;
+        } catch (e) { miss('unit registration (Toolbox plant-SQL)', e); }
+
+        if (owner) {
+            ctx.driver = { owner };
+            try {
+                const rows = await plantSql("SELECT setting, value FROM iw_plant_server3.iw_sys_plant_settings WHERE owner = '" + owner + "' ORDER BY setting");
+                const settings = {};
+                for (const r of rows) settings[r.setting] = r.value;
+                ctx.driver.settings = settings;
+                ctx.driver.connection = describeDriverConnection(settings, ctx.registration && ctx.registration.driverAddr);
+            } catch (e) { miss('driver settings (Toolbox plant-SQL)', e); }
+            try {
+                const rows = await plantSql("SELECT process_name, path, man_start FROM iw_plant_server3.iw_sys_processes WHERE process_name = '" + owner + "'");
+                ctx.driver.process = rows[0] ? { name: rows[0].process_name, path: rows[0].path, manualStart: String(rows[0].man_start) === '1' } : null;
+            } catch (e) { miss('driver process registration (Toolbox plant-SQL)', e); }
+            try {
+                const processes = await fetchPlantProcesses();
+                const m = processes.modules.find(x => x.module === owner);
+                ctx.driver.module = m ? { running: m.running, stateTime: m.since === undefined ? null : m.since } : { running: false, note: 'no module of this name among the Plant Server\'s processes' };
+                const master = processes.modules.find(x => x.module === 'MASTER');
+                ctx.driver.plantServerRunning = master ? master.running : null;
+            } catch (e) { miss('module status (process_info)', e); }
+            try {
+                ctx.bus = { unitsOnDriver: [], driversOnSamePort: [] };
+                const units = await plantSql("SELECT unit_id, unit_name, driver_addr, grp_name, active FROM iw_plant_server3.iw_sys_plant_units WHERE driver_type = '" + owner + "' ORDER BY driver_addr");
+                ctx.bus.unitsOnDriver = units.map(u => ({ unitId: u.unit_id, unitName: u.unit_name, driverAddr: u.driver_addr, table: u.grp_name, active: String(u.active) === '1' }));
+                const conn = ctx.driver.connection;
+                if (conn && conn.serial && conn.comPort !== null) {
+                    const others = await plantSql("SELECT owner, value FROM iw_plant_server3.iw_sys_plant_settings WHERE setting = 'comm_port' AND owner <> '" + owner + "' AND value = '" + sqlText(conn.comPortRaw) + "'");
+                    for (const o of others) {
+                        if (!RE_SQL_NAME.test(o.owner || '')) continue;
+                        const mode = await plantSql("SELECT value FROM iw_plant_server3.iw_sys_plant_settings WHERE owner = '" + o.owner + "' AND setting = 'mb_mode'");
+                        const active = await plantSql("SELECT COUNT(*) AS n FROM iw_plant_server3.iw_sys_plant_units WHERE driver_type = '" + o.owner + "' AND active = '1'");
+                        ctx.bus.driversOnSamePort.push({ owner: o.owner, mbMode: mode[0] ? mode[0].value : null, activeUnits: Number(active[0] && active[0].n) || 0 });
+                    }
+                }
+            } catch (e) { miss('bus (Toolbox plant-SQL)', e); }
+        }
+
+        // How IWMAC defines every parameter of the unit's table, and whether it polls it.
+        if (table) {
+            ctx.parameters = { table, definitions: {} };
+            try {
+                const rows = await plantSql('SELECT element_id, driver_id, driver_id_extra, att, eng_unit, format, scale, raw_min, raw_max, eng_min, eng_max, parameter_type, application FROM iw_plant_server3.iw_par_' + table + '_param');
+                for (const r of rows) {
+                    ctx.parameters.definitions[r.driver_id] = {
+                        elementId: r.element_id, access: r.att, unit: r.eng_unit, format: r.format,
+                        scale: { mode: r.scale, rawMin: r.raw_min, rawMax: r.raw_max, engMin: r.eng_min, engMax: r.eng_max },
+                        datatype: parseDriverIdExtra(r.driver_id_extra), datatypeText: r.driver_id_extra,
+                        parameterType: r.parameter_type, application: r.application,
+                    };
+                }
+                ctx.parameters.count = rows.length;
+            } catch (e) { miss('parameter definitions iw_par_' + table + '_param (Toolbox plant-SQL)', e); }
+            try {
+                const rows = await plantSql('SELECT element_id, active, onl_ind, update_freq, alarm_type FROM iw_plant_server3.iw_set_' + table);
+                const byElement = {};
+                for (const r of rows) byElement[r.element_id] = r;
+                let inactive = 0;
+                for (const def of Object.values(ctx.parameters.definitions)) {
+                    const s = byElement[def.elementId];
+                    if (!s) { def.active = null; continue; }
+                    def.active = String(s.active) === '1';
+                    // The parameter the driver judges the unit online by.
+                    if (String(s.onl_ind) === '1') def.onlineIndicator = true;
+                    if (s.update_freq) def.updateFreq = s.update_freq;
+                    if (s.alarm_type && String(s.alarm_type) !== '0') def.alarmType = s.alarm_type;
+                    if (!def.active) inactive++;
+                }
+                ctx.parameters.inactive = inactive;
+            } catch (e) { miss('parameter settings iw_set_' + table + ' (Toolbox plant-SQL)', e); }
+        }
+
+        // What the driver has written to the Plant Server log.
+        if (owner) {
+            const driverAddr = ctx.registration ? ctx.registration.driverAddr : null;
+            const tablePrefix = table ? plantId + '_' + owner + '_' + table + '_' : null;
+            try {
+                ctx.log = readDriverLog(await fetchDriverLog(owner), {
+                    owner, unitId, table, tablePrefix, unitPrefix: tablePrefix && driverAddr ? tablePrefix + driverAddr + '_' : null,
+                });
+            } catch (e) { miss('driver log (Plant Server log table or plant_files.php)', e); }
+        }
+        return ctx;
+    }
+
+    /** A driver's settings read as the connection they describe. */
+    function describeDriverConnection(settings, driverAddr) {
+        const s = settings || {};
+        const mode = { 0: 'rtu', 1: 'ascii', 2: 'tcp' }[String(s.mb_mode)] || null;
+        const parity = { 0: 'none', 1: 'odd', 2: 'even', 3: 'mark', 4: 'space' }[String(s.comm_parity)] || (s.comm_parity || null);
+        const portNumber = String(s.comm_port || '').replace(/^.*COM/i, '');
+        const addrParts = String(driverAddr || '').split('_').filter(Boolean);
+        const out = {
+            mode, serial: mode === 'rtu' || mode === 'ascii',
+            slave: addrParts.length ? Number(addrParts[addrParts.length - 1]) : null,
+            serverKey: addrParts.length > 1 ? addrParts[0] : null,
+            requestTimeoutMs: s.mb_request_timeout !== undefined ? Number(s.mb_request_timeout) : null,
+            requestRetries: s.mb_request_retries !== undefined ? Number(s.mb_request_retries) : null,
+        };
+        if (out.serial) {
+            Object.assign(out, {
+                comPort: /^\d+$/.test(portNumber) ? 'COM' + portNumber : (s.comm_port || null), comPortRaw: s.comm_port || '',
+                baudrate: s.comm_baudrate !== undefined ? String(s.comm_baudrate) : null, parity,
+                databits: s.comm_data_bits !== undefined ? String(s.comm_data_bits) : null,
+                stopbits: s.comm_stop_bits !== undefined ? String(s.comm_stop_bits) : null,
+                packetTimeout: s.packet_timeout !== undefined ? Number(s.packet_timeout) : null,
+                rs485Mode: s.enablers485mode !== undefined ? String(s.enablers485mode) : null,
+            });
+        } else if (mode === 'tcp') {
+            // mb_tcp_servers: one line per server, "key;ip;port;connect timeout;retries;…".
+            const servers = String(s.mb_tcp_servers || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
+                const f = l.split(';');
+                return { key: f[0], host: f[1] || null, port: f[2] ? Number(f[2]) : 502, connectTimeoutMs: f[3] ? Number(f[3]) : null, connectRetries: f[4] ? Number(f[4]) : null };
+            });
+            out.servers = servers;
+            const own = servers.find(x => x.key === out.serverKey) || null;
+            out.host = own ? own.host : null;
+            out.port = own ? own.port : null;
+        }
+        return out;
     }
 
     // ------------------------------------------------------- binary self-probe
@@ -5088,6 +5886,48 @@
         return loadNamesFor(unitId);
     }
 
+    /**
+     * IWMAC's own side of the unit a scan named, read after the scan and hung
+     * on its report — and its headline said in the log, so the panel shows what
+     * Save JSON will: whether IWMAC's driver asks the way the device answered,
+     * whether the driver runs, and whether its log shows it failing.
+     */
+    /**
+     * IWMAC's side of the unit whose names are loaded, read now and kept for the
+     * export. `used` is the connection modpoll talked to the device with — the
+     * scan's, or the last poll's — so a driver set differently is said at once.
+     */
+    async function attachIwmacContext(report, used) {
+        if (!plantNames) return null;
+        try {
+            iwmacContext = await collectIwmacContext(plantNames.unitId);
+            if (report) report.iwmac = iwmacContext;
+        } catch (e) {
+            log('Could not read IWMAC\'s setup for ' + plantNames.unitId + ': ' + e.message, 'warn');
+            return null;
+        }
+        const ctx = iwmacContext;
+        const d = ctx.driver;
+        if (d) {
+            log('IWMAC: ' + plantNames.unitId + ' on driver ' + d.owner + (d.module ? (d.module.running ? ' (running)' : ' (not running)') : '') +
+                (ctx.status ? ', unit status ' + ctx.status.unitStatus : '') + (ctx.registration ? ', table ' + ctx.registration.table : ''),
+                d.module && !d.module.running ? 'warn' : '');
+            const diff = compareConnections(used || (report && report.spec), d.connection).filter(c => c.same === false);
+            if (diff.length) {
+                log('IWMAC\'s driver is set differently from how the device answered: ' +
+                    diff.map(c => c.field + ' ' + c.iwmac + ' (modpoll used ' + c.modpoll + ')').join(', '), 'warn');
+            }
+            if (ctx.log && ctx.log.current) {
+                const counts = ctx.log.current.counts || {};
+                const bad = LOG_TROUBLE.filter(k => counts[k]).map(k => counts[k] + ' ' + k);
+                log('Driver log for ' + d.owner + ': ' + ctx.log.lines + ' lines of this unit and the driver' +
+                    (bad.length ? ', ' + bad.join(', ') + ' since ' + ctx.log.current.after : ', no errors since ' + ctx.log.current.after), bad.length ? 'warn' : '');
+            }
+        }
+        if (ctx.unavailable.length) log('Not read from IWMAC: ' + ctx.unavailable.join('; '), 'warn');
+        return ctx;
+    }
+
     async function runVerification() {
         if (!pointList || termState.busy) return;
         termState.busy = true;
@@ -5322,9 +6162,17 @@
         const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON',
             title: 'Everything known about these registers, as one file a Copilot agent can read: the readings now and before, ' +
                 'the list, every parameter the plant maps and shows, the verification, the scan' });
-        saveBtn.addEventListener('click', () => {
+        saveBtn.addEventListener('click', async () => {
             if (!lastResult && !plantNames && !pointList && !lastVerification && !lastScan) {
                 return log('Nothing to save yet — run a poll, a scan or a verification, or load a list or a unit\'s names');
+            }
+            // A scan reads IWMAC's side of the unit and a poll does not, so a
+            // file saved after a poll reads it here — without it the file cannot
+            // set the device beside IWMAC's driver and definitions at all.
+            if (plantNames && (!iwmacContext || iwmacContext.unitId !== plantNames.unitId)) {
+                saveBtn.disabled = true;
+                try { await attachIwmacContext(null, lastResult ? lastResult.spec : (lastScan && lastScan.spec)); }
+                finally { saveBtn.disabled = false; }
             }
             const doc = exportResult(lastResult);
             const text = exportText(doc);
@@ -5358,6 +6206,7 @@
                 // without a separate click nobody remembers to make.
                 showProgress(0, 'Reading the plant\'s parameter names for this unit');
                 await ensureNamesFor(readForm());
+                startCostLedger();
                 const report = await scanDevice(readForm(), true, p => {
                     // The bar moves on every tick sweepForValues makes, several
                     // times inside one chunk on a strict device; the log stays at
@@ -5368,7 +6217,10 @@
                             ' from ' + p.ref + ' (' + p.found + ' found so far)');
                     }
                 });
+                report.cost = finishCostLedger();
                 lastScan = report;
+                showProgress(0.995, 'Reading IWMAC\'s own setup for this unit');
+                await attachIwmacContext(report);
                 for (const table of Object.keys(report.tables)) {
                     const t = report.tables[table];
                     const name = (REGISTER_TABLES.find(r => r.value === table) || {}).label || table;
@@ -5412,6 +6264,7 @@
                 hideProgress(2500);
             } catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); hideProgress(); }
             finally {
+                if (costLedger) finishCostLedger();
                 scanBtn.disabled = false;
                 termState.busy = false;
                 ui.stop.disabled = !repeatTimer;
@@ -5741,8 +6594,12 @@
             // export that follows carry what IWMAC reads — unless the caller
             // has loaded names itself.
             if (!plantNames) { try { await ensureNamesFor(Object.assign(readForm(), spec || {})); } catch (e) { /* the scan stands without names */ } }
-            const report = await scanDevice(spec, deep !== false);
+            startCostLedger();
+            let report;
+            try { report = await scanDevice(spec, deep !== false); }
+            finally { const cost = finishCostLedger(); if (report) report.cost = cost; }
             lastScan = report;
+            await attachIwmacContext(report);
             try { renderScan(report); } catch (e) { /* panel not built */ }
             return report;
         },
@@ -5787,6 +6644,12 @@
         report() { return lastVerification ? buildCopilotReport(lastVerification) : null; },
         lastVerification() { return lastVerification; },
         lastScan() { return lastScan; },
+        /**
+         * IWMAC's own side of the unit whose names are loaded — driver settings,
+         * parameter definitions, module, bus, driver log — read now and kept for
+         * the export. A scan does this by itself; a poll does not.
+         */
+        async iwmac() { return attachIwmacContext(null, lastResult ? lastResult.spec : (lastScan && lastScan.spec)); },
         last() { return lastResult; },
         lastCompact() { return compactResult(lastResult); },
         lastExport() { return exportResult(lastResult); },

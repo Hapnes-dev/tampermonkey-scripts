@@ -67,7 +67,8 @@ rebuilt.
   instead of costing their blocks; a chunk that comes back empty is told apart
   from a hole in every block by two single reads before recovery is paid for. A
   lenient device answers 0 for everything and never goes empty, so its sweep
-  stops after two thousand registers of zeros past the last value. The report
+  stops after two thousand registers of zeros past the last value; a strict one
+  stops after two chunks in a row with no answer at all, 792 registers. The report
   says, per table and per region, what answered, what held a value, and why the
   sweep stopped. Useful before blaming a point list. Every register the scan
   reads is kept, not only where each region starts — see *Save JSON* below.
@@ -81,7 +82,23 @@ rebuilt.
   measured, one that reads the same is a setpoint, a configuration word or a
   measurement that held still — half of what deciding a datatype needs, for a
   few seconds of polling. The grid shows the second read beside the first,
-  what moved first.
+  what moved first. Last, it reads IWMAC's own side of the unit, each part on
+  its own so one failure costs only that part: the unit's registration and
+  status, every setting of its driver (COM port, baud rate, parity, data and
+  stop bits, or the TCP server the unit's address names, plus the request
+  timeout and retries), whether the driver's module is running, the other
+  units on that driver and any other driver set to the same COM port, how the
+  table defines each parameter (`driver_id_extra`: read function, raw type,
+  byte or word swap, write function; the linear scale; active, update rate
+  and whether it is the unit's online indicator), and that driver's lines of
+  the Plant Server log — timeouts, invalid responses, exceptions, offline and
+  online, failed writes, per parameter where the line names one. The log is
+  read from the plant's own log table by driver (`ix_dyn_plant_log_YYYY_MM`),
+  not from the Logs view: that view is the last 500 lines of every module
+  together, and on plant 2349 PHP-APP alone filled it inside ninety minutes.
+  A line naming another unit on the same driver is counted apart, and errors
+  count only since the driver last started or the unit last came back online.
+  The console log says what could not be read.
 - **Judges the width, proves it on the wire, and sets the form.** Reading a
   float map as 16-bit registers prints the halves of every number, so the
   scan ends by judging what each region holds. Every aligned pair of
@@ -144,6 +161,8 @@ rebuilt.
   `__modpoll.exportParts()` splits the same document into files of at most
   34 000 characters, each repeating the header so it stands alone.
   `__modpoll.lastExport()` is the document, `__modpoll.exportText()` the file.
+  IWMAC's side of the unit is read by a scan; after a poll, *Save JSON* reads
+  it before writing, and `await __modpoll.iwmac()` does the same for an agent.
 
   Four more things a scan reading carries, each an inference stated as one:
 
@@ -174,6 +193,49 @@ rebuilt.
   register and what it held. Both are the verification's answer for whatever
   the sweep covered, without a verification. The file is named after the unit
   and the scanned host when there is no poll.
+
+  Since 1.46.0 (`schemaVersion: 2`) the file opens with what the evidence adds
+  up to, and sets the device beside IWMAC's own setup:
+
+  - `overview` — the unit, whether the device answered, how many registers
+    answered and held values, how many IWMAC parameters were compared with the
+    device and how many agree, the unit's status, whether its driver runs, and
+    the findings' ids.
+  - `findings` — the problems the evidence shows, errors first, each with a
+    stable `id`, the evidence that proves it and a suggested action: the
+    driver's settings differ from the ones the device answered with, the
+    device answers modpoll but IWMAC is not getting answers (status, the
+    communication-error parameter, timeouts or offline in the log, parameters
+    without a value), another driver on the same COM port, two active units at
+    one address, IWMAC polling registers the device does not answer, the online
+    indicator on such a register (the driver then takes a unit that answers
+    everything else OFFLINE), IWMAC showing a value its own definition does not
+    give, floats that do not decode in the defined word order, parameters the
+    driver log names, other units on the driver failing too (a bus problem
+    rather than this unit's), inactive parameters, values IWMAC does not read,
+    and a device slow to refuse. Each is an inference from the sections below
+    it and names them.
+  - `communication` — the connection modpoll used and the one IWMAC's driver
+    is set to, compared field by field (`same`: true, false, or null where one
+    side is unknown; `\\.\COM16` and `COM16` are the same port).
+  - `iwmac` — IWMAC's side as collected after the scan: registration, status,
+    the system parameters (communication error and the like), the driver with
+    every setting and its decoded connection, module and process, the bus, the
+    table's parameter counts, the log's counts and recent lines, and what could
+    not be read.
+  - `plant[].iwmac` on every reading row — that parameter's own definition
+    (datatype with its swap, scale, format, access, write function, log
+    errors) and `expected`, what that definition makes of the register modpoll
+    just read. `agrees` compares it with the value IWMAC displayed; `false` on a
+    register that did not move is a definition that reads the register
+    differently from the device, or an old value.
+  - `scanEmpty` — registers that answered 0 with nothing else to say about them,
+    as ranges per table. On a lenient device they were most of the file: the
+    2349 V01 export was 681 KB before, almost all of it rows like that.
+  - `fieldGuide` — every field name that needs one, defined once.
+  - `scan.spec`, `scan.phases` and `scan.cost` — the connection the scan used,
+    how long each phase took, and what its commands cost: modpoll runs, values,
+    refusals, timeouts and the time per run.
 
 ## What a deep dive on plant 2313 established
 
@@ -208,6 +270,39 @@ And one thing about the device rather than the binary: **it refuses printed
 reference 1 — protocol address 0 — in every table**, while answering 0 for
 unmapped references higher up. A block containing that one reference was refused
 whole, which is why registers 1-20 first read as silence.
+
+## What a scan costs, and why it is not parallel
+
+Plant 2349's V01 ventilation controller (Modbus TCP, strict: it refuses every
+block that touches an unmapped register) is the slow case, and it was measured
+before 1.46.0 changed anything:
+
+| Measurement | Number |
+|---|---|
+| One good read, on its own command line | ~1.9 s |
+| One **refused** read, on its own | ~4.0 s |
+| Four good reads, chained on one line | ~3.0 s |
+| Four refused reads, chained on one line | ~10.1 s |
+| Whole scan, four tables | 223 s |
+
+Refusals are the cost, and they cannot be made cheaper from here: this modpoll
+build has no timeout flag (`-o` does not exist), and the device, not modpoll,
+decides how long a refusal takes. Nor can the reads run side by side. Plant
+Term runs one command line at a time; a serial bus is half-duplex, so a second
+master on it corrupts both; and a TCP gateway that serialises its RTU side only
+queues the second request behind the first. What is left is asking less:
+
+- **Two empty chunks end a strict table's sweep, not three.** On 2349 V01 the
+  third empty chunk of every table, with its three single reads, found nothing
+  and cost about 13 seconds — some 50 of the 223.
+- **Every command is costed.** `scan.cost` counts modpoll runs, values read,
+  refusals, timeouts and port errors, and `scan.phases` times ladder, narrowing,
+  sweep, second read and format check, so the next saving is chosen from a
+  measurement rather than a guess.
+
+The ladder, the narrowing and the second read were left as they are: each
+answers a question the rest of the scan depends on, and a scan that skips one
+is faster by being wrong on some device.
 
 ## Stopping and starting the Plant Server
 
@@ -441,9 +536,15 @@ quietly stop being the thing under test.
   scaled 16-bit register, a float over two registers, a 32-bit counter, a status
   word read by bits, a negative writable setpoint, a register that moved between
   the two reads, parameters on registers the scan did not find, and a scan that
-  judged one region mixed and proved another to be floats on the wire.
-  Twenty-nine expectations, each printed PASS or FAIL; exits non-zero on any
-  FAIL.
+  judged one region mixed and proved another to be floats on the wire. Then the
+  same scan again with IWMAC's side of the unit in hand: a driver set to 19200
+  where the device answered at 9600, a unit in ERROR with timeouts in its log,
+  another driver on the same COM port, two units at one address, a parameter
+  defined unsigned where the device holds a negative number, the online
+  indicator on a register the device does not answer, and forty empty coils
+  that belong in `scanEmpty`. Last, the driver log's reader on lines as plant
+  3694's driver wrote them, with another unit's errors mixed in. Sixty
+  expectations, each printed PASS or FAIL; exits non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the
