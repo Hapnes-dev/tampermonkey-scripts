@@ -565,7 +565,12 @@ list, the names — is still proven on a plant.
   `c:\iwmac\bin\modpoll.exe` by itself, saying so once. `__modpoll.probe()` runs
   `modpoll -h` and reports what that plant's build supports.
 - The Toolbox plant-SQL API (`toolbox.iwmac.local:8505`) is needed for the unit
-  list only; the rest of the panel works without it if you fill the fields yourself.
+  list and for IWMAC's side of a unit after a scan; the rest of the panel works
+  without it if you fill the fields yourself. Every call sends the page's own
+  plant id and two headers, the convention AK3-Autoscan, Topology Copy and SQL
+  Equipment Import share: `X-Caller: Modpoll-Console`, and one `X-Run-Id` per
+  plant, reused by every call for that plant so the Toolbox log reads them as
+  one run. Errors quote the run id.
 
 ## Verified against
 

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.46.0
+// @version      1.46.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.46.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.46.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -3762,9 +3762,28 @@
 
     // --------------------------------------------- unit list from the plant DB
 
-    let _runId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+    // Identifies this script to the Toolbox API the way AK3-Autoscan, Topology
+    // Copy and SQL Equipment Import do. X-Caller is constant. X-Run-Id groups
+    // every request for one plant under one run — the unit list, the scan's
+    // look at IWMAC's setup, the driver log — so the Toolbox log reads them as
+    // one operation; a new one is minted only when the plant_id changes, which
+    // in a tab bound to one plant by its URL means once per tab.
+    const makeRunId = () => ((typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID() : (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)));
+    let _runId = makeRunId();
+    let _runIdPlant = null;
+    function ensureRunIdForPlant(plantId) {
+        const pid = String(plantId || '');
+        if (pid && _runIdPlant !== pid) {
+            _runId = makeRunId();
+            _runIdPlant = pid;
+            console.debug('[Modpoll Console] New X-Run-Id for plant ' + pid + ': ' + _runId);
+        }
+        return _runId;
+    }
 
     function gmPostJson(url, payload) {
+        const runId = ensureRunIdForPlant(payload && payload.plant_id);
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') return reject(new Error('GM_xmlhttpRequest not granted'));
             GM_xmlhttpRequest({
@@ -3773,15 +3792,15 @@
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
                     'X-Caller': X_CALLER,
-                    'X-Run-Id': _runId,
+                    'X-Run-Id': runId,
                 },
                 data: JSON.stringify(payload),
                 onload: r => {
                     try { resolve({ status: r.status, body: JSON.parse(r.responseText) }); }
                     catch (e) { reject(new Error('Bad JSON from the plant-SQL API: ' + String(r.responseText).slice(0, 200))); }
                 },
-                onerror: () => reject(new Error('plant-SQL API network error (X-Run-Id ' + _runId + ')')),
-                ontimeout: () => reject(new Error('plant-SQL API timeout (X-Run-Id ' + _runId + ')')),
+                onerror: () => reject(new Error('plant-SQL API network error (X-Run-Id ' + runId + ')')),
+                ontimeout: () => reject(new Error('plant-SQL API timeout (X-Run-Id ' + runId + ')')),
             });
         });
     }
