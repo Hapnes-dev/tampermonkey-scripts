@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.45.0
+// @version      1.45.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.45.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.45.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -254,6 +254,29 @@
         }).join('&');
     }
 
+    /**
+     * Windows opens COM1-COM9 by name, but COM10 and above only through the device
+     * namespace: `\\.\COM16`. modpoll hands the name straight to Windows, so a bare
+     * COM16 fails with "Port or socket open error" — which reads exactly like a port
+     * the Plant Server holds, and was taken for one on plant 3694 (2026-09-23) until
+     * Thomas pointed at the name. A port that really is held answers "Serial port
+     * already open" instead. COM1-COM9 keep the bare name, the shape known to work.
+     */
+    const RE_BARE_COM = /^COM(\d+)$/i;
+    function serialPortArg(host) {
+        const m = RE_BARE_COM.exec(String(host == null ? '' : host).trim());
+        return m && Number(m[1]) >= 10 ? '\\\\.\\COM' + m[1] : String(host);
+    }
+
+    /** The same rewrite for a hand-typed command: every bare COM10+ token in a modpoll segment. */
+    function ensureDevicePath(command) {
+        return String(command).split('&').map(segment => {
+            if (!/modpoll/i.test(segment)) return segment;
+            return segment.replace(/(^|\s)COM(\d+)(?=\s|$)/gi,
+                (all, lead, n) => (Number(n) >= 10 ? lead + '\\\\.\\COM' + n : all));
+        }).join('&');
+    }
+
     function assertSegmentReadOnly(command) {
         if (new RegExp('^echo\\s+' + MARK + '[\\w:.-]*$').test(command)) return true;
         // A line break or a control character has no place in a command line at
@@ -379,7 +402,7 @@
             args.push('-s', String(s.stopbits));
             args.push('-p', String(s.parity));
         }
-        args.push(s.host);
+        args.push(isSerialMode(mode) ? serialPortArg(s.host) : s.host);
         return args.join(' ');
     }
 
@@ -410,12 +433,14 @@
     // Patterns worth surfacing. Everything else modpoll prints (banner, copyright,
     // the configuration echo) is noise that would only cost the reader context.
     const DIAGNOSTICS = [
-        { re: /serial port already open/i, level: 'fatal', text: 'Serial port already open — another process holds the COM port' },
-        // On a serial port this nearly always means the Plant Server has the port
-        // open, since it polls the bus continuously. Freeing it means stopping the
-        // Plant Server, which also stops temperature logging and alarms — the
-        // operator's call, never the tool's.
-        { re: /port or socket open error/i, level: 'fatal', text: 'Port or socket open error — on a COM port the Plant Server is usually holding it (stopping it stops logging and alarms); on TCP, check the address' },
+        // A held port. On a plant that is nearly always the Plant Server, which polls
+        // the bus continuously. Freeing it means stopping the Plant Server, which
+        // also stops temperature logging and alarms — the operator's call, never
+        // the tool's.
+        { re: /serial port already open/i, level: 'fatal', text: 'Serial port already open — another process holds the COM port, usually the Plant Server (stopping it stops logging and alarms)' },
+        // Not a held port: the name did not open. Measured on plant 3694: bare COM16
+        // and COM17 gave this, \\.\COM16 gave "already open" while a driver held it.
+        { re: /port or socket open error/i, level: 'fatal', text: 'Port or socket open error — on a COM port the name did not open: the port does not exist on this machine, or it is above COM9 and was not written \\\\.\\COMn (a port the Plant Server holds says "Serial port already open" instead); on TCP, check the address' },
         { re: /can'?t reach slave/i, level: 'fatal', text: "Can't reach slave — check the IP address" },
         { re: /invalid count parameter/i, level: 'fatal', text: 'Invalid count parameter — the count cap is 99, not 100' },
         { re: /invalid reference parameter/i, level: 'fatal', text: 'Invalid reference parameter — -r counts from 1, and stops at 65536' },
@@ -4820,12 +4845,17 @@
                 // A hand-edited command is run as typed, after the same write check
                 // and with -1 put back if it was left out.
                 const typed = ui.cmd.value.trim();
-                const command = ensurePollOnce(typed);
-                if (command !== typed) {
+                const pollOnce = ensurePollOnce(typed);
+                if (pollOnce !== typed) {
                     log('Added -1 so it polls once. Without it modpoll polls every second for ever: the shell fills up, ' +
                         'the port stays taken, and everything after it looks like it returned nothing.', 'warn');
-                    ui.cmd.value = command;
                 }
+                const command = ensureDevicePath(pollOnce);
+                if (command !== pollOnce) {
+                    log('Wrote the COM port as \\\\.\\COMn. Windows opens ports above COM9 only by that name; ' +
+                        'the bare name fails with "Port or socket open error", which looks like a held port but is not.', 'warn');
+                }
+                if (command !== typed) ui.cmd.value = command;
                 assertReadOnly(command);
                 log('> ' + command);
                 const raw = await termRun(command, { timeoutMs: readForm().timeoutMs, fullOutput: true });
@@ -5692,8 +5722,10 @@
         async describe(spec) { return describeForAI(spec ? await api.read(spec) : lastResult); },
         lastDescribed() { return describeForAI(lastResult); },
         async raw(typed) {
-            const command = ensurePollOnce(typed);
-            if (command !== typed) log('Added -1 so it polls once — without it modpoll polls every second until the session is reconnected', 'warn');
+            const pollOnce = ensurePollOnce(typed);
+            if (pollOnce !== typed) log('Added -1 so it polls once — without it modpoll polls every second until the session is reconnected', 'warn');
+            const command = ensureDevicePath(pollOnce);
+            if (command !== pollOnce) log('Wrote the COM port as \\\\.\\COMn — Windows opens ports above COM9 only by that name', 'warn');
             assertReadOnly(command);
             const raw = await termRun(command, { timeoutMs: 25000, fullOutput: true });
             const parsed = parseModpoll(raw);

@@ -1,14 +1,15 @@
-"""Security matrix for the Modpoll Console command guard.
+r"""Security matrix for the Modpoll Console command guard.
 
 Lifts the command model — constants, the guard, normaliseSpec, buildCommand,
 planBlocks, the chaining — verbatim from the shipped userscript and runs it in
 Node, so what is tested is the code that ships rather than a copy of it.
 
-Four questions, each answered against that code:
+Five questions, each answered against that code:
   1. Does every command the form can produce still build and pass the guard?
   2. Do the command shapes the tool emits in the field still pass?
   3. Is every attack shape refused?
   4. Are the parity spellings a list or the API may send normalised?
+  5. Does a COM port above COM9 reach modpoll as \\.\COMn, built or typed?
 
 Lives beside the script it tests. Run: python security-matrix.py
 """
@@ -114,11 +115,47 @@ for (const [given, want] of [['N', 'none'], ['E', 'even'], ['O', 'odd'], ['0', '
   } catch (e) { wrongNorm.push(given + ' threw: ' + e.message); }
 }
 
+// 5. COM ports above COM9. Windows opens them only as \\.\COMn, and a bare COM16
+//    fails with "Port or socket open error" (plant 3694, 2026-09-23). Built from a
+//    spec or typed by hand, the command must carry the device path, pass the
+//    guard, and leave COM1-COM9 and network hosts exactly as they were.
+const wrongPort = [];
+for (const [given, want] of [
+  ['COM3', 'COM3'], ['COM9', 'COM9'], ['COM10', '\\\\.\\COM10'], ['COM16', '\\\\.\\COM16'],
+  ['com17', '\\\\.\\COM17'], ['\\\\.\\COM16', '\\\\.\\COM16'],
+]) {
+  for (const mode of ['rtu', 'ascii']) {
+    const cmd = buildCommand(normaliseSpec({ mode, host: given }));
+    const got = cmd.split(' ').pop();
+    if (got !== want) wrongPort.push(mode + ' built ' + given + ' -> ' + got);
+    try { assertReadOnly(cmd); } catch (e) { wrongPort.push(mode + ' built ' + given + ' refused: ' + e.message); }
+  }
+}
+for (const host of ['192.168.10.100', 'plant-gw.iwmac.local']) {
+  for (const mode of ['tcp', 'enc']) {
+    const cmd = buildCommand(normaliseSpec({ mode, host }));
+    if (cmd.split(' ').pop() !== host) wrongPort.push(mode + ' host rewritten: ' + cmd);
+  }
+}
+for (const [typed, want] of [
+  ['modpoll -1 -m rtu -a 11 -b 9600 -p none COM16', 'modpoll -1 -m rtu -a 11 -b 9600 -p none \\\\.\\COM16'],
+  ['modpoll -1 COM11 -b9600 -pnone -a11', 'modpoll -1 \\\\.\\COM11 -b9600 -pnone -a11'],
+  ['modpoll -1 -m rtu -a 11 -p none COM5', 'modpoll -1 -m rtu -a 11 -p none COM5'],
+  ['modpoll -1 -m rtu -a 13 -p none \\\\.\\COM17', 'modpoll -1 -m rtu -a 13 -p none \\\\.\\COM17'],
+  ['echo #mpc:1 & modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 COM12', 'echo #mpc:1 & modpoll -1 -m rtu -a 1 -t 4 -r 1 -c 1 \\\\.\\COM12'],
+  ['modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100', 'modpoll -1 -m tcp -a 1 -t 4 -r 1 -c 1 192.168.10.100'],
+]) {
+  const got = ensureDevicePath(typed);
+  if (got !== want) wrongPort.push('typed "' + typed + '" -> "' + got + '"');
+  try { assertReadOnly(got); } catch (e) { wrongPort.push('typed "' + typed + '" refused after rewrite: ' + e.message); }
+}
+
 console.log('legit command lines built and guarded: ' + built);
 console.log(refusedLegit.length ? 'LEGIT REFUSED:\n  ' + refusedLegit.join('\n  ') : 'legit refused: none');
 console.log(allowedAttack.length ? 'ATTACKS ALLOWED: ' + allowedAttack.join(', ') : 'attacks allowed: none of ' + Object.keys(attacks).length);
 console.log(wrongNorm.length ? 'PARITY WRONG: ' + wrongNorm.join(', ') : 'parity spellings: all 9 normalised');
-process.exit(refusedLegit.length || allowedAttack.length || wrongNorm.length ? 1 : 0);
+console.log(wrongPort.length ? 'COM PORT WRONG:\n  ' + wrongPort.join('\n  ') : 'COM ports: above COM9 written \\\\.\\COMn, built and typed; the rest untouched');
+process.exit(refusedLegit.length || allowedAttack.length || wrongNorm.length || wrongPort.length ? 1 : 0);
 """
 
 out = Path(os.environ.get("TEMP", ".")) / "mpc-security.js"

@@ -243,6 +243,15 @@ it fails:
   modpoll cannot have that port until the service is stopped — which stops
   temperature logging and alarms. That is the plant owner's decision, and the
   console never touches it; it only tells you that is what the port error means.
+  A held port answers `Serial port already open`.
+- **COM10 and above are written `\\.\COM16`.** Windows opens COM1–COM9 by name
+  but higher ports only through the device namespace, and modpoll hands the name
+  straight to Windows. A bare `COM16` fails with `Port or socket open error`,
+  which reads exactly like a held port and is not one — on plant 3694 the bare
+  names failed that way while `\\.\COM16` and `\\.\COM17` answered, and a port a
+  driver really held said `Serial port already open`. The
+  console writes the device path itself since 1.45.1, in built polls and in typed
+  commands alike, and says so in the log when it rewrites one.
 - **Try ENC first.** Mode `enc` is Modbus RTU framed inside TCP, which is what a
   serial gateway in TCP-server mode expects, so the same bus can often be reached
   at the gateway address with nothing stopped. Port 4001 upwards is the usual
