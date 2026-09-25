@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.156
+// @version      4.157
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1881,7 +1881,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.156';
+    const SCRIPT_VERSION   = '4.157';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2516,6 +2516,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const dates = [...new Set((isoDates || []).filter(Boolean))];
             if (!dates.length) { resolve({ byDate: {} }); return; }
             let mode = 'quiet', modeAt = Date.now(), tab = null, req = null, settled = false, said = '', tick = null;
+            const listeners = [];
             const say = txt => { if (onStatus && txt !== said) { said = txt; try { onStatus(txt); } catch {} } };
             const post = () => {
                 const now = Date.now();
@@ -2530,6 +2531,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (settled) return;
                 settled = true;
                 clearInterval(tick);
+                for (const id of listeners) { try { GM_removeValueChangeListener(id); } catch {} }
                 if (keepTab || !tab) { tab = null; resolve(payload); return; }
                 setTimeout(() => { closeTab(); resolve(payload); }, 300);
             };
@@ -2553,9 +2555,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 try { handle.onclose = () => { if (!t.ours && tab === t && !settled) { tab = null; done(Object.assign({ byDate: {} }, calErrorFor('closed'))); } }; } catch {}
                 say(inFront ? 'Outlook needs a moment in front to renew its sign-in — it closes by itself…' : 'opening Outlook in the background…');
             };
-            post();
-            say('reading your Outlook calendar…');
-            tick = setInterval(() => {
+            // Hear the answer (and each progress report) the moment an Outlook tab writes it (v4.157),
+            // not on the next tick: Chrome slows the timers of a Rocketlane tab in the background — or
+            // behind the Outlook tab in front — to once a second, and after five minutes hidden to about
+            // once a minute. Seen live on 2026-09-25: an answer sat unread for about 20 s in a hidden tab.
+            // The tick stays, for the stage deadlines.
+            const check = () => {
                 if (settled) return;
                 const res = GM_getValue(KEY_CAL_RESULT, null);
                 if (calAnswerFor(res, req)) {
@@ -2576,7 +2581,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (reading) return;
                 if (mode === 'hidden' && now - modeAt > CAL_TIMING.hidden) { open(true); return; }
                 if (mode === 'visible' && now - modeAt > CAL_TIMING.visible) done(Object.assign({ byDate: {} }, calErrorFor('timeout')), true);
-            }, CAL_TIMING.tick);
+            };
+            try {
+                if (typeof GM_addValueChangeListener === 'function') {
+                    listeners.push(GM_addValueChangeListener(KEY_CAL_RESULT, () => check()));
+                    listeners.push(GM_addValueChangeListener(KEY_CAL_BEAT, () => check()));
+                }
+            } catch {}
+            post();
+            say('reading your Outlook calendar…');
+            tick = setInterval(check, CAL_TIMING.tick);
         });
     }
 
