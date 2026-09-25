@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.150
+// @version      4.151
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -982,7 +982,48 @@ var RL_RECAP_TIME = (function () {
         return { rows: out, budget };
     }
 
-    return { cappedGapCredit, dayEndExtension, eventGapCapMs, allocateMinutes, dayBudget, timesheetWeekFromPage, bookingShares };
+    // ---- The timesheet's week and days (v4.151) ----------------------------------------------------
+    // Thomas: "read the date currently selected on the website and automatically open/select the same date
+    // in the tool … hours are booked on the correct date and the dates always match". Rocketlane's My
+    // Timesheet is week-only (its picker reads "21 Sep 2026 - 27 Sep 2026"), so the week decides and a
+    // click on a day header picks the day.
+    // ISO date arithmetic at noon UTC — no DST or local-midnight traps.
+    function isoAddDays(iso, n) {
+        const d = new Date(String(iso || '') + 'T12:00:00Z');
+        if (!isFinite(d)) return '';
+        d.setUTCDate(d.getUTCDate() + (n || 0));
+        return d.toISOString().slice(0, 10);
+    }
+    // Which date the panel opens on for the week on screen: today when today is in it (a weekend → that
+    // week's Friday); otherwise the week's first weekday whose sheet total is below the workday; otherwise
+    // its Friday. `totals` maps ISO date → minutes already on the sheet (may be missing).
+    function panelDateForWeek(mondayIso, todayIso, totals, workdayMin) {
+        if (!mondayIso) return todayIso;
+        const week = [0, 1, 2, 3, 4].map(i => isoAddDays(mondayIso, i));
+        if (todayIso >= mondayIso && todayIso <= isoAddDays(mondayIso, 6)) return todayIso > week[4] ? week[4] : todayIso;
+        const t = totals || {};
+        const w = Number.isFinite(workdayMin) && workdayMin > 0 ? workdayMin : 450;
+        return week.find(d => (Number(t[d]) || 0) < w) || week[4];
+    }
+    // A day header of the timesheet grid ("Wed23 Sep") → its ISO date, given the page's Monday. Null when
+    // the text is something else or the header and the week disagree (Rocketlane mid-render).
+    const HEAD_WD = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
+    function dayHeaderIso(text, mondayIso) {
+        const m = /^(mon|tue|wed|thu|fri|sat|sun)\s*(\d{1,2})\s+[a-z]{3}\.?$/i.exec(String(text == null ? '' : text).replace(/\s+/g, ' ').trim());
+        if (!m || !mondayIso) return null;
+        const iso = isoAddDays(mondayIso, HEAD_WD[m[1].toLowerCase()]);
+        return iso && Number(iso.slice(8, 10)) === Number(m[2]) ? iso : null;
+    }
+    // After booking, what a day now totals against the workday. Only a distributed day is held to it.
+    function dayTotalVerdict(minutes, workdayMin, distributing) {
+        const diff = Math.round(Number(minutes) || 0) - Math.round(Number(workdayMin) || 0);
+        if (!distributing || !workdayMin) return { mark: 'ℹ', diff, text: '' };
+        if (Math.abs(diff) <= 1) return { mark: '✓', diff: 0, text: '' };
+        return { mark: '⚠', diff, text: diff < 0 ? 'short of' : 'over' };
+    }
+
+    return { cappedGapCredit, dayEndExtension, eventGapCapMs, allocateMinutes, dayBudget, timesheetWeekFromPage, bookingShares,
+        isoAddDays, panelDateForWeek, dayHeaderIso, dayTotalVerdict };
 })();
 // ===== Outlook calendar → meeting / admin time =======================================
 // pang only sees plant work, so meetings, planning and training never reached the timesheet — and
@@ -1725,7 +1766,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
-    const { timesheetWeekFromPage } = RL_RECAP_TIME;
+    const { timesheetWeekFromPage, panelDateForWeek, dayHeaderIso, dayTotalVerdict } = RL_RECAP_TIME;
 
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
 
@@ -1744,7 +1785,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.150';
+    const SCRIPT_VERSION   = '4.151';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3618,6 +3659,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .rl-inline-btn { font-size: 11px; line-height: 1.3; padding: 1px 7px; margin-left: 4px; border: 1px solid #b1520a; background: #fff; color: #b1520a; border-radius: 4px; cursor: pointer; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-nb { font-size: 10px; color: #525252; background: #f4f4f4; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-split { color: #0f62fe; cursor: help; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-verify { font-size: 12px; line-height: 1.5; margin: 6px 0; color: #161616; }
+        #${PANEL_ID} .catsum-sheet { font-size: 12px; color: #393939; background: #f4f4f4; border-radius: 4px; padding: 4px 8px; margin: 0 0 6px; }
+        #${PANEL_ID} .pagenote { font-size: 12px; color: #0043ce; background: #edf5ff; border-radius: 4px; padding: 4px 8px; margin: 4px 0; }
+        .rl-recap-daylink { margin-left: 4px; border: 0; background: transparent; cursor: pointer; font-size: 11px; line-height: 1; padding: 0 2px; opacity: .5; vertical-align: middle; }
+        .rl-recap-daylink:hover { opacity: 1; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-row.bookplan-zero .bookplan-txt { opacity: .55; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; background: #f9fbff; padding: 8px 0 2px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-foot button { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #c6c6c6; background: #fff; cursor: pointer; }
@@ -3706,6 +3752,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         document.head.appendChild(s);
     }
 
+    // The date a new panel starts on (v4.151): a day header's request, else today when the timesheet shows
+    // today's week, else that week's Monday until the week's sheet totals pick the real day.
+    function initialPanelDate() {
+        if (_panelDateRequest) return _panelDateRequest;
+        const pw = pageWeekMondayISO(), t = todayISO();
+        return (pw && !(t >= pw && t <= addDaysISO(pw, 6))) ? pw : t;
+    }
     function buildPanel() {
         if (document.getElementById(PANEL_ID)) return document.getElementById(PANEL_ID);
         const panel = document.createElement('div');
@@ -3717,7 +3770,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             </header>
             <div class="controls">
                 <div class="datewrap">
-                    <input type="date" value="${todayISO()}" hidden>
+                    <input type="date" value="${initialPanelDate()}" hidden>
                     <button type="button" class="datebtn"></button>
                     <div class="datecal" hidden></div>
                 </div>
@@ -3748,6 +3801,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     ✉ Zendesk
                 </label>
             </div>
+            <div class="pagenote" hidden></div>
             <div class="fsnudge" hidden></div>
             <div class="progress"><div style="width:0%"></div></div>
             <div class="catsum"></div>
@@ -3834,6 +3888,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         let lastIso = null;
         let lastUsername = null;
         let lastScanned = 0;
+        let lastSheet = null; // v4.151: { iso, min, calMin, ok, at } — what the sheet already holds for the date
         let lastMode = 'quick';     // 'quick' | 'full' — how the shown data was gathered
         let lastFromCache = false;  // true when the shown data came from the full-scan cache
         let lastCacheTs = 0;
@@ -3844,13 +3899,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (!lastVisits) return;
             const useNorm = !!normalizeChk.checked;
             const hours = parseFloat(workdayInput.value);
-            const targetMin = (useNorm && isFinite(hours) && hours > 0) ? Math.round(hours * 60) : 0;
+            const workdayMin = (isFinite(hours) && hours > 0) ? Math.round(hours * 60) : 0;
+            // v4.151: what the sheet already holds for this date — and calendar rows about to be booked —
+            // comes off the workday BEFORE plant work is distributed, exactly as booking does (4.130/4.143).
+            // Thomas: "Target: 7.5 hours · Already registered: 2.0 hours · Remaining time to book: 5.5 hours."
+            // Until now the panel spread the full workday and only the booking plan subtracted.
+            const sheet = (lastSheet && lastSheet.iso === lastIso) ? lastSheet : null;
+            const budget = RL_RECAP_TIME.dayBudget({ workdayMin, existingMin: sheet ? sheet.min : 0, calendarMin: sheet ? sheet.calMin : 0 });
+            const targetMin = (useNorm && workdayMin > 0) ? budget.plantMin : 0;
+            lastVisits._sheetInfo = (useNorm && workdayMin > 0 && sheet && (sheet.min || sheet.calMin))
+                ? { workday: workdayMin, sheet: sheet.min, cal: sheet.calMin, plant: budget.plantMin, over: budget.over } : null;
             // Reset any previous normalized values, then re-apply if asked
             for (const v of lastVisits) v.normalized_minutes = null;
             // Distribute the workday total over BOOKABLE visits only — Quick-check visits are excluded from the
             // timesheet, so they must not absorb a slice of the target and carry it into the not-booked bucket
             // (which left "to book" below the configured hours). Quick visits keep their raw estimate. (v4.53, R2)
-            if (targetMin > 0) normalizeMinutes(lastVisits.filter(v => categorizeVisit(v)[CAT_CHECK] == null), targetMin, ROUND_TO_MIN);
+            // A day the sheet already fills distributes ZERO (v4.151) — not the raw estimates.
+            if (useNorm && workdayMin > 0) normalizeMinutes(lastVisits.filter(v => categorizeVisit(v)[CAT_CHECK] == null), targetMin, ROUND_TO_MIN);
             renderVisits(list, lastVisits, lastIso, lastScanned);
             renderCategorySummary(catsumEl, lastVisits, lastIso);
             const stillMissing = lastVisits.filter(v => !v.name).length;
@@ -3869,6 +3934,31 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${lastFailed ? ` · ⚠ ${lastFailed} unreachable — not cached` : ''}${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
             ensureChangesEnriched();
             ensureZendeskEnriched();
+            ensureSheetTotal();
+        };
+        // What the sheet already holds for the date on screen (v4.151). One weekly GET, cached a minute and
+        // shared with booking; repaints only when the number changed.
+        const ensureSheetTotal = async () => {
+            const iso = lastIso;
+            if (!iso || !rlCreds() || ensureSheetTotal.busy === iso) return;
+            if (lastSheet && lastSheet.iso === iso && Date.now() - lastSheet.at < 60000) return;
+            ensureSheetTotal.busy = iso;
+            try {
+                const entries = await rlEntriesOn(iso);
+                let calMin = 0;
+                const hit = GM_getValue(KEY_CAL_ENABLED, false) ? _calCache.get(iso) : null;
+                if (hit && hit.events) {
+                    // Calendar rows about to be booked — not the ones already on the sheet (those are in `min`).
+                    const h = parseFloat(workdayInput.value) || DEFAULT_WORKDAY_HOURS;
+                    const planned = calPlanEntries(calPrice(hit.events, Math.round(h * 60)), await rlCategories(), entries);
+                    calMin = planned.filter(e => e.status !== 'already-booked').reduce((n, e) => n + (e.minutes || 0), 0);
+                }
+                const min = entries.reduce((n, e) => n + (Number(e && e.minutes) > 0 ? Number(e.minutes) : 0), 0);
+                const prev = lastSheet;
+                lastSheet = { iso, min, calMin, ok: !!entries._checkOk, at: Date.now() };
+                if (iso === lastIso && (!prev || prev.iso !== iso || prev.min !== min || prev.calMin !== calMin)) applyAndRender();
+            } catch (e) { /* the panel works without it */ }
+            finally { ensureSheetTotal.busy = null; }
         };
 
         // Lazily overlay config-change ("commits") info onto the date on screen, decoupled from the
@@ -4274,7 +4364,30 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         });
 
         renderFullScanNudge();
-        openDefault();
+        // v4.151: the date follows the timesheet on screen. A day-header click asks for one date; otherwise
+        // the week Rocketlane shows decides — today inside it, else its first weekday that is not yet full —
+        // and a later week change moves the panel along, with a one-line note saying so.
+        const pageNote = panel.querySelector('.pagenote');
+        let pageNoteTimer = null;
+        const flashPageNote = txt => {
+            pageNote.textContent = txt; pageNote.hidden = false;
+            clearTimeout(pageNoteTimer); pageNoteTimer = setTimeout(() => { pageNote.hidden = true; }, 8000);
+        };
+        const followWeek = async (mon, announce) => {
+            const cur = dateInput.value, t = todayISO();
+            const inWeek = d => mon && d >= mon && d <= addDaysISO(mon, 6);
+            if (!mon || (inWeek(cur) && (announce || inWeek(t)))) { if (!announce) openDefault(); return; }
+            const hours = parseFloat(workdayInput.value);
+            const totals = rlCreds() ? await weekSheetTotals(mon).catch(() => null) : null;
+            if (!document.body.contains(panel)) return;
+            const pick = panelDateForWeek(mon, t, totals, Math.round((isFinite(hours) && hours > 0 ? hours : DEFAULT_WORKDAY_HOURS) * 60));
+            if (announce) flashPageNote(`📅 Following the timesheet: week of ${isoToNorwegianDate(mon)} — showing ${isoToNorwegianDate(pick)}.`);
+            if (pick !== cur) setDate(pick); else if (!announce) openDefault();
+        };
+        panel.addEventListener('rl-recap-date', ev => { const iso = ev.detail && ev.detail.iso; if (iso && iso !== dateInput.value) setDate(iso); });
+        panel.addEventListener('rl-recap-week', ev => { followWeek(ev.detail && ev.detail.monday, true); });
+        if (_panelDateRequest) { _panelDateRequest = null; openDefault(); }
+        else followWeek(pageWeekMondayISO(), false);
         return panel;
     }
 
@@ -4474,6 +4587,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         container.innerHTML = '';
         if (!visits || !visits.length) return;
         const { rows, grand } = dayCategoryTotals(visits);
+        // v4.151: hours already on the sheet come off the workday first — say so above the split.
+        const si = visits._sheetInfo;
+        let sheetLine = '';
+        if (si) {
+            const cal = si.cal ? ` · calendar ${fmtMinutes(si.cal)}` : '';
+            if (si.over) sheetLine = `⚠ The sheet already holds ${fmtMinutes(si.sheet)}${cal} — ${fmtMinutes(si.sheet + si.cal - si.workday)} over the ${fmtMinutes(si.workday)} workday. No plant time is added.`;
+            else if (!si.plant) sheetLine = `🧾 The sheet already holds ${fmtMinutes(si.sheet)}${cal} for this date — the ${fmtMinutes(si.workday)} workday is full, no plant time is added.`;
+            else sheetLine = `🧾 Already on the sheet: ${fmtMinutes(si.sheet)}${cal} → plant work gets ${fmtMinutes(si.plant)} of ${fmtMinutes(si.workday)}.`;
+        }
+        if (sheetLine) {
+            const sl = document.createElement('div');
+            sl.className = 'catsum-sheet';
+            sl.textContent = sheetLine;
+            container.appendChild(sl);
+        }
         if (!rows.length || !grand) return;
         const head = document.createElement('div');
         head.className = 'catsum-head';
@@ -6023,6 +6151,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
                 + (zdWarnText(visits._zd) ? `<div class="bookplan-warn">${esc(zdWarnText(visits._zd))}</div>` : '')
+                + ((pw => pw && !(iso >= pw && iso <= addDaysISO(pw, 6))
+                    ? `<div class="bookplan-warn">📅 Rocketlane is showing the week of <b>${esc(isoToNorwegianDate(pw))}</b>; these entries go on <b>${esc(isoToNorwegianDate(iso))}</b> — another week. Open that week to see them after booking.</div>` : '')(pageWeekMondayISO()))
                 + '<div class="bookplan-budget">' + budgetWarnHtml(plan._budget) + '</div>'
                 + nonBillableWarnHtml(plan);
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${bookProgressMarkup()}${lines}
@@ -6096,7 +6226,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const failN = plan.filter(e => e.status === 'failed').length;
                     const skipN = plan.filter(e => e.status === 'ready' && e.selected === false).length;
                     const foot = box.querySelector('.bookplan-foot');
-                    foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span><button type="button" data-b="cancel">Close</button>`;
+                    // v4.151: re-read the sheet and say what the day now totals against the workday.
+                    const verified = okN ? await verifyBookedDays([iso]) : [];
+                    foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span>`
+                        + verifyHtml(verified, plan._workdayMin, !!plan._distributing)
+                        + `<button type="button" data-b="reload">↻ Reload page</button><button type="button" data-b="cancel">Close</button>`;
+                    foot.querySelector('[data-b=reload]').addEventListener('click', () => location.reload());
                     foot.querySelector('[data-b=cancel]').addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
                 });
             }
@@ -6208,6 +6343,89 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // Load one day's visits ready for booking: full-scan cache when present (instant + complete),
     // else a quick scan over recent + footprint plants; then names, commit enrichment, and the
     // 7,5 h distribution over bookable (non-quick-check) plants.
+    // ---- The timesheet on screen (v4.151) ------------------------------------------------------------
+    // The Monday of the week Rocketlane shows — from the URL, else from the week picker's own text.
+    function pageWeekMondayISO() {
+        const trig = document.querySelector('[data-cy-button="week-range-picker-trigger"]');
+        const w = timesheetWeekFromPage({ pathname: location.pathname, rangeText: trig ? trig.textContent : '' });
+        if (!w) return null;
+        return mondayOfISO(w === 'this-week' ? todayISO() : w);
+    }
+    // Tell an open panel when the page moves to another week (throttled; the SPA mutates constantly).
+    let _lastPageWeek, _pageWeekCheck = 0;
+    function notePageWeek() {
+        const now = Date.now();
+        if (now - _pageWeekCheck < 500) return;
+        _pageWeekCheck = now;
+        const mon = pageWeekMondayISO();
+        if (_lastPageWeek === undefined) { _lastPageWeek = mon; return; }
+        if (!mon || mon === _lastPageWeek) return;
+        _lastPageWeek = mon;
+        const p = document.getElementById(PANEL_ID);
+        if (p) p.dispatchEvent(new CustomEvent('rl-recap-week', { detail: { monday: mon } }));
+    }
+    // A 🏭 on each day header of the grid: one click opens the panel on THAT date.
+    let _dayHeadScan = 0, _panelDateRequest = null;
+    function buildDayHeaderLinks() {
+        const now = Date.now();
+        if (now - _dayHeadScan < 800) return;
+        _dayHeadScan = now;
+        const mon = pageWeekMondayISO();
+        if (!mon) return;
+        for (const th of document.querySelectorAll('th.ant-table-cell')) {
+            const old = th.querySelector('.rl-recap-daylink');
+            if (old && th.dataset.rlRecapWeek === mon) continue;
+            if (old) old.remove();
+            const iso = dayHeaderIso(th.textContent.replace(/🏭/g, ''), mon);
+            if (!iso) continue;
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'rl-recap-daylink';
+            b.textContent = '🏭';
+            b.title = `Plants visited on ${isoToNorwegianDate(iso)} — open the Day Recap on this date`;
+            b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); openPanelOn(iso); });
+            th.appendChild(b);
+            th.dataset.rlRecapWeek = mon;
+        }
+    }
+    function openPanelOn(iso) {
+        const p = document.getElementById(PANEL_ID);
+        if (p) { p.dispatchEvent(new CustomEvent('rl-recap-date', { detail: { iso } })); return; }
+        _panelDateRequest = iso;
+        buildPanel();
+    }
+    // Minutes already on the sheet per day of one week (one weekly GET, shared with the dedupe cache).
+    async function weekSheetTotals(mondayIso) {
+        const out = {};
+        for (let i = 0; i < 7; i++) {
+            const iso = addDaysISO(mondayIso, i);
+            const e = await rlEntriesOn(iso);
+            if (!e._checkOk) return null;
+            out[iso] = e.reduce((n, x) => n + (Number(x && x.minutes) > 0 ? Number(x.minutes) : 0), 0);
+        }
+        return out;
+    }
+    // After booking, re-read the sheet and say what each booked day now totals (v4.151). 18.09 landed at
+    // 409 of 450 minutes and nothing said so; the rows that failed were the only clue.
+    async function verifyBookedDays(isos) {
+        _rlWeekCache.clear();
+        const out = [];
+        for (const iso of (isos || [])) {
+            const e = await rlEntriesOn(iso);
+            out.push({ iso, ok: !!e._checkOk, min: e.reduce((n, x) => n + (Number(x && x.minutes) > 0 ? Number(x.minutes) : 0), 0) });
+        }
+        return out;
+    }
+    function verifyHtml(results, workdayMin, distributing) {
+        if (!results || !results.length) return '';
+        const lines = results.map(r => {
+            if (!r.ok) return `⚠ ${isoToNorwegianDate(r.iso)}: could not re-read the sheet — check it after reloading`;
+            const v = dayTotalVerdict(r.min, workdayMin, distributing);
+            return `${v.mark} ${isoToNorwegianDate(r.iso)} now totals ${fmtMinutes(r.min)}` + (v.text ? ` — ${fmtMinutes(Math.abs(v.diff))} ${v.text} ${fmtMinutes(workdayMin)}` : '');
+        });
+        return `<div class="bookplan-verify">${lines.map(escapeHtml).join('<br>')}</div>`;
+    }
+
     // ---- Zendesk as a source (v4.150) --------------------------------------------------------------
     // The cases you commented on, per plant-day, read with your own Zendesk browser session — the same
     // route the Rocketlane-improvements script proved (GM request with the session cookie, one renew on a
@@ -6437,12 +6655,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Start on the week Rocketlane's page is showing (v4.139) — the URL carries it, the range button
         // is the fallback — so ⤴ Book week never needs ‹ › to reach the week already on screen. Only
         // when the page gives no week: the panel's selected date, else the current week.
-        const pageWeekMonday = () => {
-            const trig = document.querySelector('[data-cy-button="week-range-picker-trigger"]');
-            const w = timesheetWeekFromPage({ pathname: location.pathname, rangeText: trig ? trig.textContent : '' });
-            if (!w) return null;
-            return mondayOfISO(w === 'this-week' ? todayISO() : w);
-        };
+        const pageWeekMonday = () => pageWeekMondayISO(); // shared with the panel since v4.151
         const panelDate = document.querySelector(`#${PANEL_ID} input[type=date]`);
         let pageWeek = pageWeekMonday();
         let monday = pageWeek || mondayOfISO((panelDate && panelDate.value) || todayISO());
@@ -6742,7 +6955,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const failN = all.filter(e => e.status === 'failed').length;
                 const skipN = all.filter(e => e.status === 'ready' && e.selected === false).length;
                 const foot = box.querySelector('.bookplan-foot');
-                foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span><button type="button" data-b="cancel">Close</button>`;
+                // v4.151: every day that got an entry is re-read and held to the workday.
+                const bookedDays = [...new Set(rows.filter(r => r.e.status === 'booked').map(r => r.day))];
+                const verified = bookedDays.length ? await verifyBookedDays(bookedDays.map(d => d.iso)) : [];
+                const wdMin = (bookedDays[0] && bookedDays[0].plan._workdayMin) || Math.round((GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS) * 60);
+                foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span>`
+                    + verifyHtml(verified, wdMin, true)
+                    + `<button type="button" data-b="reload">↻ Reload page</button><button type="button" data-b="cancel">Close</button>`;
+                foot.querySelector('[data-b=reload]').addEventListener('click', () => location.reload());
                 foot.querySelector('[data-b=cancel]').addEventListener('click', () => wrap.remove());
             });
         }
@@ -6869,6 +7089,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         injectStyle();
         buildButton();
         buildWeekButton();
+        notePageWeek();          // v4.151: the panel follows the page's week
+        buildDayHeaderLinks();   // v4.151: 🏭 on each day header opens the panel on that date
     }
 
     function buildButton() {
