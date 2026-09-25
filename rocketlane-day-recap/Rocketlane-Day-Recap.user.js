@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.152
+// @version      4.153
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1597,8 +1597,15 @@ var RL_RECAP_MATCH = (function () {
             if (hit) return hit;
             // No evidence distinguishes gateway tasks — walk a fixed priority over the OPEN ones instead
             // of giving up (gateway-est name first).
-            for (const re of [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i])
+            const SETUP_PRIORITY = [/gateway/i, /ak3|scan\b/i, /\brac\b/i, /nport|moxa/i, /server/i, /port\s*forward/i, /connection|forbindelse|tilkobling/i, /network|nettverk/i];
+            for (const re of SETUP_PRIORITY)
                 { const t = c.find(x => !x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return Object.assign({ rescued: true }, t); }
+            // A finished project's setup packages are still where setup work goes (v4.153). With every
+            // task ✓ done, the discipline-scored rescue below put 8222's AK3 run (25.09) on "Refrigeration
+            // and freezing systems" — an Integration package — which then pushed Integration onto
+            // "Connection to the plant". Same priority, completed ones.
+            for (const re of SETUP_PRIORITY)
+                { const t = c.find(x => x.done && re.test(x.taskName) && !(used && used.has(x.taskId))); if (t) return Object.assign({ rescued: true }, t); }
             // Fences: design names stay out longest — gateway setup is integration-side work, so an
             // Integration task is the natural second choice ("Setup 18m → Design: Energi" was wrong).
             return rescue(c, [/design|bilde|tegning/i, /integra(?:tion|sjon)/i]);
@@ -1646,16 +1653,21 @@ var RL_RECAP_MATCH = (function () {
         const gaps = (w.capped_gaps || []).filter(g => g && Number.isFinite(g.ts) && Number.isFinite(g.gap) && g.gap > C.gapCapMs);
         const segs = (segments || []).filter(s => s && s.id != null && Number.isFinite(s.ts)).slice().sort((a, b) => a.ts - b.ts);
         const out = new Map();
+        // Segments that share one timestamp are parts of ONE save (v4.153: the panels of a drawing save)
+        // and share the span before it equally.
+        const groups = [];
+        for (const s of segs) { const g = groups[groups.length - 1]; if (g && g.ts === s.ts) g.items.push(s); else groups.push({ ts: s.ts, items: [s] }); }
         let prev = first != null ? first - C.leadMs : null;
-        for (const s of segs) {
-            const end = last != null ? Math.min(s.ts, last + C.afterMs) : s.ts;
+        for (const g of groups) {
+            const end = last != null ? Math.min(g.ts, last + C.afterMs) : g.ts;
             let span = prev == null ? C.minMs : end - prev;
-            if (prev != null) for (const g of gaps) { // a capped click silence is worth the cap, not its length
-                const ov = Math.min(end, g.ts + g.gap) - Math.max(prev, g.ts);
+            if (prev != null) for (const gp of gaps) { // a capped click silence is worth the cap, not its length
+                const ov = Math.min(end, gp.ts + gp.gap) - Math.max(prev, gp.ts);
                 if (ov > C.gapCapMs) span -= ov - C.gapCapMs;
             }
-            out.set(String(s.id), Math.min(C.capMs, Math.max(C.minMs, span)));
-            prev = s.ts;
+            span = Math.min(C.capMs, Math.max(C.minMs, span));
+            for (const s of g.items) out.set(String(s.id), span / g.items.length);
+            prev = g.ts;
         }
         return out;
     }
@@ -1717,14 +1729,17 @@ var RL_RECAP_MATCH = (function () {
         let list = [...groups.values()];
         if (list.length === 1) return whole(list[0].task);
         const isPrimary = g => String(g.task.taskId) === String(primary.taskId);
-        // Apportion, then fold shares under the floor into the largest one until every share clears it.
+        // Apportion, then fold shares under the floor until every share clears it. A small share joins the
+        // day's own pick (the primary) when that part stands on its own, else the largest part (v4.153): a
+        // lone "Maskin" panel folded into the largest part read as one of "3 ventilation overview screens".
         for (;;) {
             const mins = RL_RECAP_TIME.allocateMinutes(list.map(g => g.weight), total, 1);
             list.forEach((g, i) => { g.minutes = mins[i]; });
             list.sort((a, b) => (b.minutes - a.minutes) || (Number(isPrimary(b)) - Number(isPrimary(a))) || (b.weight - a.weight));
             const small = list.filter((g, i) => i > 0 && g.minutes < C.minShareMin);
             if (!small.length) break;
-            for (const g of small) { list[0].weight += g.weight; list[0].segIds.push(...g.segIds); }
+            const home = list.find(g => isPrimary(g) && !small.includes(g)) || list[0];
+            for (const g of small) { home.weight += g.weight; home.segIds.push(...g.segIds); }
             list = list.filter(g => !small.includes(g));
         }
         if (list.length === 1) return whole(list[0].task);
@@ -1786,7 +1801,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.152';
+    const SCRIPT_VERSION   = '4.153';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -5120,6 +5135,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             out.leadActions = summarizeLeadActions(out.tools, false, out.opsChanged);
             out.leadDrawIdle = summarizeLeadDrawingIdle(out.discs);
             out.segments = [];
+            out.drawSegments = [];
             return out;
         }
         const cids = scan.map(c => String(c.id));
@@ -5227,7 +5243,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // for a split entry (v4.141). Same facts, same wording, same caps either way.
         const compose = (sel) => {
             const T = {};
-            const inSel = r => !sel || sel.has(String(r.cid));
+            // `sel` holds save ids, or "save::panel" ids for one drawing part (v4.153): a panel fact is in
+            // when its own id is, every other fact of the save when the save is named either way.
+            const selCids = sel ? new Set([...sel].map(x => String(x).split('::')[0])) : null;
+            const inSel = r => !sel || (r.panel != null ? (sel.has(String(r.cid)) || sel.has(String(r.cid) + '::' + r.panel)) : selCids.has(String(r.cid)));
             const devAdd = F.devAdd.filter(inSel).map(r => r.v);
             const devMod = new Set(F.devMod.filter(inSel).map(r => r.v));
             const virtVals = [...F.virt].some(c => inSel({ cid: c }));
@@ -5376,8 +5395,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             T.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, uRebuilt, devMod: [...devMod], virtVals, settNames, tuneLabels }, T.discs);
             // A drawing's discipline comes from its OWN name first (v4.149): "Ventilasjon" was being
             // described as a "refrigeration overview screen" because the day's devices were refrigeration.
-            const dw = bookDiscWeights(T.drawingNames.join(' '), true);
-            const drawDiscs = Object.keys(dw).sort((a, b) => dw[b] - dw[a]);
+            // v4.153: …and only when most of the drawings say it — one "Energi" among nine overviews made
+            // "9 energy overview screens". No drawing names a discipline → the day's devices guess, as before;
+            // a mix → no discipline word at all.
+            const panelDisc = {};
+            for (const n of T.drawingNames) for (const d of Object.keys(bookDiscWeights(n, true))) panelDisc[d] = (panelDisc[d] || 0) + 1;
+            const topDisc = Object.keys(panelDisc).sort((a, b) => panelDisc[b] - panelDisc[a])[0];
+            const drawDiscs = !topDisc ? [] : panelDisc[topDisc] * 2 >= T.drawingNames.length ? [topDisc] : ['mixed'];
             T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, drawDiscs.length ? drawDiscs : T.discs);
             T.leadDrawIdle = summarizeLeadDrawingIdle(drawDiscs.length ? drawDiscs : T.discs);
             T.ak3Types = [...new Set(F.ak3.filter(inSel).map(r => r.v))];
@@ -5396,6 +5420,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const names = F.unitAdd.filter(own).map(r => r.label).concat(F.unitRen.filter(own).map(r => r.to)).filter(Boolean);
             return { id: cid, ts: tsBy[cid], tokStr: toks.join(' ').toLowerCase(), uStr: names.join(' ').toLowerCase(), drawingNames: [...new Set(F.panel.filter(own).map(r => r.panel))] };
         });
+        // Drawing evidence per PANEL (v4.153): one save often carries several drawings ("Oversikt ny",
+        // "Maskin ny", "Ventilasjon" …), and each can belong to a different Design package. 23.09 on 2313
+        // put a whole 11-panel save on "Design: Energi" because one panel matched it.
+        out.drawSegments = [];
+        for (const cid of cids) {
+            for (const panel of [...new Set(F.panel.filter(r => String(r.cid) === cid).map(r => r.panel))]) {
+                out.drawSegments.push({ id: cid + '::' + panel, ts: tsBy[cid], tokStr: '', uStr: '', drawingNames: [panel] });
+            }
+        }
         return out;
     }
 
@@ -5656,7 +5689,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // the time before each save — one part when every save points the same way, and that
                 // part's task is exactly the pick this loop made before. Rules: RL_RECAP_MATCH.splitCategory.
                 const parts = kind
-                    ? splitCategory({ tasks, kind, texts, segments: texts.segments, minutes: Math.round(min), used: usedTasks, prior: priorList,
+                    ? splitCategory({ tasks, kind, texts, segments: kind === 'drawing' ? (texts.drawSegments || texts.segments) : texts.segments, minutes: Math.round(min), used: usedTasks, prior: priorList,
                         win: { first_ts: v.first_ts, last_ts: v.last_ts, capped_gaps: v.capped_gaps } })
                     : [{ task: null, minutes: Math.round(min), share: 1, segIds: [] }];
                 for (const p of parts) if (p.task) usedTasks.add(p.task.taskId);
@@ -6383,9 +6416,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
     // Tell an open panel when the page moves to another week (throttled; the SPA mutates constantly).
     let _lastPageWeek, _pageWeekCheck = 0;
+    let _pageWeekTimer = null;
     function notePageWeek() {
         const now = Date.now();
-        if (now - _pageWeekCheck < 500) return;
+        if (now - _pageWeekCheck < 500) {
+            // Throttled — but check once more after the burst, or a week change made by the LAST mutation of
+            // a burst would go unnoticed until something else changed (v4.153).
+            if (!_pageWeekTimer) _pageWeekTimer = setTimeout(() => { _pageWeekTimer = null; notePageWeek(); }, 550);
+            return;
+        }
         _pageWeekCheck = now;
         const mon = pageWeekMondayISO();
         if (_lastPageWeek === undefined) { _lastPageWeek = mon; return; }
@@ -6396,9 +6435,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
     // A 🏭 on each day header of the grid: one click opens the panel on THAT date.
     let _dayHeadScan = 0, _panelDateRequest = null;
+    let _dayHeadTimer = null;
     function buildDayHeaderLinks() {
         const now = Date.now();
-        if (now - _dayHeadScan < 800) return;
+        if (now - _dayHeadScan < 800) {
+            if (!_dayHeadTimer) _dayHeadTimer = setTimeout(() => { _dayHeadTimer = null; buildDayHeaderLinks(); }, 850); // trailing pass (v4.153)
+            return;
+        }
         _dayHeadScan = now;
         const mon = pageWeekMondayISO();
         if (!mon) return;
@@ -6889,7 +6932,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
                 if (unsafe) continue;
                 html += `<div class="bookplan-budget" data-iso="${esc(day.iso)}">` + budgetWarnHtml(day.plan._budget) + '</div>'; // silent when the day lands on the workday total
-                html += nonBillableWarnHtml(day.plan);
+                // v4.153: the non-billable banner is shown once for the week, above the days.
                 for (const e of day.plan) {
                     const i = rows.length;
                     rows.push({ e, day });
@@ -6907,6 +6950,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const zdWarn = (days.map(d => zdWarnText(d.zd)).find(Boolean)) || '';
             box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
                 + (zdWarn ? `<div class="bookplan-warn">${escapeHtml(zdWarn)}</div>` : '')
+                + nonBillableWarnHtml([].concat(...days.map(d => d.plan || [])))
                 + (signinDays ? calSigninHtml(`${signinDays} of 5 days could not be read`) : '')
                 + (weekInfo ? `<div class="rl-week-info">${weekInfo}</div>` : '') + bookProgressMarkup() + html +
                 `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
