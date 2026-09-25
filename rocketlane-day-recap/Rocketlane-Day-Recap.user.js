@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.153
+// @version      4.154
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1207,11 +1207,37 @@ var RL_RECAP_CAL = (function () {
         };
     }
 
+    // The Book week options screen (v4.154, Thomas: "before you click book week need get like prompt
+    // asking question if you want zendesk and mail or if you want to fill 7.5h or actual time you spent
+    // on plant etc"). Starting values: every choice as it was last left; the full scan pre-ticked only
+    // when no sweep (or All logs coverage) has happened today — the old check-up's rule.
+    function weekOptionsDefaults(s) {
+        s = s || {};
+        const h = Number(s.workdayHours);
+        return {
+            cal: !!s.calEnabled,
+            zd: s.zdEnabled !== false,
+            fill: s.fillMode === 'actual' ? 'actual' : 'fill',
+            hours: Number.isFinite(h) && h > 0 && h <= 24 ? h : 7.5,
+            scan: !s.coveredToday,
+        };
+    }
+    // What the built week was made from, in one line above the days.
+    function weekOptionsLine(o) {
+        o = o || {};
+        const h = Number(o.hours) || 7.5;
+        const hh = Math.floor(h), mm = Math.round((h - hh) * 60);
+        const day = mm ? `${hh}h ${mm}m` : `${hh}h`;
+        return [o.cal ? '🗓 calendar' : '🗓 no calendar', o.zd ? '✉ Zendesk' : '✉ no Zendesk',
+            o.fill === 'actual' ? 'actual time on the plants' : `each day filled to ${day}`,
+            o.scan ? 'full scan first' : ''].filter(Boolean).join(' · ');
+    }
+
     return {
         CAL_SECRET_RE, CAL_RULES,
         calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
         calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock, calDuration,
-        weekCheckupPlan, calErrorFor, calNeedsSignin,
+        weekCheckupPlan, calErrorFor, calNeedsSignin, weekOptionsDefaults, weekOptionsLine,
     };
 })();
 // ===== Rocketlane task matcher =======================================================
@@ -1782,6 +1808,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
+    const { weekOptionsDefaults, weekOptionsLine } = RL_RECAP_CAL; // v4.154
     const { timesheetWeekFromPage, panelDateForWeek, dayHeaderIso, dayTotalVerdict } = RL_RECAP_TIME;
 
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
@@ -1801,7 +1828,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.153';
+    const SCRIPT_VERSION   = '4.154';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2259,6 +2286,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_ZD_ENABLED  = 'zd_enabled';    // v4.150: read the Zendesk cases you commented on (default on)
     const KEY_ZD_PLANT_FIELD = 'zd_plant_field'; // id of the "Plant ID" ticket field, looked up once
     const KEY_CAL_ASKED   = 'cal_ask_date';  // 'YYYY-MM-DD' Book week last ASKED about the calendar (v4.129)
+    const KEY_WEEK_FILL   = 'week_fill_mode'; // v4.154: Book week fills each day to the workday ('fill') or books actual time ('actual')
     // Rocketlane REQUIRES a project on every time entry (verified live: 160 historical entries, zero
     // project-less; the activities dialog keeps its submit disabled until a project is chosen), and
     // this tenant has no meetings/admin project. So calendar rows book against a project the user
@@ -3750,6 +3778,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         #${WEEK_ID} .rl-week-day small { color: #6f6f6f; font-weight: 500; text-align: right; }
         #${WEEK_ID} .rl-week-status { font-size: 12px; color: #525252; padding: 8px 0; }
         #${WEEK_ID} .rl-week-info { font-size: 12px; color: #0e6027; padding: 2px 0 6px; }
+        #${WEEK_ID} .rl-week-opts { font-size: 12px; color: #161616; padding: 4px 0 8px; }
+        #${WEEK_ID} .rl-week-opts-title { font-weight: 700; margin: 10px 0 2px; color: #0043ce; }
+        #${WEEK_ID} .rl-week-opt { display: block; margin: 6px 0; cursor: pointer; line-height: 1.35; }
+        #${WEEK_ID} .rl-week-opt small { display: block; color: #6f6f6f; margin-left: 22px; font-weight: 400; }
+        #${WEEK_ID} .rl-week-opt input[data-o=hours] { width: 52px; padding: 1px 4px; margin: 0 2px; }
         #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; align-items: center; }
         #${WEEK_ID} .rl-week-cal { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; font-weight: 400; cursor: pointer; padding: 0 4px; user-select: none; }
         #${WEEK_ID} .rl-week-cal input { margin: 0; cursor: pointer; }
@@ -5941,15 +5974,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     function budgetWarnHtml(budget) {
         if (!budget || !budget.workday) return '';
         const t = m => fmtMinutes(m);
+        // Actual time (v4.154; also the panel's "Distribute to total" off): nothing is filled, so say what
+        // the day WILL total against the workday — and first, because "no plant time is added" is not true
+        // here: the plant rows book their estimates whatever the sheet already holds.
+        if (!budget.normalized && budget.hasPlantRows) {
+            const d = budget.projected - budget.workday;
+            return `<div class="bookplan-warn">🕑 <b>Actual time on the plants</b> — the estimates as they are, not filled to ${t(budget.workday)}. ` +
+                `This day will total <b>${t(budget.projected)}</b>` +
+                (d > 1 ? `, ${t(d)} over ${t(budget.workday)}` : d < -1 ? `, ${t(-d)} under ${t(budget.workday)}` : '') +
+                (budget.existing ? `; ${t(budget.existing)} of it is already on the sheet` : '') + `.</div>`;
+        }
         if (budget.over) {
             return `<div class="bookplan-warn">⚠ <b>Over the workday.</b> ${t(budget.existing)} is already booked on this date` +
                 (budget.calendar ? ` and the calendar adds ${t(budget.calendar)}` : '') +
                 ` — ${t(budget.committed)} against a ${t(budget.workday)} day, <b>${t(budget.overBy)} too much</b>. ` +
                 `No plant time is added; untick something, or fix the sheet.</div>`;
-        }
-        if (!budget.normalized && budget.hasPlantRows) {
-            return `<div class="bookplan-warn">🕑 “Distribute to total” is off, so these are raw estimates and the day is not ` +
-                `held to ${t(budget.workday)}. ${t(budget.existing)} is already booked on this date.</div>`;
         }
         if (budget.full) {
             return `<div class="bookplan-warn">🕑 <b>The day is already full.</b> ${t(budget.committed)} of ${t(budget.workday)} ` +
@@ -6632,7 +6671,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return (zd && !zd.ok && !zd.off && zd.reason) ? `✉ Zendesk: ${zd.reason} — your cases are not included in the notes.` : '';
     }
 
-    async function loadDayForBooking(iso, onProg, overrideDates, statusCb) {
+    // `opts.distribute === false` (v4.154, Book week's "Actual time on the plants"): each plant keeps its
+    // estimate; nothing is stretched or squeezed to the workday.
+    async function loadDayForBooking(iso, onProg, overrideDates, statusCb, opts) {
         if (iso > todayISO()) return []; // future days can't have plant work — never burn a scan on them (v4.94)
         const username = effectiveUsername();
         let visits;
@@ -6692,7 +6733,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         await enrichVisitsWithCommits(visits, iso);
         for (const v of visits) v.normalized_minutes = null;
         const bookable = visits.filter(v => categorizeVisit(v)[CAT_CHECK] == null);
-        if (bookable.length) normalizeMinutes(bookable, calRemainingWorkday(calRows, workdayMin), ROUND_TO_MIN);
+        if (bookable.length && !(opts && opts.distribute === false)) normalizeMinutes(bookable, calRemainingWorkday(calRows, workdayMin), ROUND_TO_MIN);
         return visits;
     }
     // ↻ Refresh (v4.117): make the NEXT build a genuine re-read instead of a replay. Three session
@@ -6745,6 +6786,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // next build only (it caches every date it finds, so week navigation needs no repeat).
         let scanChoice = null, forceScanOnce = false;
         let calChoice = null; // null = the calendar question is still pending for this modal (v4.129)
+        let opts = null;      // v4.154: the options chosen for this modal; null = ask first
 
         // 🗓 toggle in the week head (v4.128, Thomas's ask). Book week has booked calendar rows since
         // v4.125 and loadDayForBooking reads them — but the ONLY control for KEY_CAL_ENABLED lived on the
@@ -6752,7 +6794,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // button, so unless he happened to have ticked that box in the other panel, the week silently
         // booked no meetings and offered no way to notice or change it. Same key, so the two stay in step.
         const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
-            <span class="rl-week-nav"><label class="rl-week-cal" title="Read your Outlook calendar for every weekday in this week and offer meetings, planning and training as timesheet entries. Meetings book at their real length FIRST; each day's plant distribution then splits whatever the workday has left. Same setting as the panel's 🗓 Include calendar."><input type="checkbox" data-b="cal"${GM_getValue(KEY_CAL_ENABLED, false) ? ' checked' : ''}> 🗓</label><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
+            <span class="rl-week-nav"><label class="rl-week-cal" title="Read your Outlook calendar for every weekday in this week and offer meetings, planning and training as timesheet entries. Meetings book at their real length FIRST; each day's plant distribution then splits whatever the workday has left. Same setting as the panel's 🗓 Include calendar."><input type="checkbox" data-b="cal"${GM_getValue(KEY_CAL_ENABLED, false) ? ' checked' : ''}> 🗓</label><button type="button" data-b="opts" title="Options — calendar, Zendesk, fill to the workday or actual time, full scan">⚙</button><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
         const wireNav = () => {
             // ↻ rebuilds this week from scratch: forget the session answers, then force the same sweep
             // the pre-build check-up offers — available in every state (check-up, building, results),
@@ -6774,72 +6816,63 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (chk) chk.checked = on;
                 build();
             });
+            box.querySelector('[data-b=opts]')?.addEventListener('click', () => { opts = null; build(); }); // v4.154: back to the options
             box.querySelector('[data-b=prev]')?.addEventListener('click', () => { monday = addDaysISO(monday, -7); build(); });
             box.querySelector('[data-b=next]')?.addEventListener('click', () => { monday = addDaysISO(monday, 7); build(); });
             box.querySelectorAll('[data-b=cancel]').forEach(b => b.addEventListener('click', () => wrap.remove()));
             wireOutlookSignin(box);
         };
 
-        // Pre-build check-up. Two questions, ONE screen (v4.129) — asking them in sequence would mean two
-        // modals before a week ever builds.
-        //
-        // Full scan (v4.116, Thomas's ask): the v4.101 cache gate below trusts any cached weekday —
-        // including one written by a quick Refresh, which can hide plant-admin/designer visits — so when
-        // no scan has run today the trust has to be his call, not silent.
-        //
-        // Calendar (v4.129, Thomas's ask: "it should give a prompt when you book week if you want to sync
-        // calendar"): 4.128 put a 🗓 toggle in the head, but a toggle you have to notice is not the same as
-        // being asked, and the setting defaults to OFF — so a week could still be booked without meetings
-        // simply because nobody thought about it. Asked once per DAY (KEY_CAL_ASKED), the same anti-nag
-        // rule the full-scan recommendation uses, because reopening Book week twice in an hour should not
-        // re-ask. The checkbox writes through immediately, so the head toggle and this never disagree.
-        function renderCheckup(askScan, askCal) {
-            const calOn = GM_getValue(KEY_CAL_ENABLED, false);
-            let body = '';
-            if (askScan) {
-                body += `<div class="rl-week-status">🔍 Check-up: <b>no full scan has run today.</b><br>` +
-                    `<small>Cached weekdays may date from before today's work or come from a quick Refresh, which can miss ` +
-                    `plant-admin/designer visits. A fresh sweep re-reads pang for every plant IWMAC All logs names for the week (seconds; every plant, ~1 min, only when All logs cannot answer) and rewrites the cache for ` +
-                    `every weekday at once.</small></div>`;
-            }
-            if (askCal) {
-                body += `<div class="rl-week-status">🗓 <b>Sync your Outlook calendar for this week?</b><br>` +
-                    `<label class="rl-week-calask"><input type="checkbox" data-b="calask"${calOn ? ' checked' : ''}> ` +
-                    `Include meetings, planning and courses</label>` +
-                    `<small>Each weekday's events are booked at their real length first, and the plant estimates then split ` +
-                    `whatever the workday has left. If Outlook is already open in a tab it is read there; otherwise a ` +
-                    `background tab opens for a few seconds and closes itself. Asked once a day — the 🗓 box above changes ` +
-                    `it any time.</small></div>`;
-            }
-            const foot = askScan
-                ? `<button type="button" data-b="scanfirst">🔍 Full scan first</button><button type="button" data-b="cached">Use cached data</button>`
-                : `<button type="button" data-b="go">Build the week</button>`;
-            box.innerHTML = headHtml() + body + `<div class="bookplan-foot">${foot}</div>`;
-            wireNav();
-            // Write through on change rather than on continue: the head toggle reads the same key, and a
-            // checkbox that only takes effect when you press a button is exactly the kind of thing that
-            // leaves the two disagreeing.
-            box.querySelector('[data-b=calask]')?.addEventListener('change', (ev) => {
-                const on = !!ev.target.checked;
-                GM_setValue(KEY_CAL_ENABLED, on);
-                if (!on) _calCache.clear();
-                const head = box.querySelector('input[data-b=cal]');
-                if (head) head.checked = on;
-                const panel = document.querySelector(`#${PANEL_ID} input[data-field="calendar"]`);
-                if (panel) panel.checked = on;
+        // (The 4.116/4.129 pre-build check-up — full scan and calendar questions shown only when overdue —
+        // was replaced by the options screen below in v4.154. weekCheckupPlan stays exported for its tests.)
+        // The options screen (v4.154) — ALWAYS shown when the modal opens, prefilled with the last choices,
+        // and reachable again through ⚙. It replaces the 4.116/4.129 check-up, which only appeared when a
+        // scan or the calendar question was overdue: Thomas wants to be asked every time what goes into the
+        // week. Choices write through to the same settings the panel uses, so the two never disagree.
+        function renderOptions() {
+            seq++; // an in-flight build must not paint over the options
+            const d = weekOptionsDefaults({
+                calEnabled: GM_getValue(KEY_CAL_ENABLED, false), zdEnabled: GM_getValue(KEY_ZD_ENABLED, true),
+                fillMode: GM_getValue(KEY_WEEK_FILL, 'fill'), workdayHours: GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS),
+                coveredToday: coveredToday(),
             });
-            const answered = () => { if (askCal) { GM_setValue(KEY_CAL_ASKED, todayISO()); calChoice = 'asked'; } };
-            box.querySelector('[data-b=scanfirst]')?.addEventListener('click', () => { answered(); scanChoice = 'scan'; forceScanOnce = true; build(); });
-            box.querySelector('[data-b=cached]')?.addEventListener('click', () => { answered(); scanChoice = 'cached'; build(); });
-            box.querySelector('[data-b=go]')?.addEventListener('click', () => { answered(); build(); });
+            const scanNote = d.scan ? 'no full scan has run today — recommended' : 'a full scan or IWMAC All logs already covered today';
+            box.innerHTML = headHtml() + `<div class="rl-week-opts">
+                <div class="rl-week-opts-title">What should go into this week?</div>
+                <label class="rl-week-opt"><input type="checkbox" data-o="cal"${d.cal ? ' checked' : ''}> 🗓 <b>Outlook calendar</b><small>meetings, planning and courses as their own entries, at their real length</small></label>
+                <label class="rl-week-opt"><input type="checkbox" data-o="zd"${d.zd ? ' checked' : ''}> ✉ <b>Zendesk</b><small>the cases you commented on go into the notes; a plant you only worked on in Zendesk becomes a small Support entry</small></label>
+                <div class="rl-week-opts-title">Time per day</div>
+                <label class="rl-week-opt"><input type="radio" name="rl-week-fill" data-o="fill" value="fill"${d.fill === 'fill' ? ' checked' : ''}> <b>Fill each day to <input type="number" data-o="hours" step="0.5" min="0.5" max="24" value="${d.hours}"> h</b><small>hours already on the sheet and meetings come off first; your plant work shares the rest</small></label>
+                <label class="rl-week-opt"><input type="radio" name="rl-week-fill" data-o="actual" value="actual"${d.fill === 'actual' ? ' checked' : ''}> <b>Actual time on the plants</b><small>the estimated time per plant as it is — not stretched or squeezed, so a day can end above or below the workday</small></label>
+                <div class="rl-week-opts-title">Data</div>
+                <label class="rl-week-opt"><input type="checkbox" data-o="scan"${d.scan ? ' checked' : ''}> 🔍 <b>Full scan first</b><small>${scanNote}</small></label>
+            </div><div class="bookplan-foot"><button type="button" data-o="go">Build the week</button><button type="button" data-b="cancel">Cancel</button></div>`;
+            wireNav();
+            const q = sel => box.querySelector(sel);
+            q('[data-o=hours]').addEventListener('focus', () => { q('[data-o=fill]').checked = true; }); // typing hours means filling
+            q('[data-o=go]').addEventListener('click', () => {
+                const cal = !!q('[data-o=cal]').checked, zd = !!q('[data-o=zd]').checked;
+                const fill = q('[data-o=actual]').checked ? 'actual' : 'fill';
+                const h = parseFloat(q('[data-o=hours]').value);
+                const hours = Number.isFinite(h) && h > 0 && h <= 24 ? h : d.hours;
+                const scan = !!q('[data-o=scan]').checked;
+                if (cal !== !!GM_getValue(KEY_CAL_ENABLED, false)) { GM_setValue(KEY_CAL_ENABLED, cal); if (!cal) _calCache.clear(); calResetSignin(); }
+                if (zd !== (GM_getValue(KEY_ZD_ENABLED, true) !== false)) { GM_setValue(KEY_ZD_ENABLED, zd); _zdWeek.clear(); _zdDownUntil = 0; }
+                GM_setValue(KEY_WEEK_FILL, fill);
+                GM_setValue(KEY_WORKDAY_HOURS, hours);
+                GM_setValue(KEY_CAL_ASKED, todayISO()); // the calendar was asked today — the old check-up's anti-nag key
+                const pc = document.querySelector(`#${PANEL_ID} input[data-field="calendar"]`); if (pc) pc.checked = cal;
+                const pz = document.querySelector(`#${PANEL_ID} input[data-field="zendesk"]`); if (pz) pz.checked = zd;
+                const pw = document.querySelector(`#${PANEL_ID} input[data-field="workday"]`); if (pw) pw.value = hours;
+                opts = { cal, zd, fill, hours, scan };
+                scanChoice = scan ? 'scan' : 'cached'; forceScanOnce = scan; calChoice = 'asked';
+                LOG('week: options', JSON.stringify(opts));
+                build();
+            });
         }
 
         async function build() {
-            const { askScan, askCal } = weekCheckupPlan({
-                fullScanRanToday: coveredToday(), scanChoice, calChoice, // All-logs coverage counts for asking, never as a sweep having run
-                calAskedDate: GM_getValue(KEY_CAL_ASKED, ''), today: todayISO(),
-            });
-            if (askScan || askCal) { renderCheckup(askScan, askCal); return; }
+            if (!opts) { renderOptions(); return; }
             const force = forceScanOnce; forceScanOnce = false;
             const mySeq = ++seq;
             box.innerHTML = headHtml() + bookProgressMarkup() + '<div class="rl-week-status">Building plans…</div>';
@@ -6880,7 +6913,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const visits = await loadDayForBooking(iso,
                         (done, total) => say(0.15 + 0.35 * (total ? done / total : 0), `scanning ${done} of ${total} plants…`),
                         override,
-                        txt => say(0.2, txt));
+                        txt => say(0.2, txt),
+                        { distribute: !(opts && opts.fill === 'actual') }); // v4.154
                     if (seq !== mySeq) return;
                     // Meetings alone are worth a plan (v4.125): a day with no plant work but a calendar
                     // full of them used to be skipped here, so Book week silently dropped it.
@@ -6948,7 +6982,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const readyRows = rows.filter(r => r.e.status === 'ready');
             const signinDays = days.filter(d => calNeedsSignin(d.calCode)).length;
             const zdWarn = (days.map(d => zdWarnText(d.zd)).find(Boolean)) || '';
-            box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
+            box.innerHTML = headHtml() + (opts ? `<div class="rl-week-info">⚙ ${escapeHtml(weekOptionsLine(opts))}</div>` : '')
+                + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
                 + (zdWarn ? `<div class="bookplan-warn">${escapeHtml(zdWarn)}</div>` : '')
                 + nonBillableWarnHtml([].concat(...days.map(d => d.plan || [])))
                 + (signinDays ? calSigninHtml(`${signinDays} of 5 days could not be read`) : '')
@@ -7034,7 +7069,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const verified = bookedDays.length ? await verifyBookedDays(bookedDays.map(d => d.iso)) : [];
                 const wdMin = (bookedDays[0] && bookedDays[0].plan._workdayMin) || Math.round((GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || DEFAULT_WORKDAY_HOURS) * 60);
                 foot.innerHTML = `<span class="bookplan-sum">${okN} booked${failN ? ` · ${failN} failed` : ''}${skipN ? ` · ${skipN} left unticked` : ''} — reload the timesheet page to see them</span>`
-                    + verifyHtml(verified, wdMin, true)
+                    + verifyHtml(verified, wdMin, !(opts && opts.fill === 'actual'))
                     + `<button type="button" data-b="reload">↻ Reload page</button><button type="button" data-b="cancel">Close</button>`;
                 foot.querySelector('[data-b=reload]').addEventListener('click', () => location.reload());
                 foot.querySelector('[data-b=cancel]').addEventListener('click', () => wrap.remove());
