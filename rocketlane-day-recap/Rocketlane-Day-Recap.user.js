@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.154
+// @version      4.155
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1184,6 +1184,7 @@ var RL_RECAP_CAL = (function () {
     //   http      the REST call was refused; 401/403 ⇒ session expired, anything else ⇒ a read error
     //   timeout   a tab was opened and never answered ⇒ almost always the login redirect
     //   no-answer the tab answered with no result   open  no tab could be opened   exception  threw
+    //   closed    the user closed the Outlook tab before it answered (v4.155)
     function calErrorFor(kind, status) {
         switch (kind) {
             case 'no-token': return { code: 'signin', error: 'not signed in to Outlook' };
@@ -1193,6 +1194,7 @@ var RL_RECAP_CAL = (function () {
             case 'timeout': return { code: 'signin-likely', error: 'Outlook did not answer — most likely you are not signed in' };
             case 'no-answer': return { code: 'read', error: 'Outlook answered with nothing' };
             case 'open': return { code: 'open', error: 'could not open Outlook' };
+            case 'closed': return { code: 'closed', error: 'the Outlook tab was closed before it answered' };
             case 'exception': return { code: 'read', error: 'calendar read failed' };
             default: return { code: 'read', error: 'calendar unavailable' };
         }
@@ -1233,11 +1235,61 @@ var RL_RECAP_CAL = (function () {
             o.scan ? 'full scan first' : ''].filter(Boolean).join(' · ');
     }
 
+    // ---- The Outlook hand-off (v4.155, Thomas: "fix the outlook calendar so it works without tab
+    // open"). Pure, so the rules deciding whether the calendar can be read are testable in Node.
+
+    // The token the calendar REST call needs, picked from Outlook's MSAL cache (the parsed values of
+    // the `…accesstoken…` localStorage keys). An access token counts when it can reach the Outlook API
+    // — a Calendars scope, or the outlook.office.com / outlook.office365.com audience — and has more
+    // than a minute left; of several, the longest-lived wins. Returns { secret, exp } or null.
+    function calPickToken(entries, now) {
+        let best = null;
+        for (const v of entries || []) {
+            if (!v || String(v.credentialType || '') !== 'AccessToken' || !v.secret) continue;
+            const target = String(v.target || '');
+            if (!/calendars\.read/i.test(target) && !/outlook\.office(?:365)?\.com/i.test(target)) continue;
+            const exp = (+v.expiresOn || 0) * 1000; // MSAL stores seconds
+            if (exp && exp < now + 60000) continue; // expiring within a minute: useless
+            if (!best || exp > best.exp) best = { secret: v.secret, exp };
+        }
+        return best;
+    }
+
+    // The dates one calendar read covers: Monday to Friday of the week `iso` falls in, plus `iso`
+    // itself on a weekend. Book week reads its five days in one go and Book day the week around its
+    // date, so a week costs one trip to Outlook instead of one per day.
+    function calWeekDates(iso) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+        if (!m) return [];
+        const d = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+        const dow = (new Date(d).getUTCDay() + 6) % 7; // Monday = 0
+        const out = [];
+        for (let i = 0; i < 5; i++) out.push(new Date(d + (i - dow) * 86400000).toISOString().slice(0, 10));
+        if (dow > 4) out.push(String(iso));
+        return out;
+    }
+
+    // Is a request still worth answering? The Rocketlane tab sets `until` since v4.155; an older copy
+    // of the script sent none, and its requests lived a minute.
+    function calRequestLive(req, now) {
+        if (!req) return false;
+        return now < (+req.until || ((+req.at || 0) + 60000));
+    }
+
+    // Does an answer written by an Outlook tab belong to request `req`? Tabs running v4.155+ tag it
+    // with the request's own timestamp; an older copy sends no tag, and its answer counts when it was
+    // written after the request.
+    function calAnswerFor(res, req) {
+        if (!res || !req) return false;
+        return res.reqAt != null ? +res.reqAt === +req.at : (+res.at || 0) >= (+req.at || 0);
+    }
+
     return {
         CAL_SECRET_RE, CAL_RULES,
         calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
         calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock, calDuration,
         weekCheckupPlan, calErrorFor, calNeedsSignin, weekOptionsDefaults, weekOptionsLine,
+        calPickToken, calWeekDates, calRequestLive, calAnswerFor,
     };
 })();
 // ===== Rocketlane task matcher =======================================================
@@ -1809,6 +1861,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
     const { weekOptionsDefaults, weekOptionsLine } = RL_RECAP_CAL; // v4.154
+    const { calPickToken, calWeekDates, calRequestLive, calAnswerFor } = RL_RECAP_CAL; // v4.155
     const { timesheetWeekFromPage, panelDateForWeek, dayHeaderIso, dayTotalVerdict } = RL_RECAP_TIME;
 
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
@@ -1828,7 +1881,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.154';
+    const SCRIPT_VERSION   = '4.155';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2282,6 +2335,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_CAL_REQUEST = 'cal_request';   // { at, dates:[iso] } — written by Rocketlane, read in the Outlook tab
     const KEY_CAL_RESULT  = 'cal_result';    // { at, byDate:{iso:[event]}, error } — written back by the Outlook tab
     const KEY_CAL_DONE    = 'cal_done_ts';   // harvest completion signal, same pattern as KEY_HARVEST_DONE
+    const KEY_CAL_BEAT    = 'cal_beat';      // { at, reqAt, stage } — a script-opened Outlook tab says it is at it (v4.155)
     const KEY_CAL_ENABLED = 'cal_enabled';   // user toggle — the panel, and Book week's head + check-up
     const KEY_ZD_ENABLED  = 'zd_enabled';    // v4.150: read the Zendesk cases you commented on (default on)
     const KEY_ZD_PLANT_FIELD = 'zd_plant_field'; // id of the "Plant ID" ticket field, looked up once
@@ -2296,23 +2350,46 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PROJECT_PICK     = 'project_pick';     // { '<plant number>': projectId } — the user's choice between twin projects (v4.134)
 
     // Find a live Outlook access token in the SPA's MSAL cache. Entries are JSON blobs keyed by
-    // account/scope; the one we want is credentialType AccessToken, targets a Calendars scope, and
-    // has not expired. Returns the token string or ''. Never logged, never stored.
+    // account/scope (plain JSON in this tenant's Outlook, MSAL 5 — checked 2026-09-25); which one counts
+    // is RL_RECAP_CAL.calPickToken. Returns the token string or ''. Never logged, never stored.
     function calFindToken() {
-        let best = null;
+        const entries = [];
         for (let i = 0; i < localStorage.length; i++) {
             const k = localStorage.key(i);
             if (!k || !/accesstoken/i.test(k)) continue;
-            let v = null;
-            try { v = JSON.parse(localStorage.getItem(k)); } catch { continue; }
-            if (!v || String(v.credentialType || '') !== 'AccessToken' || !v.secret) continue;
-            const target = String(v.target || '');
-            if (!/calendars\.read/i.test(target) && !/outlook\.office\.com/i.test(target)) continue;
-            const exp = (+v.expiresOn || 0) * 1000; // MSAL stores seconds
-            if (exp && exp < Date.now() + 60000) continue; // expiring within a minute — useless
-            if (!best || exp > best.exp) best = { secret: v.secret, exp };
+            try { entries.push(JSON.parse(localStorage.getItem(k))); } catch {}
         }
+        const best = calPickToken(entries, Date.now());
         return best ? best.secret : '';
+    }
+
+    // Timings of the Outlook hand-off (v4.155), in one object so the tests can shrink them.
+    //   quiet     an Outlook tab the user already has open answers within this
+    //   hidden    a background tab gets this long before a tab in front replaces it
+    //   visible   a tab in front gets this long — it may be waiting for the user to sign in
+    //   nudge     after this long in front, the status asks the user to sign in there
+    //   read      a tab that has its token and is reading gets this long before it counts as stuck
+    //   tick      how often Rocketlane looks for the answer
+    //   poll      how often an Outlook tab looks for the token
+    //   openWait  how long a tab the USER opened looks for a token before it stays out of it
+    //   beat      how often a waiting script-opened tab says it is still at it
+    //   grace     added to a request's life, so the tab answering it is not cut off at the last moment
+    const CAL_TIMING = { quiet: 2500, hidden: 25000, visible: 180000, nudge: 20000, read: 30000,
+        tick: 250, poll: 500, openWait: 15000, beat: 3000, grace: 5000 };
+    const CAL_SYNC_MARK = 'rl_cal_sync'; // sessionStorage: the script opened this tab (v4.155)
+    const CAL_URL = 'https://outlook.office.com/calendar/view/day';
+
+    // Is this a tab the script opened to read the calendar? The #rl-cal marker says so on arrival, and
+    // it is copied into sessionStorage at once (v4.155): a Microsoft sign-in round trip can bring the
+    // tab back without the marker, and sessionStorage belongs to the tab, so it survives that trip.
+    function calIsSyncTab() {
+        if (/rl-cal/.test(location.hash) || window.name === 'rl_cal_sync') {
+            try { sessionStorage.setItem(CAL_SYNC_MARK, String(Date.now())); } catch {}
+            return true;
+        }
+        let marked = 0;
+        try { marked = +sessionStorage.getItem(CAL_SYNC_MARK) || 0; } catch {}
+        return marked > 0 && Date.now() - marked < 10 * 60000;
     }
 
     // Runs in ANY Outlook tab. Two roles (v4.122):
@@ -2320,12 +2397,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     //  - a tab THE USER already had open stays put and answers requests as they arrive, via
     //    GM_addValueChangeListener. That is the discreet path: when Outlook is already open,
     //    reading the calendar opens nothing at all and the user sees no tab appear.
+    // A script-opened tab whose request has expired — the read gave up, and the user signed in there
+    // afterwards — becomes an ordinary tab and stays open (v4.155).
     function syncFromOutlook() {
-        const isSyncTab = location.hash.includes('rl-cal') || window.name === 'rl_cal_sync';
-        if (isSyncTab) { calServeRequest(GM_getValue(KEY_CAL_REQUEST, null), true); return; }
+        const req = GM_getValue(KEY_CAL_REQUEST, null);
+        if (calIsSyncTab()) {
+            if (calRequestLive(req, Date.now())) { calServeRequest(req, true); return; }
+            try { sessionStorage.removeItem(CAL_SYNC_MARK); } catch {}
+        }
         // An ordinary Outlook tab: answer the request that is pending right now (if any), then keep
         // listening for later ones for as long as the user leaves this tab open.
-        calServeRequest(GM_getValue(KEY_CAL_REQUEST, null), false);
+        calServeRequest(req, false);
         try {
             if (typeof GM_addValueChangeListener === 'function') {
                 GM_addValueChangeListener(KEY_CAL_REQUEST, (name, oldV, newV, remote) => {
@@ -2335,31 +2417,61 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         } catch {}
     }
 
-    let _calServing = false;
+    // Has some tab already answered this request? Then there is nothing left to do here.
+    function calAnswered(req) {
+        const res = GM_getValue(KEY_CAL_RESULT, null);
+        return !!(res && !res.error && calAnswerFor(res, req));
+    }
+
+    let _calServing = null; // the request this tab is answering right now
     async function calServeRequest(req, isSyncTab) {
         const dates = (req && Array.isArray(req.dates)) ? req.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)) : [];
-        // Only answer a LIVE request: a stale one left in storage would otherwise be re-served by
-        // every Outlook tab on every page load, and the answer would look fresh to a later caller.
-        const fresh = req && (Date.now() - (+req.at || 0) < 60000);
-        if (!dates.length || (!isSyncTab && !fresh) || _calServing) {
-            if (isSyncTab) setTimeout(() => { try { window.close(); } catch {} }, 250);
+        const closeSelf = () => { if (isSyncTab) setTimeout(() => { try { window.close(); } catch {} }, 250); };
+        // Only answer a LIVE request: a stale one left in storage would otherwise be re-served by every
+        // Outlook tab on every page load, and the answer would look fresh to a later caller.
+        if (!dates.length || !calRequestLive(req, Date.now()) || calAnswered(req)) { closeSelf(); return; }
+        if (_calServing && +_calServing.at === +req.at) return; // already on it
+        const mine = req;
+        _calServing = mine;
+        const current = () => { const r = GM_getValue(KEY_CAL_REQUEST, null); return !!(r && +r.at === +mine.at); };
+        const beat = (stage, extra) => {
+            if (!isSyncTab) return; // progress comes from the tab the script opened, not from the user's
+            try { GM_setValue(KEY_CAL_BEAT, Object.assign({ at: Date.now(), reqAt: mine.at, stage }, extra || {})); } catch {}
+        };
+        const release = () => {
+            if (_calServing === mine) _calServing = null;
+            // A newer request may have come in while this one was in hand: an open tab takes that too.
+            if (!isSyncTab) { const next = GM_getValue(KEY_CAL_REQUEST, null); if (next && +next.at !== +mine.at) calServeRequest(next, false); }
+        };
+        const finish = (payload) => {
+            try { GM_setValue(KEY_CAL_RESULT, Object.assign({ at: Date.now(), reqAt: mine.at, via: isSyncTab ? 'sync' : 'open' }, payload)); } catch {}
+            try { GM_setValue(KEY_CAL_DONE, Date.now()); } catch {}
+            release();
+            closeSelf();
+        };
+        // Wait for the token by the CLOCK (v4.155). A background tab's timers fire at most once a
+        // second, so the old "40 tries of 500 ms" really took 40 s or more — past Rocketlane's own
+        // 30-second limit, which then reported the wait as "not signed in". A tab the script opened
+        // waits as long as its request lives (Outlook may be renewing its sign-in, or the user may be
+        // signing in there); a tab the user had open looks briefly and then stays out of it — it must
+        // not report "not signed in" while a tab the script opens can still get through.
+        const t0 = Date.now();
+        const until = +mine.until || (t0 + CAL_TIMING.openWait);
+        const deadline = isSyncTab ? Math.max(t0 + CAL_TIMING.openWait, Math.min(until, t0 + 5 * 60000))
+            : Math.min(t0 + CAL_TIMING.openWait, until);
+        let token = calFindToken(), beatAt = 0;
+        while (!token && Date.now() < deadline) {
+            if (Date.now() - beatAt >= CAL_TIMING.beat) { beat('token', { waited: Math.round((Date.now() - t0) / 1000) }); beatAt = Date.now(); }
+            await new Promise(r => setTimeout(r, CAL_TIMING.poll));
+            if (calAnswered(mine) || !current()) { release(); closeSelf(); return; } // answered elsewhere, or replaced
+            token = calFindToken();
+        }
+        if (!token) {
+            if (!isSyncTab) { release(); return; } // stay out of it: the tab the script opens answers
+            finish(Object.assign({ byDate: {} }, calErrorFor('no-token')));
             return;
         }
-        _calServing = true;
-        const finish = (payload) => {
-            _calServing = false;
-            try { GM_setValue(KEY_CAL_RESULT, Object.assign({ at: Date.now() }, payload)); } catch {}
-            try { GM_setValue(KEY_CAL_DONE, Date.now()); } catch {}
-            if (isSyncTab) setTimeout(() => { try { window.close(); } catch {} }, 250);
-        };
-        // The SPA writes its MSAL cache during boot; a freshly opened tab may not have it yet. An
-        // already-loaded tab has it immediately, which is why the discreet path is also the fast one.
-        let token = '';
-        for (let tries = 0; tries < (isSyncTab ? 40 : 4) && !token; tries++) {
-            token = calFindToken();
-            if (!token) await new Promise(r => setTimeout(r, 500));
-        }
-        if (!token) { finish(Object.assign({ byDate: {} }, calErrorFor('no-token'))); return; }
+        beat('read', { days: dates.length });
         const byDate = {};
         try {
             for (const iso of dates) {
@@ -2384,73 +2496,125 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         }
     }
 
-    // Called from Rocketlane: ask Outlook for these dates. Discretion order (v4.122):
-    //  1. an Outlook tab the user ALREADY has open answers over GM_addValueChangeListener — nothing
-    //     is opened, nothing appears in the tab strip, and it is the fastest path too (the MSAL cache
-    //     is already warm). Waited on for CAL_QUIET_WAIT_MS before giving up on it.
-    //  2. otherwise a background tab is opened at the END of the tab strip (`insert: false`, so it
-    //     does not push itself in beside what the user is looking at) and closed the moment it
-    //     answers — typically a few seconds.
-    // Either way `active: false` means focus never leaves Rocketlane.
-    const CAL_QUIET_WAIT_MS = 2500;
-    function calFetchDays(isoDates, timeoutMs = 30000) {
+    // Called from Rocketlane: ask Outlook for these dates (v4.122; the three stages since v4.155).
+    //  1. An Outlook tab the user ALREADY has open answers over GM_addValueChangeListener: nothing is
+    //     opened, nothing appears in the tab strip. It gets CAL_TIMING.quiet.
+    //  2. Otherwise a tab is opened in the BACKGROUND, at the end of the tab strip, and closed the
+    //     moment it answers — a few seconds; focus never leaves Rocketlane.
+    //  3. A background tab cannot always get through Outlook's sign-in. Thomas, 2026-09-25: every day
+    //     of a week read "not signed in to Outlook" although he was signed in — Outlook needed its
+    //     once-a-day sign-in renewal right then, the hidden tab did not get through it in time, and the
+    //     same page opened in front a minute later signed in by itself. So when the background tab has
+    //     not answered within CAL_TIMING.hidden, or answers that it has no sign-in, a tab IN FRONT
+    //     replaces it. That tab is closed as soon as it answers and Chrome returns to Rocketlane (its
+    //     parent). If Outlook really needs the user — password, MFA — that tab is where they sign in;
+    //     the read waits CAL_TIMING.visible for them, and on a timeout the tab is left open for them.
+    // `opts.onStatus(text)` hears each stage, so a long wait reads as progress rather than a hang.
+    function calFetchDays(isoDates, opts) {
+        const onStatus = opts && typeof opts.onStatus === 'function' ? opts.onStatus : null;
         return new Promise(resolve => {
             const dates = [...new Set((isoDates || []).filter(Boolean))];
             if (!dates.length) { resolve({ byDate: {} }); return; }
-            const startedAt = Date.now();
-            let tab = null, settled = false;
-            const answered = () => GM_getValue(KEY_CAL_DONE, 0) > startedAt;
-            const done = (payload) => {
+            let mode = 'quiet', modeAt = Date.now(), tab = null, req = null, settled = false, said = '', tick = null;
+            const say = txt => { if (onStatus && txt !== said) { said = txt; try { onStatus(txt); } catch {} } };
+            const post = () => {
+                const now = Date.now();
+                // `until` tells the Outlook tabs how long this request is worth trying for.
+                const life = mode === 'visible' ? CAL_TIMING.visible
+                    : mode === 'hidden' ? CAL_TIMING.hidden : CAL_TIMING.quiet + CAL_TIMING.hidden;
+                req = { at: now, dates, until: now + life + CAL_TIMING.grace };
+                try { GM_setValue(KEY_CAL_REQUEST, req); } catch {}
+            };
+            const closeTab = () => { const t = tab; tab = null; if (t) { t.ours = true; try { t.handle.close(); } catch {} } };
+            const done = (payload, keepTab) => {
                 if (settled) return;
                 settled = true;
                 clearInterval(tick);
-                setTimeout(() => { try { if (tab) tab.close(); } catch {} resolve(payload); }, tab ? 300 : 0);
+                if (keepTab || !tab) { tab = null; resolve(payload); return; }
+                setTimeout(() => { closeTab(); resolve(payload); }, 300);
             };
-            const readResult = () => {
+            const open = inFront => {
+                closeTab();
+                mode = inFront ? 'visible' : 'hidden';
+                modeAt = Date.now();
+                post();
+                let handle = null;
+                try {
+                    if (typeof GM_openInTab === 'function') {
+                        handle = GM_openInTab(CAL_URL + '#rl-cal', inFront
+                            ? { active: true, insert: true, setParent: true }     // beside Rocketlane; closing it returns there
+                            : { active: false, insert: false, setParent: true }); // end of the tab strip, out of the way
+                    }
+                } catch {}
+                if (!handle) { done(Object.assign({ byDate: {} }, calErrorFor('open'))); return; }
+                const t = { handle, ours: false };
+                tab = t;
+                // Closed by the user before it answered: stop waiting for it.
+                try { handle.onclose = () => { if (!t.ours && tab === t && !settled) { tab = null; done(Object.assign({ byDate: {} }, calErrorFor('closed'))); } }; } catch {}
+                say(inFront ? 'Outlook needs a moment in front to renew its sign-in — it closes by itself…' : 'opening Outlook in the background…');
+            };
+            post();
+            say('reading your Outlook calendar…');
+            tick = setInterval(() => {
+                if (settled) return;
                 const res = GM_getValue(KEY_CAL_RESULT, null);
-                return (res && res.at >= startedAt) ? { byDate: res.byDate || {}, error: res.error, code: res.code } : null;
-            };
-            try { GM_setValue(KEY_CAL_REQUEST, { at: startedAt, dates }); } catch {}
-            const tick = setInterval(() => {
-                if (answered()) { done(readResult() || Object.assign({ byDate: {} }, calErrorFor('no-answer'))); return; }
-                // Give an already-open tab first refusal; only then open one of our own.
-                if (!tab && Date.now() - startedAt > CAL_QUIET_WAIT_MS) {
-                    try {
-                        if (typeof GM_openInTab === 'function') {
-                            tab = GM_openInTab('https://outlook.office.com/calendar/view/day#rl-cal',
-                                { active: false, insert: false, setParent: true });
-                        }
-                    } catch {}
-                    if (!tab) { done(Object.assign({ byDate: {} }, calErrorFor('open'))); return; }
+                if (calAnswerFor(res, req)) {
+                    // "No sign-in" from a tab the user had open (an older copy of the script still says
+                    // so) or from the background tab is not the last word: the next stage may get through.
+                    if (res.error && calNeedsSignin(res.code) && mode !== 'visible') { open(mode === 'hidden'); return; }
+                    done({ byDate: res.byDate || {}, error: res.error, code: res.code, via: res.via });
+                    return;
                 }
-                // We opened a tab and it never answered: the script did not run there, which is what a
-                // redirect to the Microsoft login page looks like from here (v4.132).
-                if (Date.now() - startedAt > timeoutMs) done(Object.assign({ byDate: {} }, calErrorFor('timeout')));
-            }, 250);
+                const now = Date.now();
+                if (mode === 'quiet') { if (now - modeAt > CAL_TIMING.quiet) open(false); return; }
+                const beat = GM_getValue(KEY_CAL_BEAT, null);
+                const heard = beat && +beat.reqAt === +req.at ? beat : null;
+                const reading = !!heard && heard.stage === 'read' && now - heard.at < CAL_TIMING.read; // has its token
+                if (reading) say(`reading ${dates.length === 1 ? 'the day' : dates.length + ' days'} from Outlook…`);
+                else if (mode === 'hidden' && heard) say('Outlook is renewing its sign-in in the background…');
+                else if (mode === 'visible' && now - modeAt > CAL_TIMING.nudge) say('sign in to Outlook in the tab that opened — the calendar is read as soon as you are in…');
+                if (reading) return;
+                if (mode === 'hidden' && now - modeAt > CAL_TIMING.hidden) { open(true); return; }
+                if (mode === 'visible' && now - modeAt > CAL_TIMING.visible) done(Object.assign({ byDate: {} }, calErrorFor('timeout')), true);
+            }, CAL_TIMING.tick);
         });
     }
 
     // One day of calendar, ready to book: [{ ev, minutes, categoryKind }]. Cached per date for the
-    // session so re-opening a day never re-opens Outlook.
-    const _calCache = new Map(); // iso -> { at, rows, error }
+    // session so re-opening a day never re-opens Outlook, and a read covers the whole week around the
+    // date (v4.155), so the next day of that week is already here.
+    const _calCache = new Map(); // iso -> { at, events }
     const CAL_TTL_MS = 10 * 60 * 1000;
-    // A sign-in failure is latched for a minute (v4.132): Book week asks for five days in a row, and
-    // each would otherwise open a tab and wait the full timeout before reporting the same thing. The
-    // "Sign in to Outlook" button, the 🗓 toggles and ↻ all clear it, so a retry after signing in asks
-    // Outlook again.
-    let _calSigninFailedAt = 0;
-    function calResetSignin() { _calSigninFailedAt = 0; }
-    async function calRowsForDate(iso, workdayMin) {
+    // A failed read is latched (v4.132: sign-in failures for a minute; v4.155: every failure but a
+    // plain read error, for five): Book week asks for five days in a row, and each would otherwise go
+    // through the whole hand-off again — opening Outlook again — to report the same thing. The "Sign
+    // in to Outlook" button, the 🗓 toggles and ↻ all clear it, so a retry after signing in asks again.
+    const CAL_LATCH_MS = 5 * 60 * 1000;
+    let _calFailed = null; // { at, error, code }
+    function calResetSignin() { _calFailed = null; }
+    async function calEnsureDates(isoDates, onStatus) {
+        const now = Date.now();
+        const need = [...new Set((isoDates || []).filter(Boolean))]
+            .filter(d => { const h = _calCache.get(d); return !(h && now - h.at < CAL_TTL_MS); });
+        if (!need.length) return {};
+        if (_calFailed && now - _calFailed.at < CAL_LATCH_MS) return { error: _calFailed.error, code: _calFailed.code };
+        const res = await calFetchDays(need, { onStatus });
+        // An unavailable calendar is not evidence of an empty day: nothing is cached from a failed read.
+        if (!res.error) {
+            const at = Date.now();
+            for (const d of need) _calCache.set(d, { at, events: (res.byDate && res.byDate[d]) || [] });
+            _calFailed = null;
+        } else if (res.code !== 'read') {
+            _calFailed = { at: Date.now(), error: res.error, code: res.code };
+        }
+        return res;
+    }
+    async function calRowsForDate(iso, workdayMin, onStatus) {
         if (!GM_getValue(KEY_CAL_ENABLED, false)) return { rows: [] };
-        if (_calSigninFailedAt && Date.now() - _calSigninFailedAt < 60000) return Object.assign({ rows: [] }, calErrorFor('no-token'));
+        const res = await calEnsureDates(calWeekDates(iso).concat([iso]), onStatus);
         const hit = _calCache.get(iso);
-        if (hit && Date.now() - hit.at < CAL_TTL_MS) return { rows: calPrice(hit.events, workdayMin), error: hit.error };
-        const res = await calFetchDays([iso]);
-        const events = (res.byDate && res.byDate[iso]) || [];
-        // An unavailable calendar is not evidence of an empty day; let the next preview retry.
-        if (!res.error) _calCache.set(iso, { at: Date.now(), events });
-        if (calNeedsSignin(res.code)) _calSigninFailedAt = Date.now();
-        return { rows: calPrice(events, workdayMin), error: res.error, code: res.code };
+        if (hit && Date.now() - hit.at < CAL_TTL_MS) return { rows: calPrice(hit.events, workdayMin) };
+        return { rows: [], error: res.error || 'calendar unavailable', code: res.code || 'read' };
     }
     function calPrice(events, workdayMin) {
         return calAllocate(events || [], workdayMin, ROUND_TO_MIN)
@@ -6187,7 +6351,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const workdayMin = Math.round(hours * 60);
             let rows = [];
             try {
-                const res = await calRowsForDate(iso, workdayMin);
+                const res = await calRowsForDate(iso, workdayMin, msg => { // each stage of the Outlook hand-off (v4.155)
+                    if (head) head.textContent = '⤴ Book to timesheet — ' + msg;
+                    setBookProgress(box, 0, 1, msg.charAt(0).toUpperCase() + msg.slice(1));
+                });
                 rows = res.rows || [];
                 // A silent empty calendar is indistinguishable from "no meetings that day", which is
                 // exactly how this feature failed the first time. Say which it was.
@@ -6712,7 +6879,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         let calRows = [];
         if (GM_getValue(KEY_CAL_ENABLED, false)) {
             statusCb && statusCb('reading your Outlook calendar…');
-            const calendarResult = await calRowsForDate(iso, workdayMin);
+            const calendarResult = await calRowsForDate(iso, workdayMin, statusCb || null);
             if (calendarResult.error) { const e = new Error('Calendar unavailable: ' + calendarResult.error + '. Retry this day.'); e.calCode = calendarResult.code; throw e; }
             calRows = calendarResult.rows || [];
         }
@@ -6901,6 +7068,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (seq !== mySeq) return;
                 weekWarn = `⚠ Full scan failed (${esc(String((err && err.message) || err))}) — built from quick data, plans may MISS plants.`;
             }
+            // The week's calendar in ONE trip to Outlook before the days are built (v4.155): one Outlook
+            // tab at most instead of one per day, and if Outlook has to be shown to renew its sign-in,
+            // that happens once. The days then read it from the cache (or the latched failure).
+            if (GM_getValue(KEY_CAL_ENABLED, false)) {
+                sayProgress(0.12, 5, 'Reading your Outlook calendar for the week…');
+                await calEnsureDates(Array.from({ length: 5 }, (_, i) => addDaysISO(monday, i)),
+                    msg => sayProgress(0.12, 5, msg.charAt(0).toUpperCase() + msg.slice(1)));
+                if (seq !== mySeq) return;
+            }
             const days = [];
             for (let i = 0; i < 5; i++) {
                 const iso = addDaysISO(monday, i);
@@ -6959,7 +7135,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // With the calendar on, a day that returned no events says so — "no plant work" alone
                 // would read as "nothing happened" when it may mean the calendar was never consulted.
                 const calNote = calOn && !day.err && day.cal === 0 ? ' · 🗓 no calendar events' : '';
-                const side = day.err ? (calNeedsSignin(day.calCode) ? '⚠ not signed in to Outlook — day skipped' : '⚠ ' + esc(day.err))
+                const side = day.err ? (calNeedsSignin(day.calCode) ? (day.calCode === 'signin-likely' ? '⚠ Outlook did not answer — day skipped' : '⚠ not signed in to Outlook — day skipped') : '⚠ ' + esc(day.err))
                     : !day.plan.length ? 'no plant work' + calNote
                     : unsafe ? '⚠ can’t verify what’s booked — day skipped'
                     : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}`;
