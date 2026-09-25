@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.148
+// @version      4.149
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -91,17 +91,164 @@ var RL_RECAP_ALL_LOGS = (function () {
         return { date_from: iso + ' 00:00:00', date_to: iso + ' 23:59:59' };
     }
 
+    // ---- What may leave for Rocketlane (v4.149) --------------------------------------------------
+    // The 2026-09-25 review found plant credentials in BOOKED notes: pang handover notes such as
+    // "Static IP: <ip> Supervisor <password>" and "AK3 Rk <password> overlevering …" reached the Notes
+    // field as "Site note:" lines, and 4.145's lead picker put one on the collapsed FIRST line. The
+    // secret filter only knew the words pass/pwd/key/pw. Two rules since:
+    //   1. pang NOTES text never reaches a timesheet. Those notes document the PLANT — contacts, IP
+    //      plans, logins, SIM numbers (a year of Thomas's held almost nothing about work) — so a note
+    //      only counts them.
+    //   2. every other free text bound for Rocketlane (operations-log messages, calendar subjects,
+    //      Zendesk subjects, plant-setting values, legacy cached comments) passes scrubForTimesheet.
+    const IPV4_RE = /(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?::\d{1,5})?(?!\d|\.\d)/g;
+    // Norwegian numbers (8 digits, optionally +47/0047, optionally grouped 3-2-3 or 2-2-2-2) and any
+    // +CC/00CC international number. The lookarounds keep unit addresses (000:018), versions and ids out.
+    const PHONE_RE = /(?<![\w.:/-])(?:(?:\+|00)\d{2}[\s-]?)?(?:\d{8}|\d{3}[ -]\d{2}[ -]\d{3}|\d{2}[ -]\d{2}[ -]\d{2}[ -]\d{2})(?![\w.:/-])|(?<![\w.:/-])(?:\+|00)\d{1,3}[\s-]?\d{6,12}(?![\w.:/-])/g;
+    const EMAIL_RE = /([A-Za-z0-9._%+-]+)@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+    // A word that announces a credential. STRONG words always hide the token after them; WEAK ones (a
+    // role or a login name can follow harmlessly) only when that token carries a digit or a symbol.
+    const CRED_STRONG_RE = /(^|[^\p{L}\p{N}])(pw|pwd|pass|passwd|password|passord|pin|pinkode|kode|code)(\s*[:=]\s*|\s+)(\S+)/giu;
+    const CRED_WEAK_RE = /(^|[^\p{L}\p{N}])(supervisor|superuser|admin|administrator|root|user|username|bruker|brukernavn|login|rk)(\s*[:=]\s*|\s+)(\S+)/giu;
+    const SCRUB_TAG_RE = /^\[(?:IP|phone|hidden)\]$/;
+    // Password-shaped: letters and digits with one of the symbols passwords use, or mixed case with
+    // digits. '-', '.', '_', '/' and ':' are deliberately NOT password symbols — unit and drawing names
+    // ("K48-Frontlaster", "360.002", "AK-CC55") carry them and must read unchanged.
+    function looksLikePassword(tok) {
+        const t = String(tok == null ? '' : tok).replace(/^[("'«[]+|[)"'»\].,;:]+$/g, '');
+        if (t.length < 5 || t.length > 40 || /^https?:/i.test(t) || SCRUB_TAG_RE.test(t)) return false;
+        const lower = /[a-zæøå]/.test(t), upper = /[A-ZÆØÅ]/.test(t), digit = /\d/.test(t), sym = /[!#$%&*?@^~+=]/.test(t);
+        return (digit && (lower || upper) && sym) || (digit && lower && upper && t.length >= 6 && !/[-._/:()]/.test(t));
+    }
+    function scrubForTimesheet(s) {
+        s = String(s == null ? '' : s);
+        if (!s) return '';
+        s = s.replace(EMAIL_RE, (m, local) => local)
+            .replace(IPV4_RE, '[IP]')
+            .replace(PHONE_RE, '[phone]')
+            .replace(CRED_STRONG_RE, (m, pre, w, sep) => pre + w + (sep || ' ') + '[hidden]')
+            .replace(CRED_WEAK_RE, (m, pre, w, sep, tok) => (/[\d!#$%&*?@^~+=]/.test(tok) && !SCRUB_TAG_RE.test(tok)) ? pre + w + (sep || ' ') + '[hidden]' : m);
+        s = s.split(/(\s+)/).map(p => looksLikePassword(p) ? '[hidden]' : p).join('');
+        return s.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).join('\n').trim();
+    }
+
     // Make one log comment safe to display. A comment that looks like it carries a credential is
     // reduced to "[redacted]" plus any URLs it contained (the Zendesk/ticket link is the useful part
-    // and is never itself the secret).
+    // and is never itself the secret). Since v4.149 it is also scrubbed (IPs, phone numbers, e-mail
+    // domains, password-shaped tokens) — the result is matcher evidence and a local display line.
     function maskAllLogsComment(s) {
         s = String(s == null ? '' : s).trim();
         if (!s) return '';
         const urls = s.match(/https?:\/\/[^\s]+/gi) || [];
         if (ALL_LOGS_SECRET_RE.test(s)) s = '[redacted]' + (urls.length ? ' ' + urls.join(' ') : '');
-        s = s.replace(/\s+/g, ' ').trim();
+        s = scrubForTimesheet(s.replace(/\s+/g, ' ').trim());
         if (s.length > ALL_LOGS_NOTE_CHARS) s = s.slice(0, ALL_LOGS_NOTE_CHARS - 1) + '…';
         return s;
+    }
+
+    // ---- Operations-log facts (v4.149) -----------------------------------------------------------
+    // What the non-click All logs rows SAY, as counted facts rather than raw text. The leader line and
+    // the technical block are written from these, so a note reads "removed plant access for 12 users"
+    // instead of twelve pasted "Removed access for the user …" lines — or a phone number. Measured on
+    // a year of Thomas's rows: user_access 810, changed_plant_settings 181, NOTES 111, OP_LOG service
+    // 109, PING rvnc 72, RAC 161, changed_alarm_settings 60, change_duty_list 46, calllist 28,
+    // Zendesk customer sync 36, cloud settings 14, alarm-centre messages 2, alarm copies 5.
+    function emptyOpsFacts() {
+        return {
+            access: { added: [], removed: [], other: 0 }, alarmCopy: { added: [], removed: [] },
+            duty: { added: [], removed: [] }, call: { added: [], removed: [] },
+            alarmSettings: 0, plantSettings: { n: 0, what: [] }, cloud: 0, customerRecord: 0, messages: [],
+            handoverNotes: 0, serviceLogons: 0, rac: { rescan: 0, reuse: 0, info: 0, start: 0 },
+            remoteVnc: 0, alarmCalls: 0, other: 0,
+        };
+    }
+    const OPS_ITEM_MAX = 48;
+    const opsClip = s => { s = scrubForTimesheet(s).replace(/[.,;:\s]+$/, ''); return s.length > OPS_ITEM_MAX ? s.slice(0, OPS_ITEM_MAX - 1) + '…' : s; };
+    const opsAcct = s => opsClip(String(s == null ? '' : s).replace(/@.*$/, ''));
+    const opsPush = (arr, s) => { if (s && arr.indexOf(s) < 0) arr.push(s); };
+    // One row into the facts. `sys`/`act` may be empty — a comment cached before 4.149 kept only its
+    // text — so every rule also recognises IWMAC's own wording of the entry.
+    function addOpsRow(f, sys, act, comment) {
+        sys = String(sys || '').toUpperCase();
+        act = String(act || '').toLowerCase();
+        const c = String(comment == null ? '' : comment).replace(/\s+/g, ' ').trim();
+        let m;
+        if (/^PANG1?$/.test(sys)) return f;
+        if (sys === 'NOTES' || act === 'pang_note') { f.handoverNotes++; return f; }
+        if ((m = /^added access to the user (\S+?)(?: with level (\d+))?\.?$/i.exec(c))) { opsPush(f.access.added, opsAcct(m[1]) + (m[2] ? ` (level ${m[2]})` : '')); return f; }
+        if ((m = /^removed access for the user (\S+?)\.?$/i.exec(c))) { opsPush(f.access.removed, opsAcct(m[1])); return f; }
+        if (act === 'user_access') { f.access.other++; return f; }
+        if ((m = /^(added|removed) alarm copy to (\d+) for the user (\S+?)\.?$/i.exec(c))) { opsPush(/^added$/i.test(m[1]) ? f.alarmCopy.added : f.alarmCopy.removed, opsAcct(m[3])); return f; }
+        if ((m = /^(added|removed) (.+?) (?:to|from) (?:the )?duty list\.?$/i.exec(c))) { opsPush(/^added$/i.test(m[1]) ? f.duty.added : f.duty.removed, opsClip(m[2])); return f; }
+        if ((m = /added a new duty person (.+?)(?:,|$)/i.exec(c))) { opsPush(f.call.added, opsClip(m[1])); return f; }
+        if ((m = /removed the person (.+?)(?:\s*\(|,|$)/i.exec(c))) { opsPush(f.call.removed, opsClip(m[1])); return f; }
+        if (act === 'changed_alarm_settings' || /^changed alarm settings\.?$/i.test(c)) { f.alarmSettings++; return f; }
+        if (act === 'changed_plant_settings' || /^changed plant /i.test(c)) {
+            f.plantSettings.n++;
+            const w = (m = /^changed plant (.+?)\.?$/i.exec(c)) ? m[1] : '';
+            if (w && !/^settings$/i.test(w)) opsPush(f.plantSettings.what, opsClip(w));
+            return f;
+        }
+        if (act === 'set_cloud_settings' || /^update cloud settings/i.test(c)) { f.cloud++; return f; }
+        if (/^(update_plant|updated_customer|add_plant|add_customer)$/.test(act) || /^(updated|added) plant \d+ (in|to) zendesk/i.test(c)) { f.customerRecord++; return f; }
+        if (act === 'message' || /^alarmcenter message/i.test(c)) {
+            const t = (m = /^alarmcenter message\s*"?(.*?)"?\s*$/i.exec(c)) ? m[1] : c;
+            const s = scrubForTimesheet(t);
+            if (s) opsPush(f.messages, s.length > 140 ? s.slice(0, 139) + '…' : s);
+            return f;
+        }
+        if (act === 'service' || /logged on to service/i.test(c)) { f.serviceLogons++; return f; }
+        if (sys === 'RAC' || /^cmd(\s|$)/i.test(c)) {
+            if (/reuse/i.test(c)) f.rac.reuse++;
+            else if (act === 'get_units' || /rescan/i.test(c)) f.rac.rescan++;
+            else if (act === 'get_info') f.rac.info++;
+            else f.rac.start++;
+            return f;
+        }
+        if (act === 'rvnc' || sys === 'PING') { f.remoteVnc++; return f; }
+        if (act === 'call_plant_link' || sys === 'CRM_PLANT') { f.alarmCalls++; return f; }
+        f.other++;
+        return f;
+    }
+    function opsFactsFromRecords(records) {
+        const f = emptyOpsFacts();
+        for (const r of (records || [])) if (r) addOpsRow(f, r.system, r.action, r.comment);
+        return f;
+    }
+    // A day cached before 4.149 kept only masked comment text — recover what IWMAC's wording allows.
+    // Unrecognised text is counted, never quoted (it may be a handover note).
+    function opsFactsFromLegacyNotes(notes) {
+        const f = emptyOpsFacts();
+        for (const n of (notes || [])) if (n) addOpsRow(f, '', '', n);
+        return f;
+    }
+    // Merge two fact sets that may describe the SAME rows (an overlay re-reads what the cache holds):
+    // lists are unioned, counters take the larger side, so a re-merge never inflates a count.
+    function mergeOpsFacts(a, b) {
+        if (!a) return b || null;
+        if (!b) return a;
+        const out = emptyOpsFacts();
+        const u = (x, y) => [...new Set([...(x || []), ...(y || [])])];
+        const mx = (x, y) => Math.max(x || 0, y || 0);
+        out.access = { added: u(a.access && a.access.added, b.access && b.access.added), removed: u(a.access && a.access.removed, b.access && b.access.removed), other: mx(a.access && a.access.other, b.access && b.access.other) };
+        out.alarmCopy = { added: u(a.alarmCopy && a.alarmCopy.added, b.alarmCopy && b.alarmCopy.added), removed: u(a.alarmCopy && a.alarmCopy.removed, b.alarmCopy && b.alarmCopy.removed) };
+        out.duty = { added: u(a.duty && a.duty.added, b.duty && b.duty.added), removed: u(a.duty && a.duty.removed, b.duty && b.duty.removed) };
+        out.call = { added: u(a.call && a.call.added, b.call && b.call.added), removed: u(a.call && a.call.removed, b.call && b.call.removed) };
+        out.plantSettings = { n: mx(a.plantSettings && a.plantSettings.n, b.plantSettings && b.plantSettings.n), what: u(a.plantSettings && a.plantSettings.what, b.plantSettings && b.plantSettings.what) };
+        out.messages = u(a.messages, b.messages);
+        out.rac = { rescan: mx(a.rac && a.rac.rescan, b.rac && b.rac.rescan), reuse: mx(a.rac && a.rac.reuse, b.rac && b.rac.reuse), info: mx(a.rac && a.rac.info, b.rac && b.rac.info), start: mx(a.rac && a.rac.start, b.rac && b.rac.start) };
+        for (const k of ['alarmSettings', 'cloud', 'customerRecord', 'handoverNotes', 'serviceLogons', 'remoteVnc', 'alarmCalls', 'other']) out[k] = mx(a[k], b[k]);
+        return out;
+    }
+    // Whether the rows changed the plant's operation (who gets access and alarms, alarm and plant
+    // settings) — work — as opposed to presence (a logon, a remote session, a note edit).
+    function opsHasChange(f) {
+        if (!f) return false;
+        const n = x => (x && x.length) || 0;
+        return !!(n(f.access && f.access.added) || n(f.access && f.access.removed) || (f.access && f.access.other)
+            || n(f.alarmCopy && f.alarmCopy.added) || n(f.alarmCopy && f.alarmCopy.removed)
+            || n(f.duty && f.duty.added) || n(f.duty && f.duty.removed) || n(f.call && f.call.added) || n(f.call && f.call.removed)
+            || f.alarmSettings || (f.plantSettings && f.plantSettings.n) || f.cloud || n(f.messages));
     }
 
     // Keep only this user's rows that name a plant. The request already filters by exact user, but a
@@ -161,6 +308,7 @@ var RL_RECAP_ALL_LOGS = (function () {
                 action_counts,
                 count: events.filter(e => e.click !== false).length || events.length,
                 all_logs_notes: notes,
+                ops: opsFactsFromRecords(g.extra), // v4.149: what the rows say, counted — never their text
                 _events: events,
             });
         }
@@ -222,6 +370,8 @@ var RL_RECAP_ALL_LOGS = (function () {
         maskAllLogsComment, filterAllLogsRecords, visitsFromAllLogsRecords,
         formatAllLogsNotes, mergeVisitEventLists,
         allLogsScanScope, datesWithinRange,
+        scrubForTimesheet, looksLikePassword, emptyOpsFacts, addOpsRow, opsFactsFromRecords,
+        opsFactsFromLegacyNotes, mergeOpsFacts, opsHasChange,
     };
 })();
 // ===== Timesheet note prose ==========================================================
@@ -267,6 +417,7 @@ var RL_RECAP_NOTE_TEXT = (function () {
         else if (devAdd.length) clauses.push('added ' + bookAndList([...new Set(devAdd)], 3));
         if (f.uRen) clauses.push(`renamed ${bookPlural(f.uRen, 'unit')}` + ((f.renPairs || []).length ? ` (${bookAndList(f.renPairs.slice(0, 2), 2)})` : ''));
         if (f.uDel) clauses.push(`removed ${bookPlural(f.uDel, 'unit')}`);
+        if (f.uRebuilt) clauses.push(`re-created ${bookPlural(f.uRebuilt, 'unit')} (unit list rebuilt)`); // v4.149
         const tuned = (f.devMod || []).filter(x => devAdd.indexOf(x) < 0);
         if (tuned.length) clauses.push('tuned parameters on ' + bookAndList(tuned, 3));
         if (f.virtVals) clauses.push('updated the virtual values');
@@ -362,6 +513,8 @@ var RL_RECAP_NOTE_TEXT = (function () {
     };
     const leadTools = (tools, max) => (tools || []).filter(x => x && x.label).slice(0, max).map(x => LEAD_TOOL[x.label] || String(x.label));
 
+    // RETIRED from the booking notes in v4.149: it promoted pang handover text — including a password —
+    // to the first line. Kept (and tested) as a pure helper only.
     // Ops-log / handover comments good enough to lead a timesheet note (v4.145). Skip empty lines and
     // the IWMAC boilerplate that only restates the action ("Changed plant settings") — the useful ones
     // name what actually changed ("Changed plant reception block status", "Byttet føler i kjøledisk 3").
@@ -404,6 +557,7 @@ var RL_RECAP_NOTE_TEXT = (function () {
         if (tuned.length) clauses.push(`fine-tuned ${leadTuneKinds(f.tuneLabels)} on ${bookPlural(tuned.length, 'device')}`);
         if (f.uRen) clauses.push(`gave ${bookPlural(f.uRen, 'device')} clearer names` + ((f.renPairs || []).length ? ` (${bookAndList(f.renPairs.slice(0, 2), 2)})` : ''));
         if (f.uDel) clauses.push(`removed ${bookPlural(f.uDel, 'device')} from monitoring`);
+        if (f.uRebuilt) clauses.push(`refreshed the monitoring entries of ${bookPlural(f.uRebuilt, 'existing device')}`); // v4.149
         if ((f.settNames || []).length) clauses.push('adjusted plant-level settings');
         if (f.virtVals) clauses.push("updated the plant's calculated values");
         if (!clauses.length) return '';
@@ -427,10 +581,99 @@ var RL_RECAP_NOTE_TEXT = (function () {
         return `${verb} ${what}${list} — the display the plant's operators use to see live status and alarms.`;
     }
 
-    function summarizeLeadSetup(rac) {
-        return rac
-            ? 'Configured the plant\'s communication gateway (RAC) so the plant reports to the monitoring platform.'
+    function summarizeLeadSetup(rac, ak3Types) {
+        if (rac) return 'Configured the plant\'s communication gateway (RAC) so the plant reports to the monitoring platform.';
+        // v4.149: say what the scanner run produced when the saves show it.
+        return ak3Types
+            ? `Set up the plant's AK3 gateway/scanner — ${bookPlural(ak3Types, 'device type')} now report to the monitoring platform.`
             : 'Set up the plant\'s AK3 gateway/scanner so its devices report to the monitoring platform.';
+    }
+
+    // The AK3 part of a day, for the Setup row's technical line (v4.149). Until now that row repeated
+    // the whole Integration diff; the scanner's own evidence is the da3 device tables its run added.
+    function summarizeSetupTech(ak3Runs, ak3Types) {
+        const types = [...new Set((ak3Types || []).filter(Boolean))];
+        const run = ak3Runs > 0 ? `ran the AK3 scanner${ak3Runs > 1 ? ` ${ak3Runs} times` : ''}` : 'worked on the AK3 gateway';
+        return bookSentence([run + (types.length ? ` and configured ${bookPlural(types.length, 'AK3 device type')} (${bookAndList(types, 4)})` : '')]);
+    }
+
+    // Drawing work that left no save that day (v4.149) — say so plainly instead of "remote maintenance".
+    function summarizeLeadDrawingIdle(discs) {
+        const sys = LEAD_SYSTEM[(discs || [])[0]];
+        return `Worked on the plant's ${sys ? sys + ' ' : ''}overview screens in the Designer — no drawing save was recorded that day.`;
+    }
+
+    // ---- Operations-log work, in words (v4.149) ---------------------------------------------------
+    // `f` is RL_RECAP_ALL_LOGS.opsFactsFromRecords output. Clauses are shared by the lead sentence and
+    // the "Also …" line a commit-led note gets.
+    function opsClauses(f) {
+        f = f || {};
+        const c = [];
+        const a = f.access || { added: [], removed: [], other: 0 };
+        if ((a.removed || []).length) c.push(`removed plant access for ${bookPlural(a.removed.length, 'user')}`);
+        if ((a.added || []).length) c.push(`gave ${bookPlural(a.added.length, 'user')} access to the plant`);
+        if (!(a.removed || []).length && !(a.added || []).length && a.other) c.push('changed user access');
+        const ac = f.alarmCopy || {};
+        if ((ac.added || []).length || (ac.removed || []).length) c.push('changed who receives alarm copies');
+        const du = f.duty || {}, ca = f.call || {};
+        const duty = (du.added || []).length || (du.removed || []).length, call = (ca.added || []).length || (ca.removed || []).length;
+        if (duty && call) c.push('updated the alarm duty list and call list');
+        else if (duty) c.push('updated the alarm duty list');
+        else if (call) c.push('updated the alarm call list');
+        if (f.alarmSettings) c.push("adjusted the plant's alarm settings");
+        const ps = f.plantSettings || { n: 0, what: [] };
+        if ((ps.what || []).length) c.push(`changed the plant's ${bookAndList(ps.what, 2)}`);
+        else if (ps.n) c.push('adjusted plant settings');
+        if (f.cloud) c.push('updated the cloud settings');
+        if (f.customerRecord) c.push("updated the plant's customer record");
+        if ((f.messages || []).length) c.push('posted an alarm-centre message');
+        return c;
+    }
+    function summarizeLeadOps(f) {
+        const c = opsClauses(f);
+        if (!c.length) return '';
+        const onlyAccess = c.every(x => /access/.test(x));
+        return bookSentence([(onlyAccess ? 'Access administration on the plant — ' : 'Operations work on the plant — ') + bookAndList(c, 6)]);
+    }
+    // The engineer's lines: who and what, names but never phone numbers (scrubbed at capture).
+    function opsTechLines(f) {
+        f = f || {};
+        const L = [];
+        const addRem = (label, x) => {
+            const p = [];
+            if (x && (x.added || []).length) p.push('added ' + bookAndList(x.added, 4));
+            if (x && (x.removed || []).length) p.push('removed ' + bookAndList(x.removed, 4));
+            if (x && x.other) p.push(`${x.other} other change${x.other === 1 ? '' : 's'}`);
+            if (p.length) L.push(label + ': ' + p.join('; '));
+        };
+        addRem('Access', f.access);
+        addRem('Alarm copies', f.alarmCopy);
+        addRem('Duty list', f.duty);
+        addRem('Call list', f.call);
+        if (f.alarmSettings) L.push('Alarm settings changed' + (f.alarmSettings > 1 ? ` ×${f.alarmSettings}` : '') + ' (operations log)');
+        const ps = f.plantSettings || { n: 0, what: [] };
+        if ((ps.what || []).length) L.push('Plant settings (operations log): ' + bookAndList(ps.what, 3));
+        else if (ps.n) L.push('Plant settings changed' + (ps.n > 1 ? ` ×${ps.n}` : '') + ' (operations log)');
+        if (f.cloud) L.push('Cloud settings updated');
+        if (f.customerRecord) L.push('Customer record synced to Zendesk' + (f.customerRecord > 1 ? ` ×${f.customerRecord}` : ''));
+        for (const m of (f.messages || []).slice(0, 2)) L.push(`Alarm-centre message: «${m}»`);
+        const pres = [];
+        if (f.serviceLogons) pres.push('service logon' + (f.serviceLogons > 1 ? ` ×${f.serviceLogons}` : ''));
+        const r = f.rac || {};
+        const racBits = [r.rescan ? 'rescan' + (r.rescan > 1 ? ` ×${r.rescan}` : '') : '', r.reuse ? 'reuse' + (r.reuse > 1 ? ` ×${r.reuse}` : '') : '',
+            r.info ? 'info' + (r.info > 1 ? ` ×${r.info}` : '') : '', r.start ? 'start' + (r.start > 1 ? ` ×${r.start}` : '') : ''].filter(Boolean);
+        if (racBits.length) pres.push('RAC ' + racBits.join(', '));
+        if (f.remoteVnc) pres.push('remote VNC' + (f.remoteVnc > 1 ? ` ×${f.remoteVnc}` : ''));
+        if (f.alarmCalls) pres.push('alarm call' + (f.alarmCalls > 1 ? ` ×${f.alarmCalls}` : ''));
+        if (f.handoverNotes) pres.push('plant notes edited' + (f.handoverNotes > 1 ? ` ×${f.handoverNotes}` : ''));
+        if (pres.length) L.push('Also recorded: ' + pres.join(', '));
+        return L;
+    }
+    // One line that places the work in the day: when the plant was worked on, and with which tools.
+    function summarizeSession(range, tools) {
+        const t = (tools || []).filter(x => x && x.label).slice(0, 6).map(x => x.label + (x.count > 1 ? ` ×${x.count}` : ''));
+        if (!range && !t.length) return '';
+        return 'Session: ' + [range, t.join(', ')].filter(Boolean).join(' · ');
     }
 
     // A session that left no describable configuration *commit*: say what was done in plain words.
@@ -468,6 +711,7 @@ var RL_RECAP_NOTE_TEXT = (function () {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
         summarizeLeadActions, leadTuneKinds, pickLeadSiteNote, remainingSiteNotes, LEAD_NOTE_BOILER,
+        summarizeSetupTech, summarizeLeadDrawingIdle, opsClauses, summarizeLeadOps, opsTechLines, summarizeSession,
     };
 })();
 // ===== Transition-based time evidence ================================================
@@ -876,6 +1120,14 @@ var RL_RECAP_MATCH = (function () {
             if (d[1].test(bookNorm(t))) n++;
             if (n) w[d[0]] = n;
         }
+        // NS 3451 building-services codes in unit and drawing names (v4.149): "360.002 Ventilasjon",
+        // "360.01 NY", "350.1 Kjøl". 32x = heating, 35x = process cooling (refrigeration), 36x = air
+        // handling. The dot is required, so plant numbers ("3530", "3502") never read as a code.
+        const nsRe = /(^|[^0-9.])3([256])\d\.\d{1,3}(?![0-9])/g;
+        const ns = new Set();
+        let mm;
+        while ((mm = nsRe.exec(t))) ns.add(mm[2] === '2' ? 'heat' : mm[2] === '5' ? 'refrig' : 'vent');
+        for (const d of ns) w[d] = (w[d] || 0) + 1;
         return w;
     }
     // Words that name a work package's KIND rather than the work itself — they appear in half the
@@ -1279,7 +1531,12 @@ var RL_RECAP_MATCH = (function () {
         const C = Object.assign({}, SPLIT_C, o.C || {});
         const total = Number.isFinite(o.minutes) ? Math.max(0, Math.round(o.minutes)) : 0;
         const texts = o.texts || {};
-        const segs = (o.segments || []).filter(s => s && s.id != null);
+        // A save is evidence for the category it belongs to (v4.149): Drawing splits only on saves that
+        // touched a drawing — a device save says nothing about which screen was drawn, and 4.141 let
+        // one carve a "Design: Refrigeration" part out of a ventilation-drawing day — and Integration
+        // only on device and unit evidence, never on a drawing's name.
+        const drawing = o.kind === 'drawing';
+        const segs = (o.segments || []).filter(s => s && s.id != null && (!drawing || (s.drawingNames || []).length));
         const primary = pickTask(o.tasks, o.kind, texts, o.used, o.prior);
         const whole = t => [{ task: t, minutes: total, share: 1, weight: 1, segIds: segs.map(s => String(s.id)) }];
         if (!primary || !total || segs.length < 2) return whole(primary);
@@ -1290,10 +1547,15 @@ var RL_RECAP_MATCH = (function () {
         const groups = new Map(); // taskId -> { task, weight, segIds }
         for (const s of segs) {
             const gStr = (s.drawingNames || []).join(' ');
-            const segDisc = new Set(Object.keys(bookDiscWeights((s.tokStr || '') + ' ' + gStr)).concat(Object.keys(bookDiscWeights(s.uStr || ''))));
+            const segDisc = new Set(drawing
+                ? Object.keys(bookDiscWeights(gStr, true))
+                : Object.keys(bookDiscWeights(s.tokStr || '')).concat(Object.keys(bookDiscWeights(s.uStr || ''))));
             let task = primary;
             if (segDisc.size) {
-                const hit = pickTask(o.tasks, o.kind, { tokStr: s.tokStr || '', uStr: s.uStr || '', drawingNames: s.drawingNames || [], logStr: texts.logStr || '' }, o.used, o.prior);
+                const segTexts = drawing
+                    ? { tokStr: '', uStr: '', drawingNames: s.drawingNames || [], logStr: texts.logStr || '' }
+                    : { tokStr: s.tokStr || '', uStr: s.uStr || '', drawingNames: [], logStr: texts.logStr || '' };
+                const hit = pickTask(o.tasks, o.kind, segTexts, o.used, o.prior);
                 if (hit && !hit.rescued) {
                     const hd = discOfTask(hit);
                     const backed = hd.size > 0 && [...hd].some(d => segDisc.has(d)); // the task's own name carries a discipline this save wrote
@@ -1347,11 +1609,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         visitsFromAllLogsRecords, formatAllLogsNotes, mergeVisitEventLists,
     } = RL_RECAP_ALL_LOGS;
     const { allLogsScanScope, datesWithinRange } = RL_RECAP_ALL_LOGS; // the scan index (v4.142)
+    const { scrubForTimesheet, looksLikePassword, opsFactsFromRecords, opsFactsFromLegacyNotes, mergeOpsFacts, opsHasChange } = RL_RECAP_ALL_LOGS; // v4.149
 
     const {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
         summarizeLeadActions, pickLeadSiteNote, remainingSiteNotes,
+        summarizeSetupTech, summarizeLeadDrawingIdle, opsClauses, summarizeLeadOps, opsTechLines, summarizeSession, bookBareLabel,
     } = RL_RECAP_NOTE_TEXT;
 
     const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
@@ -1376,7 +1640,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.148';
+    const SCRIPT_VERSION   = '4.149';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2999,6 +3263,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             base.action_counts = base.action_counts || {};
             for (const [a, n] of Object.entries(lv.action_counts || {})) base.action_counts[a] = Math.max(base.action_counts[a] || 0, n);
             base.all_logs_notes = [...new Set([...(base.all_logs_notes || []), ...(lv.all_logs_notes || [])])].slice(0, ALL_LOGS_NOTE_CAP);
+            if (lv.ops) base.ops = mergeOpsFacts(base.ops, lv.ops); // v4.149
             base.count = base._events.filter(e => e.click !== false).length || base._events.length;
         }
         return [...byId.values()].sort((a, b) => a.first_ts - b.first_ts);
@@ -3020,6 +3285,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             base.action_counts = base.action_counts || {};
             for (const [a, n] of Object.entries(lv.action_counts || {})) base.action_counts[a] = Math.max(base.action_counts[a] || 0, n);
             base.all_logs_notes = [...new Set([...(base.all_logs_notes || []), ...(lv.all_logs_notes || [])])].slice(0, ALL_LOGS_NOTE_CAP);
+            if (lv.ops) base.ops = mergeOpsFacts(base.ops, lv.ops); // v4.149
             if (lv.first_ts && (!base.first_ts || lv.first_ts < base.first_ts)) base.first_ts = lv.first_ts;
             if (lv.last_ts && (!base.last_ts || lv.last_ts > base.last_ts)) base.last_ts = lv.last_ts;
         }
@@ -3949,16 +4215,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // What the operations log / a handover note said about this plant that day — the one thing pang's
     // click log can never tell you. Already masked upstream (a comment that looks like it carries a
     // credential arrives as "[redacted]"), and escaped here because it is user-written text.
+    // The visit's operations-log facts: captured ones (v4.149), else recovered from a cached day's text.
+    function visitOps(v) {
+        if (!v) return null;
+        if (v.ops) return v.ops;
+        return (v.all_logs_notes && v.all_logs_notes.length) ? opsFactsFromLegacyNotes(v.all_logs_notes.map(maskAllLogsComment)) : null;
+    }
     function logNoteLine(v) {
-        // Re-mask at display time: a day cached before a secret-pattern widening (e.g. the v4.115
-        // "PW:" fix) still carries the RAW comment in full_scan_cache — the stored text must never
-        // reach the chip. maskAllLogsComment is a no-op on an already-clean note.
-        const notes = [...new Set(((v && v.all_logs_notes) || []).map(maskAllLogsComment).filter(Boolean))];
-        if (!notes.length) return '';
-        const shown = notes.slice(0, 2).join(' · ');
-        const title = notes.join('\n');
-        const more = notes.length > 2 ? ` +${notes.length - 2} more` : '';
-        return `<span title="${escapeHtml(title)}">📝 ${escapeHtml(shown)}${more}</span>`;
+        // v4.149: the row shows what the operations log RECORDED, in words — never a stored comment.
+        // pang handover notes held logins and IP plans; they are counted, not shown.
+        const f = visitOps(v);
+        if (!f) return '';
+        const lead = summarizeLeadOps(f), lines = opsTechLines(f);
+        if (!lead && !lines.length) return '';
+        const shown = lead ? lead.replace(/\.$/, '') : lines[0];
+        return `<span title="${escapeHtml(lines.join('\n'))}">📝 ${escapeHtml(shown)}</span>`;
     }
 
     // ===== Day-by-category summary ("timesheet roll-up") ===============================
@@ -3988,6 +4259,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const QUICK_CHECK_MAX_MIN   = 15; // access-only visit under this (no config commit) ⇒ "just popped in to check", not real work
     const CAT_DESIGNER_ACTIONS  = new Set(['designer4', 'designer3', 'designer']);
     const CAT_AK3_ACTIONS       = new Set(['ak3_setup']);
+    const CAT_SLIVER_MIN        = 15; // v4.149: an evidence-less Integration share below this folds into the visit's main category
 
     // Split ONE visit's estimated (or distributed) minutes across categories → { category: minutes }.
     function categorizeVisit(v) {
@@ -4021,6 +4293,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (rem > 0) {
             const bucket = hasInteg ? CAT_INTEGRATION : hasDrawing ? CAT_DRAWING : CAT_SETUP_PC;
             res[bucket] = (res[bucket] || 0) + rem;
+        }
+        // v4.149: a few Integration minutes that only a phpMyAdmin/topology click produced — no save,
+        // no operations-log change — are not a task of their own. They became 5-minute entries
+        // ("10241 · Integration 5m" on 18.09) next to the real work; they join the visit's main category.
+        if (res[CAT_INTEGRATION] != null && res[CAT_INTEGRATION] < CAT_SLIVER_MIN && Object.keys(res).length > 1
+            && !(integCommits > 0) && !(v.changes_in_window > 0) && !opsHasChange(visitOps(v))) {
+            const main = Object.keys(res).filter(c => c !== CAT_INTEGRATION).sort((a, b) => res[b] - res[a])[0];
+            res[main] += res[CAT_INTEGRATION];
+            delete res[CAT_INTEGRATION];
         }
         return res;
     }
@@ -4115,6 +4396,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         designer_last: v.designer_last || null,    // v4.60: last designer session {s,e} for the commit-anchored extension
         capped_gaps: v.capped_gaps || [],          // v4.56: long-silence metadata so the evidence-gated damping works on cached dates too
         all_logs_notes: v.all_logs_notes || [],    // v4.110: masked All logs comments, so a cached day keeps them when the tool is down
+        ops: v.ops || null,                        // v4.149: the same rows as counted operations-log facts
     });
     const readCache = (username, iso) => GM_getValue(KEY_SCAN_CACHE, {})?.[username]?.[iso] || null;
     // Write one or many dates to the cache. A full scan passes every date it found (browsing any
@@ -4284,7 +4566,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const RL_API = 'https://kiona.api.rocketlane.com/api/v1';
     const KEY_RL_PROJECTS = 'rl_projects_cache';      // { fetched_at, list: [{id, name}] }
     const RL_PROJECTS_TTL_MS = 24 * 60 * 60 * 1000;   // project inventory refreshes daily (or on a cache miss)
-    const BOOK_MAX_COMMITS = 4;                       // newest triggered commits whose CONTENT is diffed for the notes
+    const BOOK_MAX_COMMITS = 12;                      // newest triggered commits whose CONTENT is diffed for the notes (4 until v4.149 — a split row lost its unit names)
     const BOOK_MAX_COMMITS_SCAN = 12;                 // newest triggered commits whose TABLE LIST feeds the matcher and the task split (v4.141)
     // "RAC" in the matched project name or in a changed table ⇒ the work is gateway setup, not integration.
     const RAC_RE = /(^|[\s_.:\-(])rac([\s_.:\-)]|$|\d)/i;
@@ -4486,18 +4768,23 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             changed_alarm_settings: 'alarm settings', changed_plant_settings: 'plant settings',
             change_duty_list: 'duty list', service: 'service logon', pang_note: 'note', call_plant_link: 'alarm call',
             user_access: 'user access', get_units: 'RAC get units', get_info: 'RAC get info',
-            start_server: 'RAC start', rvnc: 'Remote VNC' };
-        // What the operations log / handover notes said about this plant that day. Masked on capture —
-        // and RE-masked here (v4.115), because a day cached before a secret-pattern widening still
-        // carries the raw comment in full_scan_cache and must never reach a timesheet note.
+            start_server: 'RAC start', rvnc: 'Remote VNC',
+            // v4.149: pang tools the review found unlabelled
+            start_vnc_next_ping: 'VNC', direct_v3: 'direct login', restart: 'restarts', start_plant_server: 'restarts',
+            stop_plant_server: 'restarts', PlantTools: 'plant tools', screen_dump: 'screen dump', proxy_plant: 'proxy login' };
+        // What the operations log recorded about this plant that day, as counted facts (v4.149). The raw
+        // comments are NEVER printed any more: pang handover notes carried logins, IP plans and phone
+        // numbers into booked notes, one of them onto the first line. `notesLogs` / `leadFromNote` stay
+        // empty for callers that still read them.
+        out.ops = visitOps(v) || opsFactsFromRecords([]);
+        out.leadOps = summarizeLeadOps(out.ops);
+        out.opsClauses = opsClauses(out.ops);
+        out.opsLines = opsTechLines(out.ops);
+        out.notesLogs = '';
+        out.leadFromNote = '';
+        // The same comments stay MATCHER evidence (v4.112) — masked and scrubbed, never printed. Set before
+        // the no-commit early return below, so those days keep it.
         const maskedNotes = [...new Set((v.all_logs_notes || []).map(maskAllLogsComment).filter(Boolean))];
-        out.notesLogs = formatAllLogsNotes(maskedNotes);
-        // Best human comment for the collapsed first line when no commit-derived lead exists (v4.145).
-        out.leadFromNote = pickLeadSiteNote(maskedNotes);
-        // …and the same text as matcher evidence (v4.112). This is the one source that describes the work
-        // in Thomas's own words ("Byttet føler i kjøledisk 3" ⇒ refrigeration) rather than by its
-        // side-effects in the database, and it is the ONLY evidence on a day that left no config commit.
-        // Set before the no-commit early return below, so those days keep it.
         out.logStr = maskedNotes.join(' ').toLowerCase();
         const ac = v.action_counts || {};
         const actEntries = Object.entries(ac).filter(([a]) => ACT_WORDS[a]).sort((x, y) => y[1] - x[1]);
@@ -4510,9 +4797,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Same facts as a sentence — the lead line when the day left no config commit to describe.
         out.tools = actEntries.map(([a, n]) => ({ label: ACT_WORDS[a], count: n }));
         out.sumActions = summarizeActions(out.tools);
-        // Ops-log changes are real configuration even without a pang commit (v4.145).
-        out.opsChanged = actEntries.some(([a]) => /^(changed_alarm_settings|changed_plant_settings|change_duty_list)$/.test(a));
+        // Ops-log changes are real configuration even without a pang commit (v4.145; v4.149 reads the facts).
+        out.opsChanged = opsHasChange(out.ops) || actEntries.some(([a]) => /^(changed_alarm_settings|changed_plant_settings|change_duty_list)$/.test(a));
         if (v.designer_last && v.designer_last.s) out.designerSession = 'Designer session'; // no timestamps — the entry carries its own date/duration
+        // Where the work sat in the day, and with which tools (v4.149) — one line on the plant's main row.
+        const range = v.first_ts ? tsToLocalTime(v.first_ts) + (v.last_ts && v.last_ts !== v.first_ts ? '–' + tsToLocalTime(v.last_ts) : '') : '';
+        out.sessionLine = summarizeSession(range, out.tools);
+        const ak3Runs = (v.action_counts && v.action_counts.ak3_setup) || 0;
+        out.ak3Types = [];
+        out.setupTech = summarizeSetupTech(ak3Runs, []);
         // Texts read the visit-window commits PLUS the rest of the day's triggered commits — the save
         // that describes your work often lands after the visit window (e.g. during the next plant).
         const seen = new Set(); const commits = [];
@@ -4523,7 +4816,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // to see every save of the day, not the last four. CONTENT diffs (unit names, changed settings,
         // tuned params, drawing panels) stay limited to the newest BOOK_MAX_COMMITS, as before.
         const scan = commits.slice(-BOOK_MAX_COMMITS_SCAN);
-        const detail = new Set(scan.slice(-BOOK_MAX_COMMITS).map(c => String(c.id)));
+        const detail = new Set(scan.slice(-BOOK_MAX_COMMITS).map(c => String(c.id))); // since v4.149 every scanned save
         if (!scan.length) {
             out.notesDraw = out.designerSession || '';
             if (out.designerSession) out.sumDraw = 'Worked in the Designer on the plant\'s drawings.';
@@ -4532,6 +4825,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const wl = bookDiscWeights(out.logStr || '', true);
             out.discs = Object.keys(wl).sort((a, b) => wl[b] - wl[a]);
             out.leadActions = summarizeLeadActions(out.tools, false, out.opsChanged);
+            out.leadDrawIdle = summarizeLeadDrawingIdle(out.discs);
+            out.segments = [];
             return out;
         }
         const cids = scan.map(c => String(c.id));
@@ -4541,7 +4836,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         try { patches = await gmFetchTablesPatchBatch(cids); } catch (e) { return out; }
         // Per-save facts (v4.141). Every fact carries the commit that wrote it, so the same composition
         // below can run for ALL saves (the day's texts) or for one task's share of them.
-        const F = { devAdd: [], devMod: [], tok: [], virt: new Set(), unitAdd: [], unitDel: [], unitRen: [], sett: [], tune: [], panel: [] };
+        const F = { devAdd: [], devMod: [], tok: [], virt: new Set(), unitAdd: [], unitDel: [], unitRen: [], sett: [], tune: [], panel: [], ak3: [] };
         const graphicCids = [], unitJobs = [], settJobs = [], tuneJobs = [];
         const tuneSeen = new Set();
         for (const cid of cids) {
@@ -4559,9 +4854,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (!/^iw_(sys|gen|lnk)_/.test(t)) F.tok.push({ cid, v: bookPrettyToken(t).toLowerCase() });
                 if (t === 'iw_sys_virtual_values' && /^mod/.test(m.mode)) F.virt.add(cid);
                 if (/graphic_designer/i.test(t)) graphicCids.push(cid);
+                // AK3 scanner results: the da3 device tables a run adds (v4.149) — the Setup row's own evidence.
+                if (/^iw_(?:par|set)_da3_/.test(t) && m.mode === 'add') F.ak3.push({ cid, v: bookPrettyToken(t) });
                 if (!detail.has(cid)) continue; // content diffs only for the newest saves
                 // Diff a few tuned tables so the notes can say WHICH params changed (newest commit wins per table).
-                if ((/^iw_set_/.test(t) || /^iw_par_.+_param$/.test(t)) && /^mod/.test(m.mode) && !tuneSeen.has(t) && tuneJobs.length < 4) { tuneSeen.add(t); tuneJobs.push({ table_name: t, commit: cid }); }
+                if ((/^iw_set_/.test(t) || /^iw_par_.+_param$/.test(t)) && /^mod/.test(m.mode) && !tuneSeen.has(t) && tuneJobs.length < 8) { tuneSeen.add(t); tuneJobs.push({ table_name: t, commit: cid }); }
                 if (t === 'iw_sys_plant_units') unitJobs.push({ table_name: t, commit: cid });
                 if (t === 'iw_sys_plant_settings' && /^mod/.test(m.mode)) settJobs.push({ table_name: t, commit: cid });
             }
@@ -4581,8 +4878,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     if (d.unreadable) continue;
                     const tbl = jobs[i].table_name, cid = String(jobs[i].commit);
                     if (tbl === 'iw_sys_plant_units') {
-                        for (const a of d.added) F.unitAdd.push({ cid, label: chgUnitLabel(a) || '' });
-                        for (let k = 0; k < d.removed.length; k++) F.unitDel.push({ cid });
+                        for (const a of d.added) F.unitAdd.push({ cid, key: a.key, label: chgUnitLabel(a) || '' });
+                        for (const r of d.removed) F.unitDel.push({ cid, key: r.key, label: chgUnitLabel(r) || '' });
                         for (const m of d.modified) if (m.col === 'unit_name') F.unitRen.push({ cid, key: m.key, from: m.from, to: m.to });
                     } else if (tbl === 'iw_sys_plant_settings') {
                         for (const m of d.modified) {
@@ -4590,9 +4887,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             // System-internal settings churn on their own ("scripts (PHP-APP)" stream lists,
                             // data-engine/sysinfo housekeeping) — never present them as work.
                             if (SETT_NOISE_RE.test(full)) continue;
-                            const f = bookClipVal(m.from), t = bookClipVal(m.to);
+                            // v4.149: scrub the raw values BEFORE clipping — a clipped "http://192.168.2…" no
+                            // longer looks like an address and slipped past the IP rule.
+                            const f = bookClipVal(scrubForTimesheet(m.from)), t = bookClipVal(scrubForTimesheet(m.to));
                             // Secret values, or values identical after clipping ("1;stream_… → 1;stream_…"): say "changed".
-                            F.sett.push({ cid, full, lbl: full.replace(/\s*\(.*\)$/, ''), detail: (SECRET_RE.test(full) || f === t) ? `${full}: changed` : `${full}: ${f} → ${t}` });
+                            // v4.149: a password-shaped value hides too.
+                            const hide = SECRET_RE.test(full) || looksLikePassword(m.from) || looksLikePassword(m.to) || f === t;
+                            F.sett.push({ cid, full, lbl: full.replace(/\s*\(.*\)$/, ''), detail: hide ? `${full}: changed` : `${full}: ${f} → ${t}` });
                         }
                     } else {
                         // a tuned device table: collect WHICH params changed (drawer-style row labels)
@@ -4638,9 +4939,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const devMod = new Set(F.devMod.filter(inSel).map(r => r.v));
             const virtVals = [...F.virt].some(c => inSel({ cid: c }));
             let uAdd = 0, uRen = 0;
-            const uDel = F.unitDel.filter(inSel).length;
+            // Net unit changes across the day's saves (v4.149). Now that every save is diffed, an AK3
+            // rescan that clears the unit list in one save and re-creates it in the next read as "removed
+            // 75 devices from monitoring". A removal paired with a later re-add of the same unit (same bare
+            // name, else same key) is a REBUILD; an add paired with a later removal was temporary. Neither
+            // is reported as added or removed.
+            const byTime = (a, b) => (tsBy[a.cid] || 0) - (tsBy[b.cid] || 0);
+            const unitId = r => (bookBareLabel(r.label) || '').toLowerCase() || ('#' + r.key);
+            const addsAll = F.unitAdd.filter(inSel).slice().sort(byTime), delsAll = F.unitDel.filter(inSel).slice().sort(byTime);
+            const usedA = new Set(), usedD = new Set();
+            delsAll.forEach((dl, i) => { const j = addsAll.findIndex((a, k) => !usedA.has(k) && unitId(a) === unitId(dl) && (tsBy[a.cid] || 0) >= (tsBy[dl.cid] || 0)); if (j >= 0) { usedA.add(j); usedD.add(i); } });
+            addsAll.forEach((a, k) => { if (usedA.has(k)) return; const i = delsAll.findIndex((dl, x) => !usedD.has(x) && unitId(dl) === unitId(a) && (tsBy[dl.cid] || 0) >= (tsBy[a.cid] || 0)); if (i >= 0) { usedA.add(k); usedD.add(i); } });
+            const uRebuilt = delsAll.filter((dl, i) => usedD.has(i) && addsAll.some((a, k) => usedA.has(k) && unitId(a) === unitId(dl) && (tsBy[a.cid] || 0) >= (tsBy[dl.cid] || 0))).length;
+            const uDel = delsAll.filter((dl, i) => !usedD.has(i)).length;
             const uAddNames = [], uRenNames = [], renPairs = [];  // unit LABELS + "old → new" rename pairs, drawer-style
-            for (const r of F.unitAdd.filter(inSel)) { uAdd++; if (r.label && !uAddNames.includes(r.label)) uAddNames.push(r.label); }
+            for (const r of addsAll.filter((a, k) => !usedA.has(k))) { uAdd++; if (r.label && !uAddNames.includes(r.label)) uAddNames.push(r.label); }
+            T.uRebuilt = uRebuilt;
             for (const r of F.unitRen.filter(inSel)) {
                 uRen++;
                 if (r.to && !uRenNames.includes(r.to)) uRenNames.push(r.to);
@@ -4669,6 +4983,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 bits.push('added ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3} more` : ''));
             }
             if (uDel) bits.push(`-${uDel} unit${uDel === 1 ? '' : 's'}`);
+            if (uRebuilt) bits.push(`rebuilt ${uRebuilt} unit${uRebuilt === 1 ? '' : 's'}`);
             if (uRen) bits.push(`named ${uRen} unit${uRen === 1 ? '' : 's'}` + (uRenNames.length ? ` (${uRenNames.slice(0, 2).join(', ')}…)` : ''));
             if (devMod.size) { const u = [...devMod].filter(x => devAdd.indexOf(x) < 0); if (u.length) bits.push('tuned ' + u.slice(0, 3).join(', ') + (u.length > 3 ? ` +${u.length - 3}` : '')); }
             if (virtVals) bits.push('virtual values');
@@ -4706,6 +5021,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             else if (devAdd.length) { const u = [...new Set(devAdd)]; nInteg.push('Added: ' + u.slice(0, 5).join(', ') + (u.length > 5 ? ` (+${u.length - 5} more)` : '')); }
             if (renPairs.length) nInteg.push('Renamed: ' + renPairs.slice(0, 5).join(', ') + (uRen > 5 ? ` (+${uRen - 5} more)` : ''));
             if (uDel) nInteg.push(`Removed: ${uDel} unit${uDel === 1 ? '' : 's'}`);
+            if (uRebuilt) nInteg.push(`Rebuilt: ${uRebuilt} unit${uRebuilt === 1 ? '' : 's'} removed and re-created the same day`);
             if (devMod.size) {
                 const u = [...devMod].filter(x => devAdd.indexOf(x) < 0);
                 if (u.length) {
@@ -4726,7 +5042,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             else if (settNames.length) nInteg.push('Plant settings: ' + settNames.slice(0, 4).join(', ') + (settNames.length > 4 ? ` (+${settNames.length - 4} more)` : ''));
             T.notesInteg = nInteg.join('\n');
             // The same facts as one sentence, for the top of the note.
-            T.sumInteg = summarizeIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames });
+            T.sumInteg = summarizeIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, uRebuilt, devMod: [...devMod], virtVals, settNames });
             const nDraw = [];
             if (T.drawingLines.length) {
                 const lines = T.drawingLines.slice(0, 4);
@@ -4764,8 +5080,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // Leader-facing opening lines (v4.114): the plain-language first line of the entry's note.
             // The technical sentence (sumInteg / sumDraw) moves down into the detail block as evidence.
             const tuneLabels = [].concat(...[...tuneMap.values()]);
-            T.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, devMod: [...devMod], virtVals, settNames, tuneLabels }, T.discs);
-            T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, T.discs);
+            T.leadInteg = summarizeLeadIntegration({ uAdd, uAddNames, devAdd, uRen, renPairs, uDel, uRebuilt, devMod: [...devMod], virtVals, settNames, tuneLabels }, T.discs);
+            // A drawing's discipline comes from its OWN name first (v4.149): "Ventilasjon" was being
+            // described as a "refrigeration overview screen" because the day's devices were refrigeration.
+            const dw = bookDiscWeights(T.drawingNames.join(' '), true);
+            const drawDiscs = Object.keys(dw).sort((a, b) => dw[b] - dw[a]);
+            T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, drawDiscs.length ? drawDiscs : T.discs);
+            T.leadDrawIdle = summarizeLeadDrawingIdle(drawDiscs.length ? drawDiscs : T.discs);
+            T.ak3Types = [...new Set(F.ak3.filter(inSel).map(r => r.v))];
+            T.setupTech = summarizeSetupTech(ak3Runs, T.ak3Types);
             T.leadActions = summarizeLeadActions(out.tools, true, out.opsChanged); // commits existed; used only when nothing above could be said
             return T;
         };
@@ -4933,7 +5256,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         for (const r of (calRows || [])) {
             // The line Rocketlane shows leads with the FULL range, not just the start (v4.124):
             // "09:00–10:00 Ukesmøte" reads as the meeting it came from.
-            const act = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + '–' + calClock(r.ev.endTs) + ' '}${r.ev.subject}`.trim();
+            const actRaw = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + '–' + calClock(r.ev.endTs) + ' '}${r.ev.subject}`.trim();
+            const act = scrubForTimesheet(actRaw); // v4.149: a phone number or a dial-in PIN in a subject stays out of Rocketlane
             // Entries booked before v4.124 carry only the start time ("09:00 Ukesmøte"). Match those too,
             // or a re-run of an already-booked day would read them as new and book the meeting twice.
             const actLegacy = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + ' '}${r.ev.subject}`.trim();
@@ -4941,7 +5265,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const dupe = !!catId && (existing || []).some(e => {
                 if (!(e.category && e.category.categoryId === catId)) return false;
                 const name = String(e.activityName || '').trim();
-                return name === act || name === actLegacy;
+                return name === act || name === actRaw || name === actLegacy || name === scrubForTimesheet(actLegacy);
             });
             out.push({
                 calendar: true,
@@ -4949,13 +5273,20 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 projectId, projectName,
                 taskId: null, taskName: null, taskGuess: false,
                 category: r.category, categoryId: catId, minutes: r.minutes,
-                activityName: act, notes: calEntryNote(r.ev, r.minutes),
+                activityName: act, notes: calEntryNote(Object.assign({}, r.ev, { subject: scrubForTimesheet(r.ev.subject) }), r.minutes),
                 status: dupe ? 'already-booked' : !catId ? 'no-category' : !projectId ? 'no-project' : 'ready',
             });
         }
         return out;
     }
 
+    // "Also removed plant access for 3 users and updated the alarm duty list." (v4.149)
+    function bookAlso(clauses) {
+        const c = (clauses || []).filter(Boolean);
+        if (!c.length) return '';
+        const joined = c.length === 1 ? c[0] : c.slice(0, -1).join(', ') + ' and ' + c[c.length - 1];
+        return 'Also ' + joined + '.';
+    }
     async function buildBookingPlan(visits, iso, onStep) {
         // Progress (v4.148, Thomas: "this should show more data so the progress bar does not look
         // stuck"). `onStep(done, total, v, phase)` fires before EVERY wait, with a fractional `done`
@@ -5013,6 +5344,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             say(vi + 0.9, v, 'matching tasks');
             const racProject = proj ? RAC_RE.test(proj.name) : false;
             const usedTasks = new Set(); // rescue must not book two categories onto the same task
+            const rowsForVisit = []; // v4.149: notes are composed once every row of the plant-day is known
             for (const [cat, min] of bookable) {
                 let category = cat;
                 // RAC ⇒ the "integration" is really gateway setup: move it to Setup - PC / Gateway.
@@ -5067,35 +5399,34 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // plain line (leadActions) instead of falling straight to the tools sentence.
                     let summary, tech, details;
                     if (category === CAT_DRAWING) {
-                        summary = t.leadDraw || t.leadFromNote || t.leadActions || t.sumDraw || '';
-                        tech = t.sumDraw || t.sumActions || '';
+                        // v4.149: a Designer day without a save says so, instead of "remote maintenance".
+                        summary = t.leadDraw || t.leadDrawIdle || t.sumDraw || '';
+                        tech = t.sumDraw || '';
                         details = t.notesDraw || '';
                     } else if (category === CAT_SETUP_PC) {
                         // Setup is reached two ways: an AK3 scanner day, or an integration day on a RAC
                         // plant that belongs under gateway setup. Say which — the old note always claimed AK3.
-                        summary = summarizeLeadSetup(racRedirect);
-                        tech = t.sumInteg || t.sumActions || '';
-                        details = t.notesInteg || '';
+                        // v4.149: an AK3 row describes the scanner's own evidence (the da3 device tables it
+                        // added), not the whole Integration diff it used to repeat word for word.
+                        const types = t.ak3Types || [];
+                        summary = summarizeLeadSetup(racRedirect, racRedirect ? 0 : types.length);
+                        tech = racRedirect ? (t.sumInteg || t.sumActions || '') : (t.setupTech || '');
+                        details = racRedirect ? (t.notesInteg || '')
+                            : types.length ? 'AK3 device types: ' + types.slice(0, 8).join(', ') + (types.length > 8 ? ` (+${types.length - 8} more)` : '') : '';
                     } else if (category === CAT_INTEGRATION) {
-                        // Prefer commit-derived lead, then your own ops/handover wording, then tools fallback (v4.145).
-                        summary = t.leadInteg || t.leadFromNote || t.leadActions || t.sumInteg || '';
+                        // Commit-derived lead first, then what the operations log recorded (v4.149), then tools.
+                        summary = t.leadInteg || t.leadOps || t.leadActions || t.sumInteg || '';
                         tech = t.sumInteg || t.sumActions || '';
                         details = t.notesInteg || '';
                     } else {
                         // Support - External: a follow-up session that left no config evidence — say so in
                         // service terms; the tools sentence stays as the technical detail.
-                        summary = t.leadFromNote || summarizeLeadSupport(t.tools, t.opsChanged);
+                        summary = t.leadOps || summarizeLeadSupport(t.tools, t.opsChanged);
                         tech = t.sumActions || '';
-                        details = t.notesInteg || '';
+                        details = '';
                     }
                     if (tech === summary) tech = ''; // the summary had to fall back to the technical line — do not print it twice
-                    // Whatever you wrote in the operations log / a handover note that day says more about the
-                    // work than any diff can (already masked; secret values never travel); it joins the
-                    // leader's block as "Site note:". If that text was promoted to the first line, drop it
-                    // from the Site note list so it is not duplicated (v4.145).
-                    const siteLines = remainingSiteNotes(String(t.notesLogs || '').split('\n'), summary === t.leadFromNote ? t.leadFromNote : '');
-                    const notes = composeEntryNote(summary, siteLines, details, tech);
-                    plan.push({
+                    const row = {
                         plant_id: v.plant_id, plant: v.name || v.plant_id,
                         projectId: proj ? proj.id : null, projectName: proj ? proj.name : null,
                         // v4.140 (Thomas: "3530 did not fill out. had to do it manually"): the hours get WRITTEN.
@@ -5111,11 +5442,29 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         projMatch: proj ? { tier: match.tier, n: match.candidates.length, reason: match.reason, // how the project was found (v4.133/4.134)
                             twins: match.candidates.length > 1 ? match.candidates.map(c => ({ id: c.id, name: c.name, tasks: twinCounts ? twinCounts.get(String(c.id)) : null })) : null } : null,
                         taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
-                        category, categoryId: catId || null, minutes: p.minutes, activityName: act, notes,
+                        category, categoryId: catId || null, minutes: p.minutes, activityName: act, notes: '', // composed below (v4.149)
                         // Several tasks share this plant's category (v4.141): the row says which share it carries.
                         split: parts.length > 1 ? { share: p.share, n: parts.length, saves: p.segIds.length, of: Math.round(min) } : null,
                         status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
-                    });
+                    };
+                    plan.push(row);
+                    rowsForVisit.push({ e: row, summary, tech, details });
+                }
+            }
+            // Plant-day facts belong on ONE row — the plant's largest (v4.149): the operations-log lines,
+            // the session line, and an "Also …" sentence when that row's lead is about something else.
+            // Repeating them on every category and task row was noise (and, before 4.149, a password
+            // printed three times over on 18.09).
+            if (rowsForVisit.length) {
+                const big = rowsForVisit.reduce((a, b) => ((b.e.minutes || 0) > (a.e.minutes || 0) ? b : a));
+                for (const r of rowsForVisit) {
+                    const main = r === big;
+                    const also = main && (texts.opsClauses || []).length && r.summary !== texts.leadOps
+                        ? bookAlso(texts.opsClauses) : '';
+                    const summary = [r.summary, also].filter(Boolean).join(' ');
+                    const details = [r.details].concat(main ? (texts.opsLines || []) : [], main && texts.sessionLine ? [texts.sessionLine] : [])
+                        .filter(Boolean).join('\n');
+                    r.e.notes = composeEntryNote(summary, [], details, r.tech);
                 }
             }
         }
