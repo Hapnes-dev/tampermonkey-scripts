@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.149
+// @version      4.150
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -23,6 +23,7 @@
 // @connect      tools.iwmac.local
 // @connect      internal.iwmac.local
 // @connect      iwmac.local
+// @connect      iwmac.zendesk.com
 // @connect      *
 // @run-at       document-idle
 // ==/UserScript==
@@ -381,6 +382,82 @@ var RL_RECAP_ALL_LOGS = (function () {
 // so the visible part was a label rather than an answer. These helpers turn the same facts into a
 // summary sentence; the precise diff still follows underneath as evidence.
 // Pure and dependency-free, outside the IIFE, so the unit tests can require them.
+// ===== Zendesk helpers (v4.150) =========================================================================
+// Pure, like the blocks around it. The 2026-09-25 review found that the work a day's pang clicks cannot
+// explain often lives in Zendesk: 14.09's 405 minutes on 3530 were the handover checklist (case #206445),
+// 10241's access/SMS-alarm case ran over four days, 8222's case was answered the same day it was worked.
+// Only the SUBJECT, the case number and whether a comment was public or internal ever leave Zendesk —
+// never a comment body (those open with "Hei …" and carry names and numbers).
+var RL_RECAP_ZD = (function () {
+    'use strict';
+    const scrub = s => RL_RECAP_ALL_LOGS.scrubForTimesheet(s);
+    // "SV: 41584 OBS Harstad - Plug In på Iwmac" → "41584 OBS Harstad - Plug In på Iwmac"
+    function zdCleanSubject(s) {
+        let t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+        for (let i = 0; i < 4; i++) { const n = t.replace(/^(?:sv|re|vs|fw|fwd|aw|wg|antw)\s*:\s*/i, ''); if (n === t) break; t = n; }
+        t = scrub(t);
+        return t.length > 90 ? t.slice(0, 89) + '…' : t;
+    }
+    // The ticket's Plant ID field, when it holds a plant number.
+    function zdPlantField(ticket, fieldId) {
+        if (!ticket || !fieldId) return '';
+        const f = (ticket.custom_fields || []).find(x => x && String(x.id) === String(fieldId));
+        const v = f && f.value != null ? String(f.value).trim() : '';
+        return /^\d{2,6}$/.test(v) ? v : '';
+    }
+    // My comments on one ticket, bucketed per Oslo date within [fromIso, toIso]. `dateOf(createdAt)`
+    // returns 'YYYY-MM-DD' (the IIFE passes an Europe/Oslo formatter).
+    function zdMyDays(ticket, comments, meId, plantFieldId, fromIso, toIso, dateOf) {
+        const out = new Map();
+        for (const c of (comments || [])) {
+            if (!c || String(c.author_id) !== String(meId)) continue;
+            const iso = dateOf(c.created_at);
+            if (!iso || iso < fromIso || iso > toIso) continue;
+            let it = out.get(iso);
+            if (!it) out.set(iso, it = { date: iso, ticketId: ticket.id, subject: zdCleanSubject(ticket.subject),
+                plantField: zdPlantField(ticket, plantFieldId), status: String(ticket.status || ''), public: 0, internal: 0, firstTs: null, lastTs: null });
+            if (c.public) it.public++; else it.internal++;
+            const ts = Date.parse(c.created_at);
+            if (Number.isFinite(ts)) { it.firstTs = it.firstTs == null ? ts : Math.min(it.firstTs, ts); it.lastTs = it.lastTs == null ? ts : Math.max(it.lastTs, ts); }
+        }
+        return [...out.values()];
+    }
+    // Chain names and filler never identify a plant on their own ("OBS", "Meny", "Extra", "ombygging").
+    const ZD_GENERIC = new Set(['coop', 'extra', 'obs', 'mega', 'prix', 'marked', 'meny', 'spar', 'kiwi', 'rema', 'bunnpris', 'joker',
+        'ica', 'maxi', 'nærbutikken', 'matkroken', 'europris', 'ombygging', 'butikk', 'nybygg', 'stormarknad', 'senter', 'avd', 'test']);
+    const zdNorm = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9æøåäöü]+/g, ' ').trim();
+    function zdDistinct(name) {
+        return [...new Set(zdNorm(name).split(' ').filter(w => w.length >= 4 && !ZD_GENERIC.has(w) && !/^\d+$/.test(w)))];
+    }
+    // Which plant a case is about: its Plant ID field → a candidate's number as a whole number in the
+    // subject → every distinctive word of a candidate's name in the subject (longest name wins; names
+    // whose distinctive words total under 6 letters never match — "Mære" is not enough).
+    function zdPlantFor(item, candidates) {
+        if (!item) return '';
+        if (item.plantField) return item.plantField;
+        const subj = String(item.subject || '');
+        const cands = (candidates || []).filter(c => c && c.plant_id != null && String(c.plant_id).trim());
+        for (const c of cands) if (new RegExp('(^|[^0-9])' + String(c.plant_id).trim() + '([^0-9]|$)').test(subj)) return String(c.plant_id).trim();
+        const words = ' ' + zdNorm(subj) + ' ';
+        let best = '', bestLen = 0;
+        for (const c of cands) {
+            const dw = zdDistinct(c.name);
+            const len = dw.join('').length;
+            if (!dw.length || len < 6) continue;
+            if (dw.every(w => words.includes(' ' + w))) { if (len > bestLen) { best = String(c.plant_id).trim(); bestLen = len; } }
+        }
+        return best;
+    }
+    // What a Zendesk-only plant-day is worth before distribution: 10 min per case with a public reply,
+    // 5 for internal notes only, at most 30.
+    function zdMinutes(items) {
+        let m = 0;
+        for (const it of (items || [])) if (it) m += it.public ? 10 : 5;
+        return Math.min(30, m);
+    }
+    return { zdCleanSubject, zdPlantField, zdMyDays, zdDistinct, zdPlantFor, zdMinutes, ZD_GENERIC };
+})();
+
 var RL_RECAP_NOTE_TEXT = (function () {
     'use strict';
 
@@ -669,6 +746,30 @@ var RL_RECAP_NOTE_TEXT = (function () {
         if (pres.length) L.push('Also recorded: ' + pres.join(', '));
         return L;
     }
+    // ---- Zendesk work, in words (v4.150) ----------------------------------------------------------
+    // `items` are RL_RECAP_ZD.zdMyDays entries for one plant-day: case number, cleaned subject, status,
+    // public/internal comment counts. Never a comment body.
+    const zdCount = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    function zendeskTechLines(items) {
+        return (items || []).filter(Boolean).map(x => {
+            const what = [x.public ? zdCount(x.public, 'public reply', 'public replies') : '', x.internal ? zdCount(x.internal, 'internal note', 'internal notes') : ''].filter(Boolean).join(', ');
+            return `Zendesk #${x.ticketId} «${x.subject}»` + (what ? ' — ' + what : '') + (x.status ? ` (${x.status})` : '');
+        });
+    }
+    function summarizeLeadZendesk(items) {
+        const it = (items || []).filter(Boolean);
+        if (!it.length) return '';
+        const pub = it.some(x => x.public);
+        return bookSentence([(pub ? 'Customer follow-up in Zendesk — replied on ' : 'Case work in Zendesk — internal notes on ')
+            + (it.length === 1 ? 'case ' : 'cases ') + bookAndList(it.map(x => `#${x.ticketId} «${x.subject}»`), 2)]);
+    }
+    function zendeskClause(items) {
+        const it = (items || []).filter(Boolean);
+        if (!it.length) return '';
+        const ids = bookAndList(it.map(x => '#' + x.ticketId), 3);
+        return it.some(x => x.public) ? `replied to the customer in Zendesk (${ids})` : `added internal notes in Zendesk (${ids})`;
+    }
+
     // One line that places the work in the day: when the plant was worked on, and with which tools.
     function summarizeSession(range, tools) {
         const t = (tools || []).filter(x => x && x.label).slice(0, 6).map(x => x.label + (x.count > 1 ? ` ×${x.count}` : ''));
@@ -712,6 +813,7 @@ var RL_RECAP_NOTE_TEXT = (function () {
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
         summarizeLeadActions, leadTuneKinds, pickLeadSiteNote, remainingSiteNotes, LEAD_NOTE_BOILER,
         summarizeSetupTech, summarizeLeadDrawingIdle, opsClauses, summarizeLeadOps, opsTechLines, summarizeSession,
+        zendeskTechLines, summarizeLeadZendesk, zendeskClause,
     };
 })();
 // ===== Transition-based time evidence ================================================
@@ -1595,7 +1697,7 @@ var RL_RECAP_MATCH = (function () {
     };
 })();
 
-if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_NOTE_TEXT, RL_RECAP_TIME, RL_RECAP_CAL, RL_RECAP_MATCH);
+if (typeof module !== 'undefined' && module.exports) module.exports = Object.assign({}, RL_RECAP_ALL_LOGS, RL_RECAP_ZD, RL_RECAP_NOTE_TEXT, RL_RECAP_TIME, RL_RECAP_CAL, RL_RECAP_MATCH);
 
 (function () {
     'use strict';
@@ -1616,7 +1718,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         summarizeLeadIntegration, summarizeLeadDrawing, summarizeLeadSetup, summarizeLeadSupport,
         summarizeLeadActions, pickLeadSiteNote, remainingSiteNotes,
         summarizeSetupTech, summarizeLeadDrawingIdle, opsClauses, summarizeLeadOps, opsTechLines, summarizeSession, bookBareLabel,
+        zendeskTechLines, summarizeLeadZendesk, zendeskClause,
     } = RL_RECAP_NOTE_TEXT;
+    const { zdMyDays, zdPlantFor, zdMinutes } = RL_RECAP_ZD; // v4.150
 
     const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
 
@@ -1640,7 +1744,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.149';
+    const SCRIPT_VERSION   = '4.150';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2095,6 +2199,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_CAL_RESULT  = 'cal_result';    // { at, byDate:{iso:[event]}, error } — written back by the Outlook tab
     const KEY_CAL_DONE    = 'cal_done_ts';   // harvest completion signal, same pattern as KEY_HARVEST_DONE
     const KEY_CAL_ENABLED = 'cal_enabled';   // user toggle — the panel, and Book week's head + check-up
+    const KEY_ZD_ENABLED  = 'zd_enabled';    // v4.150: read the Zendesk cases you commented on (default on)
+    const KEY_ZD_PLANT_FIELD = 'zd_plant_field'; // id of the "Plant ID" ticket field, looked up once
     const KEY_CAL_ASKED   = 'cal_ask_date';  // 'YYYY-MM-DD' Book week last ASKED about the calendar (v4.129)
     // Rocketlane REQUIRES a project on every time entry (verified live: 160 historical entries, zero
     // project-less; the activities dialog keeps its submit disabled until a project is chosen), and
@@ -3637,6 +3743,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     <input type="checkbox" data-field="calendar" ${GM_getValue(KEY_CAL_ENABLED, false) ? 'checked' : ''}>
                     🗓 Include calendar (meetings &amp; admin)
                 </label>
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252;" title="Reads the Zendesk cases you commented on that day (with your own Zendesk login) and puts their numbers and subjects in the notes. A plant you only worked on in Zendesk becomes a small Support entry you can untick.">
+                    <input type="checkbox" data-field="zendesk" ${GM_getValue(KEY_ZD_ENABLED, true) ? 'checked' : ''}>
+                    ✉ Zendesk
+                </label>
             </div>
             <div class="fsnudge" hidden></div>
             <div class="progress"><div style="width:0%"></div></div>
@@ -3758,6 +3868,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 `<span>${escapeHtml(lastUsername || '')} · ${isoToNorwegianDate(lastIso)}${escapeHtml(source)}</span>` +
                 `<span>${lastVisits.length} plant${lastVisits.length === 1 ? '' : 's'} of ${lastScanned} scanned${lastFailed ? ` · ⚠ ${lastFailed} unreachable — not cached` : ''}${stillMissing ? ` · ${stillMissing} unnamed` : ''}${totalLabel}</span>`;
             ensureChangesEnriched();
+            ensureZendeskEnriched();
         };
 
         // Lazily overlay config-change ("commits") info onto the date on screen, decoupled from the
@@ -3775,6 +3886,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
             if (any) applyAndRender(); // repaint with badges + fused time + category summary
         };
+        // Zendesk cases for the date on screen (v4.150), after the first paint — the panel never waits for
+        // Zendesk. Repaints only when a case attached to a row or added a Zendesk-only plant.
+        const ensureZendeskEnriched = async () => {
+            const visits = lastVisits, iso = lastIso;
+            if (!visits || visits._zdDone === iso || visits._zdPending) return;
+            visits._zdPending = true;
+            const seq = scanSeq;
+            const n0 = visits.length, z0 = visits.filter(v => v.zendesk).length;
+            await attachZendesk(visits, iso);
+            visits._zdPending = false;
+            if (seq !== scanSeq || visits !== lastVisits) return;
+            if (visits.length !== n0 || visits.filter(v => v.zendesk).length !== z0) applyAndRender();
+        };
 
         workdayInput.addEventListener('change', () => {
             const v = parseFloat(workdayInput.value);
@@ -3788,6 +3912,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // The calendar toggle only changes what a BOOKING reads (loadDayForBooking / Book day), so
         // nothing needs re-scanning here — flipping it off also drops the session cache, so turning
         // it back on re-asks Outlook rather than serving a stale day.
+        panel.querySelector('[data-field=zendesk]')?.addEventListener('change', (ev) => {
+            GM_setValue(KEY_ZD_ENABLED, !!ev.target.checked);
+            _zdWeek.clear(); _zdDownUntil = 0;
+            openDefault(); // reload the date with or without its cases
+        });
         calendarChk?.addEventListener('change', () => {
             GM_setValue(KEY_CAL_ENABLED, !!calendarChk.checked);
             if (!calendarChk.checked) _calCache.clear();
@@ -4188,6 +4317,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         get_info:              { label: 'RAC get info',     cat: 'other' },
         start_server:          { label: 'RAC start',        cat: 'other' },
         rvnc:                  { label: 'Remote VNC',       cat: 'vnc' },
+        zendesk:               { label: 'Zendesk',          cat: 'other' }, // v4.150
     };
     // Chip order: most work-significant category first, so the row reads "what they did" at a glance.
     const ACTION_CAT_ORDER = ['edit', 'server', 'vnc', 'access', 'diag', 'other'];
@@ -4265,6 +4395,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     function categorizeVisit(v) {
         const M = (v.normalized_minutes != null ? v.normalized_minutes : v.estimated_minutes) || 0;
         if (M <= 0) return {};
+        if (v.zendesk_only) return { [CAT_SUPPORT]: M }; // v4.150: case work with no plant session that day
         const counts = v.action_counts || (v.actions || []).reduce((o, a) => (o[a] = (o[a] || 0) + 1, o), {});
         let designerN = 0, ak3N = 0;
         for (const a in counts) { if (CAT_DESIGNER_ACTIONS.has(a)) designerN += counts[a]; if (CAT_AK3_ACTIONS.has(a)) ak3N += counts[a]; }
@@ -4782,6 +4913,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         out.opsLines = opsTechLines(out.ops);
         out.notesLogs = '';
         out.leadFromNote = '';
+        // The Zendesk cases worked on this plant that day (v4.150): subject, number, public/internal.
+        out.zendesk = v.zendesk || [];
+        out.zdLines = zendeskTechLines(out.zendesk);
+        out.leadZendesk = summarizeLeadZendesk(out.zendesk);
+        out.zdClause = zendeskClause(out.zendesk);
         // The same comments stay MATCHER evidence (v4.112) — masked and scrubbed, never printed. Set before
         // the no-commit early return below, so those days keep it.
         const maskedNotes = [...new Set((v.all_logs_notes || []).map(maskAllLogsComment).filter(Boolean))];
@@ -5415,13 +5551,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                             : types.length ? 'AK3 device types: ' + types.slice(0, 8).join(', ') + (types.length > 8 ? ` (+${types.length - 8} more)` : '') : '';
                     } else if (category === CAT_INTEGRATION) {
                         // Commit-derived lead first, then what the operations log recorded (v4.149), then tools.
-                        summary = t.leadInteg || t.leadOps || t.leadActions || t.sumInteg || '';
+                        summary = t.leadInteg || t.leadOps || t.leadZendesk || t.leadActions || t.sumInteg || '';
                         tech = t.sumInteg || t.sumActions || '';
                         details = t.notesInteg || '';
                     } else {
                         // Support - External: a follow-up session that left no config evidence — say so in
                         // service terms; the tools sentence stays as the technical detail.
-                        summary = t.leadOps || summarizeLeadSupport(t.tools, t.opsChanged);
+                        summary = t.leadOps || t.leadZendesk || summarizeLeadSupport(t.tools, t.opsChanged);
                         tech = t.sumActions || '';
                         details = '';
                     }
@@ -5459,11 +5595,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const big = rowsForVisit.reduce((a, b) => ((b.e.minutes || 0) > (a.e.minutes || 0) ? b : a));
                 for (const r of rowsForVisit) {
                     const main = r === big;
-                    const also = main && (texts.opsClauses || []).length && r.summary !== texts.leadOps
-                        ? bookAlso(texts.opsClauses) : '';
+                    const alsoClauses = [].concat(r.summary !== texts.leadOps ? (texts.opsClauses || []) : [],
+                        r.summary !== texts.leadZendesk && texts.zdClause ? [texts.zdClause] : []);
+                    const also = main && alsoClauses.length ? bookAlso(alsoClauses) : '';
                     const summary = [r.summary, also].filter(Boolean).join(' ');
-                    const details = [r.details].concat(main ? (texts.opsLines || []) : [], main && texts.sessionLine ? [texts.sessionLine] : [])
-                        .filter(Boolean).join('\n');
+                    const details = [r.details].concat(main ? (texts.opsLines || []) : [], main ? (texts.zdLines || []) : [],
+                        main && texts.sessionLine ? [texts.sessionLine] : []).filter(Boolean).join('\n');
                     r.e.notes = composeEntryNote(summary, [], details, r.tech);
                 }
             }
@@ -5841,7 +5978,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 normalizeMinutes(bookable, calRemainingWorkday(rows, workdayMin), ROUND_TO_MIN);
             }
         })();
-        withCalendar.then(() => {
+        const withZendesk = withCalendar.then(async () => {
+            setBookProgress(box, 0, 1, 'Reading your Zendesk cases…');
+            await attachZendesk(visits, iso);
+            // A Zendesk-only plant arriving after the panel distributed the day must share the same total
+            // on the same scale before the plan weighs the rows (v4.150).
+            const bookable = visits.filter(v => categorizeVisit(v)[CAT_CHECK] == null);
+            if (bookable.some(v => v.normalized_minutes != null) && bookable.some(v => v.normalized_minutes == null)) {
+                normalizeMinutes(bookable, bookable.reduce((n, v) => n + (v.normalized_minutes || 0), 0), ROUND_TO_MIN);
+            }
+        });
+        withZendesk.then(() => {
             const head = box.querySelector('.bookplan-head');
             if (head) head.textContent = '⤴ Book to timesheet — reading what changed…';
             setBookProgress(box, 0, Math.max(1, visits.length), 'Reading your projects…');
@@ -5875,6 +6022,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 </div>`).join('');
             const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
+                + (zdWarnText(visits._zd) ? `<div class="bookplan-warn">${esc(zdWarnText(visits._zd))}</div>` : '')
                 + '<div class="bookplan-budget">' + budgetWarnHtml(plan._budget) + '</div>'
                 + nonBillableWarnHtml(plan);
             box.innerHTML = `<div class="bookplan-head">⤴ Book ${isoToNorwegianDate(iso)} — ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to create</div>${warn}${bookProgressMarkup()}${lines}
@@ -6060,6 +6208,139 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // Load one day's visits ready for booking: full-scan cache when present (instant + complete),
     // else a quick scan over recent + footprint plants; then names, commit enrichment, and the
     // 7,5 h distribution over bookable (non-quick-check) plants.
+    // ---- Zendesk as a source (v4.150) --------------------------------------------------------------
+    // The cases you commented on, per plant-day, read with your own Zendesk browser session — the same
+    // route the Rocketlane-improvements script proved (GM request with the session cookie, one renew on a
+    // lapsed SAML session). GET only; the cookie only ever goes to ZD_API (origin pin). One search per
+    // WEEK (`commenter:me updated>=<monday>`), then each case's comments, newest first; cached per week.
+    const ZD_API = 'https://iwmac.zendesk.com/api/v2';
+    const ZD_TTL_NOW_MS = 2 * 60 * 1000, ZD_TTL_PAST_MS = 30 * 60 * 1000, ZD_DOWN_TTL_MS = 5 * 60 * 1000;
+    let _zdDownUntil = 0;
+    const _zdWeek = new Map(); // mondayIso -> { at, res }
+    function zdGetRaw(path, renew) {
+        return new Promise(resolve => {
+            const url = ZD_API + path;
+            if (!url.startsWith(ZD_API + '/')) { resolve({ status: 0, json: null }); return; }
+            GM_xmlhttpRequest({
+                method: 'GET', url,
+                headers: Object.assign({ accept: 'application/json' }, renew ? { 'X-Zendesk-Renew-Session': 'true' } : {}),
+                anonymous: false, // the browser's Zendesk session cookie rides along
+                timeout: 20000,
+                onload: r => { let j = null; try { j = JSON.parse(r.responseText); } catch (e) {} resolve({ status: r.status, json: j }); },
+                onerror: () => resolve({ status: 0, json: null }),
+                ontimeout: () => resolve({ status: 0, json: null }),
+            });
+        });
+    }
+    async function zdGet(path) {
+        let r = await zdGetRaw(path);
+        if (r.status === 401) {
+            const renew = await zdGetRaw('/users/me.json', true);
+            if (renew.status === 200) r = await zdGetRaw(path);
+        }
+        return r;
+    }
+    const _zdOsloFmt = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Oslo', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const zdOsloDate = ts => { const d = new Date(ts); return isFinite(d) ? _zdOsloFmt.format(d) : ''; };
+    async function zdWeekActivity(mondayIso) {
+        if (!GM_getValue(KEY_ZD_ENABLED, true)) return { ok: false, off: true, items: [] };
+        const sunday = addDaysISO(mondayIso, 6), today = todayISO();
+        const ttl = (today >= mondayIso && today <= sunday) ? ZD_TTL_NOW_MS : ZD_TTL_PAST_MS;
+        const hit = _zdWeek.get(mondayIso);
+        if (hit && Date.now() - hit.at < ttl) return hit.res;
+        if (Date.now() < _zdDownUntil) return { ok: false, items: [], reason: 'Zendesk unreachable (retrying in a few minutes)' };
+        let res;
+        try {
+            const me = await zdGet('/users/me.json');
+            const meId = me.json && me.json.user && me.json.user.id;
+            if (me.status !== 200 || !meId) {
+                res = { ok: false, items: [], reason: (me.status === 200 || me.status === 401 || me.status === 403) ? 'not signed in to Zendesk' : 'Zendesk unreachable' };
+            } else {
+                let fieldId = GM_getValue(KEY_ZD_PLANT_FIELD, null);
+                if (fieldId == null) {
+                    const f = await zdGet('/ticket_fields.json?per_page=100');
+                    const fl = (f.json && f.json.ticket_fields) || [];
+                    const pf = fl.find(x => /^\s*plant\s*id\s*\*?\s*$/i.test(String(x && x.title || ''))) || fl.find(x => /plant\s*id/i.test(String(x && x.title || '')));
+                    fieldId = pf ? pf.id : 0;
+                    if (f.status === 200) GM_setValue(KEY_ZD_PLANT_FIELD, fieldId);
+                }
+                const tickets = [];
+                let failed = false;
+                for (let page = 1; page <= 3; page++) {
+                    const q = new URLSearchParams({ query: `type:ticket commenter:me updated>=${mondayIso}`, sort_by: 'updated_at', sort_order: 'desc', per_page: '100', page: String(page) });
+                    const sr = await zdGet('/search.json?' + q.toString());
+                    if (sr.status !== 200 || !sr.json) { failed = true; break; }
+                    for (const t of (sr.json.results || [])) if (t && t.result_type === 'ticket') tickets.push(t);
+                    if (!sr.json.next_page) break;
+                }
+                if (failed) res = { ok: false, items: [], reason: 'Zendesk search failed' };
+                else {
+                    const items = [];
+                    await pMap(tickets, async t => {
+                        const c = await zdGet(`/tickets/${t.id}/comments.json?sort_order=desc&per_page=100`);
+                        if (c.status === 200 && c.json) items.push(...zdMyDays(t, c.json.comments || [], meId, fieldId, mondayIso, sunday, zdOsloDate));
+                    }, 4);
+                    res = { ok: true, items };
+                }
+            }
+        } catch (e) { res = { ok: false, items: [], reason: 'Zendesk unreachable' }; }
+        if (res.ok) { _zdDownUntil = 0; _zdWeek.set(mondayIso, { at: Date.now(), res }); }
+        else if (!/signed in/.test(res.reason || '')) _zdDownUntil = Date.now() + ZD_DOWN_TTL_MS;
+        LOG('zendesk:', mondayIso, res.ok ? `${res.items.length} case-days` : res.reason);
+        return res;
+    }
+    // Attach the date's Zendesk work to its visits. A plant with Zendesk work and no other activity that
+    // day becomes a visit of its own — Support, a few minutes per case — so the day's booking can hold
+    // it; you can untick it like any row. Idempotent per date.
+    async function attachZendesk(visits, iso) {
+        if (!visits || visits._zdDone === iso) return visits;
+        const act = await zdWeekActivity(mondayOfISO(iso));
+        visits._zdDone = iso;
+        visits._zd = { ok: !!act.ok, off: !!act.off, reason: act.reason || '' };
+        if (!act.ok) return visits;
+        const dayItems = (act.items || []).filter(x => x.date === iso);
+        if (!dayItems.length) return visits;
+        const names = GM_getValue(KEY_PLANT_NAMES, {}) || {};
+        const nameOf = id => cachedPlantName(names, id) || '';
+        const seen = new Set(visits.map(v => String(v.plant_id)));
+        // The day's own plants first, then the plants you have been found on (numbers and names).
+        const footprint = ((GM_getValue(KEY_USER_PLANTS, {}) || {})[effectiveUsername()] || []).map(String).filter(id => !seen.has(id));
+        const candidates = visits.map(v => ({ plant_id: String(v.plant_id), name: v.name || nameOf(v.plant_id) }))
+            .concat(footprint.map(id => ({ plant_id: id, name: nameOf(id) })));
+        const byPlant = new Map();
+        for (const it of dayItems) {
+            const pid = zdPlantFor(it, candidates);
+            if (!pid) continue;
+            if (!byPlant.has(pid)) byPlant.set(pid, []);
+            byPlant.get(pid).push(it);
+        }
+        for (const [pid, items] of byPlant) {
+            const v = visits.find(x => String(x.plant_id) === pid);
+            if (v) { v.zendesk = items; continue; }
+            const mins = zdMinutes(items);
+            const firsts = items.map(x => x.firstTs).filter(Number.isFinite), lasts = items.map(x => x.lastTs).filter(Number.isFinite);
+            visits.push({
+                plant_id: pid, name: nameOf(pid) || null,
+                first_ts: firsts.length ? Math.min(...firsts) : null, last_ts: lasts.length ? Math.max(...lasts) : null,
+                actions: ['zendesk'], action_counts: { zendesk: items.reduce((n, x) => n + x.public + x.internal, 0) }, count: items.length,
+                estimated_minutes: mins, base_minutes: mins, designer_minutes: 0, capped_gaps: [],
+                zendesk: items, zendesk_only: true,
+            });
+        }
+        visits.sort((a, b) => (a.first_ts || 0) - (b.first_ts || 0));
+        return visits;
+    }
+    // The panel row's ✉ line (v4.150).
+    function zdNoteLine(v) {
+        const items = (v && v.zendesk) || [];
+        if (!items.length) return '';
+        const lines = zendeskTechLines(items);
+        return `<span title="${escapeHtml(lines.join('\n'))}">✉ ${escapeHtml(lines[0])}${items.length > 1 ? ` +${items.length - 1} more` : ''}</span>`;
+    }
+    function zdWarnText(zd) {
+        return (zd && !zd.ok && !zd.off && zd.reason) ? `✉ Zendesk: ${zd.reason} — your cases are not included in the notes.` : '';
+    }
+
     async function loadDayForBooking(iso, onProg, overrideDates, statusCb) {
         if (iso > todayISO()) return []; // future days can't have plant work — never burn a scan on them (v4.94)
         const username = effectiveUsername();
@@ -6104,6 +6385,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             calRows = calendarResult.rows || [];
         }
         visits._calendar = calRows;
+        // Zendesk cases (v4.150): attached before anything is distributed, so a Zendesk-only plant-day
+        // shares the workday like any other row.
+        statusCb && statusCb('reading your Zendesk cases…');
+        await attachZendesk(visits, iso);
         if (!visits.length) return visits;
         const missing = visits.filter(v => !v.name).map(v => v.plant_id);
         if (missing.length) {
@@ -6321,7 +6606,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // Carry the calendar count so the row can say "no calendar events" rather than leave a
                     // silent empty calendar looking identical to a day with no meetings (v4.128) — the
                     // exact ambiguity that hid this feature's first failure, see calRowsForDate.
-                    days.push({ iso, wd: WD[i], plan, cal: (visits._calendar || []).length });
+                    days.push({ iso, wd: WD[i], plan, cal: (visits._calendar || []).length, zd: visits._zd || null });
                     // Building a week preview must not update task descriptions.
                     sayProgress(i + 1, 5, `Loaded ${dayLabel}`);
                 } catch (err) {
@@ -6376,7 +6661,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             }
             const readyRows = rows.filter(r => r.e.status === 'ready');
             const signinDays = days.filter(d => calNeedsSignin(d.calCode)).length;
+            const zdWarn = (days.map(d => zdWarnText(d.zd)).find(Boolean)) || '';
             box.innerHTML = headHtml() + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
+                + (zdWarn ? `<div class="bookplan-warn">${escapeHtml(zdWarn)}</div>` : '')
                 + (signinDays ? calSigninHtml(`${signinDays} of 5 days could not be read`) : '')
                 + (weekInfo ? `<div class="rl-week-info">${weekInfo}</div>` : '') + bookProgressMarkup() + html +
                 `<div class="bookplan-foot"><button type="button" data-b="go" ${readyRows.length ? '' : 'disabled'}>Book ${readyRows.length} entr${readyRows.length === 1 ? 'y' : 'ies'}</button><button type="button" data-b="cancel">Close</button></div>`;
@@ -6525,7 +6812,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     ${escapeHtml(v.name || '(name not yet captured)')}
                     <div class="actions">${actionChips(v.actions)}${chgBadge}</div>
                     <div class="catrow">${categoryChips(v)}</div>
-                    <div class="lognote">${logNoteLine(v)}</div>
+                    <div class="lognote">${[logNoteLine(v), zdNoteLine(v)].filter(Boolean).join('<br>')}</div>
                 </div>
                 <div class="time">
                     ${timeRange}
