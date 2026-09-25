@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.155
+// @version      4.156
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1881,7 +1881,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.155';
+    const SCRIPT_VERSION   = '4.156';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4177,6 +4177,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             ensureZendeskEnriched();
             ensureSheetTotal();
         };
+        // A repaint that no click asked for — the sheet total, the change badges, Zendesk — must not wipe
+        // a ⤴ Book day preview that is open, or still being built, in the summary (v4.156). Seen live on
+        // 2026-09-25: Book day clicked a second after the panel opened, the sheet total arrived three
+        // seconds later and repainted, and the plan was then built out of sight. The repaint now waits
+        // until the preview is closed.
+        const repaintWhenFree = () => {
+            const busy = () => !!panel.querySelector('.bookplan');
+            if (!busy()) { applyAndRender(); return; }
+            if (repaintWhenFree.timer) return;
+            repaintWhenFree.timer = setInterval(() => {
+                if (busy()) return;
+                clearInterval(repaintWhenFree.timer);
+                repaintWhenFree.timer = null;
+                applyAndRender();
+            }, 1000);
+        };
         // What the sheet already holds for the date on screen (v4.151). One weekly GET, cached a minute and
         // shared with booking; repaints only when the number changed.
         const ensureSheetTotal = async () => {
@@ -4197,7 +4213,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const min = entries.reduce((n, e) => n + (Number(e && e.minutes) > 0 ? Number(e.minutes) : 0), 0);
                 const prev = lastSheet;
                 lastSheet = { iso, min, calMin, ok: !!entries._checkOk, at: Date.now() };
-                if (iso === lastIso && (!prev || prev.iso !== iso || prev.min !== min || prev.calMin !== calMin)) applyAndRender();
+                if (iso === lastIso && (!prev || prev.iso !== iso || prev.min !== min || prev.calMin !== calMin)) repaintWhenFree();
             } catch (e) { /* the panel works without it */ }
             finally { ensureSheetTotal.busy = null; }
         };
@@ -4215,7 +4231,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // day's visits without the panel; this wrapper only keeps the stale-view guards + repaint.
             const any = await enrichVisitsWithCommits(visits, lastIso);
             if (seq !== scanSeq || visits !== lastVisits) return; // a newer view is showing
-            if (any) applyAndRender(); // repaint with badges + fused time + category summary
+            if (any) repaintWhenFree(); // repaint with badges + fused time + category summary
         };
         // Zendesk cases for the date on screen (v4.150), after the first paint — the panel never waits for
         // Zendesk. Repaints only when a case attached to a row or added a Zendesk-only plant.
@@ -4228,7 +4244,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             await attachZendesk(visits, iso);
             visits._zdPending = false;
             if (seq !== scanSeq || visits !== lastVisits) return;
-            if (visits.length !== n0 || visits.filter(v => v.zendesk).length !== z0) applyAndRender();
+            if (visits.length !== n0 || visits.filter(v => v.zendesk).length !== z0) repaintWhenFree();
         };
 
         workdayInput.addEventListener('change', () => {
