@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.151
+// @version      4.152
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1753,6 +1753,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     } = RL_RECAP_ALL_LOGS;
     const { allLogsScanScope, datesWithinRange } = RL_RECAP_ALL_LOGS; // the scan index (v4.142)
     const { scrubForTimesheet, looksLikePassword, opsFactsFromRecords, opsFactsFromLegacyNotes, mergeOpsFacts, opsHasChange } = RL_RECAP_ALL_LOGS; // v4.149
+    const { filterAllLogsRecords, allLogsChipCode, isPang1LogSystem, isSoftAllLogsRow } = RL_RECAP_ALL_LOGS; // v4.152
 
     const {
         summarizeIntegration, summarizeDrawing, summarizeActions, composeEntryNote,
@@ -1785,7 +1786,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.151';
+    const SCRIPT_VERSION   = '4.152';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -3235,7 +3236,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // already downloads every plant's complete history, so grouping all dates costs nothing extra —
     // we then cache them all so browsing any of those dates is instant. Returns
     // { dates: { iso: visits[] }, usersOnSelected, username, scanned }.
-    async function loadUserHistoryAllDates(plantIds, selectedIso, onProgress) {
+    // `extraRecords` (v4.152): All logs rows for the scanned range. pang's get_history only holds clicks;
+    // the operations log (access, alarm and plant settings, duty and call lists), plant notes, RAC commands
+    // and service logons live in All logs alone. Folding them in gives a cached day what a live All logs
+    // day has — the operations-log facts for the notes, and plants you only touched there — so booking
+    // from the cache (All logs down) no longer loses them. PANG1 rows are skipped: pang's own history
+    // already holds those clicks.
+    async function loadUserHistoryAllDates(plantIds, selectedIso, onProgress, extraRecords) {
         const username = effectiveUsername();
         const names = GM_getValue(KEY_PLANT_NAMES, {});
         if (!plantIds || plantIds.length === 0) return { dates: {}, usersOnSelected: [], username, scanned: 0 };
@@ -3262,6 +3269,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             donePlants += batch.length;
             onProgress?.(donePlants, plantIds.length, (byDate.get(selectedIso) || { size: 0 }).size);
         }, SCAN_PARALLEL);
+        let extraN = 0;
+        for (const r of filterAllLogsRecords(extraRecords || [], username)) {
+            if (isPang1LogSystem(r.system)) continue;
+            const iso = String(r.date || '').slice(0, 10), pid = String(r.plant_id).trim();
+            const t = tsFromPangDate(String(r.date));
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || !Number.isFinite(t)) continue;
+            let pm = byDate.get(iso); if (!pm) { pm = new Map(); byDate.set(iso, pm); }
+            let rec = pm.get(pid); if (!rec) { rec = { actions: new Set(), counts: {}, ev: [] }; pm.set(pid, rec); }
+            const code = allLogsChipCode(r);
+            if (code) { rec.actions.add(code); rec.counts[code] = (rec.counts[code] || 0) + 1; }
+            rec.ev.push({ t, a: code, soft: isSoftAllLogsRow(r), click: false });
+            (rec.extra = rec.extra || []).push(r);
+            extraN++;
+        }
+        if (extraN) LOG('scan: folded', extraN, 'All logs rows (operations log, notes, RAC, logons) into the scanned days');
         const dates = {};
         for (const [iso, pm] of byDate) {
             const visits = [];
@@ -3269,8 +3291,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             for (const [pid, rec] of pm) {
                 const ev = rec.ev.sort((a, b) => a.t - b.t);
                 const ts = ev.map(e => e.t);
-                for (const e of ev) events.push({ plant_id: pid, ts: e.t, action: e.a });
-                visits.push({ plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], action_counts: rec.counts, count: ev.length });
+                for (const e of ev) events.push({ plant_id: pid, ts: e.t, action: e.a, soft: !!e.soft });
+                const clicks = ev.filter(e => e.click !== false).length;
+                const v = { plant_id: pid, name: cachedPlantName(names, pid), first_ts: ts[0], last_ts: ts[ts.length - 1], actions: [...rec.actions], action_counts: rec.counts, count: clicks || ev.length };
+                if (rec.extra) {
+                    v.ops = opsFactsFromRecords(rec.extra);
+                    v.all_logs_notes = [...new Set(rec.extra.map(x => maskAllLogsComment(x.comment)).filter(Boolean))].slice(0, ALL_LOGS_NOTE_CAP);
+                }
+                visits.push(v);
             }
             const { minutes: mins, cappedGaps } = attributeTime(events);
             const draw = designerGapByPlant(events);
@@ -3369,7 +3397,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (!al.ok || al.limit_reached) return null;
         // pang's own recent list rides along: a click made seconds ago may not be mirrored yet.
         const recent = (GM_getValue(KEY_KNOWN_PLANTS, []) || []).map(String);
-        return { ids: [...allLogsScanScope(al.records, username, recent)], from: fromIso, to: toIso, records: al.records.length };
+        // v4.152: the rows themselves are kept — the scan folds the ones pang never sees into its days.
+        return { ids: [...allLogsScanScope(al.records, username, recent)], from: fromIso, to: toIso, records: al.records.length, rows: al.records };
     }
 
     // Build a full day's visits from All logs. Returns null when the tool is unreachable / the session
@@ -4189,7 +4218,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // A full scan already pulls every plant's complete history, so extract the user's
                     // visits for EVERY date in one pass and cache them all — browsing any of those dates
                     // (e.g. the rest of the month) is then instant. Then display the selected date.
-                    const all = await loadUserHistoryAllDates(plantIds, iso, onProg);
+                    const all = await loadUserHistoryAllDates(plantIds, iso, onProg, scope ? scope.rows : null);
                     markFullScanRan();      // the sweep happened — today's recommendation is satisfied
                     renderFullScanNudge();  // …so take the tip down even if this run is superseded below
                     if (seq !== scanSeq) return;
@@ -4566,7 +4595,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return { rows, grand: rows.reduce((s, r) => s + r.minutes, 0) };
     }
 
-    const catHours = m => (m / 60).toFixed(1).replace(/\.0$/, '');
+    const catHours = m => (m > 0 && m < 3) ? '<0.1' : (m / 60).toFixed(1).replace(/\.0$/, ''); // v4.152: a 2-minute share read '0 h'
 
     // Per-plant category breakdown chips (the same split that feeds the day roll-up, shown on each row so
     // you can see which plant produced each category's time). Refines once commit classes arrive.
@@ -6330,7 +6359,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         for (const id of plantIds) (pri.has(id) ? head : tail).push(id);
         plantIds = [...head, ...tail];
         const all = await loadUserHistoryAllDates(plantIds, need[0], (done, total) =>
-            statusCb && statusCb(`Full scan (${need.length} day${need.length === 1 ? '' : 's'} uncached${scope ? `, ${total} plant${total === 1 ? '' : 's'} named by All logs` : ''}) — ${done} of ${total} plants…`));
+            statusCb && statusCb(`Full scan (${need.length} day${need.length === 1 ? '' : 's'} uncached${scope ? `, ${total} plant${total === 1 ? '' : 's'} named by All logs` : ''}) — ${done} of ${total} plants…`),
+            scope ? scope.rows : null); // v4.152: All logs rows fold into the scanned days
         markFullScanRan(); // Book week swept every plant too — the panel must not recommend it again today (v4.109)
         if (!all.username) return { ok: false, reason: 'could not identify your pang user in the scan' };
         // A scoped scan is complete only for its range (v4.142); an unscoped sweep for every date it found.
