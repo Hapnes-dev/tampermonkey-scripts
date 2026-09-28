@@ -58,7 +58,9 @@ rebuilt.
   (`iw_gen_driver_parameters`: the unit, `iw_par_<table>_param` and
   `iw_set_<table>` joined, one row per unit and parameter). Each field is in
   words, with its database column small under the label so the row can still
-  be found in phpMyAdmin:
+  be found in phpMyAdmin. A field with no value is not shown at all — on the
+  whole card, not only here — and a section left with nothing is not shown
+  either (1.49.3):
   - **How IWMAC reads it** — `driver_id_extra` as sentences (*function 4 (read
     input registers), address 208, unsigned 16-bit, no swap*; *not written*),
     `driver_id_no` (the number the Plant Server log writes: *Param write:

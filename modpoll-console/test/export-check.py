@@ -498,6 +498,19 @@ check('a search stops at 200, the full list does not', findByName('parameter').l
 plantNames = savedNames;
 pointList = savedList;
 
+// --- the card leaves out a field with no value, and a section with none ---------------
+const drawnOf = sections => sections.map(s => ({ title: s.title, labels: shownRows(s.rows).map(r => r[0]) })).filter(s => s.labels.length);
+const drawn209 = drawnOf(s209);
+const blankFields = ['format', 'range', 'states', 'category', 'user attributes', 'hardware datatype', 'plant priority', 'system priority', 'driver address extra'];
+check('the card leaves out every field with no value: ' + blankFields.join(', '),
+    !drawn209.some(s => s.labels.some(l => blankFields.indexOf(l) >= 0)) &&
+    drawn209.find(s => s.title === 'How IWMAC reads it').labels.indexOf('read') >= 0 &&
+    drawn209.find(s => s.title === 'How IWMAC shows it').labels.indexOf('scale') >= 0 &&
+    drawn209.find(s => s.title === 'How IWMAC shows it').labels.indexOf('unit') >= 0, JSON.stringify(drawn209));
+check('a register with no scale shows no scale row at all', drawnOf(s001).find(s => s.title === 'How IWMAC shows it').labels.indexOf('scale') < 0, '');
+check('a section with nothing left in it is left out whole', shownRows([['x', '—'], ['y', ''], ['z', null], ['w', '  —  ']]).length === 0 &&
+    shownRows([['a', 0], ['b', 'no']]).length === 2, '');
+
 let failed = 0;
 for (const c of checks) {
     if (!c.ok) failed++;

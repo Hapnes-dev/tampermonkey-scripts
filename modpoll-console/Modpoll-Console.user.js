@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.49.2
+// @version      1.49.3
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.2';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.3';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2682,10 +2682,23 @@
     }
 
     /**
+     * The rows of a card section worth drawing: a field with no value — empty,
+     * or '—' where a section writes one for a blank column — is left out, and
+     * a section with nothing left is left out whole.
+     */
+    function shownRows(rows) {
+        return (rows || []).filter(row => {
+            const text = row[1];
+            return !(text === null || text === undefined || String(text).trim() === '' || String(text).trim() === '—');
+        });
+    }
+
+    /**
      * The card's sections for IWMAC's definition of the parameters on one
      * register — rows as [label, text, mono, tip, column], the column name
      * shown under the label. `rows` are iw_gen_driver_parameters rows, the
-     * register's own parameter first; `value` is the register as read.
+     * register's own parameter first; `value` is the register as read. A
+     * blank column is written '—', which the card leaves out (shownRows).
      */
     function iwmacDefinitionSections(rows, value) {
         const blank = v => v === null || v === undefined || v === '';
@@ -2719,7 +2732,7 @@
         const scaleText = String(main.scale) === '1'
             ? 'linear: raw ' + show(main.raw_min) + ' … ' + show(main.raw_max) + ' → ' + show(main.eng_min) + ' … ' + show(main.eng_max) +
                 (scaleWords.indexOf('x') === 0 ? '  (' + scaleWords.replace(/^x/, '×') + ')' : '')
-            : (blank(main.scale) ? 'none — shown as read' : scaleWords);
+            : (blank(main.scale) ? '—' : scaleWords);
         const shows = [
             ['alias text', show(decodeEntities(main.alias_text)), false, '', 'alias_text'],
             ['element', show(main.element_id) + (!blank(main.menu) && main.menu !== main.element_id ? '  · menu ' + main.menu : ''), true, '', 'element_id · menu'],
@@ -2727,7 +2740,7 @@
             ['scale', scaleText, false,
                 'scale = ' + show(main.scale) + ', raw_min ' + show(main.raw_min) + ', raw_max ' + show(main.raw_max) + ', eng_min ' + show(main.eng_min) + ', eng_max ' + show(main.eng_max),
                 'scale · raw_min/max · eng_min/max'],
-            ['format', blank(main.format) ? 'default' : String(main.format), true, '', 'format'],
+            ['format', show(main.format), true, '', 'format'],
             ['range', blank(main.range_min) && blank(main.range_max) ? '—' : show(main.range_min) + ' … ' + show(main.range_max), false, 'The range IWMAC allows', 'range_min · range_max'],
             ['type', show(main.parameter_type), false, '', 'parameter_type'],
             ['application', show(main.application), false, '', 'application'],
@@ -6043,9 +6056,13 @@
 
         // The facts, in columns. A row is [label, text, mono, tip, column]; the
         // column, where a row has one, is the database column it comes from.
+        // A field with no value is not drawn, and a section left with none is
+        // not drawn at all (shownRows) — null then, which the callers skip.
         const renderSection = section => {
+            const rows = shownRows(section.rows);
+            if (!rows.length) return null;
             const sec = el('div', { className: 'mpc-dsec' }, [el('h5', { textContent: section.title })]);
-            for (const [label, text, mono, tip, column] of section.rows) {
+            for (const [label, text, mono, tip, column] of rows) {
                 const shown = String(text);
                 sec.appendChild(el('div', { className: 'mpc-kv', title: tip || '' }, [
                     el('span', { className: 'mpc-k' }, column ? [String(label), el('small', { textContent: column })] : [String(label)]),
@@ -6058,7 +6075,10 @@
             return sec;
         };
         const cols = el('div', { className: 'mpc-dcols' });
-        for (const section of model.sections.slice(1)) cols.appendChild(renderSection(section));
+        for (const section of model.sections.slice(1)) {
+            const drawn = renderSection(section);
+            if (drawn) cols.appendChild(drawn);
+        }
         box.appendChild(cols);
 
         // IWMAC's own definition of every parameter on the register — the
@@ -6078,7 +6098,10 @@
                 const order = id => { const m = String(id).match(/\.(\d+)$/); return m ? Number(m[1]) + 1 : 0; };
                 rows.sort((a, b) => order(a.driver_id) - order(b.driver_id));
                 const fragment = document.createDocumentFragment();
-                for (const section of iwmacDefinitionSections(rows, value)) fragment.appendChild(renderSection(section));
+                for (const section of iwmacDefinitionSections(rows, value)) {
+                    const drawn = renderSection(section);
+                    if (drawn) fragment.appendChild(drawn);
+                }
                 waiting.replaceWith(fragment);
             }).catch(e => {
                 if (!waiting.isConnected) return;
