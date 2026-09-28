@@ -2,7 +2,7 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.12
+// @version      9.13
 // @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
@@ -809,16 +809,41 @@
 
         p('table definitions…');
         const tblMeta = {}, tblCols = {}, tblIdx = {};
+        // Each table as the plant itself spells it. A plant server on Windows
+        // keeps every table name in lower case (lower_case_table_names=1), so an
+        // order row saying db_link 'Maskin_Foredamper_param' has its table in
+        // information_schema as iw_par_maskin_foredamper_param — plant 10219. Asked
+        // for exactly, it read as missing, and the template shipped without its
+        // parameter list. So tables are matched without regard to case — an exact
+        // match first, where a case-sensitive server has one — read under the
+        // plant's own name, and written under the order row's, which is the name
+        // the rest of the template (grp_name, iw_sys_order_no) links them by.
+        const onPlant = {};
         if (tables.length) {
-            const inList = tables.map(q).join(',');
+            const inList = tables.map(t => q(t.toLowerCase())).join(',');
             const [metaR, colR, idxR] = await plantSql(plantId, [
-                `SELECT table_name, engine, table_collation, table_comment FROM information_schema.tables WHERE table_schema=${q(S)} AND table_name IN (${inList})`,
-                `SELECT table_name, column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=${q(S)} AND table_name IN (${inList}) ORDER BY table_name, ordinal_position`,
-                `SELECT table_name, index_name, non_unique, seq_in_index, column_name, sub_part FROM information_schema.statistics WHERE table_schema=${q(S)} AND table_name IN (${inList}) ORDER BY table_name, index_name, seq_in_index`,
+                `SELECT table_name, engine, table_collation, table_comment FROM information_schema.tables WHERE table_schema=${q(S)} AND LOWER(table_name) IN (${inList})`,
+                `SELECT table_name, column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=${q(S)} AND LOWER(table_name) IN (${inList}) ORDER BY table_name, ordinal_position`,
+                `SELECT table_name, index_name, non_unique, seq_in_index, column_name, sub_part FROM information_schema.statistics WHERE table_schema=${q(S)} AND LOWER(table_name) IN (${inList}) ORDER BY table_name, index_name, seq_in_index`,
             ]);
-            for (const r of (metaR.data || [])) tblMeta[r.table_name] = r;
-            for (const r of (colR.data || [])) (tblCols[r.table_name] = tblCols[r.table_name] || []).push(r);
-            for (const r of (idxR.data || [])) (tblIdx[r.table_name] = tblIdx[r.table_name] || []).push(r);
+            const metaOf = {}, colsOf = {}, idxOf = {}, namesByLower = {};
+            for (const r of (metaR.data || [])) {
+                metaOf[r.table_name] = r;
+                (namesByLower[String(r.table_name).toLowerCase()] = namesByLower[String(r.table_name).toLowerCase()] || []).push(String(r.table_name));
+            }
+            for (const r of (colR.data || [])) (colsOf[r.table_name] = colsOf[r.table_name] || []).push(r);
+            for (const r of (idxR.data || [])) (idxOf[r.table_name] = idxOf[r.table_name] || []).push(r);
+            for (const t of tables) {
+                const names = namesByLower[t.toLowerCase()] || [];
+                const actual = names.indexOf(t) >= 0 ? t : (names.length === 1 ? names[0] : null);
+                if (!actual) continue;
+                // The plant's own name goes into a FROM clause below.
+                if (!isSafeIdent(actual)) throw new Error('Unexpected table name from API: ' + actual);
+                onPlant[t] = actual;
+                tblMeta[t] = metaOf[actual];
+                if (colsOf[actual]) tblCols[t] = colsOf[actual];
+                if (idxOf[actual]) tblIdx[t] = idxOf[actual];
+            }
             for (const t of Object.keys(tblCols)) {
                 for (const c of tblCols[t]) {
                     if (!isSafeIdent(c.column_name)) throw new Error('Unexpected column name from API: ' + t + '.' + c.column_name);
@@ -827,11 +852,12 @@
         }
         const existing = tables.filter(t => tblMeta[t] && tblCols[t]);
         const missing = tables.filter(t => !tblMeta[t] || !tblCols[t]);
+        const recased = existing.filter(t => onPlant[t] !== t);
 
         p('table data…');
         const dataSel = (t, offset) =>
             `SELECT ${tblCols[t].map(c => `CAST(\`${c.column_name}\` AS CHAR) AS \`${c.column_name}\``).join(', ')}` +
-            ` FROM ${S}.\`${t}\` LIMIT ${FETCH_PAGE_ROWS}` + (offset ? ` OFFSET ${offset}` : '');
+            ` FROM ${S}.\`${onPlant[t] || t}\` LIMIT ${FETCH_PAGE_ROWS}` + (offset ? ` OFFSET ${offset}` : '');
         const tblData = {};
         if (existing.length) {
             const firstRes = await plantSql(plantId, existing.map(t => dataSel(t, 0)));
@@ -912,6 +938,10 @@
         const parts = [];
         parts.push('-- Fetched live from plant ' + plantId + ', driver ' + equipLabel + ', by ' + X_CALLER);
         parts.push('-- Donor unit rows are not copied (' + units.length + ' on the donor) - 3 example units are generated instead.');
+        if (recased.length) {
+            parts.push('-- Spelled in another case on the source plant, written as its iw_sys_order_no row names them: ' +
+                recased.map(t => onPlant[t] + ' -> ' + t).join(', '));
+        }
         if (missing.length) parts.push('-- WARNING: linked tables missing on the source plant, not included: ' + missing.join(', '));
         if (!orders.length) parts.push('-- WARNING: no iw_sys_order_no rows found for this driver, so no iw_par_/iw_set_ tables are included.');
         parts.push('');
