@@ -52,6 +52,8 @@ js += lift("    /** A driver's settings read as the connection they describe. */
 js += lift("    /**\n     * A verification as it may leave the browser", "\n    /** One markdown file per part")
 # What may be put into SQL.
 js += lift("    const RE_SQL_NAME = ", "\n    async function plantSql")
+# Find register: search, and every named register with the box empty.
+js += lift("    /**\n     * Registers by what they are called", "\n    function setGridColumns(columns)")
 js += "const plantIdFromHost = () => '2349';\n"
 js += "const watchDelta = new Map();\n"
 js += r"""
@@ -474,6 +476,27 @@ check('how IWMAC\'s driver reads a parameter, and writes one it writes, in words
     JSON.stringify({ reads: r5(1001).plant[0].iwmac.reads, writes: r5(1012).plant[0].iwmac.writes }));
 check('howToUse and fieldGuide explain reading and reads', doc5.howToUse.some(l => l.indexOf('reading first: one sentence') >= 0) &&
     !!doc5.fieldGuide['plant[].iwmac.reading'] && !!doc5.fieldGuide['plant[].iwmac.reads'], '');
+
+// --- Find register with an empty box: every named register ---------------------------
+const everyNamed = findByName('', { all: true });
+const plantEntries = [...plantNames.byRef.values()].reduce((n, list) => n + list.length, 0);
+const listPoints = pointList.points.filter(p => p.decoded.ok).length;
+check('Find with no text lists every register the plant and the list name, by table and reference',
+    everyNamed.length === plantEntries + listPoints &&
+    everyNamed.every((m, i, a) => i === 0 || a[i - 1].table < m.table || (a[i - 1].table === m.table && a[i - 1].ref <= m.ref)),
+    everyNamed.length + ' of ' + (plantEntries + listPoints));
+check('... while an empty search without the ask still finds nothing, and a search still searches',
+    findByName('').length === 0 && findByName('Romtemp').length === 2 && findByName('1001').every(m => m.ref === 1001), '');
+const savedNames = plantNames;
+const manyRefs = new Map();
+for (let r = 1; r <= 500; r++) manyRefs.set('4||' + r, [{ name: 'Parameter ' + r, group: 'g', unit: '', bit: null, plantValue: '', access: 'r', protocol: r - 1 }]);
+plantNames = { unitId: 'U500', byRef: manyRefs, rows: 500, groups: 1, undecodable: 0 };
+const savedList = pointList;
+pointList = null;
+check('a search stops at 200, the full list does not', findByName('parameter').length === 200 && findByName('', { all: true }).length === 500,
+    findByName('parameter').length + ' / ' + findByName('', { all: true }).length);
+plantNames = savedNames;
+pointList = savedList;
 
 let failed = 0;
 for (const c of checks) {

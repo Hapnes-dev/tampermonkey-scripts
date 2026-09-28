@@ -463,9 +463,11 @@ and `driver_id`.
 
 The `driver_id` ties a parameter to a register. modbusgen writes it as
 `0_<read function>_<protocol address>`, with `.<bit>` for a bit inside a
-register, behind a prefix naming plant, driver and table — so
-`2313_VENT_vent_1_1_0_3_431` is read function 3, protocol address 431, which is
-modpoll's reference 432 on table 4.
+register, behind a prefix naming plant, driver, the unit's regulator type and
+its address — so `2313_VENT_vent_1_1_0_3_431` is read function 3, protocol
+address 431, which is modpoll's reference 432 on table 4. The regulator type is
+not always the table: plant 2349's V01 is `2349_OJEXHAUST_OJ_1_1_…` in table
+`exhausto_OJ_v610`.
 
 What that buys, on any plant, with nothing loaded:
 
@@ -478,7 +480,12 @@ What that buys, on any plant, with nothing loaded:
   binary;
 - the unit list works without the Toolbox query, which is the only part that
   needs a cross-origin helper. The Toolbox is still asked first, because it alone
-  knows the resolved IP, baud rate and parity.
+  knows the resolved IP, baud rate and parity;
+- *Find register* searches the names — alias text, group, or a reference —
+  while you type, up to 200 matches; with the box empty, the button (or Enter)
+  lists every register the plant and the loaded list name, all of them, by table
+  and reference. Click one to poll it. Emptying the box while typing goes back
+  to what was on screen before.
 
 ## Verifying a modbusgen list
 

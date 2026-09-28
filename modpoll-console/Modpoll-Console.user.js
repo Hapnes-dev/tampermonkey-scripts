@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.49.1
+// @version      1.49.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5682,17 +5682,25 @@
      * Going the other way: from a name to a register. A number goes straight
      * through as a reference, so pasting either half of what you know works.
      */
-    function findByName(query) {
+    /**
+     * Registers by what they are called, or by a reference. With no text and
+     * options.all, every register the loaded list and the plant name — all of
+     * them, where a search stops at 200 so typing stays quick.
+     */
+    function findByName(query, options) {
         const text = String(query || '').trim().toLowerCase();
-        if (!text) return [];
+        const all = !text && !!(options && options.all);
+        if (!text && !all) return [];
+        const limit = all ? Infinity : 200;
         const matches = [];
-        const add = m => { if (matches.length < 200) matches.push(m); };
+        const add = m => { if (matches.length < limit) matches.push(m); };
+        const hit = (hay, ...ids) => all || hay.indexOf(text) >= 0 || ids.some(id => String(id) === text);
 
         if (pointList) {
             for (const p of pointList.points) {
                 if (!p.decoded.ok) continue;
                 const hay = (p.name + ' ' + p.group + ' ' + p.datatype).toLowerCase();
-                if (hay.indexOf(text) < 0 && String(p.ref) !== text && String(p.addr) !== text) continue;
+                if (!hit(hay, p.ref, p.addr)) continue;
                 add({
                     ref: p.ref, addr: p.protocol, name: p.name, table: p.decoded.table, format: p.decoded.format,
                     group: p.group, unit: p.unit, value: '', source: 'list', writable: p.rw === 'rw',
@@ -5704,7 +5712,7 @@
                 const [table, , ref] = key.split('|');
                 for (const entry of entries) {
                     const hay = (entry.name + ' ' + entry.group).toLowerCase();
-                    if (hay.indexOf(text) < 0 && String(ref) !== text && String(entry.protocol) !== text) continue;
+                    if (!hit(hay, ref, entry.protocol)) continue;
                     add({
                         ref: Number(ref), addr: entry.protocol, name: entry.name + (entry.bit === null ? '' : ' (bit ' + entry.bit + ')'),
                         table, format: '', group: entry.group, unit: entry.unit,
@@ -6212,10 +6220,12 @@
             const sources = [];
             if (pointList) sources.push(pointList.points.length + ' points from the list');
             if (plantNames) sources.push(plantNames.rows + ' parameters from the plant for ' + plantNames.unitId);
-            renderEmptyGrid(sources.length
-                ? 'Nothing called "' + query + '" in ' + sources.join(' and ') +
-                    '. The plant names things in its own words — try part of one, or a reference number.'
-                : 'No names are loaded yet. Pick a unit above, or press Names from plant, and the search has something to look in.');
+            renderEmptyGrid(!sources.length
+                ? 'No names are loaded yet. Pick a unit above, or press Names from plant, and the search has something to look in.'
+                : (query
+                    ? 'Nothing called "' + query + '" in ' + sources.join(' and ') +
+                        '. The plant names things in its own words — try part of one, or a reference number.'
+                    : 'No register has a name in ' + sources.join(' and ') + '.'));
             ui.summary.textContent = '';
             return;
         }
@@ -6238,8 +6248,10 @@
             frag.appendChild(tr);
         }
         ui.gridBody.appendChild(frag);
-        ui.summary.textContent = matches.length + ' match' + (matches.length === 1 ? '' : 'es') +
-            ' for "' + query + '" — click one to poll it';
+        ui.summary.textContent = query
+            ? matches.length + ' match' + (matches.length === 1 ? '' : 'es') + ' for "' + query + '" — click one to poll it'
+            : 'All ' + matches.length + ' named register' + (matches.length === 1 ? '' : 's') +
+                (plantNames ? ' of ' + plantNames.unitId : '') + (pointList ? (plantNames ? ' and the list' : ' in the list') : '') + ' — click one to poll it';
     }
 
     /**
@@ -7230,19 +7242,23 @@
         let findMatches = [];
         const runFind = async announce => {
             const query = ui.find.value.trim();
-            if (!query) {
-                // Back to whatever was on screen before the search started.
+            // An emptied box while typing goes back to whatever was on screen
+            // before the search started; an empty box and Find — the button or
+            // Enter — asks for every register there is a name for.
+            if (!query && !announce) {
                 if (lastResult) renderGrid(lastResult); else renderEmptyGrid('No registers polled yet');
                 return;
             }
             // Searching with nothing to search is the commonest way to see an
             // empty result. If a unit is chosen, fetch its names and carry on.
             if (!pointList && !plantNames && ui.units.value) await loadNamesFor(ui.units.value);
-            findMatches = findByName(query);
+            findMatches = query ? findByName(query) : findByName('', { all: true });
             renderFindResults(findMatches, query);
             if (announce) {
-                log(findMatches.length + ' match' + (findMatches.length === 1 ? '' : 'es') + ' for "' + query + '"',
-                    findMatches.length ? 'ok' : 'warn');
+                log(query
+                    ? findMatches.length + ' match' + (findMatches.length === 1 ? '' : 'es') + ' for "' + query + '"'
+                    : 'All ' + findMatches.length + ' named register' + (findMatches.length === 1 ? '' : 's') + ', by table and reference',
+                findMatches.length ? 'ok' : 'warn');
             }
         };
         // Searching while typing, after a pause short enough not to be noticed and
@@ -7265,7 +7281,8 @@
             // One match and Enter means poll it: the search is finished either way.
             if (findMatches.length === 1) pollMatch(findMatches[0]);
         });
-        const findBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Find register' });
+        const findBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Find register',
+            title: 'Find by alias text or by a reference — with the box empty, list every register the plant and the list name' });
         findBtn.addEventListener('click', () => runFind(true));
         form.appendChild(field('Find by alias text, or by a reference', ui.find, 9));
         form.appendChild(field(' ', findBtn, 3));
