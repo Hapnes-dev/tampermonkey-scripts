@@ -140,7 +140,7 @@ rejection now names the box as the way through.
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
-| Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green only when every object and container arrived, amber when any did not, and says how many |
+| Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
 | Server writes | Never — export reads the DOM, insert only renders; saving stays 100 % in the host's own buttons |
@@ -191,6 +191,37 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Green if it went in, red if it did not (v1.31.1)
+
+The first live insert with 1.31.0 — a Replace of 200 objects on plant 2313, 200 of 200
+counted on the canvas afterwards, background applied — came back **amber**: *⚠ Inserted —
+2 warnings to look at*. The two warnings were the file's layout (two objects past the
+canvas edge, four pairs of value boxes on each other). The check had shown them before
+Insert was pressed, and nothing about the insert had gone wrong.
+
+The toast's colour now answers one question: **did everything in the file reach the
+canvas?**
+
+- ✅ **green** — every object and container is on the canvas, no graphic was skipped, and
+  the background went on or you chose to keep yours;
+- ⛔ **red** — anything did not arrive: objects or containers (*3 of the 128 did not appear
+  on the canvas*), a graphic, or the background;
+- ⚠ **amber** only when the canvas could not be counted, because then nobody knows.
+
+What the check found in the file — warnings, notes, and bindings that still point at
+another plant — is listed under its own label, *From the check — about the file, not the
+insert*, below the insert's lines. It never sets the colour: it describes the file, and
+you saw it before pressing Insert. A binding to another plant moved there from red, because
+the objects did arrive, and keeping the original ids is one of the choices Insert offers. A
+green toast stays up longer the more it lists, up to 30 seconds, and hovering holds it.
+
+For node, `iwdieInsertOutcome` returns `findings` beside `lines`. Only failures to arrive
+make `tone` `err`, and only an uncounted canvas makes it `caution`.
+
+Verified in the stub host page:
+- A Replace with a file carrying one warning and two notes: 128 of 128 on the canvas, green, with the findings under their label.
+- A host that drops three objects: red, *⛔ Inserted — but 3 objects did not appear*.
+
 ### A report you can read, and a green that means it (v1.31.0)
 
 The check report had grown into one long tinted block under the form: every finding a
@@ -238,6 +269,9 @@ with what was handed to the designer, plus what was there before in Add mode. Th
   the designer dropped them*), graphics were skipped, the background failed, warnings
   remain, or the canvas could not be counted — an uncounted canvas proves nothing;
 - ⛔ **red** when nothing arrived, or bindings point at another plant.
+
+*(1.31.1 changed these colours: warnings no longer turn the toast amber, and anything that
+did not arrive turns it red — see above.)*
 
 Each fact is a line of its own, the save reminder sits underneath, and × closes it. Green
 goes by itself after ten seconds; amber and red stay until closed. A new toast replaces the

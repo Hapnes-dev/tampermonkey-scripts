@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.31.0
+// @version      1.31.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.31.0';
+var IWDIE_VERSION = '1.31.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1542,17 +1542,23 @@ function iwdieCountPhrase(objects, containers, graphics) {
 }
 
 /**
- * The verdict on an insert that has happened (v1.31.0). Green only when everything
- * the file carried is on the canvas: the canvas, counted afterwards the way Export
- * counts it, holds every object and container handed to the designer; no graphics
- * were skipped; the background went on or was deliberately kept; no warnings; no
- * bindings left pointing at another plant. Notes stay green.
+ * The verdict on an insert that has happened (v1.31.0). The colour answers one
+ * question - did everything in the file reach the canvas? (v1.31.1):
+ *   green  every object and container handed to the designer is on the canvas,
+ *          counted afterwards with the serializer Save uses; no graphics were
+ *          skipped; the background went on, or you chose to keep yours.
+ *   red    anything did not arrive - objects or containers, graphics, the background.
+ *   amber  only when the canvas could not be counted, so the answer is unknown.
+ * What the check found in the file - warnings, notes, bindings to another plant -
+ * is returned as `findings` and listed under the insert's own lines. It never
+ * colours the toast: the user saw it before pressing Insert, and it describes the
+ * file, not the insert.
  *
  * o = {summary, inserted, expected, found, countFailed, cleared, rebound,
  *      background: applied|kept|failed|none, backgroundError, graphicsSkipped,
  *      graphicsReason: present|failed, foreign, warnings, notes, details, quick}
- * Returns {tone: good|caution|err, title, lines, footer}; tone maps onto the
- * toast's colours.
+ * Returns {tone: good|caution|err, title, lines, findings, footer}; tone maps
+ * onto the toast's colours.
  */
 function iwdieInsertOutcome(o) {
   o = o || {};
@@ -1584,29 +1590,31 @@ function iwdieInsertOutcome(o) {
     lines.push(iwdieN(skipped, 'graphic was', 'graphics were') + ' skipped — ' +
       (o.graphicsReason === 'failed' ? 'the designer could not load them.' : 'the canvas already has graphics, and the designer replaces rather than merges them.'));
   }
-  if (foreign) lines.push(iwdieN(foreign, 'object still points', 'objects still point') + ' at another plant’s drivers and will not link here.');
   if (o.quick) lines.push('Inserted without the check — overlaps, objects outside the panel and unknown types were not looked for.');
-  warnings.slice(0, 3).forEach(function (w) { lines.push('⚠ ' + lead(w)); });
-  if (warnings.length > 3) lines.push('⚠ … and ' + (warnings.length - 3) + ' more');
-  notes.forEach(function (n) { lines.push('ℹ ' + lead(n)); });
+
+  var findings = [];
+  if (foreign) findings.push('⚠ ' + iwdieN(foreign, 'object still points', 'objects still point') + ' at another plant’s drivers and will not link here');
+  warnings.slice(0, 3).forEach(function (w) { findings.push('⚠ ' + lead(w)); });
+  if (warnings.length > 3) findings.push('⚠ … and ' + (warnings.length - 3) + ' more');
+  notes.forEach(function (n) { findings.push('ℹ ' + lead(n)); });
 
   var tone, title;
-  if (foreign || (inserted && missing >= inserted)) {
+  var nothing = inserted > 0 && missing >= inserted;
+  if (nothing || missing || skipped || o.background === 'failed') {
     tone = 'err';
-    title = foreign ? '⛔ Inserted, but ' + iwdieN(foreign, 'object', 'objects') + ' will not link on this plant'
-      : '⛔ Nothing from the file appeared on the canvas';
-  } else if (missing || skipped || o.background === 'failed' || o.countFailed || warnings.length) {
+    title = nothing ? '⛔ Nothing from the file appeared on the canvas'
+      : missing ? '⛔ Inserted — but ' + iwdieN(missing, 'object', 'objects') + ' did not appear'
+      : skipped ? '⛔ Inserted — but ' + iwdieN(skipped, 'graphic was', 'graphics were') + ' skipped'
+      : '⛔ Inserted — but the background did not apply';
+  } else if (o.countFailed) {
     tone = 'caution';
-    title = missing ? '⚠ Inserted — but ' + iwdieN(missing, 'object', 'objects') + ' did not appear'
-      : skipped ? '⚠ Inserted — but ' + iwdieN(skipped, 'graphic was', 'graphics were') + ' skipped'
-      : o.background === 'failed' ? '⚠ Inserted — but the background did not apply'
-      : o.countFailed ? '⚠ Inserted — but the canvas could not be counted'
-      : '⚠ Inserted — ' + iwdieN(warnings.length, 'warning', 'warnings') + ' to look at';
+    title = '⚠ Inserted — but the canvas could not be counted';
   } else {
     tone = 'good';
     title = '✅ Inserted — everything went in';
   }
-  return { tone: tone, title: title, lines: lines, footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.' };
+  return { tone: tone, title: title, lines: lines, findings: findings,
+    footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.' };
 }
 
 /** The same report as plain text, for pasting back to the AI that wrote the file. */
@@ -4333,6 +4341,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-t-title{font-weight:700;font-size:14px}',
       '.iwdie-t-lines{margin:6px 0 0;padding:0;list-style:none}',
       '.iwdie-t-lines li{margin:3px 0}',
+      '.iwdie-t-sub{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.25);font-size:11px;letter-spacing:.03em;text-transform:uppercase;opacity:.8}',
+      '.iwdie-t-findings{margin-top:3px}',
       '.iwdie-t-foot{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.25);font-size:12px;opacity:.85}',
       '.iwdie-t-x{position:absolute;top:6px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#fff;opacity:.75;font:18px/24px Arial,sans-serif;cursor:pointer;padding:0;border-radius:4px}',
       '.iwdie-t-x:hover{opacity:1;background:rgba(255,255,255,.15)}',
@@ -4511,25 +4521,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** An insert's outcome (iwdieInsertOutcome) as a toast: the title, one line
-     *  per fact, the save reminder, and × to close. Green goes by itself; amber
-     *  and red stay until closed, because they say something did not go in. */
+     *  per fact about the insert, then what the check found in the file under a
+     *  label of its own (v1.31.1) - so a ⚠ about the layout on a green toast
+     *  reads as the file's, not as a failed insert - the save reminder, and ×
+     *  to close. Green goes by itself, later the more it has to say; amber and
+     *  red stay until closed, because they say something did not go in. */
     function outcomeToast(out) {
+      var list = function (items, cls) {
+        return '<ul class="' + cls + '">' + items.map(function (l) { return '<li>' + iwdieEscHtml(l) + '</li>'; }).join('') + '</ul>';
+      };
+      var lines = out.lines || [], findings = out.findings || [];
       try {
         var t = document.createElement('div');
         t.className = 'iwdie-toast iwdie-rich iwdie-' + out.tone;
         t.setAttribute('role', out.tone === 'good' ? 'status' : 'alert');
         t.innerHTML = '<button class="iwdie-t-x" title="Close">×</button>' +
           '<div class="iwdie-t-title">' + iwdieEscHtml(out.title) + '</div>' +
-          (out.lines && out.lines.length ? '<ul class="iwdie-t-lines">' +
-            out.lines.map(function (l) { return '<li>' + iwdieEscHtml(l) + '</li>'; }).join('') + '</ul>' : '') +
+          (lines.length ? list(lines, 'iwdie-t-lines') : '') +
+          (findings.length ? '<div class="iwdie-t-sub">From the check — about the file, not the insert</div>' +
+            list(findings, 'iwdie-t-lines iwdie-t-findings') : '') +
           (out.footer ? '<div class="iwdie-t-foot">' + iwdieEscHtml(out.footer) + '</div>' : '');
         t.querySelector('.iwdie-t-x').addEventListener('click', function () {
           t.remove();
           if (liveToast === t) liveToast = null;
         });
-        showToastEl(t, out.tone === 'good' ? 10000 : 60000);
+        showToastEl(t, out.tone === 'good' ? Math.min(30000, 8000 + 1500 * (lines.length + findings.length)) : 60000);
       } catch (e) {
-        toast(out.title + '\n' + (out.lines || []).join('\n'), out.tone === 'err', 15000, out.tone === 'err' ? '' : out.tone);
+        toast(out.title + '\n' + lines.concat(findings).join('\n'), out.tone === 'err', 15000, out.tone === 'err' ? '' : out.tone);
       }
     }
 
