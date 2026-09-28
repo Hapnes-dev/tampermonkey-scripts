@@ -187,6 +187,43 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Good to know is not a warning (v1.30.0)
+
+A house panel came back amber. Plant 2313's ventilation panel — the production export and
+a relinked copy alike — read *⚠ Ready to insert, with 2 warnings*, and after Insert the
+toast turned red. Neither finding needed fixing:
+
+- **One signal shown on two objects.** The report already said *fine when the same signal is
+  meant to show twice* and counted it as a warning anyway. A damper pair on one open
+  command, or a status shown in the drawing and again in the sidebar, is how panels are
+  built.
+- **An alarm dot on a value box.** The overlap check treated every pair of live objects the
+  same, so the alarm placed on the corner of an airflow box — deliberately, to mark that
+  value with its alarm — read as a collision.
+
+Both are **notes** now: reported, never a verdict. The Insert dialog stays green — *✅ Ready
+to insert — every check passes* — with an **ℹ Good to know · nothing to fix** block under
+the headline, above the file's read-back. After Insert the toast is **green**, with each
+note as an ℹ line; it is amber when real warnings remain and red only when bindings point
+at another plant and will not resolve here.
+
+Everything that is a fault still warns: an object outside the canvas, **two value boxes on
+top of each other**, the drawing running under the settings column, an obj_id the
+catalogue does not list, counts that disagree with the arrays, and a foreign plant prefix.
+The split for overlaps is by role — a pair where one side is an alarm or LED dot is a note,
+any other pair of live objects is a warning.
+
+The dialog also reads in a better order: what decides the verdict first — errors, the
+refusal's diagnosis, warnings — then the notes, then *What the file holds*. *Copy report
+for the AI* says `clean, with 2 note(s) for information.` and lists them under *Notes (for
+information - nothing to fix)*, so an agent does not go looking for a fault.
+
+For node: `iwdieCheckFile` returns `notes` beside `warnings`; `iwdieCheckPanelGeometry(doc,
+notes)` fills the array when given one and returns the warnings alone either way; the
+dialog's markup is `iwdieCheckReportHtml(result, fileName)`, pure, so what the user sees is
+testable. Those checks now have committed tests; the "13 assertions" 1.26.0 describes below
+were never committed.
+
 ### Objects, a progress bar, and the worker that died (v1.29.0)
 
 1.28.0 froze the tab. The tracer runs in a Web Worker whose source is lifted from the
@@ -298,7 +335,9 @@ The check is a pure function, `iwdieCheckFile(text, {plantId})`, exported to nod
 covered by 13 assertions: the starter scaffold comes back clean, the 2313 panel comes back
 with its one deliberate warning, the same file checked as if on plant 9999 gets the
 foreign-prefix warning, and broken JSON, a wrong format, a bad `image_svg` and an empty
-document are each refused with the reason Insert would give.
+document are each refused with the reason Insert would give. *(Those assertions were never
+committed; 1.30.0 is the first release whose check has tests. The 2313 panel's "one
+deliberate warning" is a note since then.)*
 
 Verified live on plant 2313 with Playwright against the installed 1.26.0: the 2313 panel
 → ⚠ one warning and the full read-back; *Copy report* → "Copied — paste it back to the
@@ -346,7 +385,9 @@ refusals: objects outside the canvas (2 px of grace, because the house's own hea
 overhang by one), live objects on top of each other, the drawing running under the
 settings column, one alias linked on two objects, and obj_ids the catalogue does not
 list. Run on a real house panel it finds nine overlapping pairs and two doubled
-setpoint boxes — true, and left for the owner to judge.
+setpoint boxes — true, and left for the owner to judge. *(Since 1.30.0 an alias linked on
+two objects, and an alarm or LED dot on a value box, are notes rather than warnings — see
+above.)*
 
 The catalogue's `number_v3_40px_dark_con_down` — the cascade-setpoint box on both
 production Ventilasjon panels — now sits under `value_conn`; the 1.24.0 generator had
