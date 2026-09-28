@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.49.4
+// @version      1.49.5
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.4';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.5';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2406,6 +2406,7 @@
                 'plant[].iwmac.parameterNo': 'driver_id_no — the number the Plant Server log uses for the parameter ("Param write: 19655 = 3")',
                 'plant[].iwmac.reading': 'the whole way from the wire to the screen in one sentence: what modpoll read, what IWMAC\'s own definition makes of it, what IWMAC shows, and whether they agree',
                 'plant[].iwmac.reads': 'how IWMAC\'s driver asks the device for the parameter (driver_id_extra in words): Modbus function, address, raw type, word or byte swap; writes, where it writes it',
+                'plant[].iwmac.element': 'element_id — IWMAC\'s own id for the parameter in its table, as stored: 3x0209, alm_0_2_0, 0_123_r15_ther__s4__ …',
                 'plant[].iwmac.expected': 'the register decoded with IWMAC\'s own datatype and scale for that parameter',
                 'plant[].iwmac.agrees': 'expected against shown: true, false, or null when IWMAC shows nothing',
                 'plant[].iwmac.onlineIndicator': 'IWMAC judges the unit online by this parameter (iw_set onl_ind): if its register does not answer, the unit goes OFFLINE',
@@ -2724,6 +2725,7 @@
                 ['write', extra.write, false, 'The second half of driver_id_extra', 'driver_id_extra'],
                 ['as stored', show(main.driver_id_extra), true, '', 'driver_id_extra'],
                 ['parameter number', show(main.driver_id_no), true, 'The number the Plant Server log uses for it: "Param write: ' + show(main.driver_id_no) + ' = …"', 'driver_id_no'],
+                ['element id', show(main.element_id), true, 'IWMAC\'s own id for the parameter in its table — 3x0209, alm_0_2_0, 0_123_r15_ther__s4__ …', 'element_id'],
                 ['driver_id', show(main.driver_id), true, '', 'driver_id'],
                 ['driver group', show(main.driver_group), true, 'The driver\'s own group for the parameter', 'driver_group'],
                 ['update rate', describeUpdateFreq(main.update_freq), false, 'update_freq = ' + show(main.update_freq), 'update_freq'],
@@ -2742,7 +2744,7 @@
             : (blank(main.scale) ? '—' : scaleWords);
         const shows = [
             ['alias text', show(decodeEntities(main.alias_text)), false, '', 'alias_text'],
-            ['element', show(main.element_id) + (!blank(main.menu) && main.menu !== main.element_id ? '  · menu ' + main.menu : ''), true, '', 'element_id · menu'],
+            ['menu', !blank(main.menu) && main.menu !== main.element_id ? String(main.menu) : '—', true, 'Shown when it differs from the element id', 'menu'],
             ['unit', blank(main.eng_unit) ? '—' : decodeEntities(main.eng_unit), false, 'eng_unit as stored: ' + show(main.eng_unit), 'eng_unit'],
             ['scale', scaleText, false,
                 'scale = ' + show(main.scale) + ', raw_min ' + show(main.raw_min) + ', raw_max ' + show(main.raw_max) + ', eng_min ' + show(main.eng_min) + ', eng_max ' + show(main.eng_max),
@@ -6087,11 +6089,31 @@
             return sec;
         };
         const cols = el('div', { className: 'mpc-dcols' });
+        let whereItIs = null;
         for (const section of model.sections.slice(1)) {
             const drawn = renderSection(section);
-            if (drawn) cols.appendChild(drawn);
+            if (!drawn) continue;
+            if (section.title === 'Where it is') whereItIs = drawn;
+            cols.appendChild(drawn);
         }
         box.appendChild(cols);
+        // The element id sits beside the driver_id it belongs with, once IWMAC's
+        // definition has arrived with it — the plant's own parameter list,
+        // which the card starts from, does not carry it.
+        const showElementIds = rows => {
+            if (!whereItIs || !whereItIs.isConnected) return;
+            const ids = [...new Set(rows.map(r => r.element_id).filter(id => id !== null && id !== undefined && String(id).trim() !== ''))];
+            if (!ids.length) return;
+            const kv = el('div', { className: 'mpc-kv', title: 'IWMAC\'s own id for the parameter in its table' }, [
+                el('span', { className: 'mpc-k' }, [ids.length > 1 ? 'element ids' : 'element id', el('small', { textContent: 'element_id' })]),
+                el('span', { className: 'mpc-v mono', textContent: ids.join(', ') }),
+            ]);
+            const driverRow = [...whereItIs.querySelectorAll('.mpc-kv')].find(row => {
+                const k = row.querySelector('.mpc-k');
+                return k && k.firstChild && k.firstChild.textContent === 'driver_id';
+            });
+            if (driverRow) driverRow.after(kv); else whereItIs.appendChild(kv);
+        };
 
         // IWMAC's own definition of every parameter on the register — the
         // Plant Server's parameter view, read when the card opens (a poll never
@@ -6109,6 +6131,7 @@
                 // The register's own parameter first, then its bits in order.
                 const order = id => { const m = String(id).match(/\.(\d+)$/); return m ? Number(m[1]) + 1 : 0; };
                 rows.sort((a, b) => order(a.driver_id) - order(b.driver_id));
+                showElementIds(rows);
                 const fragment = document.createDocumentFragment();
                 for (const section of iwmacDefinitionSections(rows, value)) {
                     const drawn = renderSection(section);

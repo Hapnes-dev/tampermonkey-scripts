@@ -511,6 +511,14 @@ check('a register with no scale shows no scale row at all', drawnOf(s001).find(s
 check('a section with nothing left in it is left out whole', shownRows([['x', '—'], ['y', ''], ['z', null], ['w', '  —  ']]).length === 0 &&
     shownRows([['a', 0], ['b', 'no']]).length === 2, '');
 
+// --- the element id, as IWMAC stores it ------------------------------------------------
+check('the card gives the element id as stored, next to the driver_id, and no menu row when the menu is the same',
+    rowText(s209, 'How IWMAC reads it', 'element id') === '3x0209' &&
+    drawnOf(s209).every(s => s.labels.indexOf('menu') < 0), rowText(s209, 'How IWMAC reads it', 'element id'));
+const sDanfoss = iwmacDefinitionSections([Object.assign({}, g209, { element_id: '0_123_r15_ther__s4__', menu: '3x0209' })], 6374);
+check('an element id of any shape is shown whole, and a menu that differs gets its own row',
+    rowText(sDanfoss, 'How IWMAC reads it', 'element id') === '0_123_r15_ther__s4__' && rowText(sDanfoss, 'How IWMAC shows it', 'menu') === '3x0209', '');
+
 let failed = 0;
 for (const c of checks) {
     if (!c.ok) failed++;

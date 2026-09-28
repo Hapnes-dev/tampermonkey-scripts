@@ -64,10 +64,13 @@ rebuilt.
   - **How IWMAC reads it** — `driver_id_extra` as sentences (*function 4 (read
     input registers), address 208, unsigned 16-bit, no swap*; *not written*),
     `driver_id_no` (the number the Plant Server log writes: *Param write:
-    19655 = 3*), `driver_id`, `driver_group`, `update_freq`, `onl_ind` (whether
-    the driver judges the unit online by it), `driver_type`,
-    `hardware_datatype`, `relation`.
-  - **How IWMAC shows it** — `alias_text`, `element_id` and `menu`, `eng_unit`
+    19655 = 3*), `element_id` as stored — `3x0209`, `alm_0_2_0`,
+    `0_123_r15_ther__s4__`, whatever the table uses — `driver_id`,
+    `driver_group`, `update_freq`, `onl_ind` (whether the driver judges the unit
+    online by it), `driver_type`, `hardware_datatype`, `relation`. The element
+    id is also put under `driver_id` in *Where it is* once it has arrived: the
+    plant's own parameter list, which the card starts from, does not carry it.
+  - **How IWMAC shows it** — `alias_text`, `menu` where it differs from the element id, `eng_unit`
     decoded (`&#037` is %), the scale spelled out (*linear: raw 0 … 1000 → 0 …
     10 (×0.01)*), `format`, `range_min`/`range_max`, `parameter_type`,
     `application`, `att`, `grp`, `category_id`, `user_attribs`, and the state
