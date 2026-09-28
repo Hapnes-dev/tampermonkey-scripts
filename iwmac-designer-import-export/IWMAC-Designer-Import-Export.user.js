@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.30.0
+// @version      1.31.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.30.0';
+var IWDIE_VERSION = '1.31.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1189,12 +1189,25 @@ function iwdieDuctLinesFromSvg(svgText) {
  * go into `notes` instead, when the caller passes an array for them: one signal
  * shown on two objects, and an alarm or LED dot placed on the corner of a value box.
  * A caller that passes no array gets the warnings alone, as before.
+ *
+ * `details` (v1.31.0), when given an object, maps each message string to
+ * {lead, items, why}: the headline, EVERY item the message only samples, and the
+ * explanation - so the dialog can show a short line with the full list folded
+ * under it. The message strings themselves are unchanged.
  */
+/** "1 object" / "3 objects" - for headlines people read, where "object(s)" does not. */
+function iwdieN(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
 var IWDIE_STATUS_ROLES = { alarm: 1, led: 1 };
 
-function iwdieCheckPanelGeometry(doc, notes) {
+function iwdieCheckPanelGeometry(doc, notes, details) {
   var warnings = [];
   notes = Array.isArray(notes) ? notes : [];
+  details = (details && typeof details === 'object') ? details : {};
+  var say = function (list, message, lead, items, why) {
+    list.push(message);
+    details[message] = { lead: lead, items: items.slice(), why: why || '' };
+  };
   var so = (doc && Array.isArray(doc.single_objects)) ? doc.single_objects : [];
   if (!so.length) return warnings;
   var W = parseInt(doc.panel_width, 10), H = parseInt(doc.panel_height, 10);
@@ -1207,7 +1220,10 @@ function iwdieCheckPanelGeometry(doc, notes) {
     // 2 px of grace: the house's own 250-wide headers sit at x 1151 and overhang a 1400 canvas by one
     so.forEach(function (o) { var b = box(o); if (b.l < -2 || b.t < -2 || b.r > W + 2 || b.b > H + 2) outside.push(label(o)); });
   }
-  if (outside.length) warnings.push(outside.length + ' object(s) reach outside the ' + W + 'x' + H + ' canvas: ' + outside.slice(0, 3).join(', ') + (outside.length > 3 ? ', …' : ''));
+  if (outside.length) {
+    say(warnings, outside.length + ' object(s) reach outside the ' + W + 'x' + H + ' canvas: ' + outside.slice(0, 3).join(', ') + (outside.length > 3 ? ', …' : ''),
+      iwdieN(outside.length, 'object reaches', 'objects reach') + ' outside the ' + W + '×' + H + ' canvas', outside, 'they will be cut off or out of reach');
+  }
 
   var live = so.filter(function (o) { return IWDIE_LIVE_ROLES[iwdieRoleOf(o.obj_id)]; });
   var overlaps = [], dots = [];
@@ -1223,14 +1239,23 @@ function iwdieCheckPanelGeometry(doc, notes) {
       }
     }
   }
-  if (overlaps.length) warnings.push(overlaps.length + ' pair(s) of live objects overlap: ' + overlaps.slice(0, 3).join('; ') + (overlaps.length > 3 ? '; …' : ''));
-  if (dots.length) notes.push(dots.length + ' alarm or LED dot(s) sit on a value box: ' + dots.slice(0, 3).join('; ') + (dots.length > 3 ? '; …' : '') + ' - the usual way to mark a value with its alarm.');
+  if (overlaps.length) {
+    say(warnings, overlaps.length + ' pair(s) of live objects overlap: ' + overlaps.slice(0, 3).join('; ') + (overlaps.length > 3 ? '; …' : ''),
+      iwdieN(overlaps.length, 'pair of value boxes sits', 'pairs of value boxes sit') + ' on top of each other', overlaps, 'one hides the other on the panel');
+  }
+  if (dots.length) {
+    say(notes, dots.length + ' alarm or LED dot(s) sit on a value box: ' + dots.slice(0, 3).join('; ') + (dots.length > 3 ? '; …' : '') + ' - the usual way to mark a value with its alarm.',
+      iwdieN(dots.length, 'alarm or LED dot sits', 'alarm or LED dots sit') + ' on a value box', dots, 'the usual way to mark a value with its alarm');
+  }
 
   var COLUMN = 1145;
   var hasColumn = so.some(function (o) { return /header/.test(String(o.obj_id)) && num(o.posLeft) >= COLUMN; });
   if (hasColumn) {
     var crossing = so.filter(function (o) { var b = box(o); return b.l < COLUMN && b.r > COLUMN + 5; }).map(label);
-    if (crossing.length) warnings.push(crossing.length + ' object(s) run from the drawing into the settings column (x ' + COLUMN + '): ' + crossing.slice(0, 3).join(', ') + (crossing.length > 3 ? ', …' : ''));
+    if (crossing.length) {
+      say(warnings, crossing.length + ' object(s) run from the drawing into the settings column (x ' + COLUMN + '): ' + crossing.slice(0, 3).join(', ') + (crossing.length > 3 ? ', …' : ''),
+        iwdieN(crossing.length, 'object runs', 'objects run') + ' from the drawing into the settings column', crossing, 'the column starts at x ' + COLUMN);
+    }
   }
 
   var seen = {}, dup = [];
@@ -1240,7 +1265,12 @@ function iwdieCheckPanelGeometry(doc, notes) {
     if (!a) return;
     if (seen[a]) { if (seen[a] === 1) dup.push(a); seen[a]++; } else seen[a] = 1;
   });
-  if (dup.length) notes.push(dup.length + ' signal(s) are shown on more than one object: ' + dup.slice(0, 2).join(' | ') + (dup.length > 2 ? ' | …' : '') + ' - usual for a damper pair on one command, or a status shown in the drawing and the sidebar.');
+  if (dup.length) {
+    say(notes, dup.length + ' signal(s) are shown on more than one object: ' + dup.slice(0, 2).join(' | ') + (dup.length > 2 ? ' | …' : '') + ' - usual for a damper pair on one command, or a status shown in the drawing and the sidebar.',
+      iwdieN(dup.length, 'signal is', 'signals are') + ' shown on more than one object',
+      dup.map(function (a) { return a + ' (×' + seen[a] + ')'; }),
+      'usual for a damper pair on one command, or a status in the drawing and the sidebar');
+  }
 
   // listed under any role, even "other", is known; only an id the catalogue has never seen is flagged
   var unknown = {};
@@ -1250,7 +1280,11 @@ function iwdieCheckPanelGeometry(doc, notes) {
     unknown[id] = (unknown[id] || 0) + 1;
   });
   var unk = Object.keys(unknown);
-  if (unk.length) warnings.push(unk.length + ' obj_id(s) the catalogue does not list: ' + unk.slice(0, 3).join(', ') + (unk.length > 3 ? ', …' : '') + ' - legal if they are palette ids, broken if typed from memory.');
+  if (unk.length) {
+    say(warnings, unk.length + ' obj_id(s) the catalogue does not list: ' + unk.slice(0, 3).join(', ') + (unk.length > 3 ? ', …' : '') + ' - legal if they are palette ids, broken if typed from memory.',
+      iwdieN(unk.length, 'object type', 'object types') + ' the catalogue does not list', unk.map(function (id) { return id + ' (×' + unknown[id] + ')'; }),
+      'fine if they are real palette ids, broken if typed from memory');
+  }
   return warnings;
 }
 
@@ -1266,7 +1300,7 @@ function iwdieCheckPanelGeometry(doc, notes) {
  */
 function iwdieCheckFile(text, opts) {
   opts = opts || {};
-  var out = { verdict: 'refused', errors: [], warnings: [], notes: [], facts: [], doc: null, meta: null };
+  var out = { verdict: 'refused', errors: [], warnings: [], notes: [], facts: [], details: {}, overview: null, doc: null, meta: null };
   var parsed;
   try { parsed = JSON.parse(String(text == null ? '' : text)); }
   catch (e) {
@@ -1289,7 +1323,7 @@ function iwdieCheckFile(text, opts) {
   if (res.doc && typeof res.doc.image_svg === 'string' && res.doc.image_svg) {
     out.errors = out.errors.concat(iwdieValidateSvg(res.doc.image_svg));
   }
-  if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc, out.notes));
+  if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc, out.notes, out.details));
 
   var so = (res.doc && Array.isArray(res.doc.single_objects)) ? res.doc.single_objects : [];
   var total = so.length + ((res.doc && Array.isArray(res.doc.containers)) ? res.doc.containers.length : 0);
@@ -1329,6 +1363,22 @@ function iwdieCheckFile(text, opts) {
   else f.push('Background: none — Insert takes it, Compile renders no picture behind the objects.');
   if (summary.extent && summary.extent.objects_outside_canvas) f.push(summary.extent.objects_outside_canvas + ' object(s) outside the canvas.');
 
+  // v1.31.0: the same read-back as fields, for the dialog's at-a-glance grid
+  out.overview = {
+    panel: (res.doc && res.doc.panel_name) || '',
+    plant: (res.doc && res.doc.plant_id) ? String(res.doc.plant_id) : '',
+    generator: (res.meta && res.meta.generator) || '',
+    here: opts.plantId ? String(opts.plantId) : '',
+    objects: summary.objects.single_objects, containers: summary.objects.containers, graphics: summary.objects.graphics,
+    linked: summary.linking.linked_to_a_parameter, unlinked: summary.linking.unlinked,
+    units: summary.units_referenced.map(function (u) { return u.unit_id + ' (' + u.objects + ')'; }),
+    prefixes: prefixes,
+    background: (res.doc && res.doc.image_svg) ? 'SVG artwork' : iwdieDocHasBackground(res.doc) ? 'embedded picture' : 'none',
+    sections: (summary.layout && summary.layout.sections || []).map(function (h) { return h.title || '(untitled)'; }),
+    roles: (summary.roles || []).map(function (r) { return r.objects + ' ' + r.role; }),
+    ducts: (summary.layout && summary.layout.duct_lines) ? summary.layout.duct_lines.length : 0
+  };
+
   out.verdict = out.errors.length ? 'refused' : (out.warnings.length ? 'warnings' : 'clean');
   if (out.verdict === 'refused' && !out.diagnosis && res.doc) out.diagnosis = iwdieDiagnoseDoc(res.doc, out.errors, out.warnings);
   return out;
@@ -1337,35 +1387,226 @@ function iwdieCheckFile(text, opts) {
 function iwdieEscHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 /**
- * The check report as the Insert dialog shows it (v1.30.0: pure, so node can test
- * what the user sees). What decides the verdict comes first - errors, the refusal
- * diagnosis, warnings - then the notes in their own "Good to know" block, then the
- * file's read-back. Notes never colour the box: a clean file with notes is green.
+ * The check report as the Insert dialog shows it - pure, so node can test what the
+ * user sees. v1.31.0 layout, top to bottom: a verdict banner; an at-a-glance grid
+ * of what the file is; errors, warnings and notes as short headlines, each with
+ * its full list folded under "show all"; the rest of the read-back folded under
+ * "File details". Per-object findings of one kind are grouped into one line.
+ * Notes never colour the verdict: a clean file with notes is green.
  * Returns {className, html}; the modal adds the buttons and wires them.
  */
+var IWDIE_FINDING_GROUPS = [
+  { re: /^single_objects\[(\d+)\]\.(\w+) is missing\/non-numeric — it will land at 0\.$/,
+    item: function (m) { return 'object ' + m[1] + ': ' + m[2]; },
+    lead: function (n) { return iwdieN(n, 'position field is missing or not a number', 'position fields are missing or not numbers'); },
+    why: 'those objects land at 0' },
+  { re: /^single_objects\[(\d+)\] has no "obj_id"/,
+    item: function (m) { return 'object ' + m[1]; },
+    lead: function (n) { return iwdieN(n, 'object has no obj_id', 'objects have no obj_id'); },
+    why: 'the designer cannot draw an object without its type' },
+  { re: /^single_objects\[(\d+)\] is not an object\./,
+    item: function (m) { return 'entry ' + m[1]; },
+    lead: function (n) { return iwdieN(n, 'entry in single_objects is not an object', 'entries in single_objects are not objects'); },
+    why: '' },
+  { re: /^containers\[(\d+)\] is not an object\./,
+    item: function (m) { return 'entry ' + m[1]; },
+    lead: function (n) { return iwdieN(n, 'entry in containers is not an object', 'entries in containers are not objects'); },
+    why: '' }
+];
+
+/** Findings as the dialog lists them: one {lead, why, items} per kind. Messages
+ *  that name one object each are folded into a single line by
+ *  IWDIE_FINDING_GROUPS; messages with an entry in `details` take its headline
+ *  and full list; anything else is shown as it is. */
+function iwdieGroupFindings(list, details) {
+  var out = [], buckets = [];
+  (list || []).forEach(function (msg) {
+    for (var g = 0; g < IWDIE_FINDING_GROUPS.length; g++) {
+      var m = IWDIE_FINDING_GROUPS[g].re.exec(msg);
+      if (m) {
+        if (!buckets[g]) { buckets[g] = { group: IWDIE_FINDING_GROUPS[g], items: [] }; out.push(buckets[g]); }
+        buckets[g].items.push(IWDIE_FINDING_GROUPS[g].item(m));
+        return;
+      }
+    }
+    var d = details && details[msg];
+    out.push(d ? { lead: d.lead, why: d.why, items: d.items } : { lead: msg, why: '', items: [] });
+  });
+  return out.map(function (x) {
+    return x.group ? { lead: x.group.lead(x.items.length), why: x.group.why, items: x.items } : x;
+  });
+}
+
+/** One finding per line: the headline in bold, why it matters after it, and the
+ *  full list folded under "show all" so a long one never floods the dialog. */
+function iwdieFindingsHtml(list, details) {
+  var esc = iwdieEscHtml;
+  return '<ul class="iwdie-findings">' + iwdieGroupFindings(list, details).map(function (f) {
+    var items = f.items || [];
+    return '<li><b>' + esc(f.lead) + '</b>' + (f.why ? ' <span class="iwdie-why">— ' + esc(f.why) + '</span>' : '') +
+      (items.length ? '<details class="iwdie-items"><summary>' + (items.length === 1 ? 'show it' : 'show all ' + items.length) +
+        '</summary><ul>' + items.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></details>' : '') + '</li>';
+  }).join('') + '</ul>';
+}
+
+function iwdieDiagnosisHtml(diag) {
+  var esc = iwdieEscHtml;
+  if (!diag || !diag.headline) return '';
+  return '<div class="iwdie-diag"><b>' + esc(diag.headline) + '</b>' +
+    (diag.facts && diag.facts.length ? '<ul>' + diag.facts.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>' : '') + '</div>';
+}
+
 function iwdieCheckReportHtml(result, fileName) {
   var esc = iwdieEscHtml;
   var notes = result.notes || [];
-  var headline = result.verdict === 'refused' ? '⛔ Not inserted — the file is refused' :
-    result.verdict === 'warnings' ? '⚠ Ready to insert, with ' + result.warnings.length + ' warning' + (result.warnings.length === 1 ? '' : 's') :
-    '✅ Ready to insert — every check passes';
-  var list = function (items) { return '<ul>' + items.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>'; };
-  var html = '<div class="iwdie-headline"><b>' + esc(headline) + '</b> <span class="iwdie-hint">' + esc(fileName || '') + '</span></div>';
-  if (result.errors.length) html += '<i>Errors — fix these first:</i>' + list(result.errors);
-  var diag = result.diagnosis;
-  if (result.verdict === 'refused' && diag && diag.headline) {
-    html += '<div class="iwdie-diag"><b>' + esc(diag.headline) + '</b>' +
-      (diag.facts && diag.facts.length ? list(diag.facts) : '') + '</div>';
+  var nw = result.warnings.length;
+  var title = result.verdict === 'refused' ? '⛔ This file cannot be inserted' :
+    result.verdict === 'warnings' ? '⚠ Ready to insert — ' + iwdieN(nw, 'warning', 'warnings') + ' to look at' :
+    '✅ Ready to insert';
+  var sub = result.verdict === 'refused' ? 'Fix the errors below first. Nothing has touched the canvas.' :
+    result.verdict === 'warnings' ? 'It goes in as it is — the warnings say what may look wrong on the panel.' :
+    'Every check passes' + (notes.length ? ' — ' + iwdieN(notes.length, 'thing', 'things') + ' good to know below.' : '.');
+  var html = '<div class="iwdie-verdict"><div class="iwdie-v-title">' + esc(title) + '</div>' +
+    '<div class="iwdie-v-sub">' + esc(sub) + '</div>' +
+    (fileName ? '<div class="iwdie-v-file">' + esc(fileName) + '</div>' : '') + '</div>';
+
+  var ov = result.overview;
+  if (ov) {
+    var cell = function (k, v) { return '<div class="iwdie-g-k">' + esc(k) + '</div><div class="iwdie-g-v">' + esc(v) + '</div>'; };
+    var plant = ov.plant ? (ov.here && ov.here !== ov.plant ? ov.plant + ' (you are on ' + ov.here + ')' : ov.plant) : '—';
+    html += '<div class="iwdie-glance">' +
+      cell('Panel', ov.panel || '—') +
+      cell('Plant', plant) +
+      cell('Contents', iwdieCountPhrase(ov.objects, ov.containers, ov.graphics)) +
+      cell('Linked', ov.linked + ' linked · ' + ov.unlinked + ' unlinked') +
+      cell('Background', ov.background) +
+      cell('Made by', ov.generator || '—') + '</div>';
   }
-  if (result.warnings.length) html += '<i>Warnings:</i>' + list(result.warnings);
+
+  if (result.errors.length) {
+    html += '<div class="iwdie-sec iwdie-sec-bad"><div class="iwdie-sec-h">Errors — fix these first</div>' + iwdieFindingsHtml(result.errors, result.details) + '</div>';
+  }
+  if (result.verdict === 'refused') html += iwdieDiagnosisHtml(result.diagnosis);
+  if (nw) html += '<div class="iwdie-sec iwdie-sec-warn"><div class="iwdie-sec-h">Warnings</div>' + iwdieFindingsHtml(result.warnings, result.details) + '</div>';
   if (notes.length && result.verdict !== 'refused') {
-    html += '<div class="iwdie-notes"><b>ℹ Good to know</b> <span class="iwdie-hint">nothing to fix</span>' + list(notes) + '</div>';
+    html += '<div class="iwdie-sec iwdie-sec-info iwdie-notes"><div class="iwdie-sec-h">ℹ Good to know <span class="iwdie-hint">nothing to fix</span></div>' +
+      iwdieFindingsHtml(notes, result.details) + '</div>';
   }
-  if (result.facts.length) html += '<i>What the file holds:</i>' + list(result.facts);
+
+  var more = [];
+  if (ov) {
+    if (ov.sections.length) more.push('Sections: ' + ov.sections.join(' / '));
+    if (ov.roles.length) more.push('Roles: ' + ov.roles.join(', '));
+    if (ov.units.length) more.push('Units: ' + ov.units.join(', '));
+    if (ov.prefixes.length) more.push('Driver ids carry plant prefix ' + ov.prefixes.join(', '));
+    if (ov.ducts) more.push(iwdieN(ov.ducts, 'straight duct run', 'straight duct runs') + ' in the artwork');
+  } else {
+    more = (result.facts || []).slice();
+  }
+  if (more.length) {
+    html += '<details class="iwdie-more"' + (result.verdict === 'refused' ? ' open' : '') + '><summary>File details</summary><ul>' +
+      more.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></details>';
+  }
   return {
     className: 'iwdie-errlist' + (result.verdict === 'warnings' ? ' iwdie-warn' : result.verdict === 'clean' ? ' iwdie-ok' : ''),
     html: html
   };
+}
+
+/** The dialog when Insert itself stops (v1.31.0): the check report's red banner
+ *  and grouped findings, for a failure found at insert time. opts.title and
+ *  opts.sub replace the banner's two lines - for the one failure that comes
+ *  after the canvas was touched, "nothing was changed" would be untrue. */
+function iwdieBlockedReportHtml(errors, warnings, diagnosis, opts) {
+  var esc = iwdieEscHtml;
+  opts = opts || {};
+  var html = '<div class="iwdie-verdict"><div class="iwdie-v-title">' + esc(opts.title || '⛔ Not inserted') + '</div>' +
+    '<div class="iwdie-v-sub">' + esc(opts.sub || 'Nothing on the canvas was changed.') + '</div></div>' +
+    '<div class="iwdie-sec iwdie-sec-bad"><div class="iwdie-sec-h">' + ((errors || []).length === 1 ? 'Why' : 'Errors — fix these first') + '</div>' +
+    iwdieFindingsHtml(errors || [], null) + '</div>' +
+    iwdieDiagnosisHtml(diagnosis);
+  if (warnings && warnings.length) {
+    html += '<div class="iwdie-sec iwdie-sec-warn"><div class="iwdie-sec-h">Warnings</div>' + iwdieFindingsHtml(warnings, null) + '</div>';
+  }
+  return { className: 'iwdie-errlist', html: html };
+}
+
+/** "128 objects", "12 objects and 1 container", "nothing" - for buttons and toasts. */
+function iwdieCountPhrase(objects, containers, graphics) {
+  var parts = [];
+  if (objects) parts.push(iwdieN(objects, 'object', 'objects'));
+  if (containers) parts.push(iwdieN(containers, 'container', 'containers'));
+  if (graphics) parts.push(iwdieN(graphics, 'graphic', 'graphics'));
+  if (!parts.length) return 'nothing';
+  return parts.length === 1 ? parts[0] : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+}
+
+/**
+ * The verdict on an insert that has happened (v1.31.0). Green only when everything
+ * the file carried is on the canvas: the canvas, counted afterwards the way Export
+ * counts it, holds every object and container handed to the designer; no graphics
+ * were skipped; the background went on or was deliberately kept; no warnings; no
+ * bindings left pointing at another plant. Notes stay green.
+ *
+ * o = {summary, inserted, expected, found, countFailed, cleared, rebound,
+ *      background: applied|kept|failed|none, backgroundError, graphicsSkipped,
+ *      graphicsReason: present|failed, foreign, warnings, notes, details, quick}
+ * Returns {tone: good|caution|err, title, lines, footer}; tone maps onto the
+ * toast's colours.
+ */
+function iwdieInsertOutcome(o) {
+  o = o || {};
+  var warnings = o.warnings || [];
+  var notes = o.notes || [];
+  var details = o.details || {};
+  var lead = function (m) { return (details[m] && details[m].lead) || m; };
+  var inserted = Number(o.inserted) || 0;
+  var counted = !o.countFailed && o.found != null && !isNaN(Number(o.found));
+  var found = counted ? Number(o.found) : null;
+  var expected = Number(o.expected) || 0;
+  var missing = (counted && found < expected) ? Math.min(expected - found, inserted) : 0;
+  var foreign = Number(o.foreign) || 0;
+  var skipped = Number(o.graphicsSkipped) || 0;
+
+  var lines = [];
+  if (o.cleared) lines.push('Replaced the panel: the ' + iwdieN(o.cleared, 'object', 'objects') + ' on it were cleared first.');
+  lines.push('From the file: ' + (o.summary || iwdieN(inserted, 'object', 'objects')) + '.');
+  if (counted && inserted) {
+    lines.push(missing ? missing + ' of the ' + inserted + ' did not appear on the canvas — the designer dropped them.'
+      : (inserted === 1 ? 'It is on the canvas.' : 'All ' + inserted + ' are on the canvas.'));
+  }
+  if (o.countFailed) lines.push('The canvas could not be counted afterwards — look the panel over before you save.');
+  if (o.rebound) lines.push(String(o.rebound) + '.');
+  if (o.background === 'applied') lines.push('Background applied.');
+  else if (o.background === 'kept') lines.push('The panel kept its own background, as you chose.');
+  else if (o.background === 'failed') lines.push('The file’s background could not be applied' + (o.backgroundError ? ': ' + o.backgroundError : '') + '.');
+  if (skipped) {
+    lines.push(iwdieN(skipped, 'graphic was', 'graphics were') + ' skipped — ' +
+      (o.graphicsReason === 'failed' ? 'the designer could not load them.' : 'the canvas already has graphics, and the designer replaces rather than merges them.'));
+  }
+  if (foreign) lines.push(iwdieN(foreign, 'object still points', 'objects still point') + ' at another plant’s drivers and will not link here.');
+  if (o.quick) lines.push('Inserted without the check — overlaps, objects outside the panel and unknown types were not looked for.');
+  warnings.slice(0, 3).forEach(function (w) { lines.push('⚠ ' + lead(w)); });
+  if (warnings.length > 3) lines.push('⚠ … and ' + (warnings.length - 3) + ' more');
+  notes.forEach(function (n) { lines.push('ℹ ' + lead(n)); });
+
+  var tone, title;
+  if (foreign || (inserted && missing >= inserted)) {
+    tone = 'err';
+    title = foreign ? '⛔ Inserted, but ' + iwdieN(foreign, 'object', 'objects') + ' will not link on this plant'
+      : '⛔ Nothing from the file appeared on the canvas';
+  } else if (missing || skipped || o.background === 'failed' || o.countFailed || warnings.length) {
+    tone = 'caution';
+    title = missing ? '⚠ Inserted — but ' + iwdieN(missing, 'object', 'objects') + ' did not appear'
+      : skipped ? '⚠ Inserted — but ' + iwdieN(skipped, 'graphic was', 'graphics were') + ' skipped'
+      : o.background === 'failed' ? '⚠ Inserted — but the background did not apply'
+      : o.countFailed ? '⚠ Inserted — but the canvas could not be counted'
+      : '⚠ Inserted — ' + iwdieN(warnings.length, 'warning', 'warnings') + ' to look at';
+  } else {
+    tone = 'good';
+    title = '✅ Inserted — everything went in';
+  }
+  return { tone: tone, title: title, lines: lines, footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.' };
 }
 
 /** The same report as plain text, for pasting back to the AI that wrote the file. */
@@ -4087,24 +4328,70 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-toast.iwdie-err{background:rgba(140,30,30,.96)}',
       '.iwdie-toast.iwdie-good{background:rgba(30,110,50,.96)}',
       '.iwdie-toast.iwdie-caution{background:rgba(150,100,10,.96)}',
+      /* An insert's outcome (v1.31.0): title, facts, the save reminder, and a × */
+      '.iwdie-toast.iwdie-rich{white-space:normal;text-align:left;min-width:360px;max-width:600px;max-height:60vh;overflow:auto;padding:12px 40px 12px 16px}',
+      '.iwdie-t-title{font-weight:700;font-size:14px}',
+      '.iwdie-t-lines{margin:6px 0 0;padding:0;list-style:none}',
+      '.iwdie-t-lines li{margin:3px 0}',
+      '.iwdie-t-foot{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.25);font-size:12px;opacity:.85}',
+      '.iwdie-t-x{position:absolute;top:6px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#fff;opacity:.75;font:18px/24px Arial,sans-serif;cursor:pointer;padding:0;border-radius:4px}',
+      '.iwdie-t-x:hover{opacity:1;background:rgba(255,255,255,.15)}',
       '.iwdie-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99998}',
       '.iwdie-panel{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:520px;max-width:92vw;max-height:86vh;overflow:auto;',
       '  background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.5);z-index:99999;font:13px/1.5 Roboto,Arial,sans-serif;color:#222;padding:18px 20px}',
       '.iwdie-panel h3{margin:0 0 10px;font-size:15px}',
       '.iwdie-panel label{display:block;margin:10px 0 4px;font-weight:500}',
-      '.iwdie-drop{border:2px dashed #9aa7b3;border-radius:6px;padding:18px;text-align:center;color:#667;margin:8px 0}',
+      '.iwdie-drop{border:2px dashed #9aa7b3;border-radius:6px;padding:18px;text-align:center;color:#556;margin:8px 0;cursor:pointer}',
+      '.iwdie-drop:hover,.iwdie-drop:focus{border-color:#2f6fb2;outline:none}',
       '.iwdie-drop.iwdie-over{border-color:#2f6fb2;color:#2f6fb2;background:#eef5fc}',
+      /* The Insert dialog (v1.31.0): the source form, then the review in its place */
+      '.iwdie-panel.iwdie-import{width:600px}',
+      '.iwdie-intro{color:#3b4550;margin:0 0 4px}',
+      '.iwdie-pick{color:#2f6fb2;text-decoration:underline;font-weight:600}',
+      '.iwdie-or{margin:12px 0 4px;color:#7a8590;font-size:12px}',
+      '.iwdie-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}',
+      '.iwdie-actions .iwdie-btn{margin:0}',
+      '.iwdie-actions .iwdie-link{margin-left:auto}',
+      '.iwdie-btn.iwdie-quick{background:#fff;color:#2f6fb2;box-shadow:inset 0 0 0 1px #2f6fb2}',
+      '.iwdie-btn.iwdie-quick:hover{background:#eef4fa}',
+      '.iwdie-link{background:none;border:none;color:#2f6fb2;cursor:pointer;font:13px Roboto,Arial,sans-serif;padding:6px 2px}',
+      '.iwdie-link:hover{text-decoration:underline}',
+      '.iwdie-review-foot{position:sticky;bottom:-18px;margin:10px -20px -18px;padding:10px 20px 14px;background:#fff;border-top:1px solid #e1e6eb}',
+      '.iwdie-review-foot .iwdie-actions{margin-top:0}',
+      '.iwdie-foot-note{margin-top:8px;color:#5a6570;font-size:12px}',
+      '.iwdie-options{margin-top:14px;border-top:1px solid #e1e6eb;padding-top:8px}',
+      '.iwdie-options>summary{cursor:pointer;color:#3b4550;font-weight:500;user-select:none}',
+      '.iwdie-options .iwdie-opt{margin-top:8px}',
       '.iwdie-panel textarea{width:100%;height:110px;box-sizing:border-box;font:12px/1.4 Consolas,monospace}',
       '.iwdie-btn{display:inline-block;background:#2f6fb2;color:#fff;border:none;border-radius:4px;padding:7px 14px;margin:8px 8px 0 0;cursor:pointer;font:13px Roboto,Arial,sans-serif}',
       '.iwdie-btn:hover{background:#265d96}',
       '.iwdie-btn.iwdie-secondary{background:#7a8794}',
-      '.iwdie-errlist{background:#fdf0f0;border:1px solid #e3b3b3;border-radius:6px;padding:10px 14px;margin:8px 0;max-height:420px;overflow:auto}',
-      '.iwdie-errlist li{margin:4px 0}',
-      '.iwdie-errlist.iwdie-warn{background:#fff8e6;border-color:#e6c77a}',
-      '.iwdie-errlist.iwdie-ok{background:#eef8ee;border-color:#a9d3a9}',
-      '.iwdie-errlist .iwdie-headline{margin:0 0 6px;font-size:14px}',
-      '.iwdie-errlist .iwdie-notes{background:#eef4fb;border-left:3px solid #7aa7d8;border-radius:4px;padding:6px 10px;margin:8px 0}',
-      '.iwdie-errlist .iwdie-notes ul{margin:4px 0 0}',
+      /* The check report (v1.31.0): the verdict banner carries the colour, each
+         section its own, and long lists fold away under "show all". */
+      '.iwdie-errlist{margin:2px 0 0}',
+      '.iwdie-verdict{border:1px solid #e3b3b3;border-left:5px solid #c0392b;border-radius:7px;padding:11px 14px;margin:0 0 10px;background:#fdecec}',
+      '.iwdie-errlist.iwdie-warn .iwdie-verdict{background:#fff6df;border-color:#ecd08a;border-left-color:#d49a00}',
+      '.iwdie-errlist.iwdie-ok .iwdie-verdict{background:#e9f6ec;border-color:#a9d3a9;border-left-color:#2e8b47}',
+      '.iwdie-v-title{font-size:15px;font-weight:700;line-height:1.35}',
+      '.iwdie-v-sub{margin-top:3px;color:#3b4550}',
+      '.iwdie-v-file{margin-top:5px;font:11.5px Consolas,monospace;color:#6b7580;overflow-wrap:anywhere}',
+      '.iwdie-glance{display:grid;grid-template-columns:max-content 1fr max-content 1fr;gap:5px 12px;padding:9px 12px;margin:0 0 10px;border:1px solid #e1e6eb;border-radius:6px;background:#fafbfc;font-size:12.5px}',
+      '.iwdie-g-k{color:#7a8590}',
+      '.iwdie-g-v{font-weight:500;overflow-wrap:anywhere}',
+      '.iwdie-sec{border:1px solid #d5dbe1;border-radius:6px;padding:8px 12px;margin:0 0 10px}',
+      '.iwdie-sec-bad{background:#fdf0f0;border-color:#e3b3b3}',
+      '.iwdie-sec-warn{background:#fff8e6;border-color:#e6c77a}',
+      '.iwdie-sec-info{background:#eef4fb;border-color:#c5d8ee}',
+      '.iwdie-sec-h{font-weight:700;margin-bottom:2px}',
+      '.iwdie-sec-h .iwdie-hint{font-weight:400;margin-left:4px}',
+      '.iwdie-findings{margin:0;padding-left:18px}',
+      '.iwdie-findings>li{margin:6px 0 0;line-height:1.45}',
+      '.iwdie-why{color:#4a545e}',
+      '.iwdie-items summary,.iwdie-more summary{cursor:pointer;color:#2f6fb2;font-size:12px;user-select:none;width:max-content}',
+      '.iwdie-items ul{margin:4px 0 2px;padding-left:16px;max-height:150px;overflow:auto;font:12px/1.5 Consolas,monospace;color:#444}',
+      '.iwdie-more{margin:0 0 4px;font-size:12.5px;color:#3b4550}',
+      '.iwdie-more ul{margin:6px 0 0;padding-left:18px}',
+      '.iwdie-more li{margin:3px 0}',
       '.iwdie-diag{background:#fff;border:1px solid #e3b3b3;border-radius:5px;padding:8px 12px;margin:8px 0}',
       '.iwdie-diag ul{margin:6px 0 0;padding-left:18px}',
       '.iwdie-diag li{font-family:Consolas,monospace;font-size:12px;color:#444}',
@@ -4196,14 +4483,54 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* tone (v1.30.0): 'good' green for a finished insert, 'caution' amber for one
        that went in with warnings; isErr still wins and paints it red. */
+    /* One toast at a time (v1.31.0): a new one replaces the last, so two never
+       stack unreadably on the same spot. Hovering holds it. */
+    var liveToast = null;
+
+    function showToastEl(t, ms) {
+      if (liveToast && liveToast.parentNode) liveToast.remove();
+      liveToast = t;
+      overlayParent().appendChild(t);
+      var timer = null;
+      var arm = function () {
+        clearTimeout(timer);
+        timer = setTimeout(function () { t.remove(); if (liveToast === t) liveToast = null; }, ms);
+      };
+      t.addEventListener('mouseenter', function () { clearTimeout(timer); });
+      t.addEventListener('mouseleave', arm);
+      arm();
+    }
+
     function toast(msg, isErr, ms, tone) {
       try {
         var t = document.createElement('div');
         t.className = 'iwdie-toast' + (isErr ? ' iwdie-err' : tone ? ' iwdie-' + tone : '');
         t.textContent = msg;
-        overlayParent().appendChild(t);
-        setTimeout(function () { t.remove(); }, ms || 5000);
+        showToastEl(t, ms || 5000);
       } catch (e) { /* noop */ }
+    }
+
+    /** An insert's outcome (iwdieInsertOutcome) as a toast: the title, one line
+     *  per fact, the save reminder, and × to close. Green goes by itself; amber
+     *  and red stay until closed, because they say something did not go in. */
+    function outcomeToast(out) {
+      try {
+        var t = document.createElement('div');
+        t.className = 'iwdie-toast iwdie-rich iwdie-' + out.tone;
+        t.setAttribute('role', out.tone === 'good' ? 'status' : 'alert');
+        t.innerHTML = '<button class="iwdie-t-x" title="Close">×</button>' +
+          '<div class="iwdie-t-title">' + iwdieEscHtml(out.title) + '</div>' +
+          (out.lines && out.lines.length ? '<ul class="iwdie-t-lines">' +
+            out.lines.map(function (l) { return '<li>' + iwdieEscHtml(l) + '</li>'; }).join('') + '</ul>' : '') +
+          (out.footer ? '<div class="iwdie-t-foot">' + iwdieEscHtml(out.footer) + '</div>' : '');
+        t.querySelector('.iwdie-t-x').addEventListener('click', function () {
+          t.remove();
+          if (liveToast === t) liveToast = null;
+        });
+        showToastEl(t, out.tone === 'good' ? 10000 : 60000);
+      } catch (e) {
+        toast(out.title + '\n' + (out.lines || []).join('\n'), out.tone === 'err', 15000, out.tone === 'err' ? '' : out.tone);
+      }
     }
 
     function hostOk(msg) { if (typeof W.V3ok_message === 'function') { try { W.V3ok_message(msg); return; } catch (e) {} } toast(msg); }
@@ -4908,52 +5235,84 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       importOverlay = document.createElement('div');
       importOverlay.className = 'iwdie-overlay';
       var panel = document.createElement('div');
-      panel.className = 'iwdie-panel';
+      panel.className = 'iwdie-panel iwdie-import';
       panel.innerHTML = [
-        '<h3>Import panel JSON</h3>',
-        '<div>Pick, drop or paste an exported or AI-written panel file. It is <b>checked first</b> — JSON, envelope, the 17 object fields, counts, geometry, artwork, plant prefix — and read back: what it holds, its sections, its picture. Nothing touches the canvas until you press <b>Insert now</b>; if the panel already holds objects you are then asked whether to <b>replace</b> them or <b>add</b> to them. Nothing reaches the server until you press the designer’s own Save.</div>',
-        '<div class="iwdie-opt" id="iwdie_bgonly_box">',
-        '  <label for="iwdie_bgonly"><input type="checkbox" id="iwdie_bgonly"><span>Background picture only — insert no objects</span></label>',
-        '  <div class="iwdie-hint">Takes nothing from the file but its background artwork. Every object already on the canvas stays exactly where it is, and none of the file’s objects, containers or graphics are inserted — so there is no replace-or-add question and no driver-id rebinding. Use it to slide re-drawn artwork in under an existing panel.</div>',
+        '<button class="iwdie-x" id="iwdie_import_x" title="Close (Esc)">×</button>',
+        '<h3>Insert panel JSON</h3>',
+        '<div id="iwdie_source">',
+        '<div class="iwdie-intro">Pick, drop or paste a panel file — exported, or written by an AI. It is checked and read back before anything touches the canvas, and nothing reaches the server until you press the designer’s own Save.</div>',
+        '<div class="iwdie-drop" id="iwdie_drop" role="button" tabindex="0">📄 Drop the .json file here, or <span class="iwdie-pick">choose a file</span></div>',
+        '<input type="file" id="iwdie_file" accept=".json,application/json" style="display:none">',
+        '<div class="iwdie-or">…or paste the JSON text</div>',
+        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Paste the JSON here, then Check it (Ctrl+Enter) — or insert it straight away."></textarea>',
+        '<div class="iwdie-actions">',
+        '  <button class="iwdie-btn" id="iwdie_paste_btn" title="Check and read back the pasted JSON before it goes in (Ctrl+Enter)">Check</button>',
+        '  <button class="iwdie-btn iwdie-quick" id="iwdie_quick_btn" title="Skip the check and insert the pasted JSON now. A file the designer cannot load is still stopped, and a panel that already holds objects still asks replace-or-add.">⚡ Insert without checking</button>',
+        '  <button class="iwdie-link" id="iwdie_cancel_btn">Cancel</button>',
         '</div>',
-        '<label>1. Background image (PNG/JPG) — optional, pick it before the .json</label>',
-        '<input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
-        '<div class="iwdie-hint">Only needed when the export carries no background of its own.</div>',
-        '<label>2. The exported .json file</label>',
-        '<input type="file" id="iwdie_file" accept=".json,application/json">',
-        '<div class="iwdie-drop" id="iwdie_drop">…or drop the .json here</div>',
-        '<label>…or paste the JSON text instead</label>',
-        '<textarea id="iwdie_paste" spellcheck="false" placeholder="Paste the exported JSON here…"></textarea>',
-        '<div>',
-        '  <button class="iwdie-btn" id="iwdie_paste_btn">Check the pasted JSON</button>',
-        '  <button class="iwdie-btn iwdie-secondary" id="iwdie_cancel_btn">Cancel</button>',
-        '</div>'
+        '<details class="iwdie-options" id="iwdie_options">',
+        '  <summary>Background options</summary>',
+        '  <div class="iwdie-opt" id="iwdie_bgonly_box">',
+        '    <label for="iwdie_bgonly"><input type="checkbox" id="iwdie_bgonly"><span>Background picture only — insert no objects</span></label>',
+        '    <div class="iwdie-hint">Takes nothing from the file but its background artwork: everything on the canvas stays where it is, and there is no replace-or-add question and no driver-id rebinding. Use it to slide re-drawn artwork in under an existing panel.</div>',
+        '  </div>',
+        '  <label for="iwdie_bgfile">Background image (PNG/JPG) — pick it before the .json</label>',
+        '  <input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
+        '  <div class="iwdie-hint">Only needed when the file carries no background of its own; a picture picked here replaces the file’s.</div>',
+        '</details>',
+        '</div>',
+        '<div id="iwdie_review" style="display:none"></div>'
       ].join('\n');
       importOverlay.appendChild(panel);
       document.body.appendChild(importOverlay);
       document.addEventListener('keydown', onPanelKeydown, true);
 
       importOverlay.addEventListener('mousedown', function (ev) { if (ev.target === importOverlay) closeImportPanel(); });
+      panel.querySelector('#iwdie_import_x').addEventListener('click', closeImportPanel);
       panel.querySelector('#iwdie_cancel_btn').addEventListener('click', closeImportPanel);
       var bgOnlyBox = panel.querySelector('#iwdie_bgonly');
       bgOnlyBox.addEventListener('change', function () {
         panel.querySelector('#iwdie_bgonly_box').classList.toggle('iwdie-on', bgOnlyBox.checked);
       });
-      panel.querySelector('#iwdie_file').addEventListener('change', function (ev) {
+      var fileInput = panel.querySelector('#iwdie_file');
+      fileInput.addEventListener('change', function (ev) {
         if (ev.target.files && ev.target.files[0]) readFileAndStage(ev.target.files[0]);
       });
       var drop = panel.querySelector('#iwdie_drop');
+      var pick = function () { fileInput.value = ''; fileInput.click(); };
+      drop.addEventListener('click', pick);
+      drop.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); }
+      });
       drop.addEventListener('dragover', function (ev) { ev.preventDefault(); drop.classList.add('iwdie-over'); });
       drop.addEventListener('dragleave', function () { drop.classList.remove('iwdie-over'); });
       drop.addEventListener('drop', function (ev) {
         ev.preventDefault(); drop.classList.remove('iwdie-over');
         if (ev.dataTransfer.files && ev.dataTransfer.files[0]) readFileAndStage(ev.dataTransfer.files[0]);
       });
-      panel.querySelector('#iwdie_paste_btn').addEventListener('click', function () {
-        var txt = panel.querySelector('#iwdie_paste').value.trim();
-        if (!txt) { toast('Nothing pasted.', true); return; }
-        stageImportText(txt, 'pasted JSON');
+
+      var paste = panel.querySelector('#iwdie_paste');
+      var pastedText = function () {
+        var txt = paste.value.trim();
+        if (!txt) { toast('Paste the JSON first — or drop or choose a file.', true); paste.focus(); }
+        return txt;
+      };
+      var check = function () {
+        var txt = pastedText();
+        if (txt) stageImportText(txt, 'pasted JSON');
+      };
+      panel.querySelector('#iwdie_paste_btn').addEventListener('click', check);
+      paste.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); check(); }
       });
+      // Insert without checking (v1.31.0): straight to the insert, no report.
+      panel.querySelector('#iwdie_quick_btn').addEventListener('click', function () {
+        var txt = pastedText();
+        if (!txt) return;
+        stagedText = txt; stagedName = 'pasted JSON';
+        importFromText(txt, { quick: true });
+      });
+      try { paste.focus(); } catch (e) {}
     }
 
     /* ---------- the check before the canvas (v1.26.0, inside Insert since v1.27.0) ----------
@@ -4977,35 +5336,82 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       renderCheckReport(iwdieCheckFile(text, { plantId: currentPlantId() }));
     }
 
-    function renderCheckReport(result) {
+    /* The source form and the review take turns in the one dialog (v1.31.0):
+       the report replaces the form instead of growing under it, so the verdict
+       is the first thing in view and the buttons stay pinned at the bottom.
+       "Choose another file" brings the form back with any pasted text intact. */
+    function showReview(className, html) {
       var panel = importOverlay ? importOverlay.querySelector('.iwdie-panel') : null;
-      if (!panel) return;
-      var old = panel.querySelector('.iwdie-errlist');
-      if (old) old.remove();
-      var div = document.createElement('div');
-      var report = iwdieCheckReportHtml(result, stagedName);
-      div.className = report.className;
-      var diag = result.diagnosis;
-      var html = report.html;
-      html += '<div>' +
-        (result.verdict !== 'refused' ? '<button class="iwdie-btn" id="iwdie_insert_now">Insert now</button>' : '') +
-        '<button class="iwdie-btn' + (result.verdict !== 'refused' ? ' iwdie-secondary' : '') + '" id="iwdie_check_copy">📋 Copy report for the AI</button>' +
-        (result.verdict === 'refused' && diag && diag.aiPrompt ? '<button class="iwdie-btn iwdie-secondary" id="iwdie_copy_fix">📋 Copy the fix for the AI</button>' : '') +
-        '</div>';
-      div.innerHTML = html;
-      panel.appendChild(div);
-      div.scrollTop = 0;
-      if (typeof div.scrollIntoView === 'function') div.scrollIntoView({ block: 'nearest' });
-      div.querySelector('#iwdie_check_copy').addEventListener('click', function () {
-        copyToClipboard(iwdieCheckReportText(result, stagedName));
-      });
-      var fix = div.querySelector('#iwdie_copy_fix');
-      if (fix) fix.addEventListener('click', function () { copyToClipboard(diag.aiPrompt); });
-      var ins = div.querySelector('#iwdie_insert_now');
-      if (ins) ins.addEventListener('click', function () { importFromText(stagedText); });
+      var review = panel ? panel.querySelector('#iwdie_review') : null;
+      if (!review) return null;
+      panel.querySelector('#iwdie_source').style.display = 'none';
+      review.className = className;
+      review.innerHTML = html;
+      review.style.display = '';
+      panel.scrollTop = 0;
+      var back = review.querySelector('#iwdie_back');
+      if (back) back.addEventListener('click', showSource);
+      return review;
     }
 
-    function importFromText(text) {
+    function showSource() {
+      var panel = importOverlay ? importOverlay.querySelector('.iwdie-panel') : null;
+      if (!panel) return;
+      var review = panel.querySelector('#iwdie_review');
+      review.style.display = 'none';
+      review.innerHTML = '';
+      review.className = '';
+      panel.querySelector('#iwdie_source').style.display = '';
+      var fileInput = panel.querySelector('#iwdie_file');
+      if (fileInput) fileInput.value = '';   // so the same file can be picked again
+      panel.scrollTop = 0;
+    }
+
+    /** The picture picked under Background options, by name ('' if none). */
+    function pickedBackgroundName() {
+      var inp = importOverlay ? importOverlay.querySelector('#iwdie_bgfile') : null;
+      var f = inp && inp.files && inp.files[0];
+      return f ? f.name : '';
+    }
+
+    function renderCheckReport(result) {
+      var report = iwdieCheckReportHtml(result, stagedName);
+      var diag = result.diagnosis;
+      var refused = result.verdict === 'refused';
+      var ov = result.overview || {};
+      var items = (ov.objects || 0) + (ov.containers || 0) + (ov.graphics || 0);
+      // A file with artwork and nothing else can only mean "apply this
+      // background", so the button offers that rather than Insert refusing it.
+      var bgOnly = !refused && (bgOnlyRequested() || items === 0);
+      var foot = [];
+      if (!refused && bgOnly) {
+        foot.push(items === 0 ? 'The file carries artwork only, so its background is all there is to apply — nothing on the canvas moves.'
+          : '“Background picture only” is ticked — the file’s ' + iwdieCountPhrase(ov.objects, ov.containers, ov.graphics) + ' stay out.');
+      }
+      var picked = pickedBackgroundName();
+      if (!refused && picked) foot.push('Background: your picture ' + picked + ', not the file’s.');
+      var html = report.html +
+        '<div class="iwdie-review-foot"><div class="iwdie-actions">' +
+        (!refused ? '<button class="iwdie-btn" id="iwdie_insert_now">' +
+          esc(bgOnly ? 'Apply the background only' : 'Insert ' + iwdieCountPhrase(ov.objects, ov.containers, ov.graphics)) + '</button>' : '') +
+        (refused && diag && diag.aiPrompt ? '<button class="iwdie-btn" id="iwdie_copy_fix">📋 Copy the fix for the AI</button>' : '') +
+        '<button class="iwdie-btn iwdie-secondary" id="iwdie_check_copy">📋 Copy report for the AI</button>' +
+        '<button class="iwdie-link" id="iwdie_back">← Choose another file</button>' +
+        '</div>' + (foot.length ? '<div class="iwdie-foot-note">' + foot.map(esc).join('<br>') + '</div>' : '') + '</div>';
+      var review = showReview(report.className, html);
+      if (!review) return;
+      review.querySelector('#iwdie_check_copy').addEventListener('click', function () {
+        copyToClipboard(iwdieCheckReportText(result, stagedName));
+      });
+      var fix = review.querySelector('#iwdie_copy_fix');
+      if (fix) fix.addEventListener('click', function () { copyToClipboard(diag.aiPrompt); });
+      var ins = review.querySelector('#iwdie_insert_now');
+      if (ins) ins.addEventListener('click', function () { importFromText(stagedText, { bgOnly: bgOnly }); });
+    }
+
+    /** opts.quick (v1.31.0): Insert without checking — see applyImportCore.
+     *  opts.bgOnly: the review found artwork only, or the box is ticked. */
+    function importFromText(text, opts) {
       var parsed;
       try { parsed = JSON.parse(text); }
       catch (e) {
@@ -5013,7 +5419,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         showErrors(bad.errors, null, bad.diagnosis);
         return;
       }
-      applyImport(parsed);
+      applyImport(parsed, opts);
     }
 
     /** Clipboard for an http origin: navigator.clipboard is unavailable outside a
@@ -5039,40 +5445,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
-    function showErrors(errors, warnings, diagnosis) {
-      var panel = importOverlay ? importOverlay.querySelector('.iwdie-panel') : null;
-      var msg = 'Import blocked:\n• ' + errors.join('\n• ');
-      if (panel) {
-        var old = panel.querySelector('.iwdie-errlist');
-        if (old) old.remove();
-        var div = document.createElement('div');
-        div.className = 'iwdie-errlist';
-        var html = '<b>Import blocked — nothing was changed:</b><ul>' +
-          errors.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' +
-          (warnings && warnings.length ? '<i>Warnings:</i><ul>' + warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>' : '');
-        if (diagnosis) {
-          html += '<div class="iwdie-diag"><b>' + esc(diagnosis.headline) + '</b>' +
-            '<ul>' + diagnosis.facts.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul></div>' +
-            '<button class="iwdie-btn" id="iwdie_copy_fix">📋 Copy the fix for the AI</button>' +
-            '<button class="iwdie-btn iwdie-secondary" id="iwdie_show_fix">Show it</button>' +
-            '<textarea class="iwdie-fixtext" id="iwdie_fix_text" readonly style="display:none">' +
-            esc(diagnosis.aiPrompt) + '</textarea>';
-        }
-        div.innerHTML = html;
-        panel.appendChild(div);
-        if (diagnosis) {
-          div.querySelector('#iwdie_copy_fix').addEventListener('click', function () {
-            copyToClipboard(diagnosis.aiPrompt);
-          });
-          div.querySelector('#iwdie_show_fix').addEventListener('click', function () {
-            var t = div.querySelector('#iwdie_fix_text');
-            var shown = t.style.display !== 'none';
-            t.style.display = shown ? 'none' : 'block';
-            this.textContent = shown ? 'Show it' : 'Hide it';
-          });
-        }
-      } else {
-        toast(msg, true, 9000);
+    /** Insert stopped. Shown where the check report goes, in its colours and
+     *  with its grouping, so the pasted text or the file is one click away for
+     *  a fix. opts {title, sub}: see iwdieBlockedReportHtml. */
+    function showErrors(errors, warnings, diagnosis, opts) {
+      var report = iwdieBlockedReportHtml(errors, warnings, diagnosis, opts);
+      var prompt = diagnosis && diagnosis.aiPrompt;
+      var html = report.html +
+        (prompt ? '<textarea class="iwdie-fixtext" id="iwdie_fix_text" readonly style="display:none">' + esc(prompt) + '</textarea>' : '') +
+        '<div class="iwdie-review-foot"><div class="iwdie-actions">' +
+        (prompt ? '<button class="iwdie-btn" id="iwdie_copy_fix">📋 Copy the fix for the AI</button>' +
+          '<button class="iwdie-btn iwdie-secondary" id="iwdie_show_fix">Show it</button>' : '') +
+        '<button class="iwdie-link" id="iwdie_back">← Back</button>' +
+        '</div></div>';
+      var review = showReview(report.className, html);
+      if (!review) {
+        toast('Insert stopped:\n• ' + errors.join('\n• '), true, 12000);
+        return;
+      }
+      if (prompt) {
+        review.querySelector('#iwdie_copy_fix').addEventListener('click', function () { copyToClipboard(prompt); });
+        review.querySelector('#iwdie_show_fix').addEventListener('click', function () {
+          var t = review.querySelector('#iwdie_fix_text');
+          var shown = t.style.display !== 'none';
+          t.style.display = shown ? 'none' : 'block';
+          this.textContent = shown ? 'Show it' : 'Hide it';
+        });
       }
     }
 
@@ -5216,25 +5614,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  graphics panels, and when the scan undercounts, the canvas reads as
      *  empty and the import adds on top of a full panel without asking.
      *
-     *  Called only from applyImportCore, at the one point where nothing has
-     *  been touched yet — the same place export collects, and never between
-     *  the clear and the host loaders, whose scratch buffers this resets the
-     *  way the host's own save path does (container_tool.js). Any failure
-     *  falls back to the DOM count rather than blocking the import. */
-    function canvasContentCount() {
-      if (typeof W.getPanelDataFromDOM !== 'function') return canvasObjectCount();
+     *  Taken only where the host is at rest: before anything has been touched
+     *  (applyImportCore), and once the loaders have finished (the insert's
+     *  outcome, v1.31.0) — never between the clear and the host loaders, whose
+     *  scratch buffers this resets the way the host's own save path does
+     *  (container_tool.js). Returns null when the serializer fails. */
+    function canvasCountStrict() {
       try {
         W.obj_data = []; W.container_data = []; W.container_items = [];
         var imgName = '';
         try { imgName = W.$('#main_image').attr('main_image') || ''; } catch (e) {}
         var doc = W.getPanelDataFromDOM(currentPlantId(), currentPanelName(), imgName, W.get_user_name());
-        if (!doc) return canvasObjectCount();
+        if (!doc) return null;
         return (doc.single_objects || []).length +
           (doc.containers || []).length +
           (doc.graphics || []).length;
       } catch (e) {
-        return canvasObjectCount();
+        return null;
       }
+    }
+
+    /** The replace-or-add count. A failure falls back to the DOM count rather
+     *  than blocking the import. */
+    function canvasContentCount() {
+      if (typeof W.getPanelDataFromDOM !== 'function') return canvasObjectCount();
+      var n = canvasCountStrict();
+      return n === null ? canvasObjectCount() : n;
+    }
+
+    /** The count an insert's outcome is judged by — null when it cannot be
+     *  taken, never a guess, or green would mean nothing. The host loaders are
+     *  synchronous, so a shortfall is almost always real; one re-count 600 ms
+     *  later still rules out a late render before the toast calls anything
+     *  missing. */
+    function countAfterInsert(expected, cb) {
+      var found = canvasCountStrict();
+      if (found !== null && found >= expected) { cb(found); return; }
+      setTimeout(function () {
+        var again = canvasCountStrict();
+        cb(again === null ? found : (found === null ? again : Math.max(found, again)));
+      }, 600);
     }
 
     /** After appending, renumber name="object_N" sequentially so no two canvas
@@ -5292,20 +5711,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return !!(box && box.checked);
     }
 
-    function applyImport(parsed) {
-      var bgOnly = bgOnlyRequested();
-      readPendingBackground(function (bg) { applyImportCore(parsed, bg, bgOnly); });
+    function applyImport(parsed, opts) {
+      opts = opts || {};
+      var bgOnly = !!opts.bgOnly || bgOnlyRequested();
+      var quick = !!opts.quick;
+      readPendingBackground(function (bg) { applyImportCore(parsed, bg, bgOnly, quick); });
     }
 
-    function applyImportCore(parsed, pendingBg, bgOnly) {
+    function applyImportCore(parsed, pendingBg, bgOnly, quick) {
       var res = iwdieParsePayload(parsed);
       if (res.errors) { showErrors(res.errors, null, res.diagnosis); return; }
       // A background-only import never reads the object arrays, so a file that
       // carries artwork and nothing else is valid input here.
       var v = iwdieValidateDoc(res.doc, { allowEmpty: bgOnly });
       v.notes = [];
-      v.warnings = v.warnings.concat(iwdieCheckEnvelopeCounts(res.meta, res.doc));
-      v.warnings = v.warnings.concat(iwdieCheckPanelGeometry(res.doc, v.notes));
+      v.details = {};
+      v.quick = quick;
+      // Insert without checking (v1.31.0) skips the checks proper — the envelope
+      // counts and the layout — but never the structural test above: the host
+      // loaders cannot take a document that fails it.
+      if (!quick) {
+        v.warnings = v.warnings.concat(iwdieCheckEnvelopeCounts(res.meta, res.doc));
+        v.warnings = v.warnings.concat(iwdieCheckPanelGeometry(res.doc, v.notes, v.details));
+      }
       if (v.errors.length) {
         // A file with artwork and no objects is not a broken export — it is a
         // background-only patch, and the switch above is what it is for. Say so
@@ -5313,7 +5741,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var errors = v.errors.slice();
         if (!bgOnly && errors.length === 1 && /document is empty/.test(errors[0]) &&
             (pendingBg || iwdieDocHasBackground(res.doc))) {
-          errors.push('It does carry a background image, though — tick “Background picture only — insert no objects” at the top of this dialog to apply just the artwork.');
+          errors.push('It does carry a background image, though — open Background options in this dialog and tick “Background picture only” to apply just the artwork.');
         }
         showErrors(errors, v.warnings, iwdieDiagnoseDoc(res.doc, v.errors, v.warnings));
         return;
@@ -5358,19 +5786,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // only swaps the background — the object-clearing in the host's own load
       // path lives in renderPanel, not here — which is the same reason Add mode
       // can already apply a background over a populated canvas.
+      var bgError = '';
       if (bgOnly) {
         if (!iwdieDocHasBackground(doc)) {
           showErrors([
             'This file carries no background image, so “Background picture only” has nothing to apply.',
-            'Either the panel it was exported from had no artwork, or the file carries objects only. Pick a PNG/JPG in step 1 to use as the background, or untick the box to insert the file’s objects instead.'
+            'Either the panel it was exported from had no artwork, or the file carries objects only. Pick a PNG/JPG under Background options to use as the background, or untick the box to insert the file’s objects instead.'
           ], v.warnings);
           return;
         }
-        if (!applyBackground()) return;   // applyBackground() has already said why
+        if (!applyBackground()) {
+          showErrors(['The designer would not take the background: ' + bgError]);
+          return;
+        }
         closeImportPanel();
-        toast('Background applied' + (doc.org_image_name ? ' (' + doc.org_image_name + ')' : '') +
-          ' — no objects were inserted, and nothing already on the canvas was touched.' +
-          '\nNothing is saved yet — use the designer’s own Save buttons when happy.', false, 9000);
+        outcomeToast({
+          tone: 'good',
+          title: '✅ Background applied',
+          lines: [
+            (doc.org_image_name ? doc.org_image_name + ' is the panel’s background now.' : 'The file’s artwork is the panel’s background now.'),
+            'No objects were inserted, and nothing already on the canvas moved.'
+          ],
+          footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
+        });
         return;
       }
 
@@ -5402,7 +5840,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (rewrite) {
             var rb = iwdieRebindDriverIds(doc, source, target);
             doc = rb.doc;
-            rebindNote = ', ' + rb.rebound + ' driver ids rebound ' + source + '→' + target;
+            rebindNote = iwdieN(rb.rebound, 'driver id', 'driver ids') + ' rewritten from plant ' + source + ' to ' + target;
           }
           askBackground();
         });
@@ -5410,14 +5848,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         askBackground();
       }
 
-      // background: only touch it if the import carries one
+      // background: only touch it if the import carries one. finish() is told
+      // what became of it — none, applied, failed, or kept by the user's choice.
       function askBackground() {
-        if (doc.converted !== 'true' || !doc.image_data) { finish(false); return; }
+        if (doc.converted !== 'true' || !doc.image_data) { finish('none'); return; }
         var hasBg = false;
         try { hasBg = (W.$('#main_image').css('background-image') || 'none') !== 'none'; } catch (e) {}
         // Replace mode already means "make this panel look like the export",
         // so the background follows without a second question.
-        if (!hasBg || replace) { finish(applyBackground()); return; }
+        if (!hasBg || replace) { finish(applyBackground() ? 'applied' : 'failed'); return; }
         openConfirmDialog({
           title: 'The file carries its own background image',
           intro: 'This panel already has a background. The imported objects are positioned against the background the file was exported on, so keeping yours can leave them sitting over the wrong drawing.',
@@ -5430,7 +5869,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             desc: 'Your background stays and the objects are inserted on top of it.'
           }
         }, function (useFileBg) {
-          finish(useFileBg ? applyBackground() : false);
+          finish(useFileBg ? (applyBackground() ? 'applied' : 'failed') : 'kept');
         });
       }
 
@@ -5439,10 +5878,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           W.iw_set_base_image(doc.panel_width, doc.panel_height, doc.image_data);
           if (doc.org_image_name) { W.$('#main_image').attr('org_image_name', doc.org_image_name); }
           return true;
-        } catch (e) { toast('Background could not be applied: ' + e, true); return false; }
+        } catch (e) { bgError = String((e && e.message) || e); return false; }
       }
 
-      function finish(appliedBg) {
+      function finish(bgStatus) {
         var foreign = iwdieListForeignDriverIds(doc, target);
 
         // Every question has been answered by now, so clearing here is the last
@@ -5455,19 +5894,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (doc.single_objects.length) handler.load_new_ver_objects(doc.single_objects);
           if (doc.containers.length) handler.load_new_ver_containers(doc.containers);
         } catch (e) {
-          showErrors(['The designer refused the objects: ' + e]);
+          showErrors(['The designer refused the objects: ' + e], null, null, {
+            title: '⛔ The designer stopped the insert',
+            sub: replace ? 'The panel was cleared first — reload the page without saving to get it back.'
+              : 'Anything it took before it stopped stays on the canvas — reload the page without saving to undo it.'
+          });
           return;
         }
         renumberCanvasNames();
 
-        var skippedGraphics = 0;
+        var skippedGraphics = 0, graphicsReason = '';
         if (doc.graphics.length) {
           var canvasHasGraphics = false;
           try { canvasHasGraphics = Object.keys(W.loadedGraphic.loaded || {}).length > 0; } catch (e) {}
-          if (!canvasHasGraphics && W.loadedGraphic && typeof W.loadedGraphic.loader === 'function') {
-            try { W.loadedGraphic.loader(doc.graphics); } catch (e) { skippedGraphics = doc.graphics.length; }
+          if (canvasHasGraphics) {
+            skippedGraphics = doc.graphics.length; graphicsReason = 'present';
+          } else if (W.loadedGraphic && typeof W.loadedGraphic.loader === 'function') {
+            try { W.loadedGraphic.loader(doc.graphics); } catch (e) { skippedGraphics = doc.graphics.length; graphicsReason = 'failed'; }
           } else {
-            skippedGraphics = doc.graphics.length;
+            skippedGraphics = doc.graphics.length; graphicsReason = 'failed';
           }
         }
 
@@ -5475,23 +5920,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { if (!document.getElementById('mouse_selector') && typeof W.make_mouse_selector === 'function') W.make_mouse_selector(); } catch (e) {}
 
         closeImportPanel();
-        var msg = (cleared ? 'Replaced the panel — cleared ' + cleared + ' object' + (cleared === 1 ? '' : 's') + ' and inserted ' : 'Inserted ') +
-          iwdieSummarize(doc) + rebindNote +
-          (appliedBg ? ', background applied' : '') +
-          (skippedGraphics ? ', ' + skippedGraphics + ' graphics skipped (canvas already has graphics)' : '') +
-          '.\nNothing is saved yet — use the designer’s own Save buttons when happy.';
-        if (foreign.length) {
-          msg += '\n⚠ ' + foreign.length + ' object(s) still reference drivers from another plant and will not link here.';
-        }
-        var warnings = (v && v.warnings) || [];
-        var notes = (v && v.notes) || [];
-        if (warnings.length) {
-          msg += '\n⚠ ' + warnings.length + ' warning' + (warnings.length === 1 ? '' : 's') + ': ' +
-            warnings.slice(0, 3).join(' | ') + (warnings.length > 3 ? ' | …' : '');
-        }
-        if (notes.length) msg += '\nℹ ' + notes.join('\nℹ ');
-        // red only when bindings will not resolve here; a finished insert is green
-        toast(msg, foreign.length > 0, 9000, warnings.length ? 'caution' : 'good');
+
+        // Green is earned, not assumed (v1.31.0): the canvas is counted the way
+        // Export and the replace-or-add question count it, and compared with
+        // what was handed to the designer.
+        var loadedGraphics = doc.graphics.length - skippedGraphics;
+        var inserted = doc.single_objects.length + doc.containers.length + loadedGraphics;
+        var expected = (replace ? 0 : existing) + inserted;
+        countAfterInsert(expected, function (found) {
+          outcomeToast(iwdieInsertOutcome({
+            summary: iwdieCountPhrase(doc.single_objects.length, doc.containers.length, loadedGraphics),
+            inserted: inserted, expected: expected, found: found, countFailed: found === null,
+            cleared: cleared, rebound: rebindNote, background: bgStatus, backgroundError: bgError,
+            graphicsSkipped: skippedGraphics, graphicsReason: graphicsReason, foreign: foreign.length,
+            warnings: (v && v.warnings) || [], notes: (v && v.notes) || [], details: (v && v.details) || {},
+            quick: !!(v && v.quick)
+          }));
+        });
       }
     }
 
@@ -6060,6 +6505,12 @@ if (typeof module !== 'undefined' && module.exports) {
     checkFile: iwdieCheckFile,
     checkReportText: iwdieCheckReportText,
     checkReportHtml: iwdieCheckReportHtml,
+    groupFindings: iwdieGroupFindings,
+    insertOutcome: iwdieInsertOutcome,
+    findingsHtml: iwdieFindingsHtml,
+    blockedReportHtml: iwdieBlockedReportHtml,
+    countPhrase: iwdieCountPhrase,
+    plural: iwdieN,
     ductLinesFromSvg: iwdieDuctLinesFromSvg,
     svgSize: iwdieSvgSize,
     exampleStarterVentilation: iwdieExampleStarterVentilation,

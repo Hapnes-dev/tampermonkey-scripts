@@ -15,7 +15,7 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 1. Open the designer on the **source** plant, *Retrieve → Load* the panel you want to copy.
 2. Click **Export JSON** to download `iwmac-panel_<plant>_<name>_<stamp>.json`.
 3. Open the designer on the **target** plant, *New → Create Panel* (or load an existing panel to combine into).
-4. Click **Insert JSON…**, pick/drop/paste the export.
+4. Click **Insert JSON…**, pick/drop/paste the export. It is checked and read back first; **⚡ Insert without checking** skips that for pasted text.
 5. If the file comes from another plant, the script offers to **rewrite the driver-id plant prefixes** (`10113_…` → `<target>_…`) so objects can link to the target plant's drivers.
 6. If the target panel already holds objects, the script asks what to do with them:
    **Replace** clears the canvas first, so you end up with an exact copy of the export;
@@ -110,16 +110,19 @@ button classes, re-added automatically whenever the host re-renders the toolbar.
 
 ## Background picture only (v1.10.0)
 
-Tick **Background picture only — insert no objects** at the top of the Insert dialog and the
-import takes nothing from the file but its artwork. No objects, containers or graphics are
+Tick **Background picture only — insert no objects** under *Background options* in the Insert
+dialog (at the top of it before v1.31.0) and the import takes nothing from the file but its
+artwork. No objects, containers or graphics are
 inserted, everything already on the canvas keeps its position, and both mid-import questions —
 replace-or-add and driver-id rebinding — are skipped, because neither has anything to decide.
 
 It works on any file that carries a background: a full export (only the picture is taken), an
-artwork-only patch with empty object arrays, or an AI-authored `image_svg`. A picture picked in
-step 1 of the dialog still wins over the one inside the `.json`, so the box is also the way to
-drop a fresh PNG under a panel you do not otherwise want to touch. If the file has no artwork at
-all, the import is refused and says so — nothing on the canvas changes.
+artwork-only patch with empty object arrays, or an AI-authored `image_svg`. A picture picked
+under *Background options* still wins over the one inside the `.json`, so the box is also the
+way to drop a fresh PNG under a panel you do not otherwise want to touch. If the file has no
+artwork at all, the import is refused and says so — nothing on the canvas changes. Since
+v1.31.0 an artwork-only file does not need the box: its check offers **Apply the background
+only** directly.
 
 Before v1.10.0 an artwork-only file was rejected outright as an empty panel document; that
 rejection now names the box as the way through.
@@ -137,6 +140,7 @@ rejection now names the box as the way through.
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
+| Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green only when every object and container arrived, amber when any did not, and says how many |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
 | Server writes | Never — export reads the DOM, insert only renders; saving stays 100 % in the host's own buttons |
@@ -187,6 +191,81 @@ rejection now names the box as the way through.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### A report you can read, and a green that means it (v1.31.0)
+
+The check report had grown into one long tinted block under the form: every finding a
+sentence carrying three samples, the file's read-back as a list of facts, and the Insert
+button at the bottom of a box you had to scroll to. And a green toast after Insert only
+meant that the designer had not thrown — nothing looked at whether the objects arrived.
+
+**The report replaces the form** in the Insert dialog, top to bottom:
+
+- a **verdict banner** — ✅ *Ready to insert*, ⚠ *Ready to insert — 2 warnings to look at*,
+  ⛔ *This file cannot be inserted* — with one line on what that means, and the file name;
+- an **at-a-glance grid**: panel, plant (*2746 (you are on 2313)* when they differ),
+  contents, linked · unlinked, background, and what wrote the file;
+- errors, warnings and notes as **one headline each, in words** — *2 pairs of value boxes
+  sit on top of each other — one hides the other on the panel* — with the complete list
+  folded under *show all N*. The old messages sampled three; the fold holds every one.
+  Per-object findings of one kind are one line: fifty missing coordinates read *50 position
+  fields are missing or not numbers*, not fifty lines;
+- the rest of the read-back — sections, roles, units, prefixes, duct runs — folded under
+  **File details**, open by default only on a refused file;
+- the buttons pinned at the bottom: **Insert 128 objects** (the count is on the button),
+  *📋 Copy report for the AI*, *← Choose another file*.
+
+A failure found at insert time uses the same layout: ⛔ *Not inserted — Nothing on the
+canvas was changed*, the errors grouped, the diagnosis, and *Copy the fix for the AI*. The one
+failure that can come after the canvas was cleared — the designer refusing the objects in
+Replace mode — says the panel was cleared and that reloading without saving brings it back,
+instead of claiming nothing changed.
+
+**⚡ Insert without checking** sits next to *Check* under the paste box. It skips the report
+and the checks proper — envelope counts, overlaps, objects outside the panel, unknown
+types — and goes straight to the insert. What it does not skip: a document the designer
+cannot load is still refused (not JSON, arrays that are not arrays, objects with no
+obj_id), and replace-or-add, rebinding and the background question are still asked,
+because they are decisions, not checks. The toast then says what was not looked for.
+
+**Green is earned.** After every insert the canvas is counted with the host's own
+serializer — the count Export and the replace-or-add question already use — and compared
+with what was handed to the designer, plus what was there before in Add mode. The toast is:
+
+- ✅ **green** — *Inserted — everything went in* — only when every object and container
+  arrived, the background went on or you chose to keep yours, no graphics were skipped and
+  no warnings remain. Notes ride along as ℹ lines;
+- ⚠ **amber** when something did not arrive (*3 of the 128 did not appear on the canvas —
+  the designer dropped them*), graphics were skipped, the background failed, warnings
+  remain, or the canvas could not be counted — an uncounted canvas proves nothing;
+- ⛔ **red** when nothing arrived, or bindings point at another plant.
+
+Each fact is a line of its own, the save reminder sits underneath, and × closes it. Green
+goes by itself after ten seconds; amber and red stay until closed. A new toast replaces the
+last one instead of stacking on top of it. The count is taken where the host is at rest,
+after the loaders — which are synchronous — have finished, and once more 600 ms later
+before anything is called missing.
+
+Smaller changes:
+- Paste, then **Ctrl+Enter**, checks.
+- The whole drop zone opens the file picker.
+- The background picture and *Background picture only* are folded under **Background options**.
+- A file that carries artwork and nothing else is offered as **Apply the background only**. It is no longer refused at Insert for want of the box.
+- Headlines use real plurals: *1 object reaches…*, never *1 object(s) reach…*.
+
+For node:
+- `iwdieCheckFile` also returns `details` (each finding → `{lead, items, why}`) and `overview` (the grid's fields).
+- `iwdieGroupFindings`, `iwdieFindingsHtml`, `iwdieBlockedReportHtml`, `iwdieCountPhrase` and `iwdieInsertOutcome` are pure and exported. The last one is the toast's verdict, tested for every tone.
+- The message strings themselves are unchanged, so *Copy report for the AI* reads as before.
+
+Verified by running the real userscript in a stub host page — the Designer's loaders and serializer, stubbed. None of these runs used the live Designer:
+- The 2313 panel checked ✅ with two notes. *Insert 128 objects* put all 128 on the canvas, and the toast was green.
+- A quick insert into a host that silently drops three objects gave amber, *but 3 objects did not appear*.
+- Replace on a five-object canvas cleared it, counted 128, and gave green.
+- Add counted 133 and went amber for the file's one warning.
+- A file missing three obj_ids was refused, with the three on one line. A quick insert of the same file stopped at *Not inserted*, with 0 objects on the canvas.
+- A serializer that throws gave amber, *the canvas could not be counted*.
+- An artwork-only file offered and applied the background alone, leaving the canvas as it was.
+
 ### Good to know is not a warning (v1.30.0)
 
 A house panel came back amber. Plant 2313's ventilation panel — the production export and
@@ -205,7 +284,8 @@ Both are **notes** now: reported, never a verdict. The Insert dialog stays green
 to insert — every check passes* — with an **ℹ Good to know · nothing to fix** block under
 the headline, above the file's read-back. After Insert the toast is **green**, with each
 note as an ℹ line; it is amber when real warnings remain and red only when bindings point
-at another plant and will not resolve here.
+at another plant and will not resolve here. *(1.31.0 redrew this dialog and made the toast
+count the canvas before it turns green — see above.)*
 
 Everything that is a fault still warns: an object outside the canvas, **two value boxes on
 top of each other**, the drawing running under the settings column, an obj_id the
