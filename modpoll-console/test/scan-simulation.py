@@ -62,6 +62,8 @@ def bundle(src, label):
         for (const segment of String(command).split('&').map(s => s.trim()).filter(Boolean)) {
             if (segment.startsWith('echo ')) { out.push(segment.slice(5)); continue; }
             COST.invocations++;
+            // A COM port a running driver holds: modpoll never reaches the device.
+            if (DEVICE.portHeld) { out.push('Serial port already open!'); continue; }
             const tokens = splitTokens(segment);
             const arg = flag => { const at = tokens.indexOf(flag); return at >= 0 ? tokens[at + 1] : undefined; };
             const [table, fmt] = String(arg('-t') || '4').split(':');
@@ -331,6 +333,22 @@ def bundle(src, label):
             lines.push('  after its map changed: ' + (third.mapFrom ? 'READ THE OLD MAP' : (changedEvents.some(e => e.mapChanged) ? 'noticed, looked again' : 'looked again')) +
                 ' — ' + (exact ? 'found exactly the new map, ' + got.size + ' registers' : 'WRONG: ' + got.size + ' against ' + expected.size) + ', about ' + Math.round(estimate(COST)) + ' s');
         }
+    }
+    // A Modbus RTU device whose COM port the running Plant Server holds: the
+    // scan must stop at its first line and say why — not probe on and end by
+    // calling the device silent.
+    DEVICE = { portHeld: true, reads: 0, read: () => null };
+    plantNames = null;
+    COST.lines = 0; COST.invocations = 0; COST.refusals = 0; COST.kinds = {};
+    lines.push('');
+    lines.push('== Modbus RTU on a COM port the Plant Server holds ==');
+    try {
+        const held = await scanDevice({ mode: 'rtu', host: 'COM16', slave: 11 }, true, () => {});
+        const answering = Object.keys(held.tables || {}).filter(t => held.tables[t].answers).length;
+        lines.push('  SCANNED ON: ' + COST.lines + ' lines, ' + COST.invocations + ' runs, and reported ' + answering + ' tables answering — the port error was taken for silence');
+    } catch (e) {
+        const says = /Plant Server/.test(e.message) && /IWMAC Escape/.test(e.message) && /TCP needs no stop/.test(e.message);
+        lines.push('  stopped after ' + COST.lines + ' line(s), ' + (says ? 'saying the Plant Server holds the port, to stop it with IWMAC Escape, and that TCP needs no stop' : 'WRONG MESSAGE: ' + e.message));
     }
     console.log(lines.join('\n'));
 })().catch(e => { console.error('FAILED: ' + (e && e.stack || e)); process.exit(1); });

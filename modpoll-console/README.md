@@ -413,11 +413,18 @@ label like `COM1 - 192.168.10.30` is both a COM port on the plant server and the
 gateway behind it, and the console says which before the poll rather than after
 it fails:
 
-- **The Plant Server holds the COM port.** It polls the bus continuously, so
-  modpoll cannot have that port until the service is stopped — which stops
-  temperature logging and alarms. That is the plant owner's decision, and the
-  console never touches it; it only tells you that is what the port error means.
-  A held port answers `Serial port already open`.
+- **Modbus RTU needs the Plant Server stopped; Modbus TCP does not.** The
+  Plant Server polls a serial bus continuously and keeps its COM port open, so
+  modpoll cannot have that port until the service is stopped — with IWMAC
+  Escape (*Stop PlantServer*) or *Stop Plant Server* here, which also stops
+  temperature logging and alarms. That is the plant owner's decision. A TCP
+  device (and ENC to a serial gateway) is reached over the network and runs
+  beside the Plant Server, stopped or not. A held port answers `Serial port
+  already open`; since 1.49.1 a scan or a verification stops at that first
+  answer and says so — before, a scan counted every such answer as a refusal,
+  probed on through its whole ladder and ended by reporting a device that
+  answers nothing. A scan of a device scanned before reads its known map, so
+  the time the Plant Server has to stay down for an RTU scan is seconds.
 - **COM10 and above are written `\\.\COM16`.** Windows opens COM1–COM9 by name
   but higher ports only through the device namespace, and modpoll hands the name
   straight to Windows. A bare `COM16` fails with `Port or socket open error`,

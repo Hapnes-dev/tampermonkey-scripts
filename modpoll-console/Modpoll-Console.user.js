@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.49.0
+// @version      1.49.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -478,7 +478,7 @@
         // the bus continuously. Freeing it means stopping the Plant Server, which
         // also stops temperature logging and alarms — the operator's call, never
         // the tool's.
-        { re: /serial port already open/i, level: 'fatal', text: 'Serial port already open — another process holds the COM port, usually the Plant Server (stopping it stops logging and alarms)' },
+        { re: /serial port already open/i, level: 'fatal', text: 'Serial port already open — the Plant Server holds this COM port while it runs: a Modbus RTU device needs it stopped first (IWMAC Escape → Stop PlantServer, or Stop Plant Server here — logging and alarms stop with it). Modbus TCP needs no stop' },
         // Not a held port: the name did not open. Measured on plant 3694: bare COM16
         // and COM17 gave this, \\.\COM16 gave "already open" while a driver held it.
         { re: /port or socket open error/i, level: 'fatal', text: 'Port or socket open error — on a COM port the name did not open: the port does not exist on this machine, or it is above COM9 and was not written \\\\.\\COMn (a port the Plant Server holds says "Serial port already open" instead); on TCP, check the address' },
@@ -1070,6 +1070,37 @@
         };
     }
 
+    /*
+     * Modbus RTU and ASCII reach the device through a COM port on the plant
+     * server, and the Plant Server keeps the ports its drivers use open for as
+     * long as it runs: modpoll is refused the port — "Serial port already open"
+     * — until it is stopped, with IWMAC Escape (Stop PlantServer) or Stop Plant
+     * Server here, which also stops logging and alarms. Modbus TCP (and ENC to a
+     * gateway) reaches the device over the network and runs beside the Plant
+     * Server, stopped or not. A port error ends a scan or a verification at
+     * once, saying which of the two it was, rather than letting every read
+     * after it fail the same way.
+     */
+    function portProblem(raw, spec) {
+        const text = String(raw || '');
+        if (/serial port already open/i.test(text)) {
+            return (isSerialMode(spec.mode) ? 'Modbus ' + spec.mode.toUpperCase() + ' on ' + spec.host + ': ' : '') +
+                'the port is held — by the Plant Server while it runs. A serial (RTU) device needs the Plant Server stopped first: ' +
+                'IWMAC Escape → Stop PlantServer, or Stop Plant Server here (logging and alarms stop with it; start it again afterwards). ' +
+                'Modbus TCP needs no stop. Nothing was read.';
+        }
+        if (/port or socket open error/i.test(text)) {
+            return isSerialMode(spec.mode)
+                ? spec.host + ' did not open: the port does not exist on the plant server, or its name is wrong. Nothing was read.'
+                : spec.host + ' did not answer the connection: check the address and the port. Nothing was read.';
+        }
+        return null;
+    }
+    function assertPortOpened(raw, spec) {
+        const problem = portProblem(raw, spec);
+        if (problem) throw new Error(problem);
+    }
+
     /**
      * Ask a list of references one register each, several per round trip, and say
      * for each whether the device answered. Chaining makes this cheap: thirteen
@@ -1113,6 +1144,10 @@
                 onProgress(from + done, list.length, { answered: answered + countValueLines(chunk), partial: true });
             } : undefined;
             let raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false, onOutput: watch });
+            // A port that will not open is no answer from anything: every probe
+            // after it would fail the same way, and a scan counting them as
+            // refusals would end by reporting a device that answers nothing.
+            assertPortOpened(raw, spec);
             // Every probe echoes its own marker, so a missing marker means output
             // was lost rather than refused. One retry settles which it was.
             const markers = (raw.match(new RegExp(MARK + ':\\d+:\\d+', 'g')) || []).length;
@@ -1203,6 +1238,8 @@
             done += count;
             answered += result.values.length;
             if (result.values.length < count) short++;
+            // A port that would not open says nothing about the map.
+            assertPortOpened(result.diagnostics.map(d => d.line || d.text).join('\n'), spec);
             const dead = result.diagnostics.find(d => d.level === 'fatal');
             if (dead) fatal = dead.text;
             for (const v of result.values) report.values.push(Object.assign({ table: part.table }, v));
@@ -2916,9 +2953,11 @@
                 'Run the scan from the installed userscript with GM_xmlhttpRequest granted and the Toolbox reachable.');
         }
         if (iw && iw.driver && iw.driver.plantServerRunning === false) {
+            const serialScan = scan && scan.spec && (scan.spec.mode === 'rtu' || scan.spec.mode === 'ascii');
             add('info', 'plant-server-stopped', 'The Plant Server was stopped',
-                'No driver polls while it is stopped, so IWMAC\'s values and status are from before the stop.', {},
-                'Start the Plant Server before judging IWMAC\'s values.');
+                (serialScan ? 'As a Modbus RTU scan needs it: modpoll can only have the COM port while the Plant Server is stopped (Modbus TCP needs no stop). ' : '') +
+                    'No driver polls while it is stopped, so IWMAC\'s values and status are from before the stop.', {},
+                'Start the Plant Server again (IWMAC Escape → Start PlantServer, or Start Plant Server in the console) before judging IWMAC\'s values.');
         } else if (iw && iw.driver && iw.driver.module && iw.driver.module.running === false) {
             add('error', 'driver-not-running', 'The unit\'s driver is not running',
                 'Driver ' + iw.driver.owner + ' is not among the running Plant Server modules, so IWMAC polls nothing on this unit.',
@@ -3922,6 +3961,9 @@
             for (const ref of result.unreadable || []) refused.add(range.table + '|' + range.format + '|' + ref);
             for (const command of result.commands) commands.push(command);
             for (const d of result.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
+            // A port that will not open fails every range after it the same way.
+            const portIssue = portProblem(result.diagnostics.map(d => d.line || d.text).join('\n'), spec);
+            if (portIssue) { diagnostics.push({ level: 'fatal', text: portIssue, line: '' }); break; }
         }
 
         const keyOf = (p, shift) => p.decoded.table + '|' + p.decoded.format + '|' + (p.ref + (shift || 0));
