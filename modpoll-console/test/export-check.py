@@ -45,6 +45,7 @@ js += lift("    function enrichValue(value, table, format) {", "\n    /**\n     
 js += lift("    /**\n     * Everything the console knows, as a document", "\n    /*\n     * Where does this device actually keep anything?")
 # The driver log's reader and the two parsers of IWMAC's own settings.
 js += lift("    // What a driver's log line reports, by the wording", "\n    /** \"3_0_F_W_")
+# parseDriverIdExtra, and after it the parameter view's readers (fetchGenRows, enrichDefinition).
 js += lift("    /** \"3_0_F_W_", "\n    async function collectIwmacContext")
 js += lift("    /** A driver's settings read as the connection they describe. */", "\n    // ------------------------------------------------------- binary self-probe")
 # What a verification looks like on its way out.
@@ -385,6 +386,76 @@ check('a document nested 200 deep is cut, not a stack overflow', deepOut.indexOf
 const kept = sanitizeDeep({ m: new Map([['password', 'x'], ['a', 'http://u:p@h/']]), d: new Date(0) });
 check('Maps and Dates keep their shape through the sanitizer', kept.m instanceof Map && kept.m.get('password') === '[redacted]' && kept.m.get('a') === 'http://[redacted]@h/' &&
     kept.d instanceof Date, '');
+
+// --- IWMAC's parameter view, read for a person --------------------------------------
+// Two rows as plant 2349's iw_gen_driver_parameters holds them for V01: a scaled
+// input register and a state word, both with every column the view has.
+const genBase = {
+    alarm_block: '0', alarm_type: '0', application: 'Analog values', att: 'r', category_id: null, driver_adr_extra: '',
+    driver_type: 'OJEXHAUST', grp: '-1', grp_name: 'exhausto_OJ_v610', hardware_datatype: '', order_no: 'exhausto_OJ_v610',
+    parameter_type: 'float', plant_pri: '', range_max: '', range_min: '', regulator_type: 'OJ', relation: '0',
+    row_date: '2026-09-22 00:15:14', save_data: 'min', save_freq: '1', sys_pri: '', unit_id: 'V01', unit_name: '360.001 Ventilasjon',
+    update_freq: 'norm', user_attribs: '',
+};
+const g209 = Object.assign({}, genBase, {
+    alias_text: 'OJ-EC/-DV-supply/Supply air motor setpoint [1/100%]', driver_group: '504', driver_id: '2349_OJEXHAUST_OJ_1_1_0_4_208',
+    driver_id_extra: '4_208_U16_N_-_-_-_-', driver_id_no: '19546', element_id: '3x0209', menu: '3x0209', eng_unit: '&#037', format: '', format_extra: '',
+    onl_ind: '0', scale: '1', raw_min: '0', raw_max: '1000', eng_min: '0', eng_max: '10',
+});
+const g001 = Object.assign({}, genBase, {
+    alias_text: 'Actual operating mode', driver_group: '317', driver_id: '2349_OJEXHAUST_OJ_1_1_0_4_0', driver_id_extra: '4_0_U16_N_-_-_-_-',
+    driver_id_no: '19359', element_id: '3x0001', menu: '3x0001', eng_unit: '', format: '', onl_ind: '1', scale: '', raw_min: '', raw_max: '', eng_min: '', eng_max: '',
+    format_extra: '{"rev":"1","type":"num","v":{"0":{"t":"Stopped Sd Calendar"},"1":{"t":"Stopped Internal Calendar"},"2":{"t":"Stopped"},"100":{"t":"Low Speed Sd Calendar"},"101":{"t":"Low Speed Internal Calendar"},"102":{"t":"Low Speed"},"200":{"t":"High Speed Sd Calendar"},"201":{"t":"High Speed Internal Calendar"},"202":{"t":"High Speed"},"300":{"t":"Spec. Control Mode"},"301":{"t":"Spec. Control Mode"},"400":{"t":"Medium Speed Sd Calendar"},"401":{"t":"Medium Speed Internal Calendar"},"402":{"t":"Medium Speed"}}}',
+});
+const rowText = (sections, title, label) => {
+    const s = sections.find(x => x.title === title);
+    const r = s && s.rows.find(x => x[0] === label);
+    return r ? String(r[1]) : undefined;
+};
+const s209 = iwmacDefinitionSections([g209], 6374);
+check('the card reads driver_id_extra as a sentence: function 4, address 208, unsigned 16-bit, no swap; not written',
+    rowText(s209, 'How IWMAC reads it', 'read') === 'function 4 (read input registers), address 208, unsigned 16-bit, no swap' &&
+    rowText(s209, 'How IWMAC reads it', 'write') === 'not written', rowText(s209, 'How IWMAC reads it', 'read'));
+check('the card decodes the unit IWMAC stores as &#037 and spells out the linear scale', rowText(s209, 'How IWMAC shows it', 'unit') === '%' &&
+    rowText(s209, 'How IWMAC shows it', 'scale') === 'linear: raw 0 … 1000 → 0 … 10  (×0.01)', rowText(s209, 'How IWMAC shows it', 'scale'));
+check('the card says how it is logged, its rate, its log number and that it is no online indicator',
+    rowText(s209, 'Logging and alarms', 'logged') === 'every 1 min' && rowText(s209, 'How IWMAC reads it', 'update rate') === 'normal' &&
+    rowText(s209, 'How IWMAC reads it', 'parameter number') === '19546' && rowText(s209, 'How IWMAC reads it', 'online indicator') === 'no', '');
+check('every column the view has is on the card, named under its label', (() => {
+    const shown = new Set();
+    for (const s of s209) for (const r of s.rows) for (const c of String(r[4] || '').split(/\s*·\s*|\//)) shown.add(c.trim());
+    return ['driver_id_extra', 'driver_id_no', 'driver_id', 'driver_group', 'update_freq', 'onl_ind', 'driver_type', 'hardware_datatype', 'relation',
+        'alias_text', 'element_id', 'eng_unit', 'format', 'parameter_type', 'application', 'att', 'grp', 'category_id', 'user_attribs', 'format_extra',
+        'alarm_type', 'alarm_block', 'plant_pri', 'sys_pri', 'regulator_type', 'driver_adr_extra', 'row_date'].every(c => shown.has(c));
+})(), '');
+const s001 = iwmacDefinitionSections([g001], 102);
+check('a state word lists its 14 states and marks the one it holds now', /^14 states — now 102 = Low Speed$/.test(rowText(s001, 'How IWMAC shows it', 'states')) &&
+    rowText(s001, 'How IWMAC shows it', '102') === 'Low Speed   ◀ now' && rowText(s001, 'How IWMAC reads it', 'online indicator').indexOf('yes') === 0,
+    rowText(s001, 'How IWMAC shows it', 'states'));
+check('a value that is none of the states says so', /20 is none of them$/.test(rowText(iwmacDefinitionSections([g001], 20), 'How IWMAC shows it', 'states')), '');
+check('entities and JSON columns read as text, credentials withheld', decodeEntities('&deg;C') === '°C' && decodeEntities('&#8451;') === '℃' && decodeEntities('&#99999999') === '&#99999999' &&
+    describeJsonColumn('{"node":"111","nodetype":"16"}') === 'node 111 · nodetype 16' && describeJsonColumn('{"user":"svc","password":"x"}') === 'user [redacted] · password [redacted]', '');
+check('JSON-shaped secrets are redacted in any text', redactText('{"user":"admin","password":"x y","node":"1"}') === '{"user":"[redacted]","password":"[redacted]","node":"1"}',
+    redactText('{"user":"admin","password":"x y","node":"1"}'));
+const bitRows = iwmacDefinitionSections([g001, Object.assign({}, g001, { driver_id: '2349_OJEXHAUST_OJ_1_1_0_4_0.3', element_id: '3x0001.3', alias_text: 'Fan fault', format_extra: '{"v":{"0":{"t":"OK"},"1":{"t":"Fault"}}}', onl_ind: '0' })], 8);
+check('other parameters on the register get one line each, with their bit\'s state now', rowText(bitRows, 'Other parameters on this register', 'bit 3') &&
+    /^Fan fault — now Fault/.test(rowText(bitRows, 'Other parameters on this register', 'bit 3')), rowText(bitRows, 'Other parameters on this register', 'bit 3'));
+
+// What the view adds to a definition for the export, and to the log reader.
+const enriched = enrichDefinition({}, g001);
+check('the export\'s definition gains the log number, the states, logging and the online indicator', enriched.idNo === '19359' && enriched.states['102'] === 'Low Speed' &&
+    enriched.logging === 'every 1 min' && enriched.onlineIndicator === true, JSON.stringify(enriched).slice(0, 200));
+const cmpStates = compareWithIwmac(Object.assign({ datatype: parseDriverIdExtra('4_0_U16_N_-_-_-_-'), scale: {} }, enriched), { bit: null, plantValue: 'Low Speed' }, 102, 0, false, null);
+check('a reading row says which state the register holds now, in IWMAC\'s words', cmpStates.stateNow === '102 = Low Speed' && cmpStates.parameterNo === '19359', JSON.stringify(cmpStates).slice(0, 160));
+const writes = readDriverLog({ source: 'test', entries: [
+    { at: ms(59), level: 1, text: 'Write failed 19546 = 1.00' },
+    { at: ms(58), level: 0, text: 'Param write: 99999 = 3 (3.0)' },
+    { at: ms(57), level: 3, text: 'Block (norm, 0) item 2349_OJEXHAUST_OJ_1_1_0_4_208 >> Modbus read error >> Time Out Error' },
+] }, { owner: 'OJEXHAUST', unitId: 'V01', unitPrefix: '2349_OJEXHAUST_OJ_1_1_', tablePrefix: '2349_OJEXHAUST_OJ_', idNos: { 19546: '2349_OJEXHAUST_OJ_1_1_0_4_208' } });
+check('the log reader files a failed write under its parameter by number, and a stranger\'s number under other units',
+    writes.byDriverId['2349_OJEXHAUST_OJ_1_1_0_4_208'] && writes.byDriverId['2349_OJEXHAUST_OJ_1_1_0_4_208'].errors === 2 &&
+    writes.byDriverId['2349_OJEXHAUST_OJ_1_1_0_4_208'].kinds.writeFailed === 1 && writes.otherUnits && writes.otherUnits['parameter no. 99999'],
+    JSON.stringify({ byDriverId: writes.byDriverId, otherUnits: writes.otherUnits }).slice(0, 300));
 
 let failed = 0;
 for (const c of checks) {

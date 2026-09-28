@@ -52,6 +52,36 @@ rebuilt.
   beside the values. Three buttons act on it: *Poll this register* reads it on
   its own at its region's width, *Watch* reads it every second, *Copy command*
   puts the modpoll line on the clipboard.
+
+  Since 1.48.0 the card also shows how IWMAC itself defines every parameter on
+  the register, read when it opens from the Plant Server's parameter view
+  (`iw_gen_driver_parameters`: the unit, `iw_par_<table>_param` and
+  `iw_set_<table>` joined, one row per unit and parameter). Each field is in
+  words, with its database column small under the label so the row can still
+  be found in phpMyAdmin:
+  - **How IWMAC reads it** — `driver_id_extra` as sentences (*function 4 (read
+    input registers), address 208, unsigned 16-bit, no swap*; *not written*),
+    `driver_id_no` (the number the Plant Server log writes: *Param write:
+    19655 = 3*), `driver_id`, `driver_group`, `update_freq`, `onl_ind` (whether
+    the driver judges the unit online by it), `driver_type`,
+    `hardware_datatype`, `relation`.
+  - **How IWMAC shows it** — `alias_text`, `element_id` and `menu`, `eng_unit`
+    decoded (`&#037` is %), the scale spelled out (*linear: raw 0 … 1000 → 0 …
+    10 (×0.01)*), `format`, `range_min`/`range_max`, `parameter_type`,
+    `application`, `att`, `grp`, `category_id`, `user_attribs`, and the state
+    texts in `format_extra` one per line, the one the register holds marked
+    *◀ now*.
+  - **Logging and alarms** — `save_data` with `save_freq` (*every 1 min*, *on
+    change*), `alarm_type`, `alarm_block`, `plant_pri`, `sys_pri`.
+  - **The unit in IWMAC** — `unit_id`, `unit_name`, `regulator_type`,
+    `grp_name` and `order_no`, `driver_adr_extra` (*node 111 · nodetype 16*),
+    and when the view was built (`row_date`).
+
+  Parameters sharing the register — the bits of a status word — get one line
+  each, with their bit's state now. A register IWMAC has no parameter on shows
+  none of this; a parameter missing from the view says so. The rows are read
+  once per page and kept, and come from the scan's own read of the unit when
+  there is one.
 - **Recovers what a refused block still holds.** Modbus refuses a read whole, so
   one unmapped register inside a 99-register block returns nothing. The block is
   halved until the readable part comes back, and the references the device will
@@ -98,7 +128,14 @@ rebuilt.
   together, and on plant 2349 PHP-APP alone filled it inside ninety minutes.
   A line naming another unit on the same driver is counted apart, and errors
   count only since the driver last started or the unit last came back online.
-  The console log says what could not be read.
+  Which lines are the unit's is decided by its real `driver_id` prefix — the
+  middle part of a `driver_id` is the unit's regulator type, not its table
+  (`2349_OJEXHAUST_OJ_1_1_0_4_208` in table `exhausto_OJ_v610`) — and a write,
+  which the log names by number (*Write failed 19423 = 1.00*), is matched to its
+  parameter through the Plant Server's parameter view, which also gives each
+  parameter's state texts and logging to the export (`plant[].iwmac.states`,
+  `stateNow`, `logging`, `parameterNo`). The console log says what could not be
+  read.
 - **Judges the width, proves it on the wire, and sets the form.** Reading a
   float map as 16-bit registers prints the halves of every number, so the
   scan ends by judging what each region holds. Every aligned pair of
@@ -610,8 +647,12 @@ quietly stop being the thing under test.
   leave: a clean export untouched by the sanitizer, text that only looks like a
   secret left alone, and a driver login, a URL login, a list's password, a
   password register and a verification all withheld; unit ids that may not
-  reach SQL; and nesting, Maps and Dates through the sanitizer. Seventy-five
-  expectations, each printed PASS or FAIL; exits non-zero on any FAIL.
+  reach SQL; and nesting, Maps and Dates through the sanitizer. And the Plant
+  Server's parameter view on two of plant 2349's own rows — a scaled input
+  register and a state word — as the card writes them out, every column
+  present, the state marked *now*, and a failed write matched to its parameter
+  by number. Eighty-seven expectations, each printed PASS or FAIL; exits
+  non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the

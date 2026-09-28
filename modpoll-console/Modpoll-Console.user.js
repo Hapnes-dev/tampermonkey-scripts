@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.47.0
+// @version      1.48.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.47.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.48.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2204,7 +2204,10 @@
                 table: '4 holding registers (function 3), 3 input registers (function 4), 1 discrete inputs (function 2), 0 coils (function 1)',
                 raw: 'the 16-bit value modpoll printed, signed; hex is the same bits',
                 shown: 'the value IWMAC displayed for a parameter when the unit\'s parameters were read',
-                'plant[].driverId': 'IWMAC\'s parameter id: <plant>_<driver>_<table>_<unit address>_0_<function>_<addr>[.<bit>]',
+                'plant[].driverId': 'IWMAC\'s parameter id: <plant>_<driver>_<regulator type>_<unit address>_0_<function>_<addr>[.<bit>]',
+                'plant[].iwmac.states': 'the texts IWMAC shows for each value (format_extra); stateNow is the one the register holds now',
+                'plant[].iwmac.logging': 'how the Plant Server logs the value (save_data, save_freq): on change, every N min …',
+                'plant[].iwmac.parameterNo': 'driver_id_no — the number the Plant Server log uses for the parameter ("Param write: 19655 = 3")',
                 'plant[].iwmac.expected': 'the register decoded with IWMAC\'s own datatype and scale for that parameter',
                 'plant[].iwmac.agrees': 'expected against shown: true, false, or null when IWMAC shows nothing',
                 'plant[].iwmac.onlineIndicator': 'IWMAC judges the unit online by this parameter (iw_set onl_ind): if its register does not answer, the unit goes OFFLINE',
@@ -2322,6 +2325,8 @@
         [/\b(bearer)\s+[A-Za-z0-9\-._~+\/]{8,}=*/gi, '$1 ' + REDACTED],
         [/\b(set-cookie|cookie)(\s*:\s*)[^\r\n]+/gi, '$1$2' + REDACTED],
         [/\b(pass(?:word|wd|phrase)?|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth[_-]?(?:key|token|id)|community|session[_-]?id|phpsessid|jsessionid|user(?:name)?|login)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s;,&"')]+)/gi, '$1$2' + REDACTED],
+        // The same inside JSON text — a driver's extra column: {"user":"x","password":"y"}.
+        [/("(?:pass(?:word|wd|phrase)?|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth[_-]?(?:key|token|id)?|community|session[_-]?id|user(?:name)?|login)")(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\s]+)/gi, '$1$2"' + REDACTED + '"'],
     ];
     // A register named as a password: English and Norwegian, and PIN codes.
     const SECRET_REGISTER = /\b(pass(?:word|wd|ord\w*)|pwd|pin[- ]?(?:code|kode))\b/i;
@@ -2399,6 +2404,192 @@
         return m ? m[1] : String(id == null ? '' : id);
     }
 
+    // ------------------------------------ IWMAC's definition, read by a person
+    /*
+     * iw_gen_driver_parameters is the Plant Server's own flattened view of every
+     * parameter it polls: one row per unit and parameter, with the unit, the
+     * definition (iw_par_<table>_param) and the settings (iw_set_<table>) joined,
+     * built at its last start (row_date). The card and the export read it
+     * through these helpers, each field in words, the column name kept beside
+     * it so the row can still be found in phpMyAdmin.
+     */
+
+    /** '&#037' and '&deg;' as the characters they stand for — IWMAC stores units HTML-encoded, not always with the semicolon. */
+    function decodeEntities(text) {
+        const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: '\'', deg: '°', micro: 'µ', sup2: '²', sup3: '³', nbsp: ' ', percnt: '%' };
+        const code = (m, n) => (n > 0 && n <= 0x10FFFF ? String.fromCodePoint(n) : m);
+        return String(text == null ? '' : text)
+            .replace(/&#x([0-9a-f]{1,6});?/gi, (m, h) => code(m, parseInt(h, 16)))
+            .replace(/&#(\d{1,7});?/g, (m, d) => code(m, Number(d)))
+            .replace(/&([a-z]+[0-9]?);/gi, (m, n) => (named[n.toLowerCase()] !== undefined ? named[n.toLowerCase()] : m));
+    }
+
+    const MODBUS_FUNCTIONS = {
+        1: 'read coils', 2: 'read discrete inputs', 3: 'read holding registers', 4: 'read input registers',
+        5: 'write single coil', 6: 'write single register', 15: 'write multiple coils', 16: 'write multiple registers',
+    };
+    const IWMAC_RAW_TYPES = { U16: 'unsigned 16-bit', I16: 'signed 16-bit', U32: 'unsigned 32-bit', I32: 'signed 32-bit', F: '32-bit float', X: 'one bit' };
+    const IWMAC_SWAPS = { N: 'no swap', W: 'word swap, low word first', R: 'byte swap' };
+
+    /** driver_id_extra "4_208_U16_N_-_-_-_-" as a sentence for the read and one for the write. */
+    function describeDriverIdExtra(extra) {
+        const d = parseDriverIdExtra(extra);
+        if (!d) return { read: String(extra || '') || '—', write: '—' };
+        const half = (fn, addr, type, swap) => 'function ' + fn + (MODBUS_FUNCTIONS[fn] ? ' (' + MODBUS_FUNCTIONS[fn] + ')' : '') +
+            (addr !== null && addr !== undefined ? ', address ' + addr : '') +
+            (type ? ', ' + (IWMAC_RAW_TYPES[type] || type) : '') + (swap ? ', ' + (IWMAC_SWAPS[swap] || 'swap ' + swap) : '');
+        const parts = String(extra).split('_');
+        return {
+            read: d.readFunction === null ? 'not read' : half(d.readFunction, d.readAddr, d.rawType, d.swap),
+            write: d.writeFunction === null ? 'not written' : half(d.writeFunction, d.writeAddr, d.writeRawType, parts[7] && parts[7] !== '-' ? parts[7] : null),
+        };
+    }
+
+    /**
+     * format_extra's state texts — {"type":"num","v":{"0":{"t":"Stopped"},…}} —
+     * as a list, with the state the register holds now picked out.
+     */
+    function describeStates(formatExtra, value) {
+        if (!formatExtra) return null;
+        let doc;
+        try { doc = JSON.parse(String(formatExtra)); } catch (e) { return { raw: String(formatExtra).slice(0, 300) }; }
+        const v = doc && typeof doc === 'object' ? doc.v : null;
+        if (!v || typeof v !== 'object') return { raw: String(formatExtra).slice(0, 300) };
+        const list = Object.keys(v).map(k => ({ v: k, t: decodeEntities(v[k] && typeof v[k] === 'object' ? v[k].t : v[k]) }))
+            .sort((a, b) => (Number(a.v) - Number(b.v)) || String(a.v).localeCompare(String(b.v)));
+        const current = typeof value === 'number' ? list.find(s => Number(s.v) === value) || null : null;
+        return { type: doc.type || null, list, current };
+    }
+
+    function describeUpdateFreq(v) {
+        const names = { fast: 'fast', norm: 'normal', slow: 'slow', once: 'once', never: 'never' };
+        return names[String(v)] !== undefined ? names[String(v)] : (v === '' || v === null || v === undefined ? '—' : String(v));
+    }
+
+    /** save_data and save_freq together: how the Plant Server logs the value. */
+    function describeLogging(saveData, saveFreq) {
+        const s = String(saveData == null ? '' : saveData), f = String(saveFreq == null ? '' : saveFreq);
+        if (s === 'change') return 'on change';
+        if (s === 'min') return 'every ' + (f || '1') + ' min';
+        if (s === 'hour') return 'every ' + (f || '1') + ' h';
+        if (s === 'none') return 'not logged';
+        return s ? s + (f ? ', ' + f : '') : '—';
+    }
+
+    /** A small JSON column — driver_adr_extra {"node":"111","nodetype":"16"} — as key value pairs, credentials withheld. */
+    function describeJsonColumn(text) {
+        if (text === null || text === undefined || text === '') return '—';
+        try {
+            const doc = JSON.parse(String(text));
+            if (doc && typeof doc === 'object' && !Array.isArray(doc)) {
+                const safe = redactSettings(doc);
+                return Object.keys(safe).map(k => k + ' ' + (typeof safe[k] === 'object' ? JSON.stringify(safe[k]) : safe[k])).join(' · ') || '—';
+            }
+        } catch (e) { /* not JSON: shown as it is */ }
+        return redactText(String(text));
+    }
+
+    /**
+     * The card's sections for IWMAC's definition of the parameters on one
+     * register — rows as [label, text, mono, tip, column], the column name
+     * shown under the label. `rows` are iw_gen_driver_parameters rows, the
+     * register's own parameter first; `value` is the register as read.
+     */
+    function iwmacDefinitionSections(rows, value) {
+        const blank = v => v === null || v === undefined || v === '';
+        const show = v => (blank(v) ? '—' : String(v));
+        const main = rows[0];
+        const bitOf = r => { const m = String(r.driver_id || '').match(/\.(\d+)$/); return m ? Number(m[1]) : null; };
+        const mainBit = bitOf(main);
+        const u16 = typeof value === 'number' ? (value < 0 ? value + 65536 : value) & 0xFFFF : null;
+        const stateValue = u16 === null ? null : (mainBit !== null ? (u16 >> mainBit) & 1 : value);
+        const extra = describeDriverIdExtra(main.driver_id_extra);
+        const sections = [];
+
+        sections.push({
+            title: 'How IWMAC reads it', rows: [
+                ['read', extra.read, false, 'Decoded from driver_id_extra', 'driver_id_extra'],
+                ['write', extra.write, false, 'The second half of driver_id_extra', 'driver_id_extra'],
+                ['as stored', show(main.driver_id_extra), true, '', 'driver_id_extra'],
+                ['parameter number', show(main.driver_id_no), true, 'The number the Plant Server log uses for it: "Param write: ' + show(main.driver_id_no) + ' = …"', 'driver_id_no'],
+                ['driver_id', show(main.driver_id), true, '', 'driver_id'],
+                ['driver group', show(main.driver_group), true, 'The driver\'s own group for the parameter', 'driver_group'],
+                ['update rate', describeUpdateFreq(main.update_freq), false, 'update_freq = ' + show(main.update_freq), 'update_freq'],
+                ['online indicator', String(main.onl_ind) === '1' ? 'yes — the driver judges the unit online by this parameter' : 'no', false, 'onl_ind = ' + show(main.onl_ind), 'onl_ind'],
+                ['driver', show(main.driver_type), true, '', 'driver_type'],
+                ['hardware datatype', show(main.hardware_datatype), true, '', 'hardware_datatype'],
+                ['relation', show(main.relation), true, '', 'relation'],
+            ],
+        });
+
+        const states = describeStates(main.format_extra, stateValue);
+        const scaleWords = describeIwmacScale({ mode: main.scale, rawMin: main.raw_min, rawMax: main.raw_max, engMin: main.eng_min, engMax: main.eng_max });
+        const scaleText = String(main.scale) === '1'
+            ? 'linear: raw ' + show(main.raw_min) + ' … ' + show(main.raw_max) + ' → ' + show(main.eng_min) + ' … ' + show(main.eng_max) +
+                (scaleWords.indexOf('x') === 0 ? '  (' + scaleWords.replace(/^x/, '×') + ')' : '')
+            : (blank(main.scale) ? 'none — shown as read' : scaleWords);
+        const shows = [
+            ['alias text', show(decodeEntities(main.alias_text)), false, '', 'alias_text'],
+            ['element', show(main.element_id) + (!blank(main.menu) && main.menu !== main.element_id ? '  · menu ' + main.menu : ''), true, '', 'element_id · menu'],
+            ['unit', blank(main.eng_unit) ? '—' : decodeEntities(main.eng_unit), false, 'eng_unit as stored: ' + show(main.eng_unit), 'eng_unit'],
+            ['scale', scaleText, false,
+                'scale = ' + show(main.scale) + ', raw_min ' + show(main.raw_min) + ', raw_max ' + show(main.raw_max) + ', eng_min ' + show(main.eng_min) + ', eng_max ' + show(main.eng_max),
+                'scale · raw_min/max · eng_min/max'],
+            ['format', blank(main.format) ? 'default' : String(main.format), true, '', 'format'],
+            ['range', blank(main.range_min) && blank(main.range_max) ? '—' : show(main.range_min) + ' … ' + show(main.range_max), false, 'The range IWMAC allows', 'range_min · range_max'],
+            ['type', show(main.parameter_type), false, '', 'parameter_type'],
+            ['application', show(main.application), false, '', 'application'],
+            ['access', ({ r: 'read only', rw: 'read and write', w: 'write only' })[String(main.att)] || show(main.att), false, 'att = ' + show(main.att), 'att'],
+            ['group', show(main.grp), true, '', 'grp'],
+            ['category', show(main.category_id), true, '', 'category_id'],
+            ['user attributes', describeJsonColumn(main.user_attribs), false, '', 'user_attribs'],
+        ];
+        if (states && states.list) {
+            shows.push(['states', states.list.length + ' state' + (states.list.length === 1 ? '' : 's') +
+                (states.current ? ' — now ' + states.current.v + ' = ' + states.current.t : (stateValue !== null ? ' — ' + stateValue + ' is none of them' : '')),
+                false, 'The texts IWMAC shows for each value', 'format_extra']);
+            for (const s of states.list.slice(0, 40)) shows.push([s.v, s.t + (states.current && states.current.v === s.v ? '   ◀ now' : ''), false, '', '']);
+            if (states.list.length > 40) shows.push(['…', (states.list.length - 40) + ' more', false, '', '']);
+        } else {
+            shows.push(['states', states && states.raw ? states.raw : '—', false, '', 'format_extra']);
+        }
+        sections.push({ title: 'How IWMAC shows it', rows: shows });
+
+        sections.push({
+            title: 'Logging and alarms', rows: [
+                ['logged', describeLogging(main.save_data, main.save_freq), false, 'save_data = ' + show(main.save_data) + ', save_freq = ' + show(main.save_freq), 'save_data · save_freq'],
+                ['alarm type', show(main.alarm_type), true, '', 'alarm_type'],
+                ['alarm blocked', String(main.alarm_block) === '1' ? 'yes' : (blank(main.alarm_block) ? '—' : 'no'), false, 'alarm_block = ' + show(main.alarm_block), 'alarm_block'],
+                ['plant priority', show(main.plant_pri), true, '', 'plant_pri'],
+                ['system priority', show(main.sys_pri), true, '', 'sys_pri'],
+            ],
+        });
+
+        sections.push({
+            title: 'The unit in IWMAC', rows: [
+                ['unit', show(main.unit_id) + (blank(main.unit_name) ? '' : ' — ' + decodeEntities(main.unit_name)), false, '', 'unit_id · unit_name'],
+                ['regulator type', show(main.regulator_type), true, 'Also the middle part of every driver_id of the unit', 'regulator_type'],
+                ['parameter table', show(main.grp_name) + (!blank(main.order_no) && main.order_no !== main.grp_name ? '  · order_no ' + main.order_no : ''), true, '', 'grp_name · order_no'],
+                ['driver address extra', describeJsonColumn(main.driver_adr_extra), false, '', 'driver_adr_extra'],
+                ['view built', show(main.row_date), true, 'When the Plant Server last built iw_gen_driver_parameters', 'row_date'],
+            ],
+        });
+
+        // The other parameters sharing the register — one line each.
+        if (rows.length > 1) {
+            const others = rows.slice(1).map(r => {
+                const bit = bitOf(r);
+                const st = describeStates(r.format_extra, bit !== null && u16 !== null ? (u16 >> bit) & 1 : value);
+                return [bit !== null ? 'bit ' + bit : show(r.element_id),
+                    decodeEntities(r.alias_text) + (st && st.current ? ' — now ' + st.current.t : '') + '  · ' + describeUpdateFreq(r.update_freq) +
+                        ', logged ' + describeLogging(r.save_data, r.save_freq) + (String(r.onl_ind) === '1' ? ', online indicator' : ''),
+                    false, r.driver_id + ' · no. ' + show(r.driver_id_no), show(r.element_id)];
+            });
+            sections.push({ title: 'Other parameters on this register', rows: others });
+        }
+        return sections;
+    }
+
     /** IWMAC's scale columns in words: '' (none), 'x0.1', or the linear map it stores. */
     function describeIwmacScale(scale) {
         if (!scale || scale.mode === '' || scale.mode === null || scale.mode === undefined || scale.mode === '0') return '';
@@ -2467,6 +2658,19 @@
         if (def.onlineIndicator) out.onlineIndicator = true;
         if (def.updateFreq) out.updateFreq = def.updateFreq;
         if (def.alarmType) out.alarmType = def.alarmType;
+        // From the Plant Server's parameter view, where it was read.
+        if (def.states) {
+            out.states = def.states;
+            // A state word: what the register holds now, in IWMAC's own words.
+            if (typeof raw === 'number') {
+                const now = entry.bit !== null && entry.bit !== undefined ? ((raw < 0 ? raw + 65536 : raw) >> entry.bit) & 1 : raw;
+                if (def.states[String(now)] !== undefined) out.stateNow = String(now) + ' = ' + def.states[String(now)];
+            }
+        }
+        if (def.logging) out.logging = def.logging;
+        if (def.range) out.range = def.range;
+        if (def.alarm) out.alarm = def.alarm;
+        if (def.idNo) out.parameterNo = def.idNo;
         if (logEntry) out.logErrors = { count: logEntry.errors, kinds: logEntry.kinds, last: logEntry.last };
         if (typeof raw !== 'number') return out;
         const decoded = decodeLikeIwmac(def, raw, nextRaw, entry.bit);
@@ -4206,7 +4410,7 @@
      * back online, whichever is later: errors from before either are history.
      */
     function readDriverLog(log, who) {
-        const { owner, unitId, table, unitPrefix, tablePrefix } = who;
+        const { owner, unitId, unitPrefix, tablePrefix, idNos } = who;
         const mine = [];
         const otherUnits = {};
         const byDriverId = {};
@@ -4214,14 +4418,21 @@
             const hit = LOG_KINDS.find(k => k.re.test(e.text));
             const entry = Object.assign({ kind: hit ? hit.kind : 'other' }, e);
             const unitLine = entry.text.match(/\bUnit (\S+) is (?:OFFLINE|ONLINE)/i);
-            const item = (entry.text.match(/\bitem (\S+)/) || [])[1] || null;
+            let item = (entry.text.match(/\bitem (\S+)/) || [])[1] || null;
+            // A write names its parameter by number, not by driver_id —
+            // "Write failed 19423 = 1.00" — and the view says whose number it is.
+            const byNumber = !item && idNos ? entry.text.match(/^(?:Param write:|Write failed)\s+(\d+)\b/i) : null;
+            if (byNumber) item = idNos[byNumber[1]] || ('parameter no. ' + byNumber[1]);
             let other = null;
             if (unitLine && unitId && unitLine[1] !== unitId) other = unitLine[1];
             else if (item && unitPrefix && item.indexOf(unitPrefix) !== 0) {
                 other = tablePrefix && item.indexOf(tablePrefix) === 0
                     ? 'address ' + item.slice(tablePrefix.length).replace(/_0_\d+_\d+(?:\.\d+)?$/, '')
                     : item.replace(/_0_\d+_\d+(?:\.\d+)?$/, '');
-            } else if (item && !unitPrefix && table && item.indexOf('_' + table + '_') < 0) other = item.replace(/_0_\d+_\d+(?:\.\d+)?$/, '');
+            }
+            // Without the unit's prefix a line cannot be told apart, and stays
+            // with the driver: a driver_id carries the regulator type, not the
+            // table, so the table name is no test.
             if (other) {
                 const o = otherUnits[other] || (otherUnits[other] = { lines: 0, kinds: {} });
                 o.lines++;
@@ -4229,7 +4440,7 @@
                 continue;
             }
             mine.push(entry);
-            if (item && LOG_TROUBLE.indexOf(entry.kind) >= 0) {
+            if (item && (LOG_TROUBLE.indexOf(entry.kind) >= 0 || entry.kind === 'writeFailed')) {
                 const agg = byDriverId[item] || (byDriverId[item] = { errors: 0, kinds: {}, last: null });
                 agg.errors++;
                 agg.kinds[entry.kind] = (agg.kinds[entry.kind] || 0) + 1;
@@ -4267,6 +4478,68 @@
             readFunction: num(p[0]), readAddr: num(p[1]), rawType: p[2] === '-' ? null : p[2], swap: p[3] === '-' ? null : p[3],
             writeFunction: num(p[4]), writeAddr: num(p[5]), writeRawType: p[6] && p[6] !== '-' ? p[6] : null,
         };
+    }
+
+    // The Plant Server's flattened parameter view (see iwmacDefinitionSections).
+    const GEN_TABLE = 'iw_plant_server3.iw_gen_driver_parameters';
+    const RE_DRIVER_ID_VALUE = /^[A-Za-z0-9_.\-]{1,160}$/;
+    // Rows read for a card, by driver_id, so reopening one costs nothing.
+    const genRowCache = new Map();
+
+    /** iw_gen_driver_parameters rows for a whole unit ({unitId}) or for some parameters ({driverIds}). */
+    async function fetchGenRows(which) {
+        let where;
+        if (which && which.unitId !== undefined) {
+            if (!RE_SQL_VALUE.test(String(which.unitId))) throw new Error('"' + String(which.unitId).slice(0, 40) + '" is not a plain unit id');
+            where = "unit_id = '" + sqlText(which.unitId) + "'";
+        } else {
+            const ids = ((which && which.driverIds) || []).filter(id => RE_DRIVER_ID_VALUE.test(String(id)));
+            if (!ids.length) return [];
+            where = 'driver_id IN (' + ids.map(id => "'" + sqlText(id) + "'").join(', ') + ')';
+        }
+        return plantSql('SELECT * FROM ' + GEN_TABLE + ' WHERE ' + where + ' LIMIT 5000');
+    }
+
+    /**
+     * The view's rows for the parameters on one register: from IWMAC's side
+     * of the unit when a scan has read it, from this page's cache, or asked
+     * for now — a poll never reads it.
+     */
+    async function loadGenRows(driverIds) {
+        const ids = [...new Set((driverIds || []).filter(Boolean))];
+        const collected = iwmacContext && plantNames && iwmacContext.unitId === plantNames.unitId && iwmacContext.parameters
+            ? iwmacContext.parameters.gen : null;
+        const found = [], wanted = [];
+        for (const id of ids) {
+            const row = (collected && collected[id]) || genRowCache.get(id);
+            if (row) found.push(row); else wanted.push(id);
+        }
+        if (wanted.length) {
+            for (const row of await fetchGenRows({ driverIds: wanted })) { genRowCache.set(row.driver_id, row); found.push(row); }
+        }
+        return found;
+    }
+
+    /** What the view adds to a parameter's definition: its log number, state texts, logging, range, alarm settings. */
+    function enrichDefinition(def, row) {
+        if (row.driver_id_no !== undefined && row.driver_id_no !== null && row.driver_id_no !== '') def.idNo = String(row.driver_id_no);
+        const states = describeStates(row.format_extra, null);
+        if (states && states.list && states.list.length) {
+            def.states = {};
+            for (const s of states.list) def.states[s.v] = s.t;
+        }
+        const logging = describeLogging(row.save_data, row.save_freq);
+        if (logging !== '—') def.logging = logging;
+        if ((row.range_min !== '' && row.range_min !== null && row.range_min !== undefined) || (row.range_max !== '' && row.range_max !== null && row.range_max !== undefined)) {
+            def.range = [row.range_min === '' ? null : row.range_min, row.range_max === '' ? null : row.range_max];
+        }
+        if (String(row.onl_ind) === '1') def.onlineIndicator = true;
+        if (row.update_freq && !def.updateFreq) def.updateFreq = row.update_freq;
+        if (row.plant_pri || row.sys_pri || String(row.alarm_block) === '1') {
+            def.alarm = { plantPriority: row.plant_pri || null, systemPriority: row.sys_pri || null, blocked: String(row.alarm_block) === '1' };
+        }
+        if (row.driver_group !== undefined && row.driver_group !== '') def.driverGroup = row.driver_group;
+        return def;
     }
 
     async function collectIwmacContext(unitId) {
@@ -4369,13 +4642,43 @@
             } catch (e) { miss('parameter settings iw_set_' + table + ' (Toolbox plant-SQL)', e); }
         }
 
-        // What the driver has written to the Plant Server log.
+        // The Plant Server's own view of the unit's parameters: what the two
+        // tables above say, plus each parameter's log number, state texts,
+        // logging and alarm settings. Nothing above depends on it.
+        try {
+            const rows = await fetchGenRows({ unitId });
+            if (rows.length) {
+                ctx.parameters = ctx.parameters || { table, definitions: {} };
+                ctx.parameters.gen = {};
+                ctx.parameters.viewBuiltAt = rows[0].row_date || null;
+                for (const r of rows) {
+                    ctx.parameters.gen[r.driver_id] = r;
+                    const def = ctx.parameters.definitions[shortDriverId(r.driver_id)];
+                    if (def) enrichDefinition(def, r);
+                }
+            }
+        } catch (e) { miss('parameter view iw_gen_driver_parameters (Toolbox plant-SQL)', e); }
+
+        // What the driver has written to the Plant Server log. A driver_id's
+        // middle part is the unit's regulator type, not its table — V01 on plant
+        // 2349 is 2349_OJEXHAUST_OJ_1_1_0_4_208 in a table exhausto_OJ_v610 — so the
+        // unit's own prefix is taken from one of its real driver_ids.
         if (owner) {
             const driverAddr = ctx.registration ? ctx.registration.driverAddr : null;
-            const tablePrefix = table ? plantId + '_' + owner + '_' + table + '_' : null;
+            const regulatorType = ctx.registration && RE_SQL_NAME.test(ctx.registration.regulatorType || '') ? ctx.registration.regulatorType : null;
+            const knownIds = Object.keys((ctx.parameters && ctx.parameters.gen) || {})
+                .concat(plantNames && plantNames.unitId === unitId ? [].concat(...Array.from(plantNames.byRef.values())).map(e => e.driverId) : []);
+            const stem = knownIds.map(id => (String(id).match(/^(.*_)0_\d+_\d+(?:\.\d+)?$/) || [])[1]).find(Boolean) || null;
+            const regulatorPrefix = regulatorType ? plantId + '_' + owner + '_' + regulatorType + '_' : null;
+            const unitPrefix = stem || (regulatorPrefix && driverAddr ? regulatorPrefix + driverAddr + '_' : null);
+            // The log names a write by the parameter's number: "Param write: 19655 = 3".
+            const idNos = {};
+            for (const r of Object.values((ctx.parameters && ctx.parameters.gen) || {})) if (r.driver_id_no) idNos[String(r.driver_id_no)] = r.driver_id;
             try {
                 ctx.log = readDriverLog(await fetchDriverLog(owner), {
-                    owner, unitId, table, tablePrefix, unitPrefix: tablePrefix && driverAddr ? tablePrefix + driverAddr + '_' : null,
+                    owner, unitId, table, unitPrefix,
+                    tablePrefix: unitPrefix && regulatorPrefix && unitPrefix.indexOf(regulatorPrefix) === 0 ? regulatorPrefix : null,
+                    idNos: Object.keys(idNos).length ? idNos : null,
                 });
             } catch (e) { miss('driver log (Plant Server log table or plant_files.php)', e); }
         }
@@ -4590,6 +4893,9 @@
     #${PANEL_ID} .mpc-kv .mpc-v.mono{font-family:Consolas,ui-monospace,monospace}
     #${PANEL_ID} .mpc-kv .mpc-v.hl{color:#1b5fa8;font-weight:bold}
     #${PANEL_ID} .mpc-kv .mpc-v.dim{color:#79808c}
+    /* The database column a field comes from, small under its label. */
+    #${PANEL_ID} .mpc-kv .mpc-k small{display:block;font:10px/1.3 Consolas,ui-monospace,monospace;color:#a0a6b0;overflow-wrap:anywhere}
+    #${PANEL_ID} .mpc-kv .mpc-v.now{color:#1b5fa8;font-weight:bold}
     #${PANEL_ID} .mpc-dnotes{display:flex;flex-direction:column;gap:4px}
     #${PANEL_ID} .mpc-dnote{padding:5px 10px;border-radius:4px;font:12px/1.45 Arial,Helvetica,sans-serif;
         background:#fff4e0;border:1px solid #f3d9a4;color:#6b4300}
@@ -5444,19 +5750,50 @@
         for (const b of [pollBtn, watchBtn, copyBtn, el('span', { className: 'mpc-spacer' }), closeBtn]) actions.appendChild(b);
         box.appendChild(el('div', { className: 'mpc-dtop' }, [nameBlock, valueBlock, actions]));
 
-        // The facts, in columns.
-        const cols = el('div', { className: 'mpc-dcols' });
-        for (const section of model.sections.slice(1)) {
+        // The facts, in columns. A row is [label, text, mono, tip, column]; the
+        // column, where a row has one, is the database column it comes from.
+        const renderSection = section => {
             const sec = el('div', { className: 'mpc-dsec' }, [el('h5', { textContent: section.title })]);
-            for (const [label, text, mono, tip] of section.rows) {
+            for (const [label, text, mono, tip, column] of section.rows) {
+                const shown = String(text);
                 sec.appendChild(el('div', { className: 'mpc-kv', title: tip || '' }, [
-                    el('span', { className: 'mpc-k', textContent: label }),
-                    el('span', { className: 'mpc-v' + (mono ? ' mono' : '') + (label === 'because' ? ' dim' : ''), textContent: String(text) }),
+                    el('span', { className: 'mpc-k' }, column ? [String(label), el('small', { textContent: column })] : [String(label)]),
+                    el('span', {
+                        className: 'mpc-v' + (mono ? ' mono' : '') + (label === 'because' || shown === '—' ? ' dim' : '') + (/◀ now$/.test(shown) ? ' now' : ''),
+                        textContent: shown,
+                    }),
                 ]));
             }
-            cols.appendChild(sec);
-        }
+            return sec;
+        };
+        const cols = el('div', { className: 'mpc-dcols' });
+        for (const section of model.sections.slice(1)) cols.appendChild(renderSection(section));
         box.appendChild(cols);
+
+        // IWMAC's own definition of every parameter on the register — the
+        // Plant Server's parameter view, read when the card opens (a poll never
+        // reads it) and kept for the next time. Filled in when it arrives.
+        const plantIds = (fromPlant || []).map(p => p.driverId).filter(Boolean);
+        if (plantIds.length) {
+            const waiting = renderSection({ title: 'How IWMAC defines it', rows: [['', 'reading IWMAC\'s definition of this parameter…', false, '', '']] });
+            cols.appendChild(waiting);
+            loadGenRows(plantIds).then(rows => {
+                if (!waiting.isConnected) return;
+                if (!rows.length) {
+                    waiting.replaceWith(renderSection({ title: 'How IWMAC defines it', rows: [['', 'not in the Plant Server\'s parameter view — an inactive parameter, or a view not built since it was added', false, '', 'iw_gen_driver_parameters']] }));
+                    return;
+                }
+                // The register's own parameter first, then its bits in order.
+                const order = id => { const m = String(id).match(/\.(\d+)$/); return m ? Number(m[1]) + 1 : 0; };
+                rows.sort((a, b) => order(a.driver_id) - order(b.driver_id));
+                const fragment = document.createDocumentFragment();
+                for (const section of iwmacDefinitionSections(rows, value)) fragment.appendChild(renderSection(section));
+                waiting.replaceWith(fragment);
+            }).catch(e => {
+                if (!waiting.isConnected) return;
+                waiting.replaceWith(renderSection({ title: 'How IWMAC defines it', rows: [['', 'not available — ' + e.message, false, 'Needs the Toolbox plant-SQL API, reachable on the IWMAC VPN', '']] }));
+            });
+        }
 
         if (model.notes.length) {
             const notes = el('div', { className: 'mpc-dnotes' });
