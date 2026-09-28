@@ -265,7 +265,14 @@ rebuilt.
     errors) and `expected`, what that definition makes of the register modpoll
     just read. `agrees` compares it with the value IWMAC displayed; `false` on a
     register that did not move is a definition that reads the register
-    differently from the device, or an old value.
+    differently from the device, or an old value. Since 1.49.0 it opens with
+    `reading`, the whole way from the wire to the screen in one sentence —
+    *modpoll read 6374 → as U16 ×0.01 = 63.74 % → IWMAC shows 63.7 % — agrees*
+    — and `reads` (and `writes`, where IWMAC writes it), what the register's
+    card shows under *How IWMAC reads it*: *function 4 (read input registers),
+    address 208, unsigned 16-bit, no swap*. Beside them `type`,
+    `application`, `element`, the state texts (`states`, `stateNow`), how it is
+    logged and its log number, from the Plant Server's parameter view.
   - `scanEmpty` — registers that answered 0 with nothing else to say about them,
     as ranges per table. On a lenient device they were most of the file: the
     2349 V01 export was 681 KB before, almost all of it rows like that.
@@ -316,11 +323,17 @@ before 1.46.0 changed anything:
 
 | Measurement | Number |
 |---|---|
-| One good read, on its own command line | ~1.9 s |
-| One **refused** read, on its own | ~4.0 s |
-| Four good reads, chained on one line | ~3.0 s |
-| Four refused reads, chained on one line | ~10.1 s |
+| One good read, on its own command line (`raw()`) | ~1.9 s |
+| One **refused** read, on its own (`raw()`) | ~4.0 s |
 | Whole scan, four tables | 223 s |
+
+A one-off command waits out a settle window a scan's reads do not, so those
+first two numbers overstate what a scan pays. `test/scan-simulation.py` carries
+V01's map and prices every run on a model calibrated on the real scan — a shell
+line ~0.5 s, an answered run ~0.1 s more, a refusal ~0.63 s (what a refusal
+cost on plant 2313 too) — which reproduces the 223 s within seconds. It says
+where the time went: the ladder ~32 s, the sweep ~180 s, 193 of the scan's 232
+refusals, most of them spent proving where each small map ends.
 
 Refusals are the cost, and they cannot be made cheaper from here: this modpoll
 build has no timeout flag (`-o` does not exist), and the device, not modpoll,
@@ -329,17 +342,46 @@ Term runs one command line at a time; a serial bus is half-duplex, so a second
 master on it corrupts both; and a TCP gateway that serialises its RTU side only
 queues the second request behind the first. What is left is asking less:
 
-- **Two empty chunks end a strict table's sweep, not three.** On 2349 V01 the
-  third empty chunk of every table, with its three single reads, found nothing
-  and cost about 13 seconds — some 50 of the 223.
+| V01, in the calibrated model | Time | Refusals |
+|---|---|---|
+| 1.45.1 | 219 s | 232 |
+| 1.46–1.48: two empty chunks end a strict sweep, not three | 198 s | 204 |
+| 1.49: an edge is searched inside the block already read short | 175 s | 180 |
+| 1.49: past IWMAC's last register, the end is proved with less | **141 s** | 136 |
+| 1.49: the same device scanned again, from its known map | **13 s** | 0 |
+
+- **The edge inside the block that came back short.** Finding where a map ends
+  used to ask again about everything to the end of the chunk — 297 registers,
+  then 148, then 74, each a refusal — before narrowing down inside the one
+  block the chunk's own read had already shown was refused. Now the search
+  starts there, wherever everything before it in the block has answered.
+- **IWMAC's list as a hint for effort.** Past the highest register IWMAC (or
+  the loaded list) reads in a table, a stretch with no answer is the map's end
+  far more often than a gap, so it is proved with a look-ahead of 8 registers
+  instead of 128 and one empty chunk instead of two. Everything up to that
+  register is swept as before, and the ladder still looks for regions beyond it
+  — the simulation's device whose list knows two of three areas still finds the
+  third. What this gives up: an island within 128 registers past IWMAC's last
+  register, after a gap of more than 8, not at a ladder rung.
+- **The known map.** A full scan that runs to its end keeps the map it found —
+  each table's answering ranges — in the userscript manager's storage, keyed by
+  plant, mode, address, port and slave, the forty most recent devices. The next
+  *Scan device* on the same device reads exactly those ranges as block reads
+  nothing refuses, then reads them again and judges widths as a full scan does:
+  seconds instead of minutes. It checks the map as it reads: a range that comes
+  back short means the device changed, and the scan looks for its map again
+  (the simulation changes V01's map under it to prove that); a device that
+  answers none of it is reported as answering nothing rather than searched for
+  at length. *find map again* next to the button forces a full scan, and the
+  export says which it was: `scan.mode` is `known map` or `full discovery`,
+  `scan.mapFrom` when the map was found.
 - **Every command is costed.** `scan.cost` counts modpoll runs, values read,
   refusals, timeouts and port errors, and `scan.phases` times ladder, narrowing,
-  sweep, second read and format check, so the next saving is chosen from a
-  measurement rather than a guess.
+  sweep, second read and format check.
 
-The ladder, the narrowing and the second read were left as they are: each
-answers a question the rest of the scan depends on, and a scan that skips one
-is faster by being wrong on some device.
+The ladder, the narrowing and the second read of a full scan are left as they
+are: each answers a question the rest of the scan depends on, and a scan that
+skips one is faster by being wrong on some device.
 
 ## Stopping and starting the Plant Server
 
@@ -507,7 +549,7 @@ What the script reaches, and what becomes of it:
 | The sys_tools page and its Plant Term session | running modpoll | Only guarded, read-only modpoll lines are sent; the output is parsed, not stored |
 | The plant's own endpoints, same origin | a unit's parameters, the module list, the log, Stop and Start | The browser supplies the plant's HTTP login; the script never reads it and strips it from every URL it builds |
 | The Toolbox plant-SQL API | the unit list, IWMAC's side of a unit | `SELECT` only, for the page's own plant; a unit id is sent only if it is a plain token; `X-Caller` and one `X-Run-Id` per plant; no browser cookies |
-| Tampermonkey storage | the form, panel heights, the Plant Server stop mark | Host, slave, port, serial settings, a plant id and a time — never a login |
+| Tampermonkey storage | the form, panel heights, the Plant Server stop mark, the known maps | Host, slave, port, serial settings, a plant id and a time; per scanned device (forty at most) its address and register ranges — never a login |
 | Files | point lists in, exports out | See below |
 
 What leaves in a file — *Save JSON*, *Save report*, *Save verification*, and the
@@ -651,8 +693,10 @@ quietly stop being the thing under test.
   Server's parameter view on two of plant 2349's own rows — a scaled input
   register and a state word — as the card writes them out, every column
   present, the state marked *now*, and a failed write matched to its parameter
-  by number. Eighty-seven expectations, each printed PASS or FAIL; exits
-  non-zero on any FAIL.
+  by number; and the one-sentence `reading` from modpoll's number to IWMAC's
+  screen, for a scaled register, a float and a value IWMAC shows differently.
+  Ninety-two expectations, each printed PASS or FAIL; exits non-zero on any
+  FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the

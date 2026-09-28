@@ -457,6 +457,24 @@ check('the log reader files a failed write under its parameter by number, and a 
     writes.byDriverId['2349_OJEXHAUST_OJ_1_1_0_4_208'].kinds.writeFailed === 1 && writes.otherUnits && writes.otherUnits['parameter no. 99999'],
     JSON.stringify({ byDriverId: writes.byDriverId, otherUnits: writes.otherUnits }).slice(0, 300));
 
+// --- from the wire to IWMAC's screen, in one sentence per parameter --------------------
+definitions[did(1001)].datatypeText = '3_1000_I16_N_-_-_-_-';
+definitions[did(1003)].datatypeText = '3_1002_F_N_-_-_-_-';
+definitions[did(1012)].datatypeText = '3_1011_U16_N_6_1011_U16_N';
+const doc5 = exportResult(null);
+const r5 = ref => doc5.scanReadings.find(r => r.table === '4' && r.ref === ref);
+check('a reading row says the whole way from modpoll to IWMAC\'s screen in one sentence',
+    r5(1001).plant[0].iwmac.reading === 'modpoll read 34 → as I16 ×0.1 = 3.4 bar → IWMAC shows 3.4 bar — agrees', r5(1001).plant[0].iwmac.reading);
+check('... for a float over two registers too', r5(1003).plant[0].iwmac.reading === 'modpoll read 16812 and 0 → as F = 21.5 °C → IWMAC shows 21,5 °C — agrees',
+    r5(1003).plant[0].iwmac.reading);
+check('a value IWMAC shows differently says so at the end of its sentence', r5(1012).plant[0].iwmac.reading === 'modpoll read -50 → as U16 ×0.1 = 6548.6 °C → IWMAC shows -5 °C — differs',
+    r5(1012).plant[0].iwmac.reading);
+check('how IWMAC\'s driver reads a parameter, and writes one it writes, in words', r5(1001).plant[0].iwmac.reads === 'function 3 (read holding registers), address 1000, signed 16-bit, no swap' &&
+    r5(1001).plant[0].iwmac.writes === undefined && r5(1012).plant[0].iwmac.writes === 'function 6 (write single register), address 1011, unsigned 16-bit, no swap',
+    JSON.stringify({ reads: r5(1001).plant[0].iwmac.reads, writes: r5(1012).plant[0].iwmac.writes }));
+check('howToUse and fieldGuide explain reading and reads', doc5.howToUse.some(l => l.indexOf('reading first: one sentence') >= 0) &&
+    !!doc5.fieldGuide['plant[].iwmac.reading'] && !!doc5.fieldGuide['plant[].iwmac.reads'], '');
+
 let failed = 0;
 for (const c of checks) {
     if (!c.ok) failed++;

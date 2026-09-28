@@ -8,6 +8,15 @@ committed at HEAD, so a change to the scan is measured against what it
 replaces on the same maps: what each finds, what each misses, and what each
 costs in modpoll invocations.
 
+One device is plant 2349's V01 ventilation controller with the map a full scan
+found there, and the cost of every run is also given in seconds on a model
+calibrated on that scan (223 s with 1.45.1): a shell line ~0.5 s, an answered
+run ~0.1 s more, a refusal ~0.63 s — so a change's cost is read in the unit the
+user waits in, phase by phase and by the kind of line that paid each refusal.
+Every device is then scanned a second time, which a device scanned in full
+before reads from its known map; V01 also has its map changed under it, which
+that second read must notice and look for again.
+
 Lives beside the script it tests. Run: python scan-simulation.py [--old-ref REF]
 """
 
@@ -34,18 +43,22 @@ def bundle(src, label):
     js = "(async () => {\n"
     js += "globalThis.window = globalThis; globalThis.location = { hostname: '2349.plants.iwmac.local' };\n"
     js += "const isSerialMode = mode => mode === 'rtu' || mode === 'ascii';\n"
+    js += "const VERSION = 'sim'; const __store = new Map(); globalThis.localStorage = { getItem: k => (__store.has(k) ? __store.get(k) : null), setItem: (k, v) => __store.set(k, String(v)) };\n"
     js += "const log = () => {}; const mirrorTerminal = () => {};\n"
     js += "const enrichValue = () => ({}); const pointForReading = () => null; const plantNamesFor = () => null;\n"
     js += lift(src, "    const EXE_BARE", "    // ---------------------------------------------------- Plant Term driver")
     js += lift(src, "    /** Runs of consecutive numbers", "    function impliedScale")
-    js += "const COST = { lines: 0, invocations: 0, refusals: 0 };\n"
-    js += "let DEVICE = null;\n"
+    js += "const COST = { lines: 0, invocations: 0, refusals: 0, kinds: {} };\n"
+    js += "let DEVICE = null; let plantNames = null; let pointList = null;\n"
     js += r"""
     // Plant Term, replaced: one chained command line in, what modpoll would
     // have printed out, and a count of what it cost.
     async function termRun(command) {
         COST.lines++;
         const out = [];
+        // Which kind of line paid for a refusal: single-register probes (the
+        // ladder, a look-ahead, an empty chunk's spot checks), block reads.
+        const kind = /echo #mpc:\d+:\d+/.test(command) ? 'probe line' : (/-c (\d+)/.exec(command) || [])[1] === '1' ? 'single read' : 'block read';
         for (const segment of String(command).split('&').map(s => s.trim()).filter(Boolean)) {
             if (segment.startsWith('echo ')) { out.push(segment.slice(5)); continue; }
             COST.invocations++;
@@ -56,7 +69,7 @@ def bundle(src, label):
             const count = Number(arg('-c') || 1);
             const wide = fmt === 'float' || fmt === 'int';
             const answer = DEVICE.read(table, ref, wide ? count * 2 : count);
-            if (answer === null) { COST.refusals++; out.push('Illegal Data Address exception response!'); continue; }
+            if (answer === null) { COST.refusals++; COST.kinds[kind] = (COST.kinds[kind] || 0) + 1; out.push('Illegal Data Address exception response!'); continue; }
             if (!wide) { answer.forEach((v, n) => out.push('[' + (ref + n) + ']: ' + v)); continue; }
             // 32-bit, as the plants' modpoll prints it: one line per value, two
             // registers each, and the high word first only with -f / -i — the
@@ -115,6 +128,9 @@ def bundle(src, label):
     const devices = {
         'strict, three areas and a hole': {
             maps: { '4': expand([[1, 50], [1001, 1049], [1051, 1100], [8192, 8200]]), '3': expand([[2001, 2040]]), '1': new Set(), '0': expand([[1, 16]]) },
+            // IWMAC's list knows two of the holding areas and nothing else: the
+            // third, at 8192, and the input registers must still be found.
+            listed: { '4': [[1, 50], [1001, 1100]] },
             live: { '4': new Set([1010, 8195]) },
             // Twenty floats, high word first, on the input registers.
             floats: { '3': floatMap(2001, series(20, 20.5, 0.25), true) },
@@ -147,6 +163,19 @@ def bundle(src, label):
                 return values;
             },
         },
+        // Plant 2349's V01 ventilation controller (Modbus TCP) as a full scan
+        // found it on 2026-09-24: strict, four small maps near the bottom of
+        // each table, two single holes. Its real cost is what the estimate below
+        // is calibrated on — 223 s for the scan 1.45.1 ran.
+        'strict, plant 2349 V01 ventilation': {
+            maps: { '4': expand([[2, 502]]), '3': expand([[1, 45], [47, 484]]), '1': expand([[3, 523]]), '0': expand([[1, 12], [14, 40]]) },
+            // IWMAC's list for the unit reads the same registers.
+            listed: { '4': [[2, 502]], '3': [[1, 484]], '1': [[3, 523]], '0': [[1, 40]] },
+            // And later, after a firmware change, a holding map that ends at 399.
+            changed: { '4': expand([[2, 399]]) },
+            reads: 0,
+            read: strictRead,
+        },
         'strict, one map starting at protocol 1000': {
             maps: { '4': expand([[1001, 1120]]), '3': expand([[1001, 1040]]), '1': new Set(), '0': new Set() },
             // Twenty floats, low word first, on the input registers — the
@@ -159,14 +188,39 @@ def bundle(src, label):
         },
     };
     const lines = [];
+    // What a scan costs on V01, calibrated on the 1.45.1 scan that took 223 s:
+    // with this model's counts for that scan (128 lines, 90 answered runs, 232
+    // refused), a shell line ~0.5 s, an answered run ~0.1 s on top and a
+    // refused one ~0.63 s reproduce it within seconds — and 0.63 s is what a
+    // refusal cost on plant 2313's controller too. One-off commands through
+    // the console's raw() cost more (1.9 s, 4.0 s): they wait out a settle
+    // window a scan's reads do not.
+    const SECONDS = { line: 0.5, answer: 0.1, refusal: 0.63 };
+    const estimate = c => c.lines * SECONDS.line + (c.invocations - c.refusals) * SECONDS.answer + c.refusals * SECONDS.refusal;
     for (const [name, device] of Object.entries(devices)) {
+        // Each device at its own address, so each keeps its own map.
+        const target = { mode: 'tcp', host: '10.0.' + (Object.keys(devices).indexOf(name) + 1) + '.5', slave: 1 };
         DEVICE = device;
-        COST.lines = 0; COST.invocations = 0; COST.refusals = 0;
+        // IWMAC's parameters for the unit, where the device declares a list.
+        plantNames = null;
+        if (device.listed) {
+            const byRef = new Map();
+            for (const t of Object.keys(device.listed)) for (const [a, b] of device.listed[t]) for (let r = a; r <= b; r++) byRef.set(t + '||' + r, [{}]);
+            plantNames = { unitId: 'U', byRef };
+        }
+        COST.lines = 0; COST.invocations = 0; COST.refusals = 0; COST.kinds = {};
         const started = Date.now();
         // Progress, where the scan reports it: the bar must never go backwards
         // and must end at 100 %, and every phase must have been announced.
         const events = [];
-        const report = await scanDevice({ mode: 'tcp', host: '10.0.0.5', slave: 1 }, true, p => events.push(p));
+        // What each phase cost: COST as it stood when the phase was first announced.
+        const phaseCost = [];
+        const report = await scanDevice(target, true, p => {
+            events.push(p);
+            if (p.phase && (!phaseCost.length || phaseCost[phaseCost.length - 1].phase !== p.phase)) {
+                phaseCost.push({ phase: p.phase, lines: COST.lines, invocations: COST.invocations, refusals: COST.refusals });
+            }
+        });
         lines.push('');
         lines.push('== ' + name + ' ==');
         if (events.length && events[0].fraction !== undefined) {
@@ -245,7 +299,38 @@ def bundle(src, label):
         } else {
             lines.push('  formats: none (this scan did not judge widths)');
         }
-        lines.push('  cost: ' + COST.lines + ' shell lines, ' + COST.invocations + ' modpoll runs, ' + COST.refusals + ' refusals, ' + (Date.now() - started) + ' ms of simulation');
+        lines.push('  cost: ' + COST.lines + ' shell lines, ' + COST.invocations + ' modpoll runs, ' + COST.refusals + ' refusals, ' + (Date.now() - started) + ' ms of simulation' +
+            ' — about ' + Math.round(estimate(COST)) + ' s at V01\'s measured costs');
+        const byPhase = [];
+        for (let i = 0; i < phaseCost.length; i++) {
+            const a = phaseCost[i], b = phaseCost[i + 1] || { lines: COST.lines, invocations: COST.invocations, refusals: COST.refusals };
+            const c = { lines: b.lines - a.lines, invocations: b.invocations - a.invocations, refusals: b.refusals - a.refusals };
+            if (c.lines) byPhase.push(a.phase + ' ' + Math.round(estimate(c)) + ' s (' + c.lines + ' lines, ' + c.invocations + ' runs, ' + c.refusals + ' refused)');
+        }
+        lines.push('  by phase: ' + byPhase.join('; '));
+        lines.push('  refused on: ' + Object.entries(COST.kinds).map(([k, v]) => k + 's ' + v).join(', '));
+        // The same device scanned again: from the map the first scan found,
+        // where there is a map to read, and it must find exactly the same.
+        const foundKeys = r => new Set((r.values || []).map(v => v.table + ':' + v.i));
+        const firstKeys = foundKeys(report);
+        COST.lines = 0; COST.invocations = 0; COST.refusals = 0; COST.kinds = {};
+        const again = await scanDevice(target, true, () => {});
+        const againKeys = foundKeys(again);
+        const same = againKeys.size === firstKeys.size && [...firstKeys].every(k => againKeys.has(k));
+        lines.push('  scanned again: ' + (again.mapFrom ? 'from the known map' : 'a full discovery') + ' — ' + COST.lines + ' lines, ' + COST.invocations + ' runs, ' +
+            COST.refusals + ' refused, about ' + Math.round(estimate(COST)) + ' s; ' + (same ? 'the same ' + againKeys.size + ' registers' : 'DIFFERENT: ' + againKeys.size + ' against ' + firstKeys.size));
+        if (device.changed) {
+            // The map changed under it: reading the old map must notice and look again.
+            for (const t of Object.keys(device.changed)) device.maps[t] = device.changed[t];
+            COST.lines = 0; COST.invocations = 0; COST.refusals = 0; COST.kinds = {};
+            const changedEvents = [];
+            const third = await scanDevice(target, true, e => changedEvents.push(e));
+            const expected = new Set(); for (const t of Object.keys(device.maps)) for (const r of device.maps[t]) expected.add(t + ':' + r);
+            const got = foundKeys(third);
+            const exact = got.size === expected.size && [...expected].every(k => got.has(k));
+            lines.push('  after its map changed: ' + (third.mapFrom ? 'READ THE OLD MAP' : (changedEvents.some(e => e.mapChanged) ? 'noticed, looked again' : 'looked again')) +
+                ' — ' + (exact ? 'found exactly the new map, ' + got.size + ' registers' : 'WRONG: ' + got.size + ' against ' + expected.size) + ', about ' + Math.round(estimate(COST)) + ' s');
+        }
     }
     console.log(lines.join('\n'));
 })().catch(e => { console.error('FAILED: ' + (e && e.stack || e)); process.exit(1); });

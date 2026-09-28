@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.48.0
+// @version      1.49.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.48.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1134,6 +1134,114 @@
     }
 
     /*
+     * The map a full scan found, kept per device in the userscript manager's
+     * storage — never the page's — so the next scan of the same device can read
+     * it instead of looking for it: plant, mode, host, port and slave name the
+     * device; each table's answering ranges are the map. Forty devices are
+     * kept, the most recently scanned. Nothing in it is secret: an address and
+     * register ranges.
+     */
+    const MAPS_KEY = 'mpc.maps.v1';
+    const MAPS_KEPT = 40;
+    const mapKeyOf = spec => [plantIdFromHost(), spec.mode, String(spec.host).toLowerCase(),
+        spec.mode === 'rtu' || spec.mode === 'ascii' ? '' : spec.port, spec.slave].join('|');
+    function storedMaps() {
+        try { const maps = JSON.parse(storeGet(MAPS_KEY, '{}')); return maps && typeof maps === 'object' ? maps : {}; } catch (e) { return {}; }
+    }
+    function storedMapFor(spec) {
+        const map = storedMaps()[mapKeyOf(spec)];
+        return map && map.tables && Object.keys(map.tables).length ? map : null;
+    }
+    function storeMap(spec, report) {
+        const tables = {};
+        for (const t of Object.keys(report.sweep || {})) if (report.sweep[t].ranges) tables[t] = report.sweep[t].ranges;
+        if (!Object.keys(tables).length) return;
+        const maps = storedMaps();
+        maps[mapKeyOf(spec)] = { at: report.at, version: typeof VERSION !== 'undefined' ? VERSION : null, tables, registers: (report.values || []).length };
+        const newest = Object.keys(maps).sort((a, b) => String(maps[b].at).localeCompare(String(maps[a].at)));
+        for (const k of newest.slice(MAPS_KEPT)) delete maps[k];
+        storeSet(MAPS_KEY, JSON.stringify(maps));
+    }
+    /** "1-45,47-484" as [[1, 45], [47, 484]]. */
+    function parseRanges(text) {
+        const out = [];
+        for (const part of String(text || '').split(',')) {
+            const m = part.trim().match(/^(\d+)(?:-(\d+))?$/);
+            if (m) out.push([Number(m[1]), Number(m[2] || m[1])]);
+        }
+        return out;
+    }
+
+    /*
+     * A device scanned in full before, read from the map that scan found: every
+     * range that answered, as block reads nothing refuses — on plant 2349's V01
+     * about ten seconds, where finding the map cost minutes, most of them in
+     * refusals. The map is checked as it is read. A range that comes back short
+     * means this is not the device that was mapped, and null sends the scan to
+     * look for the map again; a device that answers none of it is reported as
+     * answering nothing, since looking again would only be refused at length.
+     */
+    async function readKnownMap(spec, stored, tell) {
+        const plan = [];
+        for (const table of SCAN_TABLES) for (const [from, to] of parseRanges(stored.tables[table])) plan.push({ table, from, to });
+        if (!plan.length) return null;
+        const label = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
+        const since = String(stored.at || '').slice(0, 10);
+        const report = {
+            host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables: {}, sweep: {}, values: [],
+            mapFrom: { at: stored.at || null, version: stored.version || null, registers: stored.registers || null },
+        };
+        const total = plan.reduce((n, p) => n + p.to - p.from + 1, 0);
+        let done = 0, answered = 0, short = 0, fatal = null;
+        for (const part of plan) {
+            if (abortRequested || fatal) break;
+            const count = part.to - part.from + 1;
+            const said = 'Reading the map found on ' + since + ' — ' + label(part.table) + ' ' + part.from + '-' + part.to;
+            tell(0.9 * done / total, said, { phase: 'known map', table: part.table });
+            const result = await readRegisters(Object.assign({}, spec, { table: part.table, format: '', base: 'printed', start: part.from, count, recover: false }),
+                p => { if (p.partial) tell(0.9 * Math.min(total, done + (p.arriving || 0)) / total, said, { phase: 'known map', partial: true }); });
+            done += count;
+            answered += result.values.length;
+            if (result.values.length < count) short++;
+            const dead = result.diagnostics.find(d => d.level === 'fatal');
+            if (dead) fatal = dead.text;
+            for (const v of result.values) report.values.push(Object.assign({ table: part.table }, v));
+        }
+        // Some of the map, not all of it: not the device that was mapped.
+        if (short && answered && !abortRequested) return null;
+        if (!answered) report.mapFrom.noAnswer = fatal || 'the device answered none of the map found on ' + since;
+        for (const table of SCAN_TABLES) {
+            const parts = plan.filter(p => p.table === table);
+            const rows = report.values.filter(v => v.table === table);
+            const refs = rows.map(v => v.i);
+            const withValues = rows.filter(v => v.v !== 0).map(v => v.i);
+            const first = refs.length ? refs.reduce((m, r) => Math.min(m, r)) : null;
+            const last = refs.length ? refs.reduce((m, r) => Math.max(m, r)) : null;
+            report.tables[table] = {
+                answers: refs.length > 0, firstReadable: first, firstReadableAddr: first === null ? null : first - 1,
+                regions: parts.map(p => ({ from: p.from, fromAddr: p.from - 1, probesAnswering: [], nextRefusedProbe: null })),
+                sample: rows.slice(0, 3).map(v => v.i + '=' + v.v), refused: [], fromMap: true,
+            };
+            if (!parts.length) continue;
+            report.sweep[table] = {
+                answered: refs.length, nonZero: withValues.length, first, last,
+                ranges: asRanges(refs), withValues: asRanges(withValues),
+                addrRanges: asRanges(refs.map(r => r - 1)), withValuesAddr: asRanges(withValues.map(r => r - 1)),
+                regions: parts.map(p => {
+                    const inPart = rows.filter(v => v.i >= p.from && v.i <= p.to);
+                    return {
+                        from: p.from, first: inPart.length ? p.from : null, last: inPart.length ? p.to : null, answered: inPart.length,
+                        nonZero: inPart.filter(v => v.v !== 0).length, stoppedAt: p.to + 1,
+                        stoppedBecause: 'the map a full scan found on ' + since,
+                    };
+                }),
+                chunks: 0,
+            };
+        }
+        return report;
+    }
+
+    /*
      * Which references to ask first. Sparse, because every refusal costs about
      * 630 ms on the wire — but placed where maps actually begin: at 1, at the
      * round hundreds and thousands a document counts from, and one past each,
@@ -1159,7 +1267,7 @@
      * an unmapped register and one that raises an exception both exist, so what
      * is reported is what was observed.
      */
-    async function scanDevice(input, deep, onProgress) {
+    async function scanDevice(input, deep, onProgress, options) {
         // A new scan is a new action: a Stop that ended the last one must not end
         // this one before it starts.
         abortRequested = false;
@@ -1181,176 +1289,214 @@
          * the scan is.
          */
         const SWEEP_FROM = 0.3, SWEEP_TO = 0.92;
-        const tell = (fraction, text, extra) => { if (onProgress) onProgress(Object.assign({ fraction, text }, extra || {})); };
+        // A known map that turns out not to match hands over to a full scan
+        // part way along: the full scan's fractions then fill what is left of
+        // the bar, rather than starting it again from nothing.
+        let floor = 0, reached = 0;
+        const tell = (fraction, text, extra) => {
+            reached = floor + (1 - floor) * fraction;
+            if (onProgress) onProgress(Object.assign({ fraction: reached, text }, extra || {}));
+        };
         const tableLabel = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
 
-        // One chained pass over every table and every rung of its ladder. Every
-        // answer is kept, value and all: the sweep uses them to know a chunk is
-        // not empty, and they are readings in their own right.
-        const probes = [];
-        for (const table of SCAN_TABLES) for (const ref of scanLadderOf(table)) probes.push({ table, ref });
-        const first = await probeRefs(spec, probes, (done, total, info) =>
-            tell(0.2 * (done / total), 'Probing reference ' + Math.min(done + 1, total) + ' of ' + total + ' across the four tables' +
-                (info && info.answered ? ' — ' + info.answered + ' answering' : ''), { phase: 'probe' }));
-        const answered = (table, ref) => !!((first[table + ':' + ref] || {}).answered);
-        const known = {};
-        for (const table of SCAN_TABLES) known[table] = new Map();
-        const learn = results => {
-            for (const key of Object.keys(results)) {
-                if (!results[key].answered) continue;
-                const [table, ref] = key.split(':');
-                known[table].set(Number(ref), results[key].value);
-            }
-        };
-        learn(first);
-        mark('ladder');
-
-        const regions = {};
-        for (const table of SCAN_TABLES) {
-            const ladder = scanLadderOf(table);
-            regions[table] = [];
-            let open = null;
-            ladder.forEach((ref, i) => {
-                if (answered(table, ref)) {
-                    // Below reference 1 there is nothing, so the first rung has 0
-                    // as its refused neighbour and settles at once.
-                    if (!open) open = { low: i ? ladder[i - 1] : 0, high: ref, probes: [ref], until: null };
-                    else open.probes.push(ref);
-                } else if (open) {
-                    open.until = ref;
-                    regions[table].push(open);
-                    open = null;
+        // A device scanned in full before is read from the map that scan found
+        // (readKnownMap) — seconds, where finding it took minutes — unless the
+        // caller asks for the map to be found again, or the device no longer
+        // answers the way it did, when it is looked for from scratch.
+        const storedMap = deep && !(options && options.rediscover) ? storedMapFor(spec) : null;
+        let report = storedMap ? await readKnownMap(spec, storedMap, tell) : null;
+        if (report) mark('known map');
+        else if (storedMap) {
+            floor = reached;
+            tell(0, 'The map found on ' + String(storedMap.at).slice(0, 10) + ' no longer matches — looking for it again', { phase: 'probe', mapChanged: true });
+        }
+        if (!report) {
+            // One chained pass over every table and every rung of its ladder. Every
+            // answer is kept, value and all: the sweep uses them to know a chunk is
+            // not empty, and they are readings in their own right.
+            const probes = [];
+            for (const table of SCAN_TABLES) for (const ref of scanLadderOf(table)) probes.push({ table, ref });
+            const first = await probeRefs(spec, probes, (done, total, info) =>
+                tell(0.2 * (done / total), 'Probing reference ' + Math.min(done + 1, total) + ' of ' + total + ' across the four tables' +
+                    (info && info.answered ? ' — ' + info.answered + ' answering' : ''), { phase: 'probe' }));
+            const answered = (table, ref) => !!((first[table + ':' + ref] || {}).answered);
+            const known = {};
+            for (const table of SCAN_TABLES) known[table] = new Map();
+            const learn = results => {
+                for (const key of Object.keys(results)) {
+                    if (!results[key].answered) continue;
+                    const [table, ref] = key.split(':');
+                    known[table].set(Number(ref), results[key].value);
                 }
-            });
-            if (open) regions[table].push(open);
-        }
-
-        // Narrow every region's lower edge together, one chained run per halving.
-        // How many halvings that takes is known from the widest gap before the
-        // first one is sent, so this phase can say how far along it is rather
-        // than how many edges are left — which on a single edge was 0 % until
-        // it was 100 %.
-        const edges = [];
-        for (const table of SCAN_TABLES) for (const region of regions[table]) edges.push({ table, region });
-        const unsettled = () => edges.filter(e => e.region.high - e.region.low > 1);
-        const widest = edges.reduce((m, e) => Math.max(m, e.region.high - e.region.low), 0);
-        const rounds = Math.max(1, Math.ceil(Math.log2(Math.max(2, widest))));
-        let round = 0;
-        while (unsettled().length && !abortRequested) {
-            const step = unsettled().map(e => ({ table: e.table, ref: Math.floor((e.region.low + e.region.high) / 2), edge: e }));
-            const say = (done, total) => tell(0.2 + 0.1 * Math.min(1, (round + done / Math.max(1, total)) / rounds),
-                'Finding where each region starts — halving ' + Math.min(round + 1, rounds) + ' of about ' + rounds + ', ' +
-                    step.length + ' edge' + (step.length === 1 ? '' : 's') + ' still to settle', { phase: 'narrow' });
-            const probed = await probeRefs(spec, step.map(s => ({ table: s.table, ref: s.ref })), (done, total) => say(done, total));
-            learn(probed);
-            for (const s of step) {
-                if ((probed[s.table + ':' + s.ref] || {}).answered) s.edge.region.high = s.ref; else s.edge.region.low = s.ref;
-            }
-            round++;
-        }
-        mark('narrow');
-
-        const tables = {};
-        for (const table of SCAN_TABLES) {
-            const ladder = scanLadderOf(table);
-            const rs = regions[table];
-            const hits = ladder.filter(ref => answered(table, ref));
-            const firstReadable = rs.length ? rs[0].high : null;
-            tables[table] = {
-                answers: rs.length > 0,
-                firstReadable,
-                // Stated in both bases, since that is the distinction this whole
-                // tool exists to keep straight.
-                firstReadableAddr: firstReadable === null ? null : firstReadable - 1,
-                regions: rs.map(r => ({ from: r.high, fromAddr: r.high - 1, probesAnswering: r.probes, nextRefusedProbe: r.until })),
-                sample: hits.slice(0, 3).map(ref => ref + '=' + first[table + ':' + ref].value),
-                refused: ladder.filter(ref => first[table + ':' + ref] && !answered(table, ref)).slice(0, 6),
             };
-        }
-        const report = { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
+            learn(first);
+            mark('ladder');
 
-        // Then read each region until its answers stop, so the scan ends with the
-        // registers themselves rather than only where they start.
-        if (deep) {
-            report.sweep = {};
-            report.values = [];
-            const lowest = refs => refs.reduce((m, r) => (m === null || r < m ? r : m), null);
-            const highest = refs => refs.reduce((m, r) => (m === null || r > m ? r : m), null);
-            const sweeping = SCAN_TABLES.filter(table => tables[table].answers);
-            // A chunk is not one round trip on a strict device, it is dozens —
-            // chaseRun halves its way around every gap at ~630 ms a refusal, with
-            // sweepForValues previously reporting back only once the whole chunk
-            // was settled. That is what froze the bar for minutes. Ticking on
-            // every command sweepForValues issues, not once it is done with a
-            // chunk, is what makes it move the whole time instead — and inside
-            // a command, on every value or refusal that lands.
-            let commandsSoFar = 0;
-            // Ticks, not chunks, are what "how much of this share is spent" is
-            // measured in now; a strict chunk's dozens of ticks would have blown
-            // past a chunk-scaled half-life in one step.
-            const SWEEP_TICK_HALF_LIFE = 24;
+            const regions = {};
             for (const table of SCAN_TABLES) {
-                if (!tables[table].answers || abortRequested) continue;
-                const total = { answered: 0, nonZero: 0, refs: [], withValues: [], regions: [], chunks: 0 };
-                const seen = new Set();
-                const share = (SWEEP_TO - SWEEP_FROM) / sweeping.length;
-                const before = SWEEP_FROM + share * sweeping.indexOf(table);
-                // Total work left in a table's sweep is unknowable until it stops
-                // — so the share only ever creeps towards its end, asymptotically,
-                // and is snapped to exactly once the table's last region actually
-                // finishes (below), rather than trusting the creep to arrive there
-                // on its own. A partial tick — output landing mid-command — moves
-                // the text, not the count: it is the same command still running.
-                let workSoFar = 0;
-                const sweepTick = t => {
-                    if (!t.partial) { commandsSoFar++; workSoFar++; }
-                    const landing = t.partial && (t.arriving || t.refusals)
-                        ? ' (' + (t.arriving ? '+' + t.arriving + ' arriving' : '') + (t.arriving && t.refusals ? ', ' : '') +
-                            (t.refusals ? t.refusals + ' refused' : '') + ')'
-                        : '';
-                    tell(before + share * (workSoFar / (workSoFar + SWEEP_TICK_HALF_LIFE)),
-                        'Sweeping ' + tableLabel(table) + ' near ' + t.ref + ' — ' + t.found + ' found' + landing + ', ' + commandsSoFar +
-                            ' command' + (commandsSoFar === 1 ? '' : 's') + ' sent',
-                        { phase: 'sweep', table, ref: t.ref, found: t.found, commands: commandsSoFar, chunkStart: !!t.chunkStart, partial: !!t.partial });
-                };
-                for (const region of regions[table]) {
-                    if (abortRequested) break;
-                    // A sweep that ran on through the next region found its start
-                    // already — found, not merely passed over.
-                    if (seen.has(region.high)) continue;
-                    const swept = await sweepForValues(spec, table, region.high, known[table], sweepTick);
-                    total.chunks += swept.chunks;
-                    let inRegion = 0;
-                    let nonZeroInRegion = 0;
-                    for (const value of swept.values) {
-                        if (seen.has(value.i)) continue;
-                        seen.add(value.i);
-                        inRegion++;
-                        total.refs.push(value.i);
-                        if (value.v !== 0) { nonZeroInRegion++; total.withValues.push(value.i); }
-                        report.values.push(Object.assign({ table }, value));
+                const ladder = scanLadderOf(table);
+                regions[table] = [];
+                let open = null;
+                ladder.forEach((ref, i) => {
+                    if (answered(table, ref)) {
+                        // Below reference 1 there is nothing, so the first rung has 0
+                        // as its refused neighbour and settles at once.
+                        if (!open) open = { low: i ? ladder[i - 1] : 0, high: ref, probes: [ref], until: null };
+                        else open.probes.push(ref);
+                    } else if (open) {
+                        open.until = ref;
+                        regions[table].push(open);
+                        open = null;
                     }
-                    total.answered += inRegion;
-                    total.nonZero += nonZeroInRegion;
-                    total.regions.push({
-                        from: region.high, first: swept.first, last: swept.last, answered: inRegion, nonZero: nonZeroInRegion,
-                        stoppedAt: swept.stoppedAt, stoppedBecause: swept.stoppedBecause,
-                    });
-                }
-                report.sweep[table] = {
-                    answered: total.answered, nonZero: total.nonZero,
-                    first: lowest(total.refs), last: highest(total.refs),
-                    ranges: asRanges(total.refs), withValues: asRanges(total.withValues),
-                    // The same runs in the other base, since a modbusgen list
-                    // prints protocol addresses and the reader will be writing one.
-                    addrRanges: asRanges(total.refs.map(r => r - 1)), withValuesAddr: asRanges(total.withValues.map(r => r - 1)),
-                    regions: total.regions, chunks: total.chunks,
-                };
-                // The table is actually done now, rather than merely close by
-                // whatever the asymptote last happened to reach.
-                tell(before + share, tableLabel(table) + ' swept — ' + total.answered + ' registers found', { phase: 'sweep', table });
+                });
+                if (open) regions[table].push(open);
             }
-            mark('sweep');
+
+            // Narrow every region's lower edge together, one chained run per halving.
+            // How many halvings that takes is known from the widest gap before the
+            // first one is sent, so this phase can say how far along it is rather
+            // than how many edges are left — which on a single edge was 0 % until
+            // it was 100 %.
+            const edges = [];
+            for (const table of SCAN_TABLES) for (const region of regions[table]) edges.push({ table, region });
+            const unsettled = () => edges.filter(e => e.region.high - e.region.low > 1);
+            const widest = edges.reduce((m, e) => Math.max(m, e.region.high - e.region.low), 0);
+            const rounds = Math.max(1, Math.ceil(Math.log2(Math.max(2, widest))));
+            let round = 0;
+            while (unsettled().length && !abortRequested) {
+                const step = unsettled().map(e => ({ table: e.table, ref: Math.floor((e.region.low + e.region.high) / 2), edge: e }));
+                const say = (done, total) => tell(0.2 + 0.1 * Math.min(1, (round + done / Math.max(1, total)) / rounds),
+                    'Finding where each region starts — halving ' + Math.min(round + 1, rounds) + ' of about ' + rounds + ', ' +
+                        step.length + ' edge' + (step.length === 1 ? '' : 's') + ' still to settle', { phase: 'narrow' });
+                const probed = await probeRefs(spec, step.map(s => ({ table: s.table, ref: s.ref })), (done, total) => say(done, total));
+                learn(probed);
+                for (const s of step) {
+                    if ((probed[s.table + ':' + s.ref] || {}).answered) s.edge.region.high = s.ref; else s.edge.region.low = s.ref;
+                }
+                round++;
+            }
+            mark('narrow');
+
+            const tables = {};
+            for (const table of SCAN_TABLES) {
+                const ladder = scanLadderOf(table);
+                const rs = regions[table];
+                const hits = ladder.filter(ref => answered(table, ref));
+                const firstReadable = rs.length ? rs[0].high : null;
+                tables[table] = {
+                    answers: rs.length > 0,
+                    firstReadable,
+                    // Stated in both bases, since that is the distinction this whole
+                    // tool exists to keep straight.
+                    firstReadableAddr: firstReadable === null ? null : firstReadable - 1,
+                    regions: rs.map(r => ({ from: r.high, fromAddr: r.high - 1, probesAnswering: r.probes, nextRefusedProbe: r.until })),
+                    sample: hits.slice(0, 3).map(ref => ref + '=' + first[table + ':' + ref].value),
+                    refused: ladder.filter(ref => first[table + ':' + ref] && !answered(table, ref)).slice(0, 6),
+                };
+            }
+            report = { host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables };
+
+            // Then read each region until its answers stop, so the scan ends with the
+            // registers themselves rather than only where they start.
+            if (deep) {
+                report.sweep = {};
+                report.values = [];
+                const lowest = refs => refs.reduce((m, r) => (m === null || r < m ? r : m), null);
+                const highest = refs => refs.reduce((m, r) => (m === null || r > m ? r : m), null);
+                const sweeping = SCAN_TABLES.filter(table => tables[table].answers);
+                // A chunk is not one round trip on a strict device, it is dozens —
+                // chaseRun halves its way around every gap at ~630 ms a refusal, with
+                // sweepForValues previously reporting back only once the whole chunk
+                // was settled. That is what froze the bar for minutes. Ticking on
+                // every command sweepForValues issues, not once it is done with a
+                // chunk, is what makes it move the whole time instead — and inside
+                // a command, on every value or refusal that lands.
+                let commandsSoFar = 0;
+                // The highest register IWMAC — or the loaded list — reads in each
+                // table: past it the sweep proves a map's end with less (see
+                // sweepForValues). A hint for effort only; the ladder still looks
+                // for regions beyond it, and nothing is read differently.
+                const lastListed = {};
+                const listed = (t, r) => { if (!(lastListed[t] >= r)) lastListed[t] = r; };
+                if (typeof plantNames !== 'undefined' && plantNames && plantNames.byRef) {
+                    for (const key of plantNames.byRef.keys()) { const [t, , r] = key.split('|'); listed(t, Number(r)); }
+                }
+                if (typeof pointList !== 'undefined' && pointList && pointList.points) {
+                    for (const p of pointList.points) if (p.decoded && p.decoded.ok) listed(p.decoded.table, p.ref + (p.decoded.step || 1) - 1);
+                }
+                report.lastListed = lastListed;
+                // Ticks, not chunks, are what "how much of this share is spent" is
+                // measured in now; a strict chunk's dozens of ticks would have blown
+                // past a chunk-scaled half-life in one step.
+                const SWEEP_TICK_HALF_LIFE = 24;
+                for (const table of SCAN_TABLES) {
+                    if (!tables[table].answers || abortRequested) continue;
+                    const total = { answered: 0, nonZero: 0, refs: [], withValues: [], regions: [], chunks: 0 };
+                    const seen = new Set();
+                    const share = (SWEEP_TO - SWEEP_FROM) / sweeping.length;
+                    const before = SWEEP_FROM + share * sweeping.indexOf(table);
+                    // Total work left in a table's sweep is unknowable until it stops
+                    // — so the share only ever creeps towards its end, asymptotically,
+                    // and is snapped to exactly once the table's last region actually
+                    // finishes (below), rather than trusting the creep to arrive there
+                    // on its own. A partial tick — output landing mid-command — moves
+                    // the text, not the count: it is the same command still running.
+                    let workSoFar = 0;
+                    const sweepTick = t => {
+                        if (!t.partial) { commandsSoFar++; workSoFar++; }
+                        const landing = t.partial && (t.arriving || t.refusals)
+                            ? ' (' + (t.arriving ? '+' + t.arriving + ' arriving' : '') + (t.arriving && t.refusals ? ', ' : '') +
+                                (t.refusals ? t.refusals + ' refused' : '') + ')'
+                            : '';
+                        tell(before + share * (workSoFar / (workSoFar + SWEEP_TICK_HALF_LIFE)),
+                            'Sweeping ' + tableLabel(table) + ' near ' + t.ref + ' — ' + t.found + ' found' + landing + ', ' + commandsSoFar +
+                                ' command' + (commandsSoFar === 1 ? '' : 's') + ' sent',
+                            { phase: 'sweep', table, ref: t.ref, found: t.found, commands: commandsSoFar, chunkStart: !!t.chunkStart, partial: !!t.partial });
+                    };
+                    for (const region of regions[table]) {
+                        if (abortRequested) break;
+                        // A sweep that ran on through the next region found its start
+                        // already — found, not merely passed over.
+                        if (seen.has(region.high)) continue;
+                        const swept = await sweepForValues(spec, table, region.high, known[table], sweepTick, lastListed[table]);
+                        total.chunks += swept.chunks;
+                        let inRegion = 0;
+                        let nonZeroInRegion = 0;
+                        for (const value of swept.values) {
+                            if (seen.has(value.i)) continue;
+                            seen.add(value.i);
+                            inRegion++;
+                            total.refs.push(value.i);
+                            if (value.v !== 0) { nonZeroInRegion++; total.withValues.push(value.i); }
+                            report.values.push(Object.assign({ table }, value));
+                        }
+                        total.answered += inRegion;
+                        total.nonZero += nonZeroInRegion;
+                        total.regions.push({
+                            from: region.high, first: swept.first, last: swept.last, answered: inRegion, nonZero: nonZeroInRegion,
+                            stoppedAt: swept.stoppedAt, stoppedBecause: swept.stoppedBecause,
+                        });
+                    }
+                    report.sweep[table] = {
+                        answered: total.answered, nonZero: total.nonZero,
+                        first: lowest(total.refs), last: highest(total.refs),
+                        ranges: asRanges(total.refs), withValues: asRanges(total.withValues),
+                        // The same runs in the other base, since a modbusgen list
+                        // prints protocol addresses and the reader will be writing one.
+                        addrRanges: asRanges(total.refs.map(r => r - 1)), withValuesAddr: asRanges(total.withValues.map(r => r - 1)),
+                        regions: total.regions, chunks: total.chunks,
+                    };
+                    // The table is actually done now, rather than merely close by
+                    // whatever the asymptote last happened to reach.
+                    tell(before + share, tableLabel(table) + ' swept — ' + total.answered + ' registers found', { phase: 'sweep', table });
+                }
+                mark('sweep');
+                // A full scan that ran to its end is kept, so the next scan of
+                // this device reads the map instead of looking for it again.
+                if (!abortRequested) storeMap(spec, report);
+            }
+        }
+        if (deep && report.values) {
 
             // Then everything found, once more. A register that reads
             // differently a minute later is being measured; one that reads the
@@ -2140,10 +2286,13 @@
                     'whether the driver module runs, the unit\'s status and last contact, and the Plant Server log lines of its driver: ' +
                     'log.current counts only what came after the driver last started or this unit last came back online, and ' +
                     'log.otherUnits holds the lines of other units on the same driver, never counted against this one.',
-                'plant[].iwmac on a reading row is one IWMAC parameter\'s own definition — datatype (raw type and swap: _W low word ' +
-                    'first, _R bytes swapped), scale, format, access — and expected, what that definition makes of the register ' +
-                    'modpoll just read. agrees compares expected with shown, the value IWMAC displayed. false on a register that did ' +
-                    'not move is a definition reading the register differently from the device, or an old value; null means IWMAC ' +
+                'plant[].iwmac on a reading row is one IWMAC parameter\'s own definition — reading first: one sentence from the ' +
+                    'wire to the screen, "modpoll read 6374 → as U16 ×0.01 = 63.74 % → IWMAC shows 63.7 % — agrees". Then reads ' +
+                    '(how IWMAC\'s driver asks for it: function, address, raw type, swap), datatype (raw type and swap: _W low word ' +
+                    'first, _R bytes swapped), scale, format, access, type, application, element, the state texts where it has ' +
+                    'them (states, stateNow), how it is logged — and expected, what that definition makes of the register modpoll ' +
+                    'just read. agrees compares expected with shown, the value IWMAC displayed. false on a register that did not ' +
+                    'move is a definition reading the register differently from the device, or an old value; null means IWMAC ' +
                     'shows nothing for it.',
                 'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
                     'agent checking or correcting a modbusgen point list.',
@@ -2197,6 +2346,9 @@
                     'point, no change between the two reads — as ranges per table instead of one row each. They answer; they hold nothing.',
                 'scan.spec is the connection the scan used, scan.phases how long each phase took, scan.cost what the commands cost: ' +
                     'modpoll runs, refusals (exceptions), timeouts and the time per run — a device slow to refuse makes a scan slow.',
+                'scan.mode says how the registers were found: "full discovery" looked for the device\'s map; "known map" read the map ' +
+                    'an earlier full scan of the same device found (scan.mapFrom says when), every register in it, and looked for ' +
+                    'nothing outside it — so a register missing from a known-map scan was missing from that full scan too.',
             ],
             fieldGuide: {
                 ref: 'the register as modpoll prints it and -r takes it: 1-based',
@@ -2208,6 +2360,8 @@
                 'plant[].iwmac.states': 'the texts IWMAC shows for each value (format_extra); stateNow is the one the register holds now',
                 'plant[].iwmac.logging': 'how the Plant Server logs the value (save_data, save_freq): on change, every N min …',
                 'plant[].iwmac.parameterNo': 'driver_id_no — the number the Plant Server log uses for the parameter ("Param write: 19655 = 3")',
+                'plant[].iwmac.reading': 'the whole way from the wire to the screen in one sentence: what modpoll read, what IWMAC\'s own definition makes of it, what IWMAC shows, and whether they agree',
+                'plant[].iwmac.reads': 'how IWMAC\'s driver asks the device for the parameter (driver_id_extra in words): Modbus function, address, raw type, word or byte swap; writes, where it writes it',
                 'plant[].iwmac.expected': 'the register decoded with IWMAC\'s own datatype and scale for that parameter',
                 'plant[].iwmac.agrees': 'expected against shown: true, false, or null when IWMAC shows nothing',
                 'plant[].iwmac.onlineIndicator': 'IWMAC judges the unit online by this parameter (iw_set onl_ind): if its register does not answer, the unit goes OFFLINE',
@@ -2278,6 +2432,7 @@
             commands: (result && result.commands) || [],
             scan: lastScan ? {
                 at: lastScan.at, host: lastScan.host, slave: lastScan.slave, elapsedMs: lastScan.elapsedMs || null,
+                mode: lastScan.mapFrom ? 'known map' : 'full discovery', mapFrom: lastScan.mapFrom || null,
                 spec: lastScan.spec || null, phases: lastScan.phases || null, cost: lastScan.cost || null,
                 tables: lastScan.tables, sweep: lastScan.sweep || null, reread: lastScan.reread || null,
                 formats: lastScan.formats || null, modpoll: lastScan.modpoll || null, suggestedSpec: lastScan.suggestedSpec || null,
@@ -2649,10 +2804,18 @@
     /** One IWMAC parameter's definition beside the register as read, compared. */
     function compareWithIwmac(def, entry, raw, nextRaw, moving, logEntry) {
         const dt = def.datatype || {};
+        const said = describeDriverIdExtra(def.datatypeText);
         const out = {
+            // How IWMAC's driver asks the device for it, in words — the same
+            // sentences the register's card shows.
+            reads: said.read,
             datatype: dt.rawType ? dt.rawType + (dt.swap && dt.swap !== 'N' ? '_' + dt.swap : '') : (def.datatypeText || null),
             scale: describeIwmacScale(def.scale), format: def.format || '', access: def.access || '',
         };
+        if (said.write !== 'not written' && said.write !== '—') out.writes = said.write;
+        if (def.elementId) out.element = def.elementId;
+        if (def.parameterType) out.type = def.parameterType;
+        if (def.application) out.application = def.application;
         if (dt.writeFunction) out.writeFunction = dt.writeFunction;
         if (def.active === false) out.active = false;
         if (def.onlineIndicator) out.onlineIndicator = true;
@@ -2674,9 +2837,14 @@
         if (logEntry) out.logErrors = { count: logEntry.errors, kinds: logEntry.kinds, last: logEntry.last };
         if (typeof raw !== 'number') return out;
         const decoded = decodeLikeIwmac(def, raw, nextRaw, entry.bit);
-        if (!decoded.ok) { out.expected = null; out.why = decoded.why; return out; }
-        out.expected = decoded.value;
         const shownText = String(entry.plantValue == null ? '' : entry.plantValue).trim();
+        if (!decoded.ok) {
+            out.expected = null;
+            out.why = decoded.why;
+            out.reading = readingChain(raw, nextRaw, dt, out.scale, entry, null, shownText, out.stateNow, null, decoded.why);
+            return out;
+        }
+        out.expected = decoded.value;
         const shownNumber = Number(shownText.replace(',', '.'));
         if (!shownText) {
             out.agrees = null;
@@ -2688,7 +2856,28 @@
             out.agrees = Math.abs(shownNumber - decoded.value) <= tolerance + 1e-9;
             if (!out.agrees && moving) out.note = 'the register moved during the scan — a live value, so a difference is expected';
         }
+        out.reading = readingChain(raw, nextRaw, dt, out.scale, entry, decoded.value, shownText, out.stateNow, out.agrees, null);
         return out;
+    }
+
+    /**
+     * One sentence from the wire to the screen: what modpoll read, what IWMAC's
+     * own definition makes of it, what IWMAC shows, and whether they agree —
+     * "modpoll read 6374 → as U16 ×0.01 = 63.74 % → IWMAC shows 63.7 % — agrees".
+     */
+    function readingChain(raw, nextRaw, dt, scale, entry, expected, shownText, stateNow, agrees, why) {
+        const unit = entry.unit ? ' ' + entry.unit : '';
+        const wide = /^(I32|U32|F)$/.test(String(dt.rawType || ''));
+        const parts = ['modpoll read ' + raw + (wide && typeof nextRaw === 'number' ? ' and ' + nextRaw : '')];
+        if (expected === null) parts.push('IWMAC\'s definition gives nothing: ' + why);
+        else if (entry.bit !== null && entry.bit !== undefined) parts.push('bit ' + entry.bit + ' = ' + expected + (stateNow ? ' (' + stateNow.replace(/^\d+ = /, '') + ')' : ''));
+        else {
+            parts.push('as ' + (dt.rawType || '?') + (dt.swap && dt.swap !== 'N' ? ' ' + (IWMAC_SWAPS[dt.swap] || 'swap ' + dt.swap) : '') +
+                (scale ? ' ' + scale.replace(/^x/, '×') : '') + ' = ' + expected + unit + (stateNow ? ' (' + stateNow.replace(/^-?\d+ = /, '') + ')' : ''));
+        }
+        parts.push('IWMAC shows ' + (shownText ? shownText + (Number.isNaN(Number(shownText.replace(',', '.'))) ? '' : unit) : 'nothing'));
+        const verdict = agrees === true ? ' — agrees' : (agrees === false ? ' — differs' : '');
+        return parts.join(' → ') + verdict;
     }
 
     /** modpoll's connection beside IWMAC's driver, field by field. */
@@ -2971,7 +3160,17 @@
     const SWEEP_EMPTY_STOP = 2;
     const SWEEP_ZERO_STOP = 5;
 
-    async function sweepForValues(spec, table, from, known, tick) {
+    /*
+     * `lastListed` is the highest reference IWMAC (or the loaded list) has a
+     * parameter on in this table, or null. Past it, a stretch with no answer is
+     * almost certainly the map's end rather than a gap inside it, so proving
+     * the end is cheaper there: a look-ahead of 8 registers instead of 128,
+     * and one empty chunk instead of SWEEP_EMPTY_STOP. Everything up to it —
+     * and every region the ladder finds further on — is swept as before. On
+     * plant 2349's V01 each table's end cost 22 refusals before; this is 11.
+     */
+    async function sweepForValues(spec, table, from, known, tick, lastListed) {
+        const pastList = r => typeof lastListed === 'number' && r > lastListed;
         const found = new Map();                       // ref -> value row
         const answers = new Set((known || new Map()).keys());
         for (const [ref, value] of (known || new Map())) found.set(ref, { i: ref, addr: ref - 1, v: value });
@@ -3006,6 +3205,37 @@
                 table, format: '', base: 'printed', start, count, recover: false,
             }), p => { if (p.partial) note(start, false, p); });
         };
+        // Blocks that came back short. A strict device refuses a block whole,
+        // so each of these holds at least one reference that does not answer —
+        // and an edge search that starts inside one need look no further than
+        // the block's own end, where it used to ask again about everything to
+        // the end of the chunk: 297 registers, then 148, then 74, each a
+        // refusal, before narrowing down inside the one block it already knew.
+        const shortSpans = [];
+        const noteShort = (start, count, result) => {
+            const got = new Set(result.values.map(v => v.i));
+            for (let b = start; b < start + count; b += MAX_COUNT) {
+                const n = Math.min(MAX_COUNT, start + count - b);
+                for (let r = b; r < b + n; r++) if (!got.has(r)) { shortSpans.push([b, b + n]); break; }
+            }
+        };
+        const shortSpanAt = r => shortSpans.find(([a, b]) => r >= a && r < b) || null;
+        // How far right of r the edge can be at most: r's short block, when
+        // everything in it before r has answered — then its missing reference
+        // is at r or after. Null when that is not known.
+        const boundRight = r => {
+            const s = shortSpanAt(r);
+            if (!s) return null;
+            for (let q = s[0]; q < r; q++) if (!answers.has(q)) return null;
+            return s[1] - r;
+        };
+        // The mirror: how far left of an answering anchor the edge can be.
+        const boundLeft = anchor => {
+            const s = shortSpanAt(anchor - 1);
+            if (!s) return null;
+            for (let q = anchor; q < s[1]; q++) if (!answers.has(q)) return null;
+            return anchor - s[0];
+        };
         const take = result => {
             for (const value of result.values) {
                 if (!found.has(value.i)) fresh++;
@@ -3021,6 +3251,7 @@
             if (count <= 0 || abortRequested || fatal) return false;
             const result = await read(start, count);
             take(result);
+            noteShort(start, count, result);
             return result.values.length === count;
         };
         /*
@@ -3029,11 +3260,14 @@
          * extension — each question asks only the part not yet known to answer,
          * so a strict device that refuses whole is asked about seven times for
          * a block, not dozens. Leftwards is the mirror, for an island found
-         * from its far side.
+         * from its far side. Either starts inside a block already read short
+         * where there is one, since the edge is inside it.
          */
         const extendRight = async (start, limit) => {
-            if (await asks(start, limit)) return limit;
+            const bound = boundRight(start);
             let lo = 0, hi = limit;                    // [start, start + lo) answers; [start, start + hi) does not
+            if (bound !== null && bound <= limit) hi = bound;
+            else if (await asks(start, limit)) return limit;
             while (hi - lo > 1 && !abortRequested && !fatal) {
                 const mid = Math.floor((lo + hi) / 2);
                 if (await asks(start + lo, mid - lo)) lo = mid; else hi = mid;
@@ -3041,8 +3275,10 @@
             return lo;
         };
         const extendLeft = async (anchor, limit) => {
-            if (await asks(anchor - limit, limit)) return limit;
-            let lo = 0, hi = limit;                    // [anchor - lo, anchor) answers
+            const bound = boundLeft(anchor);
+            let lo = 0, hi = limit;                    // [anchor - lo, anchor) answers; [anchor - hi, anchor) does not
+            if (bound !== null && bound <= limit) hi = bound;
+            else if (await asks(anchor - limit, limit)) return limit;
             while (hi - lo > 1 && !abortRequested && !fatal) {
                 const mid = Math.floor((lo + hi) / 2);
                 if (await asks(anchor - mid, mid - lo)) lo = mid; else hi = mid;
@@ -3053,7 +3289,7 @@
         // distances, one chained line. A reserved register or a short gap is
         // crossed; the first answer says where to search back for the resumption.
         const lookAhead = async (x, end) => {
-            const at = [1, 2, 4, 8, 16, 32, 64, 128].map(d => x + d).filter(r => r <= end);
+            const at = (pastList(x) ? [1, 2, 4, 8] : [1, 2, 4, 8, 16, 32, 64, 128]).map(d => x + d).filter(r => r <= end);
             if (!at.length || abortRequested || fatal) return null;
             const inside = await probeRefs(spec, at.map(r => ({ table, ref: r })), probeNote(x));
             for (const r of at) {
@@ -3118,6 +3354,7 @@
             const first = await read(ref, count);
             chunks++;
             take(first);
+            noteShort(ref, count, first);
             if (fatal) { stoppedBecause = fatal; break; }
             if (!first.values.length && !gapsIn(ref, count).some(run => knownInside(run) !== null)) {
                 const at = [ref + 5, ref + Math.floor(count / 2), ref + count - 6].filter(r => r >= ref && r < ref + count);
@@ -3144,6 +3381,10 @@
                 zeroRuns = 0;
                 refused += first.diagnostics.some(d => /exception/i.test(d.text)) ? 1 : 0;
                 if (emptyRuns >= SWEEP_EMPTY_STOP) { stoppedBecause = 'no answer for ' + SWEEP_EMPTY_STOP * SWEEP_CHUNK + ' registers in a row'; break; }
+                if (pastList(ref - count)) {
+                    stoppedBecause = 'no answer for ' + SWEEP_CHUNK + ' registers past ' + lastListed + ', the last register IWMAC or the list reads here';
+                    break;
+                }
             }
         }
         if (abortRequested) stoppedBecause = 'stopped by user';
@@ -6739,7 +6980,14 @@
             catch (e) { log('ERROR: ' + e.message, 'err'); setDot('err'); }
             finally { reconnectBtn.disabled = false; }
         });
-        const scanBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Scan device', title: 'Find every register this device answers with, table by table' });
+        const scanBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Scan device', title: 'Find every register this device answers with, table by table — or, for a device scanned before, read the map that scan found' });
+        // A device scanned in full before is read from its map in seconds; this
+        // asks for the map to be found again — after a firmware change, or when
+        // registers outside the old map are what is being looked for.
+        ui.scanRediscover = el('input', { type: 'checkbox', id: 'mpc-rediscover' });
+        const rediscover = el('label', { className: 'mpc-check', htmlFor: 'mpc-rediscover',
+            title: 'Look for the device\'s map from scratch instead of reading the one its last full scan found' },
+        [ui.scanRediscover, el('span', { textContent: 'find map again' })]);
         scanBtn.addEventListener('click', async () => {
             if (termState.busy) return;
             scanBtn.disabled = true;
@@ -6748,8 +6996,14 @@
             ui.stop.disabled = false;
             setDot('warn');
             try {
-                log('Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — every table, every region it answers in, ' +
-                    'holes isolated, up to reference ' + SWEEP_CEILING + ', then everything found read once more. Stop ends it early');
+                const form = readForm();
+                let stored = null;
+                try { stored = ui.scanRediscover.checked ? null : storedMapFor(normaliseSpec(Object.assign({}, form, { count: 1, format: '' }))); } catch (e) { stored = null; }
+                log(stored
+                    ? 'Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' from the map its full scan found on ' + String(stored.at).slice(0, 10) +
+                        ' (' + (stored.registers || '?') + ' registers) — every one read twice, nothing looked for outside it. Tick "find map again" for a full scan'
+                    : 'Scanning ' + ui.host.value + ' slave ' + ui.slave.value + ' — every table, every region it answers in, ' +
+                        'holes isolated, up to reference ' + SWEEP_CEILING + ', then everything found read once more. Stop ends it early');
                 showProgress(0, 'Starting the scan');
                 // The unit's own parameters first, so what the scan finds is
                 // named as it lands and the export can say what IWMAC reads —
@@ -6757,16 +7011,19 @@
                 showProgress(0, 'Reading the plant\'s parameter names for this unit');
                 await ensureNamesFor(readForm());
                 startCostLedger();
-                const report = await scanDevice(readForm(), true, p => {
+                const report = await scanDevice(form, true, p => {
                     // The bar moves on every tick sweepForValues makes, several
                     // times inside one chunk on a strict device; the log stays at
                     // one line per chunk opened, or it would scroll past reading.
                     showProgress(p.fraction, p.text);
+                    if (p.mapChanged) log(p.text, 'warn');
                     if (p.phase === 'sweep' && p.chunkStart) {
                         log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
                             ' from ' + p.ref + ' (' + p.found + ' found so far)');
                     }
-                });
+                }, { rediscover: ui.scanRediscover.checked });
+                if (report.mapFrom && report.mapFrom.noAnswer) log('The device answered none of its known map: ' + report.mapFrom.noAnswer + ' — check the connection before a full scan', 'warn');
+                ui.scanRediscover.checked = false;
                 report.cost = finishCostLedger();
                 lastScan = report;
                 showProgress(0.995, 'Reading IWMAC\'s own setup for this unit');
@@ -6807,6 +7064,7 @@
                         : 'Could not measure what modpoll\'s -f flag means here' + (report.modpoll.error ? ': ' + report.modpoll.error : ' — the float reads printed neither order'), report.modpoll.measured ? '' : 'warn');
                 }
                 log('Scan finished in ' + Math.round(report.elapsedMs / 1000) + ' s' +
+                    (report.mapFrom ? ', from the map found on ' + String(report.mapFrom.at).slice(0, 10) : (abortRequested ? '' : ', map found and kept for the next scan')) +
                     (plantNames ? ' — Save JSON now carries ' + plantNames.rows + ' IWMAC parameters and a suggestion per named register' : ''), 'ok');
                 renderScan(report);
                 applyScanToForm(report);
@@ -6822,7 +7080,7 @@
         });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
-            el('span', { className: 'mpc-spacer' }), scanBtn, saveBtn, reconnectBtn,
+            el('span', { className: 'mpc-spacer' }), scanBtn, rediscover, saveBtn, reconnectBtn,
         ]));
         ui.progressFill = el('div');
         ui.progressText = el('span', { className: 'mpc-ptext' });
@@ -7146,16 +7404,18 @@
         probe(force) { return probeBinary(!!force); },
         /**
          * Which tables answer and where they start; with deep, also every register
-         * they answer with, read on until the answers stop.
+         * they answer with, read on until the answers stop. A device scanned in
+         * full before is read from the map that scan found, in seconds, unless
+         * options.rediscover asks for the map to be found again.
          */
-        async scan(spec, deep) {
+        async scan(spec, deep, options) {
             // The unit's names first, as the button does, so the report and the
             // export that follows carry what IWMAC reads — unless the caller
             // has loaded names itself.
             if (!plantNames) { try { await ensureNamesFor(Object.assign(readForm(), spec || {})); } catch (e) { /* the scan stands without names */ } }
             startCostLedger();
             let report;
-            try { report = await scanDevice(spec, deep !== false); }
+            try { report = await scanDevice(spec, deep !== false, null, { rediscover: !!(options && options.rediscover) }); }
             finally { const cost = finishCostLedger(); if (report) report.cost = cost; }
             lastScan = report;
             await attachIwmacContext(report);
