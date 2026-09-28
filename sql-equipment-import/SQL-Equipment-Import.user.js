@@ -2,8 +2,8 @@
 // @name         SQL Equipment Import
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      9.13
-// @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template with 3 example units), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
+// @version      9.14
+// @description  Floating panel on phpMyAdmin: search any plant's equipment by unit_name / grp_name / driver_type / regulator_type / order_no and fetch it live via the Toolbox plant-SQL API (settings, order_no, processes and the iw_par_/iw_set_ tables are rebuilt into a template that keeps the donor plant's own unit rows), or load a .sql from disk. Edit unit rows + Modbus settings (RTU/TCP, multi-IP), emit the full SQL ready to paste into the plant DB.
 // @author       hapnes-dev
 // @match        *://*.plants.iwmac.local:*/secure/phpMyAdmin/*
 // @run-at       document-end
@@ -177,6 +177,7 @@
     #seii-panel .body{padding:10px;overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column}
     #seii-panel #seii-form{display:flex;flex-direction:column;flex:1;min-height:0}
     #seii-panel #seii-form.show{display:flex}
+    #seii-panel #seii-units{max-height:260px;overflow-y:auto}
     #seii-panel #seii-out{flex:1;min-height:120px}
     #seii-panel.collapsed .body{display:none}
     #seii-panel.collapsed{width:auto;height:auto;min-height:0;resize:none}
@@ -329,7 +330,10 @@
     let CURRENT = null; // { name, sqlText, units, settings }
 
     function loadSqlText(name, sqlText, opts) {
-        CURRENT = { name, sqlText, passThrough: !!(opts && opts.passThrough) };
+        // realUnits marks a template fetched from a plant, whose unit rows are
+        // that plant's own and must be shown one for one instead of the three
+        // pattern rows a curated .sql from disk gets.
+        CURRENT = { name, sqlText, passThrough: !!(opts && opts.passThrough), realUnits: !!(opts && opts.realUnits) };
         CURRENT.units = parseBlock(sqlText, 'iw_sys_plant_units');
         CURRENT.settings = parseBlock(sqlText, 'iw_sys_plant_settings');
         $('seii-fileinfo').innerHTML =
@@ -773,25 +777,13 @@
         const procs = (sysCols.iw_sys_processes && sysRes[3] && sysRes[3].data) || [];
         if (!units.length) throw new Error('No units for ' + driverType + (orderNo !== null ? ' / order_no ' + (orderNo || "''") : '') + ' on plant ' + plantId);
 
-        // The donor's real unit rows never enter the template — like the curated
-        // templates, it ships three generic example units (P01 / Pos 01 / 0_1 …)
-        // that the form renumbers. Every other column (grp_name, driver_type,
-        // regulator_type, order_no, view_order, …) is carried from the donor's
-        // first unit of the selection, so the driver linkage stays intact.
+        // The selection's real unit rows go into the template as they are
+        // (v9.14) — unit_id, unit_name, driver_addr and every linkage column
+        // straight off the donor, one tuple per unit, in unit_id order. Up to
+        // v9.13 this was three invented rows (P01 / Pos 01 / 0_1 …), which had
+        // to be retyped by hand to match the equipment that was actually being
+        // copied. Only row_date is replaced, with NOW(), by insertBlock.
         const uCols = sysCols.iw_sys_plant_units;
-        const firstUnit = units[0];
-        const exampleUnits = [1, 2, 3].map(i => {
-            const r = {};
-            for (const c of uCols) r[c] = firstUnit[c];
-            const nn = String(i).padStart(2, '0');
-            if ('unit_id' in r) r.unit_id = 'P' + nn;
-            if ('unit_name' in r) r.unit_name = 'Pos ' + nn;
-            if ('driver_addr' in r) r.driver_addr = '0_' + i;
-            if ('driver_adr' in r) r.driver_adr = '0_' + i;
-            if ('active' in r) r.active = '1';
-            if ('blockout' in r) r.blockout = '0';
-            return r;
-        });
 
         // Order rows → the driver's parameter tables:
         // group_link 'x_groups' → iw_par_x_groups, db_link 'x_param' → iw_par_x_param,
@@ -937,7 +929,8 @@
 
         const parts = [];
         parts.push('-- Fetched live from plant ' + plantId + ', driver ' + equipLabel + ', by ' + X_CALLER);
-        parts.push('-- Donor unit rows are not copied (' + units.length + ' on the donor) - 3 example units are generated instead.');
+        parts.push('-- Unit rows are the ' + units.length + ' row(s) on the donor plant, copied as they are, row_date set to NOW().');
+        parts.push('-- Check unit_id and driver_addr against the target plant before running this - they are not renumbered.');
         if (recased.length) {
             parts.push('-- Spelled in another case on the source plant, written as its iw_sys_order_no row names them: ' +
                 recased.map(t => onPlant[t] + ' -> ' + t).join(', '));
@@ -945,7 +938,7 @@
         if (missing.length) parts.push('-- WARNING: linked tables missing on the source plant, not included: ' + missing.join(', '));
         if (!orders.length) parts.push('-- WARNING: no iw_sys_order_no rows found for this driver, so no iw_par_/iw_set_ tables are included.');
         parts.push('');
-        parts.push(insertBlock('iw_sys_plant_units', uCols, exampleUnits, true));
+        parts.push(insertBlock('iw_sys_plant_units', uCols, units, true));
         if (settings.length) parts.push('\n' + insertBlock('iw_sys_plant_settings', sysCols.iw_sys_plant_settings, settings, true));
         else parts.push('\n-- (no iw_sys_plant_settings rows with owner ' + drvLabel + ' on the source plant)');
         if (orders.length) parts.push('\n' + insertBlock('iw_sys_order_no', sysCols.iw_sys_order_no, orders, true));
@@ -1041,7 +1034,7 @@
         _fetchBusy = true;
         try {
             const sql = await fetchDriverTemplate(pid, drv, orderNo);
-            loadSqlText('plant ' + pid + ' · ' + drv + (orderNo !== null ? ' · ' + (orderNo || '(no order_no)') : ''), sql);
+            loadSqlText('plant ' + pid + ' · ' + drv + (orderNo !== null ? ' · ' + (orderNo || '(no order_no)') : ''), sql, { realUnits: true });
             $('seii-drivers').classList.remove('show');
         } catch (err) {
             setPlantInfo('Fetch failed: ' + escapeHtml(err.message || String(err)), 'err');
@@ -1194,8 +1187,11 @@
             if (r) tcpMap = parseTcpServers(unq(r.value));
         }
 
-        // Units — always 3 default rows numbered 1, 2, 3, shaped by the template's
-        // first row: "U50"/"F50 Plug-In50" → "U01"/"F01 Plug-In01", "U02"/"F02 Plug-In02", …
+        // Units — a template fetched from a plant shows that plant's own rows,
+        // one form row per unit, each keeping its own tuple so grp_name,
+        // regulator_type, order_no and view_order stay per unit (v9.14). A
+        // curated .sql from disk still gets 3 rows numbered 1, 2, 3, shaped by
+        // the template's first row: "U50"/"F50 Plug-In50" → "U01"/"F01 Plug-In01", …
         const u = $('seii-units');
         u.innerHTML = '';
         const templateRows = (CURRENT.units && CURRENT.units.rows) || [];
@@ -1205,14 +1201,34 @@
             sample.map(r => unq(r.unit_id || '')),
             sample.map(r => unq(r.unit_name || ''))
         );
-        for (let i = 0; i < 3; i++) {
-            addUnitRow({
-                unit_id: fillPattern(NUMBERING.id, i + 1),
-                unit_name: fillPattern(NUMBERING.name, i + 1),
-                driver_addr: `0_${i + 1}`,
-                ip: '',
-                _raw: templateRow,
-            });
+        if (CURRENT.realUnits && templateRows.length) {
+            for (const r of templateRows) {
+                const addr = unq(r.driver_addr || r.driver_adr || '');
+                // mb_tcp_servers line N is the server for driver_addr prefix N,
+                // and parseTcpServers keys those lines 0-based — verified on
+                // plant 10219, where "1;10.10.100.5;…" is the unit at 1_1. The
+                // unshifted key is tried as well for a plant that numbers its
+                // servers from 0.
+                const m = addr.match(/^(\d+)/);
+                const n = m ? parseInt(m[1], 10) : null;
+                addUnitRow({
+                    unit_id: unq(r.unit_id || ''),
+                    unit_name: unq(r.unit_name || ''),
+                    driver_addr: addr,
+                    ip: n === null ? '' : (tcpMap[n - 1] || tcpMap[n] || ''),
+                    _raw: r,
+                });
+            }
+        } else {
+            for (let i = 0; i < 3; i++) {
+                addUnitRow({
+                    unit_id: fillPattern(NUMBERING.id, i + 1),
+                    unit_name: fillPattern(NUMBERING.name, i + 1),
+                    driver_addr: `0_${i + 1}`,
+                    ip: '',
+                    _raw: templateRow,
+                });
+            }
         }
 
         // Settings
@@ -1245,8 +1261,14 @@
                 renumberDriverAddr($('seii-set-mb_mode').value === '2');
                 syncTcpVisible();
             });
-            // Always default to RTU on every template load
-            $('seii-set-mb_mode').value = '0';
+            // A curated .sql from disk always starts at RTU, whatever mode its
+            // text happens to carry. A template fetched from a plant keeps that
+            // plant's own mb_mode (v9.14) — copying a TCP equipment and writing
+            // it back as RTU would have been wrong, and the per-unit IPs that
+            // come from the donor's mb_tcp_servers stay hidden under RTU.
+            // Assigning the value directly does not fire 'change', so the
+            // donor's real driver_addr values are left alone.
+            if (!CURRENT.realUnits) $('seii-set-mb_mode').value = '0';
             syncTcpVisible();
         }
 
