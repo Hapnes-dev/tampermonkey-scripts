@@ -170,7 +170,12 @@ rebuilt.
   timer rather than a frame callback, slowing as it gets there and never
   crossing it, and the elapsed time sits beside the text — so a device saying
   no for a second at a time reads as slow rather than dead. The log still gets
-  one line per chunk opened, not one per tick.
+  one line per chunk opened, not one per tick. The text keeps a fixed share of
+  the row (1.49.4): sized to its words, it grew and shrank with every update and
+  the bar beside it with it, so the fill slid back and forth while the fraction
+  only rose. It says what is happening in words — *Reading discrete inputs
+  (1xxxx) at 516 — 519 found · 83 commands · 1:11*, *Looking for where each
+  table starts — probe 23 of 56, 9 answering*.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both

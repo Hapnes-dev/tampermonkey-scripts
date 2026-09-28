@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.49.3
+// @version      1.49.4
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.3';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.4';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -109,6 +109,10 @@
         { value: '1', label: '1 — Discrete 1xxxx', title: 'Discrete input (1xxxx)' },
         { value: '0', label: '0 — Coil 0xxxx', title: 'Coil (0xxxx)' },
     ];
+
+    // The same tables in words, for a line a person reads while it runs.
+    const TABLE_WORDS = { '4': 'holding registers (4xxxx)', '3': 'input registers (3xxxx)', '1': 'discrete inputs (1xxxx)', '0': 'coils (0xxxx)' };
+    const tableWords = table => TABLE_WORDS[String(table)] || ('table ' + table);
 
     // Serial defaults per driver family, carried over from the standalone
     // ModpollTool. They are a starting point only: the plant database is asked
@@ -1220,7 +1224,7 @@
         const plan = [];
         for (const table of SCAN_TABLES) for (const [from, to] of parseRanges(stored.tables[table])) plan.push({ table, from, to });
         if (!plan.length) return null;
-        const label = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
+        const label = tableWords;
         const since = String(stored.at || '').slice(0, 10);
         const report = {
             host: spec.host, slave: spec.slave, at: new Date().toISOString(), tables: {}, sweep: {}, values: [],
@@ -1231,7 +1235,7 @@
         for (const part of plan) {
             if (abortRequested || fatal) break;
             const count = part.to - part.from + 1;
-            const said = 'Reading the map found on ' + since + ' — ' + label(part.table) + ' ' + part.from + '-' + part.to;
+            const said = 'Reading ' + label(part.table) + ' ' + part.from + '–' + part.to + ' from the map found ' + since;
             tell(0.9 * done / total, said, { phase: 'known map', table: part.table });
             const result = await readRegisters(Object.assign({}, spec, { table: part.table, format: '', base: 'printed', start: part.from, count, recover: false }),
                 p => { if (p.partial) tell(0.9 * Math.min(total, done + (p.arriving || 0)) / total, said, { phase: 'known map', partial: true }); });
@@ -1334,7 +1338,9 @@
             reached = floor + (1 - floor) * fraction;
             if (onProgress) onProgress(Object.assign({ fraction: reached, text }, extra || {}));
         };
-        const tableLabel = table => (REGISTER_TABLES.find(t => t.value === table) || {}).label || ('table ' + table);
+        // In words on the progress line — "holding registers (4xxxx)" — where the
+        // form's label, "4 — Holding 4xxxx", read as "Sweeping 4 — Holding …".
+        const tableLabel = tableWords;
 
         // A device scanned in full before is read from the map that scan found
         // (readKnownMap) — seconds, where finding it took minutes — unless the
@@ -1354,8 +1360,8 @@
             const probes = [];
             for (const table of SCAN_TABLES) for (const ref of scanLadderOf(table)) probes.push({ table, ref });
             const first = await probeRefs(spec, probes, (done, total, info) =>
-                tell(0.2 * (done / total), 'Probing reference ' + Math.min(done + 1, total) + ' of ' + total + ' across the four tables' +
-                    (info && info.answered ? ' — ' + info.answered + ' answering' : ''), { phase: 'probe' }));
+                tell(0.2 * (done / total), 'Looking for where each table starts — probe ' + Math.min(done + 1, total) + ' of ' + total +
+                    (info && info.answered ? ', ' + info.answered + ' answering' : ''), { phase: 'probe' }));
             const answered = (table, ref) => !!((first[table + ':' + ref] || {}).answered);
             const known = {};
             for (const table of SCAN_TABLES) known[table] = new Map();
@@ -1486,8 +1492,8 @@
                                 (t.refusals ? t.refusals + ' refused' : '') + ')'
                             : '';
                         tell(before + share * (workSoFar / (workSoFar + SWEEP_TICK_HALF_LIFE)),
-                            'Sweeping ' + tableLabel(table) + ' near ' + t.ref + ' — ' + t.found + ' found' + landing + ', ' + commandsSoFar +
-                                ' command' + (commandsSoFar === 1 ? '' : 's') + ' sent',
+                            'Reading ' + tableLabel(table) + ' at ' + t.ref + ' — ' + t.found + ' found' + landing + ' · ' + commandsSoFar +
+                                ' command' + (commandsSoFar === 1 ? '' : 's'),
                             { phase: 'sweep', table, ref: t.ref, found: t.found, commands: commandsSoFar, chunkStart: !!t.chunkStart, partial: !!t.partial });
                     };
                     for (const region of regions[table]) {
@@ -1525,7 +1531,8 @@
                     };
                     // The table is actually done now, rather than merely close by
                     // whatever the asymptote last happened to reach.
-                    tell(before + share, tableLabel(table) + ' swept — ' + total.answered + ' registers found', { phase: 'sweep', table });
+                    const done = tableLabel(table);
+                    tell(before + share, done.charAt(0).toUpperCase() + done.slice(1) + ' done — ' + total.answered + ' registers found', { phase: 'sweep', table });
                 }
                 mark('sweep');
                 // A full scan that ran to its end is kept, so the next scan of
@@ -5121,9 +5128,14 @@
        saying what is happening. Hidden the rest of the time. */
     #${PANEL_ID} .mpc-progress{grid-column:span 12;display:flex;align-items:center;gap:10px;font-size:11px;color:#4a4f5a;min-height:16px}
     #${PANEL_ID} .mpc-progress.mpc-hidden{display:none}
-    #${PANEL_ID} .mpc-bar{flex:1 1 auto;height:6px;border-radius:3px;background:#e4e6ea;overflow:hidden}
+    /* The bar and the line share the row in fixed parts. Sized to its text,
+       the line grew and shrank with every update — a count, a reference, the
+       clock going from 59 s to 1:00 — and the bar, taking what was left, grew
+       and shrank with it: its fill slid back and forth while the fraction only
+       ever rose. */
+    #${PANEL_ID} .mpc-bar{flex:1 1 0;min-width:0;height:6px;border-radius:3px;background:#e4e6ea;overflow:hidden}
     #${PANEL_ID} .mpc-bar>div{height:100%;width:0;background:#3f7fbf;transition:width .15s linear}
-    #${PANEL_ID} .mpc-ptext{flex:0 0 auto;max-width:62%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #${PANEL_ID} .mpc-ptext{flex:0 0 52%;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
     #${PANEL_ID} .mpc-actions{grid-column:span 12;display:flex;gap:var(--gap);align-items:flex-end;flex-wrap:wrap}
     #${PANEL_ID} .mpc-actions .mpc-f{width:78px}
     #${PANEL_ID} .mpc-actions .mpc-spacer{flex:1 1 auto}
@@ -7095,8 +7107,7 @@
                     showProgress(p.fraction, p.text);
                     if (p.mapChanged) log(p.text, 'warn');
                     if (p.phase === 'sweep' && p.chunkStart) {
-                        log('  reading ' + (REGISTER_TABLES.find(r => r.value === p.table) || {}).label +
-                            ' from ' + p.ref + ' (' + p.found + ' found so far)');
+                        log('  reading ' + tableWords(p.table) + ' from ' + p.ref + ' (' + p.found + ' found so far)');
                     }
                 }, { rediscover: ui.scanRediscover.checked });
                 if (report.mapFrom && report.mapFrom.noAnswer) log('The device answered none of its known map: ' + report.mapFrom.noAnswer + ' — check the connection before a full scan', 'warn');
