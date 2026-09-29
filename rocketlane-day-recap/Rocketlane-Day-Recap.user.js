@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.158
+// @version      4.159
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1732,7 +1732,8 @@ var RL_RECAP_MATCH = (function () {
         const segs = (segments || []).filter(s => s && s.id != null && Number.isFinite(s.ts)).slice().sort((a, b) => a.ts - b.ts);
         const out = new Map();
         // Segments that share one timestamp are parts of ONE save (v4.153: the panels of a drawing save)
-        // and share the span before it equally.
+        // and share the span before it — by their own weight `w` when they carry one (v4.159: the revisions
+        // a screen saved, so a screen that only rode along in the save gets next to nothing), else equally.
         const groups = [];
         for (const s of segs) { const g = groups[groups.length - 1]; if (g && g.ts === s.ts) g.items.push(s); else groups.push({ ts: s.ts, items: [s] }); }
         let prev = first != null ? first - C.leadMs : null;
@@ -1744,7 +1745,9 @@ var RL_RECAP_MATCH = (function () {
                 if (ov > C.gapCapMs) span -= ov - C.gapCapMs;
             }
             span = Math.min(C.capMs, Math.max(C.minMs, span));
-            for (const s of g.items) out.set(String(s.id), span / g.items.length);
+            const wOf = s => (Number.isFinite(s.w) && s.w >= 0 ? s.w : 1);
+            const tw = g.items.reduce((a, s) => a + wOf(s), 0);
+            for (const s of g.items) out.set(String(s.id), tw > 0 ? span * wOf(s) / tw : span / g.items.length);
             prev = g.ts;
         }
         return out;
@@ -1919,11 +1922,135 @@ var RL_RECAP_MATCH = (function () {
         return list.map(g => ({ kind: g.kind, kinds: [...g.kinds].sort((a, b) => rank(a) - rank(b)), minutes: g.minutes, weight: g.weight, segIds: g.segIds }));
     }
 
+    // ---- Drawings, finer: one entry per screen (v4.159, Thomas: "split drawings finer too") -----------
+    // 4.158 split a drawing part into new screens and edits only, with a 10-min floor, so the 25-min
+    // "Design: Energi" of 2313 on 23.09 stayed one entry for nine screens. Now, in three tiers, each entry
+    // clearing `minScreenMin` minutes — the timesheet's own 5-minute step:
+    //   1. a screen that earned the floor on its own is its own time entry on the task;
+    //   2. the other screens group by FAMILY — the first word of the name: "Oversikt ny", "Oversikt Venstre"
+    //      and "Oversikt" are the Oversikt screens, "Maskin" and "Maskin_old" the Maskin screens. A small
+    //      screen joins the entry of a screen of its own family when there is one ("Energi_old" goes with
+    //      "Energi"); otherwise a family that earns the floor together is one entry;
+    //   3. what is left is one "other screens" entry when that clears the floor, else the largest entry
+    //      takes it. A task gets at most `maxScreens` drawing entries; beyond that the smallest join (3).
+    // The time a save stood for is shared over its screens by the revisions each saved (drawPartWeight):
+    // 2313's 13:57 save carried nine screens, seven of them only touched.
+    const SCREEN_C = { minScreenMin: 5, maxScreens: 6 };
+    // How much of a save one screen stood for: the revisions it saved in it (a Designer save bumps the
+    // screen's revision), else 1 for a screen created or visibly edited (layout, background image), else
+    // 0.1 — a screen the save only touched (a sort order, a timestamp) is not work on that screen.
+    function drawPartWeight(facts) {
+        let revs = 0, work = false;
+        for (const f of facts || []) {
+            if (!f) continue;
+            if (f.added || (f.what || []).length) work = true;
+            const a = Number(f.from), b = Number(f.to);
+            if (f.rev && f.from != null && f.to != null && Number.isFinite(a) && Number.isFinite(b) && a !== b) revs += Math.abs(b - a);
+        }
+        return revs > 0 ? revs : work ? 1 : 0.1;
+    }
+    // The family of a screen: the first word of its name, without trailing digits ("Oversikt_Vest" →
+    // oversikt, "Maskin_old" → maskin, "360.01 NY" → 360).
+    function screenFamily(name) {
+        const first = String(name || '').trim().split(/[\s_\-.]+/)[0] || String(name || '').trim();
+        return first.toLowerCase().replace(/\d+$/, '') || first.toLowerCase();
+    }
+    // o: { segments: the category's drawing segments [{ id, ts, drawingNames: [screen], kind, w }], segIds:
+    //      this part's, minutes: this part's, win: { first_ts, last_ts, capped_gaps }, C }
+    // Returns [{ kind: 'draw-new' | 'draw-edit' | 'screens', screen, family, screens, minutes, weight, segIds }]
+    // — the entries largest first, "other screens" last; one element (kind null) when nothing splits.
+    function splitScreens(o) {
+        o = o || {};
+        const C = Object.assign({}, SPLIT_C, SCREEN_C, o.C || {});
+        const total = Number.isFinite(o.minutes) ? Math.max(0, Math.round(o.minutes)) : 0;
+        const all = (o.segments || []).filter(s => s && s.id != null);
+        const mine = [...new Set((o.segIds || []).map(String))];
+        const inPart = new Set(mine);
+        const segs = all.filter(s => inPart.has(String(s.id)));
+        const whole = () => [{ kind: null, kinds: null, screen: null, family: null, screens: null, minutes: total, weight: 1, segIds: mine }];
+        if (segs.length < 2 || total < 2 * C.minScreenMin) return whole();
+        const weights = segmentWeights(all, o.win, C); // over the category's saves, as the task split weighed them
+        const groups = new Map(); // screen -> { screen, kind, weight, segIds, worked }
+        for (const s of segs) {
+            const name = String((s.drawingNames || [])[0] || '');
+            const g = groups.get(name) || { screen: name, kind: 'draw-edit', weight: 0, segIds: [], worked: false };
+            if (s.kind === 'draw-new') g.kind = 'draw-new';
+            if (!(Number.isFinite(s.w) && s.w < 0.5)) g.worked = true; // saved, created or visibly edited somewhere today
+            g.weight += weights.get(String(s.id)) || 0;
+            g.segIds.push(String(s.id));
+            groups.set(name, g);
+        }
+        if (groups.size < 2) return whole();
+        // Joining one group into another: the time always goes along; the screens — and so the note — only
+        // when they were worked on. A screen the day's saves merely touched is nobody's work to describe.
+        const join = (home, g) => {
+            home.weight += g.weight;
+            if (g.worked === false) return;
+            home.segIds.push(...g.segIds);
+            home.folded = (home.folded || []).concat(g.screens || [g.screen]);
+        };
+        const kindOf = new Map([...groups.values()].map(g => [g.screen, g.kind]));
+        const W = [...groups.values()].reduce((n, g) => n + g.weight, 0);
+        if (!(W > 0)) return whole();
+        const exact = g => total * g.weight / W;                 // the minutes a group earns, before rounding
+        const bySize = (x, y) => (y.weight - x.weight) || String(x.screen || x.family || '').localeCompare(String(y.screen || y.family || ''));
+        const screens = [...groups.values()].sort(bySize);
+        // 1. screens that earned their own entry
+        const entries = screens.filter(g => exact(g) >= C.minScreenMin);
+        // 2. the others by family — first into a screen of their own family that has an entry ("Energi_old"
+        //    goes with "Energi"), else into a family entry of their own
+        const famEntry = new Map();
+        for (const g of entries) { const k = screenFamily(g.screen); if (!famEntry.has(k)) famEntry.set(k, g); }
+        const fams = new Map();
+        for (const g of screens) {
+            if (entries.includes(g)) continue;
+            const key = screenFamily(g.screen);
+            const kin = famEntry.get(key);
+            if (kin) { join(kin, g); continue; }
+            const f = fams.get(key) || { family: String(g.screen).trim().split(/[\s_\-.]+/)[0] || g.screen, weight: 0, segIds: [], screens: [], worked: false };
+            f.weight += g.weight;
+            if (g.worked) { f.segIds.push(...g.segIds); f.screens.push(g.screen); f.worked = true; }
+            fams.set(key, f);
+        }
+        const rest = [];
+        for (const f of fams.values()) (f.screens.length > 1 && exact(f) >= C.minScreenMin ? entries : rest).push(f);
+        const restWorked = rest.filter(r => r.worked !== false);
+        // 3. at most maxScreens entries, the "other screens" one included; the rest in one entry, or the largest
+        entries.sort(bySize);
+        while (entries.length && entries.length > C.maxScreens - (rest.length ? 1 : 0)) rest.push(entries.pop());
+        let other = null;
+        if (rest.length) {
+            other = { other: true, weight: 0, segIds: [], screens: [], worked: restWorked.length > 0 };
+            for (const r of rest) {
+                other.weight += r.weight;
+                if (r.worked === false) continue;
+                other.segIds.push(...r.segIds);
+                other.screens.push(...(r.screens || [r.screen]));
+            }
+            // too little, or nothing worked on: the largest entry takes the time (and any work, to tell it)
+            if ((exact(other) < C.minScreenMin || !other.screens.length) && entries.length) {
+                join(entries[0], { weight: other.weight, segIds: other.segIds, screens: other.screens, worked: other.screens.length > 0 });
+                other = null;
+            }
+        }
+        const final = other ? entries.concat([other]) : entries;
+        if (final.length < 2) return whole();
+        const mins = RL_RECAP_TIME.allocateMinutes(final.map(g => g.weight), total, 1);
+        return final.map((g, i) => {
+            const minutes = mins[i];
+            if (g.screen != null) return { kind: g.kind, kinds: null, screen: g.screen, family: null, screens: [g.screen].concat(g.folded || []), minutes, weight: g.weight, segIds: g.segIds };
+            if (!g.other) return { kind: 'screens', kinds: null, screen: null, family: g.family, screens: g.screens.concat(g.folded || []), minutes, weight: g.weight, segIds: g.segIds };
+            const one = g.screens.length === 1 ? g.screens[0] : null; // a lone leftover is just that screen
+            return { kind: one != null ? (kindOf.get(one) || 'draw-edit') : 'screens', kinds: null, screen: one, family: null, screens: g.screens.slice(), minutes, weight: g.weight, segIds: g.segIds };
+        });
+    }
+
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
         bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary, projectIsBillable,
         SPLIT_C, segmentWeights, splitCategory,
         THING_C, saveKind, splitThings,
+        SCREEN_C, drawPartWeight, screenFamily, splitScreens,
     };
 })();
 
@@ -1962,6 +2089,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
     const { saveKind, splitThings } = RL_RECAP_MATCH; // v4.158
+    const { drawPartWeight, splitScreens } = RL_RECAP_MATCH; // v4.159
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -1978,7 +2106,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.158';
+    const SCRIPT_VERSION   = '4.159';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -5737,8 +5865,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // a mix → no discipline word at all.
             const panelDisc = {};
             for (const n of T.drawingNames) for (const d of Object.keys(bookDiscWeights(n, true))) panelDisc[d] = (panelDisc[d] || 0) + 1;
-            const topDisc = Object.keys(panelDisc).sort((a, b) => panelDisc[b] - panelDisc[a])[0];
-            const drawDiscs = !topDisc ? [] : panelDisc[topDisc] * 2 >= T.drawingNames.length ? [topDisc] : ['mixed'];
+            const ranked = Object.keys(panelDisc).sort((a, b) => panelDisc[b] - panelDisc[a]);
+            const topDisc = ranked[0];
+            // v4.159: two systems named equally often ("Maskin" and "Energi") are a mix, not whichever came first.
+            const tied = ranked.length > 1 && panelDisc[ranked[1]] === panelDisc[topDisc];
+            const drawDiscs = !topDisc ? [] : (!tied && panelDisc[topDisc] * 2 >= T.drawingNames.length) ? [topDisc] : ['mixed'];
+            T.drawDiscs = drawDiscs; // v4.159: what the drawings' own names say, for entries of several to keep
             T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, drawDiscs.length ? drawDiscs : T.discs);
             T.leadDrawIdle = summarizeLeadDrawingIdle(drawDiscs.length ? drawDiscs : T.discs);
             T.ak3Types = inKind('devices') ? [...new Set(F.ak3.filter(inSel).map(r => r.v))] : [];
@@ -5772,7 +5904,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         for (const cid of cids) {
             for (const panel of [...new Set(F.panel.filter(r => String(r.cid) === cid).map(r => r.panel))]) {
                 const kind = panelKind(panel); // v4.158: a screen created today, or an edit of an existing one
-                out.drawSegments.push({ id: cid + '::' + panel, ts: tsBy[cid], tokStr: '', uStr: '', drawingNames: [panel], kind, kinds: [kind] });
+                // v4.159: how much of the save this screen stood for — the revisions it saved.
+                const w = drawPartWeight(F.panel.filter(r => String(r.cid) === cid && r.panel === panel));
+                out.drawSegments.push({ id: cid + '::' + panel, ts: tsBy[cid], tokStr: '', uStr: '', drawingNames: [panel], kind, kinds: [kind], w });
             }
         }
         return out;
@@ -6058,23 +6192,33 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const byThing = (kind === 'integration' || kind === 'drawing') && !racRedirect && !!texts.forCommits;
                 const pieces = [];
                 for (const p of parts) {
+                    // Drawings split finer, one entry per screen (v4.159, RL_RECAP_MATCH.splitScreens).
+                    const win = { first_ts: v.first_ts, last_ts: v.last_ts, capped_gaps: v.capped_gaps };
                     const things = byThing && (p.segIds || []).length > 1
-                        ? splitThings({ segments: catSegs, segIds: p.segIds, minutes: p.minutes, win: { first_ts: v.first_ts, last_ts: v.last_ts, capped_gaps: v.capped_gaps } })
+                        ? (kind === 'drawing' ? splitScreens({ segments: catSegs, segIds: p.segIds, minutes: p.minutes, win })
+                            : splitThings({ segments: catSegs, segIds: p.segIds, minutes: p.minutes, win }))
                         : [{ kind: null, minutes: p.minutes, segIds: p.segIds || [] }];
-                    if (things.length > 1) LOG('book: things', v.plant_id, p.task ? p.task.taskName : category, '→', things.map(x => `${x.kind} ${x.minutes}m`).join(' + '));
-                    // The entries speak for the task part: its disciplines, as its single entry read them.
-                    const partDiscs = things.length > 1 ? texts.forCommits(p.segIds).discs : null;
-                    things.forEach((th, ti) => pieces.push({ p, th, ti, tn: things.length, partDiscs }));
+                    if (things.length > 1) LOG('book: things', v.plant_id, p.task ? p.task.taskName : category, '→', things.map(x => `${x.screen != null ? '"' + x.screen + '"' : x.family ? x.family + ' ×' + x.screens.length : x.kind} ${x.minutes}m`).join(' + '));
+                    // The entries speak for the task part: its disciplines, as its single entry read them — for a
+                    // drawing, what the part's screen names said (a mix says no system), else what its devices said.
+                    const partTexts = things.length > 1 ? texts.forCommits(p.segIds) : null;
+                    const partDiscs = partTexts ? partTexts.discs : null;
+                    const partDrawDiscs = partTexts && (partTexts.drawDiscs || []).length ? partTexts.drawDiscs : partDiscs;
+                    things.forEach((th, ti) => pieces.push({ p, th, ti, tn: things.length, partDiscs, partDrawDiscs }));
                 }
-                for (const { p, th, ti, tn, partDiscs } of pieces) {
+                for (const { p, th, ti, tn, partDiscs, partDrawDiscs } of pieces) {
                     const task = p.task;
                     // A split entry is described by ITS OWN saves (v4.141) — the ventilation entry must not
                     // claim the refrigeration controllers — while an unsplit entry reads the whole day, as before.
                     // Each entry of a task that books several (v4.158) reads ALL the task's saves, narrowed to its
                     // own kinds of facts: the renames are not the meters, and a virtual-values save with no device
                     // of its own still reads as work on the task's system.
+                    // A screen's entry (v4.159) reads just that screen's parts of the saves. Its system word comes
+                    // from its own screen names, else it says what the part's single entry said: on 2313 the
+                    // part's names were a mix, so "Oversikt ny" is just an "overview screen" (not the day's
+                    // "ventilation"), while 8222's nameless overviews stay "refrigeration" like the plant.
                     const t = !texts.forCommits ? texts
-                        : tn > 1 ? texts.forCommits(p.segIds, th.kinds, partDiscs)
+                        : tn > 1 ? (kind === 'drawing' ? texts.forCommits(th.segIds, null, partDrawDiscs) : texts.forCommits(p.segIds, th.kinds, partDiscs))
                         : parts.length > 1 ? texts.forCommits(p.segIds) : texts;
                     let act;
                     if (cat === CAT_INTEGRATION) act = 'Integration: ' + (t.integration || (t.actionsWork ? t.actionsWork + ' work' : 'device/DB config'));
@@ -6139,7 +6283,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         // Several tasks share this plant's category (v4.141): the row says which share it carries.
                         split: parts.length > 1 ? { share: p.share, n: parts.length, saves: p.segIds.length, of: Math.round(min) } : null,
                         // Several kinds of work on this task (v4.158): which entry of the task this is, and of what.
-                        thing: tn > 1 ? { kind: th.kind, i: ti + 1, n: tn, of: p.minutes, saves: th.segIds.length } : null,
+                        thing: tn > 1 ? { kind: th.kind, i: ti + 1, n: tn, of: p.minutes, saves: th.segIds.length, screen: th.screen != null ? th.screen : null, family: th.family || null, screens: th.screens || null } : null,
                         status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
                     };
                     plan.push(row);
@@ -6250,7 +6394,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     // Several tasks share this plant's category (v4.141): the row says which share it carries and why.
-    const THING_LABEL = { devices: 'devices', settings: 'plant settings', names: 'unit names', tuning: 'tuning', 'draw-new': 'new screens', 'draw-edit': 'screen edits' };
+    const THING_LABEL = { devices: 'devices', settings: 'plant settings', names: 'unit names', tuning: 'tuning', 'draw-new': 'new screens', 'draw-edit': 'screen edits', screens: 'other screens' };
     function splitHtml(e) {
         let html = '';
         const s = e && e.split;
@@ -6265,7 +6409,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (th && th.n > 1) {
             const tip = `This task's ${fmtMinutes(th.of)} held ${th.n} kinds of work, so it books as ${th.n} time entries on the task — `
                 + `what "+ Add another time entry" does in Rocketlane. Each entry's time follows its own saves (${th.saves} for this one).`;
-            html += ` · <span class="bookplan-split" title="${escapeHtml(tip)}">➕ entry ${th.i} of ${th.n} on this task: ${escapeHtml(THING_LABEL[th.kind] || th.kind || 'work')}</span>`;
+            // v4.159: a drawing entry names its screen; the "other screens" entry says how many it holds.
+            const more = th.screen != null && (th.screens || []).length > 1 ? ` +${th.screens.length - 1}` : '';
+            const what = th.screen != null ? `${th.kind === 'draw-new' ? 'new screen' : 'screen'} "${th.screen}"${more}`
+                : th.family ? `${(th.screens || []).length} "${th.family}" screens`
+                : th.kind === 'screens' ? `other screens (${(th.screens || []).length})`
+                : (THING_LABEL[th.kind] || th.kind || 'work');
+            html += ` · <span class="bookplan-split" title="${escapeHtml(tip)}">➕ entry ${th.i} of ${th.n} on this task: ${escapeHtml(what)}</span>`;
         }
         return html;
     }
