@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.50.0
+// @version      1.51.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.50.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.51.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5276,6 +5276,7 @@
     #${PANEL_ID} table.mpc-grid select.mpc-viewas:hover,#${PANEL_ID} table.mpc-grid select.mpc-viewas:focus{border-color:var(--line);background:#fff}
     #${PANEL_ID} table.mpc-grid select.mpc-viewas.on{border-color:#d9a400;background:#fff4cc;font-weight:bold}
     #${PANEL_ID} table.mpc-grid select.mpc-viewas:disabled{cursor:default;opacity:.8}
+    #${PANEL_ID} table.mpc-grid select.mpc-scale{text-align:right;text-align-last:right;font-variant-numeric:tabular-nums}
     #${PANEL_ID} table.mpc-grid tr.mpc-viewed td{background:#fffbea}
     #${PANEL_ID} .mpc-mini{height:18px;line-height:16px;padding:0 6px;font-size:11px;vertical-align:baseline}
     /* The grid's own cells are nowrap, and white-space inherits — without this the
@@ -5852,15 +5853,77 @@
         return select;
     }
 
-    /** After a redraw: how many registers are viewed as another type, and a way back. */
+    /*
+     * Scale presets, the other half of "view as": what a reading would show under
+     * another scale key, display only. The keys are modbusgen's own
+     * (data/tables/scaling.csv) that act on a plain number — x3.6 turns l/s into
+     * m³/h — and each is shown with the decimals it implies: as many as the key
+     * has after the point, the list rule that pairs x0.1 with 1.
+     */
+    const SCALE_PRESETS = ['x1000', 'x100', 'x10', 'x1', 'x3.6', 'x0.5', 'x0.25', 'x0.1', 'x0.01', 'x0.001', 'x0.0001'];
+    const scaleOverrides = new Map();   // table|ref -> scale key
+
+    function decimalsForScale(key) {
+        const m = String(key || '').trim().match(/\.(\d+)$/);
+        return m ? m[1].length : 0;
+    }
+
+    /** A reading under a scale key: the value, and the text with the decimals the key implies. */
+    function scaledPreset(raw, key) {
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+        const s = scaleFactorOf(key);
+        if (!s.known) return null;
+        if (s.invert) return { value: raw ? 0 : 1, text: String(raw ? 0 : 1) };
+        const places = decimalsForScale(key);
+        const value = roundScaled(raw * s.factor, places);
+        return { value, text: value.toFixed(places) };
+    }
+
+    /**
+     * The picker in a grid's scaled cell. Closed, it shows the value as the row
+     * stands; open, the same reading under every preset, so opening it is the
+     * comparison. Choosing one shows that scale on this row — display only, the
+     * list keeps its own; the first entry goes back.
+     */
+    function scaleSelect(table, ref, raw, baseText, baseNote) {
+        const key = table + '|' + ref;
+        const current = scaleOverrides.get(key) || '';
+        const hasRaw = typeof raw === 'number' && Number.isFinite(raw);
+        const select = el('select', {
+            className: 'mpc-viewas mpc-scale' + (current ? ' on' : ''),
+            title: hasRaw
+                ? 'This reading under another scale. Display only: the point list keeps ' + (baseNote || 'its own scale') + '.'
+                : 'No reading to scale',
+        });
+        select.appendChild(el('option', { value: '', textContent: (baseText === '' || baseText === undefined ? '—' : baseText) + (baseNote ? ' · ' + baseNote : '') }));
+        for (const k of SCALE_PRESETS) {
+            const p = scaledPreset(raw, k);
+            select.appendChild(el('option', { value: k, textContent: (p ? p.text : '—') + ' · ' + k }));
+        }
+        select.value = current;
+        select.disabled = !hasRaw;
+        const stop = ev => ev.stopPropagation();
+        select.addEventListener('click', stop);
+        select.addEventListener('mousedown', stop);
+        select.addEventListener('change', ev => {
+            ev.stopPropagation();
+            if (select.value) scaleOverrides.set(key, select.value); else scaleOverrides.delete(key);
+            if (typeof redrawGrid === 'function') redrawGrid();
+        });
+        return select;
+    }
+
+    /** After a redraw: how many registers are viewed another way, and a way back. */
     function appendViewNote() {
-        if (!viewOverrides.size || !ui.summary) return;
-        ui.summary.appendChild(document.createTextNode(' · ' + viewOverrides.size + ' register' + (viewOverrides.size === 1 ? '' : 's') +
-            ' viewed as another datatype, display only '));
-        const clear = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'clear views', title: 'Show every register as read and as the list declares it again' });
+        const viewed = new Set([...viewOverrides.keys(), ...scaleOverrides.keys()]);
+        if (!viewed.size || !ui.summary) return;
+        ui.summary.appendChild(document.createTextNode(' · ' + viewed.size + ' register' + (viewed.size === 1 ? '' : 's') +
+            ' viewed with another datatype or scale, display only '));
+        const clear = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'clear views', title: 'Show every register as read, as the list declares it and with its own scale again' });
         clear.addEventListener('click', ev => {
             ev.stopPropagation();
             viewOverrides.clear();
+            scaleOverrides.clear();
             if (typeof redrawGrid === 'function') redrawGrid();
         });
         ui.summary.appendChild(clear);
@@ -5871,9 +5934,9 @@
     const REGISTER_COLUMNS = [
         { label: 'printed', width: '7%', title: 'The index modpoll printed — -r counts from 1' },
         { label: 'addr', width: '7%', title: 'Protocol address, the printed index minus one' },
-        { label: 'name', width: '25%', align: 'left', title: 'From the loaded point list, matched on this reference' },
+        { label: 'name', width: '23%', align: 'left', title: 'From the loaded point list, matched on this reference' },
         { label: 'value', width: '9%', title: 'The register as the device returned it' },
-        { label: 'scaled', width: '9%', title: "Value multiplied by the list's scale key, or what the plant itself shows — a number or a state text" },
+        { label: 'scaled', width: '11%', title: "Value multiplied by the list's scale key, or what the plant itself shows — a number or a state text. Open it for the same reading under every scale preset, display only" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
         { label: 'hex', width: '9%', title: 'The register as hexadecimal — four digits for a 16-bit read, eight for a 32-bit integer. Blank where the bit pattern cannot be recovered from what modpoll printed, which is every float' },
         { label: 'int16', width: '8%', title: 'Filled only when the register reads differently as a signed 16-bit integer, which means it came back above 32767' },
@@ -5894,10 +5957,10 @@
     const POINT_COLUMNS = [
         { label: 'addr', width: '7%', title: 'The address as the point list prints it' },
         { label: 'ref', width: '7%', title: "modpoll's 1-based reference for that address" },
-        { label: 'name', width: '24%', align: 'left', title: 'Tag and alias text from the list' },
+        { label: 'name', width: '22%', align: 'left', title: 'Tag and alias text from the list' },
         { label: 'type', width: '13%', align: 'left', title: 'Datatype key, which decides the table and the raw type — pick another to view the point as it, display only' },
         { label: 'raw', width: '9%', title: 'The register as the device returned it' },
-        { label: 'scaled', width: '9%', title: "Raw multiplied by the list's scale key" },
+        { label: 'scaled', width: '11%', title: "Raw multiplied by the list's scale key. Open it for the same reading under every scale preset, display only" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
         { label: 'status', width: '10%', title: 'read, zero, refused, no answer or not polled' },
         { label: 'note', width: '15%', align: 'left', title: 'Why a point is flagged, or why it was not polled' },
@@ -6590,7 +6653,9 @@
                 p.unit || '', row.status,
                 view ? viewNote : (row.flags && row.flags.length ? row.flags.join('; ') : (row.note || '')),
             ];
-            const tr = el('tr', { className: 'mpc-clickable' + (view ? ' mpc-viewed' : ''), title: 'Click for every reading of this register' },
+            const rowTable = p.decoded && p.decoded.ok ? p.decoded.table : '?';
+            const scaleView = scaleOverrides.has(rowTable + '|' + p.ref);
+            const tr = el('tr', { className: 'mpc-clickable' + (view || scaleView ? ' mpc-viewed' : ''), title: 'Click for every reading of this register' },
                 cells.map((text, i) => el('td', {
                     textContent: text,
                     className: (i === 4 && raw === 0) ? 'zero' : (i === 7 && (row.status === 'refused' || row.status === 'no answer') ? 'bad' : ''),
@@ -6599,9 +6664,15 @@
                 })));
             const typeCell = tr.children[3];
             typeCell.textContent = '';
-            typeCell.appendChild(viewAsSelect(p.decoded && p.decoded.ok ? p.decoded.table : '?', p.ref, p.datatype,
+            typeCell.appendChild(viewAsSelect(rowTable, p.ref, p.datatype,
                 !!(wordAt && p.decoded && p.decoded.ok && row.status !== 'not polled'),
                 !wordAt ? 'Run Verify list again to view points as another datatype' : 'This point was not polled'));
+            // The scaled cell lists the same reading under every scale preset; the
+            // first entry is the list's own, which is what the cell shows unviewed.
+            const scaledCell = tr.children[5];
+            scaledCell.textContent = '';
+            scaledCell.removeAttribute('title');
+            scaledCell.appendChild(scaleSelect(rowTable, p.ref, raw, cells[5], (p.scaleKey || 'x1') + ', list'));
             if (row.raw !== undefined) {
                 tr.addEventListener('click', () => {
                     // A 32-bit point is aimed at as its two 16-bit words: that poll
@@ -6762,7 +6833,8 @@
                 deltaCell,
                 { text: sourceLabel, align: 'left' },
             ];
-            const tr = el('tr', { className: 'mpc-clickable' + (view ? ' mpc-viewed' : ''), title: 'Click to put this register in the command box, and to see every reading of it' },
+            const scaleView = !isBitTable && scaleOverrides.has(table + '|' + v.i);
+            const tr = el('tr', { className: 'mpc-clickable' + (view || scaleView ? ' mpc-viewed' : ''), title: 'Click to put this register in the command box, and to see every reading of it' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.title || c.text,
@@ -6772,6 +6844,16 @@
                 typeCell.textContent = '';
                 typeCell.appendChild(viewAsSelect(table, v.i, sourceLabel || (wide ? (format || '16-bit') + ' as polled' : 'as read'),
                     !wide, 'Poll as 16-bit (Format) to view registers as another datatype — a 32-bit format has already put the words together modpoll\'s way'));
+                // The scaled cell lists this reading — viewed, if a datatype view is
+                // on — under every scale preset. Unviewed it shows what it always
+                // did: the list's scale, what the plant shows, or the bare reading.
+                const shownRaw = view ? (viewed.ok ? viewed.value : undefined) : v.v;
+                const baseText = cells[4].text !== '' ? cells[4].text : viewValueText(shownRaw);
+                const baseNote = point ? (point.scaleKey || 'x1') + ', list' : (fromPlant && !view && cells[4].text !== '' ? 'IWMAC shows' : 'unscaled');
+                const scaledCell = tr.children[4];
+                scaledCell.textContent = '';
+                scaledCell.removeAttribute('title');
+                scaledCell.appendChild(scaleSelect(table, v.i, shownRaw, baseText, baseNote));
             }
             tr.addEventListener('click', () => {
                 aimAtRegister({ table, ref: v.i, format });
@@ -7737,7 +7819,9 @@
                 'await __modpoll.raw("modpoll.exe …")      one command, parsed; writes are refused',
                 '__modpoll.decode(words, "U32_N")          words as iw_mb.exe reads them: N = first register low word, W = high',
                 '__modpoll.viewAs(table, ref, "U32_N")     show one register as another datatype, display only ("" clears)',
-                '__modpoll.views() / clearViews()          the registers shown as another datatype / show them as read again',
+                '__modpoll.scaleAs(table, ref, "x0.1")     show one register with another scale key, display only ("" clears)',
+                '__modpoll.scalePresets(2000)              a reading under every scale preset, with the decimals each implies',
+                '__modpoll.views() / clearViews()          the registers shown another way / show them as read and listed again',
                 'await __modpoll.scan({host, slave})       every register the device answers for, read twice; names the unit first',
                 '__modpoll.loadList(projectJson)           adopt a modbusgen project: points and system.comm',
                 'await __modpoll.verify()                  poll every point in that list and judge the answers',
@@ -7864,9 +7948,32 @@
             try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
             return api.views();
         },
-        views() { return [...viewOverrides].map(([key, view]) => ({ table: key.split('|')[0], ref: Number(key.split('|')[1]), view })); },
+        /** Show one register with another scale key in the grid, display only. An empty key clears it. */
+        scaleAs(table, ref, scale) {
+            const key = String(table) + '|' + Number(ref);
+            if (!scale) scaleOverrides.delete(key);
+            else {
+                const text = String(scale).trim();
+                if (!scaleFactorOf(text).known || !/^x/i.test(text)) throw new Error('No scale "' + scale + '" — use a key like ' + SCALE_PRESETS.join(', '));
+                scaleOverrides.set(key, text);
+            }
+            try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
+            return api.views();
+        },
+        /** A reading under every scale preset: scalePresets(2000) -> [{ scale: 'x1000', value, text }, …]. */
+        scalePresets(raw) {
+            return SCALE_PRESETS.map(scale => Object.assign({ scale }, scaledPreset(Number(raw), scale) || { value: null, text: '' }));
+        },
+        views() {
+            const keys = new Set([...viewOverrides.keys(), ...scaleOverrides.keys()]);
+            return [...keys].map(key => ({
+                table: key.split('|')[0], ref: Number(key.split('|')[1]),
+                view: viewOverrides.get(key) || null, scale: scaleOverrides.get(key) || null,
+            }));
+        },
         clearViews() {
             viewOverrides.clear();
+            scaleOverrides.clear();
             try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
             return true;
         },

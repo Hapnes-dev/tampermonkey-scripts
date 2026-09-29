@@ -22,8 +22,9 @@ def lift(start, end):
 
 
 js = lift("    const IWMAC_WORD_ORDER = {", "\n    /*\n     * Two 16-bit registers read as one 32-bit value")
-js += lift("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * 434 × 0.1")
+js += lift("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * Points become poll ranges")
 js += lift("    const VIEW_TYPES = [", "\n    /**\n     * The picker in a grid's type cell.")
+js += lift("    const SCALE_PRESETS = [", "\n    /**\n     * The picker in a grid's scaled cell.")
 js += r"""
 let failed = 0;
 const check = (name, ok, got) => {
@@ -83,6 +84,21 @@ check('a 32-bit view asks for the register and the next one', viewWords(viewType
     viewWords(viewTypeOf('U32_N'), r => r * 10, 190).join(','));
 check('viewValueText keeps integers whole and trims float noise', viewValueText(200000) === '200000' && viewValueText(21.500000953) === '21.5',
     viewValueText(21.500000953));
+
+// Scale presets: the same reading under another scale key, with the decimals that key implies.
+check('every preset is a key the scale parser knows', SCALE_PRESETS.every(k => scaleFactorOf(k).known), SCALE_PRESETS.join(' '));
+check('decimals follow the key: x0.001 three, x0.25 two, x3.6 one, x10 none',
+    decimalsForScale('x0.001') === 3 && decimalsForScale('x0.25') === 2 && decimalsForScale('x3.6') === 1 && decimalsForScale('x10') === 0, '');
+check('2000 under x0.1 shows 200.0', scaledPreset(2000, 'x0.1').text === '200.0' && scaledPreset(2000, 'x0.1').value === 200,
+    show(scaledPreset(2000, 'x0.1')));
+check('2000 l/s under x3.6 shows 7200.0 - the m3/h the controller reports', scaledPreset(2000, 'x3.6').text === '7200.0',
+    show(scaledPreset(2000, 'x3.6')));
+check('222298115 under x0.01 shows 2222981.15 - what IWMAC showed for the _W setpoint',
+    scaledPreset(222298115, 'x0.01').text === '2222981.15', show(scaledPreset(222298115, 'x0.01')));
+check('a negative reading keeps its sign: -200 under x0.01 is -2.00', scaledPreset(-200, 'x0.01').text === '-2.00',
+    show(scaledPreset(-200, 'x0.01')));
+check('x1 shows a whole number', scaledPreset(2000, 'x1').text === '2000', show(scaledPreset(2000, 'x1')));
+check('no reading, no preset', scaledPreset(undefined, 'x0.1') === null && scaledPreset(NaN, 'x0.1') === null, '');
 
 console.log(failed ? failed + ' failed' : 'all passed');
 process.exit(failed ? 1 : 0);

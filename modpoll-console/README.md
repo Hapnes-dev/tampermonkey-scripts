@@ -555,6 +555,28 @@ The same from the API: `__modpoll.viewAs('3', 191, 'U32_N')`, `__modpoll.views()
 `__modpoll.clearViews()`, and `__modpoll.decode([3392, 3], 'U32_W')` for words in
 hand.
 
+### Scale presets
+
+The **scaled** column is a picker too (1.51.0). Closed, it shows what it always
+did — the value under the list's scale, what the plant shows, or the bare reading —
+followed by where that comes from (`x0.01, list`, `IWMAC shows`, `unscaled`). Open,
+it lists the same reading under every preset, so opening it *is* the comparison:
+
+```
+2000.00 · x0.01, list
+200000000 · x1000   20000000 · x100   2000000 · x10   200000 · x1
+720000.0 · x3.6     100000.0 · x0.5   50000.00 · x0.25
+20000.0 · x0.1      2000.00 · x0.01   200.000 · x0.001   20.0000 · x0.0001
+```
+
+The presets are modbusgen's own scale keys that act on a plain number — `x3.6` turns
+l/s into m³/h — each shown with the decimals it implies, as many as the key has after
+the point (the list rule that pairs `x0.1` with 1). Choosing one shows that scale on
+the row; the first entry goes back. **Display only: the point list keeps its own
+scale.** It combines with a datatype view — the presets then apply to the viewed
+value — and *clear views* clears both. From the API: `__modpoll.scaleAs('3', 95,
+'x3.6')`, and `__modpoll.scalePresets(2000)` for every preset of a number in hand.
+
 *Verify list* polls every point, grouping them into ranges that merge across
 small gaps and split at the count cap, then judges each answer with a fixed
 vocabulary: `read`, `zero`, `refused`, `no answer`, `not polled`. A value outside
@@ -691,8 +713,10 @@ __modpoll.stop();                          // abort a running sweep
 
 __modpoll.decode([3392, 3], 'U32_N');      // words as iw_mb.exe reads them → { value: 200000, … }
 __modpoll.viewAs('3', 191, 'U32_N');       // show one register as another datatype, display only
-__modpoll.views();                         // [{ table, ref, view }]
-__modpoll.clearViews();                    // every register as read again
+__modpoll.scaleAs('3', 95, 'x3.6');        // show one register with another scale key, display only
+__modpoll.scalePresets(2000);              // [{ scale: 'x1000', value, text }, …] for a number in hand
+__modpoll.views();                         // [{ table, ref, view, scale }]
+__modpoll.clearViews();                    // every register as read, listed and scaled again
 ```
 
 A full result is `{ ok, plant, at, spec, values, summary, diagnostics, commands }`,
@@ -754,7 +778,8 @@ quietly stop being the thing under test.
   to plant 11087: the registers it returned on 2026-09-29 decoded under every
   suffix beside what IWMAC showed for them (2222981.15 under `U32_W`, 200000
   under `U32_N`), the 16-bit views, a refused 32-bit byte swap, the view
-  catalogue; then a whole verification through the shipped `verifyPointList`
+  catalogue, the scale presets and the decimals each implies (222298115 under
+  `x0.01` prints 2222981.15); then a whole verification through the shipped `verifyPointList`
   against a map of those registers — every point read as 16-bit words, a `_W`
   point shown as IWMAC shows it, and the words kept for views but out of the JSON.
 - `python test/export-check.py` — *Save JSON* with a scan in hand and no poll,
