@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.157
+// @version      4.158
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1824,10 +1824,106 @@ var RL_RECAP_MATCH = (function () {
         return list.map(g => ({ task: g.task, minutes: g.minutes, share: g.minutes / total, weight: g.weight, segIds: g.segIds }));
     }
 
+    // ---- One task, several things (v4.158) -------------------------------------------------------
+    // Thomas, 2026-09-29, with a screenshot of Rocketlane's time-entry dialog: "when you have done multiple
+    // things on a plant you [can] use + add another time entry". Rocketlane takes several time entries on
+    // one task and day, each with its own time, category and notes — what the dialog's "+ Add another
+    // time entry" makes. Until now a task part was ONE entry whatever it held: 2313's "Integration: Energi"
+    // on 23.09 was 110 min in one note — ten energy meters connected, three units renamed, an SM850 tuned,
+    // the virtual values and two AK3 settings changed.
+    //
+    // A part now books one entry per KIND of work its saves did, and the time follows the saves exactly as
+    // the task split's does (segmentWeights: the time before a save belongs to what it saved). A save
+    // counts as ONE kind, the first of:
+    //   devices   units added, removed or rebuilt, device tables created (an AK3 scan's too)
+    //   settings  plant settings
+    //   names     units renamed
+    //   tuning    device parameters tuned, virtual (calculated) values
+    //   other     nothing describable: never an entry of its own, it joins the largest kind
+    // and a drawing part splits into screens created (draw-new) and screens edited (draw-edit).
+    // A kind under `minThingMin` minutes folds into the largest one, and a part never becomes more than
+    // `maxThings` entries. Time follows the saves, but a save often did several kinds at once (units added
+    // and renamed, a setting changed, in one save) — so the NOTES follow the facts: each entry carries
+    // `kinds`, the kinds of facts it describes from ALL of the part's saves — its own, those folded into
+    // it, and any kind that never led a save, on the entry whose saves it happened in. Every fact is told once.
+    const THING_C = { minThingMin: 10, maxThings: 4 };
+    const THING_ORDER = ['devices', 'settings', 'names', 'tuning', 'draw-new', 'draw-edit'];
+    function saveKind(f) {
+        f = f || {};
+        if (f.drawing) return f.added ? 'draw-new' : 'draw-edit';
+        if (f.devices) return 'devices';
+        if (f.settings) return 'settings';
+        if (f.names) return 'names';
+        if (f.tuning) return 'tuning';
+        return 'other';
+    }
+    // o: { segments: the category's segments [{ id, ts, kind }] as splitCategory saw them, segIds: this
+    //      part's ids, minutes: this part's minutes, win: { first_ts, last_ts, capped_gaps }, C }
+    // Returns [{ kind, minutes, weight, segIds }], largest first — one element (kind null) when nothing splits.
+    function splitThings(o) {
+        o = o || {};
+        const C = Object.assign({}, SPLIT_C, THING_C, o.C || {});
+        const total = Number.isFinite(o.minutes) ? Math.max(0, Math.round(o.minutes)) : 0;
+        const all = (o.segments || []).filter(s => s && s.id != null);
+        const mine = [...new Set((o.segIds || []).map(String))];
+        const inPart = new Set(mine);
+        const segs = all.filter(s => inPart.has(String(s.id)));
+        const whole = () => [{ kind: null, kinds: null, minutes: total, weight: 1, segIds: mine }];
+        if (segs.length < 2 || total < 2 * C.minThingMin) return whole();
+        const weights = segmentWeights(all, o.win, C); // over the category's saves, as the task split weighed them
+        const groups = new Map();
+        for (const s of segs) {
+            const k = s.kind || 'other';
+            const g = groups.get(k) || { kind: k, weight: 0, segIds: [], kinds: new Set(k === 'other' ? [] : [k]) };
+            g.weight += weights.get(String(s.id)) || 0;
+            g.segIds.push(String(s.id));
+            groups.set(k, g);
+        }
+        let list = [...groups.values()];
+        const other = list.find(g => g.kind === 'other');
+        if (other && list.length > 1) {
+            list = list.filter(g => g !== other);
+            const home = list.reduce((a, b) => (b.weight > a.weight ? b : a));
+            home.weight += other.weight;
+            home.segIds.push(...other.segIds);
+        }
+        if (list.length < 2) return whole();
+        const rank = k => { const i = THING_ORDER.indexOf(k); return i < 0 ? THING_ORDER.length : i; };
+        for (;;) {
+            const mins = RL_RECAP_TIME.allocateMinutes(list.map(g => g.weight), total, 1);
+            list.forEach((g, i) => { g.minutes = mins[i]; });
+            list.sort((a, b) => (b.minutes - a.minutes) || (b.weight - a.weight) || (rank(a.kind) - rank(b.kind)));
+            const small = list.filter((g, i) => i > 0 && (g.minutes < C.minThingMin || i >= C.maxThings));
+            if (!small.length) break;
+            for (const g of small) { list[0].weight += g.weight; list[0].segIds.push(...g.segIds); for (const k of g.kinds) list[0].kinds.add(k); }
+            list = list.filter(g => !small.includes(g));
+        }
+        if (list.length < 2) return whole();
+        // A save of the part that no segment described stays with the largest entry.
+        const placed = new Set([].concat(...list.map(g => g.segIds)));
+        for (const id of mine) if (!placed.has(id)) list[0].segIds.push(id);
+        // A kind of fact that leads no entry (renames done inside the saves that added units) is told on the
+        // entry holding most of the saves it happened in — the renames read with the meters they came with.
+        const owned = new Set([].concat(...list.map(g => [...g.kinds])));
+        const entryOf = new Map();
+        for (const g of list) for (const id of g.segIds) entryOf.set(String(id), g);
+        const homes = new Map(); // kind -> Map(entry -> weight)
+        for (const s of segs) for (const k of (s.kinds || [])) {
+            if (owned.has(k)) continue;
+            const g = entryOf.get(String(s.id)) || list[0];
+            const m = homes.get(k) || new Map();
+            m.set(g, (m.get(g) || 0) + (weights.get(String(s.id)) || 0));
+            homes.set(k, m);
+        }
+        for (const [k, m] of homes) [...m.entries()].sort((a, b) => b[1] - a[1])[0][0].kinds.add(k);
+        return list.map(g => ({ kind: g.kind, kinds: [...g.kinds].sort((a, b) => rank(a) - rank(b)), minutes: g.minutes, weight: g.weight, segIds: g.segIds }));
+    }
+
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
         bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary, projectIsBillable,
         SPLIT_C, segmentWeights, splitCategory,
+        THING_C, saveKind, splitThings,
     };
 })();
 
@@ -1865,6 +1961,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { timesheetWeekFromPage, panelDateForWeek, dayHeaderIso, dayTotalVerdict } = RL_RECAP_TIME;
 
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
+    const { saveKind, splitThings } = RL_RECAP_MATCH; // v4.158
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -1881,7 +1978,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.157';
+    const SCRIPT_VERSION   = '4.158';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -5466,17 +5563,28 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 }
             } catch (e) { /* fallback text */ }
         }
+        // A screen created today is NEW for all of the day's work on it (v4.158): its later edits are part
+        // of building it, not edits of an existing screen.
+        const newPanels = new Set(F.panel.filter(r => r.added).map(r => r.panel));
+        const panelKind = panel => (newPanels.has(panel) ? 'draw-new' : 'draw-edit');
         // Compose the texts from a SET of saves — every save for the day's own texts, one task's saves
         // for a split entry (v4.141). Same facts, same wording, same caps either way.
-        const compose = (sel) => {
+        // `kinds` (v4.158) narrows the FACTS to some kinds of work — devices, settings, names, tuning,
+        // draw-new, draw-edit — for one of several time entries on a task. The saves still decide the
+        // discipline words, so the entry reads as work on the same system as its task — or `discs`, the
+        // part's own disciplines, when the caller has them: narrowing the facts must not change the system
+        // an entry talks about (2313 on 23.09: "Integration: Energi" read as refrigeration once the energy
+        // meters' tuning had moved to an entry of its own).
+        const compose = (sel, kinds, discs) => {
             const T = {};
             // `sel` holds save ids, or "save::panel" ids for one drawing part (v4.153): a panel fact is in
             // when its own id is, every other fact of the save when the save is named either way.
             const selCids = sel ? new Set([...sel].map(x => String(x).split('::')[0])) : null;
             const inSel = r => !sel || (r.panel != null ? (sel.has(String(r.cid)) || sel.has(String(r.cid) + '::' + r.panel)) : selCids.has(String(r.cid)));
-            const devAdd = F.devAdd.filter(inSel).map(r => r.v);
-            const devMod = new Set(F.devMod.filter(inSel).map(r => r.v));
-            const virtVals = [...F.virt].some(c => inSel({ cid: c }));
+            const inKind = k => !kinds || kinds.has(k);
+            const devAdd = inKind('devices') ? F.devAdd.filter(inSel).map(r => r.v) : [];
+            const devMod = new Set(inKind('tuning') ? F.devMod.filter(inSel).map(r => r.v) : []);
+            const virtVals = inKind('tuning') && [...F.virt].some(c => inSel({ cid: c }));
             let uAdd = 0, uRen = 0;
             // Net unit changes across the day's saves (v4.149). Now that every save is diffed, an AK3
             // rescan that clears the unit list in one save and re-creates it in the next read as "removed
@@ -5485,7 +5593,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // is reported as added or removed.
             const byTime = (a, b) => (tsBy[a.cid] || 0) - (tsBy[b.cid] || 0);
             const unitId = r => (bookBareLabel(r.label) || '').toLowerCase() || ('#' + r.key);
-            const addsAll = F.unitAdd.filter(inSel).slice().sort(byTime), delsAll = F.unitDel.filter(inSel).slice().sort(byTime);
+            const addsAll = inKind('devices') ? F.unitAdd.filter(inSel).slice().sort(byTime) : [];
+            const delsAll = inKind('devices') ? F.unitDel.filter(inSel).slice().sort(byTime) : [];
             const usedA = new Set(), usedD = new Set();
             delsAll.forEach((dl, i) => { const j = addsAll.findIndex((a, k) => !usedA.has(k) && unitId(a) === unitId(dl) && (tsBy[a.cid] || 0) >= (tsBy[dl.cid] || 0)); if (j >= 0) { usedA.add(j); usedD.add(i); } });
             addsAll.forEach((a, k) => { if (usedA.has(k)) return; const i = delsAll.findIndex((dl, x) => !usedD.has(x) && unitId(dl) === unitId(a) && (tsBy[dl.cid] || 0) >= (tsBy[a.cid] || 0)); if (i >= 0) { usedA.add(k); usedD.add(i); } });
@@ -5494,19 +5603,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const uAddNames = [], uRenNames = [], renPairs = [];  // unit LABELS + "old → new" rename pairs, drawer-style
             for (const r of addsAll.filter((a, k) => !usedA.has(k))) { uAdd++; if (r.label && !uAddNames.includes(r.label)) uAddNames.push(r.label); }
             T.uRebuilt = uRebuilt;
-            for (const r of F.unitRen.filter(inSel)) {
+            for (const r of (inKind('names') ? F.unitRen.filter(inSel) : [])) {
                 uRen++;
                 if (r.to && !uRenNames.includes(r.to)) uRenNames.push(r.to);
                 const pair = (r.from ? r.from + ' → ' : '') + (r.to || '');
                 if (pair && !renPairs.includes(pair)) renPairs.push(pair);
             }
             const settNames = [], settDetails = [];               // names for the title; "name: old → new" for the notes
-            for (const r of F.sett.filter(inSel)) {
+            for (const r of (inKind('settings') ? F.sett.filter(inSel) : [])) {
                 if (r.lbl && !settNames.includes(r.lbl)) settNames.push(r.lbl);
                 if (r.full && !settDetails.some(x => x.startsWith(r.full + ':'))) settDetails.push(r.detail);
             }
             const tuneMap = new Map();                            // device pretty-name -> [changed param labels]
-            for (const r of F.tune.filter(inSel)) {
+            for (const r of (inKind('tuning') ? F.tune.filter(inSel) : [])) {
                 const rowsSeen = tuneMap.get(r.dev) || [];
                 for (const lbl of r.rows) if (rowsSeen.length < 6 && !rowsSeen.includes(lbl)) rowsSeen.push(lbl);
                 if (rowsSeen.length) tuneMap.set(r.dev, rowsSeen);
@@ -5531,7 +5640,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             if (integ.length > 110) integ = integ.slice(0, 108) + '…';
             T.integration = integ;
             const panels = new Map(); // panel -> { from, to, what:Set, added }
-            for (const r of F.panel.filter(inSel)) {
+            for (const r of F.panel.filter(inSel).filter(r => inKind(panelKind(r.panel)))) {
                 if (r.added) { if (!panels.has(r.panel)) panels.set(r.panel, { from: null, to: null, what: new Set(), added: true }); continue; }
                 const p = panels.get(r.panel) || { from: null, to: null, what: new Set(), added: false };
                 if (r.rev) { if (p.from == null) p.from = r.from; p.to = r.to; }
@@ -5616,6 +5725,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 for (const k in w) discSum[k] = (discSum[k] || 0) + w[k];
             }
             T.discs = Object.keys(discSum).sort((a, b) => discSum[b] - discSum[a]);
+            if (discs && discs.length) T.discs = discs.slice(); // v4.158: one entry of several speaks for its task part
             // Leader-facing opening lines (v4.114): the plain-language first line of the entry's note.
             // The technical sentence (sumInteg / sumDraw) moves down into the detail block as evidence.
             const tuneLabels = [].concat(...[...tuneMap.values()]);
@@ -5631,7 +5741,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const drawDiscs = !topDisc ? [] : panelDisc[topDisc] * 2 >= T.drawingNames.length ? [topDisc] : ['mixed'];
             T.leadDraw = summarizeLeadDrawing(T.panelInfo, T.drawingNames, drawDiscs.length ? drawDiscs : T.discs);
             T.leadDrawIdle = summarizeLeadDrawingIdle(drawDiscs.length ? drawDiscs : T.discs);
-            T.ak3Types = [...new Set(F.ak3.filter(inSel).map(r => r.v))];
+            T.ak3Types = inKind('devices') ? [...new Set(F.ak3.filter(inSel).map(r => r.v))] : [];
             T.setupTech = summarizeSetupTech(ak3Runs, T.ak3Types);
             T.leadActions = summarizeLeadActions(out.tools, true, out.opsChanged); // commits existed; used only when nothing above could be said
             return T;
@@ -5639,13 +5749,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         phase(0.95, 'writing the note');
         Object.assign(out, compose(null));
         // The same texts for a SUBSET of saves — what a split entry is described by (v4.141).
-        out.forCommits = ids => Object.assign({}, out, compose(new Set((ids || []).map(String))));
-        // One evidence segment per save, for RL_RECAP_MATCH.splitCategory: what THAT save wrote.
+        out.forCommits = (ids, kinds, discs) => Object.assign({}, out, compose(new Set((ids || []).map(String)), kinds ? new Set(kinds) : null, discs || null));
+        // One evidence segment per save, for RL_RECAP_MATCH.splitCategory: what THAT save wrote — and, since
+        // v4.158, which KIND of work it was (RL_RECAP_MATCH.saveKind), so one task can book one entry per kind.
         out.segments = cids.map(cid => {
             const own = r => String(r.cid) === cid;
             const toks = [...new Set(F.tok.filter(own).map(r => r.v))].concat(F.devAdd.filter(own).map(r => r.v), F.devMod.filter(own).map(r => r.v));
             const names = F.unitAdd.filter(own).map(r => r.label).concat(F.unitRen.filter(own).map(r => r.to)).filter(Boolean);
-            return { id: cid, ts: tsBy[cid], tokStr: toks.join(' ').toLowerCase(), uStr: names.join(' ').toLowerCase(), drawingNames: [...new Set(F.panel.filter(own).map(r => r.panel))] };
+            const has = {
+                devices: F.unitAdd.some(own) || F.unitDel.some(own) || F.devAdd.some(own) || F.ak3.some(own),
+                settings: F.sett.some(own),
+                names: F.unitRen.some(own),
+                tuning: F.tune.some(own) || F.devMod.some(own) || F.virt.has(cid),
+            };
+            return { id: cid, ts: tsBy[cid], tokStr: toks.join(' ').toLowerCase(), uStr: names.join(' ').toLowerCase(), drawingNames: [...new Set(F.panel.filter(own).map(r => r.panel))],
+                kind: saveKind(has), kinds: Object.keys(has).filter(k => has[k]) };
         });
         // Drawing evidence per PANEL (v4.153): one save often carries several drawings ("Oversikt ny",
         // "Maskin ny", "Ventilasjon" …), and each can belong to a different Design package. 23.09 on 2313
@@ -5653,7 +5771,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         out.drawSegments = [];
         for (const cid of cids) {
             for (const panel of [...new Set(F.panel.filter(r => String(r.cid) === cid).map(r => r.panel))]) {
-                out.drawSegments.push({ id: cid + '::' + panel, ts: tsBy[cid], tokStr: '', uStr: '', drawingNames: [panel] });
+                const kind = panelKind(panel); // v4.158: a screen created today, or an edit of an existing one
+                out.drawSegments.push({ id: cid + '::' + panel, ts: tsBy[cid], tokStr: '', uStr: '', drawingNames: [panel], kind, kinds: [kind] });
             }
         }
         return out;
@@ -5931,11 +6050,32 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const bucketDupe = !proj && !!catId && existing.some(e => e.category && e.category.categoryId === catId
                     && (String(e.activityName || '').indexOf(String(v.plant_id) + ' ') === 0
                         || String((e.task && (e.task.taskName || e.task.name)) || e.taskName || '').indexOf(String(v.plant_id) + ' ') === 0));
+                // One task, several things (v4.158, Thomas: "use + add another time entry"): a part whose saves did
+                // different kinds of work books one time entry per kind ON THAT TASK, each with its own minutes
+                // and notes. Only Integration and Drawing — their notes are written from the saves; a Support or
+                // Setup note is not, so its entries would read alike. Rules: RL_RECAP_MATCH.splitThings.
+                const catSegs = kind === 'drawing' ? (texts.drawSegments || texts.segments || []) : (texts.segments || []);
+                const byThing = (kind === 'integration' || kind === 'drawing') && !racRedirect && !!texts.forCommits;
+                const pieces = [];
                 for (const p of parts) {
+                    const things = byThing && (p.segIds || []).length > 1
+                        ? splitThings({ segments: catSegs, segIds: p.segIds, minutes: p.minutes, win: { first_ts: v.first_ts, last_ts: v.last_ts, capped_gaps: v.capped_gaps } })
+                        : [{ kind: null, minutes: p.minutes, segIds: p.segIds || [] }];
+                    if (things.length > 1) LOG('book: things', v.plant_id, p.task ? p.task.taskName : category, '→', things.map(x => `${x.kind} ${x.minutes}m`).join(' + '));
+                    // The entries speak for the task part: its disciplines, as its single entry read them.
+                    const partDiscs = things.length > 1 ? texts.forCommits(p.segIds).discs : null;
+                    things.forEach((th, ti) => pieces.push({ p, th, ti, tn: things.length, partDiscs }));
+                }
+                for (const { p, th, ti, tn, partDiscs } of pieces) {
                     const task = p.task;
                     // A split entry is described by ITS OWN saves (v4.141) — the ventilation entry must not
                     // claim the refrigeration controllers — while an unsplit entry reads the whole day, as before.
-                    const t = (parts.length > 1 && texts.forCommits) ? texts.forCommits(p.segIds) : texts;
+                    // Each entry of a task that books several (v4.158) reads ALL the task's saves, narrowed to its
+                    // own kinds of facts: the renames are not the meters, and a virtual-values save with no device
+                    // of its own still reads as work on the task's system.
+                    const t = !texts.forCommits ? texts
+                        : tn > 1 ? texts.forCommits(p.segIds, th.kinds, partDiscs)
+                        : parts.length > 1 ? texts.forCommits(p.segIds) : texts;
                     let act;
                     if (cat === CAT_INTEGRATION) act = 'Integration: ' + (t.integration || (t.actionsWork ? t.actionsWork + ' work' : 'device/DB config'));
                     else if (cat === CAT_DRAWING) act = 'Drawing: ' + (t.drawing || t.designerSession || 'graphics update in Designer');
@@ -5995,9 +6135,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         projMatch: proj ? { tier: match.tier, n: match.candidates.length, reason: match.reason, // how the project was found (v4.133/4.134)
                             twins: match.candidates.length > 1 ? match.candidates.map(c => ({ id: c.id, name: c.name, tasks: twinCounts ? twinCounts.get(String(c.id)) : null })) : null } : null,
                         taskId: task ? task.taskId : null, taskName: task ? task.taskName : null, taskGuess: !!(task && task.rescued),
-                        category, categoryId: catId || null, minutes: p.minutes, activityName: act, notes: '', // composed below (v4.149)
+                        category, categoryId: catId || null, minutes: th.minutes, activityName: act, notes: '', // composed below (v4.149)
                         // Several tasks share this plant's category (v4.141): the row says which share it carries.
                         split: parts.length > 1 ? { share: p.share, n: parts.length, saves: p.segIds.length, of: Math.round(min) } : null,
+                        // Several kinds of work on this task (v4.158): which entry of the task this is, and of what.
+                        thing: tn > 1 ? { kind: th.kind, i: ti + 1, n: tn, of: p.minutes, saves: th.segIds.length } : null,
                         status: !proj ? (bucketDupe ? 'already-booked' : 'no-project') : !catId ? 'no-category' : dupe ? 'already-booked' : 'ready',
                     };
                     plan.push(row);
@@ -6108,12 +6250,24 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     // Several tasks share this plant's category (v4.141): the row says which share it carries and why.
+    const THING_LABEL = { devices: 'devices', settings: 'plant settings', names: 'unit names', tuning: 'tuning', 'draw-new': 'new screens', 'draw-edit': 'screen edits' };
     function splitHtml(e) {
-        const s = e && e.split; if (!s || !(s.n > 1)) return '';
-        const pct = Math.round((s.share || 0) * 100);
-        const tip = `This plant's ${CAT_SHORT[e.category] || e.category} time (${fmtMinutes(s.of)}) points at ${s.n} tasks. `
-            + `The share follows the saves: the time before each save belongs to what it saved — ${s.saves} save${s.saves === 1 ? '' : 's'} for this task.`;
-        return ` · <span class="bookplan-split" title="${escapeHtml(tip)}">⚖ ${pct}% of ${fmtMinutes(s.of)}, split over ${s.n} tasks</span>`;
+        let html = '';
+        const s = e && e.split;
+        if (s && s.n > 1) {
+            const pct = Math.round((s.share || 0) * 100);
+            const tip = `This plant's ${CAT_SHORT[e.category] || e.category} time (${fmtMinutes(s.of)}) points at ${s.n} tasks. `
+                + `The share follows the saves: the time before each save belongs to what it saved — ${s.saves} save${s.saves === 1 ? '' : 's'} for this task.`;
+            html += ` · <span class="bookplan-split" title="${escapeHtml(tip)}">⚖ ${pct}% of ${fmtMinutes(s.of)}, split over ${s.n} tasks</span>`;
+        }
+        // One task, several kinds of work (v4.158): each is its own time entry on the task.
+        const th = e && e.thing;
+        if (th && th.n > 1) {
+            const tip = `This task's ${fmtMinutes(th.of)} held ${th.n} kinds of work, so it books as ${th.n} time entries on the task — `
+                + `what "+ Add another time entry" does in Rocketlane. Each entry's time follows its own saves (${th.saves} for this one).`;
+            html += ` · <span class="bookplan-split" title="${escapeHtml(tip)}">➕ entry ${th.i} of ${th.n} on this task: ${escapeHtml(THING_LABEL[th.kind] || th.kind || 'work')}</span>`;
+        }
+        return html;
     }
 
     // Two live projects carry this plant's number (v4.134): say which one was chosen and why, and let
@@ -6327,9 +6481,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // except that a split (v4.141) books several task rows on one project+category, so a
                 // task row has to find ITS task there, not a sibling's.
                 const sameTask = x => !!(x.task && (String(x.task.taskId) === String(taskId) || String(x.task.id) === String(taskId)));
+                // …and an entry of a task that books several (v4.158) has to find its own note there.
+                const firstLine = t => String(t || '').split('\n')[0].trim();
+                const sameEntry = x => sameTask(x) && (!e.thing || firstLine(x.notes) === firstLine(body.notes));
                 const landed = now._checkOk && now.some(x => x.project && x.project.id === projectId
                     && x.category && x.category.categoryId === e.categoryId
-                    && (taskId ? sameTask(x)
+                    && (taskId ? sameEntry(x)
                         : (!isFallback || String(x.activityName || '').indexOf(String(e.plant_id) + ' ') === 0)));
                 if (landed) r = { status: 201, json: null };
                 else if (now._checkOk) r = await rlFetch('POST', `/users/${creds.userId}/time-entries`, body);
