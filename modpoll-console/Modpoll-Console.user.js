@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.51.0
+// @version      1.52.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.51.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.52.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -2107,6 +2107,11 @@
             if (r.writable) out.writable = true;
             if (listed) out.list = listRow(listed);
             if (fromPlant) out.plant = fromPlant.map(e => plantRow(e, r.raw, rowWide ? undefined : nextRawOf(rowTable, v.i), !!v.changed));
+            // What the person had on screen for this register when saving, if they
+            // viewed it as another datatype or scale: display only, and a lead to
+            // what they suspected.
+            const asViewed = asViewedReading(rowTable, v.i, rowWide ? null : (ref => { const o = rawAt.get(rowTable + '|' + ref); return o ? o.v : undefined; }), r.raw, listed);
+            if (asViewed) out.asViewed = asViewed;
             const first = fromPlant && fromPlant[0];
             const implied = first && first.bit === null ? impliedScale(r.raw, first.plantValue) : null;
             if (implied) out.impliedScale = implied;
@@ -2320,6 +2325,131 @@
         const comparison = compareConnections(used, configured);
         const deviceAnswered = readings.length > 0 || allScanRows.length > 0;
         const listPoints = pointList ? pointList.points.map(listWithScan) : [];
+
+        /*
+         * What an agent needs to judge a verified point beyond its one reading:
+         * the 16-bit words it is made of, what those words read as under every
+         * other datatype of that width — scaled the way the list scales the point,
+         * so each is comparable with what it should read — and, where the evidence
+         * points somewhere, the edit to the list that would fix it. All of it from
+         * the words the verification already read; nothing is polled again.
+         */
+        const wordAtV = verification && verification.wordAt ? verification.wordAt : null;
+        const u16v = x => (x < 0 ? x + 65536 : x) & 0xFFFF;
+        const hexWords = words => words.map(w => '0x' + u16v(w).toString(16).toUpperCase().padStart(4, '0')).join(' ');
+        const wordsOfPoint = p => {
+            if (!wordAtV || !p.decoded.ok) return null;
+            const words = [];
+            for (let k = 0; k < (p.decoded.step || 1); k++) words.push(wordAtV.get(p.decoded.table + '|' + (p.ref + k)));
+            return words.every(w => typeof w === 'number') ? words : null;
+        };
+        const scaledLikeList = (p, value) => (p.scale.invert ? (value ? 0 : 1) : roundScaled(value * p.scale.factor, p.decimals));
+        const otherDatatypesOf = (p, words) => {
+            const listedKey = p.decoded.rawType + '_' + p.decoded.swap;
+            if (p.decoded.step !== 2) {
+                // One register: only the other signedness, and only where it differs.
+                const other = p.decoded.rawType === 'U16' ? 'I16' : (p.decoded.rawType === 'I16' ? 'U16' : null);
+                if (!other) return null;
+                const swap = p.decoded.swap === 'R' ? 'R' : 'N';
+                const listed = decodeWords(words, p.decoded.rawType, swap);
+                const d = decodeWords(words, other, swap);
+                if (!listed.ok || !d.ok || listed.value === d.value) return null;
+                return { [other + (swap === 'R' ? '_R' : '')]: scaledLikeList(p, d.value) };
+            }
+            const out = {};
+            for (const t of VIEW_TYPES) {
+                if (!/32|^F$/.test(t.raw) || t.raw + '_' + t.swap === listedKey) continue;
+                const d = decodeWords(words, t.raw, t.swap);
+                if (!d.ok) continue;
+                const s = scaledLikeList(p, d.value);
+                if (typeof s === 'number' && Number.isFinite(s)) out[t.key] = s;
+            }
+            return Object.keys(out).length ? out : null;
+        };
+
+        // Edits the evidence points at. Strength says how far to trust each: twin
+        // (a 16-bit point of the same name reads what the other word order gives)
+        // over pattern (the shape of the words) over unit range (the value is out
+        // of what its unit usually is). Leads, to confirm against the vendor
+        // document and an IWMAC parameter export.
+        const UNIT_RANGES = {
+            'c': [-60, 250], '°c': [-60, 250], 'k': [-100, 200], '%': [-0.5, 100.5], '%rh': [0, 100.5],
+            'l/s': [0, 100000], 'm3/h': [0, 400000], 'm3/s': [0, 100], 'pa': [-5000, 50000], 'kpa': [-100, 10000], 'bar': [-1, 400],
+            'kw': [-100000, 100000], 'a': [0, 10000], 'v': [0, 1000], 'hz': [0, 500], 'rpm': [0, 100000], 'kw/(m3/s)': [0, 10],
+        };
+        const TEMPERATURE_UNITS = new Set(['c', '°c', '°c/°f']);
+        const baseName = name => String(name || '').replace(/\s*\((?:[0-4]x\d{3,5}|\d+)\)\s*$/, '').trim().toLowerCase();
+        const near = (a, b) => typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= Math.max(Math.abs(b) * 0.005, 0.011);
+        const verifiedRows = verification ? verification.rows : [];
+        const twinIndex = new Map();
+        for (const row of verifiedRows) {
+            const p = row.point;
+            if (!p.decoded.ok || p.decoded.step === 2 || typeof row.scaled !== 'number') continue;
+            const k = baseName(p.name) + '|' + String(p.unit || '').trim().toLowerCase();
+            if (!twinIndex.has(k)) twinIndex.set(k, []);
+            twinIndex.get(k).push({ p, scaled: row.scaled });
+        }
+        const listImprovements = [];
+        const improve = (p, row, kind, tryIt, evidence, strength) => listImprovements.push({
+            addr: p.addr, ref: p.ref, name: p.name, datatype: p.datatype, scale: p.scaleKey || 'x1', unit: p.unit || '',
+            kind, now: row.scaled, try: tryIt, evidence, strength,
+        });
+        for (const row of verifiedRows) {
+            const p = row.point;
+            if (!p.decoded.ok || typeof row.raw !== 'number' || SECRET_REGISTER.test(String(p.name || ''))) continue;
+            const words = wordsOfPoint(p);
+            const unitKey = String(p.unit || '').trim().toLowerCase();
+            const unitText = p.unit ? ' ' + p.unit : '';
+            let found = false;
+            if (words && p.decoded.step === 2 && (p.decoded.swap === 'N' || p.decoded.swap === 'W')) {
+                const otherSwap = p.decoded.swap === 'N' ? 'W' : 'N';
+                const alt = decodeWords(words, p.decoded.rawType, otherSwap);
+                if (alt.ok) {
+                    const altScaled = scaledLikeList(p, alt.value);
+                    const datatype = p.datatype.replace(/_([NRW])$/, '_' + otherSwap);
+                    const twin = (twinIndex.get(baseName(p.name) + '|' + unitKey) || []).find(t => near(altScaled, t.scaled) && !near(row.scaled, t.scaled));
+                    const oneZero = (u16v(words[0]) === 0) !== (u16v(words[1]) === 0);
+                    const listedHuge = Math.abs(row.raw) >= 65536 && Math.abs(alt.value) < 65536;
+                    if (twin) {
+                        improve(p, row, 'word order', { datatype, scaled: altScaled },
+                            'the words ' + hexWords(words) + ' read ' + altScaled + unitText + ' under ' + datatype + ' — what "' + twin.p.name +
+                                '" (addr ' + twin.p.addr + ') reads — where ' + p.datatype + ' makes them ' + row.scaled + unitText, 'twin');
+                        found = true;
+                    } else if (oneZero && listedHuge) {
+                        improve(p, row, 'word order', { datatype, scaled: altScaled },
+                            'one of the words ' + hexWords(words) + ' is 0 and ' + p.datatype + ' makes the other the high word, ' + row.scaled + unitText +
+                                '; ' + datatype + ' reads ' + altScaled + unitText + ' (iw_mb.exe takes the first register as the ' +
+                                (IWMAC_WORD_ORDER[otherSwap] === 'high word first' ? 'high' : 'low') + ' word under _' + otherSwap + ')', 'pattern');
+                        found = true;
+                    } else if (p.decoded.rawType === 'F' && !plausibleFloat(row.raw) && plausibleFloat(alt.value)) {
+                        improve(p, row, 'word order', { datatype, scaled: altScaled },
+                            p.datatype + ' makes the words ' + hexWords(words) + ' an implausible float, ' + row.raw + '; ' + datatype + ' reads ' + alt.value, 'pattern');
+                        found = true;
+                    }
+                }
+            }
+            if (!found && words && p.decoded.step === 1 && p.decoded.rawType === 'U16' && TEMPERATURE_UNITS.has(unitKey) && u16v(words[0]) >= 32768) {
+                const signed = scaledLikeList(p, u16v(words[0]) - 65536);
+                if (signed >= -60) {
+                    improve(p, row, 'signedness', { datatype: p.datatype.replace(/_U16_/, '_I16_'), scaled: signed },
+                        'a temperature read unsigned is ' + row.scaled + unitText + '; the same word signed is ' + signed + unitText, 'unit range');
+                    found = true;
+                }
+            }
+            const range = UNIT_RANGES[unitKey];
+            if (!found && range && typeof row.scaled === 'number' && (row.scaled < range[0] || row.scaled > range[1])) {
+                const fits = SCALE_PRESETS.filter(k => k !== (p.scaleKey || 'x1'))
+                    .map(k => ({ scale: k, preset: scaledPreset(row.raw, k) }))
+                    .filter(x => x.preset && x.preset.value >= range[0] && x.preset.value <= range[1])
+                    .map(x => ({ scale: x.scale, scaled: x.preset.value }));
+                if (fits.length) {
+                    improve(p, row, 'scale', { scales: fits },
+                        row.scaled + unitText + ' is outside what a' + unitText + ' reading usually is (' + range[0] + ' to ' + range[1] +
+                            '); these scales bring it inside — check the vendor\'s factor before choosing one', 'unit range');
+                }
+            }
+        }
+
         const verificationRows = verification ? verification.rows.map(row => {
             const p = row.point;
             const out = { addr: p.addr, ref: p.ref, name: p.name, datatype: p.datatype, status: row.status };
@@ -2327,6 +2457,16 @@
             if (row.scaled !== undefined) out.scaled = row.scaled;
             if (row.flags && row.flags.length) out.flags = row.flags;
             if (row.note) out.note = row.note;
+            const words = wordsOfPoint(p);
+            if (words) {
+                out.words = words;
+                out.wordsHex = hexWords(words);
+                const other = otherDatatypesOf(p, words);
+                if (other) out.otherDatatypes = other;
+            }
+            const asViewed = p.decoded.ok ? asViewedReading(p.decoded.table, p.ref,
+                wordAtV ? (ref => wordAtV.get(p.decoded.table + '|' + ref)) : null, row.raw, p) : undefined;
+            if (asViewed) out.asViewed = asViewed;
             return out;
         }) : [];
         // A register named as a password keeps its place and its name in the
@@ -2334,6 +2474,7 @@
         const withheld = [readings, scanReadings, plantParameters, listPoints, verificationRows].reduce((n, rows) => n + withholdSecretValues(rows), 0);
         const findings = buildFindings({
             iw, rows: readings.concat(scanReadings), plantParameters, comparison, scan: lastScan, names: plantNames, deviceAnswered,
+            improvements: listImprovements,
         });
         const plantCompared = [];
         for (const r of readings.concat(scanReadings)) for (const p of (r.plant || [])) if (p.iwmac && p.iwmac.agrees !== undefined) plantCompared.push(p.iwmac.agrees);
@@ -2375,8 +2516,28 @@
                     contextCollected: !!iw,
                 } : null,
                 findings: { errors: count('error'), warnings: count('warning'), info: count('info'), ids: findings.map(x => x.id) },
+                listImprovements: listImprovements.length ? {
+                    total: listImprovements.length,
+                    byKind: listImprovements.reduce((m, x) => { m[x.kind] = (m[x.kind] || 0) + 1; return m; }, {}),
+                    byStrength: listImprovements.reduce((m, x) => { m[x.strength] = (m[x.strength] || 0) + 1; return m; }, {}),
+                } : null,
             },
             findings,
+            // How the console reads a register, and every other way it can: the
+            // key to verificationRows[].otherDatatypes, asViewed and listImprovements.
+            // Compact on purpose: this block repeats in every part of a split file.
+            views: {
+                wordOrder: {
+                    N: IWMAC_WORD_ORDER.N, W: IWMAC_WORD_ORDER.W, measuredFor: [...MEASURED_WIDE_TYPES], assumedFor: ['I32', 'F'],
+                    evidence: 'plant 11087, iw_mb.exe, 2026-09-29: [3392, 3] held low word first read 2222981.15 under U32_W, 2000.00 under U32_N (x0.01)',
+                },
+                datatypes: VIEW_TYPES.map(t => t.key).join(' '),
+                scalePresets: SCALE_PRESETS.join(' '),
+                active: [...new Set([...viewOverrides.keys(), ...scaleOverrides.keys()])].map(key => ({
+                    table: key.split('|')[0], ref: Number(key.split('|')[1]),
+                    datatype: viewOverrides.get(key) || null, scale: scaleOverrides.get(key) || null,
+                })),
+            },
             privacy: {
                 redacted: 'Credentials never leave in this file: a setting, key or header named like one (password, token, key, ' +
                     'auth, user, cookie, session …) and a login inside a URL read ' + REDACTED + '. The plant\'s HTTP login, browser ' +
@@ -2397,15 +2558,16 @@
                     'log.otherUnits holds the lines of other units on the same driver, never counted against this one.',
                 'plant[].iwmac on a reading row is one IWMAC parameter\'s own definition — reading first: one sentence from the ' +
                     'wire to the screen, "modpoll read 6374 → as U16 ×0.01 = 63.74 % → IWMAC shows 63.7 % — agrees". Then reads ' +
-                    '(how IWMAC\'s driver asks for it: function, address, raw type, swap), datatype (raw type and swap: _W low word ' +
-                    'first, _R bytes swapped), scale, format, access, type, application, element, the state texts where it has ' +
+                    '(how IWMAC\'s driver asks for it: function, address, raw type, swap), datatype (raw type and swap: on a 32-bit ' +
+                    'value _N reads the first register as the low word and _W as the high word, as iw_mb.exe does; _R bytes ' +
+                    'swapped), scale, format, access, type, application, element, the state texts where it has ' +
                     'them (states, stateNow), how it is logged — and expected, what that definition makes of the register modpoll ' +
                     'just read. agrees compares expected with shown, the value IWMAC displayed. false on a register that did not ' +
                     'move is a definition reading the register differently from the device, or an old value; null means IWMAC ' +
                     'shows nothing for it.',
                 'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
                     'agent checking or correcting a modbusgen point list.',
-                'Five sections, one row per line: readings, scanReadings, plantParameters, listPoints, verificationRows. When ' +
+                'Six sections, one row per line: readings, scanReadings, plantParameters, listPoints, verificationRows, listImprovements. When ' +
                     'split into files named _partNofM for a knowledge set, each file repeats this header and carries one slice of ' +
                     'one section (part.section, part.rows, part.firstRef to part.lastRef), and part.contents maps every section to ' +
                     'its parts.',
@@ -2448,6 +2610,15 @@
                 'verification and verificationRows: the last Verify list run. Per point: read, zero, refused (the device has no such ' +
                     'register), no answer, not polled (the datatype did not decode); the offset check scores whether the whole list ' +
                     'sits better a register or two along. Ranges anywhere are runs of ref, as "430-445,448".',
+                'views: wordOrder is what iw_mb.exe does on a 32-bit value (N first register low word, W high); datatypes and ' +
+                    'scalePresets are what the type and scaled pickers offer, a preset shown with the decimals its key has; active ' +
+                    'is what the person had on screen when saving.',
+                'verificationRows[].words: the 16-bit registers of the point as modpoll printed them; otherDatatypes: the same words ' +
+                    'under every other datatype of that width, scaled like the list, so a wrong word order or signedness shows as one ' +
+                    'reading what the point should; asViewed: what the person had on screen for the register.',
+                'listImprovements: list edits the words point at — kind, now, try (datatype or scales, and what they read), evidence, ' +
+                    'strength: twin (a same-named 16-bit point agrees) > pattern (the shape of the words) > unit range. Confirm each ' +
+                    'against the vendor document and an IWMAC export.',
                 'device.readingSource says what evidence this document actually rests on: "poll" when readings came from one just ' +
                     'now, "scan" when only scanReadings does, "none" when neither ran. summary.source says the same for summary ' +
                     'when it was built from a scan rather than a poll.',
@@ -2479,6 +2650,7 @@
                 'list': 'the loaded modbusgen list\'s point for the register; its addr is ref when subtract_one is true, addr when false',
                 suggest: 'the modbusgen point the device and IWMAC together suggest — a lead to check against the vendor document',
                 'communication.comparison[].same': 'true when modpoll and IWMAC use the same value for that setting; null when one side is unknown',
+                'verificationRows[].otherDatatypes': 'the words of the point under every other datatype of that width, scaled like the list',
             },
             communication: {
                 usedByModpoll: used,
@@ -2557,6 +2729,7 @@
             plantParameters,
             listPoints,
             verificationRows,
+            listImprovements,
         });
     }
 
@@ -2646,7 +2819,9 @@
             if (!names.some(n => SECRET_REGISTER.test(String(n || '')))) continue;
             withheld++;
             for (const k of ['raw', 'shown', 'scanRaw', 'scaled']) if (r[k] !== undefined) r[k] = REDACTED;
-            for (const k of ['hex', 'int16', 'reread', 'delta', 'previous', 'wide', 'impliedScale', 'notes', 'reads']) delete r[k];
+            // The words and every other reading of them are the value too.
+            for (const k of ['hex', 'int16', 'reread', 'delta', 'previous', 'wide', 'impliedScale', 'notes', 'reads',
+                'words', 'wordsHex', 'otherDatatypes', 'asViewed']) delete r[k];
             if (r.suggest) delete r.suggest.basis;
             for (const p of (r.plant || [])) {
                 if (p.shown !== undefined) p.shown = REDACTED;
@@ -3158,6 +3333,26 @@
                 'The scan averaged ' + scan.cost.msPerModpollRun + ' ms per modpoll run over ' + scan.cost.exceptions + ' refusals — most of the scan\'s time.',
                 { cost: scan.cost }, 'Nothing to fix; it is why a scan of this device takes minutes.');
         }
+        // Edits to the point list the verification's own words point at
+        // (exportResult's listImprovements) — the per-point detail is there.
+        // Kept to counts and addresses: this block repeats in every part of a split
+        // file, and the per-point detail lives in listImprovements, which splits.
+        const improvements = input.improvements || [];
+        const ofKind = kind => improvements.filter(x => x.kind === kind);
+        const brief = list => ({ count: list.length, addrs: list.slice(0, 20).map(x => x.addr), twin: list.filter(x => x.strength === 'twin').length });
+        if (ofKind('word order').length) {
+            add('warning', 'list-word-order', 'Points in the list read with the other word order',
+                '32-bit points whose words read right only the other way round (on iw_mb.exe _N is low word first, _W high word first).',
+                brief(ofKind('word order')), 'See listImprovements; change the twin ones, check the pattern ones in an IWMAC export first.');
+        }
+        if (ofKind('signedness').length) {
+            add('warning', 'list-signedness', 'Temperatures listed unsigned that read right signed', 'See listImprovements.',
+                brief(ofKind('signedness')), 'Change U16 to I16 after checking the vendor document.');
+        }
+        if (ofKind('scale').length) {
+            add('info', 'list-scale-leads', 'Values outside what their unit usually is', 'See listImprovements for the scales that bring each inside.',
+                brief(ofKind('scale')), 'Check the vendor\'s factor — a unit range is the weakest evidence.');
+        }
         const order = { error: 0, warning: 1, info: 2 };
         return f.sort((a, b) => order[a.severity] - order[b.severity]);
     }
@@ -3176,7 +3371,7 @@
      * repeats in every part; a part carries one slice of one section, one row
      * per line, so a reader can count rows and cite them.
      */
-    const EXPORT_SECTIONS = ['readings', 'scanReadings', 'plantParameters', 'listPoints', 'verificationRows'];
+    const EXPORT_SECTIONS = ['readings', 'scanReadings', 'plantParameters', 'listPoints', 'verificationRows', 'listImprovements'];
     // The knowledge-file ceiling is 36 000 characters. The markdown report keeps
     // 6 000 of headroom because it estimates; this measures the assembled part,
     // so it can go closer — and every 2 000 characters is six more readings a
@@ -5877,6 +6072,40 @@
         const places = decimalsForScale(key);
         const value = roundScaled(raw * s.factor, places);
         return { value, text: value.toFixed(places) };
+    }
+
+    /**
+     * A register as the person had it on screen when they viewed it as another
+     * datatype or scale — for the export, where it is a lead to what they
+     * suspected. `wordAt(ref)` gives a 16-bit word, or is null where the reading
+     * is not 16-bit words; `raw` is the reading as it stands; `point` the list's
+     * point, if any. Undefined when nothing is viewed.
+     */
+    function asViewedReading(table, ref, wordAt, raw, point) {
+        const key = table + '|' + ref;
+        const viewKey = viewOverrides.get(key) || null;
+        const scaleKey = scaleOverrides.get(key) || null;
+        if (!viewKey && !scaleKey) return undefined;
+        const view = viewKey ? viewTypeOf(viewKey) : null;
+        let d;
+        if (view) d = wordAt ? decodeWords(viewWords(view, wordAt, ref), view.raw, view.swap) : { ok: false, why: 'read as 16-bit words to view it as another datatype' };
+        else d = typeof raw === 'number' ? { ok: true, value: raw } : { ok: false, why: 'no reading' };
+        const listScale = point && point.scale && point.scale.known ? point.scale : null;
+        let scaled = null;
+        if (d.ok) {
+            if (scaleKey) { const p = scaledPreset(d.value, scaleKey); scaled = p ? p.value : null; }
+            else if (listScale) scaled = listScale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * listScale.factor, point.decimals);
+            else scaled = d.value;
+        }
+        const out = {
+            datatype: viewKey || (point ? point.datatype : null),
+            scale: scaleKey || (point ? (point.scaleKey || 'x1') : null),
+            value: d.ok ? d.value : null,
+            scaled,
+        };
+        if (!d.ok) out.why = d.why;
+        if (d.hex) out.wordsHex = d.hex;
+        return out;
     }
 
     /**

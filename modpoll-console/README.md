@@ -210,6 +210,34 @@ rebuilt.
   `__modpoll.lastExport()` is the document, `__modpoll.exportText()` the file.
   IWMAC's side of the unit is read by a scan; after a poll, *Save JSON* reads
   it before writing, and `await __modpoll.iwmac()` does the same for an agent.
+- **What could be improved, and on what evidence (1.52.0).** After *Verify list*
+  the export also hands the agent what it needs to suggest edits to the list,
+  all of it from the words the verification already read:
+  - `verificationRows[].words` / `wordsHex` — the 16-bit registers each point is
+    made of, as modpoll printed them;
+  - `verificationRows[].otherDatatypes` — the same words under every other
+    datatype of that width (`U32_N`, `U32_W`, `I32_*`, `F_*`; for 16-bit, the
+    other signedness where it differs), scaled the way the list scales the point,
+    so a wrong word order or signedness shows as one of them reading what it
+    should;
+  - `asViewed` — on any row the person had viewed as another datatype or scale,
+    that choice and what the register reads under it;
+  - `listImprovements` — one proposed edit per point: `kind` (word order,
+    signedness, scale), `now`, `try` (the datatype or scales and what they
+    read), `evidence`, and `strength`: **twin** (a 16-bit point of the same name
+    and unit reads exactly what the other word order gives — how plant 11087's
+    word order was proved), **pattern** (one word is 0 and the listed order makes
+    a millions-size value, or an implausible float), **unit range** (the value is
+    outside what its unit usually is, and these scales bring it inside —
+    weakest). Findings `list-word-order`, `list-signedness` and
+    `list-scale-leads` count them in the overview; a register named as a
+    password gets neither words nor a lead;
+  - `views` — the word order iw_mb.exe applies, the datatype views and scale
+    presets on offer, and what was on screen when saving.
+
+  The header repeats in every part of a split file, so these stay compact there
+  and the per-point detail rides in the split sections — `listImprovements` is a
+  section of its own, like `verificationRows`.
 
   Four more things a scan reading carries, each an inference stated as one:
 
@@ -804,8 +832,13 @@ quietly stop being the thing under test.
   present, the state marked *now*, and a failed write matched to its parameter
   by number; and the one-sentence `reading` from modpoll's number to IWMAC's
   screen, for a scaled register, a float and a value IWMAC shows differently.
-  Ninety-two expectations, each printed PASS or FAIL; exits non-zero on any
-  FAIL.
+  And a verification on plant 11087's own words: each point's words and its
+  other datatypes, `listImprovements` for a twin-proved word order (3x0400 to
+  `_N`, 2000 l/s), a zero-word pattern, a temperature that only makes sense
+  signed and a percentage outside its range, `asViewed`, the `views` block, a
+  password point with neither words nor a lead, and a split whose every part
+  stays under the ceiling. 114 expectations, each printed PASS or FAIL; exits
+  non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, the detail view, the resize grips, the corner expand control and the

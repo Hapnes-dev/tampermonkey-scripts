@@ -54,6 +54,9 @@ js += lift("    /**\n     * A verification as it may leave the browser", "\n    
 js += lift("    const RE_SQL_NAME = ", "\n    async function plantSql")
 # Find register: search, and every named register with the box empty.
 js += lift("    /**\n     * Registers by what they are called", "\n    function setGridColumns(columns)")
+# "View as": the datatype and scale catalogue, the person's views, and a register as viewed.
+js += lift("    const VIEW_TYPES = [", "\n    /**\n     * The picker in a grid's type cell.")
+js += lift("    const SCALE_PRESETS = [", "\n    /**\n     * The picker in a grid's scaled cell.")
 js += "const plantIdFromHost = () => '2349';\n"
 js += "const watchDelta = new Map();\n"
 js += r"""
@@ -524,6 +527,68 @@ check('the card gives the element id as stored, next to the driver_id, and no me
 const sDanfoss = iwmacDefinitionSections([Object.assign({}, g209, { element_id: '0_123_r15_ther__s4__', menu: '3x0209' })], 6374);
 check('an element id of any shape is shown whole, and a menu that differs gets its own row',
     rowText(sDanfoss, 'How IWMAC reads it', 'element id') === '0_123_r15_ther__s4__' && rowText(sDanfoss, 'How IWMAC shows it', 'menu') === '3x0209', '');
+
+// --- a verification, and what the file hands an agent to improve the list ----------------
+// Plant 11087's own words, 2026-09-29. 3x0400 is a 2000 l/s setpoint held low word first and
+// listed _W; 3x0112 is its 16-bit twin. 3x0191 is a flow listed _W whose high word is 0. The
+// temperature, the percentage and the password are there for the other kinds of lead.
+pointList = parsePointList({ options: { subtract_one: true }, points: [
+    { datatype: 'I_Input_U16_N', addr: 112, text: 'Akt.börv.TF', unit: 'l/s' },
+    { datatype: 'A_Input_U32_W', addr: 400, text: 'Akt.börv.TF (3x0400)', unit: 'l/s', scale: 'x0.01', decimals: 2 },
+    { datatype: 'I_Input_U32_W', addr: 191, text: 'SupplyFlow_m3/h', unit: 'm3/h' },
+    { datatype: 'A_Input_U16_N', addr: 74, text: 'Frysvaktstemp.värme', unit: 'C', scale: 'x0.1', decimals: 1 },
+    { datatype: 'I_Input_U16_N', addr: 29, text: 'Tilluftsfläkt', unit: '%' },
+    { datatype: 'I_Hold_U16_N', addr: 900, text: 'Service password', unit: '' },
+] });
+const words11087 = new Map([['3|112', 2000], ['3|400', 3392], ['3|401', 3], ['3|191', 7210], ['3|192', 0], ['3|74', -200], ['3|29', 7200], ['4|900', 1234]]);
+const vrow = (addr, raw, scaled) => ({ point: pointList.points.find(p => p.addr === addr), status: raw === 0 ? 'zero' : 'read', raw, scaled, flags: [] });
+lastVerification = { at: new Date().toISOString(), rows: [
+    vrow(112, 2000, 2000), vrow(400, 222298115, 2222981.15), vrow(191, 472514560, 472514560), vrow(74, 65336, 6533.6), vrow(29, 7200, 7200), vrow(900, 1234, 1234),
+], summary: {}, offsets: [], offsetVerdict: null, diagnostics: [] };
+Object.defineProperty(lastVerification, 'wordAt', { value: words11087, enumerable: false });
+viewOverrides.clear(); scaleOverrides.clear();
+viewOverrides.set('3|400', 'U32_N'); scaleOverrides.set('3|400', 'x0.01');
+const doc6 = exportResult(null);
+const vr = addr => doc6.verificationRows.find(r => r.addr === addr);
+const imp = addr => doc6.listImprovements.find(x => x.addr === addr);
+check('a verified point carries the words it is made of, and their bits', JSON.stringify(vr(400).words) === '[3392,3]' && vr(400).wordsHex === '0x0D40 0x0003',
+    JSON.stringify(vr(400)));
+check('... and what those words read under every other 32-bit datatype, scaled like the list: U32_N 2000',
+    vr(400).otherDatatypes && vr(400).otherDatatypes.U32_N === 2000 && vr(400).otherDatatypes.U32_W === undefined, JSON.stringify(vr(400).otherDatatypes));
+check('a 16-bit point gets the other signedness only where it differs', vr(74).otherDatatypes && vr(74).otherDatatypes.I16 === -20 && vr(112).otherDatatypes === undefined,
+    JSON.stringify([vr(74).otherDatatypes, vr(112).otherDatatypes]));
+check('listImprovements: the twin proves the word order - 3x0400 under _N reads what 3x0112 reads',
+    imp(400) && imp(400).kind === 'word order' && imp(400).strength === 'twin' && imp(400).try.datatype === 'A_Input_U32_N' && imp(400).try.scaled === 2000,
+    JSON.stringify(imp(400)));
+check('... a zero word listed as the high word is a pattern lead, SupplyFlow_m3/h to _N = 7210',
+    imp(191) && imp(191).kind === 'word order' && imp(191).strength === 'pattern' && imp(191).try.datatype === 'I_Input_U32_N' && imp(191).try.scaled === 7210,
+    JSON.stringify(imp(191)));
+check('... a temperature read unsigned that only makes sense signed: 6533.6 °C is -20.0 °C as I16',
+    imp(74) && imp(74).kind === 'signedness' && imp(74).try.datatype === 'A_Input_I16_N' && imp(74).try.scaled === -20, JSON.stringify(imp(74)));
+check('... a value outside what its unit usually is names the scales that bring it inside, 7200 % under x0.01 is 72',
+    imp(29) && imp(29).kind === 'scale' && imp(29).strength === 'unit range' && imp(29).try.scales.some(s => s.scale === 'x0.01' && s.scaled === 72),
+    JSON.stringify(imp(29)));
+check('... and the twin, the point that reads right, gets no lead at all', imp(112) === undefined, JSON.stringify(imp(112)));
+check('a point named as a password keeps its place but none of its values, and gets no lead',
+    vr(900).raw === REDACTED && vr(900).words === undefined && vr(900).otherDatatypes === undefined && imp(900) === undefined, JSON.stringify(vr(900)));
+check('asViewed is what the person had on screen: 3x0400 as U32_N and x0.01 reads 2000',
+    vr(400).asViewed && vr(400).asViewed.datatype === 'U32_N' && vr(400).asViewed.scale === 'x0.01' && vr(400).asViewed.scaled === 2000,
+    JSON.stringify(vr(400).asViewed));
+check('views: the word order iw_mb.exe applies, the catalogue, and what was on screen',
+    doc6.views.wordOrder.N === 'low word first' && doc6.views.wordOrder.W === 'high word first' && doc6.views.datatypes.split(' ').length === VIEW_TYPES.length &&
+        doc6.views.scalePresets.split(' ').indexOf('x0.1') >= 0 && doc6.views.active.some(a => a.ref === 400 && a.datatype === 'U32_N'),
+    JSON.stringify(doc6.views.active));
+check('findings name the word order and the scale leads, the overview counts them',
+    doc6.findings.some(x => x.id === 'list-word-order' && x.severity === 'warning') && doc6.findings.some(x => x.id === 'list-scale-leads') &&
+        doc6.overview.listImprovements && doc6.overview.listImprovements.byStrength.twin === 1, JSON.stringify(doc6.overview.listImprovements));
+check('howToUse explains views, words and listImprovements, and no longer calls _W low word first',
+    ['views:', 'verificationRows[].words', 'listImprovements:'].every(k => doc6.howToUse.some(l => l.indexOf(k) === 0)) &&
+        !doc6.howToUse.some(l => /_W low word/.test(l)), '');
+const parts6 = exportParts(doc6, 'modpoll_test');
+check('listImprovements is a section of its own when the file is split, every part under the ceiling',
+    parts6.some(pt => JSON.parse(pt.text).part.section === 'listImprovements') && parts6.every(pt => pt.text.length <= 36000),
+    parts6.map(pt => pt.text.length).join(','));
+viewOverrides.clear(); scaleOverrides.clear();
 
 let failed = 0;
 for (const c of checks) {
