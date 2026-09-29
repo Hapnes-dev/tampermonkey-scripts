@@ -215,8 +215,9 @@ rebuilt.
 
   - `reread`, `changed` and `delta` — the second read, and whether it moved.
   - `wide` — the register and the next one decoded as one 32-bit value, high
-    word first (modbusgen `_N`) and low word first (`_W`), as a float and as an
-    integer, from the same bits modpoll already printed. *Confirmed* when the
+    word first (IWMAC's `_W` on `iw_mb.exe`) and low word first (`_N`) — see
+    [Word order is measured, not named](#word-order-is-measured-not-named) — as a
+    float and as an integer, from the same bits modpoll already printed. *Confirmed* when the
     plant shows the number the pair decodes to — 21,5 °C where the two
     registers hold `0x41AC 0x0000` is a float, whatever the list says —
     *candidate* when only the bit pattern looks like a float. A 16-bit reading
@@ -225,8 +226,9 @@ rebuilt.
     row below a real float does not grow a spurious low-word-first twin.
   - `suggest` — the point a modbusgen list would carry for a register the
     plant has a parameter on: `datatype` from the shipped table
-    (`A_Hold_I16_N`, `I_Hold_U32_N`, `A_Input_F_N`, `Bit_Hold` with one entry
-    per bit, `Coil_X_N`, `Digital_X_N`), the scale key, unit, `rw`, group and
+    (`A_Hold_I16_N`, `I_Hold_U32_W` for a high-word-first counter, `A_Input_F_W`,
+    `Bit_Hold` with one entry per bit, `Coil_X_N`, `Digital_X_N`), the scale key,
+    unit, `rw`, group and
     `addr`, with `basis` stating every choice — why signed, why analog, which
     plant value confirmed the width. A lead to check against the vendor
     document, never a conclusion; the file says so itself.
@@ -503,9 +505,55 @@ What that buys, on any plant, with nothing loaded:
 addressing convention (`options.subtract_one`), the connection (`system.comm`)
 and the points themselves. Each `datatype` is decoded by the grammar of the
 shipped keys: `read_func` gives the Modicon prefix `-t` actually wants, `raw_type`
-gives a 16- or 32-bit format, word order gives the endian flag. A key that does
-not decode is reported as undecodable rather than guessed at — a wrong table
-polls the wrong half of a device in silence.
+gives one register or two, and the swap letter gives the word order the way
+IWMAC's driver applies it. A key that does not decode is reported as undecodable
+rather than guessed at — a wrong table polls the wrong half of a device in
+silence.
+
+Since 1.50.0 every point is read as the 16-bit words it is made of, and a 32-bit
+value is put together by the console the way `iw_mb.exe` puts it together — not
+with modpoll's own `int`/`float` formats, which follow modpoll's conventions (and
+whose `-i` some plants' builds do not have). A verification therefore shows a
+32-bit point as IWMAC will: a `_W` point on a low-word-first device reads as the
+millions IWMAC would show, where 1.49 passed it.
+
+### Word order is measured, not named
+
+`N` and `W` say what the driver does with a 32-bit value's two registers, and
+neither driver document says which register `N` takes as the high word. Measured
+on plant 11087 (`iw_mb.exe`, *Driver ModBus 2.6*, 2026-09-29): a 2000 l/s setpoint
+the device holds low word first, `[3392, 3]` = 200000 × 0.01, showed in IWMAC as
+2222981.15 under `U32_W` and correctly under `U32_N`. So **`_N` takes the first
+register as the low word and `_W` as the high word** — the reverse of how 1.49 and
+earlier read the letters. Signed 32-bit and floats are assumed to follow (plant
+8848's CVM-C10 list, `_W` on a meter whose manual proves high word first, agrees).
+One constant in the script, `IWMAC_WORD_ORDER`, carries this, and every decoder,
+suggestion, IWMAC comparison and verification goes through it; the evidence is
+owned by modbus-list-generator `docs/15` §2.1.
+
+### Viewing a register as another datatype
+
+The **type** column is a picker. Choose another datatype for a row and the console
+shows that register as IWMAC would under it — the value, the list's scale applied,
+the words in hex, and in the row's tooltip the word order used and whether it is
+measured or assumed. **Display only: the loaded point list is never changed**, and
+nothing is written anywhere. A viewed row is tinted; the summary line counts the
+views and offers *clear views*.
+
+- **16-bit:** `U16`, `I16`, and `U16_R` / `I16_R` with the bytes swapped.
+- **32-bit:** `U32_N`, `U32_W`, `I32_N`, `I32_W`, `F_N`, `F_W` — the register and
+  the next one, put together by `IWMAC_WORD_ORDER`.
+
+In the register grid a view needs a 16-bit poll, which has the raw words; a poll
+in modpoll's own 32-bit formats has already put them together modpoll's way, so
+the picker is disabled there and says so. In a verification a view decodes the
+words the verification already read — no second poll. Clicking a 32-bit point in
+a verification now aims the form at its two 16-bit words, which works on every
+modpoll build and leaves the view to decide how they go together.
+
+The same from the API: `__modpoll.viewAs('3', 191, 'U32_N')`, `__modpoll.views()`,
+`__modpoll.clearViews()`, and `__modpoll.decode([3392, 3], 'U32_W')` for words in
+hand.
 
 *Verify list* polls every point, grouping them into ranges that merge across
 small gaps and split at the count cap, then judges each answer with a fixed
@@ -623,7 +671,7 @@ await __modpoll.read({                     // full result
   host: '10.0.0.5', slave: 1, table: '4',
   start: 430, count: 272, base: 'printed', // or base: 'protocol'
   format: 'float',                         // '' 16-bit | int | float | mod | hex
-  bigEndian: true,                         // adds -i (int) or -f (float)
+  bigEndian: true,                         // adds -i (int) or -f (float): high word first, IWMAC's _W
   recover: true                            // halve a refused block, default on
 });
 await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // every register that answers, read twice; names the unit first
@@ -640,6 +688,11 @@ await __modpoll.raw('modpoll -1 -m tcp -a 1 -t 4 -r 430 -c 99 10.0.0.5');
 await __modpoll.probe();                   // what this plant's modpoll -h reports
 __modpoll.last();                          // last full result
 __modpoll.stop();                          // abort a running sweep
+
+__modpoll.decode([3392, 3], 'U32_N');      // words as iw_mb.exe reads them → { value: 200000, … }
+__modpoll.viewAs('3', 191, 'U32_N');       // show one register as another datatype, display only
+__modpoll.views();                         // [{ table, ref, view }]
+__modpoll.clearViews();                    // every register as read again
 ```
 
 A full result is `{ ok, plant, at, spec, values, summary, diagnostics, commands }`,
@@ -672,7 +725,7 @@ Both cost a version to find, and both are invisible from the code alone.
 
 ## Tests
 
-Two scripts in `test/`, both of which lift the code they test **out of
+Four scripts in `test/`, each of which lifts the code it tests **out of
 `Modpoll-Console.user.js` on every run**, so a change to the script cannot
 quietly stop being the thing under test.
 
@@ -697,6 +750,13 @@ quietly stop being the thing under test.
   measured against what it replaces: what each finds, what each misses, what
   each tells apart, what each judges, and what each costs in modpoll runs and
   refusals.
+- `python test/decode-check.py` — the word order and *view as*, in Node, pinned
+  to plant 11087: the registers it returned on 2026-09-29 decoded under every
+  suffix beside what IWMAC showed for them (2222981.15 under `U32_W`, 200000
+  under `U32_N`), the 16-bit views, a refused 32-bit byte swap, the view
+  catalogue; then a whole verification through the shipped `verifyPointList`
+  against a map of those registers — every point read as 16-bit words, a `_W`
+  point shown as IWMAC shows it, and the words kept for views but out of the JSON.
 - `python test/export-check.py` — *Save JSON* with a scan in hand and no poll,
   against a unit whose parameters cover the shapes a list has to get right: a
   scaled 16-bit register, a float over two registers, a 32-bit counter, a status

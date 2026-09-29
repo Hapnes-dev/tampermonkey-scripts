@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.49.5
+// @version      1.50.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.49.5';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.50.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1645,11 +1645,76 @@
     }
 
     /*
+     * What IWMAC's iw_mb.exe does with the word-order letter of a 32-bit
+     * datatype — measured, not read off the letter. Plant 11087 (Driver ModBus
+     * 2.6, 2026-09-29): the device sent a 2000 l/s flow setpoint low word first,
+     * [3392, 3] = 200000 × 0.01; IWMAC showed it as 2222981.15 under U32_W and
+     * correctly under U32_N. So N takes the first register as the LOW word and W
+     * as the HIGH word — the reverse of how the letters had been read here.
+     * Signed 32-bit and floats are assumed to do the same; plant 8848's CVM-C10
+     * list (_W on a meter whose manual proves high word first) agrees.
+     * modbus-list-generator docs/15 §2.1 owns the evidence. Every suffix this
+     * script names, and every 32-bit value it assembles, comes from here.
+     */
+    const IWMAC_WORD_ORDER = { N: 'low word first', W: 'high word first' };
+    const MEASURED_WIDE_TYPES = new Set(['U32']);
+
+    /** The suffix under which iw_mb.exe reads two registers in this order. */
+    function suffixForWordOrder(order) {
+        return order === 'high word first' ? '_W' : '_N';
+    }
+
+    /**
+     * Registers the way iw_mb.exe reads them under a raw type and a swap letter:
+     * one word for I16/U16, two for I32/U32/F. `words` are the registers in
+     * address order, as modpoll printed them (signed or not). Returns the value,
+     * the bit pattern in hex, and for 32-bit the word order used — or why it
+     * could not decode.
+     */
+    function decodeWords(words, rawType, swap) {
+        const type = String(rawType || '').toUpperCase();
+        const letter = String(swap || 'N').toUpperCase();
+        const wide = type === 'I32' || type === 'U32' || type === 'F';
+        const need = wide ? 2 : 1;
+        if (!wide && type !== 'I16' && type !== 'U16') return { ok: false, why: 'raw type ' + (type || '?') + ' is not decoded here' };
+        const u16 = x => (x < 0 ? x + 65536 : x) & 0xFFFF;
+        const hex4 = x => '0x' + x.toString(16).toUpperCase().padStart(4, '0');
+        if (!Array.isArray(words) || words.length < need || words.slice(0, need).some(x => typeof x !== 'number' || !Number.isFinite(x))) {
+            return { ok: false, why: wide ? 'a 32-bit ' + type + ' needs this register and the next one, read as 16-bit' : 'no reading' };
+        }
+        const w = words.slice(0, need).map(u16);
+        if (!wide) {
+            let x = w[0];
+            if (letter === 'R') x = ((x & 0xFF) << 8) | (x >> 8);
+            return { ok: true, value: type === 'I16' && x > 32767 ? x - 65536 : x, hex: hex4(x) };
+        }
+        const order = IWMAC_WORD_ORDER[letter];
+        if (!order) {
+            return { ok: false, why: letter === 'R' ? 'a byte swap on a 32-bit value has not been measured on iw_mb.exe' : 'word order ' + letter + ' is not N, W or R' };
+        }
+        const hi = order === 'high word first' ? w[0] : w[1];
+        const lo = order === 'high word first' ? w[1] : w[0];
+        const bits = ((hi << 16) >>> 0) + lo;
+        const hex = hex4(w[0]) + ' ' + hex4(w[1]);
+        let value;
+        if (type === 'U32') value = bits >>> 0;
+        else if (type === 'I32') value = bits | 0;
+        else {
+            const view = new DataView(new ArrayBuffer(4));
+            view.setUint32(0, bits >>> 0);
+            value = view.getFloat32(0);
+            if (!Number.isFinite(value)) return { ok: false, why: 'the two registers do not decode to a finite float', hex, wordOrder: order };
+        }
+        return { ok: true, value, hex, wordOrder: order, measured: MEASURED_WIDE_TYPES.has(type) };
+    }
+
+    /*
      * Two 16-bit registers read as one 32-bit value, every way a driver could:
-     * high word first — modbusgen's `_N`, modpoll's -i/-f — and low word first,
-     * `_W`; as an IEEE float and as an integer, signed and unsigned. modpoll
-     * printed each register on its own, so nothing here touches the wire: it
-     * is the same bits, rearranged.
+     * high word first — IWMAC's `_W` on iw_mb.exe, modpoll's -i/-f — and low
+     * word first, IWMAC's `_N` and modpoll's default (IWMAC_WORD_ORDER); as an
+     * IEEE float and as an integer, signed and unsigned. modpoll printed each
+     * register on its own, so nothing here touches the wire: it is the same
+     * bits, rearranged.
      */
     function decodePair(first, second) {
         const word = v => ((v < 0 ? v + 65536 : v) & 0xFFFF);
@@ -1704,8 +1769,8 @@
         if (typeof raw !== 'number' || typeof nextRaw !== 'number') return null;
         const pair = decodePair(raw, nextRaw);
         const orders = [
-            { wordOrder: 'high word first', suffix: '_N', d: pair.highFirst },
-            { wordOrder: 'low word first', suffix: '_W', d: pair.lowFirst },
+            { wordOrder: 'high word first', suffix: suffixForWordOrder('high word first'), d: pair.highFirst },
+            { wordOrder: 'low word first', suffix: suffixForWordOrder('low word first'), d: pair.lowFirst },
         ];
         const findings = [];
         const shownText = plantShown == null ? '' : String(plantShown).trim();
@@ -2077,7 +2142,7 @@
                     const rawType = region.format === 'float32' ? 'F' : (region.format === 'int32' ? 'I32' : 'U32');
                     out.suggest = {
                         addr: r.addr,
-                        datatype: (region.format === 'float32' ? 'A_' : 'I_') + family + '_' + rawType + (region.wordOrder === 'low word first' ? '_W' : '_N'),
+                        datatype: (region.format === 'float32' ? 'A_' : 'I_') + family + '_' + rawType + suffixForWordOrder(region.wordOrder),
                         basis: [
                             'region ' + region.from + '-' + region.to + ' reads as ' + region.format + ', ' + region.wordOrder + ' (' + region.confidence + '): ' + region.evidence,
                             'no plant parameter on this register — name, scale and access are not known from here',
@@ -2359,8 +2424,8 @@
                 'reread, changed and delta on a scanReadings row: the same register read again once the sweep was done ' +
                     '(scan.reread says how long after the scan began and how many moved). changed marks a value being measured; ' +
                     'unchanged is a setpoint, a configuration word, or a measurement that held still for that long.',
-                'wide on a 16-bit row: the register and the next one decoded as one 32-bit value, high word first (modbusgen _N) ' +
-                    'and low word first (_W), as a float and as an integer. confirmed names the plant value the pair decodes to; ' +
+                'wide on a 16-bit row: the register and the next one decoded as one 32-bit value, high word first (IWMAC\'s _W on ' +
+                    'iw_mb.exe) and low word first (_N) — measured on plant 11087 for U32, assumed for I32 and floats — as a float and as an integer. confirmed names the plant value the pair decodes to; ' +
                     'candidate means only the bit pattern looks like a float. Nothing on the wire proves a width — this is the ' +
                     'same bits rearranged — so a candidate on its own is a lead to poll with -t 4:float, not a datatype.',
                 'suggest: the point a modbusgen list would carry for a register the plant has a parameter on — datatype from the ' +
@@ -2629,7 +2694,18 @@
         5: 'write single coil', 6: 'write single register', 15: 'write multiple coils', 16: 'write multiple registers',
     };
     const IWMAC_RAW_TYPES = { U16: 'unsigned 16-bit', I16: 'signed 16-bit', U32: 'unsigned 32-bit', I32: 'signed 32-bit', F: '32-bit float', X: 'one bit' };
-    const IWMAC_SWAPS = { N: 'no swap', W: 'word swap, low word first', R: 'byte swap' };
+    const IWMAC_SWAPS = { N: 'no swap', W: 'word swap', R: 'byte swap' };
+
+    /**
+     * A swap letter in words. On a 32-bit type it says which register iw_mb.exe
+     * takes as the high word (IWMAC_WORD_ORDER) — what N and W do, not what the
+     * letters suggest.
+     */
+    function describeSwap(swap, type) {
+        const base = IWMAC_SWAPS[swap] || 'swap ' + swap;
+        const wide = type === 'U32' || type === 'I32' || type === 'F';
+        return wide && IWMAC_WORD_ORDER[swap] ? base + ', ' + IWMAC_WORD_ORDER[swap] : base;
+    }
 
     /** driver_id_extra "4_208_U16_N_-_-_-_-" as a sentence for the read and one for the write. */
     function describeDriverIdExtra(extra) {
@@ -2637,7 +2713,7 @@
         if (!d) return { read: String(extra || '') || '—', write: '—' };
         const half = (fn, addr, type, swap) => 'function ' + fn + (MODBUS_FUNCTIONS[fn] ? ' (' + MODBUS_FUNCTIONS[fn] + ')' : '') +
             (addr !== null && addr !== undefined ? ', address ' + addr : '') +
-            (type ? ', ' + (IWMAC_RAW_TYPES[type] || type) : '') + (swap ? ', ' + (IWMAC_SWAPS[swap] || 'swap ' + swap) : '');
+            (type ? ', ' + (IWMAC_RAW_TYPES[type] || type) : '') + (swap ? ', ' + describeSwap(swap, type) : '');
         const parts = String(extra).split('_');
         return {
             read: d.readFunction === null ? 'not read' : half(d.readFunction, d.readAddr, d.rawType, d.swap),
@@ -2830,23 +2906,14 @@
         let value;
         if (bit !== null && bit !== undefined) {
             value = (u16(raw) >> bit) & 1;
-        } else if (type === 'I16' || type === 'U16') {
-            let w = u16(raw);
-            if (swap === 'R') w = ((w & 0xFF) << 8) | (w >> 8);
-            value = type === 'I16' && w > 32767 ? w - 65536 : w;
-        } else if (type === 'I32' || type === 'U32' || type === 'F') {
-            if (typeof nextRaw !== 'number') return { ok: false, why: 'the next register was not read, and this is a 32-bit ' + type };
-            const hi = swap === 'W' ? u16(nextRaw) : u16(raw);
-            const lo = swap === 'W' ? u16(raw) : u16(nextRaw);
-            const bits = ((hi << 16) >>> 0) + lo;
-            if (type === 'U32') value = bits >>> 0;
-            else if (type === 'I32') value = bits | 0;
-            else {
-                const view = new DataView(new ArrayBuffer(4));
-                view.setUint32(0, bits >>> 0);
-                value = view.getFloat32(0);
-                if (!Number.isFinite(value)) return { ok: false, why: 'the two registers do not decode to a finite float', bits: '0x' + (bits >>> 0).toString(16).toUpperCase().padStart(8, '0') };
-            }
+        } else if (type === 'I16' || type === 'U16' || type === 'I32' || type === 'U32' || type === 'F') {
+            // The one decoder, so the comparison with the plant uses the word
+            // order iw_mb.exe actually applies (IWMAC_WORD_ORDER).
+            const wide = type === 'I32' || type === 'U32' || type === 'F';
+            if (wide && typeof nextRaw !== 'number') return { ok: false, why: 'the next register was not read, and this is a 32-bit ' + type };
+            const d = decodeWords(wide ? [raw, nextRaw] : [raw], type, swap);
+            if (!d.ok) return { ok: false, why: d.why, bits: d.hex };
+            value = d.value;
         } else {
             return { ok: false, why: 'raw type ' + type + ' is not decoded here' };
         }
@@ -2931,7 +2998,9 @@
         if (expected === null) parts.push('IWMAC\'s definition gives nothing: ' + why);
         else if (entry.bit !== null && entry.bit !== undefined) parts.push('bit ' + entry.bit + ' = ' + expected + (stateNow ? ' (' + stateNow.replace(/^\d+ = /, '') + ')' : ''));
         else {
-            parts.push('as ' + (dt.rawType || '?') + (dt.swap && dt.swap !== 'N' ? ' ' + (IWMAC_SWAPS[dt.swap] || 'swap ' + dt.swap) : '') +
+            // On 32-bit the letter always says something — which register is the
+            // high word — so it is spelt out for N as well as W.
+            parts.push('as ' + (dt.rawType || '?') + (dt.swap && (dt.swap !== 'N' || wide) ? ' ' + describeSwap(dt.swap, dt.rawType) : '') +
                 (scale ? ' ' + scale.replace(/^x/, '×') : '') + ' = ' + expected + unit + (stateNow ? ' (' + stateNow.replace(/^-?\d+ = /, '') + ')' : ''));
         }
         parts.push('IWMAC shows ' + (shownText ? shownText + (Number.isNaN(Number(shownText.replace(',', '.'))) ? '' : unit) : 'nothing'));
@@ -3827,10 +3896,13 @@
             table: FUNC_TO_TABLE[spec.func],
             format: raw.format,
             step: raw.step,
-            // Word order R means the slave presents 32-bit values the other way
-            // round. Mapping that onto -i/-f is an assumption the report states.
-            bigEndian: spec.swap === 'R',
+            // Only for a poll aimed at the point with modpoll's own 32-bit format:
+            // -i/-f read high word first, which is iw_mb.exe's W (IWMAC_WORD_ORDER).
+            // A verification does not use it — it reads the words and puts them
+            // together itself, the way the driver does.
+            bigEndian: raw.step === 2 && IWMAC_WORD_ORDER[spec.swap] === 'high word first',
             rawType: spec.raw,
+            swap: spec.swap,
         };
     }
 
@@ -3958,9 +4030,20 @@
      */
     async function verifyPointList(list, spec, onProgress) {
         const started = performance.now();
-        const ranges = planPointRanges(list.points, 8, OFFSET_WINDOW);
-        const readings = new Map();      // table|format|ref -> value
-        const refused = new Set();
+        // Every point is read as the 16-bit words it is made of, and a 32-bit
+        // value is put together here the way iw_mb.exe puts it together
+        // (IWMAC_WORD_ORDER). modpoll's own 32-bit formats follow modpoll's
+        // conventions rather than the driver's — a verification that used them
+        // passed _W points IWMAC showed as millions — and some plants' builds
+        // have no -i at all.
+        const wordPlan = [];
+        for (const p of list.points) {
+            if (!p.decoded.ok) continue;
+            for (let k = 0; k < (p.decoded.step || 1); k++) wordPlan.push({ decoded: { ok: true, table: p.decoded.table, format: '' }, ref: p.ref + k });
+        }
+        const ranges = planPointRanges(wordPlan, 8, OFFSET_WINDOW);
+        const readings = new Map();      // table|ref -> the word as modpoll printed it
+        const refused = new Set();       // table|ref
         const commands = [];
         const diagnostics = [];
 
@@ -3979,8 +4062,8 @@
                 diagnostics.push({ level: 'error', text: 'Range -r ' + range.ref + ' -c ' + range.count + ': ' + e.message, line: '' });
                 continue;
             }
-            for (const value of result.values) readings.set(range.table + '|' + range.format + '|' + value.i, value.v);
-            for (const ref of result.unreadable || []) refused.add(range.table + '|' + range.format + '|' + ref);
+            for (const value of result.values) readings.set(range.table + '|' + value.i, value.v);
+            for (const ref of result.unreadable || []) refused.add(range.table + '|' + ref);
             for (const command of result.commands) commands.push(command);
             for (const d of result.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
             // A port that will not open fails every range after it the same way.
@@ -3988,19 +4071,42 @@
             if (portIssue) { diagnostics.push({ level: 'fatal', text: portIssue, line: '' }); break; }
         }
 
-        const keyOf = (p, shift) => p.decoded.table + '|' + p.decoded.format + '|' + (p.ref + (shift || 0));
+        // The value a point reads at a shift: its words put together by its own
+        // raw type and swap, as the driver would. Raw types the decoder does not
+        // cover (bits, coils, rI16/rU16, D) keep the first word as printed, which
+        // is what a verification always gave them.
+        const wordsAt = (p, shift) => {
+            const out = [];
+            for (let k = 0; k < (p.decoded.step || 1); k++) out.push(readings.get(p.decoded.table + '|' + (p.ref + (shift || 0) + k)));
+            return out;
+        };
+        const valueAt = (p, shift) => {
+            const words = wordsAt(p, shift);
+            if (words.some(w => w === undefined)) return undefined;
+            const d = decodeWords(words, p.decoded.rawType, p.decoded.swap);
+            if (d.ok) return d.value;
+            return /not decoded here/.test(d.why) ? words[0] : undefined;
+        };
         const rows = list.points.map(p => {
             if (!p.decoded.ok) return { point: p, status: 'not polled', note: p.decoded.reason };
-            const key = keyOf(p, 0);
-            if (refused.has(key)) return { point: p, status: 'refused', note: 'the device refuses this reference' };
-            if (!readings.has(key)) return { point: p, status: 'no answer', note: 'no value came back for this reference' };
-            const raw = readings.get(key);
+            const refs = [];
+            for (let k = 0; k < (p.decoded.step || 1); k++) refs.push(p.decoded.table + '|' + (p.ref + k));
+            if (refs.some(k => refused.has(k))) return { point: p, status: 'refused', note: 'the device refuses this reference' };
+            if (refs.some(k => !readings.has(k))) return { point: p, status: 'no answer', note: 'no value came back for this reference' };
+            const raw = valueAt(p, 0);
+            if (raw === undefined) {
+                const d = decodeWords(wordsAt(p, 0), p.decoded.rawType, p.decoded.swap);
+                return { point: p, status: 'read', note: d.why, flags: [d.why] };
+            }
             const scaled = p.scale.invert ? (raw ? 0 : 1) : roundScaled(raw * p.scale.factor, p.decimals);
             const flags = [];
             if (!p.scale.known) flags.push('scale key "' + p.scaleKey + '" not understood, value shown raw');
             if (p.rangeMin !== null && scaled < p.rangeMin) flags.push('below the list range (' + p.rangeMin + ')');
             if (p.rangeMax !== null && scaled > p.rangeMax) flags.push('above the list range (' + p.rangeMax + ')');
-            if (p.decoded.step === 2) flags.push('32-bit word order assumed ' + (p.decoded.bigEndian ? 'big-endian (-i/-f)' : 'little-endian'));
+            if (p.decoded.step === 2) {
+                flags.push('32-bit, ' + (IWMAC_WORD_ORDER[p.decoded.swap] || 'word order ' + p.decoded.swap) + ' as iw_mb.exe reads _' + p.decoded.swap +
+                    (MEASURED_WIDE_TYPES.has(p.decoded.rawType) ? '' : ' (measured for U32, assumed for ' + p.decoded.rawType + ')'));
+            }
             return { point: p, status: raw === 0 ? 'zero' : 'read', raw, scaled, flags };
         });
 
@@ -4018,10 +4124,9 @@
         for (let shift = -OFFSET_WINDOW; shift <= OFFSET_WINDOW; shift++) {
             let inRange = 0, scored = 0, nonZero = 0, seen = 0;
             for (const p of polled) {
-                const key = keyOf(p, shift);
-                if (!readings.has(key)) continue;
+                const value = valueAt(p, shift);
+                if (value === undefined) continue;
                 seen++;
-                const value = readings.get(key);
                 if (value !== 0) nonZero++;
                 if (p.rangeMin === null && p.rangeMax === null) continue;
                 scored++;
@@ -4035,7 +4140,7 @@
         const zero = offsets.find(o => o.shift === 0) || { score: 0 };
         const best = offsets.slice().sort((a, b) => (b.score - a.score) || (Math.abs(a.shift) - Math.abs(b.shift)))[0];
 
-        return {
+        const verification = {
             at: new Date().toISOString(),
             plant: plantIdFromHost(),
             list: { table: list.table, plant: list.plant, subtractOne: list.subtractOne, points: list.points.length, undecodable: list.undecodable },
@@ -4061,6 +4166,11 @@
             commands,
             diagnostics,
         };
+        // The words as read, for "view as": a row shown as another datatype is
+        // decoded from these, with no second poll. Not enumerable, so it stays out
+        // of every export and of what the API hands back as JSON.
+        Object.defineProperty(verification, 'wordAt', { value: readings, enumerable: false });
+        return verification;
     }
 
     // ------------------------------------------- a report an agent can read
@@ -5161,6 +5271,13 @@
     #${PANEL_ID} table.mpc-grid td.bad{color:#c0392b}
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable{cursor:pointer}
     #${PANEL_ID} table.mpc-grid tr.mpc-clickable:hover td{background:#eef4fb}
+    #${PANEL_ID} table.mpc-grid select.mpc-viewas{width:100%;height:20px;padding:0 2px;font:inherit;font-size:11px;color:inherit;
+        background:transparent;border:1px solid transparent;border-radius:3px;cursor:pointer}
+    #${PANEL_ID} table.mpc-grid select.mpc-viewas:hover,#${PANEL_ID} table.mpc-grid select.mpc-viewas:focus{border-color:var(--line);background:#fff}
+    #${PANEL_ID} table.mpc-grid select.mpc-viewas.on{border-color:#d9a400;background:#fff4cc;font-weight:bold}
+    #${PANEL_ID} table.mpc-grid select.mpc-viewas:disabled{cursor:default;opacity:.8}
+    #${PANEL_ID} table.mpc-grid tr.mpc-viewed td{background:#fffbea}
+    #${PANEL_ID} .mpc-mini{height:18px;line-height:16px;padding:0 6px;font-size:11px;vertical-align:baseline}
     /* The grid's own cells are nowrap, and white-space inherits — without this the
        detail view cannot wrap a single line of it. */
     #${PANEL_ID} table.mpc-grid tr.mpc-detail td{background:#e9eef6;text-align:left;padding:8px 10px;white-space:normal}
@@ -5659,6 +5776,96 @@
         }
     }
 
+    /*
+     * "View as": a register shown as another datatype, for the display only. The
+     * loaded point list is never touched — the choice lives here, per register
+     * (table|ref), and a redraw decodes the words already read with decodeWords,
+     * the decoder that stands in for iw_mb.exe everywhere else, so what a row
+     * shows is what IWMAC would show under that datatype. 32-bit views need the
+     * register and the next one read as 16-bit words.
+     */
+    const VIEW_TYPES = [
+        { key: 'U16', raw: 'U16', swap: 'N', label: 'U16' },
+        { key: 'I16', raw: 'I16', swap: 'N', label: 'I16 signed' },
+        { key: 'U16_R', raw: 'U16', swap: 'R', label: 'U16_R bytes swapped' },
+        { key: 'I16_R', raw: 'I16', swap: 'R', label: 'I16_R bytes swapped' },
+        { key: 'U32_N', raw: 'U32', swap: 'N', label: 'U32_N low word first' },
+        { key: 'U32_W', raw: 'U32', swap: 'W', label: 'U32_W high word first' },
+        { key: 'I32_N', raw: 'I32', swap: 'N', label: 'I32_N low word first' },
+        { key: 'I32_W', raw: 'I32', swap: 'W', label: 'I32_W high word first' },
+        { key: 'F_N', raw: 'F', swap: 'N', label: 'F_N float, low word first' },
+        { key: 'F_W', raw: 'F', swap: 'W', label: 'F_W float, high word first' },
+    ];
+    const viewOverrides = new Map();   // table|ref -> VIEW_TYPES key
+
+    /** A view by its key, or by a datatype name: 'U32_N', 'A_Input_U32_N' and 'I16' all resolve. */
+    function viewTypeOf(key) {
+        const text = String(key || '').trim();
+        const direct = VIEW_TYPES.find(t => t.key.toLowerCase() === text.toLowerCase());
+        if (direct) return direct;
+        const m = text.match(/(I16|U16|I32|U32|F)_([NRW])$/i);
+        if (!m) return null;
+        const raw = m[1].toUpperCase(), swap = m[2].toUpperCase();
+        return VIEW_TYPES.find(t => t.raw === raw && t.swap === swap) || null;
+    }
+
+    /** The words a view needs from a lookup of reference → word; undefined where one is missing. */
+    function viewWords(view, wordAt, ref) {
+        const need = (view.raw === 'U32' || view.raw === 'I32' || view.raw === 'F') ? 2 : 1;
+        const out = [];
+        for (let k = 0; k < need; k++) out.push(wordAt(ref + k));
+        return out;
+    }
+
+    function viewValueText(value) {
+        if (typeof value !== 'number') return '';
+        return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(7)));
+    }
+
+    /**
+     * The picker in a grid's type cell. The first entry is what the row is
+     * without a view — the list's datatype, or the reading as polled — and
+     * choosing it clears the view. Clicks stay in the cell: the row's own click
+     * opens the detail card and aims the form.
+     */
+    function viewAsSelect(table, ref, baseLabel, enabled, disabledWhy) {
+        const key = table + '|' + ref;
+        const current = viewOverrides.get(key) || '';
+        const select = el('select', {
+            className: 'mpc-viewas' + (current ? ' on' : ''),
+            title: enabled
+                ? 'View this register as another datatype. Display only: the point list is not changed, and IWMAC would show this value under that datatype.'
+                : disabledWhy,
+        });
+        select.appendChild(el('option', { value: '', textContent: baseLabel || 'as read' }));
+        for (const t of VIEW_TYPES) select.appendChild(el('option', { value: t.key, textContent: 'view as ' + t.label }));
+        select.value = current;
+        select.disabled = !enabled;
+        const stop = ev => ev.stopPropagation();
+        select.addEventListener('click', stop);
+        select.addEventListener('mousedown', stop);
+        select.addEventListener('change', ev => {
+            ev.stopPropagation();
+            if (select.value) viewOverrides.set(key, select.value); else viewOverrides.delete(key);
+            if (typeof redrawGrid === 'function') redrawGrid();
+        });
+        return select;
+    }
+
+    /** After a redraw: how many registers are viewed as another type, and a way back. */
+    function appendViewNote() {
+        if (!viewOverrides.size || !ui.summary) return;
+        ui.summary.appendChild(document.createTextNode(' · ' + viewOverrides.size + ' register' + (viewOverrides.size === 1 ? '' : 's') +
+            ' viewed as another datatype, display only '));
+        const clear = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'clear views', title: 'Show every register as read and as the list declares it again' });
+        clear.addEventListener('click', ev => {
+            ev.stopPropagation();
+            viewOverrides.clear();
+            if (typeof redrawGrid === 'function') redrawGrid();
+        });
+        ui.summary.appendChild(clear);
+    }
+
     // The grid serves two readings: registers as polled, and points as verified.
     // Columns are declared rather than hard-coded so the two can share one table.
     const REGISTER_COLUMNS = [
@@ -5671,7 +5878,7 @@
         { label: 'hex', width: '9%', title: 'The register as hexadecimal — four digits for a 16-bit read, eight for a 32-bit integer. Blank where the bit pattern cannot be recovered from what modpoll printed, which is every float' },
         { label: 'int16', width: '8%', title: 'Filled only when the register reads differently as a signed 16-bit integer, which means it came back above 32767' },
         { label: 'Δ', width: '8%', title: 'Change since this register was last polled. Blank until it has been read twice, 0 when it was read again and held still' },
-        { label: 'type', width: '12%', align: 'left', title: 'Datatype from the list' },
+        { label: 'type', width: '12%', align: 'left', title: 'Datatype from the list — pick another to view this register as it, display only' },
     ];
     // Coils and discrete inputs answer 0 or 1. Hexadecimal, a signed reading and a
     // scale are all noise on a bit, so that table gets its own, shorter set.
@@ -5688,7 +5895,7 @@
         { label: 'addr', width: '7%', title: 'The address as the point list prints it' },
         { label: 'ref', width: '7%', title: "modpoll's 1-based reference for that address" },
         { label: 'name', width: '24%', align: 'left', title: 'Tag and alias text from the list' },
-        { label: 'type', width: '13%', align: 'left', title: 'Datatype key, which decides the table and the raw type' },
+        { label: 'type', width: '13%', align: 'left', title: 'Datatype key, which decides the table and the raw type — pick another to view the point as it, display only' },
         { label: 'raw', width: '9%', title: 'The register as the device returned it' },
         { label: 'scaled', width: '9%', title: "Raw multiplied by the list's scale key" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
@@ -6323,7 +6530,7 @@
         if (register.bigEndian !== undefined) ui.bigEndian.checked = !!register.bigEndian;
         ui.base.value = 'printed';
         ui.start.value = String(register.ref);
-        ui.count.value = '1';
+        ui.count.value = String(register.count || 1);
         ui.cmdDirty = false;
         refreshPreview();
         return ui.cmd.value;
@@ -6360,26 +6567,49 @@
         ui.gridBody.textContent = '';
         const onlyNonZero = ui.filterZero.checked;
         const frag = document.createDocumentFragment();
+        const wordAt = verification.wordAt;
         for (const row of verification.rows) {
-            if (onlyNonZero && row.raw === 0) continue;
             const p = row.point;
+            // A view decodes the words the verification read, as iw_mb.exe would
+            // under that datatype; the row keeps the list's scale and decimals.
+            const view = p.decoded && p.decoded.ok ? viewTypeOf(viewOverrides.get(p.decoded.table + '|' + p.ref)) : null;
+            let raw = row.raw, scaled = row.scaled, viewNote = '';
+            if (view) {
+                const d = wordAt ? decodeWords(viewWords(view, ref => wordAt.get(p.decoded.table + '|' + ref), p.ref), view.raw, view.swap)
+                    : { ok: false, why: 'this verification kept no words — run Verify list again' };
+                raw = d.ok ? d.value : undefined;
+                scaled = d.ok ? (p.scale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * p.scale.factor, p.decimals)) : undefined;
+                viewNote = 'viewed as ' + view.label + (d.ok ? ' (' + d.hex + (d.wordOrder ? ', ' + (d.measured ? 'measured' : 'assumed from U32') + ' on iw_mb.exe' : '') + ')' : ': ' + d.why) +
+                    ' — display only, the list says ' + p.datatype;
+            }
+            if (onlyNonZero && raw === 0) continue;
             const cells = [
                 String(p.addr), String(p.ref), p.name, p.datatype,
-                row.raw === undefined ? '' : String(row.raw),
-                row.scaled === undefined ? '' : (p.decimals ? row.scaled.toFixed(p.decimals) : String(row.scaled)),
+                raw === undefined ? (view ? '—' : '') : (view ? viewValueText(raw) : String(raw)),
+                scaled === undefined ? '' : (p.decimals ? scaled.toFixed(p.decimals) : String(scaled)),
                 p.unit || '', row.status,
-                (row.flags && row.flags.length ? row.flags.join('; ') : (row.note || '')),
+                view ? viewNote : (row.flags && row.flags.length ? row.flags.join('; ') : (row.note || '')),
             ];
-            const tr = el('tr', { className: 'mpc-clickable', title: 'Click for every reading of this register' },
+            const tr = el('tr', { className: 'mpc-clickable' + (view ? ' mpc-viewed' : ''), title: 'Click for every reading of this register' },
                 cells.map((text, i) => el('td', {
                     textContent: text,
-                    className: (i === 4 && row.raw === 0) ? 'zero' : (i === 7 && (row.status === 'refused' || row.status === 'no answer') ? 'bad' : ''),
+                    className: (i === 4 && raw === 0) ? 'zero' : (i === 7 && (row.status === 'refused' || row.status === 'no answer') ? 'bad' : ''),
                     style: POINT_COLUMNS[i].align === 'left' ? 'text-align:left' : '',
                     title: text,
                 })));
+            const typeCell = tr.children[3];
+            typeCell.textContent = '';
+            typeCell.appendChild(viewAsSelect(p.decoded && p.decoded.ok ? p.decoded.table : '?', p.ref, p.datatype,
+                !!(wordAt && p.decoded && p.decoded.ok && row.status !== 'not polled'),
+                !wordAt ? 'Run Verify list again to view points as another datatype' : 'This point was not polled'));
             if (row.raw !== undefined) {
                 tr.addEventListener('click', () => {
-                    aimAtRegister({ table: p.decoded.table, ref: p.ref, format: p.decoded.format, bigEndian: p.decoded.bigEndian });
+                    // A 32-bit point is aimed at as its two 16-bit words: that poll
+                    // works on every modpoll build, and "view as" can put the words
+                    // together either way the driver could.
+                    aimAtRegister(p.decoded.step === 2
+                        ? { table: p.decoded.table, ref: p.ref, format: '', bigEndian: false, count: 2 }
+                        : { table: p.decoded.table, ref: p.ref, format: p.decoded.format, bigEndian: p.decoded.bigEndian });
                     toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format);
                 });
             }
@@ -6390,6 +6620,7 @@
         ui.summary.textContent = s.points + ' points · ' + s.read + ' read, ' + s.zero + ' zero' +
             (onlyNonZero ? ' (hidden)' : '') + ', ' +
             s.refused + ' refused, ' + s.noAnswer + ' no answer · ' + s.ranges + ' poll commands · ' + s.elapsedMs + ' ms';
+        appendViewNote();
     }
 
     function renderGrid(result) {
@@ -6430,6 +6661,8 @@
         }
         const frag = document.createDocumentFragment();
         let named = 0;
+        // Every register this poll returned, by index, for the words a view needs.
+        const byIndex = new Map(result.values.map(o => [o.i, o]));
         for (const v of shown) {
             const u16 = v.v < 0 ? v.v + 65536 : v.v;
             const i16 = v.v > 32767 ? v.v - 65536 : v.v;
@@ -6480,6 +6713,20 @@
             const sourceLabel = point
                 ? point.datatype
                 : (fromPlant ? fromPlant[0].group + (fromPlant.some(e => e.access === 'rw') ? ' · writable' : '') : '');
+            // A view decodes this register — and for 32-bit the next one — as
+            // iw_mb.exe would under another datatype, for the display only. Only a
+            // 16-bit poll has the words: modpoll's 32-bit formats have already put
+            // them together their own way.
+            const view = isBitTable ? null : viewTypeOf(viewOverrides.get(table + '|' + v.i));
+            const viewed = !view ? null : (wide
+                ? { ok: false, why: 'poll as 16-bit (Format) to view this register as another datatype' }
+                : decodeWords(viewWords(view, ref => { const o = byIndex.get(ref); return o ? o.v : undefined; }, v.i), view.raw, view.swap));
+            const viewTitle = !view ? undefined
+                : 'viewed as ' + view.label + (viewed.ok ? ' (' + viewed.hex + (viewed.wordOrder ? ', ' + (viewed.measured ? 'measured' : 'assumed from U32') + ' on iw_mb.exe' : '') + ')' : ': ' + viewed.why) +
+                    ' — display only' + (point ? ', the list says ' + point.datatype : '');
+            const viewScaled = viewed && viewed.ok && point
+                ? (point.scale.invert ? (viewed.value ? 0 : 1) : roundScaled(viewed.value * point.scale.factor, point.decimals))
+                : null;
             const cells = isBitTable ? [
                 { text: String(v.i) },
                 { text: String(v.addr) },
@@ -6492,28 +6739,40 @@
                 { text: String(v.i) },
                 // A 32-bit value is read out of two registers, and saying which two
                 // is the difference between a list that lines up and one that does not.
-                { text: wide ? v.addr + '–' + (v.addr + 1) : String(v.addr) },
+                { text: wide || (viewed && /32|^F$/.test(view.raw)) ? v.addr + '–' + (v.addr + 1) : String(v.addr) },
                 { text: point ? point.name : plantLabel, align: 'left' },
-                { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
+                view
+                    ? { text: viewed.ok ? viewValueText(viewed.value) : '—', className: viewed.ok && viewed.value === 0 ? 'zero' : '', title: viewTitle }
+                    : { text: String(v.v), className: changed ? 'changed' : (v.v === 0 ? 'zero' : '') },
                 {
                     // Whatever the plant shows, number or state text: "Auto" or
                     // "Alarm" against a raw 1 says more than an empty cell does.
-                    text: scaled !== null
-                        ? (point.decimals ? scaled.toFixed(point.decimals) : String(scaled))
-                        : (fromPlant ? String(fromPlant[0].plantValue || '') : ''),
-                    title: scaled === null && fromPlant ? 'What the plant itself shows for this parameter' : undefined,
+                    // Under a view, the list's scale on the viewed value — or still
+                    // what the plant shows, which is what the view is compared with.
+                    text: view && point
+                        ? (viewScaled === null ? '' : (point.decimals ? viewScaled.toFixed(point.decimals) : String(viewScaled)))
+                        : (scaled !== null
+                            ? (point.decimals ? scaled.toFixed(point.decimals) : String(scaled))
+                            : (fromPlant ? String(fromPlant[0].plantValue || '') : '')),
+                    title: view ? viewTitle : (scaled === null && fromPlant ? 'What the plant itself shows for this parameter' : undefined),
                 },
                 { text: point ? (point.unit || '') : (fromPlant ? fromPlant[0].unit : '') },
-                { text: hexText },
-                { text: i16Text },
+                { text: view ? (viewed.hex || '') : hexText },
+                { text: view ? '' : i16Text },
                 deltaCell,
                 { text: sourceLabel, align: 'left' },
             ];
-            const tr = el('tr', { className: 'mpc-clickable', title: 'Click to put this register in the command box, and to see every reading of it' },
+            const tr = el('tr', { className: 'mpc-clickable' + (view ? ' mpc-viewed' : ''), title: 'Click to put this register in the command box, and to see every reading of it' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.title || c.text,
                 })));
+            if (!isBitTable) {
+                const typeCell = tr.lastElementChild;
+                typeCell.textContent = '';
+                typeCell.appendChild(viewAsSelect(table, v.i, sourceLabel || (wide ? (format || '16-bit') + ' as polled' : 'as read'),
+                    !wide, 'Poll as 16-bit (Format) to view registers as another datatype — a 32-bit format has already put the words together modpoll\'s way'));
+            }
             tr.addEventListener('click', () => {
                 aimAtRegister({ table, ref: v.i, format });
                 // The next register's value, for the 32-bit reading — only a
@@ -6530,6 +6789,7 @@
             ', ' + s.elapsedMs + ' ms' +
             (named ? ' · ' + named + ' named from the list' : (pointList ? ' · none matched the loaded list' : '')) +
             (rows.length > shown.length ? ' — showing the first 2000 rows' : '');
+        appendViewNote();
         placeExpandButton();
     }
 
@@ -7473,8 +7733,11 @@
                 '                                          count over 99 is split into blocks automatically',
                 'await __modpoll.readCompact(spec)         same, values as a bare array',
                 '                                          format: "" 16-bit | int | float | mod | hex',
-                '                                          bigEndian: true adds -i (int) or -f (float)',
+                '                                          bigEndian: true adds -i (int) or -f (float) = high word first = IWMAC _W',
                 'await __modpoll.raw("modpoll.exe …")      one command, parsed; writes are refused',
+                '__modpoll.decode(words, "U32_N")          words as iw_mb.exe reads them: N = first register low word, W = high',
+                '__modpoll.viewAs(table, ref, "U32_N")     show one register as another datatype, display only ("" clears)',
+                '__modpoll.views() / clearViews()          the registers shown as another datatype / show them as read again',
                 'await __modpoll.scan({host, slave})       every register the device answers for, read twice; names the unit first',
                 '__modpoll.loadList(projectJson)           adopt a modbusgen project: points and system.comm',
                 'await __modpoll.verify()                  poll every point in that list and judge the answers',
@@ -7579,6 +7842,34 @@
         report() { return lastVerification ? buildCopilotReport(verificationForExport(lastVerification)) : null; },
         lastVerification() { return lastVerification; },
         lastScan() { return lastScan; },
+        /**
+         * Words put together the way iw_mb.exe does under a datatype — 'U32_N',
+         * 'I16', or a full key like 'A_Input_U32_W'. decode([3392, 3], 'U32_N')
+         * is 200000; under 'U32_W' it is 222298115.
+         */
+        decode(words, datatype) {
+            const view = viewTypeOf(datatype);
+            if (!view) throw new Error('No view for "' + datatype + '" — use one of ' + VIEW_TYPES.map(t => t.key).join(', '));
+            return decodeWords(Array.isArray(words) ? words : [words], view.raw, view.swap);
+        },
+        /** Show one register as another datatype in the grid, display only. An empty type clears it. */
+        viewAs(table, ref, datatype) {
+            const key = String(table) + '|' + Number(ref);
+            if (!datatype) viewOverrides.delete(key);
+            else {
+                const view = viewTypeOf(datatype);
+                if (!view) throw new Error('No view for "' + datatype + '" — use one of ' + VIEW_TYPES.map(t => t.key).join(', '));
+                viewOverrides.set(key, view.key);
+            }
+            try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
+            return api.views();
+        },
+        views() { return [...viewOverrides].map(([key, view]) => ({ table: key.split('|')[0], ref: Number(key.split('|')[1]), view })); },
+        clearViews() {
+            viewOverrides.clear();
+            try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
+            return true;
+        },
         /**
          * IWMAC's own side of the unit whose names are loaded — driver settings,
          * parameter definitions, module, bus, driver log — read now and kept for

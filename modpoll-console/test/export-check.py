@@ -133,7 +133,9 @@ check('a scaled 16-bit register: impliedScale x0.1, suggest A_Hold_I16_N x0.1',
 check('a float over two registers: wide confirmed by the plant, high word first',
     row(1003).wide && row(1003).wide[0].as === 'float32' && row(1003).wide[0].wordOrder === 'high word first' && row(1003).wide[0].confirmed && Math.abs(row(1003).wide[0].value - 21.5) < 1e-6,
     JSON.stringify(row(1003).wide));
-check('... suggests A_Hold_F_N', row(1003).suggest && row(1003).suggest.datatype === 'A_Hold_F_N', JSON.stringify(row(1003).suggest));
+// High word first is IWMAC's _W on iw_mb.exe, measured on plant 11087 (1.50.0) - the suggestion names the
+// suffix under which the driver reads the pair the way the device holds it.
+check('... suggests A_Hold_F_W', row(1003).suggest && row(1003).suggest.datatype === 'A_Hold_F_W', JSON.stringify(row(1003).suggest));
 check('... and notes that the list declares it 16-bit',
     (row(1003).notes || []).some(n => /32-bit point/.test(n)) && (row(1003).notes || []).some(n => /list declares A_Hold_I16_N/.test(n)),
     JSON.stringify(row(1003).notes));
@@ -141,9 +143,9 @@ check('a status word: suggest Bit_Hold with one entry per bit, and each bit\'s s
     row(1006).suggest && row(1006).suggest.datatype === 'Bit_Hold' && row(1006).suggest.bits.length === 2 &&
         row(1006).plant[0].reads === 1 && row(1006).plant[1].reads === 1,
     JSON.stringify({ suggest: row(1006).suggest, plant: row(1006).plant }));
-check('a 32-bit counter: wide confirmed as an integer, high word first = 123456, suggest I_Hold_U32_N',
+check('a 32-bit counter: wide confirmed as an integer, high word first = 123456, suggest I_Hold_U32_W',
     row(1008).wide && row(1008).wide.some(w => w.as === 'int32' && w.wordOrder === 'high word first' && w.value === 123456 && w.confirmed) &&
-        row(1008).suggest && row(1008).suggest.datatype === 'I_Hold_U32_N',
+        row(1008).suggest && row(1008).suggest.datatype === 'I_Hold_U32_W',
     JSON.stringify({ wide: row(1008).wide, suggest: row(1008).suggest }));
 check('a negative writable setpoint: I16, rw, x0.1',
     row(1012).suggest && row(1012).suggest.datatype === 'A_Hold_I16_N' && row(1012).suggest.rw === 'rw' && row(1012).suggest.scale === 'x0.1',
@@ -168,13 +170,13 @@ check('scan block carries the width verdicts, the measured flag and the poll the
     doc.scan.formats && doc.scan.formats['3'] && doc.scan.modpoll && doc.scan.modpoll.measured && doc.scan.suggestedSpec && doc.scan.suggestedSpec.table === '4',
     JSON.stringify({ modpoll: doc.scan.modpoll, suggestedSpec: doc.scan.suggestedSpec }));
 check('a row in a wire-proved float region: regionFormat, and a datatype suggested from the verdict alone at the start of a pair',
-    row3(101).regionFormat === 'float32, high word first (wire)' && row3(101).suggest && row3(101).suggest.datatype === 'A_Input_F_N' && !row3(101).suggest.name,
+    row3(101).regionFormat === 'float32, high word first (wire)' && row3(101).suggest && row3(101).suggest.datatype === 'A_Input_F_W' && !row3(101).suggest.name,
     JSON.stringify({ regionFormat: row3(101).regionFormat, suggest: row3(101).suggest }));
 check('... the second half of a pair carries the verdict and no suggestion', row3(102).regionFormat === 'float32, high word first (wire)' && row3(102).suggest === undefined,
     JSON.stringify({ regionFormat: row3(102).regionFormat, suggest: row3(102).suggest }));
 check('a row in a mixed region carries the verdict and no suggestion from it', row(1002).regionFormat === 'mixed, high word first (plant)' && row(1002).suggest === undefined,
     JSON.stringify({ regionFormat: row(1002).regionFormat, suggest: row(1002).suggest }));
-check('... while a plant-named row in it keeps its own suggestion', row(1003).suggest && row(1003).suggest.datatype === 'A_Hold_F_N' && row(1003).suggest.name === 'Romtemp',
+check('... while a plant-named row in it keeps its own suggestion', row(1003).suggest && row(1003).suggest.datatype === 'A_Hold_F_W' && row(1003).suggest.name === 'Romtemp',
     JSON.stringify(row(1003).suggest));
 check('summary from the scan says how many changed', doc.summary && doc.summary.source === 'scan' && doc.summary.changed === 1, JSON.stringify(doc.summary));
 check('device rests on the scan', doc.device.readingSource === 'scan' && doc.device.host === '192.168.10.30', JSON.stringify(doc.device));
@@ -199,8 +201,12 @@ const def = (rawType, scaleKey, extra) => Object.assign({
 const definitions = {};
 definitions[did(1001)] = def('I16', 'x0.1');
 definitions[did(1003)] = def('F', '');
+// The device holds 1003-1004 and 1008-1009 high word first and the plant shows them right, so the plant's own
+// definitions are _W: iw_mb.exe reads W as high word first (plant 11087, 1.50.0).
+definitions[did(1003)].datatype.swap = 'W';
 definitions[did(1006, 0)] = def('U16', ''); definitions[did(1006, 3)] = def('U16', '');
 definitions[did(1008)] = def('U32', '');
+definitions[did(1008)].datatype.swap = 'W';
 definitions[did(1012)] = def('U16', 'x0.1');                       // wrong: the device holds -50
 definitions[did(1500)] = def('I16', '', { onlineIndicator: true });   // the online indicator, in the hole
 lastScan.spec = { mode: 'rtu', host: '\\\\.\\COM16', port: null, slave: 9, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1' };
@@ -461,13 +467,13 @@ check('the log reader files a failed write under its parameter by number, and a 
 
 // --- from the wire to IWMAC's screen, in one sentence per parameter --------------------
 definitions[did(1001)].datatypeText = '3_1000_I16_N_-_-_-_-';
-definitions[did(1003)].datatypeText = '3_1002_F_N_-_-_-_-';
+definitions[did(1003)].datatypeText = '3_1002_F_W_-_-_-_-';
 definitions[did(1012)].datatypeText = '3_1011_U16_N_6_1011_U16_N';
 const doc5 = exportResult(null);
 const r5 = ref => doc5.scanReadings.find(r => r.table === '4' && r.ref === ref);
 check('a reading row says the whole way from modpoll to IWMAC\'s screen in one sentence',
     r5(1001).plant[0].iwmac.reading === 'modpoll read 34 → as I16 ×0.1 = 3.4 bar → IWMAC shows 3.4 bar — agrees', r5(1001).plant[0].iwmac.reading);
-check('... for a float over two registers too', r5(1003).plant[0].iwmac.reading === 'modpoll read 16812 and 0 → as F = 21.5 °C → IWMAC shows 21,5 °C — agrees',
+check('... for a float over two registers too', r5(1003).plant[0].iwmac.reading === 'modpoll read 16812 and 0 → as F word swap, high word first = 21.5 °C → IWMAC shows 21,5 °C — agrees',
     r5(1003).plant[0].iwmac.reading);
 check('a value IWMAC shows differently says so at the end of its sentence', r5(1012).plant[0].iwmac.reading === 'modpoll read -50 → as U16 ×0.1 = 6548.6 °C → IWMAC shows -5 °C — differs',
     r5(1012).plant[0].iwmac.reading);
