@@ -232,8 +232,8 @@ rebuilt.
     weakest). Findings `list-word-order`, `list-signedness` and
     `list-scale-leads` count them in the overview; a register named as a
     password gets neither words nor a lead;
-  - `views` — the word order iw_mb.exe applies, the datatype views and scale
-    presets on offer, and what was on screen when saving.
+  - `views` — the word order iw_mb.exe applies, the datatype views and IWMAC
+    scalings on offer with their formula, and what was on screen when saving.
 
   The header repeats in every part of a split file, so these stay compact there
   and the per-point detail rides in the split sections — `listImprovements` is a
@@ -647,7 +647,7 @@ it keeps its 1120-pixel cap.
 A click on a row shows the grid row that way, and the card opens again on the same
 register, so the next datatype is one click away too. Since 1.56.0 the card's big
 number follows the choice: the value under that datatype, scaled the way the row
-would scale it, with the unit. The scale is a chosen preset, else the list's
+would scale it, with the unit. The scale is a chosen scaling, else the list's
 scale, else the factor the plant's own display implies, at the plant's decimals.
 Underneath it says what the datatype reads and what the register holds — for
 example *61.6 °C — as I_Input_rU16_N it reads 6160 · register holds 2072*. The one showing is marked
@@ -666,44 +666,98 @@ The same from the API: `__modpoll.viewAs('3', 191, 'U32_N')`, `__modpoll.views()
 `__modpoll.clearViews()`, and `__modpoll.decode([3392, 3], 'U32_W')` for words in
 hand.
 
-### Scale presets
+### Scalings
 
-The **scaled** column is a picker too (1.51.0). Closed, it shows what it always
-did — the value under the list's scale, what the plant shows, or the bare reading —
-followed by where that comes from (`x0.01, list`, `IWMAC shows`, `unscaled`). Open,
-it lists the same reading under every preset, so opening it *is* the comparison:
+IWMAC scales a value linearly. A parameter holds four numbers, `raw_min`, `raw_max`,
+`eng_min` and `eng_max`, and shows
 
 ```
-2000.00 · x0.01, list
-200000000 · x1000   20000000 · x100   2000000 · x10   200000 · x1
-720000.0 · x3.6     100000.0 · x0.5   50000.00 · x0.25
-20000.0 · x0.1      2000.00 · x0.01   200.000 · x0.001   20.0000 · x0.0001
+eng = eng_min + (raw − raw_min) × (eng_max − eng_min) / (raw_max − raw_min)
 ```
 
-The presets are modbusgen's own scale keys that act on a plain number — `x3.6` turns
-l/s into m³/h — each shown with the decimals it implies, as many as the key has after
-the point (the list rule that pairs `x0.1` with 1). Choosing one shows that scale on
-the row; the first entry goes back. **Display only: the point list keeps its own
-scale.** It combines with a datatype view — the presets then apply to the viewed
-value — and *clear views* clears both. From the API: `__modpoll.scaleAs('3', 95,
-'x3.6')`, and `__modpoll.scalePresets(2000)` for every preset of a number in hand.
+Since 1.58.0 the console scales the same way, with the catalogue Supermarket-superuser
+offers when a parameter is scaled. It has three groups:
+- **Multipliers:** `x1000` down to `x000.1`, `/5` and `Raw value * 400 / 1000`.
+- **Conversions:** `Kelvin to Celsius`, `L/s -> m3/h` and the other flow units, and the
+  energy flow rate.
+- **Digital and current transformers:** `Invert`, `MV-alarm` and the six CT ratios.
 
-**Click a register to choose its scale as well (1.57.0).** Under *View as*, the detail
-card has a *Scale* section in the same look: two lists, the keys that keep whole
-numbers and the keys that bring decimals. Each row holds the key, what it does
-(`÷10, 1 decimal`) and the value the reading gives under it. The reading is the one
-the scaled cell scales — what the chosen datatype reads, when one is chosen. Two
-marks help pick:
-- `list` sits on the list's own key.
-- `IWMAC` sits on any key that gives the number the plant showed for this register
-  when its names were read, to the decimals the plant shows.
+Every key a modbusgen list can carry is in it too. A preset that modbusgen has a key
+for carries that key, so `x00.1` is `x0.01` and `L/s -> m3/h` is `x3.6`; a choice
+made here can then be written into a list. A preset without a key is set in IWMAC
+itself, by its four numbers.
 
-A click shows the row under that scale, and the card opens again on the same
-register. The big number follows: *745.2 °C — under x3.6, display only · register
-holds 207*. *own scale*, beside the heading, goes back. The section is in the
-cards of the register grid and of a verification, where the row has a scaled cell
-to show the choice in. A text view (`STR`, `CLK`, bits) has nothing to scale, and
-the section says so.
+A reading is shown with the decimals its scaling implies: as many as its factor and
+offset state, which is the list rule that pairs `x0.1` with 1. Where those run past
+four, as `x65`'s ×0.000152587890625 does, it shows up to six decimals.
+
+**The scaled column is a picker (1.51.0).** Closed, it shows what it always did — the
+value under the list's scale, what the plant shows, or the bare reading — followed by
+where that comes from (`x0.01, list`, `IWMAC shows`, `unscaled`). Open, it lists the
+same reading under every scaling, in the three groups, so opening it *is* the
+comparison. Choosing one shows that scaling on the row; the first entry goes back.
+**Display only: the point list keeps its own scale.** It combines with a datatype
+view — the scaling then applies to the viewed value — and *clear views* clears both.
+
+**Click a register to choose its scaling as well (1.57.0, IWMAC's scalings since
+1.58.0).** Under *View as*, the detail card has a *Scale* section in the same look,
+with a column per group. Each row holds:
+- the preset;
+- what it does (`÷10`, `×3.6`, `raw − 273.15`);
+- the value the reading gives under it.
+
+Its tooltip has the four numbers, the formula with this reading in it, and the
+modbusgen key, or a note that there is none. The reading is the one the scaled cell
+scales: what the chosen datatype reads, when one is chosen. Three marks help pick:
+- a grey tag gives the modbusgen key where the preset's label is another;
+- `list` sits on the list's own scale;
+- `IWMAC` sits on any scaling that gives the number the plant showed for this
+  register when its names were read, to the decimals the plant shows.
+
+A click shows the row under that scaling, and the card opens again on the same
+register. The big number follows: *745.2 °C — under L/s -> m3/h (x3.6), display only
+· register holds 207*. *own scale*, beside the heading, goes back.
+
+Under the lists, as in Supermarket-superuser:
+- **Custom:** `raw_min`, `raw_max`, `eng_min` and `eng_max`, filled with the scaling
+  showing or the list's. Its result and formula follow the boxes as they are typed.
+  *Use* (or Enter) shows the row under it.
+- **Calculator:** *raw X should read Y*, with this reading as X and, where the plant
+  shows a number, that number as Y. It makes the scaling 0…X onto 0…Y and says
+  which preset that is, if any.
+
+A custom scaling that scales the same as a preset is shown as that preset. Otherwise
+it is listed as `raw 0..4095 -> 0..100`, the same text the export and the API use.
+The section is in the cards of the register grid and of a verification, where the row
+has a scaled cell to show the choice in. A text view (`STR`, `CLK`, bits) has nothing
+to scale, and the section says so.
+
+**A list's scale key is read through modbusgen's table (1.58.0).** `data/tables/scaling.csv`
+gives the four numbers modbusgen writes into IWMAC for each key, and four keys do not do
+what their text says. Before 1.58.0 the console read them from their text:
+
+| key | IWMAC scales it | the console read it as |
+|---|---|---|
+| `x65` | ×10/65536 (0…65536 → 0…10) | ×65 |
+| `x0036` | ÷277 | ×36 |
+| `x0.000001` | ÷100 000 (0…1000000 → 0…10) | ×0.000001 |
+| `pa` | raw − 30000 | not understood |
+
+The point list's *scale* row in the card now says what a key does, for example
+`x65 (×0.00015259)`.
+
+IWMAC's own definitions are read the same way. Scale mode 3, *scale, format and
+clipping*, scales as mode 1 does, as Supermarket-superuser's `isScalingActive` has
+it. Before 1.58.0 the console compared a mode-3 parameter unscaled.
+
+From the API:
+- `__modpoll.scaleAs('3', 95, 'x3.6')` takes a preset's label or a modbusgen key.
+- It also takes the four numbers, as `'raw 0..4095 -> 0..100'` or `[0, 4095, 0, 100]`.
+- `__modpoll.scalePresets(2000)` gives every scaling's four numbers and value for a
+  number in hand.
+
+*Save JSON* lists each scaling chosen with its four numbers (`views.active[].scaling`)
+and states the formula once (`views.scaleFormula`).
 
 *Verify list* polls every point, grouping them into ranges that merge across
 small gaps and split at the count cap, then judges each answer with a fixed
@@ -841,8 +895,9 @@ __modpoll.stop();                          // abort a running sweep
 
 __modpoll.decode([3392, 3], 'U32_N');      // words as iw_mb.exe reads them → { value: 200000, … }
 __modpoll.viewAs('3', 191, 'U32_N');       // show one register as another datatype, display only
-__modpoll.scaleAs('3', 95, 'x3.6');        // show one register with another scale key, display only
-__modpoll.scalePresets(2000);              // [{ scale: 'x1000', value, text }, …] for a number in hand
+__modpoll.scaleAs('3', 95, 'x3.6');        // show one register under another scaling, display only
+__modpoll.scaleAs('3', 95, [0, 4095, 0, 100]);   // ... or under four numbers of your own
+__modpoll.scalePresets(2000);              // [{ scale: 'x1000', key, rawMin, rawMax, engMin, engMax, value, text }, …]
 __modpoll.views();                         // [{ table, ref, view, scale }]
 __modpoll.clearViews();                    // every register as read, listed and scaled again
 ```
@@ -906,10 +961,18 @@ quietly stop being the thing under test.
   to plant 11087: the registers it returned on 2026-09-29 decoded under every
   suffix beside what IWMAC showed for them (2222981.15 under `U32_W`, 200000
   under `U32_N`), the 16-bit views, a refused 32-bit byte swap, the view
-  catalogue, the scale presets and the decimals each implies (222298115 under
-  `x0.01` prints 2222981.15), which preset gives the number IWMAC shows (207 gives
-  20,7 under `x0.1` and under no other key), and the card's big number under a
-  chosen scale, with and without a datatype view; then a whole verification through the shipped `verifyPointList`
+  catalogue, and IWMAC's scalings. For the scalings it checks:
+  - the catalogue holds Supermarket-superuser's 23 presets and every modbusgen key;
+  - each reading carries the decimals its scaling implies (222298115 under `x0.01`
+    prints 2222981.15), offsets (293 K is 19.85 °C) and inversion included;
+  - custom scalings, and a custom one that is a preset found as it;
+  - the list's keys read through modbusgen's table (`x65` is ×10/65536, `pa`
+    subtracts 30000);
+  - which scaling gives the number IWMAC shows (207 gives 20,7 under `x0.1` and no
+    other);
+  - the card's big number under a chosen scaling, with and without a datatype view.
+
+  Then a whole verification through the shipped `verifyPointList`
   against a map of those registers — every point read as 16-bit words, a `_W`
   point shown as IWMAC shows it, and the words kept for views but out of the JSON.
 - `python test/export-check.py` — *Save JSON* with a scan in hand and no poll,

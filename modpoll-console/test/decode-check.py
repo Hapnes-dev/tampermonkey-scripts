@@ -25,7 +25,7 @@ js = lift("    const IWMAC_WORD_ORDER = {", "\n    /*\n     * Two 16-bit registe
 js += lift("    function impliedScale(raw, shown) {", "\n    /**\n     * What a register and its neighbour decode to")
 js += lift("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * Points become poll ranges")
 js += lift("    const VIEW_TYPES = [", "\n    /**\n     * The picker in a grid's type cell.")
-js += lift("    const SCALE_PRESETS = [", "\n    /**\n     * The picker in a grid's scaled cell.")
+js += lift("    const SCALE_GROUPS = {", "\n    /**\n     * The picker in a grid's scaled cell.")
 js += r"""
 let failed = 0;
 const check = (name, ok, got) => {
@@ -154,43 +154,87 @@ if (fs.existsSync(csvPath)) {
         shown.every(n => known.has(n)), shown.filter(n => !known.has(n)).join(' '));
 }
 
-// Scale presets: the same reading under another scale key, with the decimals that key implies.
-check('every preset is a key the scale parser knows', SCALE_PRESETS.every(k => scaleFactorOf(k).known), SCALE_PRESETS.join(' '));
-check('decimals follow the key: x0.001 three, x0.25 two, x3.6 one, x10 none',
-    decimalsForScale('x0.001') === 3 && decimalsForScale('x0.25') === 2 && decimalsForScale('x3.6') === 1 && decimalsForScale('x10') === 0, '');
-check('2000 under x0.1 shows 200.0', scaledPreset(2000, 'x0.1').text === '200.0' && scaledPreset(2000, 'x0.1').value === 200,
-    show(scaledPreset(2000, 'x0.1')));
-check('2000 l/s under x3.6 shows 7200.0 - the m3/h the controller reports', scaledPreset(2000, 'x3.6').text === '7200.0',
-    show(scaledPreset(2000, 'x3.6')));
+// IWMAC's scalings (1.58): raw_min..raw_max onto eng_min..eng_max, the catalogue Supermarket-superuser
+// offers plus modbusgen's keys, each reading shown with the decimals its scaling implies.
+const at = (raw, name) => scaledBy(raw, scalingOf(name));
+check('every scaling is four numbers that scale, found again by its label',
+    SCALINGS.every(s => Number.isFinite(s.factor) && Number.isFinite(s.offset) && scalingOf(s.label) === s), SCALINGS.map(s => s.label).join(' | '));
+const supermarket = ['Invert', 'MV-alarm', 'x000.1', 'x00.1', 'x0.1', 'x1', 'x10', 'x100', 'x1000', 'Kelvin to Celsius', 'Unit for energy flow rate',
+    'L/h -> m3/h', 'L/h -> L/s', 'L/s -> L/h', 'L/s -> m3/h', '/5', 'CT-ratio: 1200/5A', 'CT-ratio: 1600/5A', 'CT-ratio: 2000/5A',
+    'CT-ratio: 1200/1A', 'CT-ratio: 1600/1A', 'CT-ratio: 2000/1A', 'Raw value * 400 / 1000'];
+check('the catalogue holds all 23 of Supermarket-superuser\'s presets', supermarket.every(l => scalingOf(l) && scalingOf(l).label === l),
+    supermarket.filter(l => !scalingOf(l)).join(' | '));
+check('every modbusgen key is in it, scaling as the list reads that key',
+    Object.keys(LIST_SCALE_KEYS).every(k => { const s = scalingOf(k), f = scaleFactorOf(k); return s && s.factor === f.factor && s.offset === f.offset; }),
+    Object.keys(LIST_SCALE_KEYS).filter(k => !scalingOf(k)).join(' '));
+check('a modbusgen key finds its preset: x0.01 is x00.1, x3.6 is L/s -> m3/h, INV is Invert',
+    scalingOf('x0.01').label === 'x00.1' && scalingOf('x3.6').label === 'L/s -> m3/h' && scalingOf('inv').label === 'Invert', '');
+check('2000 under x0.1 shows 200.0', at(2000, 'x0.1').text === '200.0' && at(2000, 'x0.1').value === 200, show(at(2000, 'x0.1')));
+check('2000 l/s under x3.6 shows 7200.0 - the m3/h the controller reports', at(2000, 'x3.6').text === '7200.0', show(at(2000, 'x3.6')));
 check('222298115 under x0.01 shows 2222981.15 - what IWMAC showed for the _W setpoint',
-    scaledPreset(222298115, 'x0.01').text === '2222981.15', show(scaledPreset(222298115, 'x0.01')));
-check('a negative reading keeps its sign: -200 under x0.01 is -2.00', scaledPreset(-200, 'x0.01').text === '-2.00',
-    show(scaledPreset(-200, 'x0.01')));
-check('x1 shows a whole number', scaledPreset(2000, 'x1').text === '2000', show(scaledPreset(2000, 'x1')));
-check('no reading, no preset', scaledPreset(undefined, 'x0.1') === null && scaledPreset(NaN, 'x0.1') === null, '');
+    at(222298115, 'x0.01').text === '2222981.15', show(at(222298115, 'x0.01')));
+check('a negative reading keeps its sign: -200 under x0.01 is -2.00', at(-200, 'x0.01').text === '-2.00', show(at(-200, 'x0.01')));
+check('x1 shows a whole number', at(2000, 'x1').text === '2000', show(at(2000, 'x1')));
+check('no reading, no value', at(undefined, 'x0.1') === null && at(NaN, 'x0.1') === null, '');
+check('an offset: 293 K under Kelvin to Celsius is 19.85', at(293, 'Kelvin to Celsius').text === '19.85', show(at(293, 'Kelvin to Celsius')));
+check('MV-alarm turns 2 into 1 and 1 into 0', at(2, 'MV-alarm').text === '1' && at(1, 'MV-alarm').text === '0', show([at(2, 'MV-alarm'), at(1, 'MV-alarm')]));
+check('Invert is IWMAC\'s 1 - raw: 0 reads 1, 1 reads 0', at(0, 'Invert').text === '1' && at(1, 'Invert').text === '0', '');
+check('a 1200/5A current transformer makes 2.5 A 600', at(2.5, 'CT-ratio: 1200/5A').text === '600', show(at(2.5, 'CT-ratio: 1200/5A')));
+check('a factor that runs on is shown to six places: 6553 under x65 is 0.999908, 7200 l/h under L/h -> L/s is 2',
+    at(6553, 'x65').text === '0.999908' && at(7200, 'L/h -> L/s').text === '2', show([at(6553, 'x65'), at(7200, 'L/h -> L/s')]));
+const custom = scalingOf('raw 0..207 -> 0..20.7');
+check('four numbers make a custom scaling, which reads back from its own label',
+    custom && custom.custom && at(207, 'raw 0..207 -> 0..20.7').text === '20.7' && scalingOf(custom.label).factor === custom.factor &&
+    scalingOf('raw 0…207 → 0…20.7') !== null && scalingOf('raw 0..1 -> 0..1e-8').factor === 1e-8, show(custom));
+check('... and refuses what is not one: equal raw ends, words', scalingOf('raw 5..5 -> 0..1') === null && scalingOf('nonsense') === null && scalingOf('') === null, '');
+check('a custom scaling that is a preset is found as it: 0..207 -> 0..20.7 is x0.1, 0..1 -> 1..0 is Invert',
+    sameScaling(custom).label === 'x0.1' && sameScaling(scalingOf('raw 0..1 -> 1..0')).label === 'Invert', '');
 
-// The card's scale list (1.57): what each key does, which key gives what IWMAC shows, and
-// the big number under a chosen scale.
-check('every preset says what it does', SCALE_PRESETS.every(k => SCALE_MEANINGS[k]), SCALE_PRESETS.filter(k => !SCALE_MEANINGS[k]).join(' '));
-check('207 under x0.1 gives the 20,7 the plant shows, and no other key does',
-    SCALE_PRESETS.filter(k => presetGives(207, k, '20,7')).join(' ') === 'x0.1', SCALE_PRESETS.filter(k => presetGives(207, k, '20,7')).join(' '));
-check('a float the plant rounds still matches: 21.4999 under x1 gives 21.5', presetGives(21.4999, 'x1', '21.5'), '');
-check('2000 l/s under x3.6 gives the 7200 m3/h shown', presetGives(2000, 'x3.6', '7200'), '');
+// The list's keys, read through modbusgen's table rather than from their text.
+check('x65 is 10/65536, x0036 is 1/277, x0.000001 is 1/100000 - not what their text says',
+    scaleFactorOf('x65').factor === 10 / 65536 && scaleFactorOf('x0036').factor === 1 / 277 && scaleFactorOf('x0.000001').factor === 0.00001,
+    show([scaleFactorOf('x65'), scaleFactorOf('x0036'), scaleFactorOf('x0.000001')]));
+check('pa subtracts 30000: a register of 29500 is -500', applyScale(scaleFactorOf('pa'), 29500, null) === -500, show(scaleFactorOf('pa')));
+check('the common keys scale as before: 207 x0.1 is 20.7, 222298115 x0.01 is 2222981.15, 2000 x3.6 is 7200',
+    applyScale(scaleFactorOf('x0.1'), 207, 1) === 20.7 && applyScale(scaleFactorOf('x0.01'), 222298115, 2) === 2222981.15 &&
+    applyScale(scaleFactorOf('x3.6'), 2000, 1) === 7200, '');
+check('INV stays an inverted digital, and a key not in the table still says its factor',
+    applyScale(scaleFactorOf('INV'), 1) === 0 && applyScale(scaleFactorOf('INV'), 0) === 1 && scaleFactorOf('x0.2').factor === 0.2 &&
+    !scaleFactorOf('C2F').known, '');
+check('what a scaling does, in short: ÷10, ×3.6, ÷277, raw − 30000, 1 − raw, raw − 273.15',
+    scaleEffect(scaleFactorOf('x0.1')) === '÷10' && scaleEffect(scaleFactorOf('x3.6')) === '×3.6' && scaleEffect(scaleFactorOf('x0036')) === '÷277' &&
+    scaleEffect(scaleFactorOf('pa')) === 'raw − 30000' && scaleEffect(scalingOf('Invert')) === '1 − raw' &&
+    scaleEffect(scalingOf('Kelvin to Celsius')) === 'raw − 273.15',
+    [scaleEffect(scaleFactorOf('x0.1')), scaleEffect(scaleFactorOf('x3.6')), scaleEffect(scaleFactorOf('x0036')), scaleEffect(scaleFactorOf('pa')),
+        scaleEffect(scalingOf('Invert')), scaleEffect(scalingOf('Kelvin to Celsius'))].join(' | '));
+
+// The card (1.57, 1.58): which scaling gives what IWMAC shows, and the big number under a chosen one.
+const gives = (raw, shown) => SCALINGS.filter(s => scalingGives(raw, s, shown)).map(s => s.label).join(' | ');
+check('207 under x0.1 gives the 20,7 the plant shows, and no other scaling does', gives(207, '20,7') === 'x0.1', gives(207, '20,7'));
+check('a float the plant rounds still matches: 21.4999 under x1 gives 21.5', scalingGives(21.4999, scalingOf('x1'), '21.5'), '');
+check('2000 l/s under x3.6 gives the 7200 m3/h shown', scalingGives(2000, scalingOf('x3.6'), '7200'), '');
+check('an offset matches too: 293 under Kelvin to Celsius gives the 19,85 shown', scalingGives(293, scalingOf('Kelvin to Celsius'), '19,85'), '');
 check('the match is to the decimals shown: 1 under x0.5 is not the 1 shown, under x1 it is',
-    presetGives(1, 'x1', '1') && !presetGives(1, 'x0.5', '1'), '');
-check('a zero, a state text or nothing shown matches no key',
-    !presetGives(0, 'x1', '0') && !presetGives(5, 'x1', '0') && !presetGives(1, 'x1', 'Auto') && !presetGives(1, 'x1', '') && !presetGives(1, 'x1', null), '');
+    scalingGives(1, scalingOf('x1'), '1') && !scalingGives(1, scalingOf('x0.5'), '1'), '');
+check('a zero, a state text or nothing shown matches no scaling',
+    !scalingGives(0, scalingOf('x1'), '0') && !scalingGives(5, scalingOf('x1'), '0') && !scalingGives(1, scalingOf('x1'), 'Auto') &&
+    !scalingGives(1, scalingOf('x1'), '') && !scalingGives(1, scalingOf('x1'), null), '');
 const listPoint = { unit: '°C', scale: scaleFactorOf('x0.1'), decimals: 1 };
 scaleOverrides.set('4|95', 'x3.6');
 const underScale = viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: 207 });
-check('a scale chosen without a datatype makes the big number: 207 under x3.6 is 745.2 °C',
-    underScale && underScale.lead === '745.2 °C' && /^under x3\.6, display only · register holds 207$/.test(underScale.note), show(underScale));
+check('a scaling chosen without a datatype makes the big number: 207 under x3.6 is 745.2 °C, named as the preset',
+    underScale && underScale.lead === '745.2 °C' && underScale.note === 'under L/s -> m3/h (x3.6), display only · register holds 207', show(underScale));
 check('a row with no scaled cell keeps the card\'s own big number', viewedHeadline('4', 95, 207, listPoint, null, undefined, undefined) === null, '');
 check('a row with nothing to scale keeps it too', viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: undefined }) === null, '');
+scaleOverrides.set('4|95', 'raw 0..1000 -> -273.15..726.85');
+const underCustom = viewedHeadline('4', 95, 293, listPoint, null, undefined, { raw: 293 });
+check('a custom scaling makes it too: 293 under raw 0..1000 -> -273.15..726.85 is 19.85 °C',
+    underCustom && underCustom.lead === '19.85 °C' && /^under raw 0\.\.1000 -> -273\.15\.\.726\.85, display only/.test(underCustom.note), show(underCustom));
+scaleOverrides.set('4|95', 'x3.6');
 viewOverrides.set('4|95', 'U16');
 const bothChosen = viewedHeadline('4', 95, 207, listPoint, null, ref => ({ 95: 2072 })[ref], { raw: 2072 });
-check('with a datatype too, the scale applies to what it reads: 2072 under x3.6 is 7459.2 °C, and the note says so',
-    bothChosen && bothChosen.lead === '7459.2 °C' && /reads 2072 · under x3\.6 · register holds 207$/.test(bothChosen.note), show(bothChosen));
+check('with a datatype too, the scaling applies to what it reads: 2072 under x3.6 is 7459.2 °C, and the note says so',
+    bothChosen && bothChosen.lead === '7459.2 °C' && /reads 2072 · under L\/s -> m3\/h \(x3\.6\) · register holds 207$/.test(bothChosen.note), show(bothChosen));
 viewOverrides.clear();
 scaleOverrides.clear();
 check('nothing chosen, the card keeps its own big number', viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: 207 }) === null, '');

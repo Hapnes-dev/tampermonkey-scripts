@@ -56,7 +56,7 @@ js += lift("    const RE_SQL_NAME = ", "\n    async function plantSql")
 js += lift("    /**\n     * Registers by what they are called", "\n    function setGridColumns(columns)")
 # "View as": the datatype and scale catalogue, the person's views, and a register as viewed.
 js += lift("    const VIEW_TYPES = [", "\n    /**\n     * The picker in a grid's type cell.")
-js += lift("    const SCALE_PRESETS = [", "\n    /**\n     * The picker in a grid's scaled cell.")
+js += lift("    const SCALE_GROUPS = {", "\n    /**\n     * The picker in a grid's scaled cell.")
 js += "const plantIdFromHost = () => '2349';\n"
 js += "const watchDelta = new Map();\n"
 js += r"""

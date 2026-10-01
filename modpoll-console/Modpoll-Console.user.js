@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.57.0
+// @version      1.58.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.57.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.58.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1612,9 +1612,7 @@
         const point = pointForReading(table, format, value.i);
         const fromPlant = point ? null : plantNamesFor(table, format, value.i);
         const entry = fromPlant && fromPlant[0];
-        const scaled = point
-            ? (point.scale.invert ? (value.v ? 0 : 1) : roundScaled(value.v * point.scale.factor, point.decimals))
-            : null;
+        const scaled = point ? applyScale(point.scale, value.v, point.decimals) : null;
         return {
             ref: value.i,
             addr: value.addr,
@@ -2168,8 +2166,8 @@
                     notes.push('the list declares ' + listed.datatype + ' (one register) where the plant\'s value fits a 32-bit ' + confirmedWide.as);
                 }
             }
-            if (listed && implied && listed.scale.known && ('x' + listed.scale.factor) !== implied) {
-                notes.push('the list scales by x' + listed.scale.factor + ', the plant implies ' + implied);
+            if (listed && implied && listed.scale.known && !listed.scale.invert && !listed.scale.offset && ('x' + roundScaled(listed.scale.factor, 8)) !== implied) {
+                notes.push('the list scales by ' + listed.scaleKey + ' (' + scaleEffect(listed.scale) + '), the plant implies ' + implied);
             }
             if (listed && first && listed.unit && first.unit && listed.unit.trim().toLowerCase() !== first.unit.trim().toLowerCase()) {
                 notes.push('the list says unit "' + listed.unit + '", the plant "' + first.unit + '"');
@@ -2345,7 +2343,7 @@
             for (let k = 0; k < (p.decoded.step || 1); k++) words.push(wordAtV.get(p.decoded.table + '|' + (p.ref + k)));
             return words.every(w => typeof w === 'number') ? words : null;
         };
-        const scaledLikeList = (p, value) => (p.scale.invert ? (value ? 0 : 1) : roundScaled(value * p.scale.factor, p.decimals));
+        const scaledLikeList = (p, value) => applyScale(p.scale, value, p.decimals);
         const otherDatatypesOf = (p, words) => {
             const listedKey = p.decoded.rawType + '_' + p.decoded.swap;
             if (p.decoded.step !== 2) {
@@ -2440,8 +2438,10 @@
             }
             const range = UNIT_RANGES[unitKey];
             if (!found && range && typeof row.scaled === 'number' && (row.scaled < range[0] || row.scaled > range[1])) {
-                const fits = SCALE_PRESETS.filter(k => k !== (p.scaleKey || 'x1'))
-                    .map(k => ({ scale: k, preset: scaledPreset(row.raw, k) }))
+                // the list can only take a key, and only a key that says its factor is a fair suggestion
+                const fits = SCALINGS.filter((s, i) => s.key && s.key !== (p.scaleKey || 'x1') && s.key === 'x' + roundScaled(s.factor, 10) &&
+                        SCALINGS.findIndex(o => o.key === s.key) === i)
+                    .map(s => ({ scale: s.key, preset: scaledBy(row.raw, s) }))
                     .filter(x => x.preset && x.preset.value >= range[0] && x.preset.value <= range[1])
                     .map(x => ({ scale: x.scale, scaled: x.preset.value }));
                 if (fits.length) {
@@ -2590,11 +2590,16 @@
                         'under U32_N (x0.01). Plant 3694: one float read 66925.5 under F_N and -0.0 under F_W; I32_N read -2 whole',
                 },
                 datatypes: VIEW_TYPES.map(t => t.key).join(' '),
-                scalePresets: SCALE_PRESETS.join(' '),
-                active: [...new Set([...viewOverrides.keys(), ...scaleOverrides.keys()])].map(key => ({
-                    table: key.split('|')[0], ref: Number(key.split('|')[1]),
-                    datatype: viewOverrides.get(key) || null, scale: scaleOverrides.get(key) || null,
-                })),
+                scalePresets: SCALINGS.map(scalingName).join(' | '),
+                scaleFormula: 'IWMAC shows eng_min + (raw - raw_min) * (eng_max - eng_min) / (raw_max - raw_min); a scaling below is "raw raw_min..raw_max -> eng_min..eng_max"',
+                active: [...new Set([...viewOverrides.keys(), ...scaleOverrides.keys()])].map(key => {
+                    const chosen = scalingOf(scaleOverrides.get(key));
+                    return {
+                        table: key.split('|')[0], ref: Number(key.split('|')[1]),
+                        datatype: viewOverrides.get(key) || null, scale: scaleOverrides.get(key) || null,
+                        scaling: chosen ? rangesText(chosen) : undefined,
+                    };
+                }),
             },
             privacy: {
                 redacted: 'Credentials never leave in this file: a setting, key or header named like one (password, token, key, ' +
@@ -3057,9 +3062,11 @@
 
         const states = describeStates(main.format_extra, stateValue);
         const scaleWords = describeIwmacScale({ mode: main.scale, rawMin: main.raw_min, rawMax: main.raw_max, engMin: main.eng_min, engMax: main.eng_max });
-        const scaleText = String(main.scale) === '1'
+        // Mode 1 scales; mode 3 scales the same way and formats and clips as well.
+        const scaleText = String(main.scale) === '1' || String(main.scale) === '3'
             ? 'linear: raw ' + show(main.raw_min) + ' … ' + show(main.raw_max) + ' → ' + show(main.eng_min) + ' … ' + show(main.eng_max) +
-                (scaleWords.indexOf('x') === 0 ? '  (' + scaleWords.replace(/^x/, '×') + ')' : '')
+                (scaleWords.indexOf('x') === 0 ? '  (' + scaleWords.replace(/^x/, '×') + ')' : '') +
+                (String(main.scale) === '3' ? ' — mode 3: format and clipping too' : '')
             : (blank(main.scale) ? '—' : scaleWords);
         const shows = [
             ['alias text', show(decodeEntities(main.alias_text)), false, '', 'alias_text'],
@@ -3160,8 +3167,10 @@
         } else {
             return { ok: false, why: 'raw type ' + type + ' is not decoded here' };
         }
+        // Mode 1 is "scale only" and mode 3 "scale, format and clipping": both scale
+        // linearly, as Supermarket-superuser's isScalingActive has it.
         const s = def.scale || {};
-        if (String(s.mode) === '1') {
+        if (String(s.mode) === '1' || String(s.mode) === '3') {
             const rmin = Number(s.rawMin), rmax = Number(s.rawMax), emin = Number(s.engMin), emax = Number(s.engMax);
             if (![rmin, rmax, emin, emax].some(Number.isNaN) && rmax !== rmin) value = emin + (value - rmin) * (emax - emin) / (rmax - rmin);
         } else if (String(s.mode) === '2') {
@@ -4212,16 +4221,67 @@
             : Number(value.toFixed(decimals));
     }
 
-    /** "x0.1" and friends. A key this does not know leaves the value unscaled. */
+    /**
+     * IWMAC scales a value linearly: raw_min…raw_max onto eng_min…eng_max, the
+     * four numbers a parameter holds under scale mode 1 or 3, so it shows
+     * eng_min + (raw − raw_min) × (eng_max − eng_min) / (raw_max − raw_min).
+     * As a factor and an offset that is raw × factor + offset.
+     */
+    function linearOf(rawMin, rawMax, engMin, engMax) {
+        const factor = (engMax - engMin) / (rawMax - rawMin);
+        return { factor, offset: engMin - rawMin * factor };
+    }
+
+    /**
+     * The scale keys a modbusgen list can carry, as the ranges modbusgen writes
+     * into IWMAC for each (data/tables/scaling.csv, all mode 1): raw_min,
+     * raw_max, eng_min, eng_max. Four keys do not do what their text says —
+     * x65 is ×10/65536, x0036 is ÷277, x0.000001 is ÷100 000 and pa subtracts
+     * 30 000 — so a key is read through this table, not from its text.
+     */
+    const LIST_SCALE_KEYS = {
+        x1000: [0, 1000, 0, 1000000], x100: [0, 1000, 0, 100000], x10: [0, 1000, 0, 10000], x1: [0, 1000, 0, 1000],
+        'x0.5': [0, 1000, 0, 500], 'x0.25': [0, 100, 0, 25], 'x0.1': [0, 1000, 0, 100], 'x0.01': [0, 1000, 0, 10],
+        'x0.001': [0, 1000, 0, 1], 'x0.0001': [0, 10000, 0, 1], 'x0.000001': [0, 1000000, 0, 10],
+        'x0.00000001': [0, 1000000000, 0, 10], 'x3.6': [0, 1000, 0, 3600], x65: [0, 65536, 0, 10], x0036: [0, 277, 0, 1],
+        pa: [0, 30000, -30000, 0],
+    };
+
+    /**
+     * A list's scale key as a factor and an offset: "x0.1" and friends through
+     * LIST_SCALE_KEYS, another "x…" or a bare number as the factor it says, INV
+     * as an inverted digital. A key this does not know leaves the value unscaled.
+     */
     function scaleFactorOf(key) {
         const text = String(key == null ? '' : key).trim();
-        if (!text) return { factor: 1, known: true };
+        if (!text) return { factor: 1, offset: 0, known: true };
+        if (/^inv$/i.test(text)) return { factor: 1, offset: 0, known: true, invert: true };
+        const ranges = LIST_SCALE_KEYS[text.toLowerCase()];
+        if (ranges) return Object.assign({ known: true, ranges }, linearOf(...ranges));
         const m = text.match(/^x([0-9.]+)$/i);
-        if (m) return { factor: Number(m[1]), known: true };
-        if (/^inv$/i.test(text)) return { factor: 1, known: true, invert: true };
+        if (m && Number.isFinite(Number(m[1]))) return { factor: Number(m[1]), offset: 0, known: true };
         const plain = Number(text);
-        if (!Number.isNaN(plain) && text !== '') return { factor: plain, known: true };
-        return { factor: 1, known: false };
+        if (Number.isFinite(plain)) return { factor: plain, offset: 0, known: true };
+        return { factor: 1, offset: 0, known: false };
+    }
+
+    /** A reading under a list's scale, as IWMAC would show it: to the list's decimals, else cleaned of float noise. */
+    function applyScale(scale, raw, decimals) {
+        if (scale.invert) return raw ? 0 : 1;
+        return roundScaled(raw * scale.factor + (scale.offset || 0), decimals);
+    }
+
+    /** What a list's scale does, in a few characters: ×0.1, ÷277, raw − 30000. */
+    function scaleEffect(scale) {
+        if (scale.invert) return 'inverted';
+        const f = scale.factor, o = roundScaled(scale.offset || 0, 10);
+        const sign = o < 0 ? ' − ' + -o : ' + ' + o;
+        if (f === -1) return o + ' − raw';
+        let times;
+        if (f === 1) times = o ? 'raw' : '×1';
+        else if (Math.abs(f) < 1 && Math.abs(1 / f - Math.round(1 / f)) < 1e-9 * Math.abs(1 / f)) times = '÷' + Math.round(1 / f);
+        else times = '×' + roundScaled(f, 8);
+        return o ? times + sign : times;
     }
 
     function parsePointList(json) {
@@ -4391,7 +4451,7 @@
                 const d = decodeWords(wordsAt(p, 0), p.decoded.rawType, p.decoded.swap);
                 return { point: p, status: 'read', note: d.why, flags: [d.why] };
             }
-            const scaled = p.scale.invert ? (raw ? 0 : 1) : roundScaled(raw * p.scale.factor, p.decimals);
+            const scaled = applyScale(p.scale, raw, p.decimals);
             const flags = [];
             if (!p.scale.known) flags.push('scale key "' + p.scaleKey + '" not understood, value shown raw');
             if (p.rangeMin !== null && scaled < p.rangeMin) flags.push('below the list range (' + p.rangeMin + ')');
@@ -4423,7 +4483,7 @@
                 if (value !== 0) nonZero++;
                 if (p.rangeMin === null && p.rangeMax === null) continue;
                 scored++;
-                const scaled = value * p.scale.factor;
+                const scaled = value * p.scale.factor + (p.scale.offset || 0);
                 const okLow = p.rangeMin === null || scaled >= p.rangeMin;
                 const okHigh = p.rangeMax === null || scaled <= p.rangeMax;
                 if (okLow && okHigh) inRange++;
@@ -5627,13 +5687,28 @@
     #${PANEL_ID} button.mpc-vitem[disabled]{cursor:default;opacity:.45}
     #${PANEL_ID} button.mpc-vitem.mpc-vbase{flex:0 0 auto;width:auto;grid-template-columns:auto auto;border:1px solid #c5d9f1;
         border-radius:4px}
-    /* The same list for the scale presets (1.57): the key, what it does with the
-       list's and IWMAC's marks beside it, the value. */
-    #${PANEL_ID} button.mpc-vitem.mpc-sitem{grid-template-columns:62px 1fr auto}
+    /* The same list for IWMAC's scalings (1.57, 1.58): the label, what it does
+       with the modbusgen key's, the list's and IWMAC's marks beside it, the value. */
+    #${PANEL_ID} .mpc-vcols.mpc-scols{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+    #${PANEL_ID} button.mpc-vitem.mpc-sitem{grid-template-columns:136px 1fr auto}
     #${PANEL_ID} button.mpc-vitem em i{font-style:normal;font-size:10px;margin-left:6px;padding:0 5px;border-radius:7px;
         background:#e6f0fb;color:#1b5fa8}
     #${PANEL_ID} button.mpc-vitem em i.plant{background:#e3f4e8;color:#1e7b3c}
+    #${PANEL_ID} button.mpc-vitem em i.key{background:#eef0f4;color:#555;font-family:Consolas,ui-monospace,monospace}
     #${PANEL_ID} .mpc-vnone{font-size:11.5px;color:#79808c}
+    /* The custom scaling and the calculator under the lists (1.58), as
+       Supermarket-superuser has them; amber while the custom one is showing. */
+    #${PANEL_ID} .mpc-scustom{display:flex;flex-direction:column;gap:5px;padding:6px 10px;background:#fff;
+        border:1px solid #dfe3e9;border-radius:4px}
+    #${PANEL_ID} .mpc-scustom.on{background:#fff4cc;box-shadow:inset 3px 0 0 #d9a400}
+    #${PANEL_ID} .mpc-srow{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;font-size:11.5px;color:#555}
+    #${PANEL_ID} .mpc-srow h6{margin:0;width:78px;font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;
+        text-transform:uppercase;color:#79808c}
+    #${PANEL_ID} .mpc-srow label{display:flex;align-items:center;gap:4px}
+    #${PANEL_ID} input.mpc-sinput{width:78px;height:22px;padding:0 5px;font:12px Consolas,ui-monospace,monospace}
+    #${PANEL_ID} .mpc-sresult{min-width:80px;font:bold 12px Consolas,ui-monospace,monospace;color:#1b5fa8}
+    #${PANEL_ID} .mpc-sformula{padding-left:88px;font:11px Consolas,ui-monospace,monospace;color:#79808c}
+    #${PANEL_ID} .mpc-snote{font-size:11px;color:#79808c}
     /* A 1px gap over a grey backing reads as gridlines, which is what separates
        one pair from the next without drawing a border around each of them. */
     #${PANEL_ID} .mpc-dsec{display:flex;flex-direction:column;gap:1px;min-width:0;
@@ -6350,29 +6425,116 @@
     }
 
     /*
-     * Scale presets, the other half of "view as": what a reading would show under
-     * another scale key, display only. The keys are modbusgen's own
-     * (data/tables/scaling.csv) that act on a plain number — x3.6 turns l/s into
-     * m³/h — and each is shown with the decimals it implies: as many as the key
-     * has after the point, the list rule that pairs x0.1 with 1.
+     * Scalings, the other half of "view as": what a reading would show under
+     * another of IWMAC's scalings, display only (1.58). IWMAC scales linearly,
+     * raw_min…raw_max onto eng_min…eng_max (linearOf), so every scaling here is
+     * those four numbers. The catalogue is the presets Supermarket-superuser
+     * offers when a parameter is scaled, plus the keys a modbusgen list can carry
+     * that those do not cover. A preset with a modbusgen key carries it, so a
+     * choice made here can be written into a list; one without is set in IWMAC.
+     * The groups are the card's columns.
      */
-    const SCALE_PRESETS = ['x1000', 'x100', 'x10', 'x1', 'x3.6', 'x0.5', 'x0.25', 'x0.1', 'x0.01', 'x0.001', 'x0.0001'];
-    const scaleOverrides = new Map();   // table|ref -> scale key
+    const SCALE_GROUPS = { mult: 'Multipliers', conv: 'Conversions', dig: 'Digital and current transformers' };
+    const SCALINGS = [
+        ['mult', 'x1000', 'x1000', 0, 1000, 0, 1000000],
+        ['mult', 'x100', 'x100', 0, 1000, 0, 100000],
+        ['mult', 'x10', 'x10', 0, 1000, 0, 10000],
+        ['mult', 'x1', 'x1', 0, 1000, 0, 1000],
+        ['mult', 'x0.5', 'x0.5', 0, 1000, 0, 500],
+        ['mult', 'Raw value * 400 / 1000', null, 0, 1000, 0, 400],
+        ['mult', 'x0.25', 'x0.25', 0, 100, 0, 25],
+        ['mult', '/5', null, 0, 1000, 0, 200],
+        ['mult', 'x0.1', 'x0.1', 0, 1000, 0, 100],
+        ['mult', 'x00.1', 'x0.01', 0, 1000, 0, 10],
+        ['mult', 'x0036', 'x0036', 0, 277, 0, 1],
+        ['mult', 'x000.1', 'x0.001', 0, 1000, 0, 1],
+        ['mult', 'x0.0001', 'x0.0001', 0, 10000, 0, 1],
+        ['mult', 'x65', 'x65', 0, 65536, 0, 10],
+        ['mult', 'x0.000001', 'x0.000001', 0, 1000000, 0, 10],
+        ['mult', 'x0.00000001', 'x0.00000001', 0, 1000000000, 0, 10],
+        ['conv', 'Kelvin to Celsius', null, 0, 1000, -273.15, 726.85],
+        ['conv', 'pa', 'pa', 0, 30000, -30000, 0],
+        ['conv', 'Unit for energy flow rate', null, 0, 100, 0, 27778],
+        ['conv', 'L/s -> m3/h', 'x3.6', 0, 1, 0, 3.6],
+        ['conv', 'L/s -> L/h', null, 0, 1, 0, 3600],
+        ['conv', 'L/h -> m3/h', 'x0.001', 0, 1000, 0, 1],
+        ['conv', 'L/h -> L/s', null, 0, 3600, 0, 1],
+        ['dig', 'Invert', 'INV', 0, 1, 1, 0],
+        ['dig', 'MV-alarm', null, 1, 2, 0, 1],
+        ['dig', 'CT-ratio: 1200/5A', null, 0, 5, 0, 1200],
+        ['dig', 'CT-ratio: 1600/5A', null, 0, 5, 0, 1600],
+        ['dig', 'CT-ratio: 2000/5A', null, 0, 5, 0, 2000],
+        ['dig', 'CT-ratio: 1200/1A', null, 0, 1, 0, 1200],
+        ['dig', 'CT-ratio: 1600/1A', null, 0, 1, 0, 1600],
+        ['dig', 'CT-ratio: 2000/1A', null, 0, 1, 0, 2000],
+    ].map(([group, label, key, rawMin, rawMax, engMin, engMax]) => makeScaling({ group, label, key, rawMin, rawMax, engMin, engMax }));
+    const scaleOverrides = new Map();   // table|ref -> a scaling's name, as scalingOf reads it
 
-    function decimalsForScale(key) {
-        const m = String(key || '').trim().match(/\.(\d+)$/);
-        return m ? m[1].length : 0;
+    function makeScaling(s) {
+        return Object.assign(s, linearOf(s.rawMin, s.rawMax, s.engMin, s.engMax));
     }
 
-    /** A reading under a scale key: the value, and the text with the decimals the key implies. */
-    function scaledPreset(raw, key) {
-        if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
-        const s = scaleFactorOf(key);
-        if (!s.known) return null;
-        if (s.invert) return { value: raw ? 0 : 1, text: String(raw ? 0 : 1) };
-        const places = decimalsForScale(key);
-        const value = roundScaled(raw * s.factor, places);
-        return { value, text: value.toFixed(places) };
+    /** The four numbers as text, and as the spec a custom scaling is stored under: "raw 0..1000 -> 0..100". */
+    function rangesText(s) {
+        return 'raw ' + s.rawMin + '..' + s.rawMax + ' -> ' + s.engMin + '..' + s.engMax;
+    }
+
+    /** A scaling's name for a note: its label, and its modbusgen key where that differs. */
+    function scalingName(s) {
+        return s.label + (s.key && s.key !== s.label ? ' (' + s.key + ')' : '');
+    }
+
+    /**
+     * A scaling from what names one: a preset's label or modbusgen key ("x0.1",
+     * "Kelvin to Celsius", "INV"), or four numbers as "raw 0..207 -> 0..20.7" —
+     * what the card's custom row stores. Null for anything else.
+     */
+    function scalingOf(name) {
+        const text = String(name == null ? '' : name).trim();
+        if (!text) return null;
+        const low = text.toLowerCase();
+        const preset = SCALINGS.find(s => s.label.toLowerCase() === low) || SCALINGS.find(s => s.key && s.key.toLowerCase() === low);
+        if (preset) return preset;
+        const n = '(-?\\d+(?:\\.\\d+)?(?:e[-+]?\\d+)?)';
+        const m = text.match(new RegExp('^raw\\s*' + n + '\\s*(?:\\.\\.|…)\\s*' + n + '\\s*(?:->|→)\\s*' + n + '\\s*(?:\\.\\.|…)\\s*' + n + '$', 'i'));
+        if (!m) return null;
+        const [rawMin, rawMax, engMin, engMax] = m.slice(1).map(Number);
+        if (rawMax === rawMin || ![rawMin, rawMax, engMin, engMax].every(Number.isFinite)) return null;
+        const s = makeScaling({ group: 'custom', key: null, custom: true, rawMin, rawMax, engMin, engMax });
+        s.label = rangesText(s);
+        return s;
+    }
+
+    /** How many decimals a number states, to ten places; Infinity when it runs past them. */
+    function statedPlaces(n) {
+        const t = String(roundScaled(Math.abs(n), 10));
+        if (/e/.test(t)) return Infinity;
+        const m = t.match(/\.(\d+)$/);
+        return !m ? 0 : (m[1].length >= 10 ? Infinity : m[1].length);
+    }
+
+    /**
+     * A reading under a scaling: the value, and the text with the decimals the
+     * scaling implies — as many as its factor and offset state, the list rule
+     * that pairs x0.1 with 1 — or, where those run past four, up to six with the
+     * trailing zeros dropped (x65 is ×0.000152587890625).
+     */
+    function scaledBy(raw, s) {
+        if (typeof raw !== 'number' || !Number.isFinite(raw) || !s || !Number.isFinite(s.factor)) return null;
+        const exact = raw * s.factor + s.offset;
+        const places = Math.max(statedPlaces(s.factor), statedPlaces(s.offset));
+        if (places <= 4) {
+            const value = roundScaled(exact, places);
+            return { value, text: value.toFixed(places) };
+        }
+        const value = roundScaled(exact, 6);
+        return { value, text: String(value) };
+    }
+
+    /** The IWMAC formula with this reading in it, as Supermarket-superuser prints it. */
+    function scalingFormula(s, raw) {
+        const n = x => (x < 0 ? '(' + x + ')' : String(x));   // 726.85 − (-273.15), not 726.85 − -273.15
+        return 'eng = ' + s.engMin + ' + (' + raw + ' − ' + n(s.rawMin) + ') × (' + s.engMax + ' − ' + n(s.engMin) + ') / (' + s.rawMax + ' − ' + n(s.rawMin) + ')';
     }
 
     /**
@@ -6395,8 +6557,8 @@
         let scaled = null;
         if (d.ok && typeof d.value !== 'number') scaled = d.value;   // text: nothing to scale
         else if (d.ok) {
-            if (scaleKey) { const p = scaledPreset(d.value, scaleKey); scaled = p ? p.value : null; }
-            else if (listScale) scaled = listScale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * listScale.factor, point.decimals);
+            if (scaleKey) { const p = scaledBy(d.value, scalingOf(scaleKey)); scaled = p ? p.value : null; }
+            else if (listScale) scaled = applyScale(listScale, d.value, point.decimals);
             else scaled = d.value;
         }
         const out = {
@@ -6405,6 +6567,8 @@
             value: d.ok ? d.value : null,
             scaled,
         };
+        const chosen = scalingOf(scaleKey);
+        if (chosen) out.scaling = rangesText(chosen);   // the four numbers IWMAC would hold for it
         if (!d.ok) out.why = d.why;
         if (d.hex) out.wordsHex = d.hex;
         if (d.note) out.note = d.note;   // e.g. not measured on iw_mb.exe
@@ -6413,8 +6577,8 @@
 
     /**
      * What the card's big number becomes under the datatype the register is
-     * viewed as (1.56) or the scale it is shown under (1.57): the decoded value,
-     * scaled the way the row would scale it — a scale preset when one is chosen,
+     * viewed as (1.56) or the scaling it is shown under (1.57): the decoded value,
+     * scaled the way the row would scale it — a scaling when one is chosen,
      * else the list's scale, else the factor the plant's own display implies,
      * with as many decimals as the plant shows — and the unit. The note says
      * what the datatype reads and what the register holds. With a scale and no
@@ -6425,12 +6589,12 @@
     function viewedHeadline(table, ref, value, point, fromPlant, wordAt, scale) {
         const key = table + '|' + ref;
         const view = viewTypeOf(viewOverrides.get(key));
-        const scaleKey = scaleOverrides.get(key);
+        const chosen = scalingOf(scaleOverrides.get(key));
         const entry = (fromPlant || []).find(p => p.bit === null);
         const unit = (point && point.unit) || (entry && entry.unit) || '';
         if (!view || typeof wordAt !== 'function') {
-            const preset = scaleKey && scale ? scaledPreset(scale.raw, scaleKey) : null;
-            return preset ? { lead: preset.text + (unit ? ' ' + unit : ''), note: 'under ' + scaleKey + ', display only · register holds ' + value } : null;
+            const preset = chosen && scale ? scaledBy(scale.raw, chosen) : null;
+            return preset ? { lead: preset.text + (unit ? ' ' + unit : ''), note: 'under ' + scalingName(chosen) + ', display only · register holds ' + value } : null;
         }
         const d = decodeView(view, viewWords(view, wordAt, ref));
         const name = fullNames(view, table)[0];
@@ -6438,13 +6602,13 @@
         const reads = viewValueText(d.value);
         if (typeof d.value !== 'number') return { lead: reads, note: 'as ' + name + ' it reads ' + reads + ' · register holds ' + value };
         let shown = reads, under = '';
-        if (scaleKey) {
-            const preset = scaledPreset(d.value, scaleKey);
-            if (preset) { shown = preset.text; under = ' · under ' + scaleKey; }
+        if (chosen) {
+            const preset = scaledBy(d.value, chosen);
+            if (preset) { shown = preset.text; under = ' · under ' + scalingName(chosen); }
         } else if (point && point.scale) {
             if (point.scale.invert) shown = d.value ? 'off' : 'on';
             else {
-                const scaled = roundScaled(d.value * point.scale.factor, point.decimals);
+                const scaled = applyScale(point.scale, d.value, point.decimals);
                 shown = point.decimals ? scaled.toFixed(point.decimals) : String(scaled);
             }
         } else if (entry) {
@@ -6521,115 +6685,212 @@
         return wrap;
     }
 
-    /** What each scale preset does, for the card's scale list. */
-    const SCALE_MEANINGS = {
-        x1000: '×1000', x100: '×100', x10: '×10', x1: 'unscaled', 'x3.6': '×3.6, l/s → m³/h',
-        'x0.5': '÷2, 1 decimal', 'x0.25': '÷4, 2 decimals', 'x0.1': '÷10, 1 decimal',
-        'x0.01': '÷100, 2 decimals', 'x0.001': '÷1000, 3 decimals', 'x0.0001': '÷10000, 4 decimals',
-    };
-
     /**
-     * Whether a reading under a scale key gives the number a display shows —
-     * the plant's own, "21,5" or "850" — to the decimals the display states. A
-     * zero on either side proves nothing, so it never matches.
+     * Whether a reading under a scaling gives the number a display shows — the
+     * plant's own, "21,5" or "850" — to the decimals the display states. A zero
+     * on either side proves nothing, so it never matches.
      */
-    function presetGives(raw, key, shown) {
-        const target = Number(String(shown == null ? '' : shown).trim().replace(',', '.'));
-        if (typeof raw !== 'number' || !Number.isFinite(raw) || !raw || !Number.isFinite(target) || !target) return false;
-        const s = scaleFactorOf(key);
-        if (!s.known || s.invert) return false;
-        return Math.abs(raw * s.factor - target) < 0.5 * Math.pow(10, -decimalsOf(shown));
+    function scalingGives(raw, s, shown) {
+        const target = typedNumber(shown);
+        if (typeof raw !== 'number' || !Number.isFinite(raw) || !raw || !Number.isFinite(target) || !target || !s) return false;
+        return Math.abs(raw * s.factor + s.offset - target) < 0.5 * Math.pow(10, -decimalsOf(shown));
+    }
+
+    /** A number as a person types it or a plant shows it: "20,7" as well as "20.7"; NaN for nothing. */
+    function typedNumber(text) {
+        const t = String(text == null ? '' : text).trim().replace(',', '.');
+        return t === '' ? NaN : Number(t);
+    }
+
+    /** The preset that scales the same way as `s` — the same factor and offset — or null. */
+    function sameScaling(s) {
+        const near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+        return SCALINGS.find(p => near(p.factor, s.factor) && near(p.offset, s.offset)) || null;
     }
 
     /**
-     * The register under every scale preset, for its detail card (1.57): the
-     * reading the row's scaled cell scales — what the chosen datatype reads,
-     * when one is chosen — once per key, with what the key does and the number
-     * it gives. Keys that keep whole numbers and keys that bring decimals are
-     * two lists. A click shows the row under that scale, the same display-only
-     * choice the scaled cell's picker makes, and the card opens again on the
-     * same register. The list's own key is marked, and so is any key that gives
-     * the number IWMAC itself showed; the row in the heading goes back to the
-     * row's own scale. `scale` is { raw, baseText, baseNote }, as the row has it.
+     * The register under every scaling, for its detail card (1.57; IWMAC's
+     * scalings since 1.58): the reading the row's scaled cell scales — what the
+     * chosen datatype reads, when one is chosen — under each preset, with what
+     * it does and the number it gives, a column per group. The four numbers and
+     * the formula with this reading in it are in each row's tooltip. A click
+     * shows the row under that scaling, the same display-only choice the scaled
+     * cell's picker makes, and the card opens again on the same register.
+     * Marked: the modbusgen key a preset goes by where its label is another, the
+     * list's own scale, and any scaling that gives the number IWMAC itself
+     * showed. Under the lists are the custom scaling and the calculator, as
+     * Supermarket-superuser has them. `scale` is { raw, baseText, baseNote }, as
+     * the row has it.
      */
     function scaleChoices(table, ref, scale, point, fromPlant) {
         const key = table + '|' + ref;
-        const current = scaleOverrides.get(key) || '';
+        const chosen = scalingOf(scaleOverrides.get(key));
         const raw = scale.raw;
         const view = viewTypeOf(viewOverrides.get(key));
         const entry = (fromPlant || []).find(p => p.bit === null);
-        const listKey = point ? String(point.scaleKey || 'x1').trim().toLowerCase() : null;
-        const pick = scaleKey => {
-            if (scaleKey) scaleOverrides.set(key, scaleKey); else scaleOverrides.delete(key);
+        const listScaling = point ? scalingOf(point.scaleKey || 'x1') : null;
+        const pick = name => {
+            if (name) scaleOverrides.set(key, name); else scaleOverrides.delete(key);
             redrawAndReopen(key);
         };
         const baseText = scale.baseText === '' || scale.baseText === undefined ? '—' : String(scale.baseText);
-        const base = choiceItem('mpc-vitem mpc-vbase' + (current ? '' : ' on'), "Show it with the row's own scale again",
+        const base = choiceItem('mpc-vitem mpc-vbase' + (chosen ? '' : ' on'), "Show it with the row's own scale again",
             [el('b', { textContent: 'own scale' }), el('em', { textContent: baseText + (scale.baseNote ? ' · ' + scale.baseNote : '') })], () => pick(''));
         const viewed = view ? ' as ' + fullNames(view, table)[0] : '';
         const wrap = el('div', { className: 'mpc-dviews' }, [
             el('div', { className: 'mpc-vhead' }, [
-                el('h5', { textContent: 'Scale — click a scale to show this register' + viewed + ' under it (display only, the list keeps its own)' }),
+                el('h5', { textContent: 'Scale — click a scaling to show this register' + viewed + ' under it, as IWMAC would (display only, the list keeps its own)' }),
                 base,
             ]),
         ]);
         if (typeof raw !== 'number' || !Number.isFinite(raw)) {
             wrap.appendChild(el('div', { className: 'mpc-vnone', textContent: 'Nothing to scale: this register' + (viewed ? viewed + ' gives no number here' : ' has no reading') + '.' +
-                (current ? ' ' + current + ' is still chosen — own scale clears it.' : '') }));
+                (chosen ? ' ' + scalingName(chosen) + ' is still chosen — own scale clears it.' : '') }));
             return wrap;
         }
-        const cols = el('div', { className: 'mpc-vcols' });
-        for (const [title, keys] of [
-            ['Whole numbers', SCALE_PRESETS.filter(k => !decimalsForScale(k))],
-            ['With decimals', SCALE_PRESETS.filter(k => decimalsForScale(k))],
-        ]) {
-            const col = el('div', { className: 'mpc-vcol' }, [el('h6', { textContent: title })]);
-            for (const k of keys) {
-                const p = scaledPreset(raw, k);
+        const cols = el('div', { className: 'mpc-vcols mpc-scols' });
+        for (const group of Object.keys(SCALE_GROUPS)) {
+            const col = el('div', { className: 'mpc-vcol' }, [el('h6', { textContent: SCALE_GROUPS[group] })]);
+            for (const s of SCALINGS.filter(x => x.group === group)) {
+                const p = scaledBy(raw, s);
                 const marks = [];
-                if (listKey === k) marks.push(el('i', { textContent: 'list', title: "The list's own scale" }));
-                if (entry && presetGives(raw, k, entry.plantValue)) {
+                if (s.key && s.key !== s.label) marks.push(el('i', { className: 'key', textContent: s.key, title: 'The modbusgen key for this scaling' }));
+                if (s === listScaling) marks.push(el('i', { textContent: 'list', title: "The list's own scale" }));
+                if (entry && scalingGives(raw, s, entry.plantValue)) {
                     marks.push(el('i', { className: 'plant', textContent: 'IWMAC', title: 'Gives what IWMAC showed for this register when its names were read: ' + entry.plantValue }));
                 }
-                col.appendChild(choiceItem('mpc-vitem mpc-sitem' + (k === current ? ' on' : ''),
-                    k + ' — ' + (SCALE_MEANINGS[k] || '') + ': ' + (p ? p.text : '—'), [
-                    el('b', { textContent: k }),
-                    el('em', {}, [SCALE_MEANINGS[k] || ''].concat(marks)),
+                col.appendChild(choiceItem('mpc-vitem mpc-sitem' + (s === chosen ? ' on' : ''),
+                    s.label + ': ' + rangesText(s) + '\n' + scalingFormula(s, raw) + ' = ' + (p ? p.text : '—') +
+                        (s.key ? '\nmodbusgen key ' + s.key : '\nNo modbusgen key: set the four numbers in IWMAC'), [
+                    el('b', { textContent: s.label }),
+                    el('em', {}, [scaleEffect(s)].concat(marks)),
                     el('span', { textContent: p ? p.text : '—' }),
-                ], () => pick(k), !p));
+                ], () => pick(s.label), !p));
             }
             cols.appendChild(col);
         }
         wrap.appendChild(cols);
+        wrap.appendChild(customScaling(raw, chosen, chosen || listScaling || scalingOf('x0.1'), entry, pick));
         return wrap;
     }
 
     /**
+     * The card's custom scaling and calculator, as Supermarket-superuser has
+     * them (1.58). Custom: raw_min, raw_max, eng_min and eng_max typed in, and
+     * what this reading gives under them as they are typed, with the formula.
+     * Calculator: the raw value X and what it should read, Y — the plant's own
+     * number to begin with — which makes the scaling 0…X onto 0…Y. Either
+     * button shows the row under the scaling, display only; one that scales
+     * the same as a preset is shown as that preset. `start` fills the four
+     * boxes: the scaling chosen now, else the list's, else x0.1.
+     */
+    function customScaling(raw, chosen, start, entry, pick) {
+        const stop = ev => ev.stopPropagation();
+        const box = (value, title, onEnter) => {
+            const input = el('input', { type: 'text', inputMode: 'decimal', className: 'mpc-sinput', value: String(value), title: title || '' });
+            input.addEventListener('click', stop);
+            input.addEventListener('mousedown', stop);
+            input.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); onEnter(); } });
+            return input;
+        };
+        const choose = s => {
+            const same = sameScaling(s);
+            pick(same ? same.label : s.label);
+        };
+
+        // Custom: the four numbers
+        const typed = () => {
+            const n = boxes.map(b => typedNumber(b.value));
+            return n.every(Number.isFinite) ? scalingOf(rangesText({ rawMin: n[0], rawMax: n[1], engMin: n[2], engMax: n[3] })) : null;
+        };
+        const useCustom = () => { const s = typed(); if (s) choose(s); };
+        const boxes = [
+            box(start.rawMin, 'raw_min', useCustom), box(start.rawMax, 'raw_max', useCustom),
+            box(start.engMin, 'eng_min', useCustom), box(start.engMax, 'eng_max', useCustom),
+        ];
+        const result = el('span', { className: 'mpc-sresult' });
+        const formula = el('div', { className: 'mpc-sformula' });
+        const useBtn = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'Use', title: 'Show the row under this scaling, display only' });
+        useBtn.addEventListener('click', ev => { ev.stopPropagation(); useCustom(); });
+        const update = () => {
+            const s = typed();
+            const p = s ? scaledBy(raw, s) : null;
+            const same = s ? sameScaling(s) : null;
+            result.textContent = '= ' + (p ? p.text : '—');
+            formula.textContent = s
+                ? scalingFormula(s, raw) + ' = ' + (p ? p.text : '—') + '   (' + scaleEffect(s) + (same ? ', the same as ' + scalingName(same) : '') + ')'
+                : 'Four numbers, and raw_min and raw_max must differ.';
+            useBtn.disabled = !p;
+        };
+        for (const b of boxes) b.addEventListener('input', update);
+        const labels = ['raw_min', 'raw_max', 'eng_min', 'eng_max'];
+        const customRow = el('div', { className: 'mpc-srow' }, [el('h6', { textContent: 'Custom' })]
+            .concat(boxes.map((b, i) => el('label', {}, [labels[i], b])), [result, useBtn]));
+
+        // Calculator: raw X should read Y
+        const plantNumber = entry ? typedNumber(entry.plantValue) : NaN;
+        const calcRaw = box(raw, 'The raw value', () => useCalc());
+        const calcEng = box(Number.isFinite(plantNumber) ? plantNumber : '', 'What it should read' + (Number.isFinite(plantNumber) ? ' — IWMAC showed ' + entry.plantValue : ''), () => useCalc());
+        calcEng.placeholder = 'value';
+        const calcNote = el('span', { className: 'mpc-snote' });
+        const calcScaling = () => {
+            const x = typedNumber(calcRaw.value), y = typedNumber(calcEng.value);
+            if (!Number.isFinite(x) || x === 0) return { why: 'The raw value cannot be 0 or empty.' };
+            if (!Number.isFinite(y)) return { why: 'Fill in what it should read.' };
+            return { s: scalingOf(rangesText({ rawMin: 0, rawMax: x, engMin: 0, engMax: y })) };
+        };
+        const calcBtn = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'Use', title: 'Show the row under the scaling 0…X onto 0…Y, display only' });
+        const useCalc = () => { const c = calcScaling(); if (c.s) choose(c.s); else calcNote.textContent = c.why; };
+        calcBtn.addEventListener('click', ev => { ev.stopPropagation(); useCalc(); });
+        const updateCalc = () => {
+            const c = calcScaling();
+            const same = c.s ? sameScaling(c.s) : null;
+            calcNote.textContent = c.s ? rangesText(c.s) + ', ' + scaleEffect(c.s) + (same ? ' — the same as ' + scalingName(same) : '') : c.why;
+        };
+        calcRaw.addEventListener('input', updateCalc);
+        calcEng.addEventListener('input', updateCalc);
+        const calcRow = el('div', { className: 'mpc-srow' }, [
+            el('h6', { textContent: 'Calculator' }),
+            el('label', {}, ['raw', calcRaw]), el('label', {}, ['should read', calcEng]), calcBtn, calcNote,
+        ]);
+
+        update();
+        updateCalc();
+        return el('div', { className: 'mpc-scustom' + (chosen && chosen.custom ? ' on' : '') }, [customRow, formula, calcRow]);
+    }
+
+    /**
      * The picker in a grid's scaled cell. Closed, it shows the value as the row
-     * stands; open, the same reading under every preset, so opening it is the
-     * comparison. Choosing one shows that scale on this row — display only, the
-     * list keeps its own; the first entry goes back.
+     * stands; open, the same reading under every scaling, so opening it is the
+     * comparison. Choosing one shows that scaling on this row — display only,
+     * the list keeps its own; the first entry goes back. A custom scaling from
+     * the card is listed too while it is chosen.
      */
     function scaleSelect(table, ref, raw, baseText, baseNote) {
         const key = table + '|' + ref;
-        const current = scaleOverrides.get(key) || '';
+        const chosen = scalingOf(scaleOverrides.get(key));
         const hasRaw = typeof raw === 'number' && Number.isFinite(raw);
         const select = el('select', {
-            className: 'mpc-viewas mpc-scale' + (current ? ' on' : ''),
+            className: 'mpc-viewas mpc-scale' + (chosen ? ' on' : ''),
             title: hasRaw
-                ? 'This reading under another scale. Display only: the point list keeps ' + (baseNote || 'its own scale') + '.'
+                ? 'This reading under another scaling. Display only: the point list keeps ' + (baseNote || 'its own scale') + '.'
                 : 'No reading to scale',
         });
         select.appendChild(el('option', { value: '', textContent: (baseText === '' || baseText === undefined ? '—' : baseText) + (baseNote ? ' · ' + baseNote : '') }));
-        for (const k of SCALE_PRESETS) {
-            const p = scaledPreset(raw, k);
-            select.appendChild(el('option', { value: k, textContent: (p ? p.text : '—') + ' · ' + k }));
+        const option = s => {
+            const p = scaledBy(raw, s);
+            return el('option', { value: s.label, textContent: (p ? p.text : '—') + ' · ' + scalingName(s), title: rangesText(s) });
+        };
+        for (const group of Object.keys(SCALE_GROUPS)) {
+            const og = el('optgroup', { label: SCALE_GROUPS[group] });
+            for (const s of SCALINGS.filter(x => x.group === group)) og.appendChild(option(s));
+            select.appendChild(og);
         }
-        select.value = current;
+        if (chosen && chosen.custom) select.appendChild(el('optgroup', { label: 'Custom' }, [option(chosen)]));
+        select.value = chosen ? chosen.label : '';
         select.disabled = !hasRaw;
-        const stop = ev => ev.stopPropagation();
-        select.addEventListener('click', stop);
-        select.addEventListener('mousedown', stop);
+        select.addEventListener('click', stopEvent);
+        select.addEventListener('mousedown', stopEvent);
         select.addEventListener('change', ev => {
             ev.stopPropagation();
             if (select.value) scaleOverrides.set(key, select.value); else scaleOverrides.delete(key);
@@ -6637,6 +6898,8 @@
         });
         return select;
     }
+
+    function stopEvent(ev) { ev.stopPropagation(); }
 
     /** After a redraw: how many registers are viewed another way, and a way back. */
     function appendViewNote() {
@@ -6661,7 +6924,7 @@
         { label: 'addr', width: '7%', title: 'Protocol address, the printed index minus one' },
         { label: 'name', width: '23%', align: 'left', title: 'From the loaded point list, matched on this reference' },
         { label: 'value', width: '9%', title: 'The register as the device returned it' },
-        { label: 'scaled', width: '11%', title: "Value multiplied by the list's scale key, or what the plant itself shows — a number or a state text. Open it for the same reading under every scale preset, display only" },
+        { label: 'scaled', width: '11%', title: "Value scaled by the list's scale key as IWMAC scales it, or what the plant itself shows — a number or a state text. Open it for the same reading under every IWMAC scaling, display only" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
         { label: 'hex', width: '9%', title: 'The register as hexadecimal — four digits for a 16-bit read, eight for a 32-bit integer. Blank where the bit pattern cannot be recovered from what modpoll printed, which is every float' },
         { label: 'int16', width: '8%', title: 'Filled only when the register reads differently as a signed 16-bit integer, which means it came back above 32767' },
@@ -6685,7 +6948,7 @@
         { label: 'name', width: '22%', align: 'left', title: 'Tag and alias text from the list' },
         { label: 'type', width: '13%', align: 'left', title: 'Datatype key, which decides the table and the raw type — pick another to view the point as it, display only' },
         { label: 'raw', width: '9%', title: 'The register as the device returned it' },
-        { label: 'scaled', width: '11%', title: "Raw multiplied by the list's scale key. Open it for the same reading under every scale preset, display only" },
+        { label: 'scaled', width: '11%', title: "Raw scaled by the list's scale key as IWMAC scales it. Open it for the same reading under every IWMAC scaling, display only" },
         { label: 'unit', width: '6%', title: 'Engineering unit from the list' },
         { label: 'status', width: '10%', title: 'read, zero, refused, no answer or not polled' },
         { label: 'note', width: '15%', align: 'left', title: 'Why a point is flagged, or why it was not polled' },
@@ -6824,7 +7087,7 @@
         const name = (point && point.name) || (entry && entry.name) || '';
         const unit = (point && point.unit) || (entry && entry.unit) || '';
         const meaning = point
-            ? (point.scale.invert ? (value ? 'off' : 'on') : roundScaled(value * point.scale.factor, point.decimals))
+            ? (point.scale.invert ? (value ? 'off' : 'on') : applyScale(point.scale, value, point.decimals))
             : (first ? first.plantValue : '');
         const hasMeaning = !(meaning === '' || meaning === null || meaning === undefined);
         const implied = first && !wide ? impliedScale(value, first.plantValue) : null;
@@ -6960,7 +7223,7 @@
                     : '  — not decoded'), true],
             ];
             if (point.group) rows.push(['group', point.group]);
-            if (point.scaleKey) rows.push(['scale', point.scaleKey + (point.scale.known ? '  (×' + point.scale.factor + ')' : '  — key not understood')]);
+            if (point.scaleKey) rows.push(['scale', point.scaleKey + (point.scale.known ? '  (' + scaleEffect(point.scale) + ')' : '  — key not understood')]);
             if (point.unit) rows.push(['unit', point.unit]);
             if (point.rw) rows.push(['access', point.rw === 'rw' ? 'read and write' : 'read only']);
             if (point.rangeMin !== null || point.rangeMax !== null) {
@@ -6983,8 +7246,8 @@
         }
 
         // --- where the sides disagree ------------------------------------------
-        if (point && implied && point.scale.known && ('x' + point.scale.factor) !== implied) {
-            notes.push({ text: 'The list scales by x' + point.scale.factor + '; the plant implies ' + implied + ' — it shows ' + first.plantValue + ' where the register holds ' + value + '.', tone: 'amber' });
+        if (point && implied && point.scale.known && !point.scale.invert && !point.scale.offset && ('x' + roundScaled(point.scale.factor, 8)) !== implied) {
+            notes.push({ text: 'The list scales by ' + point.scaleKey + ' (' + scaleEffect(point.scale) + '); the plant implies ' + implied + ' — it shows ' + first.plantValue + ' where the register holds ' + value + '.', tone: 'amber' });
         }
         if (point && first && point.unit && first.unit && point.unit.trim().toLowerCase() !== first.unit.trim().toLowerCase()) {
             notes.push({ text: 'The list says unit "' + point.unit + '", the plant "' + first.unit + '".', tone: 'amber' });
@@ -7068,7 +7331,7 @@
         // Every datatype for this register, where its words are to hand: a 16-bit
         // poll, or a verification that kept them.
         if (extra && typeof extra.wordAt === 'function') box.appendChild(viewChoices(table, ref, extra.wordAt, extra.listLabel));
-        // Every scale preset, where the row has a scaled cell to show the choice in.
+        // Every scaling, where the row has a scaled cell to show the choice in.
         if (extra && extra.scale) box.appendChild(scaleChoices(table, ref, extra.scale, point, fromPlant));
 
         // The facts, in columns. A row is [label, text, mono, tip, column]; the
@@ -7375,7 +7638,7 @@
                     : { ok: false, why: 'this verification kept no words — run Verify list again' };
                 raw = d.ok ? d.value : undefined;
                 scaled = d.ok && typeof d.value === 'number'
-                    ? (p.scale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * p.scale.factor, p.decimals)) : undefined;
+                    ? applyScale(p.scale, d.value, p.decimals) : undefined;
                 viewNote = 'viewed as ' + viewName(view, p.decoded.table) + viewBasis(d) + ' — display only, the list says ' + p.datatype;
             }
             if (onlyNonZero && raw === 0) continue;
@@ -7400,7 +7663,7 @@
             typeCell.appendChild(viewAsSelect(rowTable, p.ref, p.datatype,
                 !!(wordAt && p.decoded && p.decoded.ok && row.status !== 'not polled'),
                 !wordAt ? 'Run Verify list again to view points as another datatype' : 'This point was not polled'));
-            // The scaled cell lists the same reading under every scale preset; the
+            // The scaled cell lists the same reading under every scaling; the
             // first entry is the list's own, which is what the cell shows unviewed.
             const scaledCell = tr.children[5];
             scaledCell.textContent = '';
@@ -7500,7 +7763,7 @@
             // plant's own parameter list, and several bits can share one register.
             const fromPlant = point ? null : plantNamesFor(table, format, v.i);
             if (point || fromPlant) named++;
-            const scaled = point ? (point.scale.invert ? (v.v ? 0 : 1) : roundScaled(v.v * point.scale.factor, point.decimals)) : null;
+            const scaled = point ? applyScale(point.scale, v.v, point.decimals) : null;
             const plantLabel = fromPlant
                 ? fromPlant[0].name + (fromPlant.length > 1 ? '  (+' + (fromPlant.length - 1) + ' more)' : '')
                 : '';
@@ -7533,7 +7796,7 @@
             const viewTitle = !view ? undefined
                 : 'viewed as ' + viewName(view, table) + viewBasis(viewed) + ' — display only' + (point ? ', the list says ' + point.datatype : '');
             const viewScaled = viewed && viewed.ok && point && typeof viewed.value === 'number'
-                ? (point.scale.invert ? (viewed.value ? 0 : 1) : roundScaled(viewed.value * point.scale.factor, point.decimals))
+                ? applyScale(point.scale, viewed.value, point.decimals)
                 : null;
             const cells = isBitTable ? [
                 { text: String(v.i) },
@@ -7584,7 +7847,7 @@
                 typeCell.appendChild(viewAsSelect(table, v.i, sourceLabel || (wide ? (format || '16-bit') + ' as polled' : 'as read'),
                     !wide, 'Poll as 16-bit (Format) to view registers as another datatype — a 32-bit format has already put the words together modpoll\'s way'));
                 // The scaled cell lists this reading — viewed, if a datatype view is
-                // on — under every scale preset. Unviewed it shows what it always
+                // on — under every scaling. Unviewed it shows what it always
                 // did: the list's scale, what the plant shows, or the bare reading.
                 const shownRaw = view ? (viewed.ok ? viewed.value : undefined) : v.v;
                 const baseText = cells[4].text !== '' ? cells[4].text : viewValueText(shownRaw);
@@ -8567,8 +8830,8 @@
                 'await __modpoll.raw("modpoll.exe …")      one command, parsed; writes are refused',
                 '__modpoll.decode(words, "U32_N")          words as iw_mb.exe reads them: N = first register low word, W = high',
                 '__modpoll.viewAs(table, ref, "U32_N")     show one register as another datatype, display only ("" clears)',
-                '__modpoll.scaleAs(table, ref, "x0.1")     show one register with another scale key, display only ("" clears)',
-                '__modpoll.scalePresets(2000)              a reading under every scale preset, with the decimals each implies',
+                '__modpoll.scaleAs(table, ref, "x0.1")     show one register under another scaling: a preset, a key or "raw 0..1000 -> 0..100" ("" clears)',
+                '__modpoll.scalePresets(2000)              a reading under every IWMAC scaling, with its four numbers',
                 '__modpoll.views() / clearViews()          the registers shown another way / show them as read and listed again',
                 'await __modpoll.scan({host, slave})       every register the device answers for, read twice; names the unit first',
                 '__modpoll.loadList(projectJson)           adopt a modbusgen project: points and system.comm',
@@ -8698,21 +8961,31 @@
             try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
             return api.views();
         },
-        /** Show one register with another scale key in the grid, display only. An empty key clears it. */
+        /**
+         * Show one register under another scaling in the grid, display only: a
+         * preset's label or modbusgen key ('x3.6', 'Kelvin to Celsius'), or the
+         * four numbers as 'raw 0..1000 -> 0..100' or [0, 1000, 0, 100]. An empty
+         * one clears it.
+         */
         scaleAs(table, ref, scale) {
             const key = String(table) + '|' + Number(ref);
             if (!scale) scaleOverrides.delete(key);
             else {
-                const text = String(scale).trim();
-                if (!scaleFactorOf(text).known || !/^x/i.test(text)) throw new Error('No scale "' + scale + '" — use a key like ' + SCALE_PRESETS.join(', '));
-                scaleOverrides.set(key, text);
+                const name = Array.isArray(scale)
+                    ? rangesText({ rawMin: Number(scale[0]), rawMax: Number(scale[1]), engMin: Number(scale[2]), engMax: Number(scale[3]) })
+                    : String(scale).trim();
+                if (!scalingOf(name)) {
+                    throw new Error('No scaling "' + scale + '" — use a preset such as x0.1 or Kelvin to Celsius, a modbusgen key, or "raw 0..1000 -> 0..100"');
+                }
+                scaleOverrides.set(key, name);
             }
             try { if (typeof redrawGrid === 'function') redrawGrid(); } catch (e) { /* panel not built */ }
             return api.views();
         },
-        /** A reading under every scale preset: scalePresets(2000) -> [{ scale: 'x1000', value, text }, …]. */
+        /** A reading under every scaling: scalePresets(2000) -> [{ scale: 'x1000', key, rawMin, rawMax, engMin, engMax, value, text }, …]. */
         scalePresets(raw) {
-            return SCALE_PRESETS.map(scale => Object.assign({ scale }, scaledPreset(Number(raw), scale) || { value: null, text: '' }));
+            return SCALINGS.map(s => Object.assign({ scale: s.label, key: s.key, rawMin: s.rawMin, rawMax: s.rawMax, engMin: s.engMin, engMax: s.engMax },
+                scaledBy(Number(raw), s) || { value: null, text: '' }));
         },
         views() {
             const keys = new Set([...viewOverrides.keys(), ...scaleOverrides.keys()]);
