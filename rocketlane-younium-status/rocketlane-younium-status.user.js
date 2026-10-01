@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.47.0
+// @version      1.47.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5706,7 +5706,7 @@
     const entries = [];
     const text = String(html || "");
     if (!text) return entries;
-    const push = (href, label) => {
+    const push = (href, label, source) => {
       const cls = rlClassifyLinkUrl(href);
       if (!cls || cls.platform === "unknown") return;
       entries.push({
@@ -5714,6 +5714,7 @@
         label: String(label || "").replace(/\s+/g, " ").trim(),
         platform: cls.platform,
         recordId: cls.recordId || "",
+        source,
       });
     };
     try {
@@ -5724,13 +5725,13 @@
         // Innermost holder only: a <div> around the whole list used to lend its
         // first link every label in the list.
         const holder = a.closest("li, p, tr, div");
-        push(href, holder ? String(holder.textContent || "").replace(a.textContent || "", " ") : "");
+        push(href, holder ? String(holder.textContent || "").replace(a.textContent || "", " ") : "", "dom");
       }
     } catch (_) {}
     const re = /https?:\/\/[^\s<>"']+/gi;
     let m;
     while ((m = re.exec(text)) !== null) {
-      push(m[0].replace(/[).,;]+$/, ""), text.slice(Math.max(0, m.index - 40), m.index));
+      push(m[0].replace(/[).,;]+$/, ""), text.slice(Math.max(0, m.index - 40), m.index), "text");
     }
     return entries;
   }
@@ -5792,7 +5793,7 @@
     ];
   }
 
-  function rlBuildAttachLinksListHtml(links) {
+  function rlBuildAttachLinksListHtml(links, extraItems) {
     const items = rlIqcAttachLinkSlots().map(({ key, label }) => {
       const url = rlNormalizeHttpUrl(links?.[key]);
       if (url) {
@@ -5801,6 +5802,7 @@
       }
       return "<li>" + label + ":</li>";
     });
+    for (const li of Array.isArray(extraItems) ? extraItems : []) items.push(li);
     return "<ul>\n" + items.join("\n") + "\n</ul>";
   }
 
@@ -5831,7 +5833,12 @@
    *   of unknown kind fills Order before Subscription.
    * A record already placed is never placed again. The second read of the same
    * <a href> used to drop a lone Oneflow subscription link into the empty Order
-   * slot as well (10263), and a Save then wrote it into both.
+   * slot as well (10263), and a Save then wrote it into both. A record read from
+   * an <a href> (source "dom") is judged by that anchor's caption alone; the
+   * bare-URL read of the same href (source "text", label = attribute noise) is
+   * ignored. Oneflow and Younium have two slots each, so a link of theirs under
+   * another system's caption, or under a caption of its own ("Aftermarked
+   * case:" on 3694), fills neither.
    */
   function rlAssignProjectLinks(entries) {
     const out = {
@@ -5839,6 +5846,9 @@
       younium: "", youniumSubscription: "", hubspot: "", rocketlane: "",
     };
     const placed = new Set();
+    const keyOf = (e) => e.platform + ":" + (e.recordId || e.href);
+    const list = Array.isArray(entries) ? entries : [];
+    const domKeys = new Set(list.filter((e) => e && e.href && e.platform && e.source !== "text").map(keyOf));
     const slotFor = (platform, kind) => {
       if (platform === "zendesk" || platform === "hubspot" || platform === "rocketlane") return platform;
       const pair = platform === "oneflow" ? ["oneflowOrder", "oneflowSubscription"]
@@ -5851,17 +5861,23 @@
     };
     const place = (e, labelledOnly) => {
       if (!e || !e.href || !e.platform) return;
-      const key = e.platform + ":" + (e.recordId || e.href);
+      const key = keyOf(e);
       if (placed.has(key)) return;
+      if (e.source === "text" && domKeys.has(key)) return;
       const info = rlLinkLabelInfo(e.label);
       const own = info.platform === e.platform;
       if (labelledOnly && !own) return;
-      const slot = slotFor(e.platform, own ? info.kind : "unknown");
+      let kind = own ? info.kind : "unknown";
+      if (!own && (e.platform === "oneflow" || e.platform === "younium")) {
+        if (info.platform) return;
+        if (info.kind !== "unknown") kind = info.kind;
+        else if (e.source !== "text" && String(e.label || "").replace(/[\s:;,.()\-–—•*]+/g, "")) return;
+      }
+      const slot = slotFor(e.platform, kind);
       if (!slot || out[slot]) return;
       out[slot] = e.href;
       placed.add(key);
     };
-    const list = Array.isArray(entries) ? entries : [];
     for (const e of list) place(e, true);
     for (const e of list) place(e, false);
     return out;
@@ -5882,9 +5898,45 @@
     return -1;
   }
 
+  /** Visible text of an HTML fragment, lower-cased, &nbsp; as a space. */
+  function rlAttachNormText(html) {
+    return String(html || "").replace(/<[^>]*>/g, " ").replace(/&nbsp;|&#160;/gi, " ")
+      .replace(/\s+/g, " ").trim().toLowerCase();
+  }
+  /** Top-level <li> items of a list, any nested list inside them included. */
+  function rlListTopItems(listHtml) {
+    const items = [];
+    const re = /<(\/?)(ul|ol|li)\b[^>]*>/gi;
+    let depth = 0;
+    let start = -1;
+    let m;
+    while ((m = re.exec(listHtml)) !== null) {
+      const closing = !!m[1];
+      const tag = m[2].toLowerCase();
+      if (tag !== "li") { depth += closing ? -1 : 1; continue; }
+      if (depth !== 1) continue;
+      if (!closing) { if (start < 0) start = m.index; }
+      else if (start >= 0) { items.push(listHtml.slice(start, re.lastIndex)); start = -1; }
+    }
+    return items;
+  }
+  /**
+   * Rows of the old list that Save must keep: anything that is not one of the
+   * six slot rows and is not an empty template row — "Aftermarked case: <a>"
+   * (3694), "Hubspot link (…): <a>" (11140). The six slots are rebuilt from the
+   * dialog; their leftovers ("Hubspot:<ul><li>&nbsp;</li></ul>") go.
+   */
+  function rlAttachCustomItems(listHtml) {
+    const standard = new Set(rlIqcAttachLinkSlots().map((s) => s.label.toLowerCase()));
+    return rlListTopItems(listHtml).filter((li) => {
+      const text = rlAttachNormText(li);
+      if (!text && !/<a\b/i.test(li)) return false;
+      return !standard.has(text.split(":")[0].trim());
+    });
+  }
+
   function rlUpsertAttachLinksHtml(existingHtml, links) {
     const html = String(existingHtml || "");
-    const listHtml = rlBuildAttachLinksListHtml(links);
     // The list right after "Attach links:" (inside or after its <p>), matched
     // with its own nesting. Template leftovers such as
     // "<li>Hubspot:<ul><li>&nbsp;</li></ul></li>" ended the old non-greedy match
@@ -5893,9 +5945,12 @@
     if (head) {
       const start = head.index + head[0].length;
       const end = rlFindListEnd(html, start);
-      if (end > start) return html.slice(0, start) + listHtml + html.slice(end);
+      if (end > start) {
+        const keep = rlAttachCustomItems(html.slice(start, end));
+        return html.slice(0, start) + rlBuildAttachLinksListHtml(links, keep) + html.slice(end);
+      }
     }
-    const suffix = "<p>Attach links:</p>\n" + listHtml;
+    const suffix = "<p>Attach links:</p>\n" + rlBuildAttachLinksListHtml(links);
     if (!html.trim()) return suffix;
     return html.replace(/\s*$/, "") + "\n" + suffix;
   }
@@ -11759,11 +11814,19 @@
         return full && full.id ? { a: full, viaDeal: p.viaDeal } : p;
       } catch (_) { return p; }
     }));
-    return rlScoredSort(entries.map(({ a, viaDeal }) => {
-      const candidate = rlOneflowToMatchCandidate(a);
+    const kept = [];
+    for (const { a, viaDeal } of entries) {
       const docDeal = rlDigits(rlExtractOneflowDataFields(a).hubspotDealId);
+      const linked = !!docDeal && keyDeals.includes(docDeal);
+      // The other row's documents never show here: in the subscription row,
+      // a document carrying the project's order deal IS the order (rebuilds
+      // have no subscription agreement of their own); otherwise a document of
+      // the other kind needs a deal tying it to this row.
+      if (want === "subscription" && docDeal && graph.deal && docDeal === graph.deal) continue;
+      if (ofKindByName(a?.name) !== want && !linked) continue;
+      const candidate = rlOneflowToMatchCandidate(a);
       const extra = [];
-      if (docDeal && keyDeals.includes(docDeal)) {
+      if (linked) {
         extra.push({
           label: (want === "order" ? "HubSpot deal " : "Subscription deal ") + docDeal + " on the document" +
             (derived ? " (" + graph.dealVia + ")" : want === "order" ? " (project's Hubspot Deal ID)" : " (Younium subscription order)"),
@@ -11772,9 +11835,18 @@
       } else if (viaDeal) {
         extra.push({ label: "Oneflow search hit for deal " + viaDeal, points: Math.round(exactPts * 0.6) });
       }
-      if (want === "subscription" && docDeal && graph.deal && docDeal === graph.deal) {
-        extra.push({ label: "Carries the project's order deal — this is the order document", points: -40 });
+      kept.push({ a, candidate, extra });
+    }
+    // A plant has one subscription agreement; when exactly one live one names
+    // the plant it is the answer, however old (3155, 10223, 10258).
+    if (want === "subscription") {
+      const live = kept.filter((k) => k.a?.state !== 3 && k.a?.state !== 5 &&
+        k.candidate.plantId && graph.plantIds.includes(String(k.candidate.plantId)));
+      if (live.length === 1) {
+        live[0].extra.push({ label: "The only live subscription agreement for plant " + live[0].candidate.plantId, points: RL_FIND_ONLY_LIVE });
       }
+    }
+    return rlScoredSort(kept.map(({ candidate, extra }) => {
       candidate.extraSignals = extra;
       return rlScoreWithKindBonus(candidate, matchCtx, want);
     }));
@@ -11811,6 +11883,16 @@
       (o.orderType == null && ofKindByName(o.description || "") === "subscription")));
     const product = (o) => graph.ynProducts[o.id]; // name, "" = none on the order, undefined = not read
     const liveIwmac = subs.filter((o) => !rlYnIsDead(o) && product(o) !== "");
+    // "IWMAC Subscription: Basic" is the plant's subscription; "Alarm Monitoring
+    // 24/7" and the like are add-ons beside it (3694 has one of each), so they
+    // only count when there is no live Basic at all.
+    const isBasic = (o) => /\b(?:basic|basis)\b/i.test(String(product(o) || ""));
+    const pool = liveIwmac.some(isBasic) ? liveIwmac.filter(isBasic) : liveIwmac;
+    // Orders made from a HubSpot deal carry its ID; subscriptions from before the
+    // integration do not. With one of each live (10112: O-015303 for the new
+    // store, O-002212 from years back), the deal-made one is the current one.
+    const fromDeal = pool.filter((o) => rlDigits(o.integrationHubspotHubspotDealId));
+    const sole = pool.length === 1 ? pool[0] : (fromDeal.length === 1 ? fromDeal[0] : null);
     const projectPlant = String(matchCtx.plantId || graph.plantId || "");
     return rlScoredSort(subs.slice(0, 12).map((o) => {
       const name = product(o);
@@ -11818,8 +11900,15 @@
       const extra = [];
       if (name) extra.push({ label: "IWMAC subscription product (" + name + ")", points: 10 });
       else if (name === "") extra.push({ label: "No IWMAC Subscription product on this order", points: -30 });
-      if (liveIwmac.length === 1 && liveIwmac[0] === o) {
-        extra.push({ label: "The only live IWMAC subscription on plant " + (o.plant_id || projectPlant), points: RL_FIND_ONLY_LIVE });
+      if (sole === o) {
+        extra.push({
+          label: liveIwmac.length === 1
+            ? "The only live IWMAC subscription on plant " + (o.plant_id || projectPlant)
+            : pool.length === 1
+              ? "The plant's only live IWMAC Basic subscription; the others are add-ons"
+              : "The plant's only live IWMAC subscription made from a HubSpot deal",
+          points: RL_FIND_ONLY_LIVE,
+        });
       }
       const p = String(o.plant_id ?? "").trim();
       if (p && p !== projectPlant && graph.plantIds.includes(p)) {
@@ -11843,7 +11932,8 @@
       byRecord.set(id, { url: n, extra: extra ? extra.slice() : [] });
     };
     if (graph.projectDeal) add(rlHubspotDealUrl(graph.projectDeal), [{ label: "The project's Hubspot Deal ID field", points: RL_FIND_EXACT }]);
-    else if (graph.deal) add(rlHubspotDealUrl(graph.deal), [{ label: "Deal on " + graph.dealVia, points: RL_FIND_DERIVED }]);
+    // The URL is the deal itself, so it is as sure as the order it came from.
+    else if (graph.deal) add(rlHubspotDealUrl(graph.deal), [{ label: "Deal on " + graph.dealVia + ", the plant's only live order with a deal", points: RL_FIND_DERIVED + 10 }]);
     add(merged.hubspot);
     for (const l of matchCtx.embeddedLinks || []) if (l?.platform === "hubspot") add(l.url);
     const dealName = String(matchCtx.hubspotMirror?.dealName || "").trim();
@@ -11904,13 +11994,21 @@
   // Why a saved Younium link differs from the order found — only said when it
   // is certain: an older version of the same order (every amendment gets a new
   // id), a draft that has since become an order, or a cancelled order.
-  async function rlYnSavedLinkNote(existingUrl, scored, gen) {
+  async function rlYnSavedLinkNote(existingUrl, scored, gen, plantId) {
     const ex = rlClassifyLinkUrl(rlNormalizeHttpUrl(existingUrl) || "");
     const best = scored[0]?.candidate;
     if (!ex || ex.platform !== "younium" || !ex.recordId || !best || String(best.id) === ex.recordId) return "";
     try {
-      const o = await rlUpMemoGet(gen, "yn:o:" + ex.recordId, () => ynGetOrderById(ex.recordId));
-      if (!o || !o.id) return "";
+      // Read it in the legal entity the plant was found in — an order of another
+      // entity does not open from this one — without starting a new sweep.
+      const o = await rlUpMemoGet(gen, "yn:o:" + ex.recordId, async () => {
+        const get = () => ynGetOrderById(ex.recordId);
+        const rec = plantId ? ynReadPlantEntity(plantId) : null;
+        let current = "";
+        try { current = (await ynCurrentLegalEntity()).id; } catch (_) {}
+        return rec && rec.id && current && rec.id !== current ? ynRunInEntity(rec.id, get) : get();
+      });
+      if (!o || !o.id) return "the saved link opens no Younium order any more";
       if (best.orderNumber && o.orderNumber === best.orderNumber && !o.isLastVersion) {
         return "the saved link is an older version of " + o.orderNumber;
       }
@@ -11918,6 +12016,11 @@
       if (/^draft\b/i.test(String(o.orderNumber || "")) && !o.isLastVersion) return "the saved link is a draft that has since been replaced";
     } catch (_) {}
     return "";
+  }
+
+  function rlUrlPickerNothingFound(input, statusEl, message) {
+    const saved = rlNormalizeHttpUrl(input?.value);
+    rlUrlPickerSetStatus(statusEl, (saved ? "Saved link kept; the lookup found nothing to check it against. " : "") + message, saved ? "" : "warn");
   }
 
   async function rlUrlPickerFindSlot(key, row, input, statusEl, projectId, plantId, gen) {
@@ -11937,7 +12040,7 @@
         const scored = await rlFindZendeskScored(matchCtx, pid);
         if (!live()) return;
         if (!scored.length) {
-          rlUrlPickerSetStatus(statusEl, "No Zendesk case for plant " + pid + ".", "warn");
+          rlUrlPickerNothingFound(input, statusEl, "No Zendesk case for plant " + pid + ".");
           return;
         }
         rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
@@ -11966,7 +12069,7 @@
         empty = key === "younium"
           ? "No Younium order found for " + what + "."
           : "No subscription order on plant " + (graph.plantIds.join(" / ") || pid) + ".";
-        note = await rlYnSavedLinkNote(input.value, scored, gen);
+        note = await rlYnSavedLinkNote(input.value, scored, gen, pid);
       } else if (key === "hubspot") {
         scored = await rlFindHubspotScored(graph, matchCtx, projectId);
         empty = "No HubSpot deal ID on the project or its Younium order, and no HubSpot link in its fields. Paste manually.";
@@ -11976,7 +12079,7 @@
       }
       if (!live()) return;
       if (!scored.length) {
-        rlUrlPickerSetStatus(statusEl, empty, "warn");
+        rlUrlPickerNothingFound(input, statusEl, empty);
         return;
       }
       rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId, note);
