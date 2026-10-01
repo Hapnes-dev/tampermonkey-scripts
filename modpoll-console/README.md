@@ -611,7 +611,9 @@ modbusgen's `data/tables/datatypes.csv` when that repository sits beside this on
 row opens has a *View as* section. Since 1.53.1 it is three lists side by side, one
 per register width. Each row holds the full names and what this register reads as
 under them, with the values lined up on the right. What a datatype means is in its
-tooltip.
+tooltip. With the table expanded to fill the tab, the card fills it too (1.54.1):
+the facts flow into as many columns as fit and the three lists widen. In the panel
+it keeps its 1120-pixel cap.
 
 A click on a row shows the grid row that way, and the card opens again on the same
 register, so the next datatype is one click away too. The one showing is marked

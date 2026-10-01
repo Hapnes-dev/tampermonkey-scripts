@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.54.0
+// @version      1.54.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.54.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.54.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5485,6 +5485,10 @@
        edge and a shadow lift it off the grid it sits in. */
     #${PANEL_ID} .mpc-detailbox{display:flex;flex-direction:column;gap:9px;padding:10px 12px 11px 14px;max-width:1120px;
         background:#fff;border:1px solid #c9d6e8;border-left:4px solid #3f7fbf;border-radius:5px;box-shadow:0 2px 8px rgba(30,60,100,.12)}
+    /* Expanded, the card takes the width the table has: its facts flow into as
+       many columns as fit and the view lists widen with them (1.54.1). In the
+       panel the cap stays, where a line any longer is harder to read. */
+    #${PANEL_ID} .mpc-gridzone.mpc-full .mpc-detailbox{max-width:none}
     #${PANEL_ID} .mpc-dtop{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
     #${PANEL_ID} .mpc-dname{flex:1 1 320px;min-width:0}
     #${PANEL_ID} .mpc-dhead{font:bold 14px/1.3 Arial,Helvetica,sans-serif;color:#1b1b1b;overflow-wrap:anywhere}
