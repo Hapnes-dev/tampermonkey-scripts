@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.43.0
+// @version      1.44.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2518,7 +2518,7 @@
     const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId), { includeAllFields: true });
     const project = json?.data ?? json;
     const fields = Array.isArray(project?.fields) ? project.fields : [];
-    const links = { order: "", subscription: "", ambiguous: [], sources: [] };
+    const links = { order: "", subscription: "", ambiguous: [], sources: [], projectName: String(project?.projectName || "").trim() };
     const merge = (parsed, sourceName) => {
       let used = false;
       if (!links.order && parsed.order) { links.order = parsed.order; used = true; }
@@ -2548,7 +2548,39 @@
   // Plant ID custom field equals the plant — or, without custom fields, whose
   // name starts with it — and take the best document per kind: Signed first,
   // then Pending/Overdue, then Draft, newest first within a tier.
-  async function ofSearchByPlantId(plantId) {
+  // A plant name from a Rocketlane project name: "10263 - Extra Laksvollen" →
+  // "Extra Laksvollen"; "3694 - OBS Rudshøgda, ombygging" → "OBS Rudshøgda";
+  // "10215 - Høgskulekantina Sogndal: ny butikk" → "Høgskulekantina Sogndal".
+  function ofPlantNameFromProject(projectName) {
+    let s = String(projectName || "").trim();
+    s = s.replace(/^\s*\d{3,7}\s*[-–—:]?\s*/, "");
+    s = s.replace(/\s*[:,]\s.*$/, "").replace(/\s+[-–—]\s.*$/, "");
+    return s.trim();
+  }
+  function ofNormName(s) {
+    // NFD strips accents but not the Nordic letters, which are letters of their own.
+    return String(s || "").toLowerCase().replace(/ø/g, "o").replace(/æ/g, "ae")
+      .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+      .replace(/#\d+\s*$/, "").replace(/\s+/g, " ").trim();
+  }
+  /**
+   * Strict name test. Order documents are often named after the store alone —
+   * "Extra Laksvollen", "Storcash Rudshøgda" — with no plant number and no Plant
+   * ID field, so a plant-number search can never return them; only the
+   * subscription ("10263 EXTRA Laksvollen - Abonnementsavtale") carries it.
+   * Accept a document only when its name IS the plant name, or the plant name
+   * followed by " - " / ":" — never a looser contains, and never a name that
+   * starts with some other plant number.
+   */
+  function ofNameMatchesPlant(docName, plantName) {
+    const want = ofNormName(plantName);
+    if (want.length < 6 || !/\s/.test(want)) return false; // "Extra" alone would match half of Norway
+    const n = ofNormName(docName);
+    if (/^\d{3,}/.test(n)) return false;
+    return n === want || n.startsWith(want + " -") || n.startsWith(want + ":");
+  }
+
+  async function ofSearchByPlantId(plantId, projectName) {
     const pid = String(plantId || "").trim();
     const out = { order: null, subscription: null, candidates: [] };
     if (!pid) return out;
@@ -2563,13 +2595,28 @@
       const df = ofPlantIdFromDataFields(a);
       return df ? df === pid : startsWithPid.test(String(a?.name || ""));
     });
-    out.candidates = matches;
     const rank = (a) => (a?.state === 4 ? 3 : (a?.state === 1 || a?.state === 2) ? 2 : (a?.state === 0 ? 1 : 0));
     const ts = (a) => Date.parse(a?.updated_time || a?.created_time || 0) || 0;
-    const best = (kind) => matches.filter((a) => ofKindByName(a?.name) === kind)
+    const best = (pool, kind) => pool.filter((a) => ofKindByName(a?.name) === kind)
       .sort((a, b) => (rank(b) - rank(a)) || (ts(b) - ts(a)))[0] || null;
-    out.order = best("order");
-    out.subscription = best("subscription");
+    out.order = best(matches, "order");
+    out.subscription = best(matches, "subscription");
+
+    // Second pass, only for what the plant number could not find.
+    const plantName = ofPlantNameFromProject(projectName);
+    if ((!out.order || !out.subscription) && plantName) {
+      try {
+        const byName = await gmOneflowRequest("/agreements/?q=" + encodeURIComponent(plantName) + "&limit=25");
+        const seen = new Set(matches.map((a) => String(a?.id)));
+        const named = (Array.isArray(byName?.collection) ? byName.collection : [])
+          .filter((a) => a?.id && !seen.has(String(a.id)) && ofNameMatchesPlant(a?.name, plantName))
+          .map((a) => Object.assign({}, a, { _matchedByName: true }));
+        if (!out.order) out.order = best(named, "order");
+        if (!out.subscription) out.subscription = best(named, "subscription");
+        matches.push(...named);
+      } catch (_) { /* the plant-number result stands on its own */ }
+    }
+    out.candidates = matches;
     return out;
   }
 
@@ -2630,14 +2677,21 @@
       out.sub = sub;
     } else if (plantId) {
       try {
-        const found = await ofSearchByPlantId(plantId);
+        const found = await ofSearchByPlantId(plantId, links?.projectName || "");
         if (found.order) out.order = { id: String(found.order.id), agreement: found.order, error: "" };
         if (found.subscription) out.sub = { id: String(found.subscription.id), agreement: found.subscription, error: "" };
         // A plant often has several documents — different jobs, or an older
         // version of the same one. The modal lists the ones not shown above so
         // the pick is visible rather than implied.
         out.related = Array.isArray(found.candidates) ? found.candidates : [];
-        if (found.order || found.subscription) out.source = "Found by searching Oneflow for plant " + plantId + " — no link is stored on the Rocketlane project";
+        if (found.order || found.subscription) {
+          out.source = "Found by searching Oneflow for plant " + plantId + " — no link is stored on the Rocketlane project";
+          const byName = [found.order, found.subscription].filter((a) => a && a._matchedByName);
+          if (byName.length) {
+            out.source += ". Matched by plant name, not number: " + byName.map((a) => "“" + a.name + "”").join(", ") +
+              " carries no plant ID.";
+          }
+        }
       } catch (e) {
         out.fetchFailed = true;
         out.problems.push("Oneflow search for plant " + plantId + " failed: " + (e?.message ?? e));
@@ -11442,7 +11496,7 @@
           rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
           return;
         }
-        const found = await ofSearchByPlantId(effectivePlantId);
+        const found = await ofSearchByPlantId(effectivePlantId, readProjectName() || "");
         if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
         const want = key === "oneflowOrder" ? "order" : "subscription";
         const scored = (found.candidates || [])
