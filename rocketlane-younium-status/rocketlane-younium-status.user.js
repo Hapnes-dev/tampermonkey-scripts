@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.44.0
+// @version      1.45.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -6522,6 +6522,10 @@
     { key: "machine_room", label: "Machine Room", integrationTask: "Integration: Machine Room", designTask: "Design: Machine Room" },
     { key: "wireless", label: "Wireless", integrationTask: "Integration: Wireless overview", designTask: "Design: Wireless overview" },
     { key: "smart_function", label: "Smart Function" },
+    // One-off setup jobs ("IWMAC Setup: Snøsmelt", "IWMAC Setup: Direct
+    // integration, waterpump"). They have no Design/Integration pair, so like
+    // Smart Function the category carries only the order's own items.
+    { key: "add_on", label: "Add-on" },
   ];
 
   const RL_ORDER_INFO_MODULE_MAP = [
@@ -6532,6 +6536,7 @@
     { re: /IWMAC\s*Modul:\s*(Heating|VGV)/i, key: "heating_system" },
     { re: /IWMAC\s*Modul:\s*Machine\s*Room/i, key: "machine_room" },
     { re: /IWMAC\s*Modul:\s*Smart\s*Function/i, key: "smart_function" },
+    { re: /IWMAC\s*Modul:\s*Add[\s-]*on/i, key: "add_on" },
   ];
 
   const RL_ORDER_INFO_PROMOTE_RULES = [
@@ -6540,8 +6545,11 @@
     { re: /aftermarket.*refrigeration/i, presetKey: "refrigeration_freezing" },
   ];
 
+  // "IWMAC Modul: Add-on" was promoted into Machine Room here until v1.45.0 (the
+  // tracker's reasoning: its items were plant-room work such as a waterpump
+  // integration). Snow-melt and other setup jobs are not, so Add-on is now its own
+  // category via RL_ORDER_INFO_MODULE_MAP; item-level promote rules still win.
   const RL_ORDER_INFO_HEADER_PROMOTE_RULES = [
-    { re: /IWMAC\s*Modul:\s*Add[\s-]*on/i, presetKey: "machine_room" },
     { re: /IWMAC\s*Product:\s*Images?\b/i, presetKey: "machine_room" },
   ];
 
@@ -6557,6 +6565,8 @@
     { re: /energy|energi/i, key: "energy" },
     { re: /heating|varme|\bvgv\b/i, key: "heating_system" },
     { re: /wireless|trådløs|tradlos/i, key: "wireless" },
+    // Last on purpose: a setup line that names a discipline goes to that discipline.
+    { re: /IWMAC\s*Setup:/i, key: "add_on" },
   ];
 
   /** Dialog choice order: order-info first, then template, custom, then presets. */
