@@ -238,6 +238,35 @@ rebuilt.
   The header repeats in every part of a split file, so these stay compact there
   and the per-point detail rides in the split sections — `listImprovements` is a
   section of its own, like `verificationRows`.
+- **Every datatype at once, for the agent (1.55.0).** *Save JSON* has a seventh
+  section, `everyDatatype`. It covers every register a 16-bit poll read, and
+  every other register the list or IWMAC names. Each row reads the register as
+  every datatype the console knows, so a Copilot agent can hold the vendor
+  document's value against all of them and find the datatype without asking for
+  a poll per guess:
+  - `hex` holds the registers from `ref` on, as read.
+  - `listed` is the list's datatype.
+  - `as` maps the tail of each datatype name to its reading. Prefix `A_`/`I_` and
+    `Hold` (table 4) or `Input` (table 3), and `U32_N` becomes `A_Hold_U32_N`;
+    `Bit` is `Bit_Hold`.
+
+  Values are unscaled. Some readings are left out, because they would only be
+  noise:
+  - a view that needs registers that were not read;
+  - a float that is no plausible engineering value;
+  - text with an unreadable character;
+  - a register whose window of four is all zero.
+
+  A register named as a password gives no row, and no neighbour's 32- or 64-bit
+  view reads through it. Every scanned register would have been most of a
+  megabyte on a large unit, nearly all of it unnamed configuration.
+
+  Two fixes came with it:
+  - A split file's `part.contents` gives each section the range of parts holding
+    it (`"4-12"`), not every part number. That list had grown to 6 000 characters
+    and pushed parts past the ceiling.
+  - A decoded text holding `$&` can no longer break the file: sections are put in
+    place by a function, not a replacement string.
 
   Four more things a scan reading carries, each an inference stated as one:
 

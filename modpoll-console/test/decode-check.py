@@ -46,8 +46,8 @@ check('... and 7192 under _N, the m3/h IWMAC showed once the list said _N',
 check('the word order comes from IWMAC_WORD_ORDER: N low word first, W high word first',
     d([1, 2], 'U32', 'N').wordOrder === 'low word first' && d([1, 2], 'U32', 'W').wordOrder === 'high word first',
     show([d([1, 2], 'U32', 'N'), d([1, 2], 'U32', 'W')]));
-check('U32 is marked measured, I32 and floats assumed from it',
-    d([1, 2], 'U32', 'N').measured === true && d([1, 2], 'I32', 'N').measured === false && d([0, 16812], 'F', 'N').measured === false,
+check('U32 (plant 11087), I32 and floats (plant 3694) are all marked measured',
+    d([1, 2], 'U32', 'N').measured === true && d([1, 2], 'I32', 'N').measured === true && d([0, 16812], 'F', 'N').measured === true,
     show([d([1, 2], 'U32', 'N'), d([1, 2], 'I32', 'N')]));
 check('suffixForWordOrder: high word first is _W, low word first is _N',
     suffixForWordOrder('high word first') === '_W' && suffixForWordOrder('low word first') === '_N', '');

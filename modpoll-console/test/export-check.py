@@ -187,6 +187,25 @@ check('names: the list names the row it covers, so the list is the source named'
 check('howToUse explains reread, wide, suggest and scan.formats', ['reread', 'wide', 'suggest', 'scan.formats'].every(k => doc.howToUse.some(line => line.indexOf(k) === 0)), '');
 check('the file parses', (() => { try { JSON.parse(text); return true; } catch (e) { return false; } })(), text.length + ' chars');
 
+// 1.55: every named register under every datatype, for an agent matching a document's value.
+const ed = (t, ref) => doc.everyDatatype.find(r => r.table === t && r.ref === ref);
+check('everyDatatype reads the plant-named float at 4x1003 as F_W 21.5, beside every other datatype',
+    ed('4', 1003) && ed('4', 1003).as.F_W === 21.5 && ed('4', 1003).as.U16_N === 16812 && ed('4', 1003).hex.indexOf('0x41AC 0x0000') === 0,
+    JSON.stringify(ed('4', 1003)));
+check('everyDatatype carries the registers the list or IWMAC names, not every scanned register',
+    doc.everyDatatype.length > 0 && doc.everyDatatype.length < doc.scanReadings.length && doc.everyDatatype.every(r => {
+        const s = doc.scanReadings.find(x => x.table === r.table && x.ref === r.ref);
+        return r.listed || (s && (s.name || (s.plant && s.plant.length) || s.list));
+    }), doc.everyDatatype.length + ' of ' + doc.scanReadings.length);
+check('a float view is given only where it reads as a plausible value',
+    doc.everyDatatype.every(r => Object.entries(r.as).filter(([k]) => /^(F|D)_/.test(k)).every(([, v]) => v === 0 || plausibleFloat(v))), '');
+check('views are keyed by the tail of the datatype name', Object.keys(ed('4', 1003).as).every(k => /^(Bit|[A-Za-z0-9]+_[NRW])$/.test(k)),
+    Object.keys(ed('4', 1003).as).join(' '));
+check('howToUse and fieldGuide explain everyDatatype', doc.howToUse.some(l => l.indexOf('everyDatatype:') === 0) && !!doc.fieldGuide['everyDatatype[].as'], '');
+check('a row holding $& or $\' text still writes valid JSON - the section is put in place by a function, not a replacement string',
+    (() => { const t = exportText({ format: 'x', everyDatatype: [{ ref: 1, as: { STR4_N: '$&$\'' } }] });
+        try { return JSON.parse(t).everyDatatype[0].as.STR4_N === '$&$\''; } catch (e) { return false; } })(), '');
+
 // --- the same scan, now with IWMAC's own side of the unit read -----------------
 // The driver is set to 19200 where modpoll got answers at 9600; the unit is in
 // ERROR with timeouts in its log; another driver claims the same COM port; two
@@ -371,6 +390,11 @@ check('a register named as a password keeps its address and name, never its valu
     r3(1100).withheld && r3(1100).addr === 1099 && r3(1100).plant[0].name === 'Passord service' && JSON.stringify(r3(1100)).indexOf('1234') < 0,
     JSON.stringify(r3(1100)));
 check('privacy says how many registers were withheld', doc3.privacy && doc3.privacy.withheldRegisters === 1, JSON.stringify(doc3.privacy));
+check('everyDatatype gives no row for a register named as a password',
+    !doc3.everyDatatype.some(r => r.table === '4' && r.ref === 1100), '');
+check('... and no other register\'s 32- or 64-bit view reads through it',
+    doc3.everyDatatype.filter(r => r.table === '4' && r.ref >= 1097 && r.ref < 1100).every(r => r.hex.split(' ').length <= 1100 - r.ref),
+    JSON.stringify(doc3.everyDatatype.filter(r => r.table === '4' && r.ref >= 1097 && r.ref < 1100)));
 check('no secret of the fixture survives anywhere in the file', ['hunter2', 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk', '"svc"'].every(s => text3.indexOf(s) < 0), '');
 check('the file with secrets withheld still parses', (() => { try { JSON.parse(text3); return true; } catch (e) { return false; } })(), text3.length + ' chars');
 
@@ -588,6 +612,12 @@ const parts6 = exportParts(doc6, 'modpoll_test');
 check('listImprovements is a section of its own when the file is split, every part under the ceiling',
     parts6.some(pt => JSON.parse(pt.text).part.section === 'listImprovements') && parts6.every(pt => pt.text.length <= 36000),
     parts6.map(pt => pt.text.length).join(','));
+check('part.contents gives each section the range of parts holding it, "4-12", whatever the part count',
+    parts6.every(pt => Object.values(JSON.parse(pt.text).part.contents).every(v => /^\d+(-\d+)?$/.test(v))) &&
+        JSON.stringify(JSON.parse(parts6[0].text).part.contents).length < 400,
+    JSON.stringify(JSON.parse(parts6[0].text).part.contents));
+check('every split part stays under the chunk limit the frames are measured against, contents map included',
+    parts6.every(pt => pt.text.length <= 34000 || pt.rows === 1), parts6.filter(pt => pt.text.length > 34000 && pt.rows > 1).map(pt => pt.text.length).join(','));
 viewOverrides.clear(); scaleOverrides.clear();
 
 let failed = 0;

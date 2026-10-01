@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.54.1
+// @version      1.55.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.54.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.55.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1651,13 +1651,15 @@
      * [3392, 3] = 200000 × 0.01; IWMAC showed it as 2222981.15 under U32_W and
      * correctly under U32_N. So N takes the first register as the LOW word and W
      * as the HIGH word — the reverse of how the letters had been read here.
-     * Signed 32-bit and floats are assumed to do the same; plant 8848's CVM-C10
-     * list (_W on a meter whose manual proves high word first) agrees.
-     * modbus-list-generator docs/15 §2.1 owns the evidence. Every suffix this
-     * script names, and every 32-bit value it assembles, comes from here.
+     * Signed 32-bit and floats do the same, measured the same afternoon on plant
+     * 3694's Tianjin SURE EX3: two registers holding one float read 66925.5 under
+     * F_N and -0.0 under F_W, and I32_N read a negative total of -2 whole. Plant
+     * 8848's CVM-C10 list (_W on a meter whose manual proves high word first)
+     * agrees. modbus-list-generator docs/15 §2.1 owns the evidence. Every suffix
+     * this script names, and every 32-bit value it assembles, comes from here.
      */
     const IWMAC_WORD_ORDER = { N: 'low word first', W: 'high word first' };
-    const MEASURED_WIDE_TYPES = new Set(['U32']);
+    const MEASURED_WIDE_TYPES = new Set(['U32', 'I32', 'F']);
 
     /** The suffix under which iw_mb.exe reads two registers in this order. */
     function suffixForWordOrder(order) {
@@ -2472,6 +2474,61 @@
         // A register named as a password keeps its place and its name in the
         // file, never its value — before the findings, which quote values.
         const withheld = [readings, scanReadings, plantParameters, listPoints, verificationRows].reduce((n, rows) => n + withholdSecretValues(rows), 0);
+
+        // Every register that matters under every datatype the console can read it
+        // as (1.55): the 16-bit words in hand, decoded each way at once, so an agent
+        // can hold a vendor document's value against all of them instead of asking
+        // for a poll per guess. Keyed by the tail of the datatype's name —
+        // A_Hold_U32_N is A_ + Hold + U32_N, a bit view is Bit_Hold.
+        //
+        // Which registers: the ones a 16-bit poll read, and every other register the
+        // list or IWMAC names — the ones a point list is checked against. Every
+        // scanned register would be most of a megabyte on a big unit, nearly all of
+        // it unnamed configuration. A register whose window of four is all zero has
+        // nothing to tell apart and gives no row.
+        // Which views: every integer reading; a float only where it reads as a
+        // plausible engineering value, text only where every character is one -
+        // the rest of those is noise a reader would have to wade through.
+        // The password guard above holds here too: such a register gives no row,
+        // and no other register's 32- or 64-bit view reads through it.
+        const secretAt = new Set(readings.filter(r => r.withheld).map(r => table + '|' + r.ref)
+            .concat(scanReadings.filter(r => r.withheld).map(r => r.table + '|' + r.ref)));
+        const wantedAt = new Set([...listedAt.keys()]);
+        for (const r of readings) wantedAt.add(table + '|' + r.ref);
+        for (const r of scanReadings) if (r.name || (r.plant && r.plant.length) || r.list) wantedAt.add(r.table + '|' + r.ref);
+        const tailOf = view => (view.raw === 'Bits' ? 'Bit' : view.raw + '_' + view.swap);
+        const compactValue = v => (typeof v === 'number' && !Number.isSafeInteger(v) ? Number(v.toPrecision(7)) : v);
+        const worthShowing = (view, v) => {
+            if (view.raw === 'F' || view.raw === 'D') return v === 0 || plausibleFloat(v);
+            if (/^STR/.test(view.raw)) return v !== '' && v.indexOf('·') < 0;
+            return true;
+        };
+        const everyDatatype = [];
+        const wordKeys = [...rawAt.keys()].filter(k => wantedAt.has(k))
+            .map(k => { const [t, r] = k.split('|'); return { t, r: Number(r) }; })
+            .filter(x => (x.t === '4' || x.t === '3') && !secretAt.has(x.t + '|' + x.r))
+            .sort((a, b) => (a.t === b.t ? a.r - b.r : (a.t < b.t ? 1 : -1)));
+        for (const { t, r } of wordKeys) {
+            const wordAt = ref => {
+                if (secretAt.has(t + '|' + ref)) return undefined;
+                const o = rawAt.get(t + '|' + ref);
+                return o ? o.v : undefined;
+            };
+            const words = [];
+            for (let k = 0; k < 4; k++) { const w = wordAt(r + k); if (typeof w !== 'number') break; words.push(w); }
+            if (!words.length || !words.some(w => w !== 0)) continue;
+            const as = {};
+            for (const view of VIEW_TYPES) {
+                const d = decodeView(view, viewWords(view, wordAt, r));
+                if (d.ok && worthShowing(view, d.value)) as[tailOf(view)] = compactValue(d.value);
+            }
+            const listed = listedAt.get(t + '|' + r);
+            const row = { table: t, ref: r, addr: r - 1, hex: words.map(w => '0x' + ((w < 0 ? w + 65536 : w) & 0xFFFF).toString(16).toUpperCase().padStart(4, '0')).join(' ') };
+            if (listed) row.listed = listed.datatype;
+            row.as = as;
+            everyDatatype.push(row);
+        }
+
         const findings = buildFindings({
             iw, rows: readings.concat(scanReadings), plantParameters, comparison, scan: lastScan, names: plantNames, deviceAnswered,
             improvements: listImprovements,
@@ -2528,8 +2585,9 @@
             // Compact on purpose: this block repeats in every part of a split file.
             views: {
                 wordOrder: {
-                    N: IWMAC_WORD_ORDER.N, W: IWMAC_WORD_ORDER.W, measuredFor: [...MEASURED_WIDE_TYPES], assumedFor: ['I32', 'F'],
-                    evidence: 'plant 11087, iw_mb.exe, 2026-09-29: [3392, 3] held low word first read 2222981.15 under U32_W, 2000.00 under U32_N (x0.01)',
+                    N: IWMAC_WORD_ORDER.N, W: IWMAC_WORD_ORDER.W, measuredFor: [...MEASURED_WIDE_TYPES], assumedFor: [],
+                    evidence: 'iw_mb.exe, 2026-09-29. Plant 11087: [3392, 3] held low word first read 2222981.15 under U32_W, 2000.00 ' +
+                        'under U32_N (x0.01). Plant 3694: one float read 66925.5 under F_N and -0.0 under F_W; I32_N read -2 whole',
                 },
                 datatypes: VIEW_TYPES.map(t => t.key).join(' '),
                 scalePresets: SCALE_PRESETS.join(' '),
@@ -2567,10 +2625,14 @@
                     'shows nothing for it.',
                 'One device on one IWMAC plant read with modpoll, and everything the console knows about its registers, for an ' +
                     'agent checking or correcting a modbusgen point list.',
-                'Six sections, one row per line: readings, scanReadings, plantParameters, listPoints, verificationRows, listImprovements. When ' +
-                    'split into files named _partNofM for a knowledge set, each file repeats this header and carries one slice of ' +
-                    'one section (part.section, part.rows, part.firstRef to part.lastRef), and part.contents maps every section to ' +
-                    'its parts.',
+                'Seven sections, one row per line: readings, scanReadings, plantParameters, listPoints, verificationRows, listImprovements, ' +
+                    'everyDatatype. When split into files named _partNofM for a knowledge set, each file repeats this header and ' +
+                    'carries one slice of one section (part.section, part.rows, part.firstRef to part.lastRef), and part.contents ' +
+                    'gives the range of parts holding each section, "4-12".',
+                'everyDatatype: each register polled, or named by the list or IWMAC, read as every datatype at once (unscaled) — ' +
+                    'match the vendor document\'s value against them to find the datatype. hex: the registers from ref on; listed: ' +
+                    'the list\'s datatype; as: name tail to value (fieldGuide). A view needing registers not read is absent, as is a ' +
+                    'float that is no plausible value or text with an unreadable character. A match is a lead, not proof.',
                 'readings: one register per line as the device answered just now, for a range someone asked for — a poll. ref is ' +
                     'what modpoll prints and what -r takes; addr is the protocol address, ref - 1; a modbusgen list prints addr, or ' +
                     'addr + 1 when options.subtract_one is true. previous and delta are the answer the time before. list is the ' +
@@ -2587,7 +2649,7 @@
                     '(scan.reread says how long after the scan began and how many moved). changed marks a value being measured; ' +
                     'unchanged is a setpoint, a configuration word, or a measurement that held still for that long.',
                 'wide on a 16-bit row: the register and the next one decoded as one 32-bit value, high word first (IWMAC\'s _W on ' +
-                    'iw_mb.exe) and low word first (_N) — measured on plant 11087 for U32, assumed for I32 and floats — as a float and as an integer. confirmed names the plant value the pair decodes to; ' +
+                    'iw_mb.exe) and low word first (_N) — measured on plant 11087 for U32 and on plant 3694 for I32 and floats — as a float and as an integer. confirmed names the plant value the pair decodes to; ' +
                     'candidate means only the bit pattern looks like a float. Nothing on the wire proves a width — this is the ' +
                     'same bits rearranged — so a candidate on its own is a lead to poll with -t 4:float, not a datatype.',
                 'suggest: the point a modbusgen list would carry for a register the plant has a parameter on — datatype from the ' +
@@ -2651,6 +2713,11 @@
                 suggest: 'the modbusgen point the device and IWMAC together suggest — a lead to check against the vendor document',
                 'communication.comparison[].same': 'true when modpoll and IWMAC use the same value for that setting; null when one side is unknown',
                 'verificationRows[].otherDatatypes': 'the words of the point under every other datatype of that width, scaled like the list',
+                'everyDatatype[].as': 'key = tail of the datatype name; full name = A_ or I_ + Hold (table 4) or Input (table 3) + ' +
+                    'tail: U32_N in table 4 is A_Hold_U32_N / I_Hold_U32_N (same reading; A_ analog, I_ integer). BCD, CLK, STR, rU16, ' +
+                    'rI16: I_ only. Bit = Bit_Hold / Bit_Input, the 16 bits. _N first register least significant, _W most, _R bytes ' +
+                    'swapped. U64U32/I64I32: the low 32 bits IWMAC keeps. Measured on iw_mb.exe: U32, I32, F _N/_W; the rest follow ' +
+                    'docs/15.',
             },
             communication: {
                 usedByModpoll: used,
@@ -2730,6 +2797,7 @@
             listPoints,
             verificationRows,
             listImprovements,
+            everyDatatype,
         });
     }
 
@@ -3371,7 +3439,7 @@
      * repeats in every part; a part carries one slice of one section, one row
      * per line, so a reader can count rows and cite them.
      */
-    const EXPORT_SECTIONS = ['readings', 'scanReadings', 'plantParameters', 'listPoints', 'verificationRows', 'listImprovements'];
+    const EXPORT_SECTIONS = ['readings', 'scanReadings', 'plantParameters', 'listPoints', 'verificationRows', 'listImprovements', 'everyDatatype'];
     // The knowledge-file ceiling is 36 000 characters. The markdown report keeps
     // 6 000 of headroom because it estimates; this measures the assembled part,
     // so it can go closer — and every 2 000 characters is six more readings a
@@ -3391,7 +3459,9 @@
         let text = JSON.stringify(body, null, 1);
         for (const section of EXPORT_SECTIONS) {
             const rows = (doc[section] || []).map(row => JSON.stringify(row));
-            text = text.replace('"@@' + section + '@@"', rows.length ? '[\n' + rows.join(',\n') + '\n]' : '[]');
+            // A function, not a string: a row holding "$&" or "$'" - text read out of
+            // a register can - would otherwise be taken as a replacement pattern.
+            text = text.replace('"@@' + section + '@@"', () => (rows.length ? '[\n' + rows.join(',\n') + '\n]' : '[]'));
         }
         return text;
     }
@@ -3400,27 +3470,55 @@
         const header = {};
         for (const key of Object.keys(doc)) if (EXPORT_SECTIONS.indexOf(key) < 0) header[key] = doc[key];
         // What a part costs before its rows: the header, the part block at its
-        // widest, and the section's brackets — measured on the assembled text.
-        const frameOf = section => JSON.stringify(Object.assign(
-            { part: { n: 999, of: 999, section, rows: 99999, contents: {}, firstRef: 999999, lastRef: 999999 } },
+        // widest — the contents map included — and the section's brackets,
+        // measured on the assembled text.
+        const frameOf = (section, contents) => JSON.stringify(Object.assign(
+            { part: { n: 99999, of: 99999, section, rows: 99999, contents, firstRef: 999999, lastRef: 999999 } },
             header, { [section]: '@@ROWS@@' }), null, 1).length + 300;
-        const slices = [];
-        for (const section of EXPORT_SECTIONS) {
-            const rows = (doc[section] || []).map(row => JSON.stringify(row));
-            const frame = frameOf(section);
-            let chunk = [];
-            let size = 0;
-            const flush = () => { if (chunk.length) slices.push({ section, rows: chunk }); chunk = []; size = 0; };
-            for (const line of rows) {
-                if (chunk.length && frame + size + line.length + 2 > EXPORT_CHUNK_LIMIT) flush();
-                chunk.push(line);
-                size += line.length + 2;
+        const sliceAll = contents => {
+            const out = [];
+            for (const section of EXPORT_SECTIONS) {
+                const rows = (doc[section] || []).map(row => JSON.stringify(row));
+                const frame = frameOf(section, contents);
+                let chunk = [];
+                let size = 0;
+                const flush = () => { if (chunk.length) out.push({ section, rows: chunk }); chunk = []; size = 0; };
+                for (const line of rows) {
+                    if (chunk.length && frame + size + line.length + 2 > EXPORT_CHUNK_LIMIT) flush();
+                    chunk.push(line);
+                    size += line.length + 2;
+                }
+                flush();
             }
-            flush();
+            if (!out.length) out.push({ section: null, rows: [] });
+            return out;
+        };
+        // A section's parts are consecutive, so the map gives each the range of part
+        // numbers holding it, "4-700" - a list of every number was 6 000 characters
+        // on a large unit, repeated in all 1 400 of its parts (1.55.0).
+        const contentsOf = slices => {
+            const c = {};
+            slices.forEach((slice, index) => {
+                if (!slice.section) return;
+                const n = index + 1;
+                const prior = c[slice.section];
+                c[slice.section] = prior === undefined ? String(n) : prior.split('-')[0] + '-' + n;
+            });
+            return c;
+        };
+        // The contents map rides in every part's header, so it is measured rather
+        // than assumed empty: slice, see how big the map came out, and slice again
+        // until the map the frames were measured with is at least as big as the one
+        // the parts carry.
+        let assumed = {};
+        let slices = sliceAll(assumed);
+        for (let pass = 0; pass < 8; pass++) {
+            const actual = contentsOf(slices);
+            if (JSON.stringify(actual).length <= JSON.stringify(assumed).length) break;
+            assumed = actual;
+            slices = sliceAll(assumed);
         }
-        if (!slices.length) slices.push({ section: null, rows: [] });
-        const contents = {};
-        slices.forEach((slice, index) => { if (slice.section) (contents[slice.section] = contents[slice.section] || []).push(index + 1); });
+        const contents = contentsOf(slices);
         const base = baseName || resultFilename().replace(/\.json$/, '');
         return slices.map((slice, index) => {
             const part = { n: index + 1, of: slices.length, section: slice.section, rows: slice.rows.length, contents };
@@ -3431,7 +3529,7 @@
             }
             const body = Object.assign({ part }, header);
             if (slice.section) body[slice.section] = '@@ROWS@@';
-            const text = JSON.stringify(body, null, 1).replace('"@@ROWS@@"', '[\n' + slice.rows.join(',\n') + '\n]');
+            const text = JSON.stringify(body, null, 1).replace('"@@ROWS@@"', () => '[\n' + slice.rows.join(',\n') + '\n]');
             return {
                 name: base + (slices.length > 1 ? '_part' + (index + 1) + 'of' + slices.length : '') + '.json',
                 section: slice.section,
@@ -4300,7 +4398,7 @@
             if (p.rangeMax !== null && scaled > p.rangeMax) flags.push('above the list range (' + p.rangeMax + ')');
             if (p.decoded.step === 2) {
                 flags.push('32-bit, ' + (IWMAC_WORD_ORDER[p.decoded.swap] || 'word order ' + p.decoded.swap) + ' as iw_mb.exe reads _' + p.decoded.swap +
-                    (MEASURED_WIDE_TYPES.has(p.decoded.rawType) ? '' : ' (measured for U32, assumed for ' + p.decoded.rawType + ')'));
+                    (MEASURED_WIDE_TYPES.has(p.decoded.rawType) ? '' : ' (measured for U32, I32 and F, not for ' + p.decoded.rawType + ')'));
             }
             return { point: p, status: raw === 0 ? 'zero' : 'read', raw, scaled, flags };
         });
