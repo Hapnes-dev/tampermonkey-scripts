@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.53.1
+// @version      1.54.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.53.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.54.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5509,14 +5509,14 @@
     #${PANEL_ID} .mpc-vhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
     #${PANEL_ID} .mpc-vhead h5{flex:1 1 320px;margin:0;font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;
         text-transform:uppercase;color:#1b5fa8}
-    #${PANEL_ID} .mpc-vcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:8px;align-items:start}
+    #${PANEL_ID} .mpc-vcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:8px;align-items:start}
     #${PANEL_ID} .mpc-vcol{display:flex;flex-direction:column;background:#fff;border:1px solid #dfe3e9;border-radius:4px;overflow:hidden}
     #${PANEL_ID} .mpc-vcol h6{margin:0;padding:4px 10px;background:#eef0f4;font:bold 10.5px Arial,Helvetica,sans-serif;
         letter-spacing:.4px;text-transform:uppercase;color:#79808c}
-    #${PANEL_ID} button.mpc-vitem{display:grid;grid-template-columns:76px 1fr auto;gap:8px;align-items:baseline;width:100%;
+    #${PANEL_ID} button.mpc-vitem{display:grid;grid-template-columns:118px 118px 1fr;gap:6px;align-items:baseline;width:100%;
         height:auto;margin:0;padding:3px 10px;border:0;border-top:1px solid #eef0f4;border-radius:0;background:#fff;
         text-align:left;cursor:pointer;font:12px/1.5 Arial,Helvetica,sans-serif;color:#1b1b1b}
-    #${PANEL_ID} button.mpc-vitem b{color:#1b5fa8;white-space:nowrap}
+    #${PANEL_ID} button.mpc-vitem b{color:#1b5fa8;white-space:nowrap;font-size:11.5px;overflow:hidden;text-overflow:ellipsis}
     #${PANEL_ID} button.mpc-vitem em{font-style:normal;font-size:11px;color:#79808c;min-width:0;overflow:hidden;
         text-overflow:ellipsis;white-space:nowrap}
     #${PANEL_ID} button.mpc-vitem span{font-family:Consolas,ui-monospace,monospace;text-align:right;white-space:nowrap}
@@ -6026,15 +6026,15 @@
         { key: 'F_N', raw: 'F', swap: 'N', regs: 2, label: 'F_N float, low word first' },
         { key: 'F_W', raw: 'F', swap: 'W', regs: 2, label: 'F_W float, high word first' },
         // 2026-10-01: the rest of the table
-        { key: 'U16_W', raw: 'U16', swap: 'W', regs: 1, label: 'U16_W (one register: same as U16)' },
-        { key: 'I16_W', raw: 'I16', swap: 'W', regs: 1, label: 'I16_W (one register: same as I16)' },
+        { key: 'U16_W', raw: 'U16', swap: 'W', regs: 1, label: 'U16_W one register: reads as U16' },
+        { key: 'I16_W', raw: 'I16', swap: 'W', regs: 1, label: 'I16_W one register: reads as I16' },
         { key: 'rU16', raw: 'rU16', swap: 'N', regs: 1, label: 'rU16 bit order reversed' },
         { key: 'rI16', raw: 'rI16', swap: 'N', regs: 1, label: 'rI16 bit order reversed, signed' },
         { key: 'BCD4', raw: 'BCD4', swap: 'N', regs: 1, label: 'BCD4 four BCD digits' },
         { key: 'BCD35', raw: 'BCD35', swap: 'N', regs: 1, label: 'BCD35 3½ BCD digits, ±1999' },
         { key: 'CLK_N', raw: 'CLK', swap: 'N', regs: 1, label: 'CLK_N a count as hh:mm' },
         { key: 'CLK_R', raw: 'CLK', swap: 'R', regs: 1, label: 'CLK_R bytes swapped, as hh:mm' },
-        { key: 'Bits', raw: 'Bits', swap: 'N', regs: 1, label: 'Bits the 16 bits (Bit_Hold, Bit_Input)' },
+        { key: 'Bits', raw: 'Bits', swap: 'N', regs: 1, label: 'Bits the word as its 16 bits' },
         { key: 'U32_R', raw: 'U32', swap: 'R', regs: 2, label: 'U32_R bytes swapped' },
         { key: 'I32_R', raw: 'I32', swap: 'R', regs: 2, label: 'I32_R bytes swapped' },
         { key: 'F_R', raw: 'F', swap: 'R', regs: 2, label: 'F_R float, bytes swapped' },
@@ -6180,6 +6180,27 @@
         return ' (' + d.hex + sure + ')';
     }
 
+    /*
+     * A view under the full names modbusgen's datatype table gives it, for the
+     * register space being read: table 4 is _Hold_, table 3 _Input_. The table is
+     * regular: A_ (an analog value) and I_ (an integer) for every numeric raw type,
+     * I_ alone for BCD, CLK, STR and the reversed-bit types, and Bit_Hold or
+     * Bit_Input for a bit. Both A_ and I_ read the same words the same way; the
+     * letter is how IWMAC presents the value.
+     */
+    const SPACE_OF_TABLE = { 4: 'Hold', 3: 'Input' };
+    const ANALOG_RAWS = new Set(['U16', 'I16', 'U32', 'I32', 'F', 'D', 'U64U32', 'I64I32']);
+    function fullNames(view, table) {
+        const space = SPACE_OF_TABLE[String(table)] || 'Hold';
+        if (view.raw === 'Bits') return ['Bit_' + space];
+        const tail = '_' + space + '_' + view.raw + '_' + view.swap;
+        return ANALOG_RAWS.has(view.raw) ? ['A' + tail, 'I' + tail] : ['I' + tail];
+    }
+    /** What a view means beyond its name — "bytes swapped", "low word first". */
+    const viewMeaning = view => view.label.slice(view.key.length).trim();
+    /** A view as a sentence names it: its full names for this table, then what it means. */
+    const viewName = (view, table) => fullNames(view, table).join(' / ') + (viewMeaning(view) ? ' — ' + viewMeaning(view) : '');
+
     /**
      * The picker in a grid's type cell. The first entry is what the row is
      * without a view — the list's datatype, or the reading as polled — and
@@ -6199,7 +6220,11 @@
         // Grouped by how many registers each spans, so the 35 read as three short lists.
         for (const regs of [1, 2, 4]) {
             const group = el('optgroup', { label: VIEW_GROUPS[regs] });
-            for (const t of VIEW_TYPES.filter(v => v.regs === regs)) group.appendChild(el('option', { value: t.key, textContent: 'view as ' + t.label }));
+            for (const t of VIEW_TYPES.filter(v => v.regs === regs)) {
+                // The full names, as a list writes them, for the table being read.
+                const meaning = viewMeaning(t);
+                group.appendChild(el('option', { value: t.key, textContent: 'view as ' + fullNames(t, table).join(' / ') + (meaning ? ' — ' + meaning : '') }));
+            }
             select.appendChild(group);
         }
         select.value = current;
@@ -6314,9 +6339,15 @@
             const col = el('div', { className: 'mpc-vcol' }, [el('h6', { textContent: VIEW_GROUPS[regs] })]);
             for (const t of VIEW_TYPES.filter(v => v.regs === regs)) {
                 const d = decodeView(t, viewWords(t, wordAt, ref));
-                col.appendChild(item('mpc-vitem' + (t.key === current ? ' on' : ''), t.label + viewBasis(d), [
-                    el('b', { textContent: t.key }),
-                    el('em', { textContent: t.label.slice(t.key.length).trim() }),
+                // Full names, as the list writes them. The I_ name always takes the
+                // second slot, so A_ and I_ names line up down the column.
+                const names = fullNames(t, table);
+                const slots = names.length === 2 ? names : (t.raw === 'Bits' ? [names[0], ''] : ['', names[0]]);
+                const meaning = viewMeaning(t);
+                col.appendChild(item('mpc-vitem' + (t.key === current ? ' on' : ''),
+                    names.join(' / ') + (meaning ? ' — ' + meaning : '') + viewBasis(d), [
+                    el('b', { textContent: slots[0] }),
+                    el('b', { textContent: slots[1] }),
                     el('span', { textContent: d.ok ? viewValueText(d.value) : '—' }),
                 ], () => pick(t.key), !d.ok));
             }
@@ -7093,7 +7124,7 @@
                 raw = d.ok ? d.value : undefined;
                 scaled = d.ok && typeof d.value === 'number'
                     ? (p.scale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * p.scale.factor, p.decimals)) : undefined;
-                viewNote = 'viewed as ' + view.label + viewBasis(d) + ' — display only, the list says ' + p.datatype;
+                viewNote = 'viewed as ' + viewName(view, p.decoded.table) + viewBasis(d) + ' — display only, the list says ' + p.datatype;
             }
             if (onlyNonZero && raw === 0) continue;
             const cells = [
@@ -7247,7 +7278,7 @@
                 ? { ok: false, why: 'poll as 16-bit (Format) to view this register as another datatype' }
                 : decodeView(view, viewWords(view, ref => { const o = byIndex.get(ref); return o ? o.v : undefined; }, v.i)));
             const viewTitle = !view ? undefined
-                : 'viewed as ' + view.label + viewBasis(viewed) + ' — display only' + (point ? ', the list says ' + point.datatype : '');
+                : 'viewed as ' + viewName(view, table) + viewBasis(viewed) + ' — display only' + (point ? ', the list says ' + point.datatype : '');
             const viewScaled = viewed && viewed.ok && point && typeof viewed.value === 'number'
                 ? (point.scale.invert ? (viewed.value ? 0 : 1) : roundScaled(viewed.value * point.scale.factor, point.decimals))
                 : null;

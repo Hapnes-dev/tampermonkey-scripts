@@ -129,6 +129,30 @@ check('D_W and D_N read 1.5 as a 64-bit float either way round',
 check('a 64-bit view without its four words says so', v('D_N', [1, 2]).ok === false && /next 3/.test(v('D_N', [1, 2]).why), show(v('D_N', [1, 2])));
 check('viewValueText shows a text view as its text', viewValueText('m3/h') === 'm3/h', viewValueText('m3/h'));
 
+// 1.54: the full datatype names, as a list writes them, for the table being read.
+const fn = (key, table) => fullNames(viewTypeOf(key), table).join(' ');
+check('table 4 is _Hold_, with A_ and I_ for a numeric type: I16_W is A_Hold_I16_W and I_Hold_I16_W',
+    fn('I16_W', '4') === 'A_Hold_I16_W I_Hold_I16_W', fn('I16_W', '4'));
+check('table 3 is _Input_', fn('U32_N', '3') === 'A_Input_U32_N I_Input_U32_N', fn('U32_N', '3'));
+check('BCD, CLK, STR and the reversed-bit types have I_ only',
+    fn('BCD4', '4') === 'I_Hold_BCD4_N' && fn('CLK_R', '3') === 'I_Input_CLK_R' && fn('STR8_N', '4') === 'I_Hold_STR8_N' &&
+        fn('rI16', '3') === 'I_Input_rI16_N', [fn('BCD4', '4'), fn('CLK_R', '3'), fn('STR8_N', '4'), fn('rI16', '3')].join(' | '));
+check('Bits is Bit_Hold or Bit_Input', fn('Bits', '4') === 'Bit_Hold' && fn('Bits', '3') === 'Bit_Input', fn('Bits', '3'));
+check('every full name resolves back to its own view', VIEW_TYPES.every(t => ['4', '3'].every(tb =>
+    fullNames(t, tb).every(n => viewTypeOf(n) === t))),
+    VIEW_TYPES.flatMap(t => fullNames(t, '4').filter(n => viewTypeOf(n) !== t)).join(' '));
+check('viewName reads as the list writes it, then what it means',
+    viewName(viewTypeOf('I16_R'), '4') === 'A_Hold_I16_R / I_Hold_I16_R — bytes swapped', viewName(viewTypeOf('I16_R'), '4'));
+// Every name it shows is a row in modbusgen's table, when that repository sits beside this one.
+const fs = require('fs');
+const csvPath = String.raw`""" + str(Path(__file__).resolve().parents[3] / "modbus-list-generator" / "data" / "tables" / "datatypes.csv") + r"""`;
+if (fs.existsSync(csvPath)) {
+    const known = new Set(fs.readFileSync(csvPath, 'utf8').split(/\r?\n/).slice(1).map(l => l.split(',')[0]));
+    const shown = VIEW_TYPES.flatMap(t => [...fullNames(t, '4'), ...fullNames(t, '3')]);
+    check('every full name shown is a datatype in modbusgen\'s table (' + shown.length + ' names)',
+        shown.every(n => known.has(n)), shown.filter(n => !known.has(n)).join(' '));
+}
+
 // Scale presets: the same reading under another scale key, with the decimals that key implies.
 check('every preset is a key the scale parser knows', SCALE_PRESETS.every(k => scaleFactorOf(k).known), SCALE_PRESETS.join(' '));
 check('decimals follow the key: x0.001 three, x0.25 two, x3.6 one, x10 none',

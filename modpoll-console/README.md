@@ -595,10 +595,23 @@ the measured word order: `_N` takes the first register as the least significant
 word, `_W` as the most, and `_R` swaps the bytes of each word in `_N` order. None of
 those has been measured on `iw_mb.exe`, and each row's tooltip says so.
 
+**Full datatype names (1.54.0).** The picker and the card name every view the way a
+point list writes it, for the table being read:
+- `-t 4` gives `A_Hold_I16_W` / `I_Hold_I16_W`, and `-t 3` gives `A_Input_…` /
+  `I_Input_…`.
+- `BCD`, `CLK`, `STR` and the reversed-bit types have only the `I_` name, as in
+  modbusgen's table.
+- A bit view is `Bit_Hold` / `Bit_Input`.
+
+`A_` and `I_` read the same words the same way; the letter is how IWMAC presents
+the value. `test/decode-check.py` checks that every name shown is a row in
+modbusgen's `data/tables/datatypes.csv` when that repository sits beside this one.
+
 **Click a register to choose from all of them at once (1.53.0).** The detail card a
 row opens has a *View as* section. Since 1.53.1 it is three lists side by side, one
-per register width. Each row holds the datatype, what it means and what this
-register reads as under it, with the values lined up on the right.
+per register width. Each row holds the full names and what this register reads as
+under them, with the values lined up on the right. What a datatype means is in its
+tooltip.
 
 A click on a row shows the grid row that way, and the card opens again on the same
 register, so the next datatype is one click away too. The one showing is marked
