@@ -568,9 +568,39 @@ measured or assumed. **Display only: the loaded point list is never changed**, a
 nothing is written anywhere. A viewed row is tinted; the summary line counts the
 views and offers *clear views*.
 
-- **16-bit:** `U16`, `I16`, and `U16_R` / `I16_R` with the bytes swapped.
-- **32-bit:** `U32_N`, `U32_W`, `I32_N`, `I32_W`, `F_N`, `F_W` — the register and
-  the next one, put together by `IWMAC_WORD_ORDER`.
+Since 1.53.0 the picker offers every datatype modbusgen's table has a register
+reading for (docs/15 §6), grouped by how many registers each spans:
+
+- **16-bit, one register:**
+  - `U16`, `I16`, and `U16_R` / `I16_R` with the bytes swapped.
+  - `U16_W` / `I16_W`, which on one register read as `_N`.
+  - `rU16` / `rI16`, bit order reversed.
+  - `BCD4` and `BCD35`.
+  - `CLK_N` / `CLK_R`, a count shown as hh:mm.
+  - `Bits`, the register drawn as its sixteen bits — what a `Bit_Hold` or
+    `Bit_Input` point picks one of.
+- **32-bit, two registers:**
+  - `U32_N`, `U32_W`, `I32_N`, `I32_W`, `F_N`, `F_W` — the register and the next
+    one, put together by `IWMAC_WORD_ORDER`.
+  - `U32_R`, `I32_R`, `F_R`, with the bytes of each word swapped.
+  - `STR4_N` / `STR4_R`, four characters of text.
+- **64-bit, four registers:**
+  - `U64U32` and `I64I32` in `_N`, `_W` and `_R`. These show what IWMAC keeps, the
+    low 32 bits, with the whole 64-bit number in the tooltip.
+  - `D` in `_N`, `_W` and `_R`, an IEEE 64-bit float.
+  - `STR8_N` / `STR8_R`, eight characters of text.
+
+The ten 1.50 keys decode exactly as they did. Every other one follows docs/15 and
+the measured word order: `_N` takes the first register as the least significant
+word, `_W` as the most, and `_R` swaps the bytes of each word in `_N` order. None of
+those has been measured on `iw_mb.exe`, and each row's tooltip says so.
+
+**Click a register to choose from all of them at once (1.53.0).** The detail card a
+row opens has a *View as* section: one button per datatype, each showing what this
+register reads as under it. A click shows the row that way, and the card opens
+again on the same register, so the next datatype is one click away too. A datatype
+that cannot be read here is greyed out — `BCD4` on a word with a digit above 9, or
+a 64-bit view on the last register polled. *as read* goes back to the list's own.
 
 In the register grid a view needs a 16-bit poll, which has the raw words; a poll
 in modpoll's own 32-bit formats has already put them together modpoll's way, so

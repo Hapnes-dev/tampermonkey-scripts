@@ -78,12 +78,56 @@ check('viewTypeOf resolves a view key, a raw type and a full datatype key',
     viewTypeOf('U32_N').key === 'U32_N' && viewTypeOf('I16').key === 'I16' &&
         viewTypeOf('A_Input_U32_W').key === 'U32_W' && viewTypeOf('i_hold_i16_n').key === 'I16', '');
 check('viewTypeOf refuses what it cannot show', viewTypeOf('Coil_X_N') === null && viewTypeOf('') === null, '');
-check('every view decodes: 16-bit from one word, 32-bit from two',
-    VIEW_TYPES.every(t => decodeWords(viewWords(t, r => (r === 190 ? 0 : 16812), 190), t.raw, t.swap).ok), '');
+check('every view decodes: 16-bit from one word, 32-bit from two, 64-bit from four',
+    VIEW_TYPES.every(t => decodeView(t, viewWords(t, r => (r === 190 ? 0 : 16812), 190)).ok),
+    VIEW_TYPES.filter(t => !decodeView(t, viewWords(t, r => (r === 190 ? 0 : 16812), 190)).ok).map(t => t.key).join(' '));
 check('a 32-bit view asks for the register and the next one', viewWords(viewTypeOf('U32_N'), r => r * 10, 190).join(',') === '1900,1910',
     viewWords(viewTypeOf('U32_N'), r => r * 10, 190).join(','));
 check('viewValueText keeps integers whole and trims float noise', viewValueText(200000) === '200000' && viewValueText(21.500000953) === '21.5',
     viewValueText(21.500000953));
+
+// 1.53: every datatype the table has a register reading for (docs/15 section 6).
+const v = (key, words) => decodeView(viewTypeOf(key), words);
+check('the ten views 1.50 shipped read exactly as before, through decodeWords',
+    VIEW_TYPES.slice(0, 10).every(t => show(decodeView(t, [3392, 3])) === show(decodeWords([3392, 3], t.raw, t.swap))), '');
+check('views are grouped by how many registers they span: 1, 2 or 4',
+    VIEW_TYPES.every(t => [1, 2, 4].includes(t.regs)) && VIEW_TYPES.length === 35, String(VIEW_TYPES.length));
+check('a 64-bit view asks for this register and the next three', viewWords(viewTypeOf('U64U32_N'), r => r * 10, 190).join(',') === '1900,1910,1920,1930',
+    viewWords(viewTypeOf('U64U32_N'), r => r * 10, 190).join(','));
+check('viewTypeOf resolves the new families from full datatype names',
+    viewTypeOf('A_Hold_U64U32_N').key === 'U64U32_N' && viewTypeOf('I_Hold_STR4_N').key === 'STR4_N' &&
+        viewTypeOf('I_Input_BCD4_N').key === 'BCD4' && viewTypeOf('I_Hold_rU16_N').key === 'rU16' &&
+        viewTypeOf('I_Hold_CLK_R').key === 'CLK_R' && viewTypeOf('Bit_Hold').key === 'Bits' &&
+        viewTypeOf('A_Hold_D_W').key === 'D_W' && viewTypeOf('A_Hold_U32_R').key === 'U32_R', '');
+check('U16_W on one register reads as U16, and says why', v('U16_W', [0x0102]).value === 258 && /no word order/.test(v('U16_W', [0x0102]).note),
+    show(v('U16_W', [0x0102])));
+check('STR4_N reads the EX3 unit text high byte first: m3/h', v('STR4_N', [0x6D33, 0x2F68]).value === 'm3/h', show(v('STR4_N', [0x6D33, 0x2F68])));
+check('STR4_R reads the same text with the bytes swapped', v('STR4_R', [0x336D, 0x682F]).value === 'm3/h', show(v('STR4_R', [0x336D, 0x682F])));
+check('STR8_N reads the EX3 serial 35010007', v('STR8_N', [0x3335, 0x3031, 0x3030, 0x3037]).value === '35010007',
+    show(v('STR8_N', [0x3335, 0x3031, 0x3030, 0x3037])));
+check('BCD4 reads 0x1234 as 1234, and refuses a digit above 9',
+    v('BCD4', [0x1234]).value === 1234 && v('BCD4', [0x12A4]).ok === false, show([v('BCD4', [0x1234]), v('BCD4', [0x12A4])]));
+check('BCD35: bit 12 the thousand, bit 15 the sign - 0x1999 is 1999, 0x8123 is -123',
+    v('BCD35', [0x1999]).value === 1999 && v('BCD35', [0x8123]).value === -123, show([v('BCD35', [0x1999]), v('BCD35', [0x8123])]));
+check('rU16 reverses the bit order: 0x0001 is 32768, and rI16 reads that as -32768',
+    v('rU16', [1]).value === 32768 && v('rI16', [1]).value === -32768, show([v('rU16', [1]), v('rI16', [1])]));
+check('CLK_N shows 125 as 02:05, and CLK_R the same count with its bytes swapped',
+    v('CLK_N', [125]).value === '02:05' && v('CLK_R', [0x7D00]).value === '02:05', show([v('CLK_N', [125]), v('CLK_R', [0x7D00])]));
+check('Bits draws the word as its 16 bits and names the ones on',
+    v('Bits', [0x0021]).value === '0000 0000 0010 0001' && v('Bits', [0x0021]).note === 'bits on: 0, 5', show(v('Bits', [0x0021])));
+check('U32_R swaps the bytes of each word, in _N order: [0x0201, 0x0403] is 0x03040102',
+    v('U32_R', [0x0201, 0x0403]).value === 0x03040102 && /not measured/.test(v('U32_R', [0x0201, 0x0403]).note), show(v('U32_R', [0x0201, 0x0403])));
+check('U64U32_N puts four words low word first: [3392, 3, 0, 0] is 200000',
+    v('U64U32_N', [3392, 3, 0, 0]).value === 200000, show(v('U64U32_N', [3392, 3, 0, 0])));
+check('U64U32 shows what IWMAC keeps, the low 32 bits, and the whole number in the note',
+    v('U64U32_N', [0, 0, 1, 0]).value === 0 && /4294967296/.test(v('U64U32_N', [0, 0, 1, 0]).note), show(v('U64U32_N', [0, 0, 1, 0])));
+check('U64U32_W reads the first register as the most significant word', v('U64U32_W', [0, 0, 3, 3392]).value === 200000,
+    show(v('U64U32_W', [0, 0, 3, 3392])));
+check('I64I32_N keeps a negative number negative', v('I64I32_N', [-2, -1, -1, -1]).value === -2, show(v('I64I32_N', [-2, -1, -1, -1])));
+check('D_W and D_N read 1.5 as a 64-bit float either way round',
+    v('D_W', [0x3FF8, 0, 0, 0]).value === 1.5 && v('D_N', [0, 0, 0, 0x3FF8]).value === 1.5, show([v('D_W', [0x3FF8, 0, 0, 0]), v('D_N', [0, 0, 0, 0x3FF8])]));
+check('a 64-bit view without its four words says so', v('D_N', [1, 2]).ok === false && /next 3/.test(v('D_N', [1, 2]).why), show(v('D_N', [1, 2])));
+check('viewValueText shows a text view as its text', viewValueText('m3/h') === 'm3/h', viewValueText('m3/h'));
 
 // Scale presets: the same reading under another scale key, with the decimals that key implies.
 check('every preset is a key the scale parser knows', SCALE_PRESETS.every(k => scaleFactorOf(k).known), SCALE_PRESETS.join(' '));
@@ -160,7 +204,9 @@ const check = (name, ok, got) => {
 
 code = 0
 for script in (js, js2):
-    result = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8")
+    # On stdin, not as `node -e`: the lifted code outgrew Windows' 32 767-character
+    # command line once the view catalogue covered every datatype (1.53.0).
+    result = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf-8")
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     code = code or result.returncode

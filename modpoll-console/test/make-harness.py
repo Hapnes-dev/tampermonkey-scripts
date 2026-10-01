@@ -65,6 +65,10 @@ columns = between("    const REGISTER_COLUMNS = [", "\n    const POINT_COLUMNS =
 watch = between("    // Printed reference -> the value seen on the previous poll",
                 "\n    function log(text, level) {")
 render_grid = between("    function renderGrid(result) {", "\n    async function runOnce() {")
+# The "view as" block renderGrid draws into its type and scaled cells, and the
+# detail card into its every-datatype row (1.50, 1.53). Without it a poll through
+# __poll threw before a row was drawn. decodeWords itself comes with `exporting`.
+views = between("    /*\n     * \"View as\": a register shown as another datatype", "\n    // The grid serves two readings")
 
 # The doc comment that sits above EXPAND_RESERVE, kept for readability only.
 OUT.write_text(f"""<!doctype html>
@@ -99,9 +103,11 @@ let _unitsCache = null;
 const REPORT_CHUNK_LIMIT = 30000;
 const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';
+// The same as the script's own el(): a string child becomes a text node, which
+// the detail card's labels rely on.
 function el(tag, props, kids) {{
     const node = Object.assign(document.createElement(tag), props || {{}});
-    for (const kid of kids || []) node.appendChild(kid);
+    for (const kid of kids || []) node.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
     return node;
 }}
 
@@ -121,6 +127,8 @@ function el(tag, props, kids) {{
 {logfn}
 
 {progress}
+
+{views}
 
 {detail}
 

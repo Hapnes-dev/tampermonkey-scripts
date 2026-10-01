@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.52.0
+// @version      1.53.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.52.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.53.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5501,6 +5501,21 @@
     #${PANEL_ID} .mpc-dactions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
     #${PANEL_ID} .mpc-dactions .mpc-spacer{flex:1 1 auto}
     #${PANEL_ID} .mpc-dcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:10px;align-items:start}
+    /* The register under every datatype, one click each - the same amber as a
+       viewed row's picker marks the one showing. */
+    #${PANEL_ID} .mpc-dviews{display:flex;flex-direction:column;gap:5px;padding:7px 10px 9px;background:#f6f9fd;
+        border:1px solid #c5d9f1;border-radius:4px}
+    #${PANEL_ID} .mpc-dviews h5{margin:0 0 2px;font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;
+        text-transform:uppercase;color:#1b5fa8}
+    #${PANEL_ID} .mpc-vrow{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+    #${PANEL_ID} .mpc-vgroup{flex:0 0 150px;font:11px Arial,Helvetica,sans-serif;color:#79808c}
+    #${PANEL_ID} button.mpc-vbtn{display:inline-flex;gap:6px;align-items:baseline;height:auto;padding:2px 9px;
+        border:1px solid #c5d9f1;border-radius:10px;background:#fff;cursor:pointer;font:11px/1.6 Arial,Helvetica,sans-serif;color:#1b1b1b}
+    #${PANEL_ID} button.mpc-vbtn b{color:#1b5fa8}
+    #${PANEL_ID} button.mpc-vbtn span{font-family:Consolas,ui-monospace,monospace}
+    #${PANEL_ID} button.mpc-vbtn:hover:not([disabled]){border-color:#3f7fbf;background:#e6f0fb}
+    #${PANEL_ID} button.mpc-vbtn.on{background:#fff4cc;border-color:#d9a400}
+    #${PANEL_ID} button.mpc-vbtn[disabled]{opacity:.45;cursor:default}
     /* A 1px gap over a grey backing reads as gridlines, which is what separates
        one pair from the next without drawing a border around each of them. */
     #${PANEL_ID} .mpc-dsec{display:flex;flex-direction:column;gap:1px;min-width:0;
@@ -5980,42 +5995,180 @@
      * shows is what IWMAC would show under that datatype. 32-bit views need the
      * register and the next one read as 16-bit words.
      */
+    /*
+     * Every datatype modbusgen's table has a register reading for
+     * (data/tables/datatypes.csv, docs/15 §6), grouped by how many registers it
+     * spans. `regs` is that span; `group` heads it in the picker. The first ten
+     * keys are the ones 1.50 shipped and decode through decodeWords exactly as
+     * before; the rest decode in decodeView, and say so where iw_mb.exe has not
+     * been measured on them. `Bits` is the register drawn as its sixteen bits,
+     * which is what a Bit_Hold or Bit_Input point picks one of.
+     */
+    const VIEW_GROUPS = { 1: '16-bit - one register', 2: '32-bit - two registers', 4: '64-bit - four registers' };
     const VIEW_TYPES = [
-        { key: 'U16', raw: 'U16', swap: 'N', label: 'U16' },
-        { key: 'I16', raw: 'I16', swap: 'N', label: 'I16 signed' },
-        { key: 'U16_R', raw: 'U16', swap: 'R', label: 'U16_R bytes swapped' },
-        { key: 'I16_R', raw: 'I16', swap: 'R', label: 'I16_R bytes swapped' },
-        { key: 'U32_N', raw: 'U32', swap: 'N', label: 'U32_N low word first' },
-        { key: 'U32_W', raw: 'U32', swap: 'W', label: 'U32_W high word first' },
-        { key: 'I32_N', raw: 'I32', swap: 'N', label: 'I32_N low word first' },
-        { key: 'I32_W', raw: 'I32', swap: 'W', label: 'I32_W high word first' },
-        { key: 'F_N', raw: 'F', swap: 'N', label: 'F_N float, low word first' },
-        { key: 'F_W', raw: 'F', swap: 'W', label: 'F_W float, high word first' },
+        { key: 'U16', raw: 'U16', swap: 'N', regs: 1, label: 'U16' },
+        { key: 'I16', raw: 'I16', swap: 'N', regs: 1, label: 'I16 signed' },
+        { key: 'U16_R', raw: 'U16', swap: 'R', regs: 1, label: 'U16_R bytes swapped' },
+        { key: 'I16_R', raw: 'I16', swap: 'R', regs: 1, label: 'I16_R bytes swapped' },
+        { key: 'U32_N', raw: 'U32', swap: 'N', regs: 2, label: 'U32_N low word first' },
+        { key: 'U32_W', raw: 'U32', swap: 'W', regs: 2, label: 'U32_W high word first' },
+        { key: 'I32_N', raw: 'I32', swap: 'N', regs: 2, label: 'I32_N low word first' },
+        { key: 'I32_W', raw: 'I32', swap: 'W', regs: 2, label: 'I32_W high word first' },
+        { key: 'F_N', raw: 'F', swap: 'N', regs: 2, label: 'F_N float, low word first' },
+        { key: 'F_W', raw: 'F', swap: 'W', regs: 2, label: 'F_W float, high word first' },
+        // 2026-10-01: the rest of the table
+        { key: 'U16_W', raw: 'U16', swap: 'W', regs: 1, label: 'U16_W (one register: same as U16)' },
+        { key: 'I16_W', raw: 'I16', swap: 'W', regs: 1, label: 'I16_W (one register: same as I16)' },
+        { key: 'rU16', raw: 'rU16', swap: 'N', regs: 1, label: 'rU16 bit order reversed' },
+        { key: 'rI16', raw: 'rI16', swap: 'N', regs: 1, label: 'rI16 bit order reversed, signed' },
+        { key: 'BCD4', raw: 'BCD4', swap: 'N', regs: 1, label: 'BCD4 four BCD digits' },
+        { key: 'BCD35', raw: 'BCD35', swap: 'N', regs: 1, label: 'BCD35 3½ BCD digits, ±1999' },
+        { key: 'CLK_N', raw: 'CLK', swap: 'N', regs: 1, label: 'CLK_N a count as hh:mm' },
+        { key: 'CLK_R', raw: 'CLK', swap: 'R', regs: 1, label: 'CLK_R bytes swapped, as hh:mm' },
+        { key: 'Bits', raw: 'Bits', swap: 'N', regs: 1, label: 'Bits the 16 bits (Bit_Hold, Bit_Input)' },
+        { key: 'U32_R', raw: 'U32', swap: 'R', regs: 2, label: 'U32_R bytes swapped' },
+        { key: 'I32_R', raw: 'I32', swap: 'R', regs: 2, label: 'I32_R bytes swapped' },
+        { key: 'F_R', raw: 'F', swap: 'R', regs: 2, label: 'F_R float, bytes swapped' },
+        { key: 'STR4_N', raw: 'STR4', swap: 'N', regs: 2, label: 'STR4_N text, 4 characters' },
+        { key: 'STR4_R', raw: 'STR4', swap: 'R', regs: 2, label: 'STR4_R text, bytes swapped' },
+        { key: 'U64U32_N', raw: 'U64U32', swap: 'N', regs: 4, label: 'U64U32_N low word first' },
+        { key: 'U64U32_W', raw: 'U64U32', swap: 'W', regs: 4, label: 'U64U32_W high word first' },
+        { key: 'U64U32_R', raw: 'U64U32', swap: 'R', regs: 4, label: 'U64U32_R bytes swapped' },
+        { key: 'I64I32_N', raw: 'I64I32', swap: 'N', regs: 4, label: 'I64I32_N low word first' },
+        { key: 'I64I32_W', raw: 'I64I32', swap: 'W', regs: 4, label: 'I64I32_W high word first' },
+        { key: 'I64I32_R', raw: 'I64I32', swap: 'R', regs: 4, label: 'I64I32_R bytes swapped' },
+        { key: 'D_N', raw: 'D', swap: 'N', regs: 4, label: 'D_N 64-bit float, low word first' },
+        { key: 'D_W', raw: 'D', swap: 'W', regs: 4, label: 'D_W 64-bit float, high word first' },
+        { key: 'D_R', raw: 'D', swap: 'R', regs: 4, label: 'D_R 64-bit float, bytes swapped' },
+        { key: 'STR8_N', raw: 'STR8', swap: 'N', regs: 4, label: 'STR8_N text, 8 characters' },
+        { key: 'STR8_R', raw: 'STR8', swap: 'R', regs: 4, label: 'STR8_R text, bytes swapped' },
     ];
     const viewOverrides = new Map();   // table|ref -> VIEW_TYPES key
 
-    /** A view by its key, or by a datatype name: 'U32_N', 'A_Input_U32_N' and 'I16' all resolve. */
+    /**
+     * A view by its key, or by a datatype name: 'U32_N', 'A_Input_U32_N', 'I16',
+     * 'I_Hold_STR4_N' and 'Bit_Hold' all resolve. A raw type that only has _N in
+     * the table (BCD, rU16) resolves from its _N name.
+     */
     function viewTypeOf(key) {
         const text = String(key || '').trim();
         const direct = VIEW_TYPES.find(t => t.key.toLowerCase() === text.toLowerCase());
         if (direct) return direct;
-        const m = text.match(/(I16|U16|I32|U32|F)_([NRW])$/i);
+        if (/^Bit_(Hold|Input)$/i.test(text)) return VIEW_TYPES.find(t => t.key === 'Bits');
+        const m = text.match(/(U64U32|I64I32|BCD35|BCD4|STR4|STR8|CLK|rU16|rI16|I16|U16|I32|U32|F|D)_([NRW])$/i);
         if (!m) return null;
-        const raw = m[1].toUpperCase(), swap = m[2].toUpperCase();
-        return VIEW_TYPES.find(t => t.raw === raw && t.swap === swap) || null;
+        const raw = m[1].toLowerCase(), swap = m[2].toUpperCase();
+        return VIEW_TYPES.find(t => t.raw.toLowerCase() === raw && t.swap === swap)
+            || VIEW_TYPES.find(t => t.raw.toLowerCase() === raw && swap === 'N')
+            || null;
     }
 
     /** The words a view needs from a lookup of reference → word; undefined where one is missing. */
     function viewWords(view, wordAt, ref) {
-        const need = (view.raw === 'U32' || view.raw === 'I32' || view.raw === 'F') ? 2 : 1;
         const out = [];
-        for (let k = 0; k < need; k++) out.push(wordAt(ref + k));
+        for (let k = 0; k < (view.regs || 1); k++) out.push(wordAt(ref + k));
         return out;
     }
 
+    /**
+     * A view's reading of the registers it spans. The ten keys 1.50 shipped go
+     * through decodeWords untouched, so every reading they gave is the one they
+     * still give. The rest follow docs/15 §6 and the measured word order:
+     * _N takes the first register as the least significant word, _W as the
+     * most, and _R swaps the bytes of each word in _N order — the reading the
+     * letters give, marked as not measured on iw_mb.exe. Text views (STR, CLK,
+     * Bits) return their text as the value. U64U32 and I64I32 show what IWMAC
+     * stores, the low 32 bits, with the whole 64-bit number in the note.
+     */
+    function decodeView(view, words) {
+        if (!view) return { ok: false, why: 'no such view' };
+        const need = view.regs || 1;
+        if (!Array.isArray(words) || words.length < need || words.slice(0, need).some(x => typeof x !== 'number' || !Number.isFinite(x))) {
+            return { ok: false, why: need === 1 ? 'no reading' : view.key + ' spans this register and the next ' + (need - 1) + ', read as 16-bit words' };
+        }
+        const shipped = ['U16', 'I16', 'U32', 'I32', 'F'].includes(view.raw) && !(view.swap === 'W' && need === 1) && !(view.swap === 'R' && need === 2);
+        if (shipped) return decodeWords(words, view.raw, view.swap);
+        const unmeasured = 'not measured on iw_mb.exe - the reading docs/15 gives';
+        const u16 = x => (x < 0 ? x + 65536 : x) & 0xFFFF;
+        const hex4 = x => '0x' + x.toString(16).toUpperCase().padStart(4, '0');
+        const swapBytes = x => ((x & 0xFF) << 8) | (x >> 8);
+        const w = words.slice(0, need).map(u16);
+        const hex = w.map(hex4).join(' ');
+        switch (view.raw) {
+            case 'U16': case 'I16': {
+                const d = decodeWords(words, view.raw, 'N');
+                return d.ok ? Object.assign(d, { note: 'one register has no word order, so _W reads as _N' }) : d;
+            }
+            case 'rU16': case 'rI16': {
+                let x = 0;
+                for (let b = 0; b < 16; b++) if (w[0] & (1 << b)) x |= 1 << (15 - b);
+                return { ok: true, value: view.raw === 'rI16' && x > 32767 ? x - 65536 : x, hex: hex + ' -> ' + hex4(x), note: 'bit 0 read as bit 15 and so on - ' + unmeasured };
+            }
+            case 'BCD4': {
+                const digits = w[0].toString(16).padStart(4, '0');
+                if (/[a-f]/.test(digits)) return { ok: false, why: hex + ' has a digit above 9, so it is not BCD', hex };
+                return { ok: true, value: Number(digits), hex, note: unmeasured };
+            }
+            case 'BCD35': {
+                const digits = (w[0] & 0x0FFF).toString(16).padStart(3, '0');
+                if (/[a-f]/.test(digits)) return { ok: false, why: hex + ' has a digit above 9, so it is not BCD', hex };
+                const size = ((w[0] >> 12) & 1) * 1000 + Number(digits);
+                return { ok: true, value: (w[0] & 0x8000) ? -size : size, hex, note: 'three BCD digits, bit 12 the thousand, bit 15 the sign - ' + unmeasured };
+            }
+            case 'CLK': {
+                const x = view.swap === 'R' ? swapBytes(w[0]) : w[0];
+                const text = String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0');
+                return { ok: true, value: text, hex, note: x + ' minutes as hh:mm, or seconds as mm:ss - ' + unmeasured };
+            }
+            case 'Bits': {
+                const b = w[0].toString(2).padStart(16, '0');
+                const on = [];
+                for (let i = 0; i < 16; i++) if (w[0] & (1 << i)) on.push(i);
+                return { ok: true, value: b.match(/.{4}/g).join(' '), hex, note: on.length ? 'bits on: ' + on.join(', ') : 'no bit on' };
+            }
+            case 'STR4': case 'STR8': {
+                const chars = [];
+                for (const x of w) {
+                    const y = view.swap === 'R' ? swapBytes(x) : x;
+                    chars.push(y >> 8, y & 0xFF);
+                }
+                const text = chars.map(c => (c >= 32 && c < 127) ? String.fromCharCode(c) : (c === 0 ? '' : '·')).join('');
+                return { ok: true, value: text, hex, note: view.swap === 'R' ? 'low byte first' : 'high byte first - how the EX3 on plant 3694 sends its unit texts' };
+            }
+        }
+        // 32-bit _R and the 64-bit families: most significant word first.
+        const ordered = (view.swap === 'W' ? w.slice() : w.slice().reverse()).map(x => (view.swap === 'R' ? swapBytes(x) : x));
+        const order = view.swap === 'W' ? 'high word first' : 'low word first';
+        const bytes = new DataView(new ArrayBuffer(need * 2));
+        ordered.forEach((x, i) => bytes.setUint16(i * 2, x));
+        if (need === 2) {
+            const value = view.raw === 'U32' ? bytes.getUint32(0) : (view.raw === 'I32' ? bytes.getInt32(0) : bytes.getFloat32(0));
+            if (!Number.isFinite(value)) return { ok: false, why: 'the two registers do not decode to a finite float', hex };
+            return { ok: true, value, hex, wordOrder: order, note: 'bytes swapped in each word - ' + unmeasured };
+        }
+        if (view.raw === 'D') {
+            const value = bytes.getFloat64(0);
+            if (!Number.isFinite(value)) return { ok: false, why: 'the four registers do not decode to a finite number', hex };
+            return { ok: true, value, hex, wordOrder: order, note: 'IEEE 64-bit float - ' + unmeasured };
+        }
+        const whole = view.raw === 'I64I32' ? bytes.getBigInt64(0) : bytes.getBigUint64(0);
+        const value = view.raw === 'I64I32' ? bytes.getInt32(4) : bytes.getUint32(4);
+        return { ok: true, value, hex, wordOrder: order, note: 'IWMAC keeps the low 32 bits of ' + whole.toString() + ' (docs/15 §1) - ' + unmeasured };
+    }
+
     function viewValueText(value) {
+        if (typeof value === 'string') return value;
         if (typeof value !== 'number') return '';
-        return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(7)));
+        // A float past 2^53 is an "integer" to JavaScript and would print every digit.
+        return Number.isSafeInteger(value) ? String(value) : String(Number(value.toPrecision(7)));
+    }
+
+    /** What a view's reading rests on, for a title: the words, and how sure the reading is. */
+    function viewBasis(d) {
+        if (!d.ok) return ': ' + d.why;
+        const sure = d.note ? ', ' + d.note
+            : (d.wordOrder ? ', ' + (d.measured ? 'measured' : 'assumed from U32') + ' on iw_mb.exe' : '');
+        return ' (' + d.hex + sure + ')';
     }
 
     /**
@@ -6034,7 +6187,12 @@
                 : disabledWhy,
         });
         select.appendChild(el('option', { value: '', textContent: baseLabel || 'as read' }));
-        for (const t of VIEW_TYPES) select.appendChild(el('option', { value: t.key, textContent: 'view as ' + t.label }));
+        // Grouped by how many registers each spans, so the 35 read as three short lists.
+        for (const regs of [1, 2, 4]) {
+            const group = el('optgroup', { label: VIEW_GROUPS[regs] });
+            for (const t of VIEW_TYPES.filter(v => v.regs === regs)) group.appendChild(el('option', { value: t.key, textContent: 'view as ' + t.label }));
+            select.appendChild(group);
+        }
         select.value = current;
         select.disabled = !enabled;
         const stop = ev => ev.stopPropagation();
@@ -6088,11 +6246,12 @@
         if (!viewKey && !scaleKey) return undefined;
         const view = viewKey ? viewTypeOf(viewKey) : null;
         let d;
-        if (view) d = wordAt ? decodeWords(viewWords(view, wordAt, ref), view.raw, view.swap) : { ok: false, why: 'read as 16-bit words to view it as another datatype' };
+        if (view) d = wordAt ? decodeView(view, viewWords(view, wordAt, ref)) : { ok: false, why: 'read as 16-bit words to view it as another datatype' };
         else d = typeof raw === 'number' ? { ok: true, value: raw } : { ok: false, why: 'no reading' };
         const listScale = point && point.scale && point.scale.known ? point.scale : null;
         let scaled = null;
-        if (d.ok) {
+        if (d.ok && typeof d.value !== 'number') scaled = d.value;   // text: nothing to scale
+        else if (d.ok) {
             if (scaleKey) { const p = scaledPreset(d.value, scaleKey); scaled = p ? p.value : null; }
             else if (listScale) scaled = listScale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * listScale.factor, point.decimals);
             else scaled = d.value;
@@ -6105,7 +6264,49 @@
         };
         if (!d.ok) out.why = d.why;
         if (d.hex) out.wordsHex = d.hex;
+        if (d.note) out.note = d.note;   // e.g. not measured on iw_mb.exe
         return out;
+    }
+
+    /**
+     * The register under every view at once, for its detail card: one button per
+     * datatype showing what this register reads as under it. A click shows the
+     * row that way — the same display-only choice the type cell's picker makes —
+     * and the card opens again on the same register, so the next datatype is one
+     * click away too. The first button goes back to the list's own datatype.
+     */
+    function viewChoices(table, ref, wordAt, baseLabel) {
+        const key = table + '|' + ref;
+        const current = viewOverrides.get(key) || '';
+        const pick = viewKey => {
+            if (viewKey) viewOverrides.set(key, viewKey); else viewOverrides.delete(key);
+            if (typeof redrawGrid !== 'function') return;
+            redrawGrid();
+            const again = ui.gridBody && [...ui.gridBody.querySelectorAll('tr[data-key]')].find(r => r.dataset.key === key);
+            if (again) again.click();
+        };
+        const wrap = el('div', { className: 'mpc-dviews' }, [
+            el('h5', { textContent: 'View as — click a datatype to show this register that way (display only, the list is not changed)' }),
+        ]);
+        const base = el('button', { className: 'mpc-vbtn' + (current ? '' : ' on'), title: 'Show it as the list declares it, or as read' },
+            [el('b', { textContent: baseLabel || 'as read' })]);
+        base.addEventListener('click', ev => { ev.stopPropagation(); pick(''); });
+        wrap.appendChild(el('div', { className: 'mpc-vrow' }, [base]));
+        for (const regs of [1, 2, 4]) {
+            const row = el('div', { className: 'mpc-vrow' }, [el('span', { className: 'mpc-vgroup', textContent: VIEW_GROUPS[regs] })]);
+            for (const t of VIEW_TYPES.filter(v => v.regs === regs)) {
+                const d = decodeView(t, viewWords(t, wordAt, ref));
+                const btn = el('button', {
+                    className: 'mpc-vbtn' + (t.key === current ? ' on' : ''),
+                    title: t.label + viewBasis(d),
+                    disabled: !d.ok,
+                }, [el('b', { textContent: t.key }), el('span', { textContent: d.ok ? viewValueText(d.value) : '—' })]);
+                btn.addEventListener('click', ev => { ev.stopPropagation(); pick(t.key); });
+                row.appendChild(btn);
+            }
+            wrap.appendChild(row);
+        }
+        return wrap;
     }
 
     /**
@@ -6566,6 +6767,9 @@
         closeBtn.addEventListener('click', ev => { ev.stopPropagation(); close(); });
         for (const b of [pollBtn, watchBtn, copyBtn, el('span', { className: 'mpc-spacer' }), closeBtn]) actions.appendChild(b);
         box.appendChild(el('div', { className: 'mpc-dtop' }, [nameBlock, valueBlock, actions]));
+        // Every datatype for this register, where its words are to hand: a 16-bit
+        // poll, or a verification that kept them.
+        if (extra && typeof extra.wordAt === 'function') box.appendChild(viewChoices(table, ref, extra.wordAt, extra.listLabel));
 
         // The facts, in columns. A row is [label, text, mono, tip, column]; the
         // column, where a row has one, is the database column it comes from.
@@ -6867,12 +7071,12 @@
             const view = p.decoded && p.decoded.ok ? viewTypeOf(viewOverrides.get(p.decoded.table + '|' + p.ref)) : null;
             let raw = row.raw, scaled = row.scaled, viewNote = '';
             if (view) {
-                const d = wordAt ? decodeWords(viewWords(view, ref => wordAt.get(p.decoded.table + '|' + ref), p.ref), view.raw, view.swap)
+                const d = wordAt ? decodeView(view, viewWords(view, ref => wordAt.get(p.decoded.table + '|' + ref), p.ref))
                     : { ok: false, why: 'this verification kept no words — run Verify list again' };
                 raw = d.ok ? d.value : undefined;
-                scaled = d.ok ? (p.scale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * p.scale.factor, p.decimals)) : undefined;
-                viewNote = 'viewed as ' + view.label + (d.ok ? ' (' + d.hex + (d.wordOrder ? ', ' + (d.measured ? 'measured' : 'assumed from U32') + ' on iw_mb.exe' : '') + ')' : ': ' + d.why) +
-                    ' — display only, the list says ' + p.datatype;
+                scaled = d.ok && typeof d.value === 'number'
+                    ? (p.scale.invert ? (d.value ? 0 : 1) : roundScaled(d.value * p.scale.factor, p.decimals)) : undefined;
+                viewNote = 'viewed as ' + view.label + viewBasis(d) + ' — display only, the list says ' + p.datatype;
             }
             if (onlyNonZero && raw === 0) continue;
             const cells = [
@@ -6902,7 +7106,10 @@
             scaledCell.textContent = '';
             scaledCell.removeAttribute('title');
             scaledCell.appendChild(scaleSelect(rowTable, p.ref, raw, cells[5], (p.scaleKey || 'x1') + ', list'));
+            tr.dataset.key = rowTable + '|' + p.ref;
             if (row.raw !== undefined) {
+                // the words this verification kept, for the card's every-datatype row
+                const viewable = !!(wordAt && p.decoded && p.decoded.ok && row.status !== 'not polled');
                 tr.addEventListener('click', () => {
                     // A 32-bit point is aimed at as its two 16-bit words: that poll
                     // works on every modpoll build, and "view as" can put the words
@@ -6910,7 +7117,8 @@
                     aimAtRegister(p.decoded.step === 2
                         ? { table: p.decoded.table, ref: p.ref, format: '', bigEndian: false, count: 2 }
                         : { table: p.decoded.table, ref: p.ref, format: p.decoded.format, bigEndian: p.decoded.bigEndian });
-                    toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format);
+                    toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format,
+                        viewable ? { wordAt: ref => wordAt.get(p.decoded.table + '|' + ref), listLabel: p.datatype } : undefined);
                 });
             }
             frag.appendChild(tr);
@@ -7020,11 +7228,10 @@
             const view = isBitTable ? null : viewTypeOf(viewOverrides.get(table + '|' + v.i));
             const viewed = !view ? null : (wide
                 ? { ok: false, why: 'poll as 16-bit (Format) to view this register as another datatype' }
-                : decodeWords(viewWords(view, ref => { const o = byIndex.get(ref); return o ? o.v : undefined; }, v.i), view.raw, view.swap));
+                : decodeView(view, viewWords(view, ref => { const o = byIndex.get(ref); return o ? o.v : undefined; }, v.i)));
             const viewTitle = !view ? undefined
-                : 'viewed as ' + view.label + (viewed.ok ? ' (' + viewed.hex + (viewed.wordOrder ? ', ' + (viewed.measured ? 'measured' : 'assumed from U32') + ' on iw_mb.exe' : '') + ')' : ': ' + viewed.why) +
-                    ' — display only' + (point ? ', the list says ' + point.datatype : '');
-            const viewScaled = viewed && viewed.ok && point
+                : 'viewed as ' + view.label + viewBasis(viewed) + ' — display only' + (point ? ', the list says ' + point.datatype : '');
+            const viewScaled = viewed && viewed.ok && point && typeof viewed.value === 'number'
                 ? (point.scale.invert ? (viewed.value ? 0 : 1) : roundScaled(viewed.value * point.scale.factor, point.decimals))
                 : null;
             const cells = isBitTable ? [
@@ -7039,7 +7246,8 @@
                 { text: String(v.i) },
                 // A 32-bit value is read out of two registers, and saying which two
                 // is the difference between a list that lines up and one that does not.
-                { text: wide || (viewed && /32|^F$/.test(view.raw)) ? v.addr + '–' + (v.addr + 1) : String(v.addr) },
+                { text: wide ? v.addr + '–' + (v.addr + 1)
+                    : (view && view.regs > 1 ? v.addr + '–' + (v.addr + view.regs - 1) : String(v.addr)) },
                 { text: point ? point.name : plantLabel, align: 'left' },
                 view
                     ? { text: viewed.ok ? viewValueText(viewed.value) : '—', className: viewed.ok && viewed.value === 0 ? 'zero' : '', title: viewTitle }
@@ -7084,12 +7292,19 @@
                 scaledCell.removeAttribute('title');
                 scaledCell.appendChild(scaleSelect(table, v.i, shownRaw, baseText, baseNote));
             }
+            tr.dataset.key = table + '|' + v.i;
             tr.addEventListener('click', () => {
                 aimAtRegister({ table, ref: v.i, format });
                 // The next register's value, for the 32-bit reading — only a
                 // 16-bit poll has one to offer.
                 const neighbour = wide ? undefined : result.values.find(o => o.i === v.i + 1);
-                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i, format, { nextRaw: neighbour ? neighbour.v : undefined });
+                toggleDetailRow(tr, v.v, point, previous, fromPlant, table, v.i, format, {
+                    nextRaw: neighbour ? neighbour.v : undefined,
+                    // the words around it, for the card's every-datatype row: only a
+                    // 16-bit register poll has them
+                    wordAt: wide || isBitTable ? undefined : (ref => { const o = byIndex.get(ref); return o ? o.v : undefined; }),
+                    listLabel: sourceLabel || 'as read',
+                });
             });
             frag.appendChild(tr);
         }
@@ -8163,7 +8378,9 @@
         decode(words, datatype) {
             const view = viewTypeOf(datatype);
             if (!view) throw new Error('No view for "' + datatype + '" — use one of ' + VIEW_TYPES.map(t => t.key).join(', '));
-            return decodeWords(Array.isArray(words) ? words : [words], view.raw, view.swap);
+            // decodeView: the ten 1.50 keys read through decodeWords as before, and
+            // every other datatype in the table (1.53) reads too
+            return decodeView(view, Array.isArray(words) ? words : [words]);
         },
         /** Show one register as another datatype in the grid, display only. An empty type clears it. */
         viewAs(table, ref, datatype) {
