@@ -68,11 +68,18 @@ render_grid = between("    function renderGrid(result) {", "\n    async function
 # A verification's grid and its columns, so a card opened from a verified point —
 # its every-datatype and every-scale lists — is under test as shipped (1.57).
 point_columns = between("    const POINT_COLUMNS = [", "\n    const FIND_COLUMNS = [")
+# The last two column sets, so setGridColumns can name every grid it draws (1.59).
+find_columns = between("    const FIND_COLUMNS = [", "\n    /**\n     * Going the other way")
+scan_columns = between("    const SCAN_COLUMNS = [", "\n    /** What a scanned register decodes to")
 render_verification = between("    function renderVerification(verification) {", "\n    function renderGrid(result) {")
 # The "view as" block renderGrid draws into its type and scaled cells, and the
 # detail card into its every-datatype row (1.50, 1.53). Without it a poll through
 # __poll threw before a row was drawn. decodeWords itself comes with `exporting`.
 views = between("    /*\n     * \"View as\": a register shown as another datatype", "\n    // The grid serves two readings")
+# The agent API itself (1.59), so state() and card() are read back from the drawn
+# grid and card as shipped. Its methods reach the rest of the script only when
+# called; the ones under test need just the stubs below.
+bridge = between("    const api = {", "\n    Object.freeze(api);")
 
 # The doc comment that sits above EXPAND_RESERVE, kept for readability only.
 OUT.write_text(f"""<!doctype html>
@@ -104,6 +111,9 @@ let lastResult = null;
 let lastVerification = null;
 let lastScan = null;
 let _unitsCache = null;
+// What state() asks of the shell and the repeat timer.
+const termState = {{ busy: false }};
+let repeatTimer = null;
 const REPORT_CHUNK_LIMIT = 30000;
 const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';
@@ -153,8 +163,15 @@ function el(tag, props, kids) {{
 
 {point_columns}
 
+{find_columns}
+
+{scan_columns}
+
 {render_verification}
+
+{bridge}
 // ---- end lifted code -----------------------------------------------------
+window.__api = api;
 
 function renderEmptyGrid(message) {{
     ui.gridBody.textContent = '';
@@ -199,7 +216,7 @@ form.appendChild(el('label', {{ className: 'mpc-check mpc-span3', htmlFor: 'mpc-
 ui.gridBody = el('tbody');
 ui.gridCols = el('colgroup');
 ui.gridHead = el('thead');
-const table = el('table', {{ className: 'mpc-grid' }}, [ui.gridCols, ui.gridHead, ui.gridBody]);
+const table = ui.gridTable = el('table', {{ className: 'mpc-grid' }}, [ui.gridCols, ui.gridHead, ui.gridBody]);
 ui.gridWrap = el('div', {{ className: 'mpc-gridwrap' }}, [table]);
 ui.gridZone = el('div', {{ className: 'mpc-gridzone' }}, [ui.gridWrap, ui.expand]);
 form.appendChild(ui.gridZone);

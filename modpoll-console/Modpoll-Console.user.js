@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.58.0
+// @version      1.59.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.58.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.59.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5709,6 +5709,10 @@
     #${PANEL_ID} .mpc-sresult{min-width:80px;font:bold 12px Consolas,ui-monospace,monospace;color:#1b5fa8}
     #${PANEL_ID} .mpc-sformula{padding-left:88px;font:11px Consolas,ui-monospace,monospace;color:#79808c}
     #${PANEL_ID} .mpc-snote{font-size:11px;color:#79808c}
+    /* Read by the accessibility tree, not drawn (1.59): the line telling an agent
+       where the console's state is. */
+    #${PANEL_ID} .mpc-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+        clip:rect(0 0 0 0);white-space:nowrap;border:0}
     /* A 1px gap over a grey backing reads as gridlines, which is what separates
        one pair from the next without drawing a border around each of them. */
     #${PANEL_ID} .mpc-dsec{display:flex;flex-direction:column;gap:1px;min-width:0;
@@ -6116,6 +6120,10 @@
     // is always present — a blank one keeps a lone button on the same baseline as
     // the fields beside it.
     function field(labelText, control, span) {
+        // The label is a sibling, not linked to the control by for/id, so it names
+        // the control here: a screen reader, and an agent's accessibility
+        // snapshot, then read "Slave (-a)" rather than an unnamed textbox.
+        if (labelText.trim() && control.tagName !== 'BUTTON') control.setAttribute('aria-label', labelText.trim());
         return el('div', { className: 'mpc-f mpc-span' + (span || 3) }, [
             el('label', { textContent: labelText, title: labelText.trim() }),
             control,
@@ -6162,6 +6170,7 @@
         // so the row still ends on the grid's right edge.
         ui.hostWrap.className = 'mpc-f ' + (serial ? 'mpc-span8' : 'mpc-span6');
         ui.hostLabel.textContent = serial ? 'COM port' : 'IP address';
+        ui.host.setAttribute('aria-label', ui.hostLabel.textContent);
         ui.host.placeholder = serial ? 'COM3' : '10.0.0.5';
     }
 
@@ -7022,9 +7031,27 @@
             if (i === columns.length - 1) rules.push('padding-right:' + EXPAND_CORNER_ROOM + 'px');
             return el('th', { textContent: c.label, title: c.title || c.label, style: rules.join(';') });
         })));
+        // Which reading the grid holds, for __modpoll.state() and for the table's
+        // accessible name in a snapshot.
+        ui.gridKind = gridKindOf(columns);
+        if (ui.gridTable) ui.gridTable.setAttribute('aria-label', GRID_NAMES[ui.gridKind] || 'Results');
         // A different column set is a different row count, so the scrollbar the
         // corner control has to clear may have come or gone with it.
         placeExpandButton();
+    }
+
+    const GRID_NAMES = {
+        registers: 'Registers as polled', bits: 'Coils or discrete inputs as polled', verification: 'Point list verification',
+        find: 'Registers found by name', scan: 'Device scan',
+    };
+
+    function gridKindOf(columns) {
+        if (columns === REGISTER_COLUMNS) return 'registers';
+        if (columns === BIT_COLUMNS) return 'bits';
+        if (columns === POINT_COLUMNS) return 'verification';
+        if (columns === FIND_COLUMNS) return 'find';
+        if (columns === SCAN_COLUMNS) return 'scan';
+        return null;
     }
 
     /*
@@ -7290,6 +7317,9 @@
         const viewed = extra ? viewedHeadline(table, ref, value, point, fromPlant, extra.wordAt, extra.scale) : null;
         if (viewed) { head.lead = viewed.lead; head.leadNote = viewed.note; }
         const box = el('div', { className: 'mpc-detailbox' });
+        // Named, so an accessibility snapshot shows where the card begins and whose it is.
+        box.setAttribute('role', 'region');
+        box.setAttribute('aria-label', 'Register card: ' + head.headline);
 
         // The top: name and badges on the left, the value large on the right,
         // and the actions under both.
@@ -7427,6 +7457,90 @@
         try { detail.scrollIntoView({ block: 'nearest' }); } catch (e) { /* older engines */ }
     }
 
+    /*
+     * The grid and the open card as data, for an agent (1.59): __modpoll.state()
+     * and __modpoll.card() read the page through these instead of making the
+     * agent read an accessibility snapshot or a screenshot of the IWMAC page,
+     * which is large and changes shape with every render.
+     */
+
+    /** A cell as the person sees it: a picker's chosen entry, else its text. */
+    function cellText(td) {
+        const select = td.querySelector('select');
+        if (select) return select.selectedOptions[0] ? select.selectedOptions[0].textContent.trim() : '';
+        return td.textContent.trim();
+    }
+
+    /**
+     * What the grid holds: which reading, its columns, the summary line and the
+     * first `limit` rows, each keyed by column with its empty cells left out.
+     * A row's `key` (table|ref) is what __modpoll.card takes.
+     */
+    function gridState(limit) {
+        if (!ui.gridBody) return null;
+        const columns = [...ui.gridHead.querySelectorAll('th')].map(th => th.textContent.trim());
+        const all = [...ui.gridBody.querySelectorAll('tr:not(.mpc-detail)')];
+        const empty = all.length === 1 && all[0].querySelector('.mpc-empty') ? all[0].textContent.trim() : null;
+        const data = empty ? [] : all.filter(tr => tr.children.length === columns.length);
+        const rows = data.slice(0, limit).map(tr => {
+            const row = {};
+            columns.forEach((c, i) => { const t = cellText(tr.children[i]); if (t !== '') row[c || 'column ' + (i + 1)] = t; });
+            if (tr.dataset.key) row.key = tr.dataset.key;
+            if (tr.classList.contains('mpc-viewed')) row.viewed = true;
+            if (tr.classList.contains('mpc-selected')) row.cardOpen = true;
+            return row;
+        });
+        return {
+            shows: ui.gridKind || null, columns, summary: ui.summary ? ui.summary.textContent : '',
+            rows, more: data.length - rows.length, empty,
+        };
+    }
+
+    /**
+     * The card that is open, as its sections hold it: headline, the big value
+     * and its note, the badges, the notes, and every fact section as label to
+     * value. The datatype and scaling it is shown under, and the scalings that
+     * give what IWMAC shows. Null when no card is open.
+     */
+    function cardState() {
+        const box = ui.gridBody && ui.gridBody.querySelector('tr.mpc-detail .mpc-detailbox');
+        if (!box) return null;
+        const row = box.closest('tr').previousElementSibling;
+        const key = row && row.dataset.key ? row.dataset.key : null;
+        const lead = box.querySelector('.mpc-dlead');
+        const small = lead && lead.querySelector('small');
+        const sections = {};
+        for (const sec of box.querySelectorAll('.mpc-dsec')) {
+            const facts = {};
+            for (const kv of sec.querySelectorAll('.mpc-kv')) {
+                const k = kv.querySelector('.mpc-k');
+                const label = k && k.firstChild ? k.firstChild.textContent.trim() : '';
+                facts[label || '·'] = (kv.querySelector('.mpc-v') || {}).textContent || '';
+            }
+            sections[sec.querySelector('h5').textContent.trim()] = facts;
+        }
+        const scaleList = [...box.querySelectorAll('.mpc-dviews')].find(s => /^Scale/.test(s.querySelector('h5').textContent));
+        return {
+            key,
+            headline: (box.querySelector('.mpc-dhead') || {}).textContent || '',
+            value: lead && lead.firstChild ? lead.firstChild.textContent.trim() : '',
+            note: small ? small.textContent : '',
+            badges: [...box.querySelectorAll('.mpc-dbadges .mpc-badge')].map(b => b.textContent),
+            notes: [...box.querySelectorAll('.mpc-dnote')].map(n => n.textContent),
+            sections,
+            viewedAs: key ? viewOverrides.get(key) || null : null,
+            scaledBy: key ? scaleOverrides.get(key) || null : null,
+            scalingsGivingIwmac: scaleList ? [...scaleList.querySelectorAll('button.mpc-sitem')]
+                .filter(b => [...b.querySelectorAll('em i')].some(i => i.textContent === 'IWMAC')).map(b => b.firstChild.textContent) : [],
+        };
+    }
+
+    /** The log's last lines, a warning or an error marked as such. */
+    function logTail(n) {
+        if (!ui.log) return [];
+        return [...ui.log.children].slice(-n).map(d => (d.className ? d.className + ': ' : '') + d.textContent);
+    }
+
     function renderEmptyGrid(message) {
         if (!ui.gridBody) return;
         ui.gridBody.textContent = '';
@@ -7506,6 +7620,7 @@
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.text,
                 })));
+            tr.dataset.key = r.table + '|' + r.ref;   // what __modpoll.card(table, ref) finds it by
             tr.addEventListener('click', () => {
                 // Aimed at the region's width: a float is read as a float, from
                 // the first register of its pair.
@@ -8312,12 +8427,20 @@
         document.head.appendChild(el('style', { textContent: STYLE }));
 
         const panel = el('div', { id: PANEL_ID });
+        // A named region, and a line for whoever reads the page through its
+        // accessibility tree rather than its pixels - an agent driving the
+        // browser - saying where the console's state is to be had in one call.
+        panel.setAttribute('role', 'region');
+        panel.setAttribute('aria-label', 'Modpoll Console');
 
         ui.dot = el('span', { className: 'mpc-dot', title: 'Idle' });
         const head = el('div', { className: 'mpc-head' }, [
             el('span', { className: 'mpc-title', textContent: 'Modpoll' }),
             el('span', { className: 'mpc-ver', textContent: 'v' + VERSION + ' · plant ' + (plantIdFromHost() || '?') + ' · read only' }),
             ui.dot,
+            el('p', { className: 'mpc-sr', textContent: 'For an agent driving this page: window.__modpoll.state() returns what this console shows as JSON - ' +
+                'the form, the command, whether a poll is running, the grid, the open register card and the log. ' +
+                'window.__modpoll.help() lists the rest. Everything here reads; nothing writes to a device.' }),
         ]);
 
         const body = ui.body = el('div', { className: 'mpc-body' });
@@ -8704,12 +8827,13 @@
         form.appendChild(el('label', { className: 'mpc-check mpc-span3', htmlFor: 'mpc-hidezero' },
             [ui.filterZero, el('span', { textContent: 'Hide zero values' })]));
         ui.summary = el('div', { className: 'mpc-sum', textContent: 'No poll run yet' });
+        ui.summary.setAttribute('role', 'status');
         form.appendChild(el('div', { className: 'mpc-check mpc-span9', style: 'justify-content:flex-end' }, [ui.summary]));
 
         ui.gridBody = el('tbody');
         ui.gridCols = el('colgroup');
         ui.gridHead = el('thead');
-        const table = el('table', { className: 'mpc-grid' }, [ui.gridCols, ui.gridHead, ui.gridBody]);
+        const table = ui.gridTable = el('table', { className: 'mpc-grid' }, [ui.gridCols, ui.gridHead, ui.gridBody]);
         setGridColumns(REGISTER_COLUMNS);
         // The corner control is pinned to the zone rather than added to the header
         // row: the header is rebuilt from scratch every time the column set
@@ -8723,6 +8847,8 @@
         renderEmptyGrid('No registers polled yet');
 
         ui.log = el('div', { className: 'mpc-log' });
+        ui.log.setAttribute('role', 'log');
+        ui.log.setAttribute('aria-label', 'Modpoll log');
         form.appendChild(ui.log);
         form.appendChild(makeGrip(PANES.log));
 
@@ -8819,6 +8945,14 @@
             return [
                 'window.__modpoll — read-only Modbus polling through Plant Term.',
                 '',
+                'Start here — the console as the person sees it, without reading the page:',
+                '__modpoll.open()                          show the console (Tools → Modpoll)',
+                '__modpoll.state(limit)                    what it shows now: form, command, busy, the grid\'s rows, the open card, the log',
+                '__modpoll.card(table, ref)                open a register\'s card in the grid and read it; card() reads the open one',
+                'await __modpoll.useUnit(unitId)           pick a unit as the picker does: address, slave and serial settings, and its names',
+                '__modpoll.setForm({host, slave, table, start, count, format, base, mode, port, …})   fill the form, not run',
+                'await __modpoll.run()                     run what the form says, as the Run button does; returns state()',
+                '',
                 'await __modpoll.devices()                 units from the plant database',
                 'await __modpoll.read({host, slave, table, start, count, base, mode, port})',
                 '                                          table: 4 holding, 3 input, 1 discrete, 0 coil',
@@ -8846,6 +8980,84 @@
                 '',
                 'Every value row carries i (the index modpoll printed) and addr (i - 1, the protocol address).',
             ].join('\n');
+        },
+        /**
+         * What the console shows now, in one call (1.59). An agent reads this
+         * instead of an accessibility snapshot or a screenshot of the IWMAC page:
+         * the form and the command it makes, whether anything is running, what is
+         * loaded, which reading the grid holds and its first `limit` rows (40 by
+         * default), the open register card, the views and scalings chosen, the
+         * results in hand, and the log's last lines.
+         */
+        state(limit) {
+            const n = Math.max(1, Math.min(500, Number(limit) || 40));
+            const unitOption = ui.units && ui.units.selectedOptions[0];
+            return {
+                version: VERSION,
+                plant: plantIdFromHost() || null,
+                open: !!(ui.panel && ui.panel.isConnected),
+                busy: !!termState.busy,
+                repeating: !!repeatTimer,
+                progress: ui.progress && !ui.progress.classList.contains('mpc-hidden') ? ui.progressText.textContent : null,
+                unit: ui.units && ui.units.value ? { id: ui.units.value, label: unitOption ? unitOption.textContent : '' } : null,
+                form: ui.mode ? readForm() : null,
+                command: ui.cmd ? ui.cmd.value : '',
+                commandHandEdited: !!ui.cmdDirty,
+                names: plantNames ? { unit: plantNames.unitId || null, parameters: plantNames.rows, registers: plantNames.byRef.size } : null,
+                list: pointList ? { file: pointList.file || null, points: pointList.points.length } : null,
+                plantServer: ui.plantStatus ? ui.plantStatus.textContent : null,
+                grid: gridState(n),
+                card: cardState(),
+                views: api.views(),
+                results: {
+                    poll: lastResult ? { at: lastResult.at, ok: lastResult.ok, spec: lastResult.spec, summary: lastResult.summary } : null,
+                    scan: lastScan ? { at: lastScan.at || null, tables: Object.keys(lastScan.tables || {}) } : null,
+                    verification: lastVerification ? lastVerification.summary : null,
+                },
+                log: logTail(12),
+            };
+        },
+        /**
+         * The card for one register in the grid, opened as a click opens it -
+         * which also aims the form at it - and read back as cardState() reads it.
+         * Without arguments, the card that is open. Null when the grid holds no
+         * row for that register: poll, scan or verify it first.
+         */
+        card(table, ref) {
+            if (table === undefined || table === null) return cardState();
+            const key = String(table) + '|' + Number(ref);
+            const row = ui.gridBody && [...ui.gridBody.querySelectorAll('tr[data-key]')].find(r => r.dataset.key === key);
+            if (!row) return null;
+            const open = row.nextElementSibling && row.nextElementSibling.classList.contains('mpc-detail');
+            if (!open) row.click();
+            return cardState();
+        },
+        /** Pick a unit as the picker does, loading the unit list first if it is not in. */
+        async useUnit(unitId) {
+            if (!ui.units) throw new Error('The console is not built yet — __modpoll.open() first');
+            const id = String(unitId);
+            const listed = () => [...ui.units.options].some(o => o.value === id);
+            if (!listed()) await loadUnits();
+            if (!listed()) throw new Error('No unit ' + id + ' in the plant database — __modpoll.devices() lists them');
+            ui.units.value = id;
+            applyUnit(id);
+            return { form: readForm(), command: ui.cmd.value };
+        },
+        /** Fill the form as a person would; the command box follows. Nothing runs. */
+        setForm(values) {
+            if (!ui.mode) throw new Error('The console is not built yet — __modpoll.open() first');
+            applyForm(Object.assign({}, values));
+            if (values && values.timeout !== undefined) ui.timeout.value = String(values.timeout);
+            ui.cmdDirty = false;
+            refreshPreview();
+            return { form: readForm(), command: ui.cmd.value };
+        },
+        /** Run what the form says, as the Run button does, and return state() after it. */
+        async run() {
+            if (!ui.run) throw new Error('The console is not built yet — __modpoll.open() first');
+            if (termState.busy) throw new Error('Busy: a poll, scan or verification is running — __modpoll.stop() ends it');
+            await runOnce();
+            return api.state();
         },
         ready() { return !!(pageWin.w2ui && pageWin.w2ui.sidebar); },
         devices(opts) { return fetchUnits(!!(opts && opts.refresh)); },

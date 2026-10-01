@@ -869,6 +869,42 @@ the plant pages.
 
 `window.__modpoll` is exposed on the page. `__modpoll.help()` prints the list.
 
+**Start with `state()` (1.59.0).** The IWMAC page is large and its accessibility
+snapshot changes shape with every render, so an agent driving the browser
+(Playwright MCP, Claude in Chrome) should not read the console off the page. One call
+tells it what the person sees:
+
+```js
+__modpoll.open();                          // show the console, as Tools → Modpoll does
+__modpoll.state();                         // { form, command, busy, progress, unit, names, list,
+                                           //   grid: { shows, columns, summary, rows, more },
+                                           //   card, views, results, log }
+__modpoll.state(200);                      // the same with up to 200 grid rows (40 by default)
+__modpoll.card('4', 95);                   // open that register's card, as a click does, and read it:
+                                           //   headline, value, note, badges, notes, every fact section,
+                                           //   the datatype and scaling it is shown under, and the
+                                           //   scalings that give what IWMAC shows
+__modpoll.card();                          // the card that is open now, or null
+await __modpoll.useUnit('ID01');           // pick a unit as the picker does: address, slave, serial, names
+__modpoll.setForm({ table: '3', start: 191, count: 2 });   // fill the form; the command follows, nothing runs
+await __modpoll.run();                     // run what the form says, as Run does; returns state()
+```
+
+`grid.shows` says which reading the table holds: `registers`, `bits`, `verification`,
+`find` or `scan`. Each row is keyed by its column headings, a picker cell given as its
+chosen entry, and carries `key` (`table|ref`), which is what `card` takes. The person
+sees every step, since these drive the same form, buttons and cards they use.
+
+The page itself is labelled for the same readers:
+- the panel is a region named *Modpoll Console*, with a line, read by the
+  accessibility tree and not drawn, pointing at `state()`;
+- every field is named by its label (*Slave (-a)*, *Start (-r)*);
+- the table is named for what it holds (*Registers as polled*);
+- an open card is a region named for its register (*Register card: Tilluft*);
+- the summary line is a status and the log a log.
+
+A snapshot alone is therefore enough to find the way.
+
 ```js
 await __modpoll.devices();                 // units from the plant database
 await __modpoll.read({                     // full result
@@ -1007,9 +1043,11 @@ quietly stop being the thing under test.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, a verification's grid, the detail view, the resize grips, the corner
-  expand control and the log. Serve the directory (`python -m http.server 8791`
-  from `test/`) and drive it from a browser; `window.__poll`, `__verify`,
-  `__detail`, `__dragGrip`, `__toggleZeroFilter` and `__probe` are the hooks.
+  expand control and the log, and the agent API as shipped. Serve the directory
+  (`python -m http.server 8791` from `test/`) and drive it from a browser;
+  `window.__poll`, `__verify`, `__detail`, `__dragGrip`, `__toggleZeroFilter` and
+  `__probe` are the hooks, and `window.__api` is the API, `state()` and `card()`
+  reading back what the hooks drew.
 
 Neither touches a plant. What only a plant can prove — Plant Term, the unit
 list, the names — is still proven on a plant.
