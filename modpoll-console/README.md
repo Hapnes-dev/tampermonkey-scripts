@@ -645,7 +645,12 @@ the facts flow into as many columns as fit and the three lists widen. In the pan
 it keeps its 1120-pixel cap.
 
 A click on a row shows the grid row that way, and the card opens again on the same
-register, so the next datatype is one click away too. The one showing is marked
+register, so the next datatype is one click away too. Since 1.56.0 the card's big
+number follows the choice: the value under that datatype, scaled the way the row
+would scale it, with the unit. The scale is a chosen preset, else the list's
+scale, else the factor the plant's own display implies, at the plant's decimals.
+Underneath it says what the datatype reads and what the register holds — for
+example *61.6 °C — as I_Input_rU16_N it reads 6160 · register holds 2072*. The one showing is marked
 with an amber stripe. A datatype that cannot be read here is greyed out — `BCD4` on
 a word with a digit above 9, or a 64-bit view on the last register polled. *as
 read*, beside the heading, goes back to the list's own.

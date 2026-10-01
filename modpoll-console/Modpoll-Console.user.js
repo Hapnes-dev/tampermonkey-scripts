@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.55.0
+// @version      1.56.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.55.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.56.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -6405,6 +6405,46 @@
     }
 
     /**
+     * What the card's big number becomes under the datatype the register is
+     * viewed as (1.56): the decoded value, scaled the way the row would scale it —
+     * a scale preset when one is chosen, else the list's scale, else the factor
+     * the plant's own display implies, with as many decimals as the plant shows —
+     * and the unit. The note says what the datatype reads and what the register
+     * holds. Null when no datatype is viewed or the words are not in hand, so the
+     * card keeps its own headline.
+     */
+    function viewedHeadline(table, ref, value, point, fromPlant, wordAt) {
+        const key = table + '|' + ref;
+        const view = viewTypeOf(viewOverrides.get(key));
+        if (!view || typeof wordAt !== 'function') return null;
+        const d = decodeView(view, viewWords(view, wordAt, ref));
+        const name = fullNames(view, table)[0];
+        if (!d.ok) return { lead: '—', note: 'as ' + name + ': ' + d.why };
+        const reads = viewValueText(d.value);
+        const note = 'as ' + name + ' it reads ' + reads + ' · register holds ' + value;
+        if (typeof d.value !== 'number') return { lead: reads, note };
+        const entry = (fromPlant || []).find(p => p.bit === null);
+        const unit = (point && point.unit) || (entry && entry.unit) || '';
+        const scaleKey = scaleOverrides.get(key);
+        let shown = reads;
+        if (scaleKey) {
+            const preset = scaledPreset(d.value, scaleKey);
+            if (preset) shown = preset.text;
+        } else if (point && point.scale) {
+            if (point.scale.invert) shown = d.value ? 'off' : 'on';
+            else {
+                const scaled = roundScaled(d.value * point.scale.factor, point.decimals);
+                shown = point.decimals ? scaled.toFixed(point.decimals) : String(scaled);
+            }
+        } else if (entry) {
+            const implied = impliedScale(value, entry.plantValue);
+            const factor = implied ? scaleFactorOf(implied) : null;
+            if (factor && factor.known) shown = (d.value * factor.factor).toFixed(decimalsOf(entry.plantValue));
+        }
+        return { lead: shown + (unit ? ' ' + unit : ''), note };
+    }
+
+    /**
      * The register under every view at once, for its detail card: a list per
      * register width, one row per datatype — the key, what it means, and what
      * this register reads as under it, the values lined up on the right. A click
@@ -6878,6 +6918,9 @@
 
         const model = readingDetailSections(value, point, previous, fromPlant, table, ref, format, extra);
         const head = model.sections[0];
+        // Viewed as another datatype, the big number is what the row shows under it.
+        const viewed = extra ? viewedHeadline(table, ref, value, point, fromPlant, extra.wordAt) : null;
+        if (viewed) { head.lead = viewed.lead; head.leadNote = viewed.note; }
         const box = el('div', { className: 'mpc-detailbox' });
 
         // The top: name and badges on the left, the value large on the right,

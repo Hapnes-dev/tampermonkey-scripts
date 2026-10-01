@@ -103,6 +103,9 @@ let _unitsCache = null;
 const REPORT_CHUNK_LIMIT = 30000;
 const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';
+// IWMAC's own definitions arrive through the Toolbox plant-SQL API, which the
+// harness has none of: a card for a plant-named register gets none, as off the VPN.
+const loadGenRows = () => Promise.resolve([]);
 // The same as the script's own el(): a string child becomes a text node, which
 // the detail card's labels rely on.
 function el(tag, props, kids) {{
