@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.47.1
+// @version      1.48.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2441,60 +2441,10 @@
     const s = String(id ?? "").trim();
     return s ? ONEFLOW_HOST + "/documents/" + encodeURIComponent(s) : "";
   }
-  function ofIsOneflowUrl(href) {
-    try { return /(?:^|\.)oneflow\.com$/i.test(new URL(href).hostname); } catch (_) { return false; }
-  }
-  // "Subscription" wins when both could match — "Subscription order" is more
-  // likely a subscription agreement than a sales order (tracker rule).
-  function ofKindByLabel(label) {
-    const l = String(label || "").toLowerCase();
-    if (/\babonnement|\bsubscription/.test(l)) return "subscription";
-    if (/\b(?:order|offer|tilbud|ordre)\b/.test(l)) return "order";
-    return "unknown";
-  }
   // Subscriptions in this tenant carry "Abonnementsavtale" in the document name.
   function ofKindByName(name) {
     const n = String(name ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
     return /\babonnementsavtale\b|\bsubscription agreement\b|\bsubscription\b/i.test(n) ? "subscription" : "order";
-  }
-  // Slot the Oneflow links found in one rich-text field. Walks every <li>/<p>/
-  // <div>/<tr> holding an <a href> (the tracker writes "Oneflow (Order): <a>"
-  // lines), classifies by URL shape, then by the surrounding label for order vs
-  // subscription. Bare URLs in plain text count too, as unknown-kind links;
-  // unknown links fill the order slot first, then the subscription slot.
-  function ofParseLinksFromHtml(html) {
-    const out = { order: "", subscription: "", ambiguous: [] };
-    const text = String(html || "");
-    if (!text) return out;
-    const put = (href, kind, labelText) => {
-      if (!ofIsOneflowUrl(href) || !ofExtractAgreementId(href)) return;
-      if (out.order === href || out.subscription === href) return;
-      if (kind === "subscription" && !out.subscription) out.subscription = href;
-      else if (kind === "order" && !out.order) out.order = href;
-      else if (kind === "unknown") {
-        if (!out.order) { out.order = href; out.ambiguous.push({ href, labelText }); }
-        else if (!out.subscription) { out.subscription = href; out.ambiguous.push({ href, labelText }); }
-      }
-    };
-    try {
-      const doc = new DOMParser().parseFromString(text, "text/html");
-      for (const c of doc.body.querySelectorAll("li, p, div, tr")) {
-        const a = c.querySelector("a[href]");
-        if (!a) continue;
-        const href = (a.getAttribute("href") || "").trim();
-        if (!/^https?:/i.test(href)) continue;
-        const labelText = (c.textContent || "").replace(/\s+/g, " ").trim();
-        put(href, ofKindByLabel(labelText), labelText);
-      }
-    } catch (_) {}
-    const re = /https?:\/\/[^\s<>"']+/gi;
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      const href = m[0].replace(/[).,;]+$/, "");
-      const ctx = text.slice(Math.max(0, m.index - 40), m.index);
-      put(href, ofKindByLabel(ctx), ctx.trim());
-    }
-    return out;
   }
   // Rocketlane's /projects payload stores custom-field values under `fieldValue`.
   function rlReadField(fields, prefix) {
@@ -2509,28 +2459,6 @@
     }
     if (typeof v === "object") return v.value != null ? String(v.value).trim() : "";
     return String(v).trim();
-  }
-  // Oneflow links stored on the Rocketlane project: Hubspot Deal Description
-  // first (the tracker writes "Oneflow (Order): …" / "Oneflow (Subscription): …"
-  // lines there), then the Delivery status update message, then a bare Oneflow
-  // agreement-id field. An empty slot falls through to the next source.
-  async function ofLinksFromRocketlaneProject(rlProjectId) {
-    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(rlProjectId), { includeAllFields: true });
-    const project = json?.data ?? json;
-    const fields = Array.isArray(project?.fields) ? project.fields : [];
-    const links = { order: "", subscription: "", ambiguous: [], sources: [], projectName: String(project?.projectName || "").trim() };
-    const merge = (parsed, sourceName) => {
-      let used = false;
-      if (!links.order && parsed.order) { links.order = parsed.order; used = true; }
-      if (!links.subscription && parsed.subscription) { links.subscription = parsed.subscription; used = true; }
-      if (used) links.sources.push(sourceName);
-      links.ambiguous.push(...parsed.ambiguous);
-    };
-    merge(ofParseLinksFromHtml(rlReadField(fields, "hubspotdealdescription") || rlReadField(fields, "dealdescription")), "Hubspot Deal Description");
-    merge(ofParseLinksFromHtml(rlReadField(fields, "hubspotdeliverystatusupdatemessage") || rlReadField(fields, "deliverystatusupdatemessage") || rlReadField(fields, "hubspotdeliverystatus")), "Delivery status update message");
-    const fk = ofExtractAgreementId(rlReadField(fields, "oneflowagreementid") || rlReadField(fields, "oneflowid"));
-    if (fk && !links.order && !links.subscription) { links.order = ofDocumentUrl(fk); links.sources.push("Oneflow agreement id field"); }
-    return links;
   }
   // A fetched agreement keeps its data fields in `data[]` as { key: "data_field",
   // value: { external_key, name, value } }. Neither the search rows nor
@@ -2662,15 +2590,54 @@
       return { id, agreement: null, error: "Couldn't fetch Oneflow document " + id + ": " + (e?.message ?? e) };
     }
   }
+  // Where a stored Oneflow link came from, for the chip's source line.
+  const OF_LINK_SOURCE_LABEL = {
+    iqc: "the links task",
+    dealDescription: "Hubspot Deal Description",
+    deliveryStatus: "Delivery status update message",
+    agreementId: "Oneflow agreement id field",
+  };
+
+  /**
+   * Look up the Oneflow documents a project has no stored link for, exactly as
+   * Fetch URLs does: by the project's HubSpot deal (or the deal its plant's only
+   * live Younium order carries), then by the plant. Scored candidates per slot;
+   * an empty list for a slot not asked for.
+   */
+  async function ofLookupForProject(rlProjectId, plantId, wantOrder, wantSub) {
+    const gen = "ofchip:" + rlProjectId + ":" + Date.now();
+    try {
+      const matchCtx = await rlBuildEnrichedProjectMatchContext(rlProjectId);
+      const pid = String(plantId || matchCtx.plantId || "").trim();
+      const graph = await rlGetLinkGraph(gen, matchCtx, pid);
+      const can = !!(pid || graph.deal);
+      const [order, sub] = await Promise.all([
+        wantOrder && can ? rlFindOneflowScored("order", graph, matchCtx, pid, gen) : [],
+        wantSub && can ? rlFindOneflowScored("subscription", graph, matchCtx, pid, gen) : [],
+      ]);
+      return { graph, pid, order, sub };
+    } finally {
+      rlUpMemoDrop(gen);
+    }
+  }
+
   /**
    * Compute the Oneflow signing verdict for the open project. Same shape and
    * rules as the tracker's computeOneflowStatus:
    *   { color, label, signed, problems[], lastCheckedAt, order:{id,agreement,error},
-   *     sub:{id,agreement,error}, documentUrl, subDocumentUrl, source, notConnected }
+   *     sub:{id,agreement,error}, documentUrl, subDocumentUrl, source, notConnected, related }
    * The verdict follows the ORDER document; without one it falls back to the
    * subscription agreement.
+   *
+   * v1.48.0: the stored links are the ones the action bar and Fetch URLs use —
+   * the links task first (where Fetch URLs saves), then Deal Description,
+   * Delivery status message and the agreement-id field. The chip used to skip
+   * the links task, and searched by plant number only when nothing at all was
+   * stored. Now every slot without a stored link is looked up the Fetch URLs
+   * way, a pick that is not certain says so, and a stored link that belongs to
+   * another HubSpot deal is called out.
    */
-  async function computeOneflowStatusForProject(rlProjectId, plantId) {
+  async function computeOneflowStatusForProject(rlProjectId, plantId, opts) {
     const dbg = (...a) => { try { if (window.__matchDebug !== false) console.log("[Oneflow status]", ...a); } catch (_) {} };
     const empty = () => ({ id: "", agreement: null, error: "" });
     const out = {
@@ -2679,43 +2646,77 @@
       related: [],
     };
     dbg("compute for", { rlProjectId, plantId });
-    let links = null;
-    try {
-      links = await ofLinksFromRocketlaneProject(rlProjectId);
-      if (links.order || links.subscription) out.source = "Links stored on the Rocketlane project (" + links.sources.join(", ") + ")";
-      for (const amb of links.ambiguous) dbg("stored Oneflow link without an order/subscription label — slotted by position", amb);
-    } catch (e) {
-      out.problems.push("Couldn't read the Rocketlane project's link fields: " + (e?.message ?? e));
+    const links = await rlLoadProjectLinks(rlProjectId, { force: !!opts?.force });
+    const storedOrder = String(links?.oneflowOrder || "").trim();
+    const storedSub = String(links?.oneflowSubscription || "").trim();
+    const from = (k) => OF_LINK_SOURCE_LABEL[links?.from?.[k]] || "the project";
+    const sources = [];
+    const [order, sub] = await Promise.all([
+      storedOrder ? ofFetchAgreementByUrl(storedOrder) : Promise.resolve(empty()),
+      storedSub ? ofFetchAgreementByUrl(storedSub) : Promise.resolve(empty()),
+    ]);
+    out.order = order;
+    out.sub = sub;
+    if (storedOrder) sources.push("order link from " + from("oneflowOrder"));
+    if (storedSub) sources.push("subscription link from " + from("oneflowSubscription"));
+
+    // A stored link that belongs to another deal is still shown, but called out.
+    const projectDeal = rlDigits(links?.dealId);
+    const docDeal = (a) => (a ? rlDigits(rlExtractOneflowDataFields(a).hubspotDealId) : "");
+    const orderDeal = docDeal(order.agreement);
+    if (projectDeal && orderDeal && orderDeal !== projectDeal) {
+      out.problems.push("The stored order document carries HubSpot deal " + orderDeal + ", but this project's deal is " +
+        projectDeal + " — Fetch URLs offers the document of this project's deal.");
     }
-    if (links && (links.order || links.subscription)) {
-      const [order, sub] = await Promise.all([
-        links.order ? ofFetchAgreementByUrl(links.order) : Promise.resolve(empty()),
-        links.subscription ? ofFetchAgreementByUrl(links.subscription) : Promise.resolve(empty()),
-      ]);
-      out.order = order;
-      out.sub = sub;
-    } else if (plantId) {
+    if (projectDeal && docDeal(sub.agreement) === projectDeal) {
+      out.problems.push("The stored subscription link is this project's order document (it carries the project's deal " + projectDeal + ").");
+    }
+
+    // Every slot without a stored link is looked up the Fetch URLs way.
+    const wantOrder = !storedOrder;
+    const wantSub = !storedSub;
+    if (wantOrder || wantSub) {
       try {
-        const found = await ofSearchByPlantId(plantId, links?.projectName || "");
-        if (found.order) out.order = { id: String(found.order.id), agreement: found.order, error: "" };
-        if (found.subscription) out.sub = { id: String(found.subscription.id), agreement: found.subscription, error: "" };
-        // A plant often has several documents — different jobs, or an older
-        // version of the same one. The modal lists the ones not shown above so
-        // the pick is visible rather than implied.
-        out.related = Array.isArray(found.candidates) ? found.candidates : [];
-        if (found.order || found.subscription) {
-          out.source = "Found by searching Oneflow for plant " + plantId + " — no link is stored on the Rocketlane project";
-          const byName = [found.order, found.subscription].filter((a) => a && a._matchedByName);
-          if (byName.length) {
-            out.source += ". Matched by plant name, not number: " + byName.map((a) => "“" + a.name + "”").join(", ") +
-              " carries no plant ID.";
+        const look = await ofLookupForProject(rlProjectId, plantId, wantOrder, wantSub);
+        const po = wantOrder ? rlPickForStatus(look.order) : null;
+        const ps = wantSub ? rlPickForStatus(look.sub) : null;
+        const named = (pick) => "“" + String(pick.entry.candidate.raw?.name || pick.entry.candidate.id) + "” (" + pick.entry.percent + "%)";
+        if (po) {
+          out.order = { id: String(po.entry.candidate.id), agreement: po.entry.candidate.raw, error: "" };
+          if (!po.sure) {
+            out.problems.push("Not certain this is the order: " + named(po) + " is the closest of " + look.order.length +
+              " — save the right one with Fetch URLs.");
           }
+        }
+        if (ps && String(ps.entry.candidate.id) !== String(out.order.id || "")) {
+          out.sub = { id: String(ps.entry.candidate.id), agreement: ps.entry.candidate.raw, error: "" };
+          if (!ps.sure) {
+            out.problems.push("Not certain this is the subscription agreement: " + named(ps) + " is the closest of " +
+              look.sub.length + " — save the right one with Fetch URLs.");
+          }
+        }
+        // Everything the lookup saw, so the pick is visible rather than implied.
+        const seen = new Set();
+        out.related = [...look.order, ...look.sub]
+          .map((e) => e.candidate.raw)
+          .filter((a) => a?.id && !seen.has(String(a.id)) && seen.add(String(a.id)));
+        const g = look.graph;
+        out.lookup = { deal: g.deal, dealVia: g.dealVia, plantId: look.pid };
+        if (po || ps) {
+          const by = g.deal
+            ? "HubSpot deal " + g.deal + (g.dealVia ? " (from " + g.dealVia + ")" : " (the project's Hubspot Deal ID)") +
+              (look.pid ? " and plant " + look.pid : "")
+            : "plant " + look.pid;
+          sources.push((po && ps ? "order and subscription agreement" : po ? "order" : "subscription agreement") +
+            " found in Oneflow by " + by + " — not stored on the project; Fetch URLs saves it");
         }
       } catch (e) {
         out.fetchFailed = true;
-        out.problems.push("Oneflow search for plant " + plantId + " failed: " + (e?.message ?? e));
+        out.problems.push("Oneflow lookup failed: " + (e?.message ?? e));
       }
     }
+    out.source = sources.length ? sources.join("; ") : "";
+
     if (out.order.error) out.problems.push(out.order.error);
     if (out.sub.error) out.problems.push(out.sub.error);
     out.notConnected = out.problems.some((p) => /Oneflow session expired|session missing|open https:\/\/app\.oneflow\.com/i.test(String(p)));
@@ -2739,8 +2740,10 @@
     } else if (out.order.id || out.sub.id) {
       out.label = "Oneflow: Error";
     } else if (!out.problems.length) {
-      out.problems.push("No Oneflow document found — nothing is stored on the Rocketlane project" +
-        (plantId ? " and no Oneflow document carries plant ID " + plantId : "") + ".");
+      const deal = out.lookup?.deal || "";
+      const pid = out.lookup?.plantId || plantId || "";
+      out.problems.push("No Oneflow document found — nothing is stored on the Rocketlane project, and Oneflow has no document for " +
+        (deal ? "HubSpot deal " + deal + (pid ? " or plant " + pid : "") : pid ? "plant " + pid : "this project") + ".");
     }
     out.documentUrl = out.order.id ? ofDocumentUrl(out.order.id) : "";
     out.subDocumentUrl = out.sub.id ? ofDocumentUrl(out.sub.id) : "";
@@ -2780,14 +2783,25 @@
   }
   // A "not connected" verdict is never cached, so logging in to Oneflow and
   // revisiting the project is enough to get a real answer.
-  function computeOneflowForProject(rlProjectId, plantId) {
+  function computeOneflowForProject(rlProjectId, plantId, opts) {
     if (ofVerdictCache.has(rlProjectId)) return Promise.resolve(ofVerdictCache.get(rlProjectId));
     if (ofInflight.has(rlProjectId)) return ofInflight.get(rlProjectId);
-    const pr = computeOneflowStatusForProject(rlProjectId, plantId)
+    const pr = computeOneflowStatusForProject(rlProjectId, plantId, opts)
       .then((v) => { if (!v.notConnected) ofVerdictCache.set(rlProjectId, v); ofInflight.delete(rlProjectId); return v; })
       .catch((e) => { ofInflight.delete(rlProjectId); throw e; });
     ofInflight.set(rlProjectId, pr);
     return pr;
+  }
+  /** Forget a project's verdict and recompute the chip if it shows that project (after Fetch URLs saves). */
+  function ofForgetProject(rlProjectId) {
+    const id = String(rlProjectId || "");
+    ofVerdictCache.delete(id);
+    ofInflight.delete(id);
+    const btn = document.getElementById("ofNavBtn");
+    if (btn && btn.dataset.rlProjectId === id) {
+      btn.dataset.rlProjectId = "";
+      refreshOneflowButtonForCurrentProject();
+    }
   }
   function applyOneflowVerdictToButton(rlProjectId, verdict) {
     const btn = document.getElementById("ofNavBtn");
@@ -2901,7 +2915,7 @@
       setOneflowButtonState("gray", "Oneflow", true);
       els.dlgOneflowStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Refreshing…</div>';
       try {
-        const fresh = await computeOneflowForProject(p.rlProjectId, p.plantId);
+        const fresh = await computeOneflowForProject(p.rlProjectId, p.plantId, { force: true });
         if (gen !== ofRenderGen || !els.dlgOneflowStatus.open) return;
         renderOneflowStatusModalBody(fresh, gen);
       } catch (e) {
@@ -5751,10 +5765,13 @@
       { name: "deliveryStatus", links: deliveryStatusLinks },
     ];
     const merged = rlEmptyProjectLinks();
+    // Which source filled each slot, so the Oneflow chip can say where its
+    // document came from (OF_LINK_SOURCE_LABEL).
+    merged.from = {};
     for (const k of slots) {
       for (const src of ranked) {
         const v = String(src.links?.[k] || "").trim();
-        if (v) { merged[k] = v; break; }
+        if (v) { merged[k] = v; merged.from[k] = src.name; break; }
       }
     }
     return merged;
@@ -5809,7 +5826,8 @@
   // The platform a link's label names and whether it says order or subscription:
   // "Oneflow - Subscription agreement:" → oneflow / subscription, "Younium link
   // (Order / offer):" → younium / order, "Hubspot:" → hubspot / unknown.
-  // "Subscription" wins when both words appear (tracker rule, as ofKindByLabel).
+  // "Subscription" wins when both words appear ("Subscription order" is more
+  // likely a subscription agreement than a sales order — tracker rule).
   function rlLinkLabelInfo(label) {
     const l = String(label || "").toLowerCase();
     const platform = /one\s*flow/.test(l) ? "oneflow"
@@ -6354,6 +6372,21 @@
           ? "best " + best.percent + "% < " + minPct + "% auto-fill threshold"
           : "best raw " + Math.round(best.score) + " only " + Math.round(lead) + " ahead of #2 — too close to call",
     };
+  }
+
+  /**
+   * The candidate a status check shows (v1.48.0): the certain one when
+   * decideMatchOutcome would auto-fill; otherwise the front-runner when it
+   * reaches `statusMinPercent` (default 40), marked not certain so the chip
+   * can say so. Null when nothing qualifies.
+   */
+  function rlPickForStatus(scored, options) {
+    const list = Array.isArray(scored) ? scored : [];
+    if (!list.length) return null;
+    const d = decideMatchOutcome(list, options);
+    if (d.kind === "auto") return { entry: d.entry, sure: true };
+    const top = list[0];
+    return top.percent >= (options?.statusMinPercent ?? 40) ? { entry: top, sure: false } : null;
   }
 
   // @@rlUrlPickerHelpers:end
@@ -10474,6 +10507,8 @@
       let iqc = rlEmptyProjectLinks();
       let deal = rlEmptyProjectLinks();
       let delivery = rlEmptyProjectLinks();
+      let agreementId = "";
+      let dealId = "";
       try {
         const [iqcRes, projRes] = await Promise.allSettled([
           rlFetchIqcTaskLinks(pid),
@@ -10491,16 +10526,19 @@
             rlReadField(fields, "deliverystatusupdatemessage") ||
             rlReadField(fields, "hubspotdeliverystatus")
           );
+          agreementId = ofExtractAgreementId(rlReadField(fields, "oneflowagreementid") || rlReadField(fields, "oneflowid"));
+          dealId = rlDigits(rlReadField(fields, "hubspotdealid"));
         }
       } catch (_) {}
       const merged = rlMergeLinksByPriority(iqc, deal, delivery);
-      try {
-        if (!merged.oneflowOrder && !merged.oneflowSubscription) {
-          const of = await ofLinksFromRocketlaneProject(pid);
-          if (of.order) merged.oneflowOrder = of.order;
-          if (of.subscription) merged.oneflowSubscription = of.subscription;
-        }
-      } catch (_) {}
+      // A bare Oneflow agreement-id field counts as the order when no Oneflow
+      // link is stored anywhere else.
+      if (agreementId && !merged.oneflowOrder && !merged.oneflowSubscription) {
+        merged.oneflowOrder = ofDocumentUrl(agreementId);
+        merged.from.oneflowOrder = "agreementId";
+      }
+      // The project's HubSpot deal, which the Oneflow chip checks stored links against.
+      merged.dealId = dealId;
       rlProjectLinksCache.set(pid, merged);
       return merged;
     })();
@@ -11708,6 +11746,10 @@
   function rlUpMemoPrune(gen) {
     for (const k of [...rlUpMemo.keys()]) if (!k.startsWith(String(gen) + "|")) rlUpMemo.delete(k);
   }
+  function rlUpMemoDrop(gen) {
+    const prefix = String(gen) + "|";
+    for (const k of [...rlUpMemo.keys()]) if (k.startsWith(prefix)) rlUpMemo.delete(k);
+  }
 
   /**
    * Everything Younium knows about the project, in one legal-entity-aware pass:
@@ -12211,6 +12253,8 @@
       const verify = await rlSaveIqcAttachLinks(projectId, links);
       if (gen !== rlUrlPickerGen || dlg.dataset.rlProjectId !== projectId) return;
       const refreshed = await rlLoadProjectLinks(projectId, { force: true });
+      // The Oneflow chip reads the same links — recompute it from what was saved.
+      ofForgetProject(projectId);
       const bar = document.getElementById("rlProjectActionBar");
       const ctx = getOneflowContext();
       if (bar && ctx.rlProjectId === projectId) {
