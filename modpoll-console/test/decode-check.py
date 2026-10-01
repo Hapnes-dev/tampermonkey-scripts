@@ -22,6 +22,7 @@ def lift(start, end):
 
 
 js = lift("    const IWMAC_WORD_ORDER = {", "\n    /*\n     * Two 16-bit registers read as one 32-bit value")
+js += lift("    function impliedScale(raw, shown) {", "\n    /**\n     * What a register and its neighbour decode to")
 js += lift("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * Points become poll ranges")
 js += lift("    const VIEW_TYPES = [", "\n    /**\n     * The picker in a grid's type cell.")
 js += lift("    const SCALE_PRESETS = [", "\n    /**\n     * The picker in a grid's scaled cell.")
@@ -167,6 +168,32 @@ check('a negative reading keeps its sign: -200 under x0.01 is -2.00', scaledPres
     show(scaledPreset(-200, 'x0.01')));
 check('x1 shows a whole number', scaledPreset(2000, 'x1').text === '2000', show(scaledPreset(2000, 'x1')));
 check('no reading, no preset', scaledPreset(undefined, 'x0.1') === null && scaledPreset(NaN, 'x0.1') === null, '');
+
+// The card's scale list (1.57): what each key does, which key gives what IWMAC shows, and
+// the big number under a chosen scale.
+check('every preset says what it does', SCALE_PRESETS.every(k => SCALE_MEANINGS[k]), SCALE_PRESETS.filter(k => !SCALE_MEANINGS[k]).join(' '));
+check('207 under x0.1 gives the 20,7 the plant shows, and no other key does',
+    SCALE_PRESETS.filter(k => presetGives(207, k, '20,7')).join(' ') === 'x0.1', SCALE_PRESETS.filter(k => presetGives(207, k, '20,7')).join(' '));
+check('a float the plant rounds still matches: 21.4999 under x1 gives 21.5', presetGives(21.4999, 'x1', '21.5'), '');
+check('2000 l/s under x3.6 gives the 7200 m3/h shown', presetGives(2000, 'x3.6', '7200'), '');
+check('the match is to the decimals shown: 1 under x0.5 is not the 1 shown, under x1 it is',
+    presetGives(1, 'x1', '1') && !presetGives(1, 'x0.5', '1'), '');
+check('a zero, a state text or nothing shown matches no key',
+    !presetGives(0, 'x1', '0') && !presetGives(5, 'x1', '0') && !presetGives(1, 'x1', 'Auto') && !presetGives(1, 'x1', '') && !presetGives(1, 'x1', null), '');
+const listPoint = { unit: '°C', scale: scaleFactorOf('x0.1'), decimals: 1 };
+scaleOverrides.set('4|95', 'x3.6');
+const underScale = viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: 207 });
+check('a scale chosen without a datatype makes the big number: 207 under x3.6 is 745.2 °C',
+    underScale && underScale.lead === '745.2 °C' && /^under x3\.6, display only · register holds 207$/.test(underScale.note), show(underScale));
+check('a row with no scaled cell keeps the card\'s own big number', viewedHeadline('4', 95, 207, listPoint, null, undefined, undefined) === null, '');
+check('a row with nothing to scale keeps it too', viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: undefined }) === null, '');
+viewOverrides.set('4|95', 'U16');
+const bothChosen = viewedHeadline('4', 95, 207, listPoint, null, ref => ({ 95: 2072 })[ref], { raw: 2072 });
+check('with a datatype too, the scale applies to what it reads: 2072 under x3.6 is 7459.2 °C, and the note says so',
+    bothChosen && bothChosen.lead === '7459.2 °C' && /reads 2072 · under x3\.6 · register holds 207$/.test(bothChosen.note), show(bothChosen));
+viewOverrides.clear();
+scaleOverrides.clear();
+check('nothing chosen, the card keeps its own big number', viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: 207 }) === null, '');
 
 console.log(failed ? failed + ' failed' : 'all passed');
 process.exit(failed ? 1 : 0);

@@ -688,6 +688,23 @@ scale.** It combines with a datatype view — the presets then apply to the view
 value — and *clear views* clears both. From the API: `__modpoll.scaleAs('3', 95,
 'x3.6')`, and `__modpoll.scalePresets(2000)` for every preset of a number in hand.
 
+**Click a register to choose its scale as well (1.57.0).** Under *View as*, the detail
+card has a *Scale* section in the same look: two lists, the keys that keep whole
+numbers and the keys that bring decimals. Each row holds the key, what it does
+(`÷10, 1 decimal`) and the value the reading gives under it. The reading is the one
+the scaled cell scales — what the chosen datatype reads, when one is chosen. Two
+marks help pick:
+- `list` sits on the list's own key.
+- `IWMAC` sits on any key that gives the number the plant showed for this register
+  when its names were read, to the decimals the plant shows.
+
+A click shows the row under that scale, and the card opens again on the same
+register. The big number follows: *745.2 °C — under x3.6, display only · register
+holds 207*. *own scale*, beside the heading, goes back. The section is in the
+cards of the register grid and of a verification, where the row has a scaled cell
+to show the choice in. A text view (`STR`, `CLK`, bits) has nothing to scale, and
+the section says so.
+
 *Verify list* polls every point, grouping them into ranges that merge across
 small gaps and split at the count cap, then judges each answer with a fixed
 vocabulary: `read`, `zero`, `refused`, `no answer`, `not polled`. A value outside
@@ -890,7 +907,9 @@ quietly stop being the thing under test.
   suffix beside what IWMAC showed for them (2222981.15 under `U32_W`, 200000
   under `U32_N`), the 16-bit views, a refused 32-bit byte swap, the view
   catalogue, the scale presets and the decimals each implies (222298115 under
-  `x0.01` prints 2222981.15); then a whole verification through the shipped `verifyPointList`
+  `x0.01` prints 2222981.15), which preset gives the number IWMAC shows (207 gives
+  20,7 under `x0.1` and under no other key), and the card's big number under a
+  chosen scale, with and without a datatype view; then a whole verification through the shipped `verifyPointList`
   against a map of those registers — every point read as 16-bit words, a `_W`
   point shown as IWMAC shows it, and the words kept for views but out of the JSON.
 - `python test/export-check.py` — *Save JSON* with a scan in hand and no poll,
@@ -920,14 +939,14 @@ quietly stop being the thing under test.
   `_N`, 2000 l/s), a zero-word pattern, a temperature that only makes sense
   signed and a percentage outside its range, `asViewed`, the `views` block, a
   password point with neither words nor a lead, and a split whose every part
-  stays under the ceiling. 114 expectations, each printed PASS or FAIL; exits
+  stays under the ceiling. 124 expectations, each printed PASS or FAIL; exits
   non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
-  grid, the detail view, the resize grips, the corner expand control and the
-  log. Serve the directory (`python -m http.server 8791` from `test/`) and drive
-  it from a browser; `window.__poll`, `__detail`, `__dragGrip`, `__toggleZeroFilter`
-  and `__probe` are the hooks.
+  grid, a verification's grid, the detail view, the resize grips, the corner
+  expand control and the log. Serve the directory (`python -m http.server 8791`
+  from `test/`) and drive it from a browser; `window.__poll`, `__verify`,
+  `__detail`, `__dragGrip`, `__toggleZeroFilter` and `__probe` are the hooks.
 
 Neither touches a plant. What only a plant can prove — Plant Term, the unit
 list, the names — is still proven on a plant.

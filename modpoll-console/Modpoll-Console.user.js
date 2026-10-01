@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.56.0
+// @version      1.57.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.56.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.57.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5627,6 +5627,13 @@
     #${PANEL_ID} button.mpc-vitem[disabled]{cursor:default;opacity:.45}
     #${PANEL_ID} button.mpc-vitem.mpc-vbase{flex:0 0 auto;width:auto;grid-template-columns:auto auto;border:1px solid #c5d9f1;
         border-radius:4px}
+    /* The same list for the scale presets (1.57): the key, what it does with the
+       list's and IWMAC's marks beside it, the value. */
+    #${PANEL_ID} button.mpc-vitem.mpc-sitem{grid-template-columns:62px 1fr auto}
+    #${PANEL_ID} button.mpc-vitem em i{font-style:normal;font-size:10px;margin-left:6px;padding:0 5px;border-radius:7px;
+        background:#e6f0fb;color:#1b5fa8}
+    #${PANEL_ID} button.mpc-vitem em i.plant{background:#e3f4e8;color:#1e7b3c}
+    #${PANEL_ID} .mpc-vnone{font-size:11.5px;color:#79808c}
     /* A 1px gap over a grey backing reads as gridlines, which is what separates
        one pair from the next without drawing a border around each of them. */
     #${PANEL_ID} .mpc-dsec{display:flex;flex-direction:column;gap:1px;min-width:0;
@@ -6406,30 +6413,34 @@
 
     /**
      * What the card's big number becomes under the datatype the register is
-     * viewed as (1.56): the decoded value, scaled the way the row would scale it —
-     * a scale preset when one is chosen, else the list's scale, else the factor
-     * the plant's own display implies, with as many decimals as the plant shows —
-     * and the unit. The note says what the datatype reads and what the register
-     * holds. Null when no datatype is viewed or the words are not in hand, so the
-     * card keeps its own headline.
+     * viewed as (1.56) or the scale it is shown under (1.57): the decoded value,
+     * scaled the way the row would scale it — a scale preset when one is chosen,
+     * else the list's scale, else the factor the plant's own display implies,
+     * with as many decimals as the plant shows — and the unit. The note says
+     * what the datatype reads and what the register holds. With a scale and no
+     * datatype it is the reading the row's scaled cell scales, `scale.raw`,
+     * under that scale. Null when neither is chosen or there is nothing to
+     * show, so the card keeps its own headline.
      */
-    function viewedHeadline(table, ref, value, point, fromPlant, wordAt) {
+    function viewedHeadline(table, ref, value, point, fromPlant, wordAt, scale) {
         const key = table + '|' + ref;
         const view = viewTypeOf(viewOverrides.get(key));
-        if (!view || typeof wordAt !== 'function') return null;
+        const scaleKey = scaleOverrides.get(key);
+        const entry = (fromPlant || []).find(p => p.bit === null);
+        const unit = (point && point.unit) || (entry && entry.unit) || '';
+        if (!view || typeof wordAt !== 'function') {
+            const preset = scaleKey && scale ? scaledPreset(scale.raw, scaleKey) : null;
+            return preset ? { lead: preset.text + (unit ? ' ' + unit : ''), note: 'under ' + scaleKey + ', display only · register holds ' + value } : null;
+        }
         const d = decodeView(view, viewWords(view, wordAt, ref));
         const name = fullNames(view, table)[0];
         if (!d.ok) return { lead: '—', note: 'as ' + name + ': ' + d.why };
         const reads = viewValueText(d.value);
-        const note = 'as ' + name + ' it reads ' + reads + ' · register holds ' + value;
-        if (typeof d.value !== 'number') return { lead: reads, note };
-        const entry = (fromPlant || []).find(p => p.bit === null);
-        const unit = (point && point.unit) || (entry && entry.unit) || '';
-        const scaleKey = scaleOverrides.get(key);
-        let shown = reads;
+        if (typeof d.value !== 'number') return { lead: reads, note: 'as ' + name + ' it reads ' + reads + ' · register holds ' + value };
+        let shown = reads, under = '';
         if (scaleKey) {
             const preset = scaledPreset(d.value, scaleKey);
-            if (preset) shown = preset.text;
+            if (preset) { shown = preset.text; under = ' · under ' + scaleKey; }
         } else if (point && point.scale) {
             if (point.scale.invert) shown = d.value ? 'off' : 'on';
             else {
@@ -6441,7 +6452,26 @@
             const factor = implied ? scaleFactorOf(implied) : null;
             if (factor && factor.known) shown = (d.value * factor.factor).toFixed(decimalsOf(entry.plantValue));
         }
-        return { lead: shown + (unit ? ' ' + unit : ''), note };
+        return { lead: shown + (unit ? ' ' + unit : ''), note: 'as ' + name + ' it reads ' + reads + under + ' · register holds ' + value };
+    }
+
+    /**
+     * After a display-only choice in a register's card: the grid drawn again
+     * with it, and the card opened again on the same register, so the next
+     * choice is one click away.
+     */
+    function redrawAndReopen(key) {
+        if (typeof redrawGrid !== 'function') return;
+        redrawGrid();
+        const again = ui.gridBody && [...ui.gridBody.querySelectorAll('tr[data-key]')].find(r => r.dataset.key === key);
+        if (again) again.click();
+    }
+
+    /** One row of a card's choice list: a button whose click picks, and stops short of the row under the card. */
+    function choiceItem(cls, title, kids, onPick, disabled) {
+        const b = el('button', { className: cls, title, disabled: !!disabled }, kids);
+        b.addEventListener('click', ev => { ev.stopPropagation(); onPick(); });
+        return b;
     }
 
     /**
@@ -6458,17 +6488,9 @@
         const current = viewOverrides.get(key) || '';
         const pick = viewKey => {
             if (viewKey) viewOverrides.set(key, viewKey); else viewOverrides.delete(key);
-            if (typeof redrawGrid !== 'function') return;
-            redrawGrid();
-            const again = ui.gridBody && [...ui.gridBody.querySelectorAll('tr[data-key]')].find(r => r.dataset.key === key);
-            if (again) again.click();
+            redrawAndReopen(key);
         };
-        const item = (cls, title, kids, onPick, disabled) => {
-            const b = el('button', { className: cls, title, disabled: !!disabled }, kids);
-            b.addEventListener('click', ev => { ev.stopPropagation(); onPick(); });
-            return b;
-        };
-        const base = item('mpc-vitem mpc-vbase' + (current ? '' : ' on'), 'Show it as the list declares it, or as read',
+        const base = choiceItem('mpc-vitem mpc-vbase' + (current ? '' : ' on'), 'Show it as the list declares it, or as read',
             [el('b', { textContent: 'as read' }), el('em', { textContent: baseLabel && baseLabel !== 'as read' ? baseLabel : '' })], () => pick(''));
         const wrap = el('div', { className: 'mpc-dviews' }, [
             el('div', { className: 'mpc-vhead' }, [
@@ -6486,12 +6508,95 @@
                 const names = fullNames(t, table);
                 const slots = names.length === 2 ? names : (t.raw === 'Bits' ? [names[0], ''] : ['', names[0]]);
                 const meaning = viewMeaning(t);
-                col.appendChild(item('mpc-vitem' + (t.key === current ? ' on' : ''),
+                col.appendChild(choiceItem('mpc-vitem' + (t.key === current ? ' on' : ''),
                     names.join(' / ') + (meaning ? ' — ' + meaning : '') + viewBasis(d), [
                     el('b', { textContent: slots[0] }),
                     el('b', { textContent: slots[1] }),
                     el('span', { textContent: d.ok ? viewValueText(d.value) : '—' }),
                 ], () => pick(t.key), !d.ok));
+            }
+            cols.appendChild(col);
+        }
+        wrap.appendChild(cols);
+        return wrap;
+    }
+
+    /** What each scale preset does, for the card's scale list. */
+    const SCALE_MEANINGS = {
+        x1000: '×1000', x100: '×100', x10: '×10', x1: 'unscaled', 'x3.6': '×3.6, l/s → m³/h',
+        'x0.5': '÷2, 1 decimal', 'x0.25': '÷4, 2 decimals', 'x0.1': '÷10, 1 decimal',
+        'x0.01': '÷100, 2 decimals', 'x0.001': '÷1000, 3 decimals', 'x0.0001': '÷10000, 4 decimals',
+    };
+
+    /**
+     * Whether a reading under a scale key gives the number a display shows —
+     * the plant's own, "21,5" or "850" — to the decimals the display states. A
+     * zero on either side proves nothing, so it never matches.
+     */
+    function presetGives(raw, key, shown) {
+        const target = Number(String(shown == null ? '' : shown).trim().replace(',', '.'));
+        if (typeof raw !== 'number' || !Number.isFinite(raw) || !raw || !Number.isFinite(target) || !target) return false;
+        const s = scaleFactorOf(key);
+        if (!s.known || s.invert) return false;
+        return Math.abs(raw * s.factor - target) < 0.5 * Math.pow(10, -decimalsOf(shown));
+    }
+
+    /**
+     * The register under every scale preset, for its detail card (1.57): the
+     * reading the row's scaled cell scales — what the chosen datatype reads,
+     * when one is chosen — once per key, with what the key does and the number
+     * it gives. Keys that keep whole numbers and keys that bring decimals are
+     * two lists. A click shows the row under that scale, the same display-only
+     * choice the scaled cell's picker makes, and the card opens again on the
+     * same register. The list's own key is marked, and so is any key that gives
+     * the number IWMAC itself showed; the row in the heading goes back to the
+     * row's own scale. `scale` is { raw, baseText, baseNote }, as the row has it.
+     */
+    function scaleChoices(table, ref, scale, point, fromPlant) {
+        const key = table + '|' + ref;
+        const current = scaleOverrides.get(key) || '';
+        const raw = scale.raw;
+        const view = viewTypeOf(viewOverrides.get(key));
+        const entry = (fromPlant || []).find(p => p.bit === null);
+        const listKey = point ? String(point.scaleKey || 'x1').trim().toLowerCase() : null;
+        const pick = scaleKey => {
+            if (scaleKey) scaleOverrides.set(key, scaleKey); else scaleOverrides.delete(key);
+            redrawAndReopen(key);
+        };
+        const baseText = scale.baseText === '' || scale.baseText === undefined ? '—' : String(scale.baseText);
+        const base = choiceItem('mpc-vitem mpc-vbase' + (current ? '' : ' on'), "Show it with the row's own scale again",
+            [el('b', { textContent: 'own scale' }), el('em', { textContent: baseText + (scale.baseNote ? ' · ' + scale.baseNote : '') })], () => pick(''));
+        const viewed = view ? ' as ' + fullNames(view, table)[0] : '';
+        const wrap = el('div', { className: 'mpc-dviews' }, [
+            el('div', { className: 'mpc-vhead' }, [
+                el('h5', { textContent: 'Scale — click a scale to show this register' + viewed + ' under it (display only, the list keeps its own)' }),
+                base,
+            ]),
+        ]);
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+            wrap.appendChild(el('div', { className: 'mpc-vnone', textContent: 'Nothing to scale: this register' + (viewed ? viewed + ' gives no number here' : ' has no reading') + '.' +
+                (current ? ' ' + current + ' is still chosen — own scale clears it.' : '') }));
+            return wrap;
+        }
+        const cols = el('div', { className: 'mpc-vcols' });
+        for (const [title, keys] of [
+            ['Whole numbers', SCALE_PRESETS.filter(k => !decimalsForScale(k))],
+            ['With decimals', SCALE_PRESETS.filter(k => decimalsForScale(k))],
+        ]) {
+            const col = el('div', { className: 'mpc-vcol' }, [el('h6', { textContent: title })]);
+            for (const k of keys) {
+                const p = scaledPreset(raw, k);
+                const marks = [];
+                if (listKey === k) marks.push(el('i', { textContent: 'list', title: "The list's own scale" }));
+                if (entry && presetGives(raw, k, entry.plantValue)) {
+                    marks.push(el('i', { className: 'plant', textContent: 'IWMAC', title: 'Gives what IWMAC showed for this register when its names were read: ' + entry.plantValue }));
+                }
+                col.appendChild(choiceItem('mpc-vitem mpc-sitem' + (k === current ? ' on' : ''),
+                    k + ' — ' + (SCALE_MEANINGS[k] || '') + ': ' + (p ? p.text : '—'), [
+                    el('b', { textContent: k }),
+                    el('em', {}, [SCALE_MEANINGS[k] || ''].concat(marks)),
+                    el('span', { textContent: p ? p.text : '—' }),
+                ], () => pick(k), !p));
             }
             cols.appendChild(col);
         }
@@ -6918,8 +7023,8 @@
 
         const model = readingDetailSections(value, point, previous, fromPlant, table, ref, format, extra);
         const head = model.sections[0];
-        // Viewed as another datatype, the big number is what the row shows under it.
-        const viewed = extra ? viewedHeadline(table, ref, value, point, fromPlant, extra.wordAt) : null;
+        // Viewed as another datatype or scale, the big number is what the row shows under it.
+        const viewed = extra ? viewedHeadline(table, ref, value, point, fromPlant, extra.wordAt, extra.scale) : null;
         if (viewed) { head.lead = viewed.lead; head.leadNote = viewed.note; }
         const box = el('div', { className: 'mpc-detailbox' });
 
@@ -6963,6 +7068,8 @@
         // Every datatype for this register, where its words are to hand: a 16-bit
         // poll, or a verification that kept them.
         if (extra && typeof extra.wordAt === 'function') box.appendChild(viewChoices(table, ref, extra.wordAt, extra.listLabel));
+        // Every scale preset, where the row has a scaled cell to show the choice in.
+        if (extra && extra.scale) box.appendChild(scaleChoices(table, ref, extra.scale, point, fromPlant));
 
         // The facts, in columns. A row is [label, text, mono, tip, column]; the
         // column, where a row has one, is the database column it comes from.
@@ -7311,7 +7418,8 @@
                         ? { table: p.decoded.table, ref: p.ref, format: '', bigEndian: false, count: 2 }
                         : { table: p.decoded.table, ref: p.ref, format: p.decoded.format, bigEndian: p.decoded.bigEndian });
                     toggleDetailRow(tr, row.raw, p, undefined, plantNamesFor(p.decoded.table, p.decoded.format, p.ref), p.decoded.table, p.ref, p.decoded.format,
-                        viewable ? { wordAt: ref => wordAt.get(p.decoded.table + '|' + ref), listLabel: p.datatype } : undefined);
+                        Object.assign({ scale: { raw, baseText: cells[5], baseNote: (p.scaleKey || 'x1') + ', list' } },
+                            viewable ? { wordAt: ref => wordAt.get(p.decoded.table + '|' + ref), listLabel: p.datatype } : {}));
                 });
             }
             frag.appendChild(tr);
@@ -7469,6 +7577,7 @@
                     textContent: c.text, className: c.className || '',
                     style: c.align === 'left' ? 'text-align:left' : '', title: c.title || c.text,
                 })));
+            let scaleInfo;   // what the scaled cell's picker scales, for the card's scale list
             if (!isBitTable) {
                 const typeCell = tr.lastElementChild;
                 typeCell.textContent = '';
@@ -7484,6 +7593,7 @@
                 scaledCell.textContent = '';
                 scaledCell.removeAttribute('title');
                 scaledCell.appendChild(scaleSelect(table, v.i, shownRaw, baseText, baseNote));
+                scaleInfo = { raw: shownRaw, baseText, baseNote };
             }
             tr.dataset.key = table + '|' + v.i;
             tr.addEventListener('click', () => {
@@ -7497,6 +7607,7 @@
                     // 16-bit register poll has them
                     wordAt: wide || isBitTable ? undefined : (ref => { const o = byIndex.get(ref); return o ? o.v : undefined; }),
                     listLabel: sourceLabel || 'as read',
+                    scale: scaleInfo,
                 });
             });
             frag.appendChild(tr);

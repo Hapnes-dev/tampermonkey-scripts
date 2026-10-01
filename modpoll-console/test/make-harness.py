@@ -65,6 +65,10 @@ columns = between("    const REGISTER_COLUMNS = [", "\n    const POINT_COLUMNS =
 watch = between("    // Printed reference -> the value seen on the previous poll",
                 "\n    function log(text, level) {")
 render_grid = between("    function renderGrid(result) {", "\n    async function runOnce() {")
+# A verification's grid and its columns, so a card opened from a verified point —
+# its every-datatype and every-scale lists — is under test as shipped (1.57).
+point_columns = between("    const POINT_COLUMNS = [", "\n    const FIND_COLUMNS = [")
+render_verification = between("    function renderVerification(verification) {", "\n    function renderGrid(result) {")
 # The "view as" block renderGrid draws into its type and scaled cells, and the
 # detail card into its every-datatype row (1.50, 1.53). Without it a poll through
 # __poll threw before a row was drawn. decodeWords itself comes with `exporting`.
@@ -146,6 +150,10 @@ function el(tag, props, kids) {{
 {grid_columns}
 
 {render_grid}
+
+{point_columns}
+
+{render_verification}
 // ---- end lifted code -----------------------------------------------------
 
 function renderEmptyGrid(message) {{
@@ -293,6 +301,18 @@ window.__poll = (pairs, opts) => {{
     }};
     lastResult = result;
     renderGrid(result);
+    return window.__grid();
+}};
+// A verification of the loaded list: rows in the shape verifyPointList builds
+// them ({{ point, raw, scaled, status, flags }}), and the words it kept, keyed
+// "table|ref", for the views.
+window.__verify = (rows, words) => {{
+    const ver = {{
+        rows, wordAt: new Map(Object.entries(words || {{}})),
+        summary: {{ points: rows.length, read: rows.filter(r => r.status === 'read').length, zero: 0, refused: 0, noAnswer: 0, ranges: 1, elapsedMs: 50 }},
+    }};
+    lastVerification = ver;
+    renderVerification(ver);
     return window.__grid();
 }};
 // Every rendered row as the header labels to cell text, so an assertion reads
