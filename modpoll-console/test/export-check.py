@@ -206,6 +206,62 @@ check('a row holding $& or $\' text still writes valid JSON - the section is put
     (() => { const t = exportText({ format: 'x', everyDatatype: [{ ref: 1, as: { STR4_N: '$&$\'' } }] });
         try { return JSON.parse(t).everyDatatype[0].as.STR4_N === '$&$\''; } catch (e) { return false; } })(), '');
 
+// 1.60: Save JSON keeps to the registers the table shows - one register looked up and polled -
+// and gives each of them under every IWMAC scaling as well as every datatype.
+const onePoll = {
+    ok: true, plant: '2349', at: new Date().toISOString(),
+    spec: { mode: 'tcp', host: '192.168.10.30', port: 502, slave: 9, table: '4', start: 1001, count: 1, base: 'printed', format: '16-bit' },
+    values: [{ i: 1001, addr: 1000, v: 34 }], unreadable: [], notes: [], diagnostics: [],
+    commands: ['modpoll -1 -m tcp -a 9 -t 4 -r 1001 -c 1 192.168.10.30'],
+    summary: { requested: 1, returned: 1, nonZero: 1, min: 34, max: 34, blocks: 1, elapsedMs: 900 },
+};
+const fdoc = exportResult(onePoll, { focus: new Set(['4|1001']), focusSource: 'poll' });
+const ftext = exportText(fdoc);
+check('a focused file holds the one register polled: one reading, no other plant parameter, no list point elsewhere',
+    fdoc.readings.length === 1 && fdoc.readings[0].ref === 1001 && fdoc.plantParameters.length === 0 && fdoc.listPoints.length === 0,
+    JSON.stringify({ readings: fdoc.readings.length, plant: fdoc.plantParameters.length, list: fdoc.listPoints.length }));
+check('... and leaves the scan out: no scan row beside the poll, no scan summary, no empty ranges',
+    fdoc.scanReadings.length === 0 && fdoc.scan === null && fdoc.scanEmpty.length === 0 && fdoc.overview.device.tablesAnswering === null, '');
+check('... and says so at the top: focus names the register and how it was chosen',
+    fdoc.focus && fdoc.focus.source === 'poll' && fdoc.focus.registers.join() === '4|1001' && /Only these registers/.test(fdoc.focus.note),
+    JSON.stringify(fdoc.focus));
+const fe = fdoc.everyDatatype.find(r => r.table === '4' && r.ref === 1001);
+check('its everyDatatype row reads it under every datatype, with the neighbours the scan read: U16_N 34, U32_W 34 * 65536 + 2',
+    fdoc.everyDatatype.length === 1 && fe && fe.as.U16_N === 34 && fe.as.U32_W === 34 * 65536 + 2, JSON.stringify(fe && fe.as));
+check('... and under every IWMAC scaling: x0.1 3.4, x00.1 (x0.01) 0.34, Kelvin to Celsius -239.15, a 1200/5A CT 8160',
+    fe && fe.scales && Object.keys(fe.scales).length === SCALINGS.length && fe.scales['x0.1'] === 3.4 && fe.scales['x00.1 (x0.01)'] === 0.34 &&
+    fe.scales['Kelvin to Celsius'] === -239.15 && fe.scales['CT-ratio: 1200/5A'] === 8160, JSON.stringify(fe && fe.scales));
+check('... with nearShown naming the scaling that gives the 3.4 bar IWMAC showed, x0.1 and no other',
+    fe && JSON.stringify(fe.nearShown) === '["x0.1"]', JSON.stringify(fe && fe.nearShown));
+const edge = exportResult(null, { focus: new Set(['3|486']), focusSource: 'poll' }).everyDatatype.find(r => r.ref === 486);
+check('a register read without the ones after it says which datatypes that leaves out, and the poll that gives them',
+    fe && fe.notRead === undefined && edge && /2- and 4-register datatypes/.test(edge.notRead) && /references 487-489/.test(edge.notRead) &&
+    /poll 486 with count 4/.test(edge.notRead), JSON.stringify(edge && edge.notRead));
+check('the focused file is small - the one register, not the unit', ftext.length < 25000 && ftext.length * 5 < text.length,
+    ftext.length + ' against ' + text.length);
+check('the file parses, and the guide explains focus and scales',
+    (() => { try { JSON.parse(ftext); return true; } catch (e) { return false; } })() && fdoc.howToUse.some(l => l.indexOf('focus, when present') === 0) &&
+    !!fdoc.fieldGuide['everyDatatype[].scales'] && !!fdoc.fieldGuide['everyDatatype[].nearShown'] && !!fdoc.fieldGuide.focus, '');
+check('a whole file gives no scales where nothing was polled: they ride on the registers someone chose',
+    doc.everyDatatype.every(r => !r.scales) && doc.focus === undefined, '');
+
+// A search: the registers found by name, read or not.
+const sdoc = exportResult(onePoll, { focus: new Set(['4|1500', '4|5000']), focusSource: 'search' });
+check('a search keeps to what it found: their plant parameters, and not the poll that read neither',
+    sdoc.readings.length === 0 && sdoc.summary === null && sdoc.commands.length === 0 && sdoc.plantParameters.map(p => p.ref).join() === '1500,5000' &&
+    sdoc.everyDatatype.length === 0 && sdoc.focus.source === 'search' && /found by searching/.test(sdoc.focus.note),
+    JSON.stringify({ readings: sdoc.readings.length, summary: sdoc.summary, plant: sdoc.plantParameters.map(p => p.ref), every: sdoc.everyDatatype.length }));
+check('... each found register still says where the scan left it', sdoc.plantParameters.every(p => typeof p.scan === 'string'),
+    JSON.stringify(sdoc.plantParameters.map(p => p.scan)));
+
+// The API's options: a list of registers, or what the table shows, as Save JSON does.
+var ui = { gridKind: 'find', findShown: [{ table: '4', ref: 1500 }] };
+const viaList = exportOptions({ focus: ['4|1001'] });
+const viaShown = exportOptions({ focus: 'shown' });
+check('exportOptions takes a list of registers, or what the table shows - here the one register found',
+    viaList && viaList.focus.has('4|1001') && viaList.focusSource === 'api' && viaShown && viaShown.focus.has('4|1500') &&
+    viaShown.focus.size === 1 && viaShown.focusSource === 'search' && exportOptions({}) === undefined && exportOptions() === undefined, '');
+
 // --- the same scan, now with IWMAC's own side of the unit read -----------------
 // The driver is set to 19200 where modpoll got answers at 9600; the unit is in
 // ERROR with timeouts in its log; another driver claims the same COM port; two

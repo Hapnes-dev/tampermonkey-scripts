@@ -267,6 +267,33 @@ rebuilt.
     and pushed parts past the ceiling.
   - A decoded text holding `$&` can no longer break the file: sections are put in
     place by a function, not a replacement string.
+- **Save JSON keeps to what the table shows, and adds every scaling (1.60.0).**
+  It used to write everything known: every parameter of the unit, the last scan
+  and the last verification, even for one register looked up to show an agent.
+  Now:
+  - With a poll in the table, the file holds only the registers polled.
+  - With a search in the table, it holds only the registers found.
+  - With a scan or a verification in the table, it is the whole device or list,
+    as before.
+
+  A focused file says so at the top, in `focus`: which registers (`table|ref`),
+  how they were chosen, and what was left out. Every register section keeps only
+  their rows, and the scan's and verification's summaries stay out. One register
+  is about 19 k characters, nearly all of it the guide an agent reads it by.
+
+  Each focused register that was read has its `everyDatatype` row:
+  - `as`: every datatype, as before;
+  - `scales`: its reading under every IWMAC scaling, what IWMAC would show with
+    that scaling set (`"x00.1 (x0.01)": 18.91`);
+  - `nearShown`: the scalings within 2 % of what IWMAC showed;
+  - `notRead`: present when the registers after it were not read. A register
+    polled on its own has no 32- or 64-bit reading, and this says which poll
+    gives them (count 4 from it).
+
+  Without a focus, scales ride only on the registers a poll read. The API takes
+  the same choice: `__modpoll.exportText({ focus: 'shown' })` does what Save JSON
+  does, `{ focus: ['3|30'] }` picks registers, and no option gives the whole
+  document.
 
   Four more things a scan reading carries, each an inference stated as one:
 
@@ -1038,8 +1065,11 @@ quietly stop being the thing under test.
   `_N`, 2000 l/s), a zero-word pattern, a temperature that only makes sense
   signed and a percentage outside its range, `asViewed`, the `views` block, a
   password point with neither words nor a lead, and a split whose every part
-  stays under the ceiling. 124 expectations, each printed PASS or FAIL; exits
-  non-zero on any FAIL.
+  stays under the ceiling. And a focused file (1.60): one polled register on
+  its own, with its datatypes, its scales and the scaling near what IWMAC
+  showed; a search's registers without the poll that read none of them; and the
+  datatypes a lone register cannot have. 137 expectations, each printed PASS or
+  FAIL; exits non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the
   grid, a verification's grid, the detail view, the resize grips, the corner
