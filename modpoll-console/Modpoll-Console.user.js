@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.53.0
+// @version      1.53.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.53.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.53.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5501,21 +5501,30 @@
     #${PANEL_ID} .mpc-dactions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
     #${PANEL_ID} .mpc-dactions .mpc-spacer{flex:1 1 auto}
     #${PANEL_ID} .mpc-dcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:10px;align-items:start}
-    /* The register under every datatype, one click each - the same amber as a
-       viewed row's picker marks the one showing. */
-    #${PANEL_ID} .mpc-dviews{display:flex;flex-direction:column;gap:5px;padding:7px 10px 9px;background:#f6f9fd;
+    /* The register under every datatype, as three lists side by side - one per
+       register width - with the values lined up on the right. The same amber as
+       a viewed row's picker marks the one showing (1.53.1). */
+    #${PANEL_ID} .mpc-dviews{display:flex;flex-direction:column;gap:7px;padding:7px 10px 10px;background:#f6f9fd;
         border:1px solid #c5d9f1;border-radius:4px}
-    #${PANEL_ID} .mpc-dviews h5{margin:0 0 2px;font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;
+    #${PANEL_ID} .mpc-vhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    #${PANEL_ID} .mpc-vhead h5{flex:1 1 320px;margin:0;font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;
         text-transform:uppercase;color:#1b5fa8}
-    #${PANEL_ID} .mpc-vrow{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
-    #${PANEL_ID} .mpc-vgroup{flex:0 0 150px;font:11px Arial,Helvetica,sans-serif;color:#79808c}
-    #${PANEL_ID} button.mpc-vbtn{display:inline-flex;gap:6px;align-items:baseline;height:auto;padding:2px 9px;
-        border:1px solid #c5d9f1;border-radius:10px;background:#fff;cursor:pointer;font:11px/1.6 Arial,Helvetica,sans-serif;color:#1b1b1b}
-    #${PANEL_ID} button.mpc-vbtn b{color:#1b5fa8}
-    #${PANEL_ID} button.mpc-vbtn span{font-family:Consolas,ui-monospace,monospace}
-    #${PANEL_ID} button.mpc-vbtn:hover:not([disabled]){border-color:#3f7fbf;background:#e6f0fb}
-    #${PANEL_ID} button.mpc-vbtn.on{background:#fff4cc;border-color:#d9a400}
-    #${PANEL_ID} button.mpc-vbtn[disabled]{opacity:.45;cursor:default}
+    #${PANEL_ID} .mpc-vcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:8px;align-items:start}
+    #${PANEL_ID} .mpc-vcol{display:flex;flex-direction:column;background:#fff;border:1px solid #dfe3e9;border-radius:4px;overflow:hidden}
+    #${PANEL_ID} .mpc-vcol h6{margin:0;padding:4px 10px;background:#eef0f4;font:bold 10.5px Arial,Helvetica,sans-serif;
+        letter-spacing:.4px;text-transform:uppercase;color:#79808c}
+    #${PANEL_ID} button.mpc-vitem{display:grid;grid-template-columns:76px 1fr auto;gap:8px;align-items:baseline;width:100%;
+        height:auto;margin:0;padding:3px 10px;border:0;border-top:1px solid #eef0f4;border-radius:0;background:#fff;
+        text-align:left;cursor:pointer;font:12px/1.5 Arial,Helvetica,sans-serif;color:#1b1b1b}
+    #${PANEL_ID} button.mpc-vitem b{color:#1b5fa8;white-space:nowrap}
+    #${PANEL_ID} button.mpc-vitem em{font-style:normal;font-size:11px;color:#79808c;min-width:0;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap}
+    #${PANEL_ID} button.mpc-vitem span{font-family:Consolas,ui-monospace,monospace;text-align:right;white-space:nowrap}
+    #${PANEL_ID} button.mpc-vitem:hover:not([disabled]){background:#e6f0fb}
+    #${PANEL_ID} button.mpc-vitem.on{background:#fff4cc;box-shadow:inset 3px 0 0 #d9a400}
+    #${PANEL_ID} button.mpc-vitem[disabled]{cursor:default;opacity:.45}
+    #${PANEL_ID} button.mpc-vitem.mpc-vbase{flex:0 0 auto;width:auto;grid-template-columns:auto auto;border:1px solid #c5d9f1;
+        border-radius:4px}
     /* A 1px gap over a grey backing reads as gridlines, which is what separates
        one pair from the next without drawing a border around each of them. */
     #${PANEL_ID} .mpc-dsec{display:flex;flex-direction:column;gap:1px;min-width:0;
@@ -6269,11 +6278,13 @@
     }
 
     /**
-     * The register under every view at once, for its detail card: one button per
-     * datatype showing what this register reads as under it. A click shows the
-     * row that way — the same display-only choice the type cell's picker makes —
-     * and the card opens again on the same register, so the next datatype is one
-     * click away too. The first button goes back to the list's own datatype.
+     * The register under every view at once, for its detail card: a list per
+     * register width, one row per datatype — the key, what it means, and what
+     * this register reads as under it, the values lined up on the right. A click
+     * shows the grid row that way — the same display-only choice the type cell's
+     * picker makes — and the card opens again on the same register, so the next
+     * datatype is one click away too. The row in the heading goes back to the
+     * list's own datatype.
      */
     function viewChoices(table, ref, wordAt, baseLabel) {
         const key = table + '|' + ref;
@@ -6285,27 +6296,33 @@
             const again = ui.gridBody && [...ui.gridBody.querySelectorAll('tr[data-key]')].find(r => r.dataset.key === key);
             if (again) again.click();
         };
+        const item = (cls, title, kids, onPick, disabled) => {
+            const b = el('button', { className: cls, title, disabled: !!disabled }, kids);
+            b.addEventListener('click', ev => { ev.stopPropagation(); onPick(); });
+            return b;
+        };
+        const base = item('mpc-vitem mpc-vbase' + (current ? '' : ' on'), 'Show it as the list declares it, or as read',
+            [el('b', { textContent: 'as read' }), el('em', { textContent: baseLabel && baseLabel !== 'as read' ? baseLabel : '' })], () => pick(''));
         const wrap = el('div', { className: 'mpc-dviews' }, [
-            el('h5', { textContent: 'View as — click a datatype to show this register that way (display only, the list is not changed)' }),
+            el('div', { className: 'mpc-vhead' }, [
+                el('h5', { textContent: 'View as — click a datatype to show this register that way (display only, the list is not changed)' }),
+                base,
+            ]),
         ]);
-        const base = el('button', { className: 'mpc-vbtn' + (current ? '' : ' on'), title: 'Show it as the list declares it, or as read' },
-            [el('b', { textContent: baseLabel || 'as read' })]);
-        base.addEventListener('click', ev => { ev.stopPropagation(); pick(''); });
-        wrap.appendChild(el('div', { className: 'mpc-vrow' }, [base]));
+        const cols = el('div', { className: 'mpc-vcols' });
         for (const regs of [1, 2, 4]) {
-            const row = el('div', { className: 'mpc-vrow' }, [el('span', { className: 'mpc-vgroup', textContent: VIEW_GROUPS[regs] })]);
+            const col = el('div', { className: 'mpc-vcol' }, [el('h6', { textContent: VIEW_GROUPS[regs] })]);
             for (const t of VIEW_TYPES.filter(v => v.regs === regs)) {
                 const d = decodeView(t, viewWords(t, wordAt, ref));
-                const btn = el('button', {
-                    className: 'mpc-vbtn' + (t.key === current ? ' on' : ''),
-                    title: t.label + viewBasis(d),
-                    disabled: !d.ok,
-                }, [el('b', { textContent: t.key }), el('span', { textContent: d.ok ? viewValueText(d.value) : '—' })]);
-                btn.addEventListener('click', ev => { ev.stopPropagation(); pick(t.key); });
-                row.appendChild(btn);
+                col.appendChild(item('mpc-vitem' + (t.key === current ? ' on' : ''), t.label + viewBasis(d), [
+                    el('b', { textContent: t.key }),
+                    el('em', { textContent: t.label.slice(t.key.length).trim() }),
+                    el('span', { textContent: d.ok ? viewValueText(d.value) : '—' }),
+                ], () => pick(t.key), !d.ok));
             }
-            wrap.appendChild(row);
+            cols.appendChild(col);
         }
+        wrap.appendChild(cols);
         return wrap;
     }
 

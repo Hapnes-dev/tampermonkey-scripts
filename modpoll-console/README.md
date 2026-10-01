@@ -596,11 +596,15 @@ word, `_W` as the most, and `_R` swaps the bytes of each word in `_N` order. Non
 those has been measured on `iw_mb.exe`, and each row's tooltip says so.
 
 **Click a register to choose from all of them at once (1.53.0).** The detail card a
-row opens has a *View as* section: one button per datatype, each showing what this
-register reads as under it. A click shows the row that way, and the card opens
-again on the same register, so the next datatype is one click away too. A datatype
-that cannot be read here is greyed out — `BCD4` on a word with a digit above 9, or
-a 64-bit view on the last register polled. *as read* goes back to the list's own.
+row opens has a *View as* section. Since 1.53.1 it is three lists side by side, one
+per register width. Each row holds the datatype, what it means and what this
+register reads as under it, with the values lined up on the right.
+
+A click on a row shows the grid row that way, and the card opens again on the same
+register, so the next datatype is one click away too. The one showing is marked
+with an amber stripe. A datatype that cannot be read here is greyed out — `BCD4` on
+a word with a digit above 9, or a 64-bit view on the last register polled. *as
+read*, beside the heading, goes back to the list's own.
 
 In the register grid a view needs a 16-bit poll, which has the raw words; a poll
 in modpoll's own 32-bit formats has already put them together modpoll's way, so
