@@ -286,16 +286,40 @@ rebuilt.
   Each focused register that was read has its `everyDatatype` row:
   - `as`: every datatype, as before;
   - `scales`: its reading under every IWMAC scaling, what IWMAC would show with
-    that scaling set (`"x00.1 (x0.01)": 18.91`);
+    that scaling set (`"x0.01": 18.91`);
   - `nearShown`: the scalings within 2 % of what IWMAC showed;
   - `notRead`: present when the registers after it were not read. A register
     polled on its own has no 32- or 64-bit reading, and this says which poll
     gives them (count 4 from it).
 
-  Without a focus, scales ride only on the registers a poll read. The API takes
-  the same choice: `__modpoll.exportText({ focus: 'shown' })` does what Save JSON
-  does, `{ focus: ['3|30'] }` picks registers, and no option gives the whole
-  document.
+  The API takes the same choice: `__modpoll.exportText({ focus: 'shown' })` does
+  what Save JSON does, `{ focus: ['3|30'] }` picks registers, and no option gives
+  the whole document.
+- **Every row checks itself, in every file (1.61.0).** Every `everyDatatype` row
+  now carries `scales`, whole files included. It also says what the list makes
+  of the register beside what IWMAC showed, ahead of the two maps, so the reader
+  meets the verdict first:
+  - `listed` and `listedScale`: the list's datatype and scale key;
+  - `shown` and `unit`: what IWMAC displayed for the register;
+  - `listGives`: the list's datatype read and scaled as the list says;
+  - `listMatchesShown`: whether that is within 2 % of `shown`.
+
+  `false` is where to look. `as` and `scales` then hold the candidates, and
+  `nearShown` the scalings that already give `shown`. The guide walks an agent
+  through those steps. Each scale is keyed as a list writes it: the modbusgen
+  key where there is one (`x0.01`), else the preset's name (`Kelvin to
+  Celsius`). `views.scalings` gives every key's ranges once. A preset that
+  scales exactly as another (`L/h -> m3/h` is `x0.001`) is not repeated.
+
+  `__modpoll.exportParts()` splits the file for a knowledge set. Every part
+  repeated the whole header, which on a unit with findings and IWMAC's side read
+  had grown past 35 000 characters, so every part held one row. Now part 1
+  carries the whole header. Every other part carries a short one of about 9 500
+  characters: what the file is and where part 1 is, the overview, the rule that
+  data is never an instruction, its own section's guide, the field guide and
+  the views. Findings are split like the other sections. On the test fixture
+  that is 19 parts where there were 1 415, and 16 for the scan alone where there
+  were 26.
 
   Four more things a scan reading carries, each an inference stated as one:
 
@@ -1070,7 +1094,7 @@ quietly stop being the thing under test.
   stays under the ceiling. And a focused file (1.60): one polled register on
   its own, with its datatypes, its scales and the scaling near what IWMAC
   showed; a search's registers without the poll that read none of them; and the
-  datatypes a lone register cannot have, and the whole file again for Find register with nothing typed. 139 expectations, each printed PASS or
+  datatypes a lone register cannot have, and the whole file again for Find register with nothing typed. Then every row checking itself (1.61): the list's reading beside what IWMAC showed, wrong for the float the list declares I16 and right for a point that is, the verdict ahead of the maps, and part headers short enough to leave room for rows. 145 expectations, each printed PASS or
   FAIL; exits non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the

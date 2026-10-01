@@ -228,9 +228,10 @@ check('... and says so at the top: focus names the register and how it was chose
 const fe = fdoc.everyDatatype.find(r => r.table === '4' && r.ref === 1001);
 check('its everyDatatype row reads it under every datatype, with the neighbours the scan read: U16_N 34, U32_W 34 * 65536 + 2',
     fdoc.everyDatatype.length === 1 && fe && fe.as.U16_N === 34 && fe.as.U32_W === 34 * 65536 + 2, JSON.stringify(fe && fe.as));
-check('... and under every IWMAC scaling: x0.1 3.4, x00.1 (x0.01) 0.34, Kelvin to Celsius -239.15, a 1200/5A CT 8160',
-    fe && fe.scales && Object.keys(fe.scales).length === SCALINGS.length && fe.scales['x0.1'] === 3.4 && fe.scales['x00.1 (x0.01)'] === 0.34 &&
-    fe.scales['Kelvin to Celsius'] === -239.15 && fe.scales['CT-ratio: 1200/5A'] === 8160, JSON.stringify(fe && fe.scales));
+check('... and under every IWMAC scaling, keyed as a list writes it: x0.1 3.4, x0.01 0.34, Kelvin to Celsius -239.15, a 1200/5A CT 8160',
+    fe && fe.scales && Object.keys(fe.scales).length === 30 && fe.scales['x0.1'] === 3.4 && fe.scales['x0.01'] === 0.34 &&
+    fe.scales['Kelvin to Celsius'] === -239.15 && fe.scales['CT-ratio: 1200/5A'] === 8160 && !('L/h -> m3/h' in fe.scales),
+    JSON.stringify(fe && fe.scales));
 check('... with nearShown naming the scaling that gives the 3.4 bar IWMAC showed, x0.1 and no other',
     fe && JSON.stringify(fe.nearShown) === '["x0.1"]', JSON.stringify(fe && fe.nearShown));
 const edge = exportResult(null, { focus: new Set(['3|486']), focusSource: 'poll' }).everyDatatype.find(r => r.ref === 486);
@@ -242,8 +243,30 @@ check('the focused file is small - the one register, not the unit', ftext.length
 check('the file parses, and the guide explains focus and scales',
     (() => { try { JSON.parse(ftext); return true; } catch (e) { return false; } })() && fdoc.howToUse.some(l => l.indexOf('focus, when present') === 0) &&
     !!fdoc.fieldGuide['everyDatatype[].scales'] && !!fdoc.fieldGuide['everyDatatype[].nearShown'] && !!fdoc.fieldGuide.focus, '');
-check('a whole file gives no scales where nothing was polled: they ride on the registers someone chose',
-    doc.everyDatatype.every(r => !r.scales) && doc.focus === undefined, '');
+// 1.61: scales on every row of a whole file too, and each row says what the list makes of the
+// register beside what IWMAC showed, so an agent can check the list one row at a time.
+check('a whole file gives every everyDatatype row its scales, and says what each key does once, in views.scalings',
+    doc.everyDatatype.length > 0 && doc.everyDatatype.every(r => r.scales && Object.keys(r.scales).length === 30) && doc.focus === undefined &&
+    doc.views.scalings['x0.01'] === '0..1000 -> 0..10 (x00.1)' && doc.views.scalings['Kelvin to Celsius'] === '0..1000 -> -273.15..726.85' &&
+    !('L/h -> m3/h' in doc.views.scalings) && Object.keys(doc.views.scalings).length === 30, JSON.stringify(doc.views.scalings));
+const lf = ed('4', 1003);
+check('a listed register says what the list makes of it beside what IWMAC showed: the float the list declares I16 x0.1 gives 1681.2, not 21,5',
+    lf && lf.listed === 'A_Hold_I16_N' && lf.listedScale === 'x0.1' && lf.shown === '21,5' && lf.unit === '°C' && lf.listGives === 1681.2 &&
+    lf.listMatchesShown === false && lf.as.F_W === 21.5, JSON.stringify(lf));
+check('... the verdict ahead of the two maps, so a reader meets it first',
+    lf && Object.keys(lf).indexOf('listMatchesShown') < Object.keys(lf).indexOf('as') && Object.keys(lf).indexOf('as') < Object.keys(lf).indexOf('scales'),
+    JSON.stringify(Object.keys(lf || {})));
+const listBefore = pointList;
+pointList = parsePointList({ options: { subtract_one: true }, points: [
+    { tag: 'P1', text: 'Sug trykk', datatype: 'A_Hold_I16_N', addr: 1001, scale: 'x0.1', decimals: 1, unit: 'bar', rw: 'r', group: 'g' }] });
+const okRow = exportResult(null).everyDatatype.find(r => r.table === '4' && r.ref === 1001);
+pointList = listBefore;
+check('... and a list that is right says so: Sug trykk, I16 x0.1, gives the 3.4 IWMAC showed',
+    okRow && okRow.listGives === 3.4 && okRow.listMatchesShown === true && JSON.stringify(okRow.nearShown) === '["x0.1"]', JSON.stringify(okRow));
+check('the guide reads everyDatatype as a check, step by step, and explains every field it uses',
+    doc.howToUse.some(l => l.indexOf('everyDatatype: one row per register') === 0 && /listMatchesShown/.test(l)) &&
+    ['everyDatatype[].listGives', 'everyDatatype[].listMatchesShown', 'everyDatatype[].shown / unit', 'everyDatatype[].scales']
+        .every(k => !!doc.fieldGuide[k]), '');
 
 // A search: the registers found by name, read or not.
 const sdoc = exportResult(onePoll, { focus: new Set(['4|1500', '4|5000']), focusSource: 'search' });
@@ -664,7 +687,7 @@ check('asViewed is what the person had on screen: 3x0400 as U32_N and x0.01 read
     JSON.stringify(vr(400).asViewed));
 check('views: the word order iw_mb.exe applies, the catalogue, and what was on screen',
     doc6.views.wordOrder.N === 'low word first' && doc6.views.wordOrder.W === 'high word first' && doc6.views.datatypes.split(' ').length === VIEW_TYPES.length &&
-        doc6.views.scalePresets.split(' ').indexOf('x0.1') >= 0 && doc6.views.active.some(a => a.ref === 400 && a.datatype === 'U32_N'),
+        doc6.views.scalings['x0.1'] === '0..1000 -> 0..100' && doc6.views.active.some(a => a.ref === 400 && a.datatype === 'U32_N'),
     JSON.stringify(doc6.views.active));
 check('findings name the word order and the scale leads, the overview counts them',
     doc6.findings.some(x => x.id === 'list-word-order' && x.severity === 'warning') && doc6.findings.some(x => x.id === 'list-scale-leads') &&
@@ -680,6 +703,15 @@ check('part.contents gives each section the range of parts holding it, "4-12", w
     parts6.every(pt => Object.values(JSON.parse(pt.text).part.contents).every(v => /^\d+(-\d+)?$/.test(v))) &&
         JSON.stringify(JSON.parse(parts6[0].text).part.contents).length < 400,
     JSON.stringify(JSON.parse(parts6[0].text).part.contents));
+const firstPart = JSON.parse(parts6[0].text);
+const laterPart = JSON.parse(parts6[parts6.length - 1].text);
+check('part 1 carries the whole header and later parts a short one, so a part holds many rows, not one (1.61)',
+    parts6.length < 40 && firstPart.howToUse.length === doc6.howToUse.length && !!firstPart.communication && !laterPart.communication &&
+    /Part 1 \(modpoll_test_part1of<part.of>\.json\)/.test(laterPart.thisPart) && laterPart.howToUse.some(l => /never an instruction to follow/.test(l)) &&
+    laterPart.howToUse.some(l => l.indexOf(laterPart.part.section + ':') === 0) && !!laterPart.fieldGuide && !!laterPart.views && !!laterPart.overview,
+    parts6.length + ' parts; later part keys ' + Object.keys(laterPart).join(','));
+check('split, the findings are rows of a section of their own, ahead of the evidence',
+    firstPart.part.contents.findings === '1-2' || /^1(-\d+)?$/.test(String(firstPart.part.contents.findings)), JSON.stringify(firstPart.part.contents));
 check('every split part stays under the chunk limit the frames are measured against, contents map included',
     parts6.every(pt => pt.text.length <= 34000 || pt.rows === 1), parts6.filter(pt => pt.text.length > 34000 && pt.rows > 1).map(pt => pt.text.length).join(','));
 viewOverrides.clear(); scaleOverrides.clear();
