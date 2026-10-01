@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.45.0
+// @version      1.46.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -6526,6 +6526,9 @@
     // integration, waterpump"). They have no Design/Integration pair, so like
     // Smart Function the category carries only the order's own items.
     { key: "add_on", label: "Add-on" },
+    // "IWMAC Modul: Light Control" (Younium product name). No PPT template tasks
+    // exist for lighting, so it carries only the order's own items too.
+    { key: "light_control", label: "Light Control" },
   ];
 
   const RL_ORDER_INFO_MODULE_MAP = [
@@ -6537,6 +6540,7 @@
     { re: /IWMAC\s*Modul:\s*Machine\s*Room/i, key: "machine_room" },
     { re: /IWMAC\s*Modul:\s*Smart\s*Function/i, key: "smart_function" },
     { re: /IWMAC\s*Modul:\s*Add[\s-]*on/i, key: "add_on" },
+    { re: /IWMAC\s*Modul:\s*Light\s*Control/i, key: "light_control" },
   ];
 
   const RL_ORDER_INFO_PROMOTE_RULES = [
@@ -6565,6 +6569,7 @@
     { re: /energy|energi/i, key: "energy" },
     { re: /heating|varme|\bvgv\b/i, key: "heating_system" },
     { re: /wireless|trådløs|tradlos/i, key: "wireless" },
+    { re: /light\s*control|lys\s*styring|belysning/i, key: "light_control" },
     // Last on purpose: a setup line that names a discipline goes to that discipline.
     { re: /IWMAC\s*Setup:/i, key: "add_on" },
   ];
