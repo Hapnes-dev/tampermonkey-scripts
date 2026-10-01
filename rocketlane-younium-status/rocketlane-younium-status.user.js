@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.46.0
+// @version      1.47.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2532,14 +2532,33 @@
     if (fk && !links.order && !links.subscription) { links.order = ofDocumentUrl(fk); links.sources.push("Oneflow agreement id field"); }
     return links;
   }
+  // A fetched agreement keeps its data fields in `data[]` as { key: "data_field",
+  // value: { external_key, name, value } }. Neither the search rows nor
+  // GET /agreements/{id} carry a `data_fields` array (checked 2026-10-01 on
+  // 15013132), which is all this used to read, so the Plant ID test never
+  // matched and every document was judged by its name alone.
+  function ofDataFieldList(a) {
+    const out = [];
+    const legacy = Array.isArray(a?.data_fields) ? a.data_fields : (Array.isArray(a?.dataFields) ? a.dataFields : []);
+    for (const f of legacy) {
+      out.push({ key: String(f?.external_key ?? f?.custom_id ?? f?.customId ?? ""), name: String(f?.name ?? ""), value: String(f?.value ?? "").trim() });
+    }
+    for (const d of Array.isArray(a?.data) ? a.data : []) {
+      const v = d && d.key === "data_field" ? d.value : null;
+      if (!v || typeof v !== "object") continue;
+      out.push({ key: String(v.external_key ?? v.custom_id ?? ""), name: String(v.name ?? ""), value: String(v.value ?? "").trim() });
+    }
+    return out.filter((f) => f.value);
+  }
   function ofPlantIdFromDataFields(a) {
-    const fields = Array.isArray(a?.data_fields) ? a.data_fields : (Array.isArray(a?.dataFields) ? a.dataFields : []);
     const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    for (const f of fields) {
-      const value = String(f?.value ?? "").trim();
-      if (!value) continue;
-      // Exact "plantid" only — not "Plant ID-Invoice Account CM".
-      if (norm(f?.name) === "plantid" || norm(f?.custom_id ?? f?.customId) === "plantid") return value.replace(/\D+/g, "") || value;
+    for (const f of ofDataFieldList(a)) {
+      // The exact field only — not "Plant ID-Invoice Account CM". Documents
+      // built from a HubSpot deal call it "Deal_Plant ID" (hs_deal_plant_id).
+      const n = norm(f.name);
+      if (f.key === "hs_deal_plant_id" || n === "plantid" || n === "dealplantid" || norm(f.key) === "plantid") {
+        return f.value.replace(/\D+/g, "") || f.value;
+      }
     }
     return "";
   }
@@ -5679,72 +5698,45 @@
     };
   }
 
-  function rlParseProjectLinksFromHtml(html) {
-    const result = rlEmptyProjectLinks();
-    if (!html) return result;
+  // Every link in a rich-text field, in document order, with the text that
+  // labels it: the innermost <li>/<p>/<tr>/<div> around each <a href> minus the
+  // link's own text (usually the URL itself), then every bare URL with the 40
+  // characters before it. rlAssignProjectLinks does the slotting.
+  function rlCollectLinkEntries(html) {
+    const entries = [];
+    const text = String(html || "");
+    if (!text) return entries;
+    const push = (href, label) => {
+      const cls = rlClassifyLinkUrl(href);
+      if (!cls || cls.platform === "unknown") return;
+      entries.push({
+        href,
+        label: String(label || "").replace(/\s+/g, " ").trim(),
+        platform: cls.platform,
+        recordId: cls.recordId || "",
+      });
+    };
     try {
-      const doc = new DOMParser().parseFromString(String(html), "text/html");
-      for (const c of doc.body.querySelectorAll("li, p, div, tr")) {
-        const a = c.querySelector("a[href]");
-        if (!a) continue;
+      const doc = new DOMParser().parseFromString(text, "text/html");
+      for (const a of doc.body.querySelectorAll("a[href]")) {
         const href = (a.getAttribute("href") || "").trim();
         if (!/^https?:/i.test(href)) continue;
-        const cls = rlClassifyLinkUrl(href);
-        if (!cls) continue;
-        const labelText = (c.textContent || "").replace(/\s+/g, " ").trim();
-        const kind = ofKindByLabel(labelText);
-        switch (cls.platform) {
-          case "zendesk":
-            if (!result.zendesk) result.zendesk = href;
-            break;
-          case "hubspot":
-            if (!result.hubspot) result.hubspot = href;
-            break;
-          case "rocketlane":
-            if (!result.rocketlane) result.rocketlane = href;
-            break;
-          case "younium":
-            if (kind === "subscription" && !result.youniumSubscription) result.youniumSubscription = href;
-            else if (kind === "order" && !result.younium) result.younium = href;
-            else if (kind === "unknown") {
-              if (!result.younium) result.younium = href;
-              else if (!result.youniumSubscription) result.youniumSubscription = href;
-            }
-            break;
-          case "oneflow":
-            if (kind === "subscription" && !result.oneflowSubscription) result.oneflowSubscription = href;
-            else if (kind === "order" && !result.oneflowOrder) result.oneflowOrder = href;
-            else if (kind === "unknown") {
-              if (!result.oneflowOrder) result.oneflowOrder = href;
-              else if (!result.oneflowSubscription) result.oneflowSubscription = href;
-            }
-            break;
-        }
+        // Innermost holder only: a <div> around the whole list used to lend its
+        // first link every label in the list.
+        const holder = a.closest("li, p, tr, div");
+        push(href, holder ? String(holder.textContent || "").replace(a.textContent || "", " ") : "");
       }
     } catch (_) {}
     const re = /https?:\/\/[^\s<>"']+/gi;
     let m;
-    const text = String(html || "");
     while ((m = re.exec(text)) !== null) {
-      const href = m[0].replace(/[).,;]+$/, "");
-      const cls = rlClassifyLinkUrl(href);
-      if (!cls || cls.platform === "unknown") continue;
-      const ctx = text.slice(Math.max(0, m.index - 40), m.index);
-      const kind = ofKindByLabel(ctx);
-      if (cls.platform === "zendesk" && !result.zendesk) result.zendesk = href;
-      else if (cls.platform === "hubspot" && !result.hubspot) result.hubspot = href;
-      else if (cls.platform === "rocketlane" && !result.rocketlane) result.rocketlane = href;
-      else if (cls.platform === "younium") {
-        if (kind === "subscription" && !result.youniumSubscription) result.youniumSubscription = href;
-        else if (!result.younium) result.younium = href;
-        else if (!result.youniumSubscription) result.youniumSubscription = href;
-      } else if (cls.platform === "oneflow") {
-        if (kind === "subscription" && !result.oneflowSubscription) result.oneflowSubscription = href;
-        else if (!result.oneflowOrder) result.oneflowOrder = href;
-        else if (!result.oneflowSubscription) result.oneflowSubscription = href;
-      }
+      push(m[0].replace(/[).,;]+$/, ""), text.slice(Math.max(0, m.index - 40), m.index));
     }
-    return result;
+    return entries;
+  }
+
+  function rlParseProjectLinksFromHtml(html) {
+    return rlAssignProjectLinks(rlCollectLinkEntries(html));
   }
 
   function rlMergeLinksByPriority(iqcLinks, dealDescLinks, deliveryStatusLinks) {
@@ -5796,7 +5788,7 @@
       { key: "hubspot", label: "Hubspot", find: true },
       { key: "younium", label: "Younium link (Order / offer)", find: true },
       { key: "youniumSubscription", label: "Younium link (Subscription)", find: true },
-      { key: "zendesk", label: "Zendesk", find: false },
+      { key: "zendesk", label: "Zendesk", find: true },
     ];
   }
 
@@ -5812,13 +5804,97 @@
     return "<ul>\n" + items.join("\n") + "\n</ul>";
   }
 
+  // The platform a link's label names and whether it says order or subscription:
+  // "Oneflow - Subscription agreement:" → oneflow / subscription, "Younium link
+  // (Order / offer):" → younium / order, "Hubspot:" → hubspot / unknown.
+  // "Subscription" wins when both words appear (tracker rule, as ofKindByLabel).
+  function rlLinkLabelInfo(label) {
+    const l = String(label || "").toLowerCase();
+    const platform = /one\s*flow/.test(l) ? "oneflow"
+      : /younium/.test(l) ? "younium"
+      : /hub\s*spot/.test(l) ? "hubspot"
+      : /zendesk/.test(l) ? "zendesk"
+      : "";
+    const kind = /\babonnement|\bsubscription/.test(l) ? "subscription"
+      : /\b(?:order|offer|tilbud|ordre)\b/.test(l) ? "order"
+      : "unknown";
+    return { platform, kind };
+  }
+
+  /**
+   * Slot the links of one rich-text field (v1.47.0). `entries` are
+   * { href, label, platform, recordId } in document order.
+   *   Pass 1 places only links whose label names their own platform, so the
+   *   "Hubspot:" line wins over a HubSpot URL pasted under "Oneflow -
+   *   Subscription agreement" (11131, 2026-10-01).
+   *   Pass 2 places the rest into still-empty slots of their platform; a link
+   *   of unknown kind fills Order before Subscription.
+   * A record already placed is never placed again. The second read of the same
+   * <a href> used to drop a lone Oneflow subscription link into the empty Order
+   * slot as well (10263), and a Save then wrote it into both.
+   */
+  function rlAssignProjectLinks(entries) {
+    const out = {
+      zendesk: "", oneflowOrder: "", oneflowSubscription: "",
+      younium: "", youniumSubscription: "", hubspot: "", rocketlane: "",
+    };
+    const placed = new Set();
+    const slotFor = (platform, kind) => {
+      if (platform === "zendesk" || platform === "hubspot" || platform === "rocketlane") return platform;
+      const pair = platform === "oneflow" ? ["oneflowOrder", "oneflowSubscription"]
+        : platform === "younium" ? ["younium", "youniumSubscription"]
+        : null;
+      if (!pair) return "";
+      if (kind === "order") return pair[0];
+      if (kind === "subscription") return pair[1];
+      return out[pair[0]] ? pair[1] : pair[0];
+    };
+    const place = (e, labelledOnly) => {
+      if (!e || !e.href || !e.platform) return;
+      const key = e.platform + ":" + (e.recordId || e.href);
+      if (placed.has(key)) return;
+      const info = rlLinkLabelInfo(e.label);
+      const own = info.platform === e.platform;
+      if (labelledOnly && !own) return;
+      const slot = slotFor(e.platform, own ? info.kind : "unknown");
+      if (!slot || out[slot]) return;
+      out[slot] = e.href;
+      placed.add(key);
+    };
+    const list = Array.isArray(entries) ? entries : [];
+    for (const e of list) place(e, true);
+    for (const e of list) place(e, false);
+    return out;
+  }
+
+  /** End (exclusive) of the <ul> that starts at `start`, nested lists included; -1 when unbalanced. */
+  function rlFindListEnd(html, start) {
+    const re = /<(\/?)ul\b[^>]*>/gi;
+    re.lastIndex = start;
+    let depth = 0;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      if (!m[1]) { depth += 1; continue; }
+      depth -= 1;
+      if (depth === 0) return re.lastIndex;
+      if (depth < 0) return -1;
+    }
+    return -1;
+  }
+
   function rlUpsertAttachLinksHtml(existingHtml, links) {
     const html = String(existingHtml || "");
     const listHtml = rlBuildAttachLinksListHtml(links);
-    const reP = /(<p[^>]*>\s*Attach\s+links:\s*<\/p>\s*)(<ul\b[\s\S]*?<\/ul>)/i;
-    if (reP.test(html)) return html.replace(reP, "$1" + listHtml);
-    const reBare = /(Attach\s+links:\s*)(<ul\b[\s\S]*?<\/ul>)/i;
-    if (reBare.test(html)) return html.replace(reBare, "$1" + listHtml);
+    // The list right after "Attach links:" (inside or after its <p>), matched
+    // with its own nesting. Template leftovers such as
+    // "<li>Hubspot:<ul><li>&nbsp;</li></ul></li>" ended the old non-greedy match
+    // at the inner </ul> and left the rest of the old list behind on every Save.
+    const head = /Attach\s+links:\s*(?:<\/p>\s*)?(?=<ul\b)/i.exec(html);
+    if (head) {
+      const start = head.index + head[0].length;
+      const end = rlFindListEnd(html, start);
+      if (end > start) return html.slice(0, start) + listHtml + html.slice(end);
+    }
     const suffix = "<p>Attach links:</p>\n" + listHtml;
     if (!html.trim()) return suffix;
     return html.replace(/\s*$/, "") + "\n" + suffix;
@@ -6176,6 +6252,16 @@
         signals.push({ label: "Dead status (" + candidate.status + ")", points: -20 });
         raw -= 20;
       }
+    }
+
+    // Evidence the generic signals cannot see, supplied by the caller: an exact
+    // hit from a search by HubSpot deal ID, the plant's only live subscription,
+    // a document that belongs to the other slot.
+    for (const s of Array.isArray(candidate.extraSignals) ? candidate.extraSignals : []) {
+      const pts = Number(s?.points);
+      if (!Number.isFinite(pts)) continue;
+      signals.push({ label: String(s.label || ""), points: pts });
+      raw += pts;
     }
 
     const percent = Math.min(100, Math.max(0, Math.round(raw)));
@@ -10012,38 +10098,40 @@
     const out = {
       plantId: "", plantName: "", hubspotDealId: "", zendeskTicketId: "",
       dealPartner: "", customerContact: "", dealContactEmail: "",
-      dealContactPhone: "", yourReference: "", description: "",
+      dealContactPhone: "", yourReference: "", description: "", orgNumber: "",
     };
-    const fields = Array.isArray(a?.data_fields) ? a.data_fields
-                 : Array.isArray(a?.dataFields) ? a.dataFields : [];
     const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    for (const f of fields) {
-      const value = String(f?.value ?? "").trim();
-      if (!value) continue;
-      const key = norm(f?.name);
-      const cid = norm(f?.custom_id ?? f?.customId);
+    // HubSpot-built documents name their fields "Deal_Deal ID", "Deal_Plant ID",
+    // "Participant Email 1" … with external keys hs_deal_hs_object_id,
+    // hs_deal_plant_id, hs_participant_1_email (see ofDataFieldList).
+    for (const f of ofDataFieldList(a)) {
+      const value = f.value;
+      const key = norm(f.name);
+      const ext = String(f.key || "").toLowerCase();
+      const cid = norm(f.key);
       const has = (n) => key.includes(n) || cid.includes(n);
-      const eq = (n) => key === n || cid === n;
-      if (!out.hubspotDealId && has("hubspotdealid")) {
+      if (!out.hubspotDealId && (ext === "hs_deal_hs_object_id" || key === "dealdealid" || has("hubspotdealid"))) {
         const d = value.replace(/\D+/g, "");
         if (d) out.hubspotDealId = d;
-      } else if (!out.plantId && (eq("plantid") || cid === "plantid")) {
+      } else if (!out.plantId && (ext === "hs_deal_plant_id" || key === "plantid" || key === "dealplantid" || cid === "plantid")) {
         out.plantId = value.replace(/\D+/g, "") || value;
-      } else if (!out.plantName && has("plantname")) {
+      } else if (!out.plantName && (ext === "hs_deal_plant_name" || has("plantname"))) {
         out.plantName = value;
       } else if (has("zendeskticket")) {
         const d = value.replace(/\D+/g, "");
         if (d && !out.zendeskTicketId) out.zendeskTicketId = d;
-      } else if (!out.dealPartner && has("dealpartner")) {
+      } else if (!out.dealPartner && (ext === "hs_deal_delivery_company" || has("dealpartner"))) {
         out.dealPartner = value;
-      } else if (!out.customerContact && has("customercontact")) {
+      } else if (!out.customerContact && (ext === "hs_participant_1_fullname" || has("customercontact"))) {
         out.customerContact = value;
-      } else if (!out.dealContactEmail && has("dealcontactemail")) {
+      } else if (!out.dealContactEmail && (ext === "hs_participant_1_email" || has("dealcontactemail"))) {
         out.dealContactEmail = value.toLowerCase();
-      } else if (!out.dealContactPhone && has("dealcontactphone")) {
+      } else if (!out.dealContactPhone && (ext === "hs_participant_1_mobilephone" || has("dealcontactphone"))) {
         out.dealContactPhone = value;
       } else if (!out.yourReference && has("yourreference")) {
         out.yourReference = value;
+      } else if (!out.orgNumber && (ext === "hs_company_younium_org_nr" || has("organizationnr"))) {
+        out.orgNumber = value;
       }
     }
     if (!out.description) out.description = String(a?.description ?? "").trim();
@@ -10083,6 +10171,7 @@
     if (df.dealPartner && !partyNames.some((n) => matchNormalize(n) === matchNormalize(df.dealPartner))) {
       partyNames.push(df.dealPartner);
     }
+    if (df.orgNumber) orgNumbers.push(df.orgNumber);
     const amount = Number(a?.agreement_value?.amount);
     const currency = String(a?.agreement_value?.currency ?? "");
     const date = a?.sign_time ?? a?.start_time ?? a?.created_time ?? a?.updated_time ?? null;
@@ -10113,7 +10202,9 @@
   }
 
   function rlYouniumToMatchCandidate(o, productName) {
-    const statusLabel = RL_YOUNIUM_MATCH_STATUS[o?.status] ?? ("status " + o?.status);
+    // The related-orders labels, so a cancelled order (status 2 with a past
+    // cancellationDate) reads "Cancelled" and scores as dead.
+    const statusLabel = youniumRelatedOrderStatusLabel(o) || RL_YOUNIUM_MATCH_STATUS[o?.status] || ("status " + o?.status);
     const cf = {};
     for (const c of (Array.isArray(o?.customFields) ? o.customFields : [])) {
       if (c && c.name != null && c.value != null && c.value !== "") cf[String(c.name)] = String(c.value);
@@ -10136,15 +10227,16 @@
       Number.isFinite(cmrr) && cmrr > 0 ? cmrr : null;
     const currency = String(o?.currency?.code ?? o?.currency ?? o?.currencyCode ?? "").trim();
     const dealContact = String(cf.deal_contact ?? "").trim();
-    const hubspotDealId = String(cf.integrationHubspotHubspotDealId ?? "").trim();
+    const hubspotDealId = String(cf.integrationHubspotHubspotDealId ?? o?.integrationHubspotHubspotDealId ?? "").trim();
     const orgNumbers = [o?._account?.organizationNumber, o?._account?.organisationNumber]
       .filter(Boolean).map(String);
-    const primaryExtra = productName || plantName;
+    const primaryExtra = productName || description || plantName;
     return {
       id: o?.id,
       platform: "younium",
       url: ynOrderUrl(o?.id),
-      primaryText: (o?.orderNumber ?? "(no number)") + (primaryExtra ? " — " + primaryExtra : ""),
+      primaryText: (o?.orderType === 0 ? "Subscription · " : o?.orderType === 1 ? "Order · " : "") +
+        (o?.orderNumber ?? "(no number)") + (primaryExtra ? " — " + primaryExtra : ""),
       secondaryText:
         statusLabel +
         (accountName ? " · " + accountName : "") +
@@ -11382,7 +11474,18 @@
       "";
   }
 
-  function rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId) {
+  /** Same record behind two URLs — /documents/1 and /documents/1/contract_only, two HubSpot hosts. */
+  function rlSameRecordUrl(a, b) {
+    const x = rlNormalizeHttpUrl(a);
+    const y = rlNormalizeHttpUrl(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const cx = rlClassifyLinkUrl(x);
+    const cy = rlClassifyLinkUrl(y);
+    return !!(cx && cy && cx.platform === cy.platform && cx.recordId && cx.recordId === cy.recordId);
+  }
+
+  function rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId, note) {
     rlUrlPickerClearPicker(row);
     if (!scored.length) {
       rlUrlPickerSetStatus(statusEl, "No candidates.", "warn");
@@ -11390,6 +11493,9 @@
     }
     const decision = decideMatchOutcome(scored);
     const existing = rlNormalizeHttpUrl(input.value);
+    const describe = (e) => (e.candidate.primaryText || rlUrlPickerCandidateUrl(e) || "(no name)") + " (" + e.percent + "%)";
+    let headline = "";
+    let tone = "warn";
     if (decision.kind === "auto") {
       const url = rlUrlPickerCandidateUrl(decision.entry);
       if (!url) {
@@ -11398,22 +11504,32 @@
       }
       if (!existing) {
         input.value = url;
-        rlUrlPickerSetStatus(
-          statusEl,
-          "Auto-filled (" + decision.entry.percent + "%): " + (decision.entry.candidate.primaryText || url),
-          "good"
-        );
+        rlUrlPickerSetStatus(statusEl, "Auto-filled: " + describe(decision.entry), "good");
         return;
       }
-      if (existing === url) {
-        rlUrlPickerSetStatus(statusEl, "Already matches best candidate (" + decision.entry.percent + "%).", "good");
+      if (rlSameRecordUrl(existing, url)) {
+        rlUrlPickerSetStatus(statusEl, "Saved link confirmed: " + describe(decision.entry), "good");
         return;
       }
-      // Never overwrite a nonempty input — fall through to picker.
-    }
-    if (decision.kind === "none") {
+      // Never overwrite a filled slot — say what was found and offer it.
+      headline = "Saved link kept" + (note ? " — " + note : "") + ". The lookup found " +
+        describe(decision.entry) + "; pick it below to replace.";
+    } else if (decision.kind === "none") {
       rlUrlPickerSetStatus(statusEl, "No usable match signals.", "warn");
       return;
+    } else {
+      const reason = decision.reason ? " (" + decision.reason + ")" : "";
+      const at = existing ? scored.findIndex((e) => rlSameRecordUrl(existing, rlUrlPickerCandidateUrl(e))) : -1;
+      if (at === 0) {
+        tone = "good";
+        headline = "Saved link is the top candidate: " + describe(scored[0]) + ". Others below in case it is wrong.";
+      } else if (at > 0) {
+        headline = "Saved link is candidate #" + (at + 1) + " (" + scored[at].percent + "%); the best match is " +
+          describe(scored[0]) + " — pick to replace" + reason + ".";
+      } else {
+        headline = (existing ? "Saved link is not among the candidates" + (note ? " — " + note : "") + ". " : "") +
+          scored.length + " candidate(s) — pick one" + reason + ".";
+      }
     }
     const host = document.createElement("div");
     host.className = "rlUpPicker";
@@ -11466,19 +11582,12 @@
         if (!url) return;
         input.value = url;
         rlUrlPickerClearPicker(row);
-        rlUrlPickerSetStatus(statusEl, "Selected (" + entry.percent + "%).", "good");
+        rlUrlPickerSetStatus(statusEl, "Selected: " + describe(entry), "good");
       });
       host.appendChild(btn);
     }
     row.appendChild(host);
-    const reason = decision.reason || "";
-    rlUrlPickerSetStatus(
-      statusEl,
-      (existing ? "Existing value kept — " : "") +
-        scored.length + " candidate(s) — pick one" +
-        (reason ? " (" + reason + ")" : "") + ".",
-      "warn"
-    );
+    rlUrlPickerSetStatus(statusEl, headline, tone);
   }
 
   function rlUrlPickerShowCandidates(row, input, statusEl, candidates, gen, projectId) {
@@ -11497,115 +11606,414 @@
     return dlg?.dataset?.rlProjectId || "";
   }
 
+  // ── Link discovery (v1.47.0) ─────────────────────────────────────────────
+  // The HubSpot deal ID is the key all four systems share. Measured on the 31
+  // open projects of 2026-10-01: Rocketlane mirrors it into "Hubspot Deal ID"
+  // (28 of 31); Younium stores it on the order (integrationHubspotHubspotDealId);
+  // Oneflow keeps it on the document (data field hs_deal_hs_object_id) and its
+  // search finds it; the HubSpot record URL is built from it. A search by that ID
+  // returned exactly one document per project in Oneflow and the current order in
+  // Younium, where a plant-number search returns up to twenty. The subscription
+  // is a deal of its own: Younium's subscription order (orderType 0) carries it,
+  // and Oneflow's Abonnementsavtale is found by it. Without a deal ID on the
+  // project, the plant's only live Younium order lends its deal (10263).
+  const RL_HUBSPOT_DEAL_URL_BASE = "https://app-eu1.hubspot.com/contacts/8805657/record/0-3/";
+  const RL_YN_LINK_FIELDS = [
+    "orderNumber", "description", "plant_id", "plant_name", "accountname", "status",
+    "orderType", "effectiveStartDate", "effectiveEndDate", "cancellationDate", "created",
+    "id", "isLastVersion", "integrationHubspotHubspotDealId",
+  ];
+  const RL_FIND_EXACT = 90;      // found by the project's own HubSpot deal ID
+  const RL_FIND_DERIVED = 75;    // found by a deal ID borrowed from Younium
+  const RL_FIND_ONLY_LIVE = 50;  // the plant's only live candidate of its kind
+
+  function rlDigits(v) { return String(v ?? "").replace(/\D+/g, ""); }
+  function rlHubspotDealUrl(dealId) {
+    const d = rlDigits(dealId);
+    return d ? RL_HUBSPOT_DEAL_URL_BASE + d : "";
+  }
+  function rlYnIsDead(o) { return youniumRelatedOrderStatusLabel(o) === "Cancelled"; }
+  function rlScoredSort(list) {
+    return list.sort((x, y) => y.percent - x.percent || y.score - x.score);
+  }
+
+  // One memo per picker generation, so the rows (and a second Find click) share
+  // the Younium pass, Oneflow searches and document fetches.
+  const rlUpMemo = new Map();
+  function rlUpMemoGet(gen, key, fn) {
+    const k = String(gen) + "|" + key;
+    if (!rlUpMemo.has(k)) {
+      const pr = Promise.resolve().then(fn);
+      rlUpMemo.set(k, pr);
+      // A failed lookup is retried by the next Find click, not remembered.
+      pr.catch(() => { if (rlUpMemo.get(k) === pr) rlUpMemo.delete(k); });
+    }
+    return rlUpMemo.get(k);
+  }
+  function rlUpMemoPrune(gen) {
+    for (const k of [...rlUpMemo.keys()]) if (!k.startsWith(String(gen) + "|")) rlUpMemo.delete(k);
+  }
+
+  /**
+   * Everything Younium knows about the project, in one legal-entity-aware pass:
+   * the orders on the project's deal, every order of the plant — plus any other
+   * plant number those deal orders carry (10259 Extra Mære still lives under
+   * 2191) — the product lines of its subscription orders, and the deal ID to
+   * use when the project has none.
+   */
+  function rlGetLinkGraph(gen, matchCtx, plantId) {
+    const projectDeal = rlDigits(matchCtx?.foreignKeys?.hubspotDealId);
+    const pid = String(plantId || matchCtx?.plantId || "").trim();
+    return rlUpMemoGet(gen, "graph:" + projectDeal + ":" + pid, async () => {
+      const g = {
+        projectDeal, deal: projectDeal, dealVia: "", plantId: pid,
+        plantIds: pid ? [pid] : [], ynByDeal: [], ynByPlant: [], ynProducts: {},
+        subDeals: [], ynError: "",
+      };
+      if (!projectDeal && !pid) return g;
+      const query = async (cond) => {
+        const res = await ynSearchOrders("", {
+          pageSize: 50,
+          displayFields: RL_YN_LINK_FIELDS,
+          conditions: [cond, { fieldName: "isLastVersion", value: true, operator: 0 }],
+        });
+        return Array.isArray(res?.result) ? res.result : [];
+      };
+      try {
+        const found = await ynRunForPlant(pid, async () => {
+          const byDeal = projectDeal
+            ? await query({ fieldName: "integrationHubspotHubspotDealId", value: projectDeal, operator: 0 })
+            : [];
+          const plants = [...new Set([pid, ...byDeal.map((o) => String(o?.plant_id ?? "").trim())].filter(Boolean))];
+          const byPlant = [];
+          for (const p of plants) byPlant.push(...(await query({ fieldName: "plant_id", value: p, operator: 0 })));
+          // Product lines of the subscription orders, read in the same legal
+          // entity the search ran in: only "IWMAC Subscription" qualifies.
+          const products = {};
+          await Promise.all(byPlant.filter((o) => o?.orderType === 0 && o.id).slice(0, 6).map(async (o) => {
+            try {
+              const full = await ynGetOrderById(o.id);
+              if (full && full.id) {
+                const hit = findIwmacSubscriptionItem(full);
+                products[o.id] = hit ? hit.productName : "";
+              }
+            } catch (_) {}
+          }));
+          return { byDeal, byPlant, plants, products };
+        }, (r) => !r || (!r.byDeal.length && !r.byPlant.length));
+        const seen = new Set();
+        g.ynByDeal = (found.byDeal || []).filter((o) => o?.id);
+        g.ynByPlant = (found.byPlant || []).filter((o) => o?.id && !seen.has(o.id) && seen.add(o.id));
+        g.plantIds = found.plants && found.plants.length ? found.plants : g.plantIds;
+        g.ynProducts = found.products || {};
+      } catch (e) {
+        g.ynError = String(e?.message ?? e);
+      }
+      if (!g.deal) {
+        const live = g.ynByPlant.filter((o) => o.orderType !== 0 && !rlYnIsDead(o) && rlDigits(o.integrationHubspotHubspotDealId));
+        const deals = [...new Set(live.map((o) => rlDigits(o.integrationHubspotHubspotDealId)))];
+        if (deals.length === 1) {
+          g.deal = deals[0];
+          const via = live.find((o) => rlDigits(o.integrationHubspotHubspotDealId) === g.deal);
+          g.dealVia = "Younium order " + (via?.orderNumber || "Draft");
+        }
+      }
+      g.subDeals = [...new Set(g.ynByPlant
+        .filter((o) => o.orderType === 0 && !rlYnIsDead(o))
+        .map((o) => rlDigits(o.integrationHubspotHubspotDealId))
+        .filter(Boolean))];
+      return g;
+    });
+  }
+
+  /** Oneflow candidates for one slot; `want` is "order" or "subscription". */
+  async function rlFindOneflowScored(want, graph, matchCtx, plantId, gen) {
+    const keyDeals = want === "order" ? (graph.deal ? [graph.deal] : []) : graph.subDeals;
+    const derived = want === "order" && graph.deal && graph.deal !== graph.projectDeal;
+    const exactPts = derived ? RL_FIND_DERIVED : RL_FIND_EXACT;
+    const pool = new Map(); // agreement id -> { a, viaDeal }
+    const errors = [];
+    for (const d of keyDeals.slice(0, 4)) {
+      try {
+        const res = await rlUpMemoGet(gen, "of:q:" + d, () => gmOneflowRequest("/agreements/?q=" + encodeURIComponent(d) + "&limit=10"));
+        for (const a of Array.isArray(res?.collection) ? res.collection : []) {
+          if (a?.id && !pool.has(String(a.id))) pool.set(String(a.id), { a, viaDeal: d });
+        }
+      } catch (e) { errors.push(e); }
+    }
+    if (plantId) {
+      try {
+        const found = await rlUpMemoGet(gen, "of:plant:" + plantId, () => ofSearchByPlantId(plantId, readProjectName() || matchCtx.name || ""));
+        for (const a of found?.candidates || []) {
+          if (a?.id && !pool.has(String(a.id))) pool.set(String(a.id), { a, viaDeal: "" });
+        }
+      } catch (e) { errors.push(e); }
+    }
+    if (!pool.size && errors.length) throw errors[0];
+    // Search rows carry no data fields; fetch the document so its deal ID and
+    // plant ID can be read.
+    const entries = await Promise.all([...pool.values()].slice(0, 14).map(async (p) => {
+      if (Array.isArray(p.a?.data)) return p;
+      try {
+        const full = await rlUpMemoGet(gen, "of:a:" + p.a.id, () => gmOneflowRequest("/agreements/" + encodeURIComponent(p.a.id)));
+        return full && full.id ? { a: full, viaDeal: p.viaDeal } : p;
+      } catch (_) { return p; }
+    }));
+    return rlScoredSort(entries.map(({ a, viaDeal }) => {
+      const candidate = rlOneflowToMatchCandidate(a);
+      const docDeal = rlDigits(rlExtractOneflowDataFields(a).hubspotDealId);
+      const extra = [];
+      if (docDeal && keyDeals.includes(docDeal)) {
+        extra.push({
+          label: (want === "order" ? "HubSpot deal " : "Subscription deal ") + docDeal + " on the document" +
+            (derived ? " (" + graph.dealVia + ")" : want === "order" ? " (project's Hubspot Deal ID)" : " (Younium subscription order)"),
+          points: exactPts,
+        });
+      } else if (viaDeal) {
+        extra.push({ label: "Oneflow search hit for deal " + viaDeal, points: Math.round(exactPts * 0.6) });
+      }
+      if (want === "subscription" && docDeal && graph.deal && docDeal === graph.deal) {
+        extra.push({ label: "Carries the project's order deal — this is the order document", points: -40 });
+      }
+      candidate.extraSignals = extra;
+      return rlScoreWithKindBonus(candidate, matchCtx, want);
+    }));
+  }
+
+  function rlFindYouniumOrderScored(graph, matchCtx) {
+    const notSub = (o) => o && o.orderType !== 0 && ofKindByName(o.description || "") !== "subscription";
+    const byDeal = graph.ynByDeal.filter(notSub);
+    const pool = byDeal.length ? byDeal : graph.ynByPlant.filter(notSub);
+    const live = pool.filter((o) => !rlYnIsDead(o));
+    const projectPlant = String(matchCtx.plantId || graph.plantId || "");
+    return rlScoredSort(pool.slice(0, 15).map((o) => {
+      const candidate = rlYouniumToMatchCandidate(o);
+      const deal = rlDigits(o.integrationHubspotHubspotDealId);
+      const extra = [];
+      if (byDeal.length) {
+        extra.push({ label: "Order on the project's HubSpot deal " + graph.projectDeal, points: RL_FIND_EXACT });
+      } else if (graph.deal && deal === graph.deal) {
+        extra.push({ label: "The plant's only live order with a HubSpot deal (" + deal + ")", points: RL_FIND_DERIVED });
+      } else if (live.length === 1 && live[0] === o) {
+        extra.push({ label: "The only live order on plant " + (o.plant_id || projectPlant), points: RL_FIND_ONLY_LIVE });
+      }
+      const p = String(o.plant_id ?? "").trim();
+      if (p && p !== projectPlant && graph.plantIds.includes(p)) {
+        extra.push({ label: "Plant " + p + " — the plant number on the deal's order", points: 30 });
+      }
+      candidate.extraSignals = extra;
+      return { candidate, ...scoreMatchCandidate(candidate, matchCtx, { preferLinkKind: "order" }) };
+    }));
+  }
+
+  function rlFindYouniumSubscriptionScored(graph, matchCtx) {
+    const subs = graph.ynByPlant.filter((o) => o && (o.orderType === 0 ||
+      (o.orderType == null && ofKindByName(o.description || "") === "subscription")));
+    const product = (o) => graph.ynProducts[o.id]; // name, "" = none on the order, undefined = not read
+    const liveIwmac = subs.filter((o) => !rlYnIsDead(o) && product(o) !== "");
+    const projectPlant = String(matchCtx.plantId || graph.plantId || "");
+    return rlScoredSort(subs.slice(0, 12).map((o) => {
+      const name = product(o);
+      const candidate = rlYouniumToMatchCandidate(o, name || "");
+      const extra = [];
+      if (name) extra.push({ label: "IWMAC subscription product (" + name + ")", points: 10 });
+      else if (name === "") extra.push({ label: "No IWMAC Subscription product on this order", points: -30 });
+      if (liveIwmac.length === 1 && liveIwmac[0] === o) {
+        extra.push({ label: "The only live IWMAC subscription on plant " + (o.plant_id || projectPlant), points: RL_FIND_ONLY_LIVE });
+      }
+      const p = String(o.plant_id ?? "").trim();
+      if (p && p !== projectPlant && graph.plantIds.includes(p)) {
+        extra.push({ label: "Plant " + p + " — the plant number on the deal's order", points: 30 });
+      }
+      candidate.extraSignals = extra;
+      return { candidate, ...scoreMatchCandidate(candidate, matchCtx, { preferLinkKind: "subscription" }) };
+    }));
+  }
+
+  async function rlFindHubspotScored(graph, matchCtx, projectId) {
+    const merged = await rlLoadProjectLinks(projectId);
+    const byRecord = new Map();
+    const add = (url, extra) => {
+      const n = rlNormalizeHttpUrl(url);
+      const cls = n ? rlClassifyLinkUrl(n) : null;
+      if (!cls || cls.platform !== "hubspot") return;
+      const id = cls.recordId || n;
+      const cur = byRecord.get(id);
+      if (cur) { if (extra) cur.extra.push(...extra); return; }
+      byRecord.set(id, { url: n, extra: extra ? extra.slice() : [] });
+    };
+    if (graph.projectDeal) add(rlHubspotDealUrl(graph.projectDeal), [{ label: "The project's Hubspot Deal ID field", points: RL_FIND_EXACT }]);
+    else if (graph.deal) add(rlHubspotDealUrl(graph.deal), [{ label: "Deal on " + graph.dealVia, points: RL_FIND_DERIVED }]);
+    add(merged.hubspot);
+    for (const l of matchCtx.embeddedLinks || []) if (l?.platform === "hubspot") add(l.url);
+    const dealName = String(matchCtx.hubspotMirror?.dealName || "").trim();
+    return rlScoredSort([...byRecord.values()].map(({ url, extra }) => {
+      const candidate = rlHubspotUrlToMatchCandidate(url);
+      if (dealName && graph.projectDeal && String(candidate.id) === graph.projectDeal) candidate.primaryText += " — " + dealName;
+      candidate.extraSignals = extra;
+      return { candidate, ...scoreMatchCandidate(candidate, matchCtx) };
+    }));
+  }
+
+  /** The plant's Zendesk cases, gated the way the Cases tab gates them (rlZdLoadTickets). */
+  async function rlZdFindPlantTickets(plantId, plantName) {
+    const cached = rlZdTicketsSessionCache.get(String(plantId));
+    if (cached && Array.isArray(cached.tickets) && Date.now() - (cached.at || 0) < 10 * 60 * 1000) return cached.tickets.slice();
+    const plantFieldId = await rlZdGetPlantFieldId();
+    const queries = rlZdBuildSearchQueries(plantId, plantName, plantFieldId);
+    const trustedIds = new Set();
+    const lists = await Promise.all(queries.map(async ({ query, trusted }) => {
+      const params = new URLSearchParams({ query, sort_by: "updated_at", sort_order: "desc", per_page: "50" });
+      const json = await zendeskApiRequest("GET", "/search.json?" + params.toString());
+      const results = Array.isArray(json?.results) ? json.results : [];
+      if (trusted) for (const r of results) { if (r?.id != null) trustedIds.add(r.id); }
+      return results;
+    }));
+    return rlZdMergeSearchResults(lists).filter((t) => trustedIds.has(t.id) || rlZdTicketMatchesPlant(t, plantId, plantName, plantFieldId));
+  }
+
+  /** Zendesk: the plant's handover case wins; otherwise its newest cases to pick from. */
+  async function rlFindZendeskScored(matchCtx, plantId) {
+    const handover = await dtsFindHandoverTicket(plantId); // throws when logged out of Zendesk
+    const plantName = rlZdExtractPlantName(readProjectName() || matchCtx.name || "");
+    let others = [];
+    try { others = await rlZdFindPlantTickets(plantId, plantName); } catch (_) {}
+    const ts = (t) => Date.parse(t?.created_at || 0) || 0;
+    const toCandidate = (t, extra) => ({
+      id: String(t.id),
+      platform: "zendesk",
+      url: ZENDESK_AGENT_TICKET_URL + encodeURIComponent(String(t.id)),
+      primaryText: String(t.subject || t.raw_subject || "(no subject)").trim(),
+      secondaryText: "#" + t.id + (t.status ? " · " + t.status : "") + (t.created_at ? " · " + String(t.created_at).slice(0, 10) : ""),
+      matchableTexts: [t.subject || t.raw_subject || ""].filter(Boolean),
+      partyNames: [], contactNames: [], contactEmails: [], contactPhones: [], orgNumbers: [],
+      plantId: "", status: "", date: t.created_at || null, amount: null, currency: "",
+      zendeskTicketId: String(t.id),
+      extraSignals: extra || [],
+      raw: t,
+    });
+    const list = [];
+    if (handover) list.push(toCandidate(handover, [{ label: "Handover case («overlevering») for plant " + plantId, points: RL_FIND_EXACT }]));
+    for (const t of others.slice().sort((a, b) => ts(b) - ts(a)).slice(0, 8)) {
+      if (handover && String(t.id) === String(handover.id)) continue;
+      list.push(toCandidate(t));
+    }
+    return rlScoredSort(list.map((candidate) => ({ candidate, ...scoreMatchCandidate(candidate, matchCtx) })));
+  }
+
+  // Why a saved Younium link differs from the order found — only said when it
+  // is certain: an older version of the same order (every amendment gets a new
+  // id), a draft that has since become an order, or a cancelled order.
+  async function rlYnSavedLinkNote(existingUrl, scored, gen) {
+    const ex = rlClassifyLinkUrl(rlNormalizeHttpUrl(existingUrl) || "");
+    const best = scored[0]?.candidate;
+    if (!ex || ex.platform !== "younium" || !ex.recordId || !best || String(best.id) === ex.recordId) return "";
+    try {
+      const o = await rlUpMemoGet(gen, "yn:o:" + ex.recordId, () => ynGetOrderById(ex.recordId));
+      if (!o || !o.id) return "";
+      if (best.orderNumber && o.orderNumber === best.orderNumber && !o.isLastVersion) {
+        return "the saved link is an older version of " + o.orderNumber;
+      }
+      if (rlYnIsDead(o)) return "the saved order " + (o.orderNumber || "") + " is cancelled";
+      if (/^draft\b/i.test(String(o.orderNumber || "")) && !o.isLastVersion) return "the saved link is a draft that has since been replaced";
+    } catch (_) {}
+    return "";
+  }
+
   async function rlUrlPickerFindSlot(key, row, input, statusEl, projectId, plantId, gen) {
     rlUrlPickerClearPicker(row);
     rlUrlPickerSetStatus(statusEl, "Searching…", "");
+    const live = () => gen === rlUrlPickerGen && dlgProjectId(row) === String(projectId);
     try {
-      if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
+      if (!live()) return;
       const matchCtx = await rlGetMatchContextCached(projectId, gen);
-      if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-      const effectivePlantId = plantId || matchCtx.plantId || "";
-
+      if (!live()) return;
+      const pid = plantId || matchCtx.plantId || "";
+      if (key === "zendesk") {
+        if (!pid) {
+          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
+          return;
+        }
+        const scored = await rlFindZendeskScored(matchCtx, pid);
+        if (!live()) return;
+        if (!scored.length) {
+          rlUrlPickerSetStatus(statusEl, "No Zendesk case for plant " + pid + ".", "warn");
+          return;
+        }
+        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
+        return;
+      }
+      const graph = await rlGetLinkGraph(gen, matchCtx, pid);
+      if (!live()) return;
+      if (!pid && !graph.deal) {
+        rlUrlPickerSetStatus(statusEl, "No plant ID in the project name and no HubSpot deal ID on the project — nothing to search by.", "warn");
+        return;
+      }
+      const what = graph.deal ? "HubSpot deal " + graph.deal + (pid ? " or plant " + pid : "") : "plant " + pid;
+      let scored = [];
+      let empty = "No candidates.";
+      let note = "";
       if (key === "oneflowOrder" || key === "oneflowSubscription") {
-        if (!effectivePlantId) {
-          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
-          return;
-        }
-        const found = await ofSearchByPlantId(effectivePlantId, readProjectName() || "");
-        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
         const want = key === "oneflowOrder" ? "order" : "subscription";
-        const scored = (found.candidates || [])
-          .filter((a) => a?.id)
-          .map((a) => rlScoreWithKindBonus(rlOneflowToMatchCandidate(a), matchCtx, want))
-          .sort((x, y) => y.percent - x.percent || y.score - x.score);
-        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
+        scored = await rlFindOneflowScored(want, graph, matchCtx, pid, gen);
+        empty = want === "order"
+          ? "No Oneflow order found for " + what + "."
+          : "No Abonnementsavtale found for plant " + (pid || "?") + " — a rebuild usually has none of its own." +
+            (graph.ynError ? " (Younium lookup failed, so the subscription deal is unknown: " + graph.ynError + ")" : "");
+      } else if (key === "younium" || key === "youniumSubscription") {
+        if (graph.ynError) throw new Error(graph.ynError);
+        scored = key === "younium" ? rlFindYouniumOrderScored(graph, matchCtx) : rlFindYouniumSubscriptionScored(graph, matchCtx);
+        empty = key === "younium"
+          ? "No Younium order found for " + what + "."
+          : "No subscription order on plant " + (graph.plantIds.join(" / ") || pid) + ".";
+        note = await rlYnSavedLinkNote(input.value, scored, gen);
+      } else if (key === "hubspot") {
+        scored = await rlFindHubspotScored(graph, matchCtx, projectId);
+        empty = "No HubSpot deal ID on the project or its Younium order, and no HubSpot link in its fields. Paste manually.";
+      } else {
+        rlUrlPickerSetStatus(statusEl, "No Find action for this slot.", "warn");
         return;
       }
-      if (key === "younium") {
-        if (!effectivePlantId) {
-          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
-          return;
-        }
-        const all = await youniumFindAllOrdersByPlantId(effectivePlantId);
-        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        const orders = (all || [])
-          .filter((o) => String(o?.plant_id ?? "").trim() === String(effectivePlantId) && o?.id)
-          .filter((o) => ofKindByName(o?.description || o?.orderNumber || "") !== "subscription");
-        const hydrated = await Promise.all(orders.map(async (o) => {
-          try {
-            const full = await ynGetOrderById(o.id);
-            return full?.id ? { ...full, ...o } : o;
-          } catch (_) { return o; }
-        }));
-        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        const scored = hydrated
-          .map((o) => {
-            const candidate = rlYouniumToMatchCandidate(o);
-            const { score, percent, signals } = scoreMatchCandidate(candidate, matchCtx, { preferLinkKind: "order" });
-            return { candidate, score, percent, signals };
-          })
-          .sort((x, y) => y.percent - x.percent || y.score - x.score);
-        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
+      if (!live()) return;
+      if (!scored.length) {
+        rlUrlPickerSetStatus(statusEl, empty, "warn");
         return;
       }
-      if (key === "youniumSubscription") {
-        if (!effectivePlantId) {
-          rlUrlPickerSetStatus(statusEl, "Project name needs a plant ID prefix.", "warn");
-          return;
-        }
-        const foundList = await youniumFindAllSubscriptionsByPlantId(effectivePlantId);
-        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        if (!foundList.length) {
-          rlUrlPickerSetStatus(statusEl, "No IWMAC subscription order for plant " + effectivePlantId + ".", "warn");
-          return;
-        }
-        const scored = foundList
-          .map(({ order, productName }) => {
-            const candidate = rlYouniumToMatchCandidate(order, productName);
-            const { score, percent, signals } = scoreMatchCandidate(candidate, matchCtx, { preferLinkKind: "subscription" });
-            return { candidate, score, percent, signals };
-          })
-          .sort((x, y) => y.percent - x.percent || y.score - x.score);
-        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
-        return;
-      }
-      if (key === "hubspot") {
-        // Fields-only: score URLs recovered from IQC / Deal / Delivery. No HubSpot API.
-        const merged = await rlLoadProjectLinks(projectId, { force: true });
-        if (gen !== rlUrlPickerGen || dlgProjectId(row) !== String(projectId)) return;
-        const urls = [];
-        const seen = new Set();
-        const pushUrl = (u) => {
-          const n = rlNormalizeHttpUrl(u);
-          if (!n || seen.has(n)) return;
-          const cls = rlClassifyLinkUrl(n);
-          if (!cls || cls.platform !== "hubspot") return;
-          seen.add(n);
-          urls.push(n);
-        };
-        pushUrl(merged.hubspot);
-        for (const l of matchCtx.embeddedLinks || []) {
-          if (l?.platform === "hubspot" && l.url) pushUrl(l.url);
-        }
-        if (!urls.length) {
-          rlUrlPickerSetStatus(statusEl, "No HubSpot URL in Deal Description / Delivery / IQC. Paste manually.", "warn");
-          return;
-        }
-        const scored = urls
-          .map((u) => {
-            const candidate = rlHubspotUrlToMatchCandidate(u);
-            const { score, percent, signals } = scoreMatchCandidate(candidate, matchCtx);
-            return { candidate, score, percent, signals };
-          })
-          .sort((x, y) => y.percent - x.percent || y.score - x.score);
-        rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId);
-        return;
-      }
-      rlUrlPickerSetStatus(statusEl, "No Find action for this slot.", "warn");
+      rlUrlPickerApplyScored(row, input, statusEl, scored, gen, projectId, note);
     } catch (e) {
       if (gen !== rlUrlPickerGen) return;
       rlUrlPickerSetStatus(statusEl, "Find failed: " + (e?.message ?? e), "error");
     }
+  }
+
+  /** Every Find at once when the chooser opens; the rows share one Younium pass and one Oneflow search. */
+  async function rlUrlPickerFindAll(dlg, projectId, gen) {
+    const plantId = dlg.dataset.rlPlantId || "";
+    const meta = dlg.querySelector("[data-rl-up-meta]");
+    const jobs = [];
+    for (const slot of rlIqcAttachLinkSlots()) {
+      if (!slot.find) continue;
+      const row = dlg.querySelector('.rlUpRow[data-rl-slot="' + slot.key + '"]');
+      const input = row?.querySelector("input");
+      const statusEl = row?.querySelector("[data-rl-status]");
+      const btn = row?.querySelector("[data-rl-find]");
+      if (!row || !input) continue;
+      if (btn) btn.disabled = true;
+      jobs.push(rlUrlPickerFindSlot(slot.key, row, input, statusEl, projectId, plantId, gen)
+        .finally(() => { if (btn) btn.disabled = false; }));
+    }
+    await Promise.allSettled(jobs);
+    if (gen !== rlUrlPickerGen || dlg.dataset.rlProjectId !== String(projectId) || !meta) return;
+    let filled = 0;
+    let check = 0;
+    let missing = 0;
+    for (const row of dlg.querySelectorAll(".rlUpRow")) {
+      if (row.querySelector(".rlUpPicker")) check += 1;
+      else if (rlNormalizeHttpUrl(row.querySelector("input")?.value)) filled += 1;
+      else missing += 1;
+    }
+    meta.textContent = meta.textContent.replace(/\s*Lookup done:.*$/, "") +
+      " Lookup done: " + filled + " filled, " + check + " to check, " + missing + " empty.";
   }
 
   function rlEnsureUrlPickerDialog() {
@@ -11733,6 +12141,7 @@
     for (const k of [...rlMatchCtxCache.keys()]) {
       if (!k.endsWith(":" + gen)) rlMatchCtxCache.delete(k);
     }
+    rlUpMemoPrune(gen);
     void rlGetMatchContextCached(ctx.rlProjectId, gen);
     const meta = dlg.querySelector("[data-rl-up-meta]");
     if (meta) meta.textContent = "Loading links from IQC / Deal Description / Delivery…";
@@ -11776,13 +12185,16 @@
         meta.textContent = (iqc.found
           ? ("IQC task “" + (iqc.taskName || "Internal QC") + "” · id " + iqc.taskId + ". ")
           : "No IQC task found yet — Save will fail until it exists. ") +
-          "Prefill: " + n + " discovered link(s). Find never overwrites a filled slot unless you pick.";
+          "Prefill: " + n + " link(s) from the project. Looking every slot up now — a filled slot is never overwritten unless you pick.";
       }
       if (btn) {
         btn.title = n
           ? ("Chooser open — " + n + " link(s) discovered. Save writes Attach links on the IQC task.")
           : "Chooser open — no links discovered yet. Use Find or paste, then Save.";
       }
+      // Look every slot up straight away: an empty slot fills itself when the
+      // match is certain, a filled one is checked against what the lookup finds.
+      void rlUrlPickerFindAll(dlg, ctx.rlProjectId, gen);
     } catch (e) {
       if (meta) meta.textContent = "Load failed: " + (e?.message ?? e);
       if (btn) btn.title = "Fetch failed: " + (e?.message ?? e);
