@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.60.0
+// @version      1.60.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.60.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.60.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -3619,8 +3619,9 @@
      * a poll or a search - the ones polled, or the ones found by name - so a
      * register looked up to show an agent leaves on its own, not with the unit's
      * other parameters and the last scan. A scan or a verification in the table
-     * is the whole device or the whole list, and is saved whole. Undefined for
-     * the whole document.
+     * is the whole device or the whole list, and is saved whole. So is Find
+     * register with nothing typed (1.60.1): that lists every named register,
+     * and asks for all of it. Undefined for the whole document.
      */
     function shownFocus() {
         if ((ui.gridKind === 'registers' || ui.gridKind === 'bits') && lastResult && lastResult.values && lastResult.values.length) {
@@ -3631,7 +3632,7 @@
             for (const v of lastResult.values) { keys.add(t + '|' + v.i); if (wide) keys.add(t + '|' + (v.i + 1)); }
             return { focus: keys, focusSource: 'poll' };
         }
-        if (ui.gridKind === 'find' && ui.findShown && ui.findShown.length) {
+        if (ui.gridKind === 'find' && String(ui.findQuery || '').trim() && ui.findShown && ui.findShown.length) {
             return { focus: new Set(ui.findShown.map(m => String(m.table) + '|' + Number(m.ref))), focusSource: 'search' };
         }
         return undefined;
@@ -7748,7 +7749,10 @@
     function renderFindResults(matches, query) {
         // Names, not readings: the zero filter has nothing to apply to here.
         redrawGrid = null;
-        ui.findShown = matches;   // what Save JSON keeps to while they are shown (shownFocus)
+        // What Save JSON keeps to while they are shown (shownFocus) - unless nothing was
+        // typed, which lists every named register and saves everything.
+        ui.findShown = matches;
+        ui.findQuery = query || '';
         setGridColumns(FIND_COLUMNS);
         ui.gridBody.textContent = '';
         if (!matches.length) {
@@ -8638,8 +8642,9 @@
         // API's job, __modpoll.exportParts().
         const saveBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Save JSON',
             title: 'Everything known about the registers in the table, as one file a Copilot agent can read. With a poll or a search ' +
-                'in the table, only those registers, each under every datatype and every IWMAC scaling; with a scan or a ' +
-                'verification, the whole device: the readings, the list, every parameter the plant maps, the verification, the scan' });
+                'in the table, only those registers, each under every datatype and every IWMAC scaling. With a scan, a ' +
+                'verification, or Find register with nothing typed, everything: the readings, the list, every parameter the ' +
+                'plant maps, the verification, the scan' });
         saveBtn.addEventListener('click', async () => {
             if (!lastResult && !plantNames && !pointList && !lastVerification && !lastScan) {
                 return log('Nothing to save yet — run a poll, a scan or a verification, or load a list or a unit\'s names');

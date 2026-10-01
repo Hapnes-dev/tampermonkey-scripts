@@ -275,6 +275,8 @@ rebuilt.
   - With a search in the table, it holds only the registers found.
   - With a scan or a verification in the table, it is the whole device or list,
     as before.
+  - *Find register* with nothing typed lists every named register, and saves
+    everything (1.60.1).
 
   A focused file says so at the top, in `focus`: which registers (`table|ref`),
   how they were chosen, and what was left out. Every register section keeps only
@@ -1068,7 +1070,7 @@ quietly stop being the thing under test.
   stays under the ceiling. And a focused file (1.60): one polled register on
   its own, with its datatypes, its scales and the scaling near what IWMAC
   showed; a search's registers without the poll that read none of them; and the
-  datatypes a lone register cannot have. 137 expectations, each printed PASS or
+  datatypes a lone register cannot have, and the whole file again for Find register with nothing typed. 139 expectations, each printed PASS or
   FAIL; exits non-zero on any FAIL.
 - `python test/make-harness.py` — writes `test/harness.html`, a page that mounts
   the panel chrome with everything the IWMAC page would supply stubbed: the

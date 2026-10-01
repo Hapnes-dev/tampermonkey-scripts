@@ -255,12 +255,20 @@ check('... each found register still says where the scan left it', sdoc.plantPar
     JSON.stringify(sdoc.plantParameters.map(p => p.scan)));
 
 // The API's options: a list of registers, or what the table shows, as Save JSON does.
-var ui = { gridKind: 'find', findShown: [{ table: '4', ref: 1500 }] };
+var ui = { gridKind: 'find', findShown: [{ table: '4', ref: 1500 }], findQuery: 'ghost' };
 const viaList = exportOptions({ focus: ['4|1001'] });
 const viaShown = exportOptions({ focus: 'shown' });
 check('exportOptions takes a list of registers, or what the table shows - here the one register found',
     viaList && viaList.focus.has('4|1001') && viaList.focusSource === 'api' && viaShown && viaShown.focus.has('4|1500') &&
     viaShown.focus.size === 1 && viaShown.focusSource === 'search' && exportOptions({}) === undefined && exportOptions() === undefined, '');
+// Find register with nothing typed lists every named register, and that asks for everything (1.60.1).
+ui.findShown = [...plantNames.byRef.values()].map(e => ({ table: e[0].table, ref: e[0].ref }));
+ui.findQuery = '';
+check('Find register with nothing typed saves everything: no focus, the whole document',
+    shownFocus() === undefined && exportOptions({ focus: 'shown' }) === undefined &&
+    exportResult(null, exportOptions({ focus: 'shown' })).plantParameters.length === doc.plantParameters.length, '');
+ui.findQuery = '   ';
+check('... and so does a box holding only spaces', shownFocus() === undefined, '');
 
 // --- the same scan, now with IWMAC's own side of the unit read -----------------
 // The driver is set to 19200 where modpoll got answers at 9600; the unit is in
