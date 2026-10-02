@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.48.0
-// @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases.
+// @version      1.49.0
+// @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -28,6 +28,9 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_notification
+// @grant        GM_openInTab
+// @grant        GM_registerMenuCommand
 // @run-at       document-start
 // ==/UserScript==
 
@@ -77,6 +80,10 @@
  *     ticket outright. On finish it can set the task to Completed through the
  *     Rocketlane API. On iwmac.zendesk.com pages the script only captures the
  *     CSRF token, mirroring the younium.com region capture.
+ *  1f. Chat notifications (section 5d+, v1.49.0). A desktop notification for
+ *     every new chat message from someone else in the open projects the user
+ *     owns; one Rocketlane tab polls the chats' unread counts. On/off and a
+ *     test notification live in the Tampermonkey menu.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -5079,6 +5086,308 @@
     setTimeout(() => void rlPnMaybeSync(false), 8000);
     setInterval(() => void rlPnMaybeSync(false), RL_PN_TICK_MS);
     try { rlPtDecorateInit(); } catch (_) {}
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5d+. Chat notifications (v1.49.0). A desktop notification for every new
+  //     chat message from someone else in the open projects the user owns.
+  //     Rocketlane shows chat unread counts only inside each project, so one
+  //     Rocketlane tab polls them: GET /projects/{id}/project-conversations
+  //     lists a project's chats with `unreadMessages` for the current user
+  //     (15 owned projects answered in ~0.5 s in parallel, 2026-10-02), and only
+  //     a chat whose unread count moved is opened (GET …/{conversationId}/
+  //     conversations → `comments`, messageType USER_MESSAGE or CONTROL_MESSAGE,
+  //     sender in `user`, HTML in `content`). GM_notification shows them while
+  //     the tab is in the background and needs no site permission; a click opens
+  //     the chat. One tab polls (a GM heartbeat elects it) so several open tabs
+  //     do not notify several times, and every notification carries a tag so a
+  //     rare double still collapses into one. The first poll after the feature
+  //     arrives sums up what is already unread in one notification instead of
+  //     replaying it. Tampermonkey menu: turn it on/off, or send a test.
+  // ════════════════════════════════════════════════════════════════════════
+  // @@rlChatNotifyHelpers:start
+  /** Sender's user id of a chat comment (`createdBy` is a number there, an object elsewhere). */
+  function rlCnSenderId(m) {
+    const by = m?.createdBy;
+    const id = by && typeof by === "object" ? by.userId : by;
+    return String(id ?? m?.user?.userId ?? "");
+  }
+
+  /**
+   * Which chats to open this poll (pure). `state` maps conversationId →
+   * { at, unread, fetchedAt }: `at` is the newest message already handled.
+   * `lists` is [{ project: { id, name }, convs }] from project-conversations.
+   * A chat seen for the first time is only baselined — with unread messages it
+   * goes into `firstSight` for the one summary — and a known chat is opened
+   * when its unread count moved, or after `refetchMs` while it stays unread
+   * (reading it and receiving a new message between two polls keeps the count).
+   * Mutates `state`; returns { toFetch, firstSight, seen }.
+   */
+  function rlCnPlan(state, lists, now, refetchMs) {
+    const toFetch = [];
+    const firstSight = [];
+    const seen = new Set();
+    for (const entry of Array.isArray(lists) ? lists : []) {
+      const project = entry?.project;
+      for (const c of Array.isArray(entry?.convs) ? entry.convs : []) {
+        if (!project || !c || c.conversationId == null || c.isHidden || c.partOfConversation === false) continue;
+        const id = String(c.conversationId);
+        seen.add(id);
+        const unread = Math.max(0, Number(c.unreadMessages) || 0);
+        const s = state[id];
+        if (!s) {
+          state[id] = { at: 0, unread, fetchedAt: 0 };
+          if (unread > 0) {
+            firstSight.push({ project, conv: c, unread });
+            toFetch.push({ project, conv: c, unread, baseline: true });
+          }
+          continue;
+        }
+        if (unread > 0 && (unread !== Number(s.unread) || now - (Number(s.fetchedAt) || 0) > refetchMs)) {
+          toFetch.push({ project, conv: c, unread, baseline: false });
+        }
+        s.unread = unread;
+      }
+    }
+    return { toFetch, firstSight, seen };
+  }
+
+  /**
+   * The messages to announce from one chat (pure): other people's
+   * USER_MESSAGEs newer than the chat's watermark — or, for a chat first seen
+   * with nothing unread (watermark 0), the newest `unread` of them, at most
+   * `cap`. Returns { fresh (oldest first), newest }.
+   */
+  function rlCnFreshMessages(entry, comments, unread, userId, cap) {
+    const list = Array.isArray(comments) ? comments : [];
+    const newest = list.reduce((m, x) => Math.max(m, Number(x?.createdAt) || 0), 0);
+    const me = String(userId || "");
+    const others = list
+      .filter((x) => x && x.messageType === "USER_MESSAGE" && rlCnSenderId(x) !== me)
+      .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+    const at = Number(entry?.at) || 0;
+    const fresh = at
+      ? others.filter((x) => (Number(x.createdAt) || 0) > at)
+      : others.slice(-Math.max(0, Math.min(Number(unread) || 0, cap || 9)));
+    return { fresh, newest };
+  }
+
+  /** Projects with unread chats at first sight, most unread first (the one summary). */
+  function rlCnSummary(firstSight) {
+    const by = new Map();
+    for (const f of Array.isArray(firstSight) ? firstSight : []) {
+      const k = String(f?.project?.id ?? "");
+      if (!k) continue;
+      const cur = by.get(k) || { project: f.project, conv: f.conv, unread: 0 };
+      cur.unread += Number(f.unread) || 0;
+      by.set(k, cur);
+    }
+    return [...by.values()].sort((a, b) => b.unread - a.unread);
+  }
+  // @@rlChatNotifyHelpers:end
+
+  const RL_CN_GM_ENABLED = "rlChatNotifyEnabled";    // boolean, default true
+  const RL_CN_GM_STATE = "rlChatNotifyState";        // { [conversationId]: { at, unread, fetchedAt } }
+  const RL_CN_GM_LEADER = "rlChatNotifyLeader";      // { id, at } — the tab that polls
+  const RL_CN_GM_LAST = "rlChatNotifyLastPoll";      // shared, so a new leader keeps the pace
+  const RL_CN_POLL_MS = 60 * 1000;
+  const RL_CN_TICK_MS = 15 * 1000;
+  const RL_CN_LEADER_STALE_MS = 150 * 1000;          // a hidden tab ticks about once a minute
+  const RL_CN_REFETCH_MS = 5 * 60 * 1000;
+  const RL_CN_PROJECTS_MS = 10 * 60 * 1000;
+  const RL_CN_PER_CHAT = 3;                          // notifications per chat per poll; the rest is "+N more"
+  const rlCnTabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  let rlCnProjects = { at: 0, userId: "", list: [] };
+  let rlCnBusy = false;
+
+  function rlCnEnabled() { return GM_getValue(RL_CN_GM_ENABLED, true) !== false; }
+  function rlCnReadState() {
+    try { const j = JSON.parse(GM_getValue(RL_CN_GM_STATE, "") || "{}"); return j && typeof j === "object" ? j : {}; } catch (_) { return {}; }
+  }
+  function rlCnWriteState(s) { try { GM_setValue(RL_CN_GM_STATE, JSON.stringify(s)); } catch (_) {} }
+  function rlCnChatUrl(projectId, conversationId) {
+    return location.origin + "/projects/" + encodeURIComponent(String(projectId)) + "/chat/" + encodeURIComponent(String(conversationId));
+  }
+  /** Plain text of a chat message's HTML. DOMParser documents run no scripts and load no images. */
+  function rlCnText(html) {
+    try {
+      const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      return String(doc.body.textContent || "").replace(/\s+/g, " ").trim();
+    } catch (_) { return ""; }
+  }
+  function rlCnNotify(opts) {
+    try {
+      GM_notification({
+        title: opts.title,
+        text: opts.text || " ",
+        tag: opts.tag,
+        image: rlFavicon("rocketlane.com"),
+        silent: false,
+        onclick: () => {
+          if (!opts.url) return;
+          try { GM_openInTab(opts.url, { active: true, insert: true, setParent: true }); }
+          catch (_) { try { window.open(opts.url, "_blank", "noopener"); } catch (__) {} }
+        },
+      });
+    } catch (e) {
+      console.warn("[Rocketlane improvements] chat notification failed:", e?.message || e);
+    }
+  }
+
+  /** Open projects the user owns (lightV1: projectOwner = me, status ≠ Completed), cached 10 min. */
+  async function rlCnOwnedProjects(userId) {
+    if (rlCnProjects.userId === userId && rlCnProjects.list.length && Date.now() - rlCnProjects.at < RL_CN_PROJECTS_MS) {
+      return rlCnProjects.list;
+    }
+    const out = [];
+    let offset = 0;
+    for (let page = 0; page < 10; page++) {
+      const r = await gmRocketlaneRequest("POST", "/projects/lightV1", { offset: String(offset), limit: "100" },
+        { sortModel: [], filterModel: {}, filter: rlPnFilter("projectOwner", userId) });
+      const rows = Array.isArray(r?.data) ? r.data : [];
+      for (const p of rows) if (p?.projectId != null) out.push({ id: String(p.projectId), name: String(p.projectName || "").trim() });
+      if (rows.length < 100) break;
+      offset += rows.length;
+    }
+    rlCnProjects = { at: Date.now(), userId, list: out };
+    return out;
+  }
+
+  function rlCnAnnounce(project, conv, fresh) {
+    const chat = conv?.private ? "Private chat" : "General chat";
+    const url = rlCnChatUrl(project.id, conv.conversationId);
+    const shown = fresh.slice(-RL_CN_PER_CHAT);
+    const more = fresh.length - shown.length;
+    for (const m of shown) {
+      const who = [m?.user?.firstName, m?.user?.lastName].filter(Boolean).join(" ").trim() || "Someone";
+      const body = rlCnText(m?.content) || "(attachment)";
+      rlCnNotify({
+        title: project.name + " — " + chat,
+        text: who + ": " + (body.length > 180 ? body.slice(0, 177) + "…" : body),
+        tag: "rl-chat-" + String(m?.commentId ?? m?.createdAt),
+        url,
+      });
+    }
+    if (more > 0) {
+      rlCnNotify({
+        title: project.name + " — " + chat,
+        text: "+" + more + " more new message" + (more === 1 ? "" : "s"),
+        tag: "rl-chat-more-" + String(conv.conversationId) + "-" + String(fresh[fresh.length - 1]?.commentId ?? ""),
+        url,
+      });
+    }
+  }
+
+  async function rlCnPoll() {
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) return;
+    const projects = await rlCnOwnedProjects(userId);
+    let failed = 0;
+    const lists = await rlZdMapWithConcurrency(projects, 5, async (project) => {
+      try {
+        const r = await gmRocketlaneGet("/projects/" + encodeURIComponent(project.id) + "/project-conversations");
+        return { project, convs: Array.isArray(r) ? r : (Array.isArray(r?.data) ? r.data : []) };
+      } catch (_) {
+        failed += 1;
+        return { project, convs: [] };
+      }
+    });
+    // Re-read right before planning: another tab may have handled messages since.
+    const state = rlCnReadState();
+    const plan = rlCnPlan(state, lists, Date.now(), RL_CN_REFETCH_MS);
+    for (const job of plan.toFetch) {
+      const id = String(job.conv.conversationId);
+      let comments;
+      try {
+        const r = await gmRocketlaneGet("/projects/" + encodeURIComponent(job.project.id) +
+          "/project-conversations/" + encodeURIComponent(id) + "/conversations");
+        comments = Array.isArray(r?.comments) ? r.comments : [];
+      } catch (_) {
+        continue;
+      }
+      const entry = state[id];
+      const { fresh, newest } = rlCnFreshMessages(entry, comments, job.unread, userId, RL_CN_PER_CHAT * 3);
+      entry.fetchedAt = Date.now();
+      if (newest > (Number(entry.at) || 0)) entry.at = newest;
+      // Saved before notifying, so another tab never announces the same messages.
+      rlCnWriteState(state);
+      if (!job.baseline && fresh.length) rlCnAnnounce(job.project, job.conv, fresh);
+    }
+    const summary = rlCnSummary(plan.firstSight);
+    if (summary.length) {
+      const total = summary.reduce((n, x) => n + x.unread, 0);
+      rlCnNotify({
+        title: "Rocketlane: " + total + " unread chat message" + (total === 1 ? "" : "s") + " in " + summary.length +
+          " of your project" + (summary.length === 1 ? "" : "s"),
+        text: summary.slice(0, 5).map((x) => x.project.name + " (" + x.unread + ")").join("\n") + (summary.length > 5 ? "\n…" : ""),
+        tag: "rl-chat-summary",
+        url: rlCnChatUrl(summary[0].project.id, summary[0].conv.conversationId),
+      });
+    }
+    // Forget chats of projects that are no longer open and mine — only after a complete poll.
+    if (!failed) for (const id of Object.keys(state)) if (!plan.seen.has(id)) delete state[id];
+    rlCnWriteState(state);
+  }
+
+  function rlCnReadLeader() {
+    try { return JSON.parse(GM_getValue(RL_CN_GM_LEADER, "") || "null"); } catch (_) { return null; }
+  }
+  /** True when this tab polls. A stale leader is replaced by claiming; the claim is confirmed one tick later. */
+  function rlCnHoldsLead() {
+    const lead = rlCnReadLeader();
+    const now = Date.now();
+    if (lead && lead.id === rlCnTabId) {
+      try { GM_setValue(RL_CN_GM_LEADER, JSON.stringify({ id: rlCnTabId, at: now })); } catch (_) {}
+      return true;
+    }
+    if (lead && now - (Number(lead.at) || 0) < RL_CN_LEADER_STALE_MS) return false;
+    try { GM_setValue(RL_CN_GM_LEADER, JSON.stringify({ id: rlCnTabId, at: now })); } catch (_) {}
+    return false;
+  }
+  function rlCnReleaseLead() {
+    const lead = rlCnReadLeader();
+    if (lead && lead.id === rlCnTabId) { try { GM_setValue(RL_CN_GM_LEADER, ""); } catch (_) {} }
+  }
+  async function rlCnTick() {
+    if (!rlCnEnabled() || rlCnBusy) return;
+    if (!rlCnHoldsLead()) return;
+    const last = Number(GM_getValue(RL_CN_GM_LAST, 0)) || 0;
+    if (Date.now() - last < RL_CN_POLL_MS - 2000) return;
+    rlCnBusy = true;
+    try {
+      GM_setValue(RL_CN_GM_LAST, Date.now());
+      await rlCnPoll();
+    } catch (e) {
+      console.warn("[Rocketlane improvements] chat notifications: poll failed:", e?.message || e);
+    } finally {
+      rlCnBusy = false;
+    }
+  }
+
+  rlWhenDomReady(() => {
+    // The floating chat panel embeds Rocketlane in an iframe; only top windows poll.
+    if (window.top !== window.self) return;
+    try {
+      GM_registerMenuCommand("Chat notifications on/off", () => {
+        const next = !rlCnEnabled();
+        GM_setValue(RL_CN_GM_ENABLED, next);
+        rlCnNotify({
+          title: "Rocketlane chat notifications are " + (next ? "on" : "off"),
+          text: next ? "New chat messages in the projects you own will show up here." : "Turn them back on from the Tampermonkey menu.",
+          tag: "rl-chat-toggle",
+        });
+      });
+      GM_registerMenuCommand("Chat notifications: send a test", () => {
+        rlCnNotify({
+          title: "Rocketlane chat notifications" + (rlCnEnabled() ? "" : " (turned off)"),
+          text: "Test — a new chat message will look like this. Clicking it opens the chat.",
+          tag: "rl-chat-test",
+        });
+      });
+    } catch (_) {}
+    window.addEventListener("pagehide", rlCnReleaseLead);
+    setTimeout(() => void rlCnTick(), 4000);
+    setInterval(() => void rlCnTick(), RL_CN_TICK_MS);
   });
 
   // ════════════════════════════════════════════════════════════════════════
