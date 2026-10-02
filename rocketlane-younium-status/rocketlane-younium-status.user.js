@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.49.0
+// @version      1.50.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -31,6 +31,7 @@
 // @grant        GM_notification
 // @grant        GM_openInTab
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
@@ -80,10 +81,11 @@
  *     ticket outright. On finish it can set the task to Completed through the
  *     Rocketlane API. On iwmac.zendesk.com pages the script only captures the
  *     CSRF token, mirroring the younium.com region capture.
- *  1f. Chat notifications (section 5d+, v1.49.0). A desktop notification for
- *     every new chat message from someone else in the open projects the user
- *     owns; one Rocketlane tab polls the chats' unread counts. On/off and a
- *     test notification live in the Tampermonkey menu.
+ *  1f. Chat notifications (section 5d+, v1.49.0–1.50.0). A desktop
+ *     notification for every new chat message from someone else in the open
+ *     projects the user owns, instant through Rocketlane's own Pusher
+ *     connection, with a poll as the safety net. On/off switch in the
+ *     Notifications panel header and in the Tampermonkey menu.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -5104,6 +5106,17 @@
   //     rare double still collapses into one. The first poll after the feature
   //     arrives sums up what is already unread in one notification instead of
   //     replaying it. Tampermonkey menu: turn it on/off, or send a test.
+  //
+  //     v1.50.0 — instant. Rocketlane pushes every change in a project over
+  //     Pusher, on `private-accountId@<acc>-permissionId@<perm>-projectId@<id>`
+  //     (accountId and the user's permission set from GET /projects/{id}; it
+  //     subscribes there itself whenever a project page is open). The polling
+  //     tab subscribes to that channel for every owned project through the
+  //     page's own Pusher instance — and so through Rocketlane's own channel
+  //     authorizer; all 15 subscriptions succeeded on 2026-10-02 — and any event
+  //     on one triggers a check of that project's chats a second later. The poll
+  //     drops to every 5 minutes while live, and runs at once after a reconnect.
+  //     The switch "Chat push: On/Off" sits in the Notifications panel header.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlChatNotifyHelpers:start
   /** Sender's user id of a chat comment (`createdBy` is a number there, an object elsewhere). */
@@ -5184,21 +5197,40 @@
     }
     return [...by.values()].sort((a, b) => b.unread - a.unread);
   }
+  /** Rocketlane's Pusher channel for a project, from GET /projects/{id}; "" when a part is missing. */
+  function rlCnChannelName(project) {
+    const acc = project?.account?.accountId;
+    const perm = project?.permissionSet?.permissionSetId;
+    const pid = project?.projectId;
+    if (acc == null || perm == null || pid == null) return "";
+    return "private-accountId@" + acc + "-permissionId@" + perm + "-projectId@" + pid;
+  }
   // @@rlChatNotifyHelpers:end
 
   const RL_CN_GM_ENABLED = "rlChatNotifyEnabled";    // boolean, default true
   const RL_CN_GM_STATE = "rlChatNotifyState";        // { [conversationId]: { at, unread, fetchedAt } }
-  const RL_CN_GM_LEADER = "rlChatNotifyLeader";      // { id, at } — the tab that polls
+  const RL_CN_GM_LEADER = "rlChatNotifyLeader";      // { id, at } — the tab that listens and polls
   const RL_CN_GM_LAST = "rlChatNotifyLastPoll";      // shared, so a new leader keeps the pace
-  const RL_CN_POLL_MS = 60 * 1000;
+  const RL_CN_GM_CHANNELS = "rlChatNotifyChannels";  // { [projectId]: { name, at } }
+  const RL_CN_GM_LIVE = "rlChatNotifyLive";          // { at, channels, of } — the leader's live state, for the switch
+  const RL_CN_POLL_MS = 60 * 1000;                   // without a live connection
+  const RL_CN_POLL_LIVE_MS = 5 * 60 * 1000;          // the safety net while live
   const RL_CN_TICK_MS = 15 * 1000;
   const RL_CN_LEADER_STALE_MS = 150 * 1000;          // a hidden tab ticks about once a minute
   const RL_CN_REFETCH_MS = 5 * 60 * 1000;
   const RL_CN_PROJECTS_MS = 10 * 60 * 1000;
-  const RL_CN_PER_CHAT = 3;                          // notifications per chat per poll; the rest is "+N more"
+  const RL_CN_CHANNEL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const RL_CN_EVENT_DELAY_MS = 1200;                 // a burst of events becomes one check
+  const RL_CN_PER_CHAT = 3;                          // notifications per chat per check; the rest is "+N more"
+  const RL_CN_TOGGLE_ID = "rlChatPushToggle";
   const rlCnTabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
   let rlCnProjects = { at: 0, userId: "", list: [] };
-  let rlCnBusy = false;
+  let rlCnChain = Promise.resolve();
+  let rlCnTicking = false;
+  let rlCnForcePoll = false;
+  let rlCnConnBound = null;
+  const rlCnLive = new Map();      // channel name → project id, the channels this tab listens on
+  const rlCnPending = new Map();   // project id → timer of a queued check
 
   function rlCnEnabled() { return GM_getValue(RL_CN_GM_ENABLED, true) !== false; }
   function rlCnReadState() {
@@ -5232,6 +5264,12 @@
     } catch (e) {
       console.warn("[Rocketlane improvements] chat notification failed:", e?.message || e);
     }
+  }
+  /** Run checks one after another in this tab, so two never interleave their state writes. */
+  function rlCnSerial(fn) {
+    const run = rlCnChain.then(fn, fn);
+    rlCnChain = run.then(() => {}, () => {});
+    return run;
   }
 
   /** Open projects the user owns (lightV1: projectOwner = me, status ≠ Completed), cached 10 min. */
@@ -5278,10 +5316,10 @@
     }
   }
 
-  async function rlCnPoll() {
+  /** Check the chats of `projects`; `full` = all owned projects, which may also forget gone chats. */
+  async function rlCnCheck(projects, full) {
     const userId = rlHpReadCurrentUserId();
-    if (!userId) return;
-    const projects = await rlCnOwnedProjects(userId);
+    if (!userId || !projects.length) return;
     let failed = 0;
     const lists = await rlZdMapWithConcurrency(projects, 5, async (project) => {
       try {
@@ -5325,14 +5363,105 @@
       });
     }
     // Forget chats of projects that are no longer open and mine — only after a complete poll.
-    if (!failed) for (const id of Object.keys(state)) if (!plan.seen.has(id)) delete state[id];
+    if (full && !failed) for (const id of Object.keys(state)) if (!plan.seen.has(id)) delete state[id];
     rlCnWriteState(state);
+  }
+
+  // ── Live: Rocketlane's own Pusher connection ────────────────────────────
+  function rlCnPusher() {
+    try {
+      const w = typeof unsafeWindow !== "undefined" && unsafeWindow ? unsafeWindow : window;
+      const inst = w.Pusher && Array.isArray(w.Pusher.instances) ? w.Pusher.instances[0] : null;
+      return inst && typeof inst.subscribe === "function" ? inst : null;
+    } catch (_) { return null; }
+  }
+  function rlCnOnProjectPage(projectId) {
+    return new RegExp("^/projects/" + String(projectId) + "(?:/|$)").test(location.pathname || "");
+  }
+  /** Each owned project's channel name, from GET /projects/{id} once a week (cached in GM). */
+  async function rlCnChannelNames(projects) {
+    let cache = {};
+    try { cache = JSON.parse(GM_getValue(RL_CN_GM_CHANNELS, "") || "{}") || {}; } catch (_) {}
+    const now = Date.now();
+    const missing = projects.filter((p) => !cache[p.id] || now - (Number(cache[p.id].at) || 0) > RL_CN_CHANNEL_TTL_MS);
+    if (missing.length) {
+      await rlZdMapWithConcurrency(missing, 4, async (p) => {
+        try {
+          const j = await gmRocketlaneGet("/projects/" + encodeURIComponent(p.id));
+          cache[p.id] = { name: rlCnChannelName(j?.data ?? j), at: now };
+        } catch (_) { /* retried on a later tick */ }
+      });
+      for (const k of Object.keys(cache)) if (!projects.some((p) => p.id === k)) delete cache[k];
+      try { GM_setValue(RL_CN_GM_CHANNELS, JSON.stringify(cache)); } catch (_) {}
+    }
+    const out = new Map();
+    for (const p of projects) if (cache[p.id]?.name) out.set(p.id, cache[p.id].name);
+    return out;
+  }
+  function rlCnIsLeaderNow() {
+    const lead = rlCnReadLeader();
+    return !!(lead && lead.id === rlCnTabId);
+  }
+  /** An event on a project's channel: check that project's chats a moment later (bursts coalesce). */
+  function rlCnOnEvent(project) {
+    if (!rlCnEnabled() || !rlCnIsLeaderNow()) return;
+    clearTimeout(rlCnPending.get(project.id));
+    rlCnPending.set(project.id, setTimeout(() => {
+      rlCnPending.delete(project.id);
+      void rlCnSerial(() => rlCnCheck([project], false)).catch((e) => {
+        console.warn("[Rocketlane improvements] chat notifications: live check failed:", e?.message || e);
+      });
+    }, RL_CN_EVENT_DELAY_MS));
+  }
+  /**
+   * Subscribe to every owned project's channel on the page's Pusher instance and
+   * listen there. The page unsubscribes a project's channel when it leaves that
+   * project, which drops our listener with it, so this runs every tick and binds
+   * again. Returns how many channels are live.
+   */
+  async function rlCnEnsureLive(projects) {
+    const inst = rlCnPusher();
+    if (!inst) return 0;
+    if (rlCnConnBound !== inst.connection && inst.connection && typeof inst.connection.bind === "function") {
+      // After a reconnect, check everything once: events during the gap are lost.
+      inst.connection.bind("connected", () => { rlCnForcePoll = true; });
+      rlCnConnBound = inst.connection;
+    }
+    const names = await rlCnChannelNames(projects);
+    const wanted = new Map();
+    for (const p of projects) { const n = names.get(p.id); if (n) wanted.set(n, p); }
+    for (const [name, project] of wanted) {
+      let ch = typeof inst.channel === "function" ? inst.channel(name) : null;
+      if (!ch) ch = inst.subscribe(name);
+      if (ch && !ch.__rlCnLive && typeof ch.bind_global === "function") {
+        ch.bind_global((event) => { if (!String(event || "").startsWith("pusher")) rlCnOnEvent(project); });
+        ch.__rlCnLive = true;
+      }
+      rlCnLive.set(name, project.id);
+    }
+    // Projects no longer open and mine — never the channel the page itself is using.
+    for (const [name, pid] of [...rlCnLive]) {
+      if (wanted.has(name)) continue;
+      rlCnLive.delete(name);
+      if (!rlCnOnProjectPage(pid)) { try { inst.unsubscribe(name); } catch (_) {} }
+    }
+    const live = [...wanted.keys()].filter((n) => inst.channel?.(n)?.subscribed).length;
+    try { GM_setValue(RL_CN_GM_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size })); } catch (_) {}
+    return live;
+  }
+  function rlCnStopLive() {
+    if (!rlCnLive.size) return;
+    const inst = rlCnPusher();
+    for (const [name, pid] of [...rlCnLive]) {
+      rlCnLive.delete(name);
+      if (inst && !rlCnOnProjectPage(pid)) { try { inst.unsubscribe(name); } catch (_) {} }
+    }
   }
 
   function rlCnReadLeader() {
     try { return JSON.parse(GM_getValue(RL_CN_GM_LEADER, "") || "null"); } catch (_) { return null; }
   }
-  /** True when this tab polls. A stale leader is replaced by claiming; the claim is confirmed one tick later. */
+  /** True when this tab listens and polls. A stale leader is replaced by claiming; the claim is confirmed one tick later. */
   function rlCnHoldsLead() {
     const lead = rlCnReadLeader();
     const now = Date.now();
@@ -5345,38 +5474,111 @@
     return false;
   }
   function rlCnReleaseLead() {
-    const lead = rlCnReadLeader();
-    if (lead && lead.id === rlCnTabId) { try { GM_setValue(RL_CN_GM_LEADER, ""); } catch (_) {} }
+    if (rlCnIsLeaderNow()) { try { GM_setValue(RL_CN_GM_LEADER, ""); } catch (_) {} }
   }
   async function rlCnTick() {
-    if (!rlCnEnabled() || rlCnBusy) return;
-    if (!rlCnHoldsLead()) return;
-    const last = Number(GM_getValue(RL_CN_GM_LAST, 0)) || 0;
-    if (Date.now() - last < RL_CN_POLL_MS - 2000) return;
-    rlCnBusy = true;
+    if (rlCnTicking) return;
+    if (!rlCnEnabled() || !rlCnHoldsLead()) { rlCnStopLive(); return; }
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) return;
+    rlCnTicking = true;
     try {
+      const projects = await rlCnOwnedProjects(userId);
+      let live = 0;
+      try { live = await rlCnEnsureLive(projects); }
+      catch (e) { console.warn("[Rocketlane improvements] chat notifications: live connection failed:", e?.message || e); }
+      const every = live > 0 ? RL_CN_POLL_LIVE_MS : RL_CN_POLL_MS;
+      const last = Number(GM_getValue(RL_CN_GM_LAST, 0)) || 0;
+      if (!rlCnForcePoll && Date.now() - last < every - 2000) return;
+      rlCnForcePoll = false;
       GM_setValue(RL_CN_GM_LAST, Date.now());
-      await rlCnPoll();
+      await rlCnSerial(() => rlCnCheck(projects, true));
     } catch (e) {
       console.warn("[Rocketlane improvements] chat notifications: poll failed:", e?.message || e);
     } finally {
-      rlCnBusy = false;
+      rlCnTicking = false;
     }
   }
 
+  // ── The switch in the Notifications panel header ────────────────────────
+  function rlCnLiveStatus() {
+    try {
+      const j = JSON.parse(GM_getValue(RL_CN_GM_LIVE, "") || "null");
+      return j && Date.now() - (Number(j.at) || 0) < 90 * 1000 ? j : null;
+    } catch (_) { return null; }
+  }
+  function rlCnSetEnabled(next) {
+    GM_setValue(RL_CN_GM_ENABLED, next);
+    if (next) { try { GM_setValue(RL_CN_GM_LAST, 0); } catch (_) {} }
+    rlCnNotify({
+      title: "Rocketlane chat notifications are " + (next ? "on" : "off"),
+      text: next
+        ? "New chat messages in the projects you own will show up here as they arrive."
+        : "Turn them back on with the switch in the Notifications panel.",
+      tag: "rl-chat-toggle",
+    });
+  }
+  function rlCnInjectToggleStyles() {
+    if (document.getElementById("rlChatPushToggleStyles")) return;
+    const st = document.createElement("style");
+    st.id = "rlChatPushToggleStyles";
+    st.textContent = `
+      .ant-drawer-header.rlCnHdr { position: relative; }
+      #${RL_CN_TOGGLE_ID} {
+        position: absolute; right: 60px; top: 50%; transform: translateY(-50%); z-index: 2;
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 4px 12px; border-radius: 999px; border: 1px solid #cbd5e1;
+        background: #f1f5f9; color: #334155; font: 600 12px/18px inherit; cursor: pointer; white-space: nowrap;
+      }
+      #${RL_CN_TOGGLE_ID}:hover { filter: brightness(0.97); }
+      #${RL_CN_TOGGLE_ID}[data-on="1"] { background: #dcfce7; border-color: #86efac; color: #166534; }
+      #${RL_CN_TOGGLE_ID} .rlCnDot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .35; }
+      #${RL_CN_TOGGLE_ID}[data-live="1"] .rlCnDot { opacity: 1; background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.18); }
+    `;
+    document.documentElement.appendChild(st);
+  }
+  function rlCnPaintToggle(btn) {
+    const on = rlCnEnabled();
+    const live = on ? rlCnLiveStatus() : null;
+    const isLive = !!(live && live.channels > 0);
+    btn.dataset.on = on ? "1" : "0";
+    btn.dataset.live = isLive ? "1" : "0";
+    btn.innerHTML = '<span class="rlCnDot"></span>';
+    btn.appendChild(document.createTextNode((on ? "Chat push: On" : "Chat push: Off") + (isLive ? " · live" : "")));
+    btn.title = on
+      ? "Desktop notifications for new chat messages in the projects you own — " +
+        (isLive ? "live on " + live.channels + " project channel" + (live.channels === 1 ? "" : "s") + "." : "checked every minute.") +
+        " Click to turn off."
+      : "Chat notifications are off. Click to turn them on.";
+  }
+  function rlCnMountToggle() {
+    if (!/notifications=show/.test(location.hash || "")) return;
+    const hdr = [...document.querySelectorAll(".ant-drawer-header")]
+      .find((h) => /^\s*Notifications\s*$/.test(h.querySelector(".ant-drawer-title")?.textContent || ""));
+    if (!hdr) return;
+    let btn = hdr.querySelector("#" + RL_CN_TOGGLE_ID);
+    if (!btn) {
+      rlCnInjectToggleStyles();
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = RL_CN_TOGGLE_ID;
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        rlCnSetEnabled(!rlCnEnabled());
+        rlCnPaintToggle(btn);
+      });
+      hdr.classList.add("rlCnHdr");
+      hdr.appendChild(btn);
+    }
+    rlCnPaintToggle(btn);
+  }
+
   rlWhenDomReady(() => {
-    // The floating chat panel embeds Rocketlane in an iframe; only top windows poll.
+    // The floating chat panel embeds Rocketlane in an iframe; only top windows take part.
     if (window.top !== window.self) return;
     try {
-      GM_registerMenuCommand("Chat notifications on/off", () => {
-        const next = !rlCnEnabled();
-        GM_setValue(RL_CN_GM_ENABLED, next);
-        rlCnNotify({
-          title: "Rocketlane chat notifications are " + (next ? "on" : "off"),
-          text: next ? "New chat messages in the projects you own will show up here." : "Turn them back on from the Tampermonkey menu.",
-          tag: "rl-chat-toggle",
-        });
-      });
+      GM_registerMenuCommand("Chat notifications on/off", () => rlCnSetEnabled(!rlCnEnabled()));
       GM_registerMenuCommand("Chat notifications: send a test", () => {
         rlCnNotify({
           title: "Rocketlane chat notifications" + (rlCnEnabled() ? "" : " (turned off)"),
@@ -5385,9 +5587,11 @@
         });
       });
     } catch (_) {}
-    window.addEventListener("pagehide", rlCnReleaseLead);
+    window.addEventListener("pagehide", () => { rlCnStopLive(); rlCnReleaseLead(); });
     setTimeout(() => void rlCnTick(), 4000);
     setInterval(() => void rlCnTick(), RL_CN_TICK_MS);
+    // The switch: mount as soon as the panel opens, repaint while it is open.
+    setInterval(() => { try { rlCnMountToggle(); } catch (_) {} }, 700);
   });
 
   // ════════════════════════════════════════════════════════════════════════
