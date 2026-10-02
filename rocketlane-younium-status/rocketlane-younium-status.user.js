@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.50.0
+// @version      1.50.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5197,6 +5197,47 @@
     }
     return [...by.values()].sort((a, b) => b.unread - a.unread);
   }
+  /**
+   * Plain text of a chat message's HTML (pure, v1.50.1): mentions as "@Name",
+   * paragraphs, list items and line breaks as spaces — DOM textContent glued
+   * "<p>Hei</p><p>test</p>" into "Heitest" — and entities decoded. Only ever
+   * shown as notification text, never put back into a page.
+   */
+  function rlCnHtmlToText(html) {
+    const code = (n) => { try { return String.fromCodePoint(n); } catch (_) { return " "; } };
+    return String(html || "")
+      .replace(/<a\b[^>]*\brl__mention\b[^>]*>([\s\S]*?)<\/a>/gi, (_, name) => " @" + name.replace(/<[^>]*>/g, "").trim() + " ")
+      .replace(/<li\b[^>]*>/gi, " • ")
+      .replace(/<br\s*\/?>/gi, " ")
+      .replace(/<\/(?:p|div|li|h[1-6]|blockquote|tr|ul|ol)>/gi, " ")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&#(\d+);/g, (_, n) => code(Number(n)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, h) => code(parseInt(h, 16)))
+      .replace(/&amp;/gi, "&")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /**
+   * Title and text of one message's notification (pure). The sender and the
+   * project go in the title, so the text is the whole message: Windows shows
+   * as much of it as fits, and the rest stays in the notification centre.
+   */
+  function rlCnMessageCard(project, conv, m, maxText) {
+    const who = [m?.user?.firstName, m?.user?.lastName].filter(Boolean).join(" ").trim() || "Someone";
+    const body = rlCnHtmlToText(m?.content) || "(attachment)";
+    const max = maxText || 2000;
+    return {
+      title: who + " · " + String(project?.name || "") + (conv?.private ? " · Private chat" : ""),
+      text: body.length > max ? body.slice(0, max - 1) + "…" : body,
+    };
+  }
+
   /** Rocketlane's Pusher channel for a project, from GET /projects/{id}; "" when a part is missing. */
   function rlCnChannelName(project) {
     const acc = project?.account?.accountId;
@@ -5239,13 +5280,6 @@
   function rlCnWriteState(s) { try { GM_setValue(RL_CN_GM_STATE, JSON.stringify(s)); } catch (_) {} }
   function rlCnChatUrl(projectId, conversationId) {
     return location.origin + "/projects/" + encodeURIComponent(String(projectId)) + "/chat/" + encodeURIComponent(String(conversationId));
-  }
-  /** Plain text of a chat message's HTML. DOMParser documents run no scripts and load no images. */
-  function rlCnText(html) {
-    try {
-      const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
-      return String(doc.body.textContent || "").replace(/\s+/g, " ").trim();
-    } catch (_) { return ""; }
   }
   function rlCnNotify(opts) {
     try {
@@ -5297,14 +5331,8 @@
     const shown = fresh.slice(-RL_CN_PER_CHAT);
     const more = fresh.length - shown.length;
     for (const m of shown) {
-      const who = [m?.user?.firstName, m?.user?.lastName].filter(Boolean).join(" ").trim() || "Someone";
-      const body = rlCnText(m?.content) || "(attachment)";
-      rlCnNotify({
-        title: project.name + " — " + chat,
-        text: who + ": " + (body.length > 180 ? body.slice(0, 177) + "…" : body),
-        tag: "rl-chat-" + String(m?.commentId ?? m?.createdAt),
-        url,
-      });
+      const card = rlCnMessageCard(project, conv, m);
+      rlCnNotify({ title: card.title, text: card.text, tag: "rl-chat-" + String(m?.commentId ?? m?.createdAt), url });
     }
     if (more > 0) {
       rlCnNotify({
