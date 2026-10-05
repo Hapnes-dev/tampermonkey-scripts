@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.52.0
+// @version      1.53.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8248,7 +8248,10 @@
   // ──────────────────────────────────────────────────────────────────────────
   // @@rlTimelineHelpers:start
 
-  const RL_TL_TAIL_DAYS = 14;      // the axis runs two weeks past the last start (v1.52.0, Thomas)
+  // Horizon buttons (v1.53.0, Thomas: "filter button … 1 month ahead, 3, 6, 12").
+  // The axis is today → today + N calendar months; N is remembered between opens.
+  const RL_TL_HORIZONS = [1, 3, 6, 12];
+  const RL_TL_DEFAULT_MONTHS = 3;
   const RL_TL_TIER_STEP = 1;       // one tier = one extra connector step
   const RL_TL_LABEL_GAP_PX = 16;   // minimum horizontal gap between two labels
 
@@ -8286,21 +8289,42 @@
   }
 
   /**
-   * Timeline window: the LEFT EDGE IS ALWAYS TODAY (v1.52.0, Thomas: "the timeline
-   * should be from today so its all the way to the left should be todays date").
-   * It ends two weeks (RL_TL_TAIL_DAYS) past the last start that is still ahead —
-   * Thomas's rule; the prototype's brief said one. Projects that already
-   * started do not stretch the window back — they belong to the "needs attention"
-   * table, exactly as in the prototype's own mockup. (1.51.x stretched back, which
-   * on a real owner list meant a spine starting in March for an October view.)
+   * Calendar-month arithmetic. The day is clamped to the target month's length, so
+   * 31 Jan + 1 month is 28/29 Feb rather than JavaScript's overflow into March.
    */
-  function rlTlRangeFor(projects, todayMs) {
+  function rlTlAddMonths(ms, n) {
+    const d = new Date(ms);
+    const first = new Date(d.getFullYear(), d.getMonth() + n, 1);
+    const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    return new Date(first.getFullYear(), first.getMonth(), Math.min(d.getDate(), lastDay)).getTime();
+  }
+
+  /** Any stored or clicked value → one of the offered horizons. */
+  function rlTlNormalizeHorizon(months) {
+    const n = Number(months);
+    return RL_TL_HORIZONS.indexOf(n) >= 0 ? n : RL_TL_DEFAULT_MONTHS;
+  }
+
+  /**
+   * The axis window. LEFT EDGE IS ALWAYS TODAY (v1.52.0, Thomas: "all the way to the
+   * left should be todays date"); the right edge is today + the chosen horizon in
+   * calendar months (v1.53.0). This replaces 1.52.0's "two weeks past the last
+   * start" end: a horizon the user picks is predictable, a data-driven end is not.
+   * Projects that already started never stretch the window back — they live in the
+   * "needs attention" table, exactly as in the prototype's own mockup.
+   */
+  function rlTlHorizonRange(todayMs, months) {
     const t0 = Number.isNaN(todayMs) || todayMs == null ? Date.now() : todayMs;
-    const ahead = (projects || []).map((p) => rlTlDayMs(p && p.start)).filter((n) => !Number.isNaN(n) && n >= t0);
-    if (!ahead.length) return { start: t0, end: rlTlAddDays(t0, RL_TL_TAIL_DAYS) };
-    let end = rlTlAddDays(Math.max(...ahead), RL_TL_TAIL_DAYS);
-    if (end <= t0) end = rlTlAddDays(t0, RL_TL_TAIL_DAYS);
-    return { start: t0, end };
+    return { start: t0, end: rlTlAddMonths(t0, rlTlNormalizeHorizon(months)) };
+  }
+
+  /** Projects whose start falls inside the window, edges included. */
+  function rlTlInRange(projects, range) {
+    if (!range) return [];
+    return (projects || []).filter((p) => {
+      const ms = rlTlDayMs(p && p.start);
+      return !Number.isNaN(ms) && ms >= range.start && ms <= range.end;
+    });
   }
 
   /** The spine's projects: those starting today or later. The rest are "started". */
@@ -8412,7 +8436,7 @@
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.52.0";
+  const RL_TL_STYLE_READY = "1.53.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8470,6 +8494,15 @@
 #${RL_TL_OVERLAY_ID} table.rltlTable a{color:inherit;text-decoration:none;}
 #${RL_TL_OVERLAY_ID} table.rltlTable a:hover{color:var(--rltl-accent);text-decoration:underline;}
 #${RL_TL_OVERLAY_ID} .rltlState{padding:40px 4px;color:var(--rltl-muted);font-size:18px;}
+#${RL_TL_OVERLAY_ID} .rltlHead{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;}
+#${RL_TL_OVERLAY_ID} .rltlRange{display:inline-flex;background:var(--rltl-card);border-radius:14px;padding:5px;
+  box-shadow:0 4px 16px rgba(108,74,182,.10);margin:0 0 40px;}
+#${RL_TL_OVERLAY_ID} .rltlRangeBtn{border:0;background:transparent;color:var(--rltl-muted);font:600 16px Inter,-apple-system,sans-serif;
+  padding:10px 20px;border-radius:10px;cursor:pointer;white-space:nowrap;}
+#${RL_TL_OVERLAY_ID} .rltlRangeBtn:hover{color:var(--rltl-accent);background:var(--rltl-accent-soft);}
+#${RL_TL_OVERLAY_ID} .rltlRangeBtn.on{background:var(--rltl-accent);color:#fff;}
+#${RL_TL_OVERLAY_ID} .rltlFoot{color:var(--rltl-muted);font-size:15px;margin:24px 4px 0;}
+#${RL_TL_OVERLAY_ID} .rltlFoot:empty{display:none;}
 `;
   }
 
@@ -8534,20 +8567,28 @@
       '<div class="rltlPage" role="dialog" aria-label="Project Timeline">' +
       '<button type="button" class="rltlClose" title="Close">×</button>' +
       '<p class="rltlEyebrow rltlCount">Loading…</p>' +
+      '<div class="rltlHead"><div>' +
       '<h1 class="rltlTitle">Project Timeline</h1>' +
       '<p class="rltlSub"></p>' +
+      '</div><div class="rltlRange" role="group" aria-label="How far ahead"></div></div>' +
       '<div class="rltlCard"><div class="rltlState">Reading your projects…</div></div>' +
       '<div class="rltlAttentionHost"></div>' +
+      '<p class="rltlFoot"></p>' +
       "</div>";
     document.body.appendChild(overlay);
     overlay.querySelector(".rltlClose").addEventListener("click", rlTlCloseOverlay);
     overlay.addEventListener("mousedown", (ev) => { if (ev.target === overlay) rlTlCloseOverlay(); });
     document.addEventListener("keydown", rlTlOnKeydown, true);
+    overlay._rltlMonths = rlTlNormalizeHorizon(GM_getValue("rltlHorizonMonths", RL_TL_DEFAULT_MONTHS));
 
     rlHpLoadProjects({ revalidate: true })
       .then((buckets) => {
         if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
         const mine = rlTlMineOnly(buckets && buckets.ownerProjects, rlHpReadCurrentUserId());
+        // Projects of his that cannot sit on a timeline (no start date) are named in a
+        // footnote, so the count never silently disagrees with Rocketlane's own list.
+        overlay._rltlUndated = mine.filter((p) => p && Number.isNaN(rlTlDayMs(p.start)) &&
+          String(p.status || "") !== "completed");
         rlTlRender(overlay, rlTlPickProjects(mine));
       })
       .catch((err) => {
@@ -8576,13 +8617,48 @@
     const card = overlay.querySelector(".rltlCard");
     const attentionHost = overlay.querySelector(".rltlAttentionHost");
 
-    // The spine holds only what starts today or later; what already started goes
+    // Horizon buttons (v1.53.0): the axis is today → today + N months. The choice is
+    // remembered, and a click only re-renders from the projects already loaded.
+    const months = rlTlNormalizeHorizon(overlay._rltlMonths);
+    const rangeHost = overlay.querySelector(".rltlRange");
+    if (rangeHost) {
+      rangeHost.innerHTML = "";
+      for (const n of RL_TL_HORIZONS) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "rltlRangeBtn" + (n === months ? " on" : "");
+        b.setAttribute("aria-pressed", n === months ? "true" : "false");
+        b.textContent = n === 1 ? "1 month" : n + " months";
+        b.addEventListener("click", () => {
+          overlay._rltlMonths = n;
+          try { GM_setValue("rltlHorizonMonths", n); } catch (_) {}
+          rlTlRender(overlay, overlay._rltlProjects || []);
+        });
+        rangeHost.appendChild(b);
+      }
+    }
+
+    // The spine holds only what starts inside the window; what already started goes
     // to the attention table below (v1.52.0). The left edge is today.
-    const upcoming = rlTlUpcoming(projects, todayMs);
+    const range = rlTlHorizonRange(todayMs, months);
+    const upcoming = rlTlInRange(projects, range);
+    const later = rlTlUpcoming(projects, todayMs).length - upcoming.length;
     const late = rlTlStartedBeforeToday(projects, todayMs);
     if (count) {
       count.textContent = projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") +
-        " · " + upcoming.length + " UPCOMING";
+        " · " + upcoming.length + " IN THE NEXT " + (months === 1 ? "MONTH" : months + " MONTHS") +
+        (later > 0 ? " · " + later + " LATER" : "");
+    }
+
+    // Footnote: his projects that are not on the timeline at all, by name.
+    const foot = overlay.querySelector(".rltlFoot");
+    const undated = overlay._rltlUndated || [];
+    if (foot) {
+      foot.textContent = undated.length
+        ? (undated.length === 1 ? "1 of your projects has" : undated.length + " of your projects have") +
+          " no start date and is not shown: " + undated.slice(0, 5).map((p) => p.name).join(", ") +
+          (undated.length > 5 ? ", …" : "") + "."
+        : "";
     }
 
     if (!projects.length) {
@@ -8592,7 +8668,6 @@
       return;
     }
 
-    const range = rlTlRangeFor(projects, todayMs);
     if (sub) sub.textContent = rlTlFmtDate(rlTlIsoOf(range.start)) + " – " + rlTlFmtDate(rlTlIsoOf(range.end));
 
     card.innerHTML = '<div class="rltlPlot"></div>';
@@ -8707,7 +8782,8 @@
       none.style.right = "0";
       none.style.top = (spineY - 96) + "px";
       none.style.textAlign = "center";
-      none.textContent = "No project starts ahead of today.";
+      none.textContent = "No project starts in the next " + (months === 1 ? "month" : months + " months") +
+        (later > 0 ? " — " + later + " start" + (later === 1 ? "s" : "") + " later; try a longer range." : ".");
       plot.appendChild(none);
     }
 
