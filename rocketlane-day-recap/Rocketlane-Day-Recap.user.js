@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.159
+// @version      4.160
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -965,7 +965,10 @@ var RL_RECAP_TIME = (function () {
             || (e.status === 'no-project' && e.selected === true && !!e.fallbackProjectId));
         const books = list.map(willBook);
         const mins = e => Math.max(0, Math.round(Number(e && e.minutes) || 0));
-        const calMin = list.reduce((s, e, i) => s + (books[i] && e.calendar ? mins(e) : 0), 0);
+        // v4.160: a ticked calendar row after working hours is overtime — on top of the day, never taking
+        // the plant work's place in it.
+        const calMin = list.reduce((s, e, i) => s + (books[i] && e.calendar && !e.afterHours ? mins(e) : 0), 0);
+        const afterMin = list.reduce((s, e, i) => s + (books[i] && e.calendar && e.afterHours ? mins(e) : 0), 0);
         const plantIdx = list.map((e, i) => i).filter(i => books[i] && !list[i].calendar);
         const budget = dayBudget({ workdayMin: o.workdayMin, existingMin: o.existingMin, calendarMin: calMin });
         const out = list.map((e, i) => ({ book: books[i], minutes: mins(e), overBudget: false }));
@@ -976,7 +979,8 @@ var RL_RECAP_TIME = (function () {
         }
         const plant = out.reduce((s, r, i) => s + (r.book && !list[i].calendar ? r.minutes : 0), 0);
         budget.plant = plant;
-        budget.projected = budget.existing + calMin + plant;
+        budget.after = afterMin;
+        budget.projected = budget.existing + calMin + plant + afterMin;
         budget.normalized = !!o.distributing;
         budget.hasPlantRows = plantIdx.length > 0;
         return { rows: out, budget };
@@ -1099,6 +1103,38 @@ var RL_RECAP_CAL = (function () {
         return !!ev && !ev.cancelled && !ev.declined && !ev.free && ev.endTs > ev.startTs;
     }
 
+    // ---- Working hours (v4.160) -------------------------------------------------------------------
+    // Thomas, 2026-10-05: "Could we not add things that happen outside working hours, or get a big warning
+    // when it happens on calendar import? so everything over 16:00". A calendar event is cut at the end of
+    // the working day (CAL_DAY_END, 16:00 unless set on the Book week options screen): the part before
+    // books as it always did; the part after becomes its own row that is NOT booked unless ticked, and the
+    // review says so in a big banner. A ticked after-hours row is overtime — it comes ON TOP of the
+    // workday instead of squeezing the plant work the day held (RL_RECAP_TIME.bookingShares). An all-day
+    // event is a day, not hours, and is never cut.
+    const CAL_DAY_END = '16:00';
+    // 'HH:MM' → minutes after midnight; anything unreadable is 16:00.
+    function calDayEndMin(hhmm) {
+        const m = /^(\d{1,2})[:.](\d{2})$/.exec(String(hhmm == null ? '' : hhmm).trim());
+        const v = m && +m[2] < 60 ? (+m[1]) * 60 + (+m[2]) : NaN;
+        return Number.isFinite(v) && v > 0 && v < 24 * 60 ? v : 16 * 60;
+    }
+    function calDayEndLabel(min) {
+        const m = Number.isFinite(min) ? min : 16 * 60;
+        return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    }
+    // The event split at the end of ITS day's working hours (local time): [{ startTs, endTs, afterHours }].
+    // `endMin` not finite → no cut.
+    function calSplitAtDayEnd(ev, endMin) {
+        if (!ev) return [];
+        const whole = late => [{ startTs: ev.startTs, endTs: ev.endTs, afterHours: late }];
+        if (ev.allDay || !Number.isFinite(endMin)) return whole(false);
+        const d = new Date(ev.startTs);
+        const cut = new Date(d.getFullYear(), d.getMonth(), d.getDate(), Math.floor(endMin / 60), endMin % 60).getTime();
+        if (ev.endTs <= cut) return whole(false);
+        if (ev.startTs >= cut) return whole(true);
+        return [{ startTs: ev.startTs, endTs: cut, afterHours: false }, { startTs: cut, endTs: ev.endTs, afterHours: true }];
+    }
+
     // Wall-clock minutes the day's meetings actually occupy, overlaps counted once: two events
     // 10:00–11:00 and 10:30–11:30 span 90 minutes, not 120. No longer used for PRICING a row (v4.123
     // books every meeting at its real length) — kept as an exported helper for tests and for reasoning
@@ -1125,35 +1161,51 @@ var RL_RECAP_CAL = (function () {
     // gets the smaller remainder. `roundTo` is accepted for signature stability but deliberately unused.
     // An all-day event is still priced at the whole workday — it has no clock duration, and a full-day
     // course IS the day, which correctly leaves nothing for plant work.
-    function calAllocate(events, workdayMin, roundTo) {
+    // v4.160: `endMin` (minutes after midnight, default 16:00) cuts a timed event at the end of the working
+    // day — one allocation per part, the part after flagged `afterHours` (`split` when it crossed the cut).
+    function calAllocate(events, workdayMin, roundTo, endMin) {
         const ok = (events || []).filter(calIsBookable);
         const allDay = ok.filter(e => e.allDay), timed = ok.filter(e => !e.allDay);
         const out = [];
-        for (const e of allDay) out.push({ ev: e, minutes: workdayMin });
+        for (const e of allDay) out.push({ ev: e, minutes: workdayMin, startTs: e.startTs, endTs: e.endTs, afterHours: false, split: false });
         if (allDay.length) return out; // the day is already fully accounted for
-        for (const e of timed) out.push({ ev: e, minutes: Math.max(1, Math.round((e.endTs - e.startTs) / 60000)) });
+        const cutAt = endMin === undefined ? calDayEndMin(CAL_DAY_END) : endMin;
+        for (const e of timed) {
+            const parts = calSplitAtDayEnd(e, cutAt);
+            for (const p of parts) out.push({ ev: e, minutes: Math.max(1, Math.round((p.endTs - p.startTs) / 60000)),
+                startTs: p.startTs, endTs: p.endTs, afterHours: p.afterHours, split: parts.length > 1 });
+        }
         return out;
     }
 
     // How much of the workday is left for plant work once the meetings are booked (v4.117: Thomas's
     // rule — meetings first, plant work fills the rest). Never negative, never more than the workday.
     function calRemainingWorkday(allocations, workdayMin) {
-        const used = (allocations || []).reduce((s, a) => s + (a && a.minutes || 0), 0);
+        // v4.160: time after working hours is overtime — it never takes plant work's place in the day.
+        const used = (allocations || []).filter(a => a && !a.afterHours).reduce((s, a) => s + (a.minutes || 0), 0);
         return Math.max(0, Math.min(workdayMin, workdayMin - used));
     }
 
     // The entry's Notes field: same contract as a plant entry — a plain first line a project leader
     // can read, then the facts underneath.
-    function calEntryNote(ev, mins) {
+    // v4.160: `part` ({ startTs, endTs, afterHours, split }) is the piece of the event this entry books
+    // when the event was cut at the end of the working day.
+    function calEntryNote(ev, mins, part) {
         if (!ev) return '';
         const when = ev.allDay ? 'All day' : `${calClock(ev.startTs)}–${calClock(ev.endTs)}`;
         // Say the whole story on the note: when it ran, from when till when, and how long that is
         // (v4.124). The booked minutes were the one fact the note never stated.
         const dur = calDuration(mins);
+        const piece = part && !ev.allDay ? `${calClock(part.startTs)}–${calClock(part.endTs)}` : when;
         const lead = ev.allDay
             ? `Full-day calendar commitment: ${ev.subject}.`
+            : part && part.afterHours
+                ? (part.split ? `Attended "${ev.subject}" ${when}; this is the part after working hours, ${piece}${dur ? ` (${dur})` : ''}.`
+                    : `Attended "${ev.subject}" ${when}${dur ? ` (${dur})` : ''}, after working hours.`)
+            : part && part.split
+                ? `Attended "${ev.subject}" ${when}; booked until ${calClock(part.endTs)}${dur ? ` (${dur})` : ''}, the rest is after working hours.`
             : `Attended "${ev.subject}" ${when}${dur ? ` (${dur})` : ''}.`;
-        const facts = [`Calendar: ${when}`, dur, ev.recurring ? 'Recurring event' : '', ev.organizer ? 'Organiser' : '']
+        const facts = [`Calendar: ${when}`, dur, part && part.afterHours ? 'After working hours' : '', ev.recurring ? 'Recurring event' : '', ev.organizer ? 'Organiser' : '']
             .filter(Boolean).join(' · ');
         return [lead, facts].filter(Boolean).join('\n\n');
     }
@@ -1288,6 +1340,7 @@ var RL_RECAP_CAL = (function () {
         CAL_SECRET_RE, CAL_RULES,
         calMaskSubject, calKindOf, calParseLocal, calNormalizeEvent, calIsBookable,
         calMergedMinutes, calAllocate, calRemainingWorkday, calEntryNote, calClock, calDuration,
+        CAL_DAY_END, calDayEndMin, calDayEndLabel, calSplitAtDayEnd,
         weekCheckupPlan, calErrorFor, calNeedsSignin, weekOptionsDefaults, weekOptionsLine,
         calPickToken, calWeekDates, calRequestLive, calAnswerFor,
     };
@@ -2083,6 +2136,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { cappedGapCredit, dayEndExtension, eventGapCapMs } = RL_RECAP_TIME;
 
     const { calNormalizeEvent, calAllocate, calRemainingWorkday, calEntryNote, calClock, weekCheckupPlan, calErrorFor, calNeedsSignin } = RL_RECAP_CAL;
+    const { CAL_DAY_END, calDayEndMin, calDayEndLabel } = RL_RECAP_CAL; // v4.160
     const { weekOptionsDefaults, weekOptionsLine } = RL_RECAP_CAL; // v4.154
     const { calPickToken, calWeekDates, calRequestLive, calAnswerFor } = RL_RECAP_CAL; // v4.155
     const { timesheetWeekFromPage, panelDateForWeek, dayHeaderIso, dayTotalVerdict } = RL_RECAP_TIME;
@@ -2106,7 +2160,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.159';
+    const SCRIPT_VERSION   = '4.160';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2566,6 +2620,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_ZD_PLANT_FIELD = 'zd_plant_field'; // id of the "Plant ID" ticket field, looked up once
     const KEY_CAL_ASKED   = 'cal_ask_date';  // 'YYYY-MM-DD' Book week last ASKED about the calendar (v4.129)
     const KEY_WEEK_FILL   = 'week_fill_mode'; // v4.154: Book week fills each day to the workday ('fill') or books actual time ('actual')
+    const KEY_CAL_DAY_END = 'cal_day_end';    // v4.160: 'HH:MM' — calendar time after this is overtime: unticked, warned
+    const calDayEnd = () => calDayEndMin(GM_getValue(KEY_CAL_DAY_END, CAL_DAY_END));
     // Rocketlane REQUIRES a project on every time entry (verified live: 160 historical entries, zero
     // project-less; the activities dialog keeps its submit disabled until a project is chosen), and
     // this tenant has no meetings/admin project. So calendar rows book against a project the user
@@ -2856,9 +2912,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return { rows: [], error: res.error || 'calendar unavailable', code: res.code || 'read' };
     }
     function calPrice(events, workdayMin) {
-        return calAllocate(events || [], workdayMin, ROUND_TO_MIN)
+        return calAllocate(events || [], workdayMin, ROUND_TO_MIN, calDayEnd())
             .filter(a => a.minutes > 0)
-            .map(a => ({ ev: a.ev, minutes: a.minutes, category: CAL_CATEGORY[a.ev.kind] || CAL_CATEGORY.internal }));
+            .map(a => ({ ev: a.ev, minutes: a.minutes, category: CAL_CATEGORY[a.ev.kind] || CAL_CATEGORY.internal,
+                startTs: a.startTs, endTs: a.endTs, afterHours: !!a.afterHours, split: !!a.split })); // v4.160: the piece booked
     }
     // kind → the tenant's category NAME (verified live 2026-08-31: all four exist).
     const CAL_CATEGORY = {
@@ -4126,6 +4183,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-row { display: flex; gap: 7px; align-items: flex-start; padding: 4px 0; border-top: 1px solid #eef1f6; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-st { flex: none; width: 18px; text-align: center; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-cb { width: 14px; height: 14px; margin: 1px 0 0; accent-color: #0f62fe; cursor: pointer; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-latewarn { margin: 8px 0; padding: 10px 12px; border: 2px solid #d97706; border-left-width: 6px; border-radius: 6px; background: #fff7ed; color: #7c2d12; font-size: 13px; line-height: 1.45; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-latewarn > b:first-child { font-size: 14px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-latewarn ul { margin: 6px 0 0; padding-left: 18px; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-late { color: #b45309; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-proj { font-size: 11px; max-width: 190px; padding: 1px 2px; border: 1px solid #c6c6c6; border-radius: 4px; background: #fff; color: #21272a; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt { flex: 1; line-height: 1.35; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt small { color: #6f6f6f; }
@@ -4186,6 +4247,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         #${WEEK_ID} .rl-week-opt { display: block; margin: 6px 0; cursor: pointer; line-height: 1.35; }
         #${WEEK_ID} .rl-week-opt small { display: block; color: #6f6f6f; margin-left: 22px; font-weight: 400; }
         #${WEEK_ID} .rl-week-opt input[data-o=hours] { width: 52px; padding: 1px 4px; margin: 0 2px; }
+        #${WEEK_ID} .rl-week-opt input[data-o=dayend] { width: 46px; padding: 0 3px; margin: 0 2px; font-size: 11px; }
         #${WEEK_ID} .rl-week-nav { float: right; display: inline-flex; gap: 4px; align-items: center; }
         #${WEEK_ID} .rl-week-cal { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; font-weight: 400; cursor: pointer; padding: 0 4px; user-select: none; }
         #${WEEK_ID} .rl-week-cal input { margin: 0; cursor: pointer; }
@@ -4447,7 +4509,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     // Calendar rows about to be booked — not the ones already on the sheet (those are in `min`).
                     const h = parseFloat(workdayInput.value) || DEFAULT_WORKDAY_HOURS;
                     const planned = calPlanEntries(calPrice(hit.events, Math.round(h * 60)), await rlCategories(), entries);
-                    calMin = planned.filter(e => e.status !== 'already-booked').reduce((n, e) => n + (e.minutes || 0), 0);
+                    calMin = planned.filter(e => e.status !== 'already-booked' && !e.afterHours).reduce((n, e) => n + (e.minutes || 0), 0);
                 }
                 const min = entries.reduce((n, e) => n + (Number(e && e.minutes) > 0 ? Number(e.minutes) : 0), 0);
                 const prev = lastSheet;
@@ -6061,27 +6123,35 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const projectName = GM_getValue(KEY_CAL_PROJECT_NAME, '') || null;
         for (const r of (calRows || [])) {
             // The line Rocketlane shows leads with the FULL range, not just the start (v4.124):
-            // "09:00–10:00 Ukesmøte" reads as the meeting it came from.
-            const actRaw = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + '–' + calClock(r.ev.endTs) + ' '}${r.ev.subject}`.trim();
+            // "09:00–10:00 Ukesmøte" reads as the meeting it came from. A piece of an event cut at the end
+            // of the working day (v4.160) leads with ITS range: "15:30–16:00 Prosjektmøte", "16:00–16:30 …".
+            const s0 = Number.isFinite(r.startTs) ? r.startTs : r.ev.startTs, e0 = Number.isFinite(r.endTs) ? r.endTs : r.ev.endTs;
+            const actRaw = `${r.ev.allDay ? '' : calClock(s0) + '–' + calClock(e0) + ' '}${r.ev.subject}`.trim();
             const act = scrubForTimesheet(actRaw); // v4.149: a phone number or a dial-in PIN in a subject stays out of Rocketlane
+            // The whole event's name: what an entry booked before v4.160 (uncut) carries.
+            const actWhole = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + '–' + calClock(r.ev.endTs) + ' '}${r.ev.subject}`.trim();
             // Entries booked before v4.124 carry only the start time ("09:00 Ukesmøte"). Match those too,
             // or a re-run of an already-booked day would read them as new and book the meeting twice.
             const actLegacy = `${r.ev.allDay ? '' : calClock(r.ev.startTs) + ' '}${r.ev.subject}`.trim();
             const catId = cats[r.category] || null;
+            const names = new Set([act, actRaw, actWhole, scrubForTimesheet(actWhole), actLegacy, scrubForTimesheet(actLegacy)]);
             const dupe = !!catId && (existing || []).some(e => {
                 if (!(e.category && e.category.categoryId === catId)) return false;
-                const name = String(e.activityName || '').trim();
-                return name === act || name === actRaw || name === actLegacy || name === scrubForTimesheet(actLegacy);
+                return names.has(String(e.activityName || '').trim());
             });
-            out.push({
+            const row = {
                 calendar: true,
-                plant_id: null, plant: r.ev.allDay ? 'All day' : `${calClock(r.ev.startTs)}–${calClock(r.ev.endTs)}`,
+                plant_id: null, plant: r.ev.allDay ? 'All day' : `${calClock(s0)}–${calClock(e0)}`,
                 projectId, projectName,
                 taskId: null, taskName: null, taskGuess: false,
                 category: r.category, categoryId: catId, minutes: r.minutes,
-                activityName: act, notes: calEntryNote(Object.assign({}, r.ev, { subject: scrubForTimesheet(r.ev.subject) }), r.minutes),
+                activityName: act, notes: calEntryNote(Object.assign({}, r.ev, { subject: scrubForTimesheet(r.ev.subject) }), r.minutes,
+                    { startTs: s0, endTs: e0, afterHours: !!r.afterHours, split: !!r.split }),
                 status: dupe ? 'already-booked' : !catId ? 'no-category' : !projectId ? 'no-project' : 'ready',
-            });
+            };
+            // v4.160: after working hours → shown, unticked, and warned about; booked only when ticked.
+            if (r.afterHours) { row.afterHours = true; row.calSplit = !!r.split; row.selected = false; }
+            out.push(row);
         }
         return out;
     }
@@ -6469,14 +6539,35 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
     // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
     // same one: after this booking, does the day read 7,5 h? Silence means it does.
+    // The BIG warning (v4.160, Thomas: "a big warning when it happens on calendar import … everything over
+    // 16:00"): every calendar piece after working hours, listed, with what happens to it.
+    function calLateWarnHtml(rows, dayOf) {
+        const late = (rows || []).filter(e => e && e.calendar && e.afterHours && e.status !== 'already-booked');
+        if (!late.length) return '';
+        const end = calDayEndLabel(calDayEnd());
+        const items = late.map(e => `<li>${dayOf ? escapeHtml(dayOf(e)) + ' · ' : ''}<b>${escapeHtml(e.activityName)}</b> — ${fmtMinutes(e.minutes)}`
+            + (e.calSplit ? ` <small>(the part of the meeting after ${end})</small>` : '') + '</li>').join('');
+        const one = late.length === 1;
+        return `<div class="bookplan-latewarn">🌙 <b>After working hours — after ${end}.</b> ${one ? 'This calendar entry is' : `These ${late.length} calendar entries are`} `
+            + `<b>NOT booked</b> unless you tick ${one ? 'it' : 'them'} below. Ticked, ${one ? 'it comes' : 'they come'} on top of the day as overtime; `
+            + `the plant work is not cut for ${one ? 'it' : 'them'}.<ul>${items}</ul></div>`;
+    }
+    function lateRowHtml(e) {
+        return e && e.calendar && e.afterHours ? ` · <b class="bookplan-late">🌙 after ${escapeHtml(calDayEndLabel(calDayEnd()))} — not booked unless ticked</b>` : '';
+    }
     function budgetWarnHtml(budget) {
         if (!budget || !budget.workday) return '';
+        // v4.160: ticked calendar time after working hours is on top of the day — say so under any banner.
+        const late = budget.after ? `<div class="bookplan-warn">🌙 Plus <b>${fmtMinutes(budget.after)}</b> after working hours that you ticked — on top of the ${fmtMinutes(budget.workday)} day.</div>` : '';
+        return budgetMainHtml(budget) + late;
+    }
+    function budgetMainHtml(budget) {
         const t = m => fmtMinutes(m);
         // Actual time (v4.154; also the panel's "Distribute to total" off): nothing is filled, so say what
         // the day WILL total against the workday — and first, because "no plant time is added" is not true
         // here: the plant rows book their estimates whatever the sheet already holds.
         if (!budget.normalized && budget.hasPlantRows) {
-            const d = budget.projected - budget.workday;
+            const d = budget.projected - (budget.after || 0) - budget.workday;
             return `<div class="bookplan-warn">🕑 <b>Actual time on the plants</b> — the estimates as they are, not filled to ${t(budget.workday)}. ` +
                 `This day will total <b>${t(budget.projected)}</b>` +
                 (d > 1 ? `, ${t(d)} over ${t(budget.workday)}` : d < -1 ? `, ${t(-d)} under ${t(budget.workday)}` : '') +
@@ -6735,7 +6826,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         }).then(plan => {
             hideBookProgress(box);
             if (!plan.length) { box.innerHTML = '<div class="bookplan-head">Nothing bookable for this date.</div>' + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '') + '<div class="bookplan-foot"><button type="button" data-b="cancel">Close</button></div>'; wire(); return; }
-            const ready = plan.filter(e => e.status === 'ready');
+            const ready = plan.filter(e => e.status === 'ready' && e.selected !== false); // v4.160: an unticked after-hours row books nothing
             const teamProjects = plan._teamProjects || [];
             const rememberedFallback = GM_getValue('book_fallback_project', 0);
             const rememberedCal = GM_getValue(KEY_CAL_PROJECT, 0);
@@ -6747,13 +6838,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // same mechanism with their own remembered project, since meetings have no project at all.
             const lines = plan.map((e, i) =>
                 `<div class="bookplan-row" data-i="${i}">
-                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="' + (e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
+                    <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb"' + (e.selected === false ? '' : ' checked') + ' title="' + (e.afterHours ? 'After working hours — tick to book it anyway (on top of the day)' : e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
                         : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b class="bookplan-min">${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${splitHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${splitHtml(e)}${lateRowHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                 </div>`).join('');
-            const warn = (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
+            const warn = calLateWarnHtml(plan) // v4.160: the big one first
+                + (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
                 + (calError ? `<div class="bookplan-warn">🗓 Calendar: ${esc(calError)}.</div>` : '')
                 + (zdWarnText(visits._zd) ? `<div class="bookplan-warn">${esc(zdWarnText(visits._zd))}</div>` : '')
                 + ((pw => pw && !(iso >= pw && iso <= addDaysISO(pw, 6))
@@ -7343,7 +7435,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const scanNote = d.scan ? 'no full scan has run today — recommended' : 'a full scan or IWMAC All logs already covered today';
             box.innerHTML = headHtml() + `<div class="rl-week-opts">
                 <div class="rl-week-opts-title">What should go into this week?</div>
-                <label class="rl-week-opt"><input type="checkbox" data-o="cal"${d.cal ? ' checked' : ''}> 🗓 <b>Outlook calendar</b><small>meetings, planning and courses as their own entries, at their real length</small></label>
+                <label class="rl-week-opt"><input type="checkbox" data-o="cal"${d.cal ? ' checked' : ''}> 🗓 <b>Outlook calendar</b><small>meetings, planning and courses as their own entries, at their real length — anything after <input type="text" data-o="dayend" maxlength="5" value="${escapeHtml(calDayEndLabel(calDayEnd()))}"> is after working hours: shown with a warning, not booked unless you tick it</small></label>
                 <label class="rl-week-opt"><input type="checkbox" data-o="zd"${d.zd ? ' checked' : ''}> ✉ <b>Zendesk</b><small>the cases you commented on go into the notes; a plant you only worked on in Zendesk becomes a small Support entry</small></label>
                 <div class="rl-week-opts-title">Time per day</div>
                 <label class="rl-week-opt"><input type="radio" name="rl-week-fill" data-o="fill" value="fill"${d.fill === 'fill' ? ' checked' : ''}> <b>Fill each day to <input type="number" data-o="hours" step="0.5" min="0.5" max="24" value="${d.hours}"> h</b><small>hours already on the sheet and meetings come off first; your plant work shares the rest</small></label>
@@ -7360,6 +7452,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const h = parseFloat(q('[data-o=hours]').value);
                 const hours = Number.isFinite(h) && h > 0 && h <= 24 ? h : d.hours;
                 const scan = !!q('[data-o=scan]').checked;
+                GM_setValue(KEY_CAL_DAY_END, calDayEndLabel(calDayEndMin(q('[data-o=dayend]').value))); // v4.160; unreadable → 16:00
                 if (cal !== !!GM_getValue(KEY_CAL_ENABLED, false)) { GM_setValue(KEY_CAL_ENABLED, cal); if (!cal) _calCache.clear(); calResetSignin(); }
                 if (zd !== (GM_getValue(KEY_ZD_ENABLED, true) !== false)) { GM_setValue(KEY_ZD_ENABLED, zd); _zdWeek.clear(); _zdDownUntil = 0; }
                 GM_setValue(KEY_WEEK_FILL, fill);
@@ -7465,7 +7558,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             let html = '';
             for (const day of days) {
                 const unsafe = day.plan._dedupeOk === false; // can't see what's already booked ⇒ never book this day
-                const ready = day.plan.filter(e => e.status === 'ready');
+                const ready = day.plan.filter(e => e.status === 'ready' && e.selected !== false); // v4.160: unticked after-hours rows book nothing
                 const already = day.plan.filter(e => e.status === 'already-booked').length;
                 const noCat = day.plan.filter(e => e.status === 'no-category').length;
                 const mins = ready.reduce((s, e) => s + e.minutes, 0);
@@ -7484,18 +7577,22 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const i = rows.length;
                     rows.push({ e, day });
                     html += `<div class="bookplan-row" data-i="${i}">
-                        <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb" checked title="' + (e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
+                        <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb"' + (e.selected === false ? '' : ' checked') + ' title="' + (e.afterHours ? 'After working hours — tick to book it anyway (on top of the day)' : e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
                             : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b class="bookplan-min">${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${splitHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${splitHtml(e)}${lateRowHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
                     </div>`;
                 }
             }
-            const readyRows = rows.filter(r => r.e.status === 'ready');
+            const readyRows = rows.filter(r => r.e.status === 'ready' && r.e.selected !== false);
             const signinDays = days.filter(d => calNeedsSignin(d.calCode)).length;
+            // v4.160: every calendar piece after working hours this week, in one big banner on top.
+            const dayOfRow = new Map(rows.map(r => [r.e, `${r.day.wd} ${isoToNorwegianDate(r.day.iso)}`]));
+            const lateWarn = calLateWarnHtml(rows.map(r => r.e), e => dayOfRow.get(e) || '');
             const zdWarn = (days.map(d => zdWarnText(d.zd)).find(Boolean)) || '';
             box.innerHTML = headHtml() + (opts ? `<div class="rl-week-info">⚙ ${escapeHtml(weekOptionsLine(opts))}</div>` : '')
+                + lateWarn
                 + (weekWarn ? `<div class="bookplan-warn">${weekWarn}</div>` : '')
                 + (zdWarn ? `<div class="bookplan-warn">${escapeHtml(zdWarn)}</div>` : '')
                 + nonBillableWarnHtml([].concat(...days.map(d => d.plan || [])))
