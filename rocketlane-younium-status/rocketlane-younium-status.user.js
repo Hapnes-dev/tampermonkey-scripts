@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.53.0
+// @version      1.54.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8432,11 +8432,112 @@
     });
   }
 
+  /**
+   * Server-side filter for the timeline's own fetch (v1.54.0): not completed AND
+   * owned by this user. Measured on the live tenant against the home panel's
+   * tenant-wide scan: 1 request / 15 rows / 317 KB instead of 5 requests / 417 rows /
+   * 8.3 MB. `projectOwner` with `oneOf` is the same native field Rocketlane's own
+   * Projects page groups by.
+   */
+  function rlTlOwnerFilter(userId) {
+    return {
+      nativeFields: [
+        { name: "status", operation: "isNot", value: "3", sourceType: "project" },
+        { name: "projectOwner", operation: "oneOf", value: String(userId || ""), sourceType: "project" },
+      ],
+      customFields: [],
+      match: "all",
+      nestedFilter: [],
+    };
+  }
+
+  /**
+   * What the timeline actually draws from a project list, as one string: id, start
+   * and status per project, order-independent. A background refresh re-renders only
+   * when this changes, so a cached paint does not flicker for nothing.
+   */
+  function rlTlSignature(projects) {
+    return (projects || [])
+      .filter((p) => p && p.id)
+      .map((p) => [p.id, String(p.start || ""), String(p.status || ""), String(p.name || "")].join("|"))
+      .sort()
+      .join("\n");
+  }
+
   // @@rlTimelineHelpers:end
+
+  // ── Timeline loading (v1.54.0, Thomas: "is it possible to improve loading of projects?") ──
+  // Two changes. (1) Cache first: the timeline paints at once from its own small
+  // cache (memory, then GM storage — survives page loads, 24 h) and refreshes in the
+  // background, re-rendering only if something it draws changed. (2) Fetch only HIS
+  // projects: one owner-filtered lightV1 call instead of borrowing the home panel's
+  // tenant-wide scan (5 requests, 417 rows, 8.3 MB measured). If the filtered call
+  // ever fails, it falls back to that scan, which has always worked.
+  const RL_TL_GM_CACHE = "rltlMineCache";
+  const RL_TL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  // A filtered owner list is a few dozen at most. A count this high means the server
+  // ignored the owner filter and returned the tenant — never trust that as "mine".
+  const RL_TL_SANE_MAX = 300;
+  let rlTlMem = null;
+  let rlTlInflight = null;
+
+  function rlTlPeekMine(userId) {
+    const me = String(userId || "");
+    if (!me) return null;
+    if (rlTlMem && rlTlMem.userId === me) return rlTlMem;
+    try {
+      const raw = GM_getValue(RL_TL_GM_CACHE, "");
+      if (!raw) return null;
+      const j = JSON.parse(raw);
+      if (!j || j.v !== 1 || String(j.userId) !== me || !Array.isArray(j.projects)) return null;
+      if (!(Date.now() - Number(j.at || 0) < RL_TL_CACHE_MAX_AGE_MS)) return null;
+      rlTlMem = { at: Number(j.at), userId: me, projects: j.projects };
+      return rlTlMem;
+    } catch (_) { return null; }
+  }
+
+  function rlTlWriteMine(cache) {
+    rlTlMem = cache;
+    try { GM_setValue(RL_TL_GM_CACHE, JSON.stringify({ v: 1, at: cache.at, userId: cache.userId, projects: cache.projects })); } catch (_) {}
+  }
+
+  async function rlTlFetchMine(userId) {
+    const filter = rlTlOwnerFilter(userId);
+    const first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE, filter);
+    const rows = Array.isArray(first && first.data) ? first.data.slice() : [];
+    const total = typeof (first && first.count) === "number" ? first.count : rows.length;
+    if (total > RL_TL_SANE_MAX) throw new Error("owner filter ignored (" + total + " rows)");
+    for (let off = RL_HP_PAGE_SIZE; off < total; off += RL_HP_PAGE_SIZE) {
+      const page = await rlHpFetchLightPage(off, RL_HP_PAGE_SIZE, filter);
+      if (Array.isArray(page && page.data)) rows.push(...page.data);
+    }
+    // Same keep → normalise → not-completed pipeline as the home panel's owner
+    // bucket (drops "[Tracker] Workload Sync"), then the owner check once more.
+    return rlTlMineOnly(rlHpFilterNormalizeBucket(rows, userId, rlHpShouldKeepOwnerProject), userId);
+  }
+
+  async function rlTlLoadMine() {
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) throw new Error("No Rocketlane user id in __api_key yet — reload once logged in.");
+    if (rlTlInflight) return rlTlInflight;
+    rlTlInflight = (async () => {
+      let projects;
+      try {
+        projects = await rlTlFetchMine(userId);
+      } catch (e) {
+        console.warn("[Rocketlane improvements] timeline owner fetch failed, using the full scan:", (e && e.message) || e);
+        const buckets = await rlHpLoadProjects({ revalidate: true });
+        projects = rlTlMineOnly(buckets && buckets.ownerProjects, userId);
+      }
+      rlTlWriteMine({ at: Date.now(), userId: String(userId), projects });
+      return projects;
+    })();
+    try { return await rlTlInflight; } finally { rlTlInflight = null; }
+  }
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.53.0";
+  const RL_TL_STYLE_READY = "1.54.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8495,8 +8596,10 @@
 #${RL_TL_OVERLAY_ID} table.rltlTable a:hover{color:var(--rltl-accent);text-decoration:underline;}
 #${RL_TL_OVERLAY_ID} .rltlState{padding:40px 4px;color:var(--rltl-muted);font-size:18px;}
 #${RL_TL_OVERLAY_ID} .rltlHead{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;}
+#${RL_TL_OVERLAY_ID} .rltlHeadRight{display:flex;flex-direction:column;align-items:flex-end;gap:10px;margin:0 0 40px;}
 #${RL_TL_OVERLAY_ID} .rltlRange{display:inline-flex;background:var(--rltl-card);border-radius:14px;padding:5px;
-  box-shadow:0 4px 16px rgba(108,74,182,.10);margin:0 0 40px;}
+  box-shadow:0 4px 16px rgba(108,74,182,.10);}
+#${RL_TL_OVERLAY_ID} .rltlSync{color:var(--rltl-muted);font-size:13px;min-height:16px;}
 #${RL_TL_OVERLAY_ID} .rltlRangeBtn{border:0;background:transparent;color:var(--rltl-muted);font:600 16px Inter,-apple-system,sans-serif;
   padding:10px 20px;border-radius:10px;cursor:pointer;white-space:nowrap;}
 #${RL_TL_OVERLAY_ID} .rltlRangeBtn:hover{color:var(--rltl-accent);background:var(--rltl-accent-soft);}
@@ -8570,7 +8673,8 @@
       '<div class="rltlHead"><div>' +
       '<h1 class="rltlTitle">Project Timeline</h1>' +
       '<p class="rltlSub"></p>' +
-      '</div><div class="rltlRange" role="group" aria-label="How far ahead"></div></div>' +
+      '</div><div class="rltlHeadRight"><div class="rltlRange" role="group" aria-label="How far ahead"></div>' +
+      '<div class="rltlSync"></div></div></div>' +
       '<div class="rltlCard"><div class="rltlState">Reading your projects…</div></div>' +
       '<div class="rltlAttentionHost"></div>' +
       '<p class="rltlFoot"></p>' +
@@ -8581,17 +8685,36 @@
     document.addEventListener("keydown", rlTlOnKeydown, true);
     overlay._rltlMonths = rlTlNormalizeHorizon(GM_getValue("rltlHorizonMonths", RL_TL_DEFAULT_MONTHS));
 
-    rlHpLoadProjects({ revalidate: true })
-      .then((buckets) => {
+    const sync = overlay.querySelector(".rltlSync");
+    const setSync = (text) => { if (sync) sync.textContent = text; };
+    const paint = (mine) => {
+      // Projects of his that cannot sit on a timeline (no start date) are named in a
+      // footnote, so the count never silently disagrees with Rocketlane's own list.
+      overlay._rltlUndated = (mine || []).filter((p) => p && Number.isNaN(rlTlDayMs(p.start)) &&
+        String(p.status || "") !== "completed");
+      rlTlRender(overlay, rlTlPickProjects(mine));
+    };
+
+    // Cache first: paint instantly from the last result, then refresh behind it.
+    const cached = rlTlPeekMine(rlHpReadCurrentUserId());
+    if (cached) {
+      paint(cached.projects);
+      setSync("Updated " + rlHpFmtClock(cached.at) + " · refreshing…");
+    }
+    rlTlLoadMine()
+      .then((mine) => {
         if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
-        const mine = rlTlMineOnly(buckets && buckets.ownerProjects, rlHpReadCurrentUserId());
-        // Projects of his that cannot sit on a timeline (no start date) are named in a
-        // footnote, so the count never silently disagrees with Rocketlane's own list.
-        overlay._rltlUndated = mine.filter((p) => p && Number.isNaN(rlTlDayMs(p.start)) &&
-          String(p.status || "") !== "completed");
-        rlTlRender(overlay, rlTlPickProjects(mine));
+        // Re-render only when something the timeline draws actually changed.
+        if (!cached || rlTlSignature(mine) !== rlTlSignature(cached.projects)) paint(mine);
+        setSync("Updated " + rlHpFmtClock(Date.now()));
       })
       .catch((err) => {
+        if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
+        if (cached) {
+          // Keep the cached view; just say it could not be refreshed.
+          setSync("Couldn't refresh — showing " + rlHpFmtClock(cached.at));
+          return;
+        }
         const card = overlay.querySelector(".rltlCard");
         if (card) card.innerHTML = '<div class="rltlState"></div>';
         const state = overlay.querySelector(".rltlState");
