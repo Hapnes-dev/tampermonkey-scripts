@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.160
+// @version      4.161
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2160,7 +2160,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.160';
+    const SCRIPT_VERSION   = '4.161';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -6151,6 +6151,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             };
             // v4.160: after working hours → shown, unticked, and warned about; booked only when ticked.
             if (r.afterHours) { row.afterHours = true; row.calSplit = !!r.split; row.selected = false; }
+            // v4.161: the meeting a piece belongs to, so the warning names each meeting once — and the part
+            // BEFORE the end of a meeting that runs past it is flagged too (it is ticked, and easy to miss).
+            if (r.afterHours || r.split) {
+                row.calKey = String(r.ev.id || '') + '|' + r.ev.startTs;
+                row.calWhole = scrubForTimesheet(actWhole);
+                row.calUntil = calClock(r.ev.endTs);
+            }
+            if (r.split && !r.afterHours) row.calCrosses = true;
             out.push(row);
         }
         return out;
@@ -6540,20 +6548,43 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // The workday-total banner (v4.130). Both flows show the same sentence, because the question is the
     // same one: after this booking, does the day read 7,5 h? Silence means it does.
     // The BIG warning (v4.160, Thomas: "a big warning when it happens on calendar import … everything over
-    // 16:00"): every calendar piece after working hours, listed, with what happens to it.
+    // 16:00"; v4.161: "can you give warning if meeting last over 16:00"). One line per MEETING that runs
+    // past the end of the working day or lies after it, saying what happens to each part: the part before
+    // the end is ticked — a 15:30 "Gaming & Pizza" would otherwise book its first half hour unnoticed — and
+    // the part after is not booked unless ticked.
     function calLateWarnHtml(rows, dayOf) {
-        const late = (rows || []).filter(e => e && e.calendar && e.afterHours && e.status !== 'already-booked');
-        if (!late.length) return '';
         const end = calDayEndLabel(calDayEnd());
-        const items = late.map(e => `<li>${dayOf ? escapeHtml(dayOf(e)) + ' · ' : ''}<b>${escapeHtml(e.activityName)}</b> — ${fmtMinutes(e.minutes)}`
-            + (e.calSplit ? ` <small>(the part of the meeting after ${end})</small>` : '') + '</li>').join('');
-        const one = late.length === 1;
-        return `<div class="bookplan-latewarn">🌙 <b>After working hours — after ${end}.</b> ${one ? 'This calendar entry is' : `These ${late.length} calendar entries are`} `
-            + `<b>NOT booked</b> unless you tick ${one ? 'it' : 'them'} below. Ticked, ${one ? 'it comes' : 'they come'} on top of the day as overtime; `
-            + `the plant work is not cut for ${one ? 'it' : 'them'}.<ul>${items}</ul></div>`;
+        const meetings = new Map(); // calKey -> { before, after }
+        for (const e of rows || []) {
+            if (!e || !e.calendar || !(e.afterHours || e.calCrosses)) continue;
+            const key = e.calKey || e.activityName;
+            const m = meetings.get(key) || { before: null, after: null };
+            if (e.afterHours) m.after = e; else m.before = e;
+            meetings.set(key, m);
+        }
+        const live = [...meetings.values()].filter(m => [m.before, m.after].some(e => e && e.status !== 'already-booked'));
+        if (!live.length) return '';
+        const part = (e, late) => e.status === 'already-booked' ? `${escapeHtml(e.plant)} is already on the sheet`
+            : late ? `${escapeHtml(e.plant)} (${fmtMinutes(e.minutes)}) is <b>NOT booked</b> unless you tick it`
+            : e.status === 'ready' && e.selected !== false ? `${escapeHtml(e.plant)} (${fmtMinutes(e.minutes)}) is ticked to book — untick it if it was not work`
+            : `${escapeHtml(e.plant)} (${fmtMinutes(e.minutes)}) is not ticked`;
+        const items = live.map(m => {
+            const any = m.before || m.after;
+            const day = dayOf ? escapeHtml(dayOf(any)) + ' · ' : '';
+            const name = `<b>${escapeHtml(any.calWhole || any.activityName)}</b>`;
+            const parts = [m.before && part(m.before, false), m.after && part(m.after, true)].filter(Boolean).join('; ');
+            return `<li>${day}${name} ${m.before ? `runs past ${end}` : `is after ${end}`}: ${parts}.</li>`;
+        }).join('');
+        const n = live.length;
+        return `<div class="bookplan-latewarn">🌙 <b>${n === 1 ? 'A meeting' : n + ' meetings'} outside working hours — after ${end}.</b>`
+            + `<ul>${items}</ul>Ticked, time after ${end} comes on top of the day as overtime; the plant work is not cut for it.</div>`;
     }
     function lateRowHtml(e) {
-        return e && e.calendar && e.afterHours ? ` · <b class="bookplan-late">🌙 after ${escapeHtml(calDayEndLabel(calDayEnd()))} — not booked unless ticked</b>` : '';
+        if (!e || !e.calendar) return '';
+        const end = escapeHtml(calDayEndLabel(calDayEnd()));
+        if (e.afterHours) return ` · <b class="bookplan-late">🌙 after ${end} — not booked unless ticked</b>`;
+        if (e.calCrosses) return ` · <b class="bookplan-late">⚠ the meeting runs past ${end}${e.calUntil ? ` (until ${escapeHtml(e.calUntil)})` : ''} — only the part before ${end} is ticked; untick it if it was not work</b>`;
+        return '';
     }
     function budgetWarnHtml(budget) {
         if (!budget || !budget.workday) return '';
@@ -7565,10 +7596,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // With the calendar on, a day that returned no events says so — "no plant work" alone
                 // would read as "nothing happened" when it may mean the calendar was never consulted.
                 const calNote = calOn && !day.err && day.cal === 0 ? ' · 🗓 no calendar events' : '';
+                // v4.161: meetings that run past (or lie after) the end of the working day, counted on the day.
+                const lateMeet = new Set(day.plan.filter(e => e.calendar && (e.afterHours || e.calCrosses) && e.status !== 'already-booked').map(e => e.calKey || e.activityName)).size;
+                const lateNote = lateMeet ? ` · 🌙 ${lateMeet} meeting${lateMeet === 1 ? '' : 's'} past ${calDayEndLabel(calDayEnd())}` : '';
                 const side = day.err ? (calNeedsSignin(day.calCode) ? (day.calCode === 'signin-likely' ? '⚠ Outlook did not answer — day skipped' : '⚠ not signed in to Outlook — day skipped') : '⚠ ' + esc(day.err))
                     : !day.plan.length ? 'no plant work' + calNote
                     : unsafe ? '⚠ can’t verify what’s booked — day skipped'
-                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}`;
+                    : `${ready.length ? `${ready.length} to book · ${fmtMinutes(mins)}` : 'nothing new'}${already ? ` · ⏭ ${already} already booked` : ''}${noCat ? ` · ⚠ ${noCat} missing category — flip ‹ › to retry` : ''}${calNote}${lateNote}`;
                 html += `<div class="rl-week-day">${day.wd} ${isoToNorwegianDate(day.iso)} <small>${side}</small></div>`;
                 if (unsafe) continue;
                 html += `<div class="bookplan-budget" data-iso="${esc(day.iso)}">` + budgetWarnHtml(day.plan._budget) + '</div>'; // silent when the day lands on the workday total
