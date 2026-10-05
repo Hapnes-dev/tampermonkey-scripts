@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.51.0
+// @version      1.51.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8309,10 +8309,28 @@
     return f < 0 ? 0 : f > 1 ? 1 : f;
   }
 
-  /** Only owned projects that actually carry a start date can sit on a timeline. */
-  function rlTlPickProjects(ownerProjects) {
-    return (ownerProjects || [])
-      .filter((p) => p && p.id && !Number.isNaN(rlTlDayMs(p.start)))
+  /**
+   * ⚠️ `rlHpLoadProjects().ownerProjects` is the TENANT-WIDE bucket — every open
+   * project grouped by whoever owns it, which the home panel then renders in
+   * per-owner groups. It is NOT "projects I own": measured live it held 409 rows,
+   * only 13 of them Thomas's (the rest Rasmus's, Henrik's, Borger's, …), which is
+   * what made the first timeline a 3,5-year, 32 000px wall. Filter by owner id.
+   */
+  function rlTlMineOnly(projects, userId) {
+    const me = String(userId || "").trim();
+    if (!me) return [];
+    return (projects || []).filter((p) => p && String(p.ownerId || "").trim() === me);
+  }
+
+  /**
+   * Only projects that are mine, not completed, and actually carry a start date can
+   * sit on a timeline. Completed is already dropped upstream by rlHpIsHomeListStatus,
+   * but it is asserted here too — Thomas asked for it twice, and this module should
+   * not silently depend on a filter that lives in another section.
+   */
+  function rlTlPickProjects(projects) {
+    return (projects || [])
+      .filter((p) => p && p.id && String(p.status || "") !== "completed" && !Number.isNaN(rlTlDayMs(p.start)))
       .slice()
       .sort((a, b) => rlTlDayMs(a.start) - rlTlDayMs(b.start) || String(a.name).localeCompare(String(b.name)));
   }
@@ -8347,13 +8365,24 @@
     });
   }
 
-  /** Weekly axis ticks across the window, aligned to the window start. */
-  function rlTlAxisTicks(range) {
+  /**
+   * Axis ticks across the window, aligned to the window start. Weekly by default,
+   * but the step widens to fit `maxTicks` — a real owner list spans months, not the
+   * prototype's five weeks, and 32 weekly ticks over seven months render as an
+   * illegible smear of overlapping dates.
+   */
+  const RL_TL_TICK_STEPS = [7, 14, 28, 56, 91, 182, 364];
+  function rlTlAxisTicks(range, maxTicks) {
     if (!range || range.end <= range.start) return [];
+    const days = Math.round((range.end - range.start) / 86400000);
+    let step = 7;
+    if (typeof maxTicks === "number" && maxTicks > 0) {
+      for (const s of RL_TL_TICK_STEPS) { step = s; if (Math.floor(days / s) + 1 <= maxTicks) break; }
+    }
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const out = [];
-    for (let ms = range.start; ms <= range.end; ms = rlTlAddDays(ms, 7)) {
+    for (let ms = range.start; ms <= range.end; ms = rlTlAddDays(ms, step)) {
       const d = new Date(ms);
-      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       out.push({ ms, label: String(d.getDate()).padStart(2, "0") + " " + months[d.getMonth()] });
     }
     return out;
@@ -8503,7 +8532,8 @@
     rlHpLoadProjects({ revalidate: true })
       .then((buckets) => {
         if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
-        rlTlRender(overlay, rlTlPickProjects(buckets && buckets.ownerProjects));
+        const mine = rlTlMineOnly(buckets && buckets.ownerProjects, rlHpReadCurrentUserId());
+        rlTlRender(overlay, rlTlPickProjects(mine));
       })
       .catch((err) => {
         const card = overlay.querySelector(".rltlCard");
@@ -8629,7 +8659,8 @@
       plot.appendChild(today);
     }
 
-    for (const tick of rlTlAxisTicks(range)) {
+    // ~72px per tick keeps "dd MMM" labels from touching at this font size.
+    for (const tick of rlTlAxisTicks(range, Math.max(2, Math.floor(width / 72)))) {
       const el = document.createElement("div");
       el.className = "rltlTick";
       el.textContent = tick.label;
