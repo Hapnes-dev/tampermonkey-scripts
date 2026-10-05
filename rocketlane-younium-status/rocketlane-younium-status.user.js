@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.50.2
+// @version      1.51.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2036,6 +2036,10 @@
   }
   // Inject the button if missing, then sync it to the current project. Idempotent.
   function ensure() {
+    // The sidebar is global, so the Project Timeline item is ensured on every
+    // route — before the home-path early return, or it would only ever appear
+    // on project pages.
+    try { rlTlEnsureNavItem(); } catch (_) {}
     if (rlHpIsHomePath(location.pathname)) {
       try { rlHpEnsureHomePanel(); } catch (_) {}
       return;
@@ -8233,6 +8237,435 @@
     return modeDesc;
   }
   // @@rlHomeProjectsHelpers:end
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Project Timeline (v1.51.0) — a nav item under Templates opening a timeline
+  // of every project the user OWNS, laid out from today to a week past the last
+  // start date. Ported from Thomas's Dash prototype (Desktop/project_files):
+  // same palette and the same alternating-label spine, but the label layout is
+  // measured in the browser instead of estimated from a character-width guess,
+  // which is what the prototype's notes flagged as its weakest point.
+  // ──────────────────────────────────────────────────────────────────────────
+  // @@rlTimelineHelpers:start
+
+  const RL_TL_TAIL_DAYS = 7;       // the spine runs a week past the last start
+  const RL_TL_TIER_STEP = 1;       // one tier = one extra connector step
+  const RL_TL_LABEL_GAP_PX = 16;   // minimum horizontal gap between two labels
+
+  /** "2026-10-05" → "05 Oct 2026". Empty for anything unparseable. */
+  function rlTlFmtDate(iso) {
+    const s = String(iso || "").slice(0, 10);
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return "";
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return m[3] + " " + months[+m[2] - 1] + " " + m[1];
+  }
+
+  /** Local midnight for an ISO date, so day maths never drifts across a DST edge. */
+  function rlTlDayMs(iso) {
+    const s = String(iso || "").slice(0, 10);
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return NaN;
+    return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+  }
+
+  function rlTlAddDays(ms, days) {
+    const d = new Date(ms);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days).getTime();
+  }
+
+  /**
+   * Timestamp → "YYYY-MM-DD" in LOCAL time. `toISOString()` cannot be used here:
+   * these timestamps are local midnight, so east of UTC it converts them back to
+   * the previous evening and every date in the header, on the axis and under the
+   * TODAY marker lands a day early.
+   */
+  function rlTlIsoOf(ms) {
+    const d = new Date(ms);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  /**
+   * Timeline window. Starts at today — the prototype's brief — but stretches back
+   * when a project already started, so an overdue start is still on the spine
+   * rather than clamped onto the "today" marker. Ends a week past the last start.
+   */
+  function rlTlRangeFor(projects, todayMs) {
+    const starts = (projects || []).map((p) => rlTlDayMs(p && p.start)).filter((n) => !Number.isNaN(n));
+    const t0 = Number.isNaN(todayMs) ? Date.now() : todayMs;
+    if (!starts.length) return { start: t0, end: rlTlAddDays(t0, RL_TL_TAIL_DAYS) };
+    const first = Math.min(t0, ...starts);
+    const last = Math.max(...starts);
+    let end = rlTlAddDays(last, RL_TL_TAIL_DAYS);
+    if (end <= first) end = rlTlAddDays(first, RL_TL_TAIL_DAYS);
+    return { start: first, end };
+  }
+
+  /** Date → 0..1 across the window. Clamped, so a stray date cannot escape the card. */
+  function rlTlPosition(iso, range) {
+    const ms = rlTlDayMs(iso);
+    if (Number.isNaN(ms) || !range || range.end <= range.start) return 0;
+    const f = (ms - range.start) / (range.end - range.start);
+    return f < 0 ? 0 : f > 1 ? 1 : f;
+  }
+
+  /** Only owned projects that actually carry a start date can sit on a timeline. */
+  function rlTlPickProjects(ownerProjects) {
+    return (ownerProjects || [])
+      .filter((p) => p && p.id && !Number.isNaN(rlTlDayMs(p.start)))
+      .slice()
+      .sort((a, b) => rlTlDayMs(a.start) - rlTlDayMs(b.start) || String(a.name).localeCompare(String(b.name)));
+  }
+
+  /** Alternate above/below the spine by index parity, exactly like the prototype. */
+  function rlTlSplitSides(projects) {
+    const above = [], below = [];
+    (projects || []).forEach((p, i) => (i % 2 === 0 ? above : below).push({ project: p, index: i }));
+    return { above, below };
+  }
+
+  /**
+   * Greedy interval stacking. `items` are {centerPx, widthPx} in spine order; the
+   * result is a tier per item. Tier 0 is closest to the spine; an item drops back
+   * to tier 0 as soon as the slot is clear again — the prototype's notes record a
+   * bug where tiers only ever escalated because the check compared against the
+   * previous label instead of the per-tier occupancy, so each tier keeps its own
+   * right edge here.
+   */
+  function rlTlAssignTiers(items, gapPx) {
+    const gap = typeof gapPx === "number" ? gapPx : RL_TL_LABEL_GAP_PX;
+    const tierRight = [];
+    return (items || []).map((it) => {
+      const half = (it && it.widthPx ? it.widthPx : 0) / 2;
+      const left = (it && it.centerPx ? it.centerPx : 0) - half;
+      const right = (it && it.centerPx ? it.centerPx : 0) + half;
+      for (let t = 0; t < tierRight.length; t++) {
+        if (left >= tierRight[t] + gap) { tierRight[t] = right; return t * RL_TL_TIER_STEP; }
+      }
+      tierRight.push(right);
+      return (tierRight.length - 1) * RL_TL_TIER_STEP;
+    });
+  }
+
+  /** Weekly axis ticks across the window, aligned to the window start. */
+  function rlTlAxisTicks(range) {
+    if (!range || range.end <= range.start) return [];
+    const out = [];
+    for (let ms = range.start; ms <= range.end; ms = rlTlAddDays(ms, 7)) {
+      const d = new Date(ms);
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      out.push({ ms, label: String(d.getDate()).padStart(2, "0") + " " + months[d.getMonth()] });
+    }
+    return out;
+  }
+
+  /** The "needs attention" bucket: owned projects whose start date has passed. */
+  function rlTlStartedBeforeToday(projects, todayMs) {
+    const t0 = Number.isNaN(todayMs) ? Date.now() : todayMs;
+    return (projects || []).filter((p) => {
+      const ms = rlTlDayMs(p && p.start);
+      return !Number.isNaN(ms) && ms < t0;
+    });
+  }
+
+  // @@rlTimelineHelpers:end
+
+  const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
+  const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
+  const RL_TL_STYLE_READY = "1.51.0";
+
+  function rlTlInjectStyles() {
+    let style = document.getElementById("rlProjectTimelineStyles");
+    if (style && style.dataset.rlTlReady === RL_TL_STYLE_READY) return;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "rlProjectTimelineStyles";
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.dataset.rlTlReady = RL_TL_STYLE_READY;
+    // Palette lifted from the prototype's assets/style.css.
+    style.textContent = `
+#${RL_TL_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483600;background:rgba(31,27,46,.45);
+  display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:32px 16px;}
+#${RL_TL_OVERLAY_ID} .rltlPage{--rltl-bg:#f6f4fb;--rltl-card:#fff;--rltl-text:#1f1b2e;--rltl-muted:#8a8398;
+  --rltl-accent:#6c4ab6;--rltl-accent-soft:#ece6f9;--rltl-today:#eb6f4d;--rltl-line:#e2dcf0;--rltl-warn-soft:#fdeee8;
+  width:min(1100px,100%);background:var(--rltl-bg);border-radius:20px;padding:40px 32px 48px;
+  font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--rltl-text);position:relative;}
+#${RL_TL_OVERLAY_ID} .rltlClose{position:absolute;top:16px;right:16px;width:32px;height:32px;border:0;border-radius:50%;
+  background:var(--rltl-card);color:var(--rltl-text);font-size:18px;line-height:1;cursor:pointer;box-shadow:0 2px 8px rgba(31,27,46,.12);}
+#${RL_TL_OVERLAY_ID} .rltlClose:hover{background:var(--rltl-accent-soft);}
+#${RL_TL_OVERLAY_ID} .rltlEyebrow{color:var(--rltl-accent);font-weight:600;font-size:13px;letter-spacing:.08em;
+  text-transform:uppercase;margin:0 0 8px;}
+#${RL_TL_OVERLAY_ID} .rltlEyebrow.warn{color:var(--rltl-today);}
+#${RL_TL_OVERLAY_ID} h1.rltlTitle{font-size:32px;font-weight:700;margin:0 0 6px;letter-spacing:-.01em;}
+#${RL_TL_OVERLAY_ID} .rltlSub{color:var(--rltl-muted);font-size:15px;margin:0 0 32px;}
+#${RL_TL_OVERLAY_ID} .rltlCard{background:var(--rltl-card);border-radius:20px;padding:32px 24px 16px;
+  box-shadow:0 12px 32px rgba(108,74,182,.08);}
+#${RL_TL_OVERLAY_ID} .rltlPlot{position:relative;width:100%;}
+#${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;left:0;right:0;height:2px;background:var(--rltl-line);}
+#${RL_TL_OVERLAY_ID} .rltlDot{position:absolute;width:13px;height:13px;border-radius:50%;background:var(--rltl-accent);
+  transform:translate(-50%,-50%);cursor:pointer;}
+#${RL_TL_OVERLAY_ID} .rltlDot:hover{box-shadow:0 0 0 5px var(--rltl-accent-soft);}
+#${RL_TL_OVERLAY_ID} .rltlConn{position:absolute;width:1px;background:var(--rltl-line);transform:translateX(-50%);}
+#${RL_TL_OVERLAY_ID} .rltlLabel{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap;
+  text-decoration:none;color:inherit;}
+#${RL_TL_OVERLAY_ID} .rltlLabel b{display:block;font-size:14px;font-weight:700;}
+#${RL_TL_OVERLAY_ID} .rltlLabel span{display:block;font-size:13px;color:var(--rltl-muted);}
+#${RL_TL_OVERLAY_ID} .rltlLabel:hover b{color:var(--rltl-accent);text-decoration:underline;}
+#${RL_TL_OVERLAY_ID} .rltlToday{position:absolute;transform:translateX(-50%);color:var(--rltl-today);font-size:11px;
+  font-weight:700;letter-spacing:.08em;}
+#${RL_TL_OVERLAY_ID} .rltlTick{position:absolute;transform:translateX(-50%);color:var(--rltl-muted);font-size:12px;}
+#${RL_TL_OVERLAY_ID} .rltlAttention{margin-top:24px;padding-bottom:28px;}
+#${RL_TL_OVERLAY_ID} .rltlAttention h2{font-size:18px;font-weight:600;margin:0 0 20px;}
+#${RL_TL_OVERLAY_ID} table.rltlTable{width:100%;border-collapse:collapse;}
+#${RL_TL_OVERLAY_ID} table.rltlTable th{text-align:left;color:var(--rltl-muted);font-size:12px;font-weight:600;
+  letter-spacing:.04em;text-transform:uppercase;padding:0 12px 10px;border-bottom:1px solid var(--rltl-line);}
+#${RL_TL_OVERLAY_ID} table.rltlTable td{padding:12px;border-bottom:1px solid var(--rltl-line);font-size:14px;vertical-align:middle;}
+#${RL_TL_OVERLAY_ID} table.rltlTable tr:last-child td{border-bottom:none;}
+#${RL_TL_OVERLAY_ID} table.rltlTable tr:hover td{background:var(--rltl-warn-soft);}
+#${RL_TL_OVERLAY_ID} table.rltlTable a{color:inherit;text-decoration:none;}
+#${RL_TL_OVERLAY_ID} table.rltlTable a:hover{color:var(--rltl-accent);text-decoration:underline;}
+#${RL_TL_OVERLAY_ID} .rltlState{padding:28px 4px;color:var(--rltl-muted);font-size:14px;}
+`;
+  }
+
+  /**
+   * The nav item. Rocketlane's sidebar is an antd menu whose styled-components
+   * class hashes change between deploys, so the item is CLONED from the Templates
+   * row rather than rebuilt from hardcoded classes — the clone inherits whatever
+   * the current build calls those classes, including the active/hover states.
+   */
+  function rlTlEnsureNavItem() {
+    if (document.getElementById(RL_TL_NAV_ID)) return;
+    const tplLink = document.querySelector("aside a[href='/templates']");
+    const tplItem = tplLink && tplLink.closest("li");
+    const menu = tplItem && tplItem.parentElement;
+    if (!tplItem || !menu) return;
+
+    const item = tplItem.cloneNode(true);
+    item.id = RL_TL_NAV_ID;
+    item.removeAttribute("data-menu-id");
+    item.classList.remove("ant-menu-item-selected");
+    const link = item.querySelector("a");
+    if (!link) return;
+    link.setAttribute("href", "#project-timeline");
+    link.setAttribute("aria-label", "Project Timeline");
+    link.setAttribute("title", "Project Timeline");
+    // Swap the Templates glyph for a Gantt-style timeline mark. A spine-with-dots
+    // drawing was tried first and read as three loose dots at the rail's 16px —
+    // the spine is under a pixel at that scale. Offset bars stay legible.
+    const svg = link.querySelector("svg");
+    if (svg) {
+      svg.setAttribute("viewBox", "0 0 448 512");
+      svg.setAttribute("data-icon", "timeline");
+      svg.innerHTML =
+        '<rect x="32" y="112" width="256" height="56" rx="28" fill="currentColor"/>' +
+        '<rect x="128" y="228" width="288" height="56" rx="28" fill="currentColor"/>' +
+        '<rect x="64" y="344" width="200" height="56" rx="28" fill="currentColor"/>';
+    }
+    link.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      rlTlOpenOverlay();
+    });
+    menu.insertBefore(item, tplItem.nextSibling);
+  }
+
+  function rlTlCloseOverlay() {
+    const el = document.getElementById(RL_TL_OVERLAY_ID);
+    if (el) el.remove();
+    document.removeEventListener("keydown", rlTlOnKeydown, true);
+  }
+
+  function rlTlOnKeydown(ev) {
+    if (ev.key === "Escape") { ev.stopPropagation(); rlTlCloseOverlay(); }
+  }
+
+  function rlTlOpenOverlay() {
+    if (document.getElementById(RL_TL_OVERLAY_ID)) { rlTlCloseOverlay(); return; }
+    rlTlInjectStyles();
+    const overlay = document.createElement("div");
+    overlay.id = RL_TL_OVERLAY_ID;
+    overlay.innerHTML =
+      '<div class="rltlPage" role="dialog" aria-label="Project Timeline">' +
+      '<button type="button" class="rltlClose" title="Close">×</button>' +
+      '<p class="rltlEyebrow rltlCount">Loading…</p>' +
+      '<h1 class="rltlTitle">Project Timeline</h1>' +
+      '<p class="rltlSub"></p>' +
+      '<div class="rltlCard"><div class="rltlState">Reading your projects…</div></div>' +
+      '<div class="rltlAttentionHost"></div>' +
+      "</div>";
+    document.body.appendChild(overlay);
+    overlay.querySelector(".rltlClose").addEventListener("click", rlTlCloseOverlay);
+    overlay.addEventListener("mousedown", (ev) => { if (ev.target === overlay) rlTlCloseOverlay(); });
+    document.addEventListener("keydown", rlTlOnKeydown, true);
+
+    rlHpLoadProjects({ revalidate: true })
+      .then((buckets) => {
+        if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
+        rlTlRender(overlay, rlTlPickProjects(buckets && buckets.ownerProjects));
+      })
+      .catch((err) => {
+        const card = overlay.querySelector(".rltlCard");
+        if (card) card.innerHTML = '<div class="rltlState"></div>';
+        const state = overlay.querySelector(".rltlState");
+        if (state) state.textContent = "Couldn't load your projects: " + String((err && err.message) || err);
+        const count = overlay.querySelector(".rltlCount");
+        if (count) count.textContent = "PROJECT TIMELINE";
+      });
+    // A resize changes every x position, and the label tiers are measured, so the
+    // whole plot is rebuilt rather than scaled.
+    const onResize = () => {
+      const el = document.getElementById(RL_TL_OVERLAY_ID);
+      if (!el) { window.removeEventListener("resize", onResize); return; }
+      if (el._rltlProjects) rlTlRender(el, el._rltlProjects);
+    };
+    window.addEventListener("resize", onResize);
+  }
+
+  function rlTlRender(overlay, projects) {
+    overlay._rltlProjects = projects;
+    const todayMs = rlTlDayMs(rlTlIsoOf(Date.now()));
+    const count = overlay.querySelector(".rltlCount");
+    const sub = overlay.querySelector(".rltlSub");
+    const card = overlay.querySelector(".rltlCard");
+    const attentionHost = overlay.querySelector(".rltlAttentionHost");
+    if (count) count.textContent = projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS");
+
+    if (!projects.length) {
+      if (sub) sub.textContent = "";
+      card.innerHTML = '<div class="rltlState">No projects with a start date are owned by you right now.</div>';
+      attentionHost.innerHTML = "";
+      return;
+    }
+
+    const range = rlTlRangeFor(projects, todayMs);
+    if (sub) sub.textContent = rlTlFmtDate(rlTlIsoOf(range.start)) + " – " + rlTlFmtDate(rlTlIsoOf(range.end));
+
+    card.innerHTML = '<div class="rltlPlot"></div>';
+    const plot = card.querySelector(".rltlPlot");
+    const width = plot.clientWidth || 1000;
+    const { above, below } = rlTlSplitSides(projects);
+
+    // Labels are measured, not estimated: render them hidden, read the real width,
+    // then stack. The prototype had to guess at character widths server-side.
+    const made = [];
+    for (const side of ["above", "below"]) {
+      for (const entry of (side === "above" ? above : below)) {
+        const p = entry.project;
+        const a = document.createElement("a");
+        a.className = "rltlLabel";
+        a.href = p.href || ("/projects/" + encodeURIComponent(p.id) + "/plan");
+        a.innerHTML = "<b></b><span></span>";
+        a.querySelector("b").textContent = p.name;
+        a.querySelector("span").textContent = rlTlFmtDate(p.start);
+        a.style.visibility = "hidden";
+        a.style.left = "0px";
+        a.style.top = "0px";
+        plot.appendChild(a);
+        made.push({ side, p, el: a, centerPx: rlTlPosition(p.start, range) * width });
+      }
+    }
+    for (const side of ["above", "below"]) {
+      const group = made.filter((m) => m.side === side).sort((a, b) => a.centerPx - b.centerPx);
+      // Clamp BEFORE stacking. The first and last labels slide inward to stay in the
+      // card, and a tier assignment computed on the unclamped centres does not see
+      // that shift — the edge label then lands on top of its neighbour.
+      for (const m of group) {
+        const half = m.el.offsetWidth / 2;
+        m.labelPx = Math.min(Math.max(m.centerPx, half), Math.max(half, width - half));
+      }
+      const tiers = rlTlAssignTiers(group.map((m) => ({ centerPx: m.labelPx, widthPx: m.el.offsetWidth })));
+      group.forEach((m, i) => { m.tier = tiers[i]; m.height = m.el.offsetHeight; });
+    }
+
+    // Geometry: the spine sits between the two label stacks.
+    const rowH = 46;
+    const maxAbove = Math.max(0, ...made.filter((m) => m.side === "above").map((m) => m.tier));
+    const maxBelow = Math.max(0, ...made.filter((m) => m.side === "below").map((m) => m.tier));
+    const labelH = 40;
+    const aboveH = (maxAbove + 1) * rowH + labelH;
+    const belowH = (maxBelow + 1) * rowH + labelH;
+    const spineY = aboveH;
+    const axisY = spineY + belowH + 28;
+    plot.style.height = (axisY + 24) + "px";
+
+    const spine = document.createElement("div");
+    spine.className = "rltlSpine";
+    spine.style.top = spineY + "px";
+    plot.appendChild(spine);
+
+    for (const m of made) {
+      const x = m.centerPx;
+      const dist = (m.tier + 1) * rowH;
+      const conn = document.createElement("div");
+      conn.className = "rltlConn";
+      conn.style.left = x + "px";
+      conn.style.top = (m.side === "above" ? spineY - dist : spineY) + "px";
+      conn.style.height = dist + "px";
+      plot.appendChild(conn);
+
+      m.el.style.visibility = "";
+      // The label sits at its clamped position (inside the card) while the connector
+      // and the dot above stay on the real date.
+      m.el.style.left = m.labelPx + "px";
+      m.el.style.top = (m.side === "above" ? spineY - dist - m.height : spineY + dist) + "px";
+
+      const dot = document.createElement("div");
+      dot.className = "rltlDot";
+      dot.style.left = x + "px";
+      dot.style.top = spineY + "px";
+      dot.title = m.p.name + " · " + rlTlFmtDate(m.p.start);
+      dot.addEventListener("click", () => { location.href = m.el.getAttribute("href"); });
+      plot.appendChild(dot);
+    }
+
+    if (todayMs >= range.start && todayMs <= range.end) {
+      const today = document.createElement("div");
+      today.className = "rltlToday";
+      today.textContent = "TODAY";
+      today.style.left = (rlTlPosition(rlTlIsoOf(todayMs), range) * width) + "px";
+      today.style.top = (spineY + 22) + "px";
+      plot.appendChild(today);
+    }
+
+    for (const tick of rlTlAxisTicks(range)) {
+      const el = document.createElement("div");
+      el.className = "rltlTick";
+      el.textContent = tick.label;
+      el.style.left = (rlTlPosition(rlTlIsoOf(tick.ms), range) * width) + "px";
+      el.style.top = axisY + "px";
+      plot.appendChild(el);
+    }
+
+    const late = rlTlStartedBeforeToday(projects, todayMs);
+    attentionHost.innerHTML = "";
+    if (late.length) {
+      const box = document.createElement("div");
+      box.className = "rltlCard rltlAttention";
+      box.innerHTML =
+        '<p class="rltlEyebrow warn">Needs attention</p>' +
+        "<h2></h2>" +
+        '<table class="rltlTable"><thead><tr><th>Project</th><th>Start date</th><th>Status</th></tr></thead><tbody></tbody></table>';
+      box.querySelector("h2").textContent = late.length + " project(s) started before today";
+      const tbody = box.querySelector("tbody");
+      for (const p of late) {
+        const tr = document.createElement("tr");
+        const a = document.createElement("a");
+        a.href = p.href || ("/projects/" + encodeURIComponent(p.id) + "/plan");
+        a.textContent = p.name;
+        const tdName = document.createElement("td");
+        tdName.appendChild(a);
+        const tdStart = document.createElement("td");
+        tdStart.textContent = rlTlFmtDate(p.start);
+        const tdStatus = document.createElement("td");
+        tdStatus.textContent = p.statusLabel || "";
+        tr.append(tdName, tdStart, tdStatus);
+        tbody.appendChild(tr);
+      }
+      attentionHost.appendChild(box);
+    }
+  }
 
   // Search box (v1.15.2): one query filters both panels — every word must
   // appear in the plant name, id, owner or status. Ctrl+F on the home page
