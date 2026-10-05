@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.39.1
+// @version      1.40.0
 // @description  Export/Import the current VV Designer sketch as JSON (with driver-id plant rebinding) + a Live Simulate panel: set input values yourself and re-simulate on every change, no prompt() spam — adds entries to the File menu.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -960,7 +960,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     'use strict';
 
     var SCRIPT_NAME = 'Logic Designer Import/Export';
-    var VERSION = '1.39.1';
+    var VERSION = '1.40.0';
     var UNDO_LIMIT = 20;   // Ctrl+Z steps kept for the script's own canvas operations
     var ADD_GAP = 120;     // px between the lowest existing block and an added tile
     var LOAD_FLAG = '__LDIO_LOADED';
@@ -2385,6 +2385,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof paper.element_pointer === 'number' && paper.element_pointer <= maxId) paper.element_pointer = maxId + 1;
     }
 
+    // The document that is open — what Ctrl+S (or Save process) saves over —
+    // or null when none is, in which case the next save asks for a name. Read
+    // from the host's own fields: application.save_sketch() shows Save-as
+    // exactly when current_sketch == null, and save_process() likewise keys on
+    // current_process (HOST.md §11, verified live on plant 6254, 2026-10-05).
+    function describeOpenDocument() {
+      var app = W.application;
+      if (!app) return null;
+      var paper = W.logic_designer && W.logic_designer.paper;
+      if (paper && paper.mode === 'process') {
+        if (app.current_process == null) return null;
+        return { kind: 'process definition', save: 'Save process',
+          name: String(app.current_process_name || app.current_process) };
+      }
+      if (app.current_sketch == null) return null;
+      return { kind: 'sketch', save: 'Ctrl+S',
+        name: String(app.current_sketch_name || ('#' + app.current_sketch)) };
+    }
+
     function restoreCanvasState(state) {
       var paper = W.logic_designer && W.logic_designer.paper;
       if (!paper || !paper.initialized) { toast('Designer not ready — cannot undo.', 'error'); return false; }
@@ -2483,8 +2502,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var p2 = document.createElement('p');
       p2.className = 'ldio-choice-text';
       p2.innerHTML = '<b>Replace entire sketch</b> \u2014 clears the canvas first' +
-        (unsaved ? ' (<b>it has unsaved changes</b> that would be lost)' : '') +
-        '. The next save is a Save-as.';
+        (unsaved ? ' (<b>it has unsaved changes</b> that would be lost)' : '') + '. ';
+      // The name is user content: a text node, never markup.
+      var openDoc = describeOpenDocument();
+      p2.appendChild(document.createTextNode(openDoc
+        ? 'It stays the open ' + openDoc.kind + ' \u201c' + openDoc.name + '\u201d \u2014 ' + openDoc.save + ' saves over it' +
+          (openDoc.kind === 'sketch' ? '; File → Save sketch as makes a new one.' : '.')
+        : 'Nothing is open yet, so the next save asks for a name.'));
       panel.appendChild(p2);
       var p3 = document.createElement('p');
       p3.className = 'ldio-choice-text';
@@ -2537,6 +2561,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // import actually lands; every confirmation below can still cancel.
         var before = null;
         try { before = captureCanvasState(paper); } catch (e) { before = null; }
+        var switchedMode = false;
 
         // Mode mismatch: a process definition must never load onto a
         // function-mode canvas (or vice versa). Offer to switch mode — the
@@ -2553,6 +2578,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!wantSwitch) return;
           paper.set_mode(sketch.mode);
           if (W.application && typeof W.application.reset === 'function') W.application.reset();
+          switchedMode = true;
         }
 
         // Non-fatal notes (e.g. empty driver_ids) — surface but continue.
@@ -2620,12 +2646,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             bumpElementPointer(paper, docToLoad);
             paper.changed = true; // imported content is unsaved by definition
 
-            if (mode !== 'add' && W.application) {
-              // Replaced content is NEW on this plant — make Ctrl+S open the
-              // save-as dialog instead of silently overwriting a previously
-              // open sketch (or, in process mode, a previously open process
-              // definition). An ADD is an edit of the open sketch: it keeps
-              // its identity, so Ctrl+S saves over it as the user expects.
+            // Add and Replace both edit the document that is OPEN, so its
+            // identity carries through and Ctrl+S saves over it. Until 1.40 a
+            // Replace cleared current_sketch/current_sketch_name/
+            // current_process so the next save was a Save-as; that was the
+            // wrong default for the main round trip — export a sketch, edit
+            // the JSON, import it back over the same sketch — and was changed
+            // on request (2026-10-05). An overwrite stays recoverable: the
+            // host asks for a revision comment on every save and each save
+            // is a history entry (HOST.md, sketch history).
+            // A mode switch still drops the identity: the open id then names
+            // a document of the other kind (a function sketch is not a
+            // process definition), and one must never be saved over the
+            // other. application.reset() clears most of it; this is explicit.
+            if (switchedMode && W.application) {
               W.application.current_sketch = null;
               W.application.current_sketch_name = null;
               if ('current_process' in W.application) W.application.current_process = null;
@@ -2639,11 +2673,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               toast('Added ' + added.blocks + ' blocks / ' + added.connections + ' wires below the existing ' + (docToLoad.blocks.length - added.blocks) + rebindNote +
                 '. Ctrl+Z undoes it. Save with File → Save sketch as usual.');
             } else {
+              var openDoc = describeOpenDocument();
               toast('Imported ' + importedKind + ': ' + sketch.blocks.length + ' blocks / ' + sketch.connections.length + ' wires' + rebindNote +
                 '. Ctrl+Z undoes it.' +
-                (sketch.mode === 'process'
-                  ? ' Use File → Save process, then Publish process to make it a library block.'
-                  : ' Use File → Save sketch to store it on this plant.'));
+                (openDoc
+                  ? ' ' + openDoc.save + ' saves it over the open ' + openDoc.kind + ' \u201c' + openDoc.name + '\u201d' +
+                    (sketch.mode === 'process' ? '; then Publish process to make it a library block.' : '.')
+                  : (sketch.mode === 'process'
+                    ? ' Use File → Save process, then Publish process to make it a library block.'
+                    : ' Use File → Save sketch to store it on this plant.')));
             }
           } catch (err) {
             console.error('[' + SCRIPT_NAME + '] import failed:', err);
