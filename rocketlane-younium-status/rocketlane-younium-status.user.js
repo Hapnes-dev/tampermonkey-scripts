@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.51.1
+// @version      1.52.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8248,7 +8248,7 @@
   // ──────────────────────────────────────────────────────────────────────────
   // @@rlTimelineHelpers:start
 
-  const RL_TL_TAIL_DAYS = 7;       // the spine runs a week past the last start
+  const RL_TL_TAIL_DAYS = 14;      // the axis runs two weeks past the last start (v1.52.0, Thomas)
   const RL_TL_TIER_STEP = 1;       // one tier = one extra connector step
   const RL_TL_LABEL_GAP_PX = 16;   // minimum horizontal gap between two labels
 
@@ -8286,19 +8286,30 @@
   }
 
   /**
-   * Timeline window. Starts at today — the prototype's brief — but stretches back
-   * when a project already started, so an overdue start is still on the spine
-   * rather than clamped onto the "today" marker. Ends a week past the last start.
+   * Timeline window: the LEFT EDGE IS ALWAYS TODAY (v1.52.0, Thomas: "the timeline
+   * should be from today so its all the way to the left should be todays date").
+   * It ends two weeks (RL_TL_TAIL_DAYS) past the last start that is still ahead —
+   * Thomas's rule; the prototype's brief said one. Projects that already
+   * started do not stretch the window back — they belong to the "needs attention"
+   * table, exactly as in the prototype's own mockup. (1.51.x stretched back, which
+   * on a real owner list meant a spine starting in March for an October view.)
    */
   function rlTlRangeFor(projects, todayMs) {
-    const starts = (projects || []).map((p) => rlTlDayMs(p && p.start)).filter((n) => !Number.isNaN(n));
-    const t0 = Number.isNaN(todayMs) ? Date.now() : todayMs;
-    if (!starts.length) return { start: t0, end: rlTlAddDays(t0, RL_TL_TAIL_DAYS) };
-    const first = Math.min(t0, ...starts);
-    const last = Math.max(...starts);
-    let end = rlTlAddDays(last, RL_TL_TAIL_DAYS);
-    if (end <= first) end = rlTlAddDays(first, RL_TL_TAIL_DAYS);
-    return { start: first, end };
+    const t0 = Number.isNaN(todayMs) || todayMs == null ? Date.now() : todayMs;
+    const ahead = (projects || []).map((p) => rlTlDayMs(p && p.start)).filter((n) => !Number.isNaN(n) && n >= t0);
+    if (!ahead.length) return { start: t0, end: rlTlAddDays(t0, RL_TL_TAIL_DAYS) };
+    let end = rlTlAddDays(Math.max(...ahead), RL_TL_TAIL_DAYS);
+    if (end <= t0) end = rlTlAddDays(t0, RL_TL_TAIL_DAYS);
+    return { start: t0, end };
+  }
+
+  /** The spine's projects: those starting today or later. The rest are "started". */
+  function rlTlUpcoming(projects, todayMs) {
+    const t0 = Number.isNaN(todayMs) || todayMs == null ? Date.now() : todayMs;
+    return (projects || []).filter((p) => {
+      const ms = rlTlDayMs(p && p.start);
+      return !Number.isNaN(ms) && ms >= t0;
+    });
   }
 
   /** Date → 0..1 across the window. Clamped, so a stray date cannot escape the card. */
@@ -8401,7 +8412,7 @@
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.51.0";
+  const RL_TL_STYLE_READY = "1.52.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8412,49 +8423,53 @@
       (document.head || document.documentElement).appendChild(style);
     }
     style.dataset.rlTlReady = RL_TL_STYLE_READY;
-    // Palette lifted from the prototype's assets/style.css.
+    // Palette lifted from the prototype's assets/style.css. v1.52.0 makes it the
+    // whole screen (Thomas: "i want to make it much bigger"): the page fills the
+    // viewport bar a small margin, and every type size and the dots scale up with it.
     style.textContent = `
-#${RL_TL_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483600;background:rgba(31,27,46,.45);
-  display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:32px 16px;}
+#${RL_TL_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483600;background:rgba(31,27,46,.55);
+  display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px;}
 #${RL_TL_OVERLAY_ID} .rltlPage{--rltl-bg:#f6f4fb;--rltl-card:#fff;--rltl-text:#1f1b2e;--rltl-muted:#8a8398;
   --rltl-accent:#6c4ab6;--rltl-accent-soft:#ece6f9;--rltl-today:#eb6f4d;--rltl-line:#e2dcf0;--rltl-warn-soft:#fdeee8;
-  width:min(1100px,100%);background:var(--rltl-bg);border-radius:20px;padding:40px 32px 48px;
+  width:calc(100vw - 48px);min-height:calc(100vh - 48px);box-sizing:border-box;background:var(--rltl-bg);
+  border-radius:24px;padding:56px 64px 64px;
   font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--rltl-text);position:relative;}
-#${RL_TL_OVERLAY_ID} .rltlClose{position:absolute;top:16px;right:16px;width:32px;height:32px;border:0;border-radius:50%;
-  background:var(--rltl-card);color:var(--rltl-text);font-size:18px;line-height:1;cursor:pointer;box-shadow:0 2px 8px rgba(31,27,46,.12);}
+#${RL_TL_OVERLAY_ID} .rltlClose{position:absolute;top:24px;right:24px;width:44px;height:44px;border:0;border-radius:50%;
+  background:var(--rltl-card);color:var(--rltl-text);font-size:26px;line-height:1;cursor:pointer;box-shadow:0 2px 10px rgba(31,27,46,.14);}
 #${RL_TL_OVERLAY_ID} .rltlClose:hover{background:var(--rltl-accent-soft);}
-#${RL_TL_OVERLAY_ID} .rltlEyebrow{color:var(--rltl-accent);font-weight:600;font-size:13px;letter-spacing:.08em;
-  text-transform:uppercase;margin:0 0 8px;}
+#${RL_TL_OVERLAY_ID} .rltlEyebrow{color:var(--rltl-accent);font-weight:600;font-size:16px;letter-spacing:.08em;
+  text-transform:uppercase;margin:0 0 10px;}
 #${RL_TL_OVERLAY_ID} .rltlEyebrow.warn{color:var(--rltl-today);}
-#${RL_TL_OVERLAY_ID} h1.rltlTitle{font-size:32px;font-weight:700;margin:0 0 6px;letter-spacing:-.01em;}
-#${RL_TL_OVERLAY_ID} .rltlSub{color:var(--rltl-muted);font-size:15px;margin:0 0 32px;}
-#${RL_TL_OVERLAY_ID} .rltlCard{background:var(--rltl-card);border-radius:20px;padding:32px 24px 16px;
-  box-shadow:0 12px 32px rgba(108,74,182,.08);}
+#${RL_TL_OVERLAY_ID} h1.rltlTitle{font-size:48px;font-weight:700;margin:0 0 8px;letter-spacing:-.015em;}
+#${RL_TL_OVERLAY_ID} .rltlSub{color:var(--rltl-muted);font-size:20px;margin:0 0 40px;}
+#${RL_TL_OVERLAY_ID} .rltlCard{background:var(--rltl-card);border-radius:24px;padding:48px 40px 28px;
+  box-shadow:0 14px 40px rgba(108,74,182,.09);}
 #${RL_TL_OVERLAY_ID} .rltlPlot{position:relative;width:100%;}
-#${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;left:0;right:0;height:2px;background:var(--rltl-line);}
-#${RL_TL_OVERLAY_ID} .rltlDot{position:absolute;width:13px;height:13px;border-radius:50%;background:var(--rltl-accent);
-  transform:translate(-50%,-50%);cursor:pointer;}
-#${RL_TL_OVERLAY_ID} .rltlDot:hover{box-shadow:0 0 0 5px var(--rltl-accent-soft);}
-#${RL_TL_OVERLAY_ID} .rltlConn{position:absolute;width:1px;background:var(--rltl-line);transform:translateX(-50%);}
+#${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;height:3px;border-radius:2px;background:var(--rltl-line);}
+#${RL_TL_OVERLAY_ID} .rltlDot{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--rltl-accent);
+  transform:translate(-50%,-50%);cursor:pointer;box-shadow:0 0 0 4px var(--rltl-card);}
+#${RL_TL_OVERLAY_ID} .rltlDot:hover{box-shadow:0 0 0 4px var(--rltl-card),0 0 0 10px var(--rltl-accent-soft);}
+#${RL_TL_OVERLAY_ID} .rltlConn{position:absolute;width:2px;background:var(--rltl-line);transform:translateX(-50%);}
 #${RL_TL_OVERLAY_ID} .rltlLabel{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap;
   text-decoration:none;color:inherit;}
-#${RL_TL_OVERLAY_ID} .rltlLabel b{display:block;font-size:14px;font-weight:700;}
-#${RL_TL_OVERLAY_ID} .rltlLabel span{display:block;font-size:13px;color:var(--rltl-muted);}
+#${RL_TL_OVERLAY_ID} .rltlLabel b{display:block;font-size:19px;font-weight:700;line-height:1.3;}
+#${RL_TL_OVERLAY_ID} .rltlLabel span{display:block;font-size:16px;color:var(--rltl-muted);line-height:1.4;}
 #${RL_TL_OVERLAY_ID} .rltlLabel:hover b{color:var(--rltl-accent);text-decoration:underline;}
-#${RL_TL_OVERLAY_ID} .rltlToday{position:absolute;transform:translateX(-50%);color:var(--rltl-today);font-size:11px;
-  font-weight:700;letter-spacing:.08em;}
-#${RL_TL_OVERLAY_ID} .rltlTick{position:absolute;transform:translateX(-50%);color:var(--rltl-muted);font-size:12px;}
-#${RL_TL_OVERLAY_ID} .rltlAttention{margin-top:24px;padding-bottom:28px;}
-#${RL_TL_OVERLAY_ID} .rltlAttention h2{font-size:18px;font-weight:600;margin:0 0 20px;}
+#${RL_TL_OVERLAY_ID} .rltlToday{position:absolute;transform:translateX(-50%);color:var(--rltl-today);font-size:14px;
+  font-weight:700;letter-spacing:.1em;white-space:nowrap;}
+#${RL_TL_OVERLAY_ID} .rltlTodayLine{position:absolute;width:2px;background:var(--rltl-today);opacity:.35;transform:translateX(-50%);}
+#${RL_TL_OVERLAY_ID} .rltlTick{position:absolute;transform:translateX(-50%);color:var(--rltl-muted);font-size:15px;white-space:nowrap;}
+#${RL_TL_OVERLAY_ID} .rltlAttention{margin-top:32px;padding-bottom:36px;}
+#${RL_TL_OVERLAY_ID} .rltlAttention h2{font-size:26px;font-weight:600;margin:0 0 24px;}
 #${RL_TL_OVERLAY_ID} table.rltlTable{width:100%;border-collapse:collapse;}
-#${RL_TL_OVERLAY_ID} table.rltlTable th{text-align:left;color:var(--rltl-muted);font-size:12px;font-weight:600;
-  letter-spacing:.04em;text-transform:uppercase;padding:0 12px 10px;border-bottom:1px solid var(--rltl-line);}
-#${RL_TL_OVERLAY_ID} table.rltlTable td{padding:12px;border-bottom:1px solid var(--rltl-line);font-size:14px;vertical-align:middle;}
+#${RL_TL_OVERLAY_ID} table.rltlTable th{text-align:left;color:var(--rltl-muted);font-size:14px;font-weight:600;
+  letter-spacing:.05em;text-transform:uppercase;padding:0 16px 14px;border-bottom:1px solid var(--rltl-line);}
+#${RL_TL_OVERLAY_ID} table.rltlTable td{padding:16px;border-bottom:1px solid var(--rltl-line);font-size:17px;vertical-align:middle;}
 #${RL_TL_OVERLAY_ID} table.rltlTable tr:last-child td{border-bottom:none;}
 #${RL_TL_OVERLAY_ID} table.rltlTable tr:hover td{background:var(--rltl-warn-soft);}
 #${RL_TL_OVERLAY_ID} table.rltlTable a{color:inherit;text-decoration:none;}
 #${RL_TL_OVERLAY_ID} table.rltlTable a:hover{color:var(--rltl-accent);text-decoration:underline;}
-#${RL_TL_OVERLAY_ID} .rltlState{padding:28px 4px;color:var(--rltl-muted);font-size:14px;}
+#${RL_TL_OVERLAY_ID} .rltlState{padding:40px 4px;color:var(--rltl-muted);font-size:18px;}
 `;
   }
 
@@ -8560,7 +8575,15 @@
     const sub = overlay.querySelector(".rltlSub");
     const card = overlay.querySelector(".rltlCard");
     const attentionHost = overlay.querySelector(".rltlAttentionHost");
-    if (count) count.textContent = projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS");
+
+    // The spine holds only what starts today or later; what already started goes
+    // to the attention table below (v1.52.0). The left edge is today.
+    const upcoming = rlTlUpcoming(projects, todayMs);
+    const late = rlTlStartedBeforeToday(projects, todayMs);
+    if (count) {
+      count.textContent = projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") +
+        " · " + upcoming.length + " UPCOMING";
+    }
 
     if (!projects.length) {
       if (sub) sub.textContent = "";
@@ -8574,8 +8597,16 @@
 
     card.innerHTML = '<div class="rltlPlot"></div>';
     const plot = card.querySelector(".rltlPlot");
-    const width = plot.clientWidth || 1000;
-    const { above, below } = rlTlSplitSides(projects);
+    const width = plot.clientWidth || 1200;
+    // Inset the spine so TODAY at the far left — and the first/last tick and dot —
+    // are not cut in half by the card edge. Every x below goes through xOf().
+    const pad = 56;
+    const usable = Math.max(1, width - 2 * pad);
+    const xOf = (iso) => pad + rlTlPosition(iso, range) * usable;
+
+    const rowH = 64;     // one tier = this much further from the spine
+    const labelH = 56;   // room for a two-line label at the larger type size
+    const { above, below } = rlTlSplitSides(upcoming);
 
     // Labels are measured, not estimated: render them hidden, read the real width,
     // then stack. The prototype had to guess at character widths server-side.
@@ -8593,7 +8624,7 @@
         a.style.left = "0px";
         a.style.top = "0px";
         plot.appendChild(a);
-        made.push({ side, p, el: a, centerPx: rlTlPosition(p.start, range) * width });
+        made.push({ side, p, el: a, centerPx: xOf(p.start) });
       }
     }
     for (const side of ["above", "below"]) {
@@ -8609,21 +8640,39 @@
       group.forEach((m, i) => { m.tier = tiers[i]; m.height = m.el.offsetHeight; });
     }
 
-    // Geometry: the spine sits between the two label stacks.
-    const rowH = 46;
+    // Geometry: the spine sits between the two label stacks. With nothing above or
+    // below, that side still keeps one empty tier so the spine is not glued to the
+    // card edge.
     const maxAbove = Math.max(0, ...made.filter((m) => m.side === "above").map((m) => m.tier));
     const maxBelow = Math.max(0, ...made.filter((m) => m.side === "below").map((m) => m.tier));
-    const labelH = 40;
     const aboveH = (maxAbove + 1) * rowH + labelH;
     const belowH = (maxBelow + 1) * rowH + labelH;
     const spineY = aboveH;
-    const axisY = spineY + belowH + 28;
-    plot.style.height = (axisY + 24) + "px";
+    const axisY = spineY + belowH + 36;
+    plot.style.height = (axisY + 32) + "px";
 
     const spine = document.createElement("div");
     spine.className = "rltlSpine";
-    spine.style.top = spineY + "px";
+    spine.style.top = (spineY - 1) + "px";
+    spine.style.left = pad + "px";
+    spine.style.width = usable + "px";
     plot.appendChild(spine);
+
+    // TODAY is the left edge by definition: a faint vertical rule through the spine
+    // and the label underneath it.
+    const todayX = xOf(rlTlIsoOf(todayMs));
+    const rule = document.createElement("div");
+    rule.className = "rltlTodayLine";
+    rule.style.left = todayX + "px";
+    rule.style.top = (spineY - 26) + "px";
+    rule.style.height = "52px";
+    plot.appendChild(rule);
+    const today = document.createElement("div");
+    today.className = "rltlToday";
+    today.textContent = "TODAY";
+    today.style.left = todayX + "px";
+    today.style.top = (spineY + 30) + "px";
+    plot.appendChild(today);
 
     for (const m of made) {
       const x = m.centerPx;
@@ -8637,7 +8686,7 @@
 
       m.el.style.visibility = "";
       // The label sits at its clamped position (inside the card) while the connector
-      // and the dot above stay on the real date.
+      // and the dot stay on the real date.
       m.el.style.left = m.labelPx + "px";
       m.el.style.top = (m.side === "above" ? spineY - dist - m.height : spineY + dist) + "px";
 
@@ -8650,26 +8699,28 @@
       plot.appendChild(dot);
     }
 
-    if (todayMs >= range.start && todayMs <= range.end) {
-      const today = document.createElement("div");
-      today.className = "rltlToday";
-      today.textContent = "TODAY";
-      today.style.left = (rlTlPosition(rlTlIsoOf(todayMs), range) * width) + "px";
-      today.style.top = (spineY + 22) + "px";
-      plot.appendChild(today);
+    if (!upcoming.length) {
+      const none = document.createElement("div");
+      none.className = "rltlState";
+      none.style.position = "absolute";
+      none.style.left = "0";
+      none.style.right = "0";
+      none.style.top = (spineY - 96) + "px";
+      none.style.textAlign = "center";
+      none.textContent = "No project starts ahead of today.";
+      plot.appendChild(none);
     }
 
-    // ~72px per tick keeps "dd MMM" labels from touching at this font size.
-    for (const tick of rlTlAxisTicks(range, Math.max(2, Math.floor(width / 72)))) {
+    // ~96px per tick keeps "dd MMM" labels apart at the larger axis type.
+    for (const tick of rlTlAxisTicks(range, Math.max(2, Math.floor(usable / 96)))) {
       const el = document.createElement("div");
       el.className = "rltlTick";
       el.textContent = tick.label;
-      el.style.left = (rlTlPosition(rlTlIsoOf(tick.ms), range) * width) + "px";
+      el.style.left = xOf(rlTlIsoOf(tick.ms)) + "px";
       el.style.top = axisY + "px";
       plot.appendChild(el);
     }
 
-    const late = rlTlStartedBeforeToday(projects, todayMs);
     attentionHost.innerHTML = "";
     if (late.length) {
       const box = document.createElement("div");
