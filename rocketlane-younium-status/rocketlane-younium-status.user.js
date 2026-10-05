@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.50.1
+// @version      1.50.2
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8798,6 +8798,9 @@
     const owner = rlHpGetOwnerPanel();
     const member = rlHpGetMemberPanel();
     if (!owner || !member || !owner.isConnected || !member.isConnected) return true;
+    // A panel sitting outside the application shell is displacing the whole page —
+    // always remount it, whatever the anchors currently say.
+    if (!rlHpIsSafeMountHost(owner.parentElement) || !rlHpIsSafeMountHost(member.parentElement)) return true;
     const overdue = rlHpFindOverdueSection();
     if (overdue) return !rlHpTwinPanelsFollowAnchor(overdue, owner, member);
     // Overdue not painted yet: keep retrying while either panel parked on MAIN/host.
@@ -8828,8 +8831,24 @@
     return null;
   }
 
+  // MAIN is NOT a safe parking spot. Rocketlane's whole application — the left nav
+  // rail and the routed content — lives in a shell element that is itself a child of
+  // MAIN, so inserting a panel at the top of MAIN pushes the entire app down by the
+  // panel's height and the nav rail leaves the viewport. A host is only safe when it
+  // sits inside that shell, i.e. when it does not contain the shell or the rail.
+  function rlHpIsSafeMountHost(host) {
+    if (!host || host === document.body || host === document.documentElement) return false;
+    if (!host.querySelector) return false;
+    return !host.querySelector("aside.ant-layout-sider, [class*='router-shell__RouterShellComponent']");
+  }
+
   function rlHpFindMountHost() {
-    return document.querySelector("[role='main']") || document.querySelector("main") || document.body;
+    // The routed content container inside the shell: a panel parked here scrolls with
+    // the home view instead of displacing the application around it.
+    const content = document.querySelector("[class*='router-shell__MainContent']");
+    if (rlHpIsSafeMountHost(content)) return content;
+    const main = document.querySelector("[role='main']") || document.querySelector("main");
+    return rlHpIsSafeMountHost(main) ? main : null;
   }
 
   function rlHpPlaceAfter(anchor, panel) {
@@ -8874,8 +8893,14 @@
       rlHpPlaceAfter(ownerPanel, memberPanel);
       return;
     }
+    // No anchor and no safe host: stay detached and keep retrying rather than park
+    // somewhere that breaks the page. Opening the notifications overlay unmounts the
+    // home view for a moment — Overdue and the greeting both vanish — and that is
+    // exactly when this fallback used to fire and shove the whole app below the fold.
+    // A detached panel already counts as "needs remount", so nothing is lost by
+    // waiting for the home view to come back.
     const host = rlHpFindMountHost();
-    if (!host) return;
+    if (!host) { rlHpScheduleAnchorRetry(); return; }
     if (ownerPanel.parentElement !== host) {
       host.insertBefore(ownerPanel, host.firstChild);
     }
