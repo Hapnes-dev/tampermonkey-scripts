@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Section Copy/Paste
 // @namespace    https://logic-designer-section.local
-// @version      1.7.43
+// @version      1.7.79
 // @description  Copy/paste selected node subgraphs (with internal wires and variable bindings) in the iwmac logic designer.
 // @author       Henrik Monge
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -15,6 +15,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @connect      toolbox.iwmac.local
 // ==/UserScript==
 
 // ─── Pure helpers (top-level so Node tests can reach them) ──────────
@@ -381,8 +383,6 @@ function buildSnapshot({ nodes, wires }) {
       const TAG_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>';
       // Four-swatch grid icon for the Type colors toggle.
       const TYPECOLOR_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
-      // Open-folder icon for the Switch project menu entry.
-      const FOLDER_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg>';
 
       // ═══════════════════════════════════════════════════════════════
       //  Host adapter — ONLY module that touches unsafeWindow / host.
@@ -995,10 +995,12 @@ function buildSnapshot({ nodes, wires }) {
       // ═══════════════════════════════════════════════════════════════
 
       const SelectionInterceptor = (() => {
-        let warnedResolveFail = false;
+        let marquee = null;
 
         function onMouseDown(event) {
+          marquee = null;
           const ctrl = event.ctrlKey || event.metaKey;
+          if (event.button !== 0 || MultiWireMode.isActive() || RemoveConnectorsMode.isActive() || GhostPasteMode.isActive()) return;
           if (!ctrl) return;
           // Other modifier chords may carry host meaning — pass through.
           if (event.altKey || event.shiftKey) return;
@@ -1006,14 +1008,18 @@ function buildSnapshot({ nodes, wires }) {
           if (isEditingText(event.target)) return;
 
           const ref = resolveBlockRefShared(event.target);
-          if (ref == null && !warnedResolveFail) {
-            warnedResolveFail = true;
-            console.warn('[LDSCP] SelectionInterceptor could not resolve Ctrl-click target; passing through.');
-          }
-          if (ref == null) return; // not on a block — pass through
-
           const paper = W.logic_designer?.paper;
           if (!paper) return;
+          if (ref == null) {
+            if (paper.initialized && paper.paper?.canvas?.contains(event.target)
+              && !HostAdapter.getPinAtTarget(event.target) && !HostAdapter.getWireAtTarget(event.target)) {
+              marquee = {
+                paper, generation: undoHistory.generation(), refs: HostAdapter.getSelection(),
+                x: event.clientX, y: event.clientY,
+              };
+            }
+            return; // Let the host draw and resolve its normal marquee.
+          }
 
           // Toggle the ref in selected_blocks (normalize string/number keys to numbers).
           const current = Array.from(paper.selected_blocks || [])
@@ -1039,6 +1045,25 @@ function buildSnapshot({ nodes, wires }) {
 
         function install() {
           document.addEventListener('mousedown', onMouseDown, true); // capture phase
+          window.addEventListener('mouseup', (event) => {
+            const session = marquee;
+            if (!session || event.button !== 0) return;
+            // Wait for native mouseup/click handlers to finish replacing selection.
+            setTimeout(() => {
+              if (marquee !== session) return;
+              marquee = null;
+              if (Math.hypot(event.clientX - session.x, event.clientY - session.y) < 4
+                || W.logic_designer?.paper !== session.paper || undoHistory.generation() !== session.generation
+                || MultiWireMode.isActive() || RemoveConnectorsMode.isActive() || GhostPasteMode.isActive()) return;
+              const refs = [...new Set([...session.refs, ...HostAdapter.getSelection()].map(Number))]
+                .filter((ref) => Number.isInteger(ref) && session.paper.elements?.[ref]);
+              HostAdapter.setSelection(refs);
+            }, 0);
+          }, true);
+          window.addEventListener('blur', () => { marquee = null; });
+          window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') marquee = null;
+          }, true);
         }
 
         return { install };
@@ -1114,6 +1139,9 @@ function buildSnapshot({ nodes, wires }) {
 
       const MultiWireMode = (() => {
         let mode = 'inactive';
+        let ctrlHeld = false;
+        let activePaper = null;
+        let activeGeneration = null;
         let sourceSide = null;
         const sources = []; // [{ blockRef, pinIndex, side, y, overlayEl }]
 
@@ -1145,7 +1173,7 @@ function buildSnapshot({ nodes, wires }) {
             return;
           }
           const sideLabel = sourceSide === 'output' ? (n === 1 ? 'output' : 'outputs') : (n === 1 ? 'input' : 'inputs');
-          setBanner(`${prefix}: ${n} ${sideLabel} picked. Click target to finalize. (Esc to cancel)`);
+          setBanner(`${prefix}: ${n} ${sideLabel} picked. Click target; hold Ctrl to keep outputs for another target. (Esc to cancel)`);
         }
 
         // Resolves the Raphael shape for a pin using the verified per-block
@@ -1229,6 +1257,7 @@ function buildSnapshot({ nodes, wires }) {
 
         function observeSelectionPoll() {
           if (mode === 'inactive') return;
+          if (!validContext()) { exit(); return; }
           const sel = readSelection();
           const fingerprint = JSON.stringify(sel);
           if (fingerprint === lastObservedSelection) return;
@@ -1287,8 +1316,7 @@ function buildSnapshot({ nodes, wires }) {
               // Finalize against the single target-only block.
               const snapshot = sources.map((s) => ({ blockRef: s.blockRef, pinIndex: s.pinIndex, side: s.side, y: s.y }));
               const targets = [{ blockRef: targetOnly[0], startPin: 0, side: 'input', isPinClick: false, noExpand }];
-              exit();
-              doMultiWire({ sources: snapshot, targets });
+              finish(snapshot, targets);
               return;
             }
             // Mix with multiple target-only → check if we can distribute.
@@ -1331,8 +1359,7 @@ function buildSnapshot({ nodes, wires }) {
                     noExpand,
                   };
                 });
-                exit();
-                doMultiWire({ sources: snapshot, targets });
+                finish(snapshot, targets);
                 return;
               }
 
@@ -1370,16 +1397,14 @@ function buildSnapshot({ nodes, wires }) {
                 noExpand: mode === 'fill',
               };
             });
-            exit();
-            doMultiWire({ sources: snapshot, targets });
+            finish(snapshot, targets);
             return;
           }
 
           if (candidates.length === 1) {
             const snapshot = sources.map((s) => ({ blockRef: s.blockRef, pinIndex: s.pinIndex, side: s.side, y: s.y }));
             const targets = [{ blockRef: candidates[0], startPin: 0, side: oppositeSide, isPinClick: false, noExpand }];
-            exit();
-            doMultiWire({ sources: snapshot, targets });
+            finish(snapshot, targets);
             return;
           }
 
@@ -1411,8 +1436,7 @@ function buildSnapshot({ nodes, wires }) {
                   noExpand,
                 };
               });
-              exit();
-              doMultiWire({ sources: snapshot, targets });
+              finish(snapshot, targets);
               return;
             }
             toast('Multiple targets — click a specific one to pair into.');
@@ -1465,6 +1489,8 @@ function buildSnapshot({ nodes, wires }) {
             GhostPasteMode.exit();
           }
           mode = 'collecting';
+          activePaper = W.logic_designer?.paper;
+          activeGeneration = undoHistory.generation();
           sourceSide = null;
           sources.length = 0;
           updateBanner();
@@ -1505,8 +1531,28 @@ function buildSnapshot({ nodes, wires }) {
           return mode !== 'inactive';
         }
 
+        function validContext() {
+          return activePaper === W.logic_designer?.paper && activeGeneration === undoHistory.generation()
+            && sources.every((s) => activePaper?.elements?.[s.blockRef]?.[s.side === 'output' ? 'outputs' : 'inputs']?.[s.pinIndex]);
+        }
+
+        function finish(snapshot, targets) {
+          if (!validContext()) { exit(); return; }
+          // Inputs accept only one source; only outputs can be reused for fan-out.
+          const repeat = ctrlHeld && sourceSide === 'output';
+          if (!repeat) exit();
+          doMultiWire({ sources: snapshot, targets });
+          if (repeat) {
+            lastObservedSelection = JSON.stringify(readSelection());
+            updateBanner();
+          }
+        }
+
         function onMouseDown(event) {
+          ctrlHeld = event.ctrlKey;
           if (mode === 'inactive') return;
+          if (event.button !== 0) return;
+          if (!validContext()) { exit(); return; }
           if (event.shiftKey) return;
           const pin = HostAdapter.getPinAtTarget(event.target);
 
@@ -1551,8 +1597,7 @@ function buildSnapshot({ nodes, wires }) {
             isPinClick: true,
             noExpand,
           }];
-          exit();
-          doMultiWire({ sources: snapshot, targets });
+          finish(snapshot, targets);
         }
 
         function finalizeOnBlock(targetBlockRef) {
@@ -1566,12 +1611,14 @@ function buildSnapshot({ nodes, wires }) {
             isPinClick: false,
             noExpand,
           }];
-          exit();
-          doMultiWire({ sources: snapshot, targets });
+          finish(snapshot, targets);
         }
 
         function install() {
           document.addEventListener('mousedown', onMouseDown, true);
+          window.addEventListener('keydown', (event) => { ctrlHeld = event.ctrlKey; }, true);
+          window.addEventListener('keyup', (event) => { ctrlHeld = event.ctrlKey; }, true);
+          window.addEventListener('blur', () => { ctrlHeld = false; });
         }
 
         return { enter, exit, toggle, isActive, install };
@@ -2258,12 +2305,13 @@ function buildSnapshot({ nodes, wires }) {
                 const original = paper[name];
                 if (typeof original !== 'function') continue;
                 paper[name] = function (...args) {
+                  VariableNames.reset(this);
                   undoHistory.clear();
                   recordingActive = false;
                   suppressNextCreate.clear();
                   suppressNextRemove.clear();
                   try { return original.apply(this, args); }
-                  finally { undoHistory.clear(); }
+                  finally { undoHistory.clear(); VariableNames.reset(this); }
                 };
               }
             }
@@ -2340,6 +2388,7 @@ function buildSnapshot({ nodes, wires }) {
             prevConnectionsLength = currConnectionsLength;
             prevPinCountFingerprint = currPinCountFingerprint;
 
+            VariableNames.observe(paper);
             setTimeout(tick, 500);
           } catch (err) {
             console.error(`[${SCRIPT_NAME}] WireObserver tick failed:`, err);
@@ -2967,6 +3016,1329 @@ function buildSnapshot({ nodes, wires }) {
         }
       }
 
+      // Verify live bindings on this plant, then offer an undoable unit swap.
+      // Derived variable labels. First observation/load establishes a baseline only.
+      const VariableNames = (() => {
+        const snapshots = new WeakMap();
+        function plan(paper) {
+          const entries = Object.entries(paper.elements || {}).filter(([ref]) => /^\d+$/.test(ref));
+          const byPointer = new Map(entries.map(([, block]) => [String(block.pointer), block]));
+          const memo = new Map();
+          function sourceName(block, visiting = new Set()) {
+            if (!block || visiting.has(block)) return '';
+            if (memo.has(block)) return memo.get(block);
+            visiting.add(block);
+            let name = '';
+            if (block.block_type === 'VARIABLE_INPUT') {
+              const output = byPointer.get(String(block.data?.pointer));
+              if (output?.block_type === 'VARIABLE_OUTPUT') name = sourceName(output, visiting);
+            } else if (block.block_type === 'VARIABLE_OUTPUT') {
+              const input = block.inputs?.[0];
+              if (input?.connected) name = sourceName(paper.elements[input.connected_to?.ref], visiting);
+            } else {
+              name = String(block.override?.alias_text || '').trim();
+              if (!name) {
+                const shape = block.set?.[block.text?.set_id];
+                const text = typeof shape?.attr === 'function' ? shape.attr('text') : '';
+                const suffix = ' (' + block.pointer + ')';
+                name = String(text || '');
+                if (name.endsWith(suffix)) name = name.slice(0, -suffix.length);
+                name = name.trim();
+              }
+            }
+            visiting.delete(block);
+            memo.set(block, name);
+            return name;
+          }
+          return entries.filter(([, block]) => ['VARIABLE_INPUT', 'VARIABLE_OUTPUT'].includes(block.block_type))
+            .map(([ref, block]) => ({ ref: Number(ref), block,
+              name: (block.block_type === 'VARIABLE_OUTPUT' ? 'VarOut:' : 'VarIn:')
+                + (sourceName(block) || (block.block_type === 'VARIABLE_OUTPUT' ? 'Unconnected'
+                  : block.data?.pointer != null ? 'Connected to ' + block.data.pointer : 'Unconnected')),
+              label: block.override?.alias_text ?? '' }));
+        }
+        function apply(paper, items, manual) {
+          const updates = [];
+          try {
+            for (const item of items) {
+              if (!item.name || item.name === item.label) continue;
+              updates.push({ ref: item.ref, oldData: item.block.data == null ? null
+                : JSON.parse(JSON.stringify(item.block.data)), oldAliasText: item.label });
+              paper.set_block_override(item.ref, 'alias_text', item.name);
+              paper.changed = true;
+            }
+          } finally {
+            // Automatic labels follow the originating edit's Undo; manual naming has its own batch.
+            if (manual && updates.length) undoHistory.push({ type: 'tag-paste',
+              timestamp: new Date().toISOString(), payload: { updates } });
+          }
+          return updates.length;
+        }
+        function remember(paper, items) {
+          snapshots.set(paper, new Map(items.map((item) => [item.ref,
+            { block: item.block, name: item.name }])));
+        }
+        function observe(paper) {
+          const items = plan(paper);
+          const previous = snapshots.get(paper);
+          if (previous) apply(paper, items.filter((item) => {
+            const old = previous.get(item.ref);
+            return !old || old.block !== item.block || old.name !== item.name;
+          }), false);
+          remember(paper, items);
+        }
+        function nameAll() {
+          const paper = W.logic_designer?.paper;
+          if (!paper?.initialized) { toast('Open a sketch first.', 'error'); return; }
+          try {
+            const items = plan(paper);
+            const count = apply(paper, items, true);
+            remember(paper, items);
+            toast(count + ' variable names updated. Save the sketch to keep them. Ctrl+Z undoes this batch.', 'info');
+          } catch (error) { toast('Variable naming stopped: ' + error.message, 'error'); }
+        }
+        function installSelector() {
+          const host = W.designer_windows;
+          if (typeof host?.show_variable_input !== 'function') {
+            setTimeout(installSelector, 500);
+            return;
+          }
+          const original = host.show_variable_input;
+          host.show_variable_input = function (...args) {
+            const creator = this.dd_wnd_variable_input?.creator;
+            const paper = W.logic_designer?.paper;
+            if (typeof creator?.add !== 'function' || !paper?.elements) return original.apply(this, args);
+            const names = new Map();
+            try {
+              for (const item of plan(paper)) {
+                if (item.block.block_type === 'VARIABLE_OUTPUT') {
+                  names.set(String(item.block.pointer), item.label || item.name);
+                }
+              }
+            } catch (error) {
+              console.warn('[' + SCRIPT_NAME + '] Could not read variable output names:', error);
+              return original.apply(this, args);
+            }
+            const add = creator.add;
+            // The probed opener builds this dropdown synchronously. Decorate labels only.
+            creator.add = function (label, value, ...rest) {
+              const name = names.get(String(value));
+              if (name && /^Output\s+\d+$/.test(String(label))) {
+                const text = document.createElement('span');
+                text.textContent = label + ' — ' + name;
+                label = text.innerHTML; // qxs labels may be rendered as HTML.
+              }
+              return add.call(this, label, value, ...rest);
+            };
+            try { return original.apply(this, args); }
+            finally { creator.add = add; }
+          };
+        }
+        return { observe, nameAll, installSelector, reset: (paper) => snapshots.delete(paper) };
+      })();
+
+      const BulkEdit = (() => {
+        const dataTypes = ['integer', 'float', 'boolean', 'string'];
+        // Native dropdown choices and storage keys confirmed by the user's catalogue probes.
+        const typeFields = {
+          CONST: { key: 'type', choices: dataTypes },
+          VIRTUALOUT: { key: 'type', choices: dataTypes, input: true },
+          PROCESSIN: { key: 'type', choices: ['mixed', ...dataTypes] },
+          PROCESSOUT: { key: 'type', choices: ['mixed', 'integer', 'float', 'boolean'], input: true },
+          TEMP_VALUE: { key: 'type', choices: ['mixed', 'integer', 'float', 'boolean'], input: true },
+          FORMULA: { key: 'output_type', choices: dataTypes },
+          SELECTOR: { key: 'output_type', choices: dataTypes },
+        };
+        const attributes = [['name', 'Alias / display name'], ['type', 'Data type'], ['value', 'Initial value'], ['link', 'Link'], ['unit', 'Engineering unit'], ['readonly', 'Read only']];
+        function fieldsFor(row) {
+          const fields = {};
+          const data = row.oldData, type = row.block.block_type;
+          const add = (key, value) => { fields[key] = { original: String(value ?? ''), value: String(value ?? '') }; };
+          add('name', row.oldAliasText || data?.alias_text || '');
+          const spec = typeFields[type];
+          if (spec && data && (type !== 'CONST' || data.mode === 'single')) add('type', data[spec.key] ?? (['PROCESSOUT', 'TEMP_VALUE'].includes(type) ? 'mixed' : 'integer'));
+          if (type === 'CONST' && data?.mode === 'single' && ['integer', 'float', 'boolean', 'string'].includes(data.type)) add('value', data.initial_value);
+          if (type === 'PROCESSIN' && data && Object.hasOwn(data, 'initial_value')) add('value', data.initial_value);
+          if (type === 'VARIABLE_INPUT') add('link', data?.pointer);
+          if (['PARAMV', 'WRITETOUNIT'].includes(type) && Array.isArray(data?.driver_ids)) add('link', data.driver_ids.join('; '));
+          if (type === 'CONST' && data && Object.hasOwn(data, 'eng_unit')) add('unit', data.eng_unit);
+          if (type === 'VIRTUALOUT' && data?.engineering && Object.hasOwn(data.engineering, 'unit')) add('unit', data.engineering.unit);
+          if (type === 'CONST' && typeof data?.readonly === 'boolean') add('readonly', data.readonly);
+          return fields;
+        }
+        function open(chosen = null) {
+          const paper = W.logic_designer?.paper;
+          const selection = HostAdapter.getSelection();
+          if (!paper?.initialized || !selection.length) { toast('Select blocks to edit first.', 'error'); return; }
+          const generation = undoHistory.generation();
+          const getPlant = () => String(W.plant_id ?? W.query_string?.plant_id ?? new URLSearchParams(location.search).get('plant_id') ?? '');
+          const plant = getPlant();
+          const clone = (value) => value == null ? value : JSON.parse(JSON.stringify(value));
+          const rows = selection.map((ref) => {
+            const block = paper.elements[ref];
+            return { ref, block, oldData: clone(block.data), oldAliasText: block.override?.alias_text ?? '', fields: {} };
+          });
+          for (const row of rows) row.fields = fieldsFor(row);
+          if (!chosen) {
+            const picker = document.createElement('dialog');
+            picker.style.cssText = 'width:480px;max-width:90vw;max-height:85vh;overflow:auto;padding:18px;border:1px solid #888;border-radius:6px;font:13px/1.5 sans-serif';
+            const heading = document.createElement('h2'); heading.textContent = 'Choose attributes to edit'; picker.appendChild(heading);
+            const hint = document.createElement('p');
+            hint.textContent = selection.length + ' selected objects. Only checked attributes will appear in the editor. Counts show which selected objects support each attribute.';
+            picker.appendChild(hint);
+            const checks = [];
+            for (const [key, title] of attributes) {
+              const supported = rows.filter((row) => row.fields[key]);
+              if (!supported.length) continue;
+              const label = document.createElement('label'); label.style.cssText = 'display:block;margin:10px 0';
+              const check = document.createElement('input'); check.type = 'checkbox'; check.checked = key === 'name';
+              checks.push({ key, check });
+              label.append(check, document.createTextNode(' ' + title + ' — ' + supported.length + '/' + rows.length));
+              const types = document.createElement('small'); types.style.cssText = 'display:block;margin-left:22px;color:#555';
+              types.textContent = [...new Set(supported.map((row) => row.block.block_type))]
+                .map((type) => key === 'type' ? type + ': ' + typeFields[type].choices.join(', ') : type).join('; ');
+              label.appendChild(types); picker.appendChild(label);
+            }
+            const note = document.createElement('p');
+            note.textContent = 'Data type choices follow each native object editor. Repeated constant values use the native editor.';
+            picker.appendChild(note);
+            const status = document.createElement('p'); status.setAttribute('role', 'status'); picker.appendChild(status);
+            const next = document.createElement('button'); next.type = 'button'; next.textContent = 'Open editor';
+            const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.style.marginLeft = '8px';
+            const update = () => { next.disabled = !checks.some(({ check }) => check.checked); };
+            checks.forEach(({ check }) => check.addEventListener('change', update));
+            next.addEventListener('click', () => {
+              if (W.logic_designer?.paper !== paper || generation !== undoHistory.generation() || plant !== getPlant()
+                || JSON.stringify(selection) !== JSON.stringify(HostAdapter.getSelection())
+                || rows.some((row) => paper.elements[row.ref] !== row.block)) {
+                status.textContent = 'Sketch or selection changed. Close and reopen Edit selected objects.'; return;
+              }
+              const keys = checks.filter(({ check }) => check.checked).map(({ key }) => key);
+              if (!keys.length) return;
+              picker.close(); open(keys);
+            });
+            cancel.addEventListener('click', () => picker.close());
+            const escape = (event) => {
+              if (event.key !== 'Escape' || !picker.contains(event.target)) return;
+              event.preventDefault(); event.stopImmediatePropagation(); picker.close();
+            };
+            window.addEventListener('keydown', escape, true);
+            picker.addEventListener('close', () => { window.removeEventListener('keydown', escape, true); picker.remove(); });
+            picker.append(next, cancel); document.body.appendChild(picker); picker.showModal(); update();
+            return;
+          }
+          const dialog = document.createElement('dialog');
+          dialog.style.cssText = 'width:94vw;max-width:96vw;min-width:min(480px,96vw);height:80vh;min-height:min(360px,94vh);max-height:94vh;box-sizing:border-box;flex-direction:column;resize:both;overflow:auto;padding:18px;border:1px solid #888;border-radius:6px;font:13px/1.4 sans-serif';
+          const make = (tag, text, parent = dialog) => {
+            const el = document.createElement(tag); el.textContent = text || ''; parent.appendChild(el); return el;
+          };
+          const title = make('h2', 'Edit selected objects');
+          title.style.cssText = 'margin:0 0 8px;cursor:move;user-select:none;touch-action:none;flex-shrink:0';
+          title.title = 'Drag to move this window';
+          const instructions = make('p', 'One line per object, in the fixed numbered order. Separate fields with |. Leave unsupported fields as —. Use \\| for a literal pipe, \\\\ for a backslash and \\n for a line break within a field.');
+          instructions.style.cssText = 'flex-shrink:0;max-height:40px;overflow:auto;margin:4px 0 8px';
+          const columns = attributes.filter(([key]) => chosen.includes(key));
+          const outputs = Object.values(paper.elements).filter((b) => b?.block_type === 'VARIABLE_OUTPUT');
+          const heading = make('div', 'Line / block     ' + columns.map(([, title]) => title).join(' | '));
+          heading.style.cssText = 'font:13px/20px monospace;white-space:pre-wrap;padding:8px;background:#eef1f5;flex-shrink:0';
+          const scroll = make('div');
+          scroll.style.cssText = 'display:flex;flex:1;min-height:40px;min-width:0;border:1px solid #aaa;overflow:hidden';
+          const gutter = make('div', '', scroll);
+          gutter.setAttribute('aria-label', 'Locked line numbers and block IDs');
+          gutter.style.cssText = 'flex:0 0 125px;overflow:hidden;background:#f1f3f5;border-right:1px solid #bbb;padding:8px 0;box-sizing:border-box;font:13px/20px monospace;user-select:none';
+          const editor = make('textarea', '', scroll);
+          editor.wrap = 'off'; editor.spellcheck = false;
+          editor.setAttribute('aria-label', 'Selected objects: ' + columns.map(([, title]) => title).join(', '));
+          editor.style.cssText = 'flex:1;min-width:0;box-sizing:border-box;margin:0;padding:8px;border:0;border-radius:0;resize:none;overflow:auto;white-space:pre;font:13px/20px monospace;tab-size:4';
+          const encode = (value) => value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+          editor.value = rows.map((row) => columns.map(([key]) => row.fields[key] ? encode(row.fields[key].original) : '—').join('|')).join('\n');
+          const markers = rows.map((row, i) => {
+            const marker = make('div', (i + 1) + ' · #' + row.ref, gutter);
+            marker.title = row.block.block_type + ': ' + row.oldAliasText;
+            marker.style.cssText = 'height:20px;line-height:20px;padding:0 8px;white-space:nowrap;cursor:pointer';
+            return marker;
+          });
+          // Match the textarea's trailing space so both scroll offsets stay aligned.
+          const spacer = make('div', '', gutter); spacer.style.height = '24px';
+          editor.addEventListener('scroll', () => { gutter.scrollTop = editor.scrollTop; });
+          const status = make('p'); status.setAttribute('role', 'status');
+          status.style.cssText = 'flex-shrink:0;max-height:44px;overflow:auto;margin:8px 0;overflow-wrap:anywhere';
+          const message = (text, error = false) => { status.textContent = text; status.style.color = error ? '#a22' : ''; };
+          let outline = null;
+          let activeLine = -1;
+          function focusLine() {
+            const index = editor.value.slice(0, editor.selectionStart).split('\n').length - 1;
+            if (index === activeLine) return;
+            activeLine = index;
+            markers.forEach((marker, i) => { marker.style.background = i === index ? '#fff1aa' : ''; });
+            outline?.remove(); outline = null;
+            const row = rows[index];
+            if (row && W.logic_designer?.paper === paper && paper.elements[row.ref] === row.block) {
+              outline = AlarmHighlight.outline(row.ref);
+              message('Line ' + (index + 1) + ' → block ' + row.ref + ' (' + row.block.block_type + '): ' + (row.oldAliasText || 'unnamed'));
+            }
+          }
+          for (const event of ['click', 'keyup', 'input', 'select']) editor.addEventListener(event, focusLine);
+          markers.forEach((marker, i) => marker.addEventListener('click', () => {
+            const values = editor.value.split('\n');
+            const start = values.slice(0, i).reduce((total, line) => total + line.length + 1, 0);
+            editor.focus(); editor.setSelectionRange(start, start + (values[i]?.length || 0)); focusLine();
+          }));
+          function parseLine(line, number) {
+            const values = [''];
+            for (let i = 0; i < line.length; i++) {
+              const char = line[i];
+              if (char === '|') values.push('');
+              else if (char === '\\') {
+                const escaped = line[++i];
+                const escapes = { n: '\n', r: '\r', '\\': '\\', '|': '|' };
+                if (!Object.hasOwn(escapes, escaped)) throw new Error('Line ' + number + ': invalid escape. Use \\\\ for a backslash.');
+                values[values.length - 1] += escapes[escaped];
+              } else values[values.length - 1] += char;
+            }
+            if (values.length !== columns.length) throw new Error('Line ' + number + ': expected ' + columns.length + ' pipe-separated fields.');
+            return values;
+          }
+          function stageText() {
+            const lines = editor.value.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
+            if (lines.length !== rows.length) throw new Error('Keep exactly ' + rows.length + ' object lines; received ' + lines.length + '. The locked numbers identify the original objects.');
+            const parsed = lines.map((line, i) => parseLine(line, i + 1));
+            parsed.forEach((values, i) => columns.forEach(([key], c) => {
+              if (!rows[i].fields[key] && values[c] !== '—') throw new Error('Line ' + (i + 1) + ': ' + columns[c][1] + ' is not editable; leave —.');
+              if (rows[i].fields[key] && key === 'readonly' && !['true', 'false'].includes(values[c])) throw new Error('Line ' + (i + 1) + ': Read only must be true or false.');
+              if (rows[i].fields[key] && key === 'type' && !typeFields[rows[i].block.block_type].choices.includes(values[c].trim().toLowerCase())) {
+                throw new Error('Line ' + (i + 1) + ': ' + rows[i].block.block_type + ' accepts ' + typeFields[rows[i].block.block_type].choices.join(', ') + '.');
+              }
+            }));
+            parsed.forEach((values, i) => columns.forEach(([key], c) => { if (rows[i].fields[key]) rows[i].fields[key].value = values[c]; }));
+          }
+          if (rows.some((row) => row.block.block_type === 'VARIABLE_INPUT')) {
+            const help = make('details'); make('summary', 'Available variable output numbers', help);
+            help.style.cssText = 'flex-shrink:0;max-height:80px;overflow:auto;margin:4px 0';
+            make('pre', outputs.map((block) => block.pointer + ' — ' + (block.override?.alias_text || 'Variable output')).join('\n'), help);
+          }
+          const actions = make('div'); actions.style.cssText = 'flex-shrink:0;padding-top:8px';
+          const apply = make('button', 'Apply changes', actions), close = make('button', 'Close', actions);
+          for (const button of [apply, close]) { button.type = 'button'; button.style.marginRight = '8px'; }
+          let alive = true;
+          const unchanged = () => {
+            if (!alive || W.logic_designer?.paper !== paper || plant !== getPlant() || generation !== undoHistory.generation()
+              || JSON.stringify(HostAdapter.getSelection()) !== JSON.stringify(selection)
+              || rows.some((row) => paper.elements[row.ref] !== row.block || JSON.stringify(row.block.data) !== JSON.stringify(row.oldData)
+                || (row.block.override?.alias_text ?? '') !== row.oldAliasText)) throw new Error('Sketch or selection changed. Reopen Edit selected objects.');
+          };
+          apply.addEventListener('click', async () => {
+            apply.disabled = true; scroll.inert = true;
+            try {
+              unchanged();
+              stageText();
+              const changes = [], ids = new Set();
+              for (const row of rows) {
+                const changed = Object.entries(row.fields).filter(([, field]) => field.value !== field.original);
+                if (!changed.length) continue;
+                let data = clone(row.oldData), name = row.oldAliasText, driverIds = null;
+                const editedName = changed.some(([key]) => key === 'name');
+                const editedType = changed.some(([key]) => key === 'type');
+                if (editedType) data[typeFields[row.block.block_type].key] = row.fields.type.value.trim().toLowerCase();
+                for (const [key, field] of changed) {
+                  const value = field.value;
+                  if (key === 'type') continue;
+                  else if (key === 'name') {
+                    name = value;
+                    if (data && Object.hasOwn(data, 'alias_text')) data.alias_text = value;
+                  } else if (key === 'value') {
+                    let parsed = value;
+                    if (data.type === 'boolean') {
+                      if (!/^(true|false|0|1)$/i.test(value.trim())) throw new Error('Block ' + row.ref + ': use true, false, 0 or 1.');
+                      parsed = /^(true|1)$/i.test(value.trim());
+                      if (typeof data.initial_value === 'number') parsed = parsed ? 1 : 0;
+                      else if (typeof data.initial_value === 'string') parsed = parsed ? '1' : '0';
+                    } else if (data.type !== 'string' && data.type !== 'mixed') {
+                      parsed = Number(value);
+                      if (!value.trim() || !Number.isFinite(parsed) || (data.type === 'integer' && !Number.isSafeInteger(parsed))) {
+                        throw new Error('Block ' + row.ref + ': invalid ' + data.type + ' value.');
+                      }
+                    }
+                    data.initial_value = parsed;
+                  } else if (key === 'readonly') data.readonly = value === 'true';
+                  else if (key === 'unit') {
+                    if (row.block.block_type === 'CONST') data.eng_unit = value;
+                    else data.engineering.unit = value;
+                  } else if (row.block.block_type === 'VARIABLE_INPUT') {
+                    const output = outputs.find((b) => String(b.pointer) === value.trim());
+                    if (!output || !Object.values(paper.elements).includes(output)) throw new Error('Block ' + row.ref + ': choose an existing variable output number.');
+                    data = { ...data, pointer: typeof data?.pointer === 'number' ? output.pointer : String(output.pointer) };
+                  } else {
+                    driverIds = value.split(/[;\s,]+/).filter(Boolean);
+                    if (!driverIds.length) throw new Error('Block ' + row.ref + ': enter at least one driver ID.');
+                    driverIds.forEach((id) => ids.add(id));
+                    data.driver_ids = driverIds;
+                  }
+                }
+                if (editedType && ['CONST', 'PROCESSIN'].includes(row.block.block_type)
+                  && Object.hasOwn(data, 'initial_value') && data.type !== 'mixed' && !changed.some(([key]) => key === 'value')) {
+                  const value = data.initial_value;
+                  if (data.type === 'string') data.initial_value = String(value ?? '');
+                  else if (data.type === 'boolean') {
+                    if (!/^(true|false|0|1)$/i.test(String(value))) throw new Error('Block ' + row.ref + ': set Initial value to true, false, 0 or 1 for boolean.');
+                    data.initial_value = /^(true|1)$/i.test(String(value));
+                  } else {
+                    const number = typeof value === 'boolean' ? Number(value) : Number(String(value ?? '').trim());
+                    if (value == null || String(value).trim() === '' || !Number.isFinite(number)
+                      || (data.type === 'integer' && !Number.isSafeInteger(number))) {
+                      throw new Error('Block ' + row.ref + ': initial value cannot convert to ' + data.type + '. Include Initial value and edit it too.');
+                    }
+                    data.initial_value = number;
+                  }
+                }
+                if (editedType && data.type === 'float' && ['CONST', 'PROCESSIN', 'VIRTUALOUT', 'TEMP_VALUE'].includes(row.block.block_type)
+                  && !data.precision) data.precision = '%.1f';
+                changes.push({ row, data, name, editedName, driverIds });
+              }
+              if (!changes.length) throw new Error('No fields changed.');
+              message('Validating ' + changes.length + ' changed blocks...');
+              const resolved = ids.size ? await BindingTools.resolve([...ids], plant, unchanged) : new Map();
+              unchanged();
+              for (const id of ids) if (!resolved.has(id)) throw new Error('Driver ID does not resolve on this plant: ' + id);
+              const pending = new Map(changes.map((change) => [change.row.block, change.data]));
+              const retyped = new Set(changes.filter(({ row, data }) => row.fields.type
+                && data[typeFields[row.block.block_type].key] !== row.oldData?.[typeFields[row.block.block_type].key]).map(({ row }) => row.block));
+              if (retyped.size) {
+                if (typeof paper.__get_valid_types_flag !== 'function' || typeof paper.get_valid_output_types !== 'function') {
+                  throw new Error('Native type compatibility helpers unavailable. No changes applied.');
+                }
+                const allTypes = ['mixed', ...dataTypes];
+                const flags = (types) => {
+                  const list = Array.isArray(types) ? types : [types];
+                  if (!list.length || list.some((type) => !allTypes.includes(type))) return null;
+                  return paper.__get_valid_types_flag(list) ?? null;
+                };
+                const sourceTypes = (block, put, visited = new Set()) => {
+                  if (!block || visited.has(block)) return null;
+                  visited.add(block);
+                  const data = pending.get(block) ?? block.data;
+                  if (block.block_type === 'VARIABLE_INPUT') {
+                    const output = Object.values(paper.elements).find((item) => item?.block_type === 'VARIABLE_OUTPUT'
+                      && String(item.pointer) === String(data?.pointer));
+                    const pin = output?.inputs?.[0];
+                    return pin?.connected ? sourceTypes(paper.elements[pin.connected_to?.ref], pin.connected_to?.put_id, visited) : null;
+                  }
+                  const spec = typeFields[block.block_type];
+                  const explicit = spec ? data?.[spec.key] : block.properties?.output_types?.value?.[put];
+                  return flags(explicit ?? block.output_type ?? block.outputs?.[put]?.valid_types);
+                };
+                // Check the complete proposed graph, so two connected objects can change together.
+                // Only edges affected by this batch are checked; existing unrelated errors remain untouched.
+                const affected = (block, visited = new Set()) => {
+                  if (!block || visited.has(block)) return false;
+                  if (retyped.has(block)) return true;
+                  visited.add(block);
+                  if (block.block_type !== 'VARIABLE_INPUT') return false;
+                  const data = pending.get(block) ?? block.data;
+                  const output = Object.values(paper.elements).find((item) => item?.block_type === 'VARIABLE_OUTPUT'
+                    && String(item.pointer) === String(data?.pointer));
+                  const pin = output?.inputs?.[0];
+                  return !!pin?.connected && affected(paper.elements[pin.connected_to?.ref], visited);
+                };
+                for (const [ref, target] of Object.entries(paper.elements)) {
+                  if (!/^\d+$/.test(ref)) continue;
+                  for (const pin of Object.values(target?.inputs || {})) {
+                    if (!pin?.connected) continue;
+                    const source = paper.elements[pin.connected_to?.ref];
+                    const spec = typeFields[target.block_type];
+                    if (!affected(source) && !(retyped.has(target) && spec?.input)) continue;
+                    const data = pending.get(target) ?? target.data;
+                    const accepts = flags(spec?.input ? data?.[spec.key] ?? (target.block_type === 'VIRTUALOUT' ? 'integer' : 'mixed') : paper.get_valid_output_types(pin));
+                    const produces = sourceTypes(source, pin.connected_to?.put_id);
+                    if (accepts == null || produces == null || (accepts & produces) !== produces) {
+                      throw new Error('Type change conflicts with or cannot resolve connection ' + source?.pointer + ' → ' + target.pointer + '. Review these objects before applying.');
+                    }
+                  }
+                }
+              }
+              for (const change of changes) {
+                if (change.row.block.block_type === 'VARIABLE_INPUT') {
+                  const target = outputs.find((block) => String(block.pointer) === String(change.data?.pointer));
+                  if (String(change.data?.pointer) !== String(change.row.oldData?.pointer)
+                    && (!target || !Object.values(paper.elements).includes(target))) {
+                    throw new Error('A selected variable output changed. Reopen the editor.');
+                  }
+                }
+                if (change.driverIds && !change.editedName) {
+                  const value = resolved.get(change.driverIds[0]);
+                  change.name = change.driverIds.length === 1 ? value.unit_id + ', ' + value.unit_name + ', ' + value.alias_text : 'Multiple parameters';
+                }
+              }
+              const updates = [];
+              let failed = null;
+              const variableLabels = Object.entries(paper.elements)
+                .filter(([ref, block]) => /^\d+$/.test(ref) && ['VARIABLE_INPUT', 'VARIABLE_OUTPUT'].includes(block.block_type))
+                .map(([ref, block]) => ({ ref: Number(ref), oldData: clone(block.data), oldAliasText: block.override?.alias_text ?? '' }));
+              try {
+                for (const { row, data, name } of changes) {
+                  updates.push({ ref: row.ref, oldData: row.oldData, oldAliasText: row.oldAliasText });
+                  if (JSON.stringify(data) !== JSON.stringify(row.oldData)) paper.set_block_data(row.ref, data);
+                  if (name !== row.oldAliasText) paper.set_block_override(row.ref, 'alias_text', name);
+                  paper.changed = true;
+                }
+                VariableNames.observe(paper);
+                // Explicit names in this batch take precedence over derived variable names.
+                for (const { row, name, editedName } of changes) {
+                  if (editedName && ['VARIABLE_INPUT', 'VARIABLE_OUTPUT'].includes(row.block.block_type)) {
+                    paper.set_block_override(row.ref, 'alias_text', name);
+                  }
+                }
+              } catch (error) { failed = error; }
+              finally {
+                for (const old of variableLabels) {
+                  if (!updates.some((item) => item.ref === old.ref)
+                    && (paper.elements[old.ref]?.override?.alias_text ?? '') !== old.oldAliasText) updates.push(old);
+                }
+                if (updates.length) undoHistory.push({ type: 'tag-paste', timestamp: new Date().toISOString(), payload: { updates } });
+              }
+              dialog.close();
+              toast(failed ? 'Bulk edit stopped: ' + failed.message + '. Ctrl+Z restores attempted changes.'
+                : changes.length + ' blocks updated. Ctrl+Z undoes this batch. Save the sketch to keep it.', failed ? 'error' : 'info');
+            } catch (error) { if (alive) message(error.message, true); }
+            finally {
+              if (alive) { apply.disabled = false; scroll.inert = false; }
+            }
+          });
+          const escape = (event) => {
+            if (event.key !== 'Escape' || !dialog.contains(event.target)) return;
+            event.preventDefault(); event.stopImmediatePropagation(); dialog.close();
+          };
+          window.addEventListener('keydown', escape, true);
+          close.addEventListener('click', () => dialog.close());
+          const geometryKey = 'ldscp:bulk-edit:geometry';
+          let geometry = null;
+          let saveTimer;
+          const remember = () => {
+            if (!dialog.open) return;
+            const { x, y, width, height } = dialog.getBoundingClientRect();
+            geometry = { x, y, width, height };
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => GM_setValue(geometryKey, geometry), 250);
+          };
+          title.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            const box = dialog.getBoundingClientRect();
+            const dx = event.clientX - box.left, dy = event.clientY - box.top;
+            dialog.style.margin = '0';
+            dialog.style.left = box.left + 'px'; dialog.style.top = box.top + 'px';
+            title.setPointerCapture(event.pointerId);
+            const move = (e) => {
+              dialog.style.left = Math.max(0, Math.min(innerWidth - dialog.offsetWidth, e.clientX - dx)) + 'px';
+              dialog.style.top = Math.max(0, Math.min(innerHeight - dialog.offsetHeight, e.clientY - dy)) + 'px';
+            };
+            title.addEventListener('pointermove', move);
+            title.addEventListener('lostpointercapture', () => {
+              title.removeEventListener('pointermove', move); remember();
+            }, { once: true });
+          });
+          const resizeObserver = new ResizeObserver(remember);
+          dialog.addEventListener('close', () => {
+            alive = false; outline?.remove(); resizeObserver.disconnect(); clearTimeout(saveTimer);
+            if (geometry) GM_setValue(geometryKey, geometry);
+            window.removeEventListener('keydown', escape, true); dialog.remove();
+          });
+          const saved = GM_getValue(geometryKey, null);
+          if (saved && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite(saved[key]))) {
+            const width = Math.max(Math.min(480, innerWidth * .96), Math.min(saved.width, innerWidth * .96));
+            const height = Math.max(Math.min(360, innerHeight * .94), Math.min(saved.height, innerHeight * .94));
+            dialog.style.width = width + 'px'; dialog.style.height = height + 'px'; dialog.style.margin = '0';
+            dialog.style.left = Math.max(0, Math.min(saved.x, innerWidth - width)) + 'px';
+            dialog.style.top = Math.max(0, Math.min(saved.y, innerHeight - height)) + 'px';
+          }
+          document.body.appendChild(dialog); dialog.showModal(); dialog.style.display = 'flex';
+          remember(); resizeObserver.observe(dialog);
+          message(rows.length + ' fixed object lines. Click a gutter number to select its line and highlight the block.');
+        }
+        function install() {
+          let menu = null;
+          const closeMenu = () => { menu?.remove(); menu = null; };
+          const eligible = (event) => {
+            const paper = W.logic_designer?.paper;
+            return paper?.initialized && paper.paper?.canvas?.contains(event.target)
+              && HostAdapter.getSelection().length >= 2 && !MultiWireMode.isActive()
+              && !RemoveConnectorsMode.isActive() && !GhostPasteMode.isActive();
+          };
+          // Preserve the marquee selection before the host handles a right press.
+          const preserveSelection = (event) => {
+            if (menu?.contains(event.target)) return;
+            closeMenu();
+            if (event.button === 2 && eligible(event)) {
+              event.stopImmediatePropagation();
+            }
+          };
+          window.addEventListener('pointerdown', preserveSelection, true);
+          window.addEventListener('mousedown', preserveSelection, true);
+          window.addEventListener('contextmenu', (event) => {
+            if (!eligible(event)) return;
+            event.preventDefault(); event.stopImmediatePropagation(); closeMenu();
+            const paper = W.logic_designer.paper;
+            const generation = undoHistory.generation();
+            const selection = JSON.stringify(HostAdapter.getSelection());
+            menu = document.createElement('div');
+            menu.setAttribute('role', 'menu');
+            menu.setAttribute('aria-label', 'Selected objects');
+            menu.style.cssText = 'position:fixed;z-index:2147483647;padding:4px;background:white;border:1px solid #aaa;border-radius:5px;box-shadow:0 3px 12px #0003;max-width:95vw';
+            const edit = document.createElement('button');
+            edit.type = 'button'; edit.setAttribute('role', 'menuitem');
+            edit.textContent = 'Edit selected objects…';
+            edit.style.cssText = 'padding:8px 12px;cursor:pointer';
+            edit.addEventListener('click', () => {
+              closeMenu();
+              if (paper !== W.logic_designer?.paper || generation !== undoHistory.generation()
+                || selection !== JSON.stringify(HostAdapter.getSelection())) {
+                toast('Selection changed. Select the objects again.', 'error'); return;
+              }
+              open();
+            });
+            menu.appendChild(edit); document.body.appendChild(menu);
+            menu.style.left = Math.max(0, Math.min(event.clientX, innerWidth - menu.offsetWidth)) + 'px';
+            menu.style.top = Math.max(0, Math.min(event.clientY, innerHeight - menu.offsetHeight)) + 'px';
+            edit.focus();
+          }, true);
+          window.addEventListener('keydown', (event) => {
+            if (menu && event.key === 'Escape') {
+              event.preventDefault(); event.stopImmediatePropagation(); closeMenu();
+            }
+          }, true);
+          window.addEventListener('blur', closeMenu);
+          window.addEventListener('resize', closeMenu);
+          document.addEventListener('scroll', closeMenu, true);
+        }
+        return { open, install };
+      })();
+
+      const BindingTools = (() => {
+        const PARAM_FILE = '../lib/xml/qxs/views/ext/qxs_param_chooser/runtime/class.param_chooser.php';
+        const normalize = (value) => String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const plantId = () => String(W.plant_id ?? W.query_string?.plant_id
+          ?? new URLSearchParams(location.search).get('plant_id') ?? '');
+        function labelParts(text) {
+          const parts = String(text || '').split(',');
+          return { unit: parts.length >= 3 ? parts[0].trim() : '',
+            alias: parts.length >= 3 ? parts.slice(2).join(',').trim() : String(text || '') };
+        }
+        function aliasScore(source, candidate) {
+          const a = normalize(source);
+          const b = normalize(candidate);
+          if (!a || !b) return 0;
+          if (a === b) return 100;
+          // Historical annotations are not part of the alias; comparison phrases are.
+          const strip = (s) => s.replace(/\s*\(old text:.*$/, '').trim();
+          if (strip(a) === strip(b)) return 96;
+          const numbers = (s) => (strip(s).match(/\d+/g) || []).join(',');
+          const sameNumbers = numbers(a) === numbers(b);
+          if (sameNumbers && (strip(a).startsWith(strip(b)) || strip(b).startsWith(strip(a)))) return 85;
+          const left = new Set(strip(a).match(/[\p{L}\p{N}]+/gu) || []);
+          const right = new Set(strip(b).match(/[\p{L}\p{N}]+/gu) || []);
+          return Math.round((sameNumbers ? 75 : 55)
+            * [...left].filter((word) => right.has(word)).length / Math.max(3, left.size, right.size));
+        }
+        async function lookup(ids, plant, active) {
+          const rows = new Map();
+          const unique = [...new Set(ids)];
+          for (let offset = 0; offset < unique.length; offset += 100) {
+            active();
+            const batch = unique.slice(offset, offset + 100);
+            const reply = await new Promise((resolve, reject) => {
+              const timer = setTimeout(() => reject(new Error('Native parameter lookup timed out.')), 15000);
+              try {
+                W.core.communication.poll({
+                  file: PARAM_FILE, func: 'param_chooser->get_values',
+                  data: { plant_id: plant, values_to_load: batch },
+                  callback: (value) => { clearTimeout(timer); resolve(value); },
+                });
+              } catch (error) { clearTimeout(timer); reject(error); }
+            });
+            active();
+            const result = typeof reply === 'string' ? JSON.parse(reply) : reply;
+            if (result?.ok !== true || !Array.isArray(result.data?.values_to_load)) {
+              throw new Error('Native parameter lookup failed; no missing-ID conclusions were made.');
+            }
+            const returned = new Set(result.data.values_to_load.map((row) => String(row?.driver_id ?? '')));
+            if (batch.some((id) => !returned.has(id))) {
+              throw new Error('Native lookup returned an incomplete response. Retry verification.');
+            }
+            for (const row of result.data.values_to_load) {
+              const id = String(row?.driver_id ?? '');
+              // Removed IDs are returned as null-filled placeholders.
+              if (batch.includes(id) && row.unit_id != null && row.element_id != null
+                && (row.alias_text == null || typeof row.alias_text === 'string')) {
+                rows.set(id, { ...row, alias_text: row.alias_text ?? '', unit_name: row.unit_name ?? '' });
+              }
+            }
+          }
+          return rows;
+        }
+
+        // Only internally constructed SELECTs. No arbitrary SQL, writes or saved-sketch scans.
+        // Values use MySQL hex literals, avoiding quote/backslash SQL-mode differences.
+        const sqlValue = (value) => 'CONVERT(0x'
+          // Prototype's Array.from replacement ignores its mapper. Use spread + map.
+          + [...new TextEncoder().encode(String(value))].map((b) => b.toString(16).padStart(2, '0')).join('')
+          + ' USING utf8mb4)';
+        function catalog(plant, active, requests) {
+          let schema = '';
+          const runId = 'ldscp-' + Date.now();
+          async function query(sql) {
+            active();
+            const rows = await new Promise((resolve, reject) => {
+              let request;
+              const finish = (error, value) => {
+                requests.delete(request);
+                if (error) reject(error); else resolve(value);
+              };
+              request = GM_xmlhttpRequest({
+                method: 'POST', url: 'http://toolbox.iwmac.local:8505/plant-sql/',
+                anonymous: true, timeout: 15000,
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded',
+                  'X-Caller': 'logic-designer-section', 'X-Run-Id': runId },
+                data: new URLSearchParams({ plant_id: plant, caller: 'logic-designer-section',
+                  sql_command: sql + ';' }).toString(),
+                onload: (response) => {
+                  try {
+                    if (response.status !== 200) throw new Error('Plant SQL HTTP ' + response.status);
+                    const result = JSON.parse(response.responseText);
+                    if (result?.success !== true || result.results?.length !== 1
+                      || !Array.isArray(result.results[0].data)) throw new Error('Plant SQL returned an invalid or failed result.');
+                    finish(null, result.results[0].data);
+                  } catch (error) { finish(error); }
+                },
+                onerror: () => finish(new Error('Plant SQL connection failed.')),
+                ontimeout: () => finish(new Error('Plant SQL timed out.')),
+                onabort: () => finish(new Error('Plant SQL cancelled.')),
+              });
+              requests.add(request);
+            });
+            active();
+            return rows;
+          }
+          async function table() {
+            if (!schema) {
+              const rows = await query("SELECT table_schema FROM information_schema.tables WHERE table_name='iw_gen_driver_parameters' LIMIT 2");
+              const found = rows[0]?.table_schema ?? rows[0]?.TABLE_SCHEMA;
+              if (rows.length !== 1 || !/^[A-Za-z0-9_]+$/.test(found || '')) {
+                throw new Error('Parameter schema missing or ambiguous; no schema was guessed.');
+              }
+              schema = found;
+            }
+            return schema + '.iw_gen_driver_parameters';
+          }
+          return {
+            async units() {
+              const name = await table();
+              const result = [];
+              let after = '';
+              for (;;) {
+                const page = await query('SELECT unit_id, MAX(unit_name) AS unit_name FROM ' + name
+                  + " WHERE unit_id IS NOT NULL AND unit_id <> ''" + (after ? ' AND unit_id > ' + sqlValue(after) : '')
+                  + ' GROUP BY unit_id ORDER BY unit_id LIMIT 500');
+                if (!page.length) return result;
+                const next = String(page[page.length - 1].unit_id);
+                if (next === after) throw new Error('Unit pagination did not advance.');
+                result.push(...page);
+                after = next;
+                if (result.length > 50000) throw new Error('Unit list too large; request stopped.');
+                // Continue to an empty page, even if the service caps results below LIMIT.
+              }
+            },
+            async parameters(unit) {
+              const name = await table();
+              const where = ' WHERE unit_id = ' + sqlValue(unit);
+              const count = await query('SELECT COUNT(*) AS total FROM ' + name + where);
+              const expected = Number(count[0]?.total);
+              if (!Number.isSafeInteger(expected) || expected < 0 || expected > 50000) {
+                throw new Error('Invalid or excessive parameter count for unit ' + unit);
+              }
+              const rows = new Map();
+              let after = '';
+              for (;;) {
+                const page = await query('SELECT driver_id, alias_text, unit_id, unit_name, parameter_type FROM '
+                  + name + where + (after ? ' AND driver_id > ' + sqlValue(after) : '')
+                  + ' ORDER BY driver_id LIMIT 500');
+                if (!page.length) break;
+                for (const row of page) {
+                  if (!row.driver_id || row.unit_id == null
+                    || (row.alias_text != null && typeof row.alias_text !== 'string')) {
+                    throw new Error('Incomplete parameter metadata for unit ' + unit);
+                  }
+                  rows.set(String(row.driver_id), { ...row, alias_text: row.alias_text ?? '', unit_name: row.unit_name ?? '' });
+                }
+                const next = String(page[page.length - 1].driver_id);
+                if (next === after || rows.size > 50000) throw new Error('Parameter pagination failed for unit ' + unit);
+                after = next;
+              }
+              if (rows.size !== expected) {
+                throw new Error('Incomplete or changing parameter list for ' + unit + ': '
+                  + rows.size + ' of ' + expected + '. Retry verification.');
+              }
+              return rows;
+            },
+          };
+        }
+        function capture(scope) {
+          const paper = W.logic_designer?.paper;
+          if (!paper?.elements) throw new Error('Paper not ready.');
+          const selection = HostAdapter.getSelection();
+          const refs = scope === 'selected' ? selection
+            : Object.keys(paper.elements).filter((key) => /^\d+$/.test(key)).map(Number);
+          const blocks = refs.map((ref) => {
+            const element = paper.elements[ref];
+            if (!['PARAMV', 'WRITETOUNIT'].includes(element?.block_type)) return null;
+            const ids = element.data?.driver_ids;
+            if (!Array.isArray(ids) || !ids.length) return null;
+            return { ref, element, ids: ids.map(String),
+              oldData: JSON.parse(JSON.stringify(element.data)),
+              oldAliasText: element.override?.alias_text ?? '' };
+          }).filter(Boolean);
+          if (!blocks.length) throw new Error('No PARAMV or WRITETOUNIT bindings in this scope.');
+          const plant = plantId();
+          if (!plant) throw new Error('Plant ID not found.');
+          return { paper, selection, scope, blocks, plant, generation: undoHistory.generation() };
+        }
+        function unchanged(scan) {
+          return plantId() === scan.plant && W.logic_designer?.paper === scan.paper
+            && undoHistory.generation() === scan.generation
+            && (scan.scope !== 'selected'
+              || JSON.stringify(HostAdapter.getSelection()) === JSON.stringify(scan.selection))
+            && scan.blocks.every((block) => scan.paper.elements[block.ref] === block.element
+              && JSON.stringify(block.element.data) === JSON.stringify(block.oldData)
+              && (block.element.override?.alias_text ?? '') === block.oldAliasText);
+        }
+        function open({ pointer = null } = {}) {
+          const dialog = document.createElement('dialog');
+          dialog.className = 'ldscp-binding-dialog';
+          const controls = document.createElement('div');
+          dialog.appendChild(controls);
+          const make = (tag, text, parent = controls) => {
+            const el = document.createElement(tag);
+            if (text) el.textContent = text;
+            parent.appendChild(el);
+            return el;
+          };
+          // Native popovers escape the table's scrolling area and close on outside click/Escape.
+          const dropdown = (parent, text) => {
+            const button = make('button', text, parent);
+            button.type = 'button';
+            button.className = 'ldscp-binding-dropdown';
+            button.setAttribute('aria-expanded', 'false');
+            const panel = make('div', '', dialog);
+            panel.popover = 'auto';
+            panel.className = 'ldscp-binding-picker';
+            panel._trigger = button;
+            button.addEventListener('click', () => {
+              if (panel.matches(':popover-open')) { panel.hidePopover(); return; }
+              panel.showPopover();
+              const anchor = button.getBoundingClientRect();
+              const box = panel.getBoundingClientRect();
+              panel.style.left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8)) + 'px';
+              panel.style.top = Math.max(8, Math.min(anchor.bottom, innerHeight - box.height - 8)) + 'px';
+              const input = panel.querySelector('input');
+              input?.focus();
+              input?.select();
+            });
+            panel.addEventListener('toggle', () => button.setAttribute('aria-expanded', String(panel.matches(':popover-open'))));
+            return { button, panel };
+          };
+          const title = make('h2', 'Verify objects / Swap unit');
+          title.title = 'Drag to move this window';
+          make('p', 'Verify checks bindings on this plant. Swap loads the full new unit. Strong, unambiguous matches are included automatically at the threshold below. Review checked changes before Apply.');
+          const field = (text, tag) => make(tag, '', make('label', text));
+          const scope = field('Scope', 'select');
+          scope.add(new Option('Entire sketch', 'all'));
+          scope.add(new Option('Selected blocks', 'selected'));
+          const from = field('From unit (Verify and swap)', 'select');
+          const unitRow = make('div');
+          unitRow.className = 'ldscp-binding-unit-row';
+          make('span', 'To unit (swap only)', unitRow);
+          const unitPicker = dropdown(unitRow, 'Choose new unit ▾');
+          const unitSearch = make('input', '', unitPicker.panel);
+          unitSearch.placeholder = 'Search unit ID or name';
+          unitSearch.setAttribute('aria-label', 'Search destination units');
+          const to = make('select', '', unitPicker.panel);
+          to.size = 10;
+          to.setAttribute('aria-label', 'Destination unit');
+          let unitOptions = [];
+          let chosenUnit = '';
+          const filterUnits = () => {
+            to.replaceChildren(new Option('Choose new unit', ''));
+            for (const option of unitOptions) {
+              if (normalize(option.text).includes(normalize(unitSearch.value)) || option.value === chosenUnit) {
+                to.add(new Option(option.text, option.value));
+              }
+            }
+            to.value = chosenUnit;
+          };
+          unitSearch.addEventListener('input', filterUnits);
+          to.addEventListener('change', () => {
+            chosenUnit = to.value;
+            unitPicker.button.textContent = (to.selectedOptions[0]?.textContent || 'Choose new unit') + ' ▾';
+            unitPicker.panel.hidePopover();
+          });
+          from.add(new Option('Any unit', '*'));
+          from.add(new Option('Missing bindings only', '?'));
+          to.add(new Option('Choose new unit', ''));
+          const loadButton = make('button', 'Load units', unitRow);
+          const threshold = field('Auto-include match at or above (%)', 'input');
+          threshold.type = 'number';
+          threshold.min = '0';
+          threshold.max = '100';
+          threshold.value = '95';
+          threshold.style.width = '64px';
+          threshold.title = 'Tied matches and matches within 5 points remain unchecked.';
+          const verifyButton = make('button', 'Verify');
+          const swapButton = make('button', 'Preview swap');
+          const applyButton = make('button', 'Apply checked changes');
+          const closeButton = make('button', 'Close');
+          for (const button of [loadButton, verifyButton, swapButton, applyButton, closeButton]) button.type = 'button';
+          const status = make('p');
+          status.setAttribute('role', 'status');
+          const results = make('div', '', dialog);
+          results.className = 'ldscp-binding-results';
+          let scan = null;
+          let alive = true;
+          let running = false;
+          let proposals = [];
+          let activeRow = null;
+          let outline = null;
+          const requests = new Set();
+          const geometryKey = 'ldscp:binding-dialog:geometry';
+          let lastGeometry = null;
+          let saveTimer;
+          const rememberGeometry = () => {
+            if (!dialog.open) return;
+            const { x, y, width, height } = dialog.getBoundingClientRect();
+            lastGeometry = { x, y, width, height };
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => GM_setValue(geometryKey, lastGeometry), 250);
+          };
+          const resizeObserver = new ResizeObserver(rememberGeometry);
+          const message = (text, error = false) => {
+            status.textContent = text;
+            status.style.color = error ? '#a33' : '';
+          };
+          const active = () => {
+            if (!alive) throw new Error('Dialog closed.');
+            if (!scan || !unchanged(scan)) throw new Error('Plant, sketch or selection changed. Run the preview again.');
+          };
+          const focus = (row, block) => {
+            activeRow?.classList.remove('ldscp-binding-active');
+            outline?.remove();
+            activeRow = row;
+            row.classList.add('ldscp-binding-active');
+            outline = AlarmHighlight.outline(block.ref);
+            outline?.setAttribute('stroke', '#fff000');
+          };
+          title.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            const box = dialog.getBoundingClientRect();
+            dialog.style.margin = '0';
+            dialog.style.left = box.left + 'px';
+            dialog.style.top = box.top + 'px';
+            const dx = event.clientX - box.left;
+            const dy = event.clientY - box.top;
+            title.setPointerCapture(event.pointerId);
+            const move = (e) => {
+              dialog.style.left = Math.max(0, Math.min(innerWidth - 80, e.clientX - dx)) + 'px';
+              dialog.style.top = Math.max(0, Math.min(innerHeight - 40, e.clientY - dy)) + 'px';
+            };
+            title.addEventListener('pointermove', move);
+            title.addEventListener('lostpointercapture', () => {
+              title.removeEventListener('pointermove', move);
+              rememberGeometry();
+            }, { once: true });
+          });
+          const updateApply = () => {
+            for (const proposal of proposals) {
+              const row = proposal.check?.closest('tr');
+              row?.classList.toggle('ldscp-binding-matched', !!proposal.chosen);
+              row?.classList.toggle('ldscp-binding-included', !!proposal.chosen && proposal.check.checked);
+            }
+            applyButton.disabled = running || !proposals.some((p) => p.check.checked && p.chosen);
+          };
+          const clear = () => {
+            proposals = [];
+            for (const picker of results.querySelectorAll('[data-picker]')) picker._panel?.remove();
+            results.replaceChildren();
+            outline?.remove();
+            outline = null;
+            activeRow = null;
+            updateApply();
+          };
+          for (const control of [scope, from, to, threshold]) control.addEventListener('change', () => {
+            clear();
+            message('Options changed. Run Verify or Preview swap again.');
+          });
+          function sourceUnits(records) {
+            const selected = from.value;
+            from.replaceChildren(new Option('Any unit', '*'), new Option('Missing bindings only', '?'));
+            const units = new Set(records.map((r) => r.unit).filter(Boolean));
+            for (const unit of [...units].sort()) from.add(new Option(unit, unit));
+            if ([...from.options].some((o) => o.value === selected)) from.value = selected;
+          }
+          async function loadUnits() {
+            clear();
+            scan = capture(scope.value);
+            const api = catalog(scan.plant, active, requests);
+            message('Loading units from the current plant...');
+            const rows = await api.units();
+            active();
+            const selected = to.value;
+            unitOptions = rows.map((row) => ({ text: row.unit_id + ', ' + (row.unit_name || ''), value: String(row.unit_id) }));
+            chosenUnit = unitOptions.some((o) => o.value === selected) ? selected : '';
+            unitSearch.value = '';
+            filterUnits();
+            unitPicker.button.textContent = (to.selectedOptions[0]?.textContent || 'Choose new unit') + ' ▾';
+            const values = await lookup(scan.blocks.flatMap((b) => b.ids), scan.plant, active);
+            sourceUnits(scan.blocks.flatMap((b) => b.ids.map((id) => ({
+              unit: String(values.get(id)?.unit_id ?? labelParts(b.oldAliasText).unit),
+            }))));
+            message(rows.length + ' current-plant units loaded. Choose old and new units, then Preview swap.');
+          }
+          function picker(cell, includeCell, proposal, candidates, alias, preferred) {
+            const check = make('input', '', includeCell);
+            check.type = 'checkbox';
+            check.setAttribute('aria-label', 'Include mapping for ' + proposal.id);
+            proposal.check = check;
+            const pickerUI = dropdown(cell, 'Choose replacement ▾');
+            pickerUI.button.dataset.picker = 'true';
+            pickerUI.button._panel = pickerUI.panel;
+            const choose = (candidate) => {
+              proposal.chosen = candidate;
+              pickerUI.button.textContent = candidate.alias_text + ' [' + candidate.unit_id + '] ▾';
+              pickerUI.button.title = candidate.alias_text + ' — ' + candidate.driver_id;
+              check.checked = false;
+              updateApply();
+            };
+            const search = make('input', '', pickerUI.panel);
+            search.placeholder = 'Search full list; ++ means AND';
+            search.setAttribute('aria-label', 'Search replacements for ' + proposal.id);
+            const regexLabel = make('label', 'Regex ', pickerUI.panel);
+            const regex = make('input', '', regexLabel);
+            regex.type = 'checkbox';
+            const info = make('div', '', pickerUI.panel);
+            info.setAttribute('role', 'status');
+            const list = make('div', '', pickerUI.panel);
+            list.className = 'ldscp-binding-options';
+            const more = make('button', 'Show 10 more', pickerUI.panel);
+            more.type = 'button';
+            let limit = 10;
+            const isPriorityList = (value) => /\bpriority[\s_-]*list\b/i.test(value.alias_text || '');
+            const ranked = candidates.map((value) => ({ value, score: aliasScore(alias, value.alias_text) }))
+              .sort((a, b) => b.score - a.score || a.value.alias_text.localeCompare(b.value.alias_text));
+            const suggested = ranked.filter(({ value }) => !isPriorityList(value));
+            const top = suggested[0];
+            const unique = top && (!suggested[1] || top.score - suggested[1].score > 5);
+            const cutoff = Number(threshold.value);
+            if (preferred && !isPriorityList(preferred)) choose(preferred);
+            else if (unique && top.score >= Math.min(85, cutoff)) choose(top.value);
+            const changesBinding = proposal.chosen && proposal.items.some(({ id, block }) =>
+              id !== String(proposal.chosen.driver_id) || (block.ids.length === 1
+                && block.oldAliasText !== proposal.chosen.unit_id + ', ' + proposal.chosen.unit_name + ', ' + proposal.chosen.alias_text));
+            if (proposal.chosen && top && unique && top.score >= cutoff
+              && changesBinding && String(proposal.chosen.driver_id) === String(top.value.driver_id)) check.checked = true;
+            const render = () => {
+              list.replaceChildren();
+              let matches;
+              try {
+                const re = regex.checked && search.value ? new RegExp(search.value, 'i') : null;
+                const terms = normalize(search.value).split('++').map((t) => t.trim()).filter(Boolean);
+                matches = ranked.filter(({ value }) => {
+                  // Require an explicit Priority search or exact ID, not a broad alias/regex match.
+                  if (isPriorityList(value) && !/priority/i.test(search.value)
+                    && !terms.includes(normalize(value.driver_id))) return false;
+                  const fields = [value.alias_text, String(value.unit_id), value.unit_name || '', String(value.driver_id)];
+                  return re ? fields.some((s) => re.test(s))
+                    : terms.every((term) => fields.some((s) => normalize(s).includes(term)));
+                });
+                search.removeAttribute('aria-invalid');
+              } catch (error) {
+                search.setAttribute('aria-invalid', 'true');
+                info.textContent = 'Invalid regex: ' + error.message;
+                more.disabled = true;
+                check.checked = false;
+                updateApply();
+                return;
+              }
+              for (const { value, score } of matches.slice(0, limit)) {
+                const option = make('button', '', list);
+                option.type = 'button';
+                option.classList.toggle('ldscp-binding-match-option', score >= cutoff);
+                option.setAttribute('aria-pressed', String(proposal.chosen?.driver_id === value.driver_id));
+                make('strong', score + '% — ' + value.alias_text, option);
+                make('small', value.unit_id + ' — ' + value.driver_id, option);
+                option.addEventListener('click', () => {
+                  choose(value);
+                  pickerUI.panel.hidePopover();
+                  pickerUI.button.focus();
+                });
+              }
+              info.textContent = Math.min(limit, matches.length) + ' of ' + matches.length
+                + ' matches; ' + candidates.length + ' parameters loaded.'
+                + ' Priority list objects are hidden unless you search for priority or their exact driver ID.'
+                + (top && !unique ? ' Ambiguous: review candidates.' : '');
+              more.disabled = matches.length <= limit;
+            };
+            check.addEventListener('change', () => {
+              if (!proposal.chosen || search.getAttribute('aria-invalid') === 'true') check.checked = false;
+              updateApply();
+            });
+            search.addEventListener('keydown', (event) => {
+              if (event.key === 'ArrowDown') { event.preventDefault(); list.querySelector('button')?.focus(); }
+            });
+            list.addEventListener('keydown', (event) => {
+              if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+              event.preventDefault();
+              const options = [...list.children];
+              const index = options.indexOf(document.activeElement);
+              options[Math.max(0, Math.min(options.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus();
+            });
+            for (const el of [search, regex]) el.addEventListener('input', () => { limit = 10; render(); });
+            more.addEventListener('click', () => { limit += 10; render(); });
+            pickerUI.panel.addEventListener('beforetoggle', (event) => { if (event.newState === 'open') render(); });
+            render();
+          }
+          async function preview(swap) {
+            clear();
+            if (!threshold.value.trim() || !threshold.checkValidity()) throw new Error('Enter a match threshold from 0 to 100.');
+            scan = capture(scope.value);
+            if (swap && !to.value) throw new Error('Load units and choose a new unit first.');
+            message('Checking current bindings...');
+            const current = await lookup(scan.blocks.flatMap((b) => b.ids), scan.plant, active);
+            const records = scan.blocks.flatMap((block) => block.ids.map((id, index) => {
+              const value = current.get(id);
+              const label = labelParts(block.oldAliasText);
+              return { block, id, index, value, label,
+                unit: String(value?.unit_id ?? label.unit) };
+            }));
+            sourceUnits(records);
+            const source = records.filter((r) => (pointer == null || String(r.block.element.pointer) === String(pointer))
+              && (from.value === '*' || (from.value === '?' ? !r.value : normalize(r.unit) === normalize(from.value))));
+            if (!source.length) throw new Error('No bindings match this source unit.');
+            const api = catalog(scan.plant, active, requests);
+            const units = new Map();
+            const needed = new Set(swap ? [to.value] : source.map((r) => r.unit).filter(Boolean));
+            for (const unit of needed) {
+              message('Loading the complete parameter list for ' + unit + '...');
+              units.set(unit, await api.parameters(unit));
+            }
+            active();
+            const errors = new Map();
+            for (const alarm of AlarmHighlight.problems()) {
+              const key = String(alarm.pointer);
+              errors.set(key, [...(errors.get(key) || []), alarm.text]);
+            }
+            const groups = new Map();
+            for (const item of source) {
+              // Repeated bindings share one mapping; differing stored aliases stay separate in Verify.
+              const key = JSON.stringify([item.unit, item.id, swap ? '' : item.block.oldAliasText]);
+              if (!groups.has(key)) groups.set(key, []);
+              groups.get(key).push(item);
+            }
+            const table = make('table', '', results);
+            const head = table.createTHead().insertRow();
+            for (const text of ['Include', 'Blocks / stored label', 'Current binding', 'Status / replacement', 'Host error']) make('th', text, head);
+            const body = table.createTBody();
+            let missing = 0;
+            let renamed = 0;
+            let catalogWarnings = 0;
+            for (const items of groups.values()) {
+              const item = items[0];
+              const row = body.insertRow();
+              const includeCell = row.insertCell();
+              const blocksCell = row.insertCell();
+              for (const block of new Set(items.map((r) => r.block))) {
+                const button = make('button', 'Block ' + block.ref, blocksCell);
+                button.type = 'button';
+                button.addEventListener('pointerenter', () => focus(row, block));
+                button.addEventListener('focus', () => focus(row, block));
+                button.addEventListener('click', () => focus(row, block));
+                make('div', block.oldAliasText || '(No stored label)', blocksCell);
+              }
+              row.addEventListener('pointerenter', () => focus(row, item.block));
+              const idCell = row.insertCell();
+              make('div', item.id, idCell);
+              make('div', 'Unit: ' + (item.unit || 'unknown'), idCell);
+              make('div', 'Element: ' + (item.value?.element_id ?? 'missing'), idCell);
+              const cell = row.insertCell();
+              const catalogRows = units.get(swap ? to.value : item.unit);
+              const live = catalogRows?.get(item.id);
+              if (!swap && item.value && !live) {
+                catalogWarnings += items.length;
+                make('div', 'Native chooser confirms this binding; absent from this unit\'s catalog list. Replacement coverage may be incomplete.', cell);
+              }
+              const exists = !!item.value;
+              const nameChanged = exists && item.block.ids.length === 1
+                && normalize(item.block.oldAliasText) !== normalize(item.value.unit_id + ', '
+                  + item.value.unit_name + ', ' + item.value.alias_text);
+              if (!exists) missing += items.length;
+              if (nameChanged) renamed += items.length;
+              const hostErrors = [...new Set(items.flatMap((r) => errors.get(String(r.block.element.pointer)) || []))];
+              make('div', swap ? 'Unit swap' : !exists ? (item.unit ? 'Missing driver ID' : 'Missing driver ID; source unit unknown. Use Swap unit.')
+                : nameChanged ? 'Name changed' : hostErrors.length ? 'Binding exists; inspect host error' : 'OK', cell);
+              if (!swap && exists && !nameChanged && !hostErrors.length) row.classList.add('ldscp-binding-matched');
+              const candidates = [...(catalogRows?.values() || [])];
+              if (!swap && item.value) {
+                // Native metadata remains authoritative for an existing binding/name refresh.
+                const index = candidates.findIndex((candidate) => String(candidate.driver_id) === item.id);
+                if (index < 0) candidates.push(item.value);
+                else candidates[index] = item.value;
+              }
+              if (swap || !exists || nameChanged || hostErrors.length) {
+                const proposal = { id: item.id, items, chosen: null };
+                proposals.push(proposal);
+                picker(cell, includeCell, proposal, candidates, item.value?.alias_text || item.label.alias,
+                  !swap && nameChanged ? item.value : null);
+              }
+              make('div', hostErrors.join(' | ') || '—', row.insertCell());
+            }
+            message(source.length + ' bindings checked; ' + missing + ' missing, ' + renamed
+              + ' name changes. Catalog lists loaded for ' + needed.size + ' unit(s). '
+              + (catalogWarnings ? catalogWarnings + ' binding(s) confirmed only by the native chooser; see row warnings. ' : '')
+              + 'Review and tick changes to apply.');
+          }
+          async function apply() {
+            active();
+            const selected = proposals.filter((p) => p.check.checked && p.chosen);
+            if (!selected.length) throw new Error('Tick at least one reviewed change.');
+            const targets = new Map();
+            for (const p of selected) {
+              const id = String(p.chosen.driver_id);
+              if (!targets.has(id)) targets.set(id, new Set());
+              targets.get(id).add(p.id);
+            }
+            if ([...targets.values()].some((ids) => ids.size > 1)
+              && !W.confirm('Different old parameters map to the same new parameter. Apply these checked mappings?')) return;
+            message('Rechecking chosen replacements with the native chooser...');
+            const fresh = await lookup([...targets.keys()], scan.plant, active);
+            active();
+            const changes = new Map();
+            for (const p of selected) {
+              const candidate = fresh.get(String(p.chosen.driver_id));
+              if (!candidate || String(candidate.unit_id) !== String(p.chosen.unit_id)
+                || candidate.alias_text !== p.chosen.alias_text) {
+                throw new Error('A chosen parameter is missing or changed. Run the preview again.');
+              }
+              for (const item of p.items) {
+                if (!changes.has(item.block)) changes.set(item.block, []);
+                changes.get(item.block).push({ index: item.index, candidate });
+              }
+            }
+            const updates = [];
+            let failures = 0;
+            for (const [block, replacements] of changes) {
+              const ids = block.ids.slice();
+              for (const { index, candidate } of replacements) ids[index] = String(candidate.driver_id);
+              const value = ids.length === 1 ? replacements[0].candidate : null;
+              const label = value ? value.unit_id + ', ' + value.unit_name + ', ' + value.alias_text : block.oldAliasText;
+              if (JSON.stringify(ids) === JSON.stringify(block.ids) && label === block.oldAliasText) continue;
+              updates.push({ ref: block.ref, oldData: block.oldData, oldAliasText: block.oldAliasText });
+              try {
+                scan.paper.set_block_data(block.ref, { ...block.oldData, driver_ids: ids });
+                scan.paper.set_block_override(block.ref, 'alias_text', label);
+              } catch (error) {
+                failures++;
+                console.error('[' + SCRIPT_NAME + '] Binding update failed:', error);
+                break; // Preserve Undo for all attempted writes; stop after the first failure.
+              }
+            }
+            if (!updates.length) throw new Error('Checked mappings make no changes.');
+            undoHistory.push({ type: 'tag-paste', timestamp: new Date().toISOString(), payload: { updates } });
+            dialog.close();
+            toast((updates.length - failures) + ' blocks updated. Ctrl+Z restores attempted changes.', failures ? 'error' : 'info');
+          }
+          async function run(action) {
+            if (running) return;
+            running = true;
+            for (const panel of dialog.querySelectorAll(':popover-open')) panel.hidePopover();
+            for (const el of [scope, from, to, unitPicker.button, unitSearch, threshold, loadButton, verifyButton, swapButton]) el.disabled = true;
+            results.inert = true;
+            updateApply();
+            try { await action(); }
+            catch (error) { if (alive) { clear(); message(error.message, true); } }
+            finally {
+              running = false;
+              if (alive) {
+                for (const el of [scope, from, to, unitPicker.button, unitSearch, threshold, loadButton, verifyButton, swapButton]) el.disabled = false;
+                results.inert = false;
+                updateApply();
+              }
+            }
+          }
+          loadButton.addEventListener('click', () => run(loadUnits));
+          verifyButton.addEventListener('click', () => run(() => preview(false)));
+          swapButton.addEventListener('click', () => run(() => preview(true)));
+          applyButton.addEventListener('click', () => run(apply));
+          closeButton.addEventListener('click', () => dialog.close());
+          const dismissTopLayer = () => {
+            const panel = dialog.querySelector(':popover-open');
+            if (panel) {
+              panel.hidePopover();
+              panel._trigger?.focus();
+            } else dialog.close();
+          };
+          const onVerifyEscape = (event) => {
+            if (event.key !== 'Escape' || !dialog.open || !dialog.contains(event.target)) return;
+            // Window capture runs before canvas/document shortcuts can consume Escape.
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (!event.repeat) dismissTopLayer();
+          };
+          window.addEventListener('keydown', onVerifyEscape, true);
+          dialog.addEventListener('cancel', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            dismissTopLayer();
+          });
+          dialog.addEventListener('close', () => {
+            alive = false;
+            window.removeEventListener('keydown', onVerifyEscape, true);
+            resizeObserver.disconnect();
+            clearTimeout(saveTimer);
+            if (lastGeometry) GM_setValue(geometryKey, lastGeometry);
+            for (const request of requests) request.abort();
+            outline?.remove();
+            dialog.remove();
+          });
+          updateApply();
+          document.body.appendChild(dialog);
+          const saved = GM_getValue(geometryKey, null);
+          if (saved && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite(saved[key]))) {
+            dialog.style.width = Math.max(Math.min(640, innerWidth * .9), Math.min(saved.width, innerWidth * .96)) + 'px';
+            dialog.style.height = Math.max(Math.min(340, innerHeight * .94), Math.min(saved.height, innerHeight * .94)) + 'px';
+            dialog.style.margin = '0';
+            dialog.style.left = Math.max(0, Math.min(saved.x, innerWidth - parseFloat(dialog.style.width))) + 'px';
+            dialog.style.top = Math.max(0, Math.min(saved.y, innerHeight - parseFloat(dialog.style.height))) + 'px';
+          }
+          dialog.showModal();
+          rememberGeometry();
+          resizeObserver.observe(dialog);
+          try {
+            // Stored labels populate the selector immediately, including removed units.
+            scan = capture(scope.value);
+            sourceUnits(scan.blocks.map((block) => ({ unit: labelParts(block.oldAliasText).unit })));
+            if (pointer != null) {
+              make('p', 'Reviewing error block ' + pointer + '. Close and reopen Verify objects for the full sketch.');
+              run(() => preview(false));
+            } else {
+              run(async () => {
+                message('Resolving units used in this sketch...');
+                const rows = await lookup(scan.blocks.flatMap((block) => block.ids), scan.plant, active);
+                sourceUnits(scan.blocks.flatMap((block) => block.ids.map((id) => ({
+                  unit: String(rows.get(id)?.unit_id ?? labelParts(block.oldAliasText).unit),
+                }))));
+                message('Sketch units ready. Green means a binding or replacement is matched; darker green means included. Changes are made only with Apply.');
+              });
+            }
+          } catch (error) { message(error.message, true); }
+        }
+        return { open, resolve: lookup };
+      })();
+
       // ═══════════════════════════════════════════════════════════════
       //  Multi-wire orchestrator — pair sources across one or more
       //  targets, create wires. v3: accepts targets[] array; v1.3.0's
@@ -3160,6 +4532,7 @@ function buildSnapshot({ nodes, wires }) {
           }
           .ldscp-launcher:hover { background: rgba(40, 40, 40, 0.96); color: #ffffff; }
           .ldscp-launcher svg { display: block; }
+          .ldscp-launcher[hidden] { display: none; }
           .ldscp-alarm-pill {
             position: fixed;
             bottom: 56px;
@@ -3203,6 +4576,173 @@ function buildSnapshot({ nodes, wires }) {
             color: #d4d4d4;
           }
           .ldscp-menu[hidden] { display: none; }
+          .ldscp-menu-topbar {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            box-sizing: border-box;
+            height: 40px;
+            min-width: 0;
+            padding: 2px;
+            box-shadow: none;
+            background: #eee;
+            color: #333;
+            border-color: #bbb;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scrollbar-width: thin;
+          }
+          .ldscp-menu-topbar .ldscp-menu-item {
+            flex: 0 0 auto;
+            width: auto;
+            height: 28px;
+            gap: 5px;
+            padding: 4px 7px;
+            white-space: nowrap;
+          }
+          .ldscp-menu-topbar .ldscp-menu-item:hover { background: #ddd; color: #222; }
+          .ldscp-menu-topbar .ldscp-menu-item-kbd { display: none; }
+          .ldscp-menu-topbar select { background: #f4f4f4 !important; }
+          .ldscp-menu-topbar::-webkit-scrollbar { height: 6px; }
+          .ldscp-menu-topbar .ldscp-paste-tags-panel {
+            position: fixed;
+            background: #202020;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            border-radius: 4px;
+          }
+          .ldscp-menu-floating {
+            box-sizing: border-box;
+            width: max-content;
+            min-width: min(160px, calc(100vw - 16px));
+            max-width: calc(100vw - 16px);
+            max-height: calc(100vh - 16px);
+            overflow: auto;
+          }
+          .ldscp-menu-floating .ldscp-paste-tags-panel { min-width: 0; }
+          .ldscp-menu-horizontal { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+          .ldscp-menu-horizontal .ldscp-menu-item { width: auto; height: 28px; padding: 4px 6px; flex: 0 0 auto; white-space: nowrap; }
+          .ldscp-menu-horizontal .ldscp-menu-item > span:not(:first-child) { display: none; }
+          .ldscp-menu-horizontal .ldscp-menu-drag { flex: 0 0 auto; width: 28px; height: 28px; padding: 4px 6px; border-bottom: 0; font-size: 0; }
+          .ldscp-menu-horizontal .ldscp-menu-drag::before { content: '⋮⋮'; font-size: 13px; }
+          .ldscp-menu-orientation[hidden] { display: none; }
+          .ldscp-menu-drag {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            display: block;
+            width: 100%;
+            padding: 5px 8px;
+            border: 0;
+            border-bottom: 1px solid #555;
+            background: #202020;
+            color: #d4d4d4;
+            font: inherit;
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+          }
+          .ldscp-menu-drag[hidden] { display: none; }
+          .ldscp-switch-project {
+            display: inline-flex;
+            align-items: center;
+            min-height: 0;
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0 10px;
+            border: 0;
+            border-left: 1px solid #d1d1d1;
+            border-right: 1px solid #d1d1d1;
+            border-radius: 0;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            cursor: pointer;
+          }
+          .ldscp-switch-project:hover { background: #e9e9e9; }
+          .ldscp-binding-dialog {
+            border: 1px solid #888;
+            border-radius: 6px;
+            padding: 16px;
+            width: min(1080px, 94vw);
+            height: 85vh;
+            min-width: min(640px, 90vw);
+            min-height: min(340px, 94vh);
+            max-width: 96vw;
+            max-height: 94vh;
+            box-sizing: border-box;
+            resize: both;
+            overflow: auto;
+            font: 13px/1.4 sans-serif;
+            color: #222;
+            background: #fff;
+            z-index: 100000;
+          }
+          .ldscp-binding-dialog[open] { display: flex; flex-direction: column; }
+          .ldscp-binding-dialog > div:first-child { flex-shrink: 0; }
+          .ldscp-binding-dialog::backdrop { background: rgba(0,0,0,.12); }
+          .ldscp-binding-dialog h2 {
+            margin: -16px -16px 12px;
+            padding: 12px 16px;
+            background: #e9eef5;
+            cursor: move;
+            user-select: none;
+            touch-action: none;
+          }
+          .ldscp-binding-dialog label { display: block; margin: 8px 0; }
+          .ldscp-binding-dialog input,
+          .ldscp-binding-dialog select,
+          .ldscp-binding-dialog textarea { font: inherit; margin-left: 6px; }
+          .ldscp-binding-dialog textarea { display: block; width: 98%; min-height: 52px; }
+          .ldscp-binding-dialog button { margin: 6px 6px 6px 0; }
+          .ldscp-binding-results { flex: 1; min-height: 100px; overflow: auto; }
+          .ldscp-binding-results table { width: 100%; border-collapse: collapse; }
+          .ldscp-binding-results th,
+          .ldscp-binding-results td { border-bottom: 1px solid #ddd; padding: 4px; text-align: left; }
+          .ldscp-binding-results td { overflow-wrap: anywhere; }
+          .ldscp-binding-results tr.ldscp-binding-matched { background: #eff9f0; }
+          .ldscp-binding-results tr.ldscp-binding-included { background: #dcefdc; }
+          .ldscp-binding-results tr.ldscp-binding-active { background: #fff1aa; outline: 2px solid #bb7500; }
+          .ldscp-binding-results select { width: 100%; min-width: 190px; }
+          .ldscp-binding-results table { table-layout: fixed; }
+          .ldscp-binding-results th:nth-child(1) { width: 52px; }
+          .ldscp-binding-results th:nth-child(2) { width: 21%; }
+          .ldscp-binding-results th:nth-child(3) { width: 19%; }
+          .ldscp-binding-results th:nth-child(4) { width: 43%; }
+          .ldscp-binding-results td { vertical-align: top; }
+          .ldscp-binding-results input:not([type="checkbox"]) { box-sizing: border-box; width: 96%; }
+          .ldscp-binding-results select { box-sizing: border-box; width: 96%; min-width: 0; }
+          .ldscp-binding-unit-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+          .ldscp-binding-unit-row .ldscp-binding-dropdown { width: min(440px, 60vw); }
+          .ldscp-binding-dialog .ldscp-binding-dropdown {
+            display: block; width: 100%; padding: 8px; text-align: left;
+            white-space: normal; overflow-wrap: anywhere; cursor: pointer;
+          }
+          .ldscp-binding-dialog .ldscp-binding-unit-row .ldscp-binding-dropdown { width: min(440px, 60vw); }
+          .ldscp-binding-picker {
+            position: fixed; inset: auto; margin: 0; padding: 14px;
+            width: min(1000px, calc(100vw - 16px)); max-height: calc(100vh - 16px);
+            box-sizing: border-box; overflow: auto; border: 1px solid #777;
+            border-radius: 5px; background: #fff; color: #222;
+            box-shadow: 0 6px 24px #0004; font: 13px/1.4 sans-serif;
+          }
+          .ldscp-binding-picker input:not([type="checkbox"]), .ldscp-binding-picker select {
+            box-sizing: border-box; width: 100%; margin: 0; padding: 8px; font: inherit;
+          }
+          .ldscp-binding-picker label { display: block; margin: 8px 0; }
+          .ldscp-binding-options { max-height: min(480px, 55vh); overflow: auto; margin-top: 8px; }
+          .ldscp-binding-options button {
+            display: block; width: 100%; text-align: left; padding: 9px;
+            white-space: normal; overflow-wrap: anywhere; border: 0;
+            border-bottom: 1px solid #ddd; background: #fff; color: #222; cursor: pointer;
+          }
+          .ldscp-binding-options button:hover, .ldscp-binding-options button:focus-visible,
+          .ldscp-binding-options button[aria-pressed="true"] { background: #e4efff; }
+          .ldscp-binding-options button.ldscp-binding-match-option { background: #eff9f0; }
+          .ldscp-binding-options button.ldscp-binding-match-option:hover,
+          .ldscp-binding-options button.ldscp-binding-match-option:focus-visible,
+          .ldscp-binding-options button.ldscp-binding-match-option[aria-pressed="true"] { background: #dcefdc; }
+          .ldscp-binding-options strong, .ldscp-binding-options small { display: block; }
           .ldscp-menu-item {
             box-sizing: border-box;
             display: flex;
@@ -3644,6 +5184,8 @@ function buildSnapshot({ nodes, wires }) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'ldscp-menu-item';
+        btn.title = label + (kbd ? ` (${kbd})` : '');
+        btn.setAttribute('aria-label', label);
         // Icon is a hardcoded SVG string — innerHTML is safe.
         // Label and kbd are text-typed via textContent so a future caller can
         // pass dynamic strings without XSS.
@@ -3673,6 +5215,28 @@ function buildSnapshot({ nodes, wires }) {
         const menu = document.createElement('div');
         menu.className = 'ldscp-menu';
         menu.hidden = true;
+        const layoutKey = 'ldscp:button-layout';
+        const positionKey = 'ldscp:floating-menu:position';
+        const orientationKey = 'ldscp:floating-menu:orientation';
+        let layout = 'corner';
+        let orientation = 'vertical';
+        let floatingPosition = null;
+        try {
+          const saved = GM_getValue(layoutKey, 'corner');
+          if (['top', 'corner', 'free'].includes(saved)) layout = saved;
+          const position = GM_getValue(positionKey, null);
+          if (Number.isFinite(position?.x) && Number.isFinite(position?.y)) floatingPosition = position;
+          if (GM_getValue(orientationKey, 'vertical') === 'horizontal') orientation = 'horizontal';
+        }
+        catch { /* Keep the default if preference storage is unavailable. */ }
+        const dragHandle = document.createElement('button');
+        dragHandle.type = 'button';
+        dragHandle.className = 'ldscp-menu-drag';
+        dragHandle.textContent = '⋮⋮ Move menu';
+        dragHandle.title = 'Drag to move; arrow keys move by 10px, Shift by 50px';
+        dragHandle.setAttribute('aria-label', 'Move floating menu');
+        dragHandle.hidden = true;
+        menu.appendChild(dragHandle);
         menu.appendChild(makeMenuItem(COPY_ICON, 'Copy section', 'Ctrl+C', () => {
           closeMenu();
           doCopy();
@@ -3698,6 +5262,7 @@ function buildSnapshot({ nodes, wires }) {
         menu.appendChild(removeItem);
         const typeColorsItem = document.createElement('label');
         typeColorsItem.className = 'ldscp-menu-item';
+        typeColorsItem.title = 'Type colors';
         const typeColorsIcon = document.createElement('span');
         typeColorsIcon.innerHTML = TYPECOLOR_ICON;
         const typeColorsLabel = document.createElement('span');
@@ -3720,12 +5285,22 @@ function buildSnapshot({ nodes, wires }) {
           openPasteTagsPanel();
         });
         menu.appendChild(pasteTagsItem);
-        const switchProjectItem = makeMenuItem(FOLDER_ICON, 'Switch project', null, () => {
+        menu.appendChild(makeMenuItem(TAG_ICON, 'Verify objects / Swap unit', null, () => {
           closeMenu();
-          // Re-show the host's own "Get started!" project selector — it is
-          // hidden (not destroyed) after startup, and its Ok handler runs the
-          // same native project-open path as page load. Unsaved sketch changes
-          // are the user's to save first, same as before a reload.
+          BindingTools.open();
+        }));
+        menu.appendChild(makeMenuItem(TAG_ICON, 'Name variable in/out', null, () => {
+          closeMenu();
+          VariableNames.nameAll();
+        }));
+        menu.appendChild(makeMenuItem(TAG_ICON, 'Edit selected objects', null, () => {
+          closeMenu();
+          BulkEdit.open();
+        }));
+        const showProjectSelector = () => {
+          closeMenu();
+          // Re-show the reusable "Get started!" dialog. Save unsaved sketch
+          // changes before switching, as with a page reload.
           const wnd = W.application_windows?.wnd_splash;
           if (wnd && typeof wnd.show_modal === 'function') {
             try {
@@ -3737,8 +5312,83 @@ function buildSnapshot({ nodes, wires }) {
           } else {
             toast('Project selector not reachable on this host build.', 'error');
           }
+        };
+        const switchProjectButton = document.createElement('button');
+        switchProjectButton.type = 'button';
+        switchProjectButton.className = 'ldscp-switch-project';
+        switchProjectButton.textContent = 'Switch project';
+        switchProjectButton.title = 'Switch project or start a new sketch';
+        switchProjectButton.addEventListener('click', showProjectSelector);
+        // ponytail: a 1s poll remounts after host startup without a global observer.
+        const mountSwitchProjectButton = () => {
+          const processMode = [...document.querySelectorAll('.iw_oc_menu_top_level, .iw_oc_menu_level')]
+            .find((el) => el.getClientRects().length > 0 && [el.getAttribute('title'),
+              el.getAttribute('aria-label'), el.getAttribute('value'), el.textContent]
+              .some((value) => /^\s*set process mode\b/i.test(value || '')));
+          if (processMode) {
+            const nativeStyle = getComputedStyle(processMode);
+            switchProjectButton.style.font = nativeStyle.font;
+            switchProjectButton.style.letterSpacing = nativeStyle.letterSpacing;
+            switchProjectButton.style.height = processMode.offsetHeight + 'px';
+            if (switchProjectButton.previousElementSibling !== processMode) {
+              processMode.insertAdjacentElement('afterend', switchProjectButton);
+            }
+          }
+        };
+        mountSwitchProjectButton();
+
+        const layoutItem = document.createElement('label');
+        layoutItem.className = 'ldscp-menu-item';
+        layoutItem.title = 'Button layout';
+        const layoutLabel = document.createElement('span');
+        layoutLabel.textContent = 'Layout';
+        const layoutSelect = document.createElement('select');
+        layoutSelect.setAttribute('aria-label', 'Button layout');
+        layoutSelect.style.cssText = typeColorsSelect.style.cssText;
+        for (const [value, text] of [['top', 'Top bar'], ['corner', 'Corner button'], ['free', 'Floating menu']]) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = text;
+          layoutSelect.appendChild(option);
+        }
+        layoutSelect.value = layout;
+        layoutSelect.addEventListener('change', () => {
+          layout = ['top', 'corner', 'free'].includes(layoutSelect.value) ? layoutSelect.value : 'corner';
+          try { GM_setValue(layoutKey, layout); }
+          catch { toast('Layout changed for this session; could not save the preference.', 'error'); }
+          applyToolbarLayout();
+          closeMenu();
         });
-        menu.appendChild(switchProjectItem);
+        layoutSelect.addEventListener('keydown', (event) => event.stopPropagation());
+        layoutSelect.addEventListener('keyup', (event) => event.stopPropagation());
+        layoutItem.append(layoutLabel, layoutSelect);
+        menu.appendChild(layoutItem);
+
+        const orientationItem = document.createElement('label');
+        orientationItem.className = 'ldscp-menu-item ldscp-menu-orientation';
+        orientationItem.hidden = true;
+        const orientationLabel = document.createElement('span');
+        orientationLabel.textContent = 'Orientation';
+        const orientationSelect = document.createElement('select');
+        orientationSelect.setAttribute('aria-label', 'Floating menu orientation');
+        orientationSelect.style.cssText = typeColorsSelect.style.cssText;
+        for (const [value, text] of [['vertical', 'Vertical'], ['horizontal', 'Horizontal']]) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = text;
+          orientationSelect.appendChild(option);
+        }
+        orientationSelect.value = orientation;
+        orientationSelect.addEventListener('change', () => {
+          orientation = orientationSelect.value === 'horizontal' ? 'horizontal' : 'vertical';
+          try { GM_setValue(orientationKey, orientation); }
+          catch { toast('Orientation changed for this session; could not save it.', 'error'); }
+          applyToolbarLayout();
+        });
+        orientationSelect.addEventListener('keydown', event => event.stopPropagation());
+        orientationSelect.addEventListener('keyup', event => event.stopPropagation());
+        orientationItem.append(orientationLabel, orientationSelect);
+        menu.appendChild(orientationItem);
 
         // Build the Paste-tags panel ONCE as a hidden child of the menu.
         // Toggled by openPasteTagsPanel / closeMenu; never destroyed.
@@ -3822,7 +5472,7 @@ function buildSnapshot({ nodes, wires }) {
 
         menu.appendChild(tagsPanel);
 
-        // closeMenu: restore all regular items, hide panel, hide menu.
+        // Restore actions; persistent layouts remain visible.
         const closeMenu = () => {
           tagPasteSession++;
           for (const item of menu.children) {
@@ -3832,13 +5482,108 @@ function buildSnapshot({ nodes, wires }) {
               item.style.display = '';
             }
           }
-          menu.hidden = true;
+          menu.hidden = layout !== 'free' && !menu.classList.contains('ldscp-menu-topbar');
+          if (menu.classList.contains('ldscp-menu-floating')) placeFloatingMenu();
         };
+
+        function placeFloatingMenu(position = floatingPosition) {
+          const { width, height } = menu.getBoundingClientRect();
+          position ||= { x: innerWidth - width - 16, y: innerHeight - height - 56 };
+          floatingPosition = {
+            x: Math.max(8, Math.min(position.x, innerWidth - width - 8)),
+            y: Math.max(8, Math.min(position.y, innerHeight - height - 8)),
+          };
+          menu.style.left = floatingPosition.x + 'px';
+          menu.style.top = floatingPosition.y + 'px';
+          menu.style.right = menu.style.bottom = 'auto';
+        }
+        const saveFloatingPosition = () => {
+          try { GM_setValue(positionKey, floatingPosition); }
+          catch { toast('Menu moved for this session; could not save its position.', 'error'); }
+        };
+        let drag = null;
+        dragHandle.addEventListener('pointerdown', event => {
+          if (layout !== 'free' || event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = menu.getBoundingClientRect();
+          drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+          dragHandle.setPointerCapture(event.pointerId);
+        });
+        dragHandle.addEventListener('pointermove', event => {
+          if (!drag || layout !== 'free' || event.pointerId !== drag.id) return;
+          placeFloatingMenu({ x: drag.left + event.clientX - drag.x, y: drag.top + event.clientY - drag.y });
+        });
+        const finishDrag = event => {
+          if (!drag || event.pointerId !== drag.id) return;
+          drag = null;
+          saveFloatingPosition();
+        };
+        for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) dragHandle.addEventListener(event, finishDrag);
+        dragHandle.addEventListener('keydown', event => {
+          const delta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+          if (layout !== 'free' || !delta) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const step = event.shiftKey ? 50 : 10;
+          placeFloatingMenu({ x: floatingPosition.x + delta[0] * step, y: floatingPosition.y + delta[1] * step });
+          saveFloatingPosition();
+        });
+
+        // ponytail: reuse the same buttons/poll; align with the user-probed native row.
+        function applyToolbarLayout() {
+          const toolbar = layout === 'top'
+            ? [...document.querySelectorAll('.css_iw_app_base_alt_top_menu')]
+              .find(el => el.getClientRects().length > 0) : null;
+          const rect = toolbar?.getBoundingClientRect();
+          const visibleBounds = (selector, root = toolbar) => root
+            ? [...root.querySelectorAll(selector)].filter(el => el.getClientRects().length > 0)
+              .map(el => el.getBoundingClientRect()) : [];
+          const controls = visibleBounds('.iw_oc_menu_top_level, .iw_oc_menu_level, .ldscp-switch-project')
+            .filter(r => r.top >= rect.top - 1 && r.bottom <= rect.bottom + 2);
+          const labels = visibleBounds('.css_iw_app_base_alt_logo')
+            .concat(visibleBounds('.ldscp-sketchinfo, .ldscp-typelegend', document))
+            .filter(r => rect && r.bottom > rect.top && r.top < rect.bottom);
+          const left = Math.max(rect?.left || 0, ...controls.map(r => r.right)) + 8;
+          const reference = controls[0];
+          const top = reference ? Math.max(rect.top, reference.top + (reference.height - 40) / 2) : 0;
+          const right = Math.min(rect?.right || 0, innerWidth, ...labels.map(r => r.left)) - 8;
+          const docked = !!reference && rect.height >= 40 && right - left >= 400;
+          const floating = layout === 'free';
+          const wasDocked = menu.classList.contains('ldscp-menu-topbar');
+          menu.classList.toggle('ldscp-menu-topbar', docked);
+          menu.classList.toggle('ldscp-menu-floating', floating);
+          menu.classList.toggle('ldscp-menu-horizontal', floating && orientation === 'horizontal');
+          orientationItem.hidden = !floating;
+          dragHandle.hidden = !floating;
+          launcher.hidden = docked || floating;
+          menu.style.left = docked ? left + 'px' : '';
+          menu.style.top = docked ? top + 'px' : '';
+          menu.style.right = docked ? 'auto' : '';
+          menu.style.bottom = docked ? 'auto' : '';
+          menu.style.width = docked ? right - left + 'px' : '';
+          tagsPanel.style.left = docked ? left + 'px' : '';
+          tagsPanel.style.top = docked ? top + 44 + 'px' : '';
+          if (wasDocked !== docked) closeMenu();
+          if (docked) {
+            menu.hidden = false;
+            const size = menu.getBoundingClientRect();
+            menu.style.top = Math.max(rect.top, reference.top + (reference.height - size.height) / 2) + 'px';
+            tagsPanel.style.top = parseFloat(menu.style.top) + size.height + 4 + 'px';
+          } else if (floating) {
+            menu.hidden = false;
+            placeFloatingMenu();
+          }
+          if (docked || floating) {
+            typeColorsSelect.value = TypeColorMode.getMode();
+            undoItem.disabled = undoHistory.isEmpty();
+          }
+        }
 
         // openPasteTagsPanel: hide regular items, show panel, clear state, focus.
         function openPasteTagsPanel() {
           for (const item of menu.children) {
-            if (item === tagsPanel) continue;
+            if (item === tagsPanel || item === dragHandle) continue;
             item.style.display = 'none';
           }
           tagsTextarea.value = '';
@@ -3846,6 +5591,7 @@ function buildSnapshot({ nodes, wires }) {
           tagsError.textContent = '';
           tagsMode.textContent = describePasteTagsMode();
           tagsPanel.style.display = '';
+          if (layout === 'free') placeFloatingMenu();
           setTimeout(() => tagsTextarea.focus(), 0);
         }
 
@@ -4014,6 +5760,9 @@ function buildSnapshot({ nodes, wires }) {
 
         document.body.appendChild(launcher);
         document.body.appendChild(menu);
+        applyToolbarLayout();
+        window.addEventListener('resize', applyToolbarLayout);
+        setInterval(() => { mountSwitchProjectButton(); applyToolbarLayout(); }, 1000);
       }
 
       // ═══════════════════════════════════════════════════════════════
@@ -4482,16 +6231,6 @@ function buildSnapshot({ nodes, wires }) {
           return list;
         }
 
-        function selectNativeProject(projectName) {
-          const rows = document.querySelectorAll('#comp_application_windows_tbl_wnd_splash_projects tbody.qxsTable_body > tr.qxsTable_tr');
-          for (let i = 0; i < rows.length; i++) {
-            if (projectRowName(rows[i]) === projectName) {
-              fireClick(rows[i].querySelector('td') || rows[i]);
-              return;
-            }
-          }
-        }
-
         function projectItems() {
           const items = [];
           const seen = new Set();
@@ -4544,11 +6283,11 @@ function buildSnapshot({ nodes, wires }) {
             const title = document.createElement('div');
             title.className = 'ldscp-splash-card-title';
             title.textContent = name;
-            title.title = name;
+            title.title = `${name} — click to start a new sketch`;
             title.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
-              selectNativeProject(name);
+              openSketch(pid, null); // ponytail: native "project + Ok" = fresh empty sketch
             });
             card.appendChild(title);
             if (sketchCache.has(pid)) {
@@ -5001,6 +6740,8 @@ function buildSnapshot({ nodes, wires }) {
             if (!project) { toast('Sketch open: project not found.', 'error'); return; }
             const app = W.application;
             const windows = W.application_windows;
+            const hadOpenSketch = app.current_sketch != null
+              || (W.logic_designer?.paper?.parsed_elements?.length ?? 0) > 0;
             const configuration = windows.dd_wnd_splash_configuration.get_value();
             if (configuration == null || configuration === '-') {
               toast('Please select a configuration.', 'error');
@@ -5016,9 +6757,28 @@ function buildSnapshot({ nodes, wires }) {
             app.startup(() => {
               clearCaches();
               windows.wnd_splash.hide();
-              openLoadDialog(sketchId);
+              if (sketchId != null) openLoadDialog(sketchId);
+              else if (hadOpenSketch) openNewSketch();
             });
           });
+        }
+
+        function openNewSketch() {
+          pollFor(
+            () => findByText('File', '.iw_oc_menu_top_level, .iw_oc_menu_level'),
+            (fileMenu) => {
+              if (!fileMenu) { toast('New sketch: File menu not found.', 'error'); return; }
+              fireHover(fileMenu); fireClick(fileMenu);
+              pollFor(
+                () => [...document.querySelectorAll('.iw_oc_menu_dropdown_item, [class*="dropdown_item"]')]
+                  .find((el) => /^\s*new sketch\b/i.test(el.textContent || '') && el.offsetParent !== null),
+                (newItem) => {
+                  if (!newItem) { toast('New sketch: menu item not found.', 'error'); return; }
+                  fireClick(newItem);
+                }
+              );
+            }
+          );
         }
 
         function openLoadDialog(sketchId) {
@@ -5236,7 +6996,33 @@ function buildSnapshot({ nodes, wires }) {
           for (const tr of rows) {
             const parsed = parseAlarmToken(tr.textContent);
             if (!parsed) continue;
-            next.push({ pointer: parsed.pointer, line: parsed.line, rowEl: tr });
+            next.push({ ...parsed, text: tr.textContent.replace(/\s*Verify object\s*$/, '').trim(), rowEl: tr });
+            if (!tr.querySelector('.ldscp-alarm-verify')) {
+              const verify = document.createElement('button');
+              verify.type = 'button';
+              verify.className = 'ldscp-alarm-verify';
+              verify.textContent = 'Verify object';
+              verify.title = 'Review this block’s parameter bindings and replacements';
+              verify.style.marginLeft = '8px';
+              verify.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const alarm = parseAlarmToken(tr.textContent);
+                if (!alarm || !problems().some((item) => item.proj === alarm.proj
+                  && item.sketch === alarm.sketch && item.pointer === alarm.pointer)) {
+                  toast('Open the sketch referenced by this error before verifying its object.', 'error');
+                  return;
+                }
+                const ref = refByPointer(alarm.pointer);
+                const block = W.logic_designer?.paper?.elements?.[ref];
+                if (!['PARAMV', 'WRITETOUNIT'].includes(block?.block_type)) {
+                  flash(ref);
+                  toast('This error is not a parameter binding. Review the highlighted block and its error message.', 'info');
+                  return;
+                }
+                BindingTools.open({ pointer: alarm.pointer });
+              });
+              (tr.lastElementChild || tr).appendChild(verify);
+            }
             if (tr.dataset.ldscpAlarm !== '1') {
               tr.dataset.ldscpAlarm = '1';
               tr.style.cursor = 'pointer';
@@ -5273,6 +7059,12 @@ function buildSnapshot({ nodes, wires }) {
               renderPill();
             });
             pillEl.appendChild(label);
+            const verify = document.createElement('button');
+            verify.type = 'button';
+            verify.textContent = 'Verify objects';
+            verify.title = 'Review parameter bindings in the current sketch';
+            verify.addEventListener('click', (event) => { event.stopPropagation(); BindingTools.open(); });
+            pillEl.appendChild(verify);
             pillEl.appendChild(close);
             document.body.appendChild(pillEl);
           }
@@ -5298,6 +7090,124 @@ function buildSnapshot({ nodes, wires }) {
           mo.observe(win, { attributes: true, attributeFilter: ['style'] });
         }
 
+        function problems() {
+          scrapeAlarms();
+          const projectId = W.application?.current_project;
+          const current = W.application?.current_sketch;
+          const sketchId = (typeof current === 'object' ? current?.id ?? current?.sketch_id : current)
+            ?? SketchInfoWidget.currentSketchId();
+          if (projectId == null || (sketchId == null && !findAlarmDialog())) return [];
+          return lastAlarms.filter((alarm) => String(alarm.proj) === String(projectId)
+            && (sketchId == null || String(alarm.sketch) === String(sketchId)));
+        }
+
+        return { install, problems, outline: drawBlockOutline };
+      })();
+
+      // Visual overlays never change the host's selection, bindings or saved sketch.
+      const VariableUsageHighlight = (() => {
+        let clicked = null;
+        let panel = null;
+        let panelKey = '';
+        let paintKey = '';
+        let canvas = null;
+        let overlays = [];
+        const clearPaint = () => { for (const node of overlays) node.remove(); overlays = []; };
+        function refresh() {
+          if (document.hidden) return;
+          const paper = W.logic_designer?.paper;
+          if (!paper?.initialized) {
+            clearPaint(); panel?.remove(); panel = null; clicked = null; paintKey = ''; return;
+          }
+          if (canvas !== paper.paper?.canvas) {
+            clearPaint(); paintKey = ''; canvas = paper.paper?.canvas;
+          }
+          if (clicked && (clicked.paper !== paper || paper.elements[clicked.ref] !== clicked.block)) clicked = null;
+          const entries = Object.entries(paper.elements).filter(([ref]) => /^\d+$/.test(ref));
+          let family = [];
+          if (clicked) {
+            const pointer = clicked.block.block_type === 'VARIABLE_OUTPUT'
+              ? clicked.block.pointer : clicked.block.data?.pointer;
+            family = entries.filter(([, block]) =>
+              (block.block_type === 'VARIABLE_OUTPUT' && String(block.pointer) === String(pointer))
+              || (block.block_type === 'VARIABLE_INPUT' && pointer != null && String(block.data?.pointer) === String(pointer)))
+              .sort((a, b) => (a[1].block_type === 'VARIABLE_OUTPUT' ? -1 : 1)
+                - (b[1].block_type === 'VARIABLE_OUTPUT' ? -1 : 1) || Number(a[0]) - Number(b[0]));
+          }
+          const nextPanelKey = JSON.stringify(family.map(([ref, block]) => [ref, block.override?.alias_text]));
+          if (nextPanelKey !== panelKey || (!panel && family.length)) {
+            panelKey = nextPanelKey;
+            panel?.remove(); panel = null;
+            if (family.length) {
+              panel = document.createElement('div');
+              panel.style.cssText = 'position:fixed;bottom:16px;right:64px;z-index:99990;background:#fff;color:#222;border:1px solid #8b36c7;border-radius:6px;padding:10px;max-width:calc(100vw - 90px);max-height:150px;overflow:auto;font:13px sans-serif;box-shadow:0 2px 10px #0004';
+              const heading = document.createElement('div');
+              heading.textContent = 'Variable uses: ' + family.filter(([, b]) => b.block_type === 'VARIABLE_INPUT').length
+                + ' input(s). Purple = linked; orange = selected. Click a button to find it.';
+              panel.appendChild(heading);
+              for (const [ref, block] of family) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = (block.block_type === 'VARIABLE_OUTPUT' ? 'Out ' : 'In ') + block.pointer;
+                button.title = block.override?.alias_text || button.textContent;
+                button.style.margin = '6px 5px 0 0';
+                button.addEventListener('click', () => {
+                  if (W.logic_designer?.paper !== paper || paper.elements[ref] !== block) return;
+                  block.set?.items?.[0]?.node?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+                });
+                panel.appendChild(button);
+              }
+              const close = document.createElement('button');
+              close.type = 'button'; close.textContent = 'Close';
+              close.addEventListener('click', () => { clicked = null; refresh(); });
+              panel.appendChild(close);
+              document.body.appendChild(panel);
+            }
+          }
+          const refs = new Map(family.map(([ref]) => [String(ref), 'linked']));
+          for (const ref of HostAdapter.getSelection()) refs.set(String(ref), 'selected');
+          const geometry = [...refs].map(([ref, kind]) => {
+            const main = paper.elements[ref]?.set?.items?.[0];
+            let box;
+            try { box = main?.node?.getBBox(); } catch { /* block is rendering */ }
+            return [ref, kind, box?.x, box?.y, box?.width, box?.height, main?.matrix?.e, main?.matrix?.f];
+          });
+          const key = JSON.stringify(geometry);
+          if (key === paintKey && overlays.every((node) => node.isConnected)) return;
+          paintKey = key;
+          clearPaint();
+          for (const [ref, kind] of refs) {
+            const rect = AlarmHighlight.outline(ref);
+            if (!rect) { paintKey = ''; continue; }
+            rect.setAttribute('stroke', kind === 'selected' ? '#d65b00' : '#8b27c7');
+            rect.setAttribute('stroke-width', '1.8');
+            rect.setAttribute('stroke-opacity', '.95');
+            rect.setAttribute('vector-effect', 'non-scaling-stroke');
+            rect.setAttribute('fill', kind === 'selected' ? '#d65b00' : '#8b27c7');
+            rect.setAttribute('fill-opacity', '.035');
+            // Tighten the padding and draw below every SVG label, including neighbours.
+            for (const attr of ['x', 'y']) rect.setAttribute(attr, String(Number(rect.getAttribute(attr)) + 3));
+            for (const attr of ['width', 'height']) rect.setAttribute(attr, String(Math.max(0, Number(rect.getAttribute(attr)) - 6)));
+            const svg = rect.ownerSVGElement;
+            let firstText = svg.querySelector('text');
+            while (firstText && firstText.parentNode !== svg) firstText = firstText.parentNode;
+            svg.insertBefore(rect, firstText || svg.firstChild);
+            overlays.push(rect);
+          }
+        }
+        function install() {
+          document.addEventListener('mousedown', (event) => {
+            if (event.button !== 0) return;
+            const paper = W.logic_designer?.paper;
+            if (!paper?.paper?.canvas?.contains(event.target)) return;
+            const ref = resolveBlockRefShared(event.target);
+            const block = paper.elements?.[ref];
+            clicked = ['VARIABLE_INPUT', 'VARIABLE_OUTPUT'].includes(block?.block_type)
+              ? { paper, ref, block } : null;
+            setTimeout(refresh, 0);
+          }, true);
+          setInterval(refresh, 150);
+        }
         return { install };
       })();
 
@@ -5316,6 +7226,7 @@ function buildSnapshot({ nodes, wires }) {
       // ═══════════════════════════════════════════════════════════════
       const FormulaDialogHelper = (() => {
         const INPUT_ID = 'comp_designer_windows_inp_wnd_formula_formula';
+        let verifyRevision = 0;
 
         // Full quick-reference shown by the "?" button. Contents verified
         // against the VV runtime implementation (2026-07-10): formulas are
@@ -5467,10 +7378,73 @@ function buildSnapshot({ nodes, wires }) {
           helper.classList.toggle('ldscp-formula-helper-ok', kind === 'ok');
         }
 
+        // Hints only: the server remains the PHP-expression syntax authority.
+        function syntaxHint(text) {
+          const stack = [];
+          let quote = null, quoteStart = 0;
+          const pairs = { ')': '(', ']': '[', '}': '{' };
+          for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (quote) {
+              if (ch === '\\') { i++; continue; }
+              if (ch === quote) quote = null;
+              continue;
+            }
+            if (ch === '"' || ch === "'") { quote = ch; quoteStart = i; continue; }
+            if (text.startsWith('//', i) || ch === '#') {
+              const end = text.indexOf('\n', i); i = end < 0 ? text.length : end; continue;
+            }
+            if (text.startsWith('/*', i)) {
+              const end = text.indexOf('*/', i + 2);
+              if (end < 0) return { index: i, length: 2, message: 'Close this comment with */.' };
+              i = end + 1; continue;
+            }
+            if ('“”‘’'.includes(ch)) return { index: i, length: 1, message: 'Use straight quotes (" or \u0027), not curly quotes.' };
+            if (/[a-z_]/i.test(ch)) {
+              const token = text.slice(i).match(/^[a-z_][a-z_0-9]*/i)[0];
+              if (token.toLowerCase() === 'if' && /^\s*\(/.test(text.slice(i + token.length))) {
+                return { index: i, length: token.length, message: 'Use condition ? valueIfTrue : valueIfFalse, for example inp0 > 25 ? 1 : 0.' };
+              }
+              i += token.length - 1; continue;
+            }
+            if ('([{'.includes(ch)) stack.push({ ch, index: i });
+            else if (pairs[ch]) {
+              if (stack.at(-1)?.ch !== pairs[ch]) return { index: i, length: 1, message: 'This closing bracket does not match its opening bracket.' };
+              stack.pop();
+            }
+          }
+          if (quote) return { index: quoteStart, length: 1, message: 'Close this quoted string with ' + quote + '.' };
+          if (stack.length) {
+            const opening = stack.at(-1);
+            return { index: opening.index, length: 1, message: 'Missing closing bracket for this ' + opening.ch + '.' };
+          }
+          return null;
+        }
+
+        function showHint(ta, hint, prefix = '') {
+          const before = ta.value.slice(0, hint.index);
+          const line = before.split('\n').length;
+          const column = hint.index - before.lastIndexOf('\n');
+          setStatus(ta, `${prefix}Hint — line ${line}, column ${column}: ${hint.message} `, 'warn');
+          const helper = document.querySelector('div.ldscp-formula-helper');
+          if (!helper) return;
+          const locate = document.createElement('button');
+          locate.type = 'button'; locate.textContent = 'Show in formula';
+          locate.addEventListener('click', (event) => {
+            event.preventDefault(); event.stopPropagation();
+            ta.focus(); ta.setSelectionRange(hint.index, hint.index + hint.length);
+            const height = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+            ta.scrollTop = Math.max(0, (line - 2) * height);
+          });
+          helper.appendChild(locate);
+        }
+
         function refreshHelper(ta) {
+          const hint = syntaxHint(ta.value);
+          if (hint) { showHint(ta, hint); return; }
           const count = Number(ta.dataset.ldscpInputs || 0);
           const names = count > 0
-            ? Array.from({ length: count }, (_, i) => `inp${i}`).join(', ')
+            ? [...Array(count).keys()].map((i) => `inp${i}`).join(', ')
             : 'inp0, inp1, …';
           const bad = [];
           if (count > 0) {
@@ -5487,6 +7461,8 @@ function buildSnapshot({ nodes, wires }) {
         }
 
         function verifyNow(ta) {
+          const revision = ++verifyRevision;
+          const original = ta.value;
           const count = Number(ta.dataset.ldscpInputs || 0);
           const mgr = W.logic_designer_manager;
           if (!mgr?.verify_math) {
@@ -5495,13 +7471,26 @@ function buildSnapshot({ nodes, wires }) {
           }
           setStatus(ta, 'Verifying…', '');
           try {
-            mgr.verify_math(flatten(ta.value), Math.max(count, 1), (reply, error) => {
+            mgr.verify_math(flatten(original), Math.max(count, 1), (reply, error) => {
+              if (revision !== verifyRevision || !ta.isConnected || ta.value !== original) return;
               if (reply && reply.ok === true && reply.data === true) {
                 // verify_math is syntax-only; the nuance lives in the "?" popup.
                 setStatus(ta, '✓ Syntax OK.', 'ok');
               } else {
                 const msg = (reply && reply.message) || String(error || 'invalid');
-                setStatus(ta, `✗ ${msg}`, 'warn');
+                const prefix = `✗ ${msg} (The server checks one flattened line.) `;
+                let hint = syntaxHint(original);
+                // A unique literal unexpected token gives a useful place to look,
+                // but the actual mistake can be immediately before that token.
+                const token = String(msg).match(/unexpected\s+(?:token\s+)?["']([^"']+)["']/i)?.[1];
+                if (!hint && token) {
+                  const index = original.indexOf(token);
+                  if (index >= 0 && original.indexOf(token, index + 1) < 0) {
+                    hint = { index, length: token.length, message: 'Check this token and the expression before it: missing operator, comma, or bracket?' };
+                  }
+                }
+                if (hint) showHint(ta, hint, prefix);
+                else setStatus(ta, prefix + 'Check matching brackets, operators between values, commas between function arguments, and both ? and : in conditional expressions. Use ? for examples.', 'warn');
               }
             });
           } catch (err) {
@@ -5539,6 +7528,7 @@ function buildSnapshot({ nodes, wires }) {
             funcs.appendChild(helpBtn);
             const helper = document.createElement('div');
             helper.className = 'ldscp-formula-helper';
+            helper.setAttribute('role', 'status');
             const verifyBtn = document.createElement('button');
             verifyBtn.type = 'button';
             verifyBtn.className = 'ldscp-formula-verify';
@@ -5550,6 +7540,7 @@ function buildSnapshot({ nodes, wires }) {
               verifyNow(ta);
             });
             ta.addEventListener('input', () => {
+              verifyRevision++;
               mirror(ta.value);
               refreshHelper(ta);
             });
@@ -5565,6 +7556,7 @@ function buildSnapshot({ nodes, wires }) {
           // (Re)sync for this open: host's show_formula already prefilled the
           // input via set_value before our wrapper runs.
           ta.value = input.value;
+          verifyRevision++;
           ta.dataset.ldscpInputs = String(currentInputCount());
           refreshHelper(ta);
         }
@@ -5739,6 +7731,51 @@ function buildSnapshot({ nodes, wires }) {
               return origSave.apply(this, args);
             };
           }
+        }
+
+        return { install, currentSketchId: () => current?.sketchId ?? null };
+      })();
+
+      // ═══════════════════════════════════════════════════════════════
+      //  UploadAutoSelect — when the host Upload Manager opens, tick the
+      //  sketch that is loaded on the canvas (once per opening; the user
+      //  can untick). Only ticks the checkbox through its own onchange →
+      //  on_checkbox_change, exactly like a click. NEVER presses Upload.
+      //  Rows: tbl_wnd_upload_manager_sketches.get_user(i) =
+      //  { sketch_id, plant_id } (row 0 = plant group header → null).
+      //  ponytail: 1s visibility poll, an observer if the delay annoys.
+      // ═══════════════════════════════════════════════════════════════
+      const UploadAutoSelect = (() => {
+        const WIN_ID = 'comp_application_window_upload_manager_wnd_upload_manager';
+        let done = false;
+
+        function tick() {
+          const win = document.getElementById(WIN_ID);
+          if (!win || win.offsetParent === null) { done = false; return; }
+          if (done) return;
+          const id = SketchInfoWidget.currentSketchId();
+          const t = W.application_window_upload_manager?.tbl_wnd_upload_manager_sketches;
+          if (id == null || !t) return;
+          const n = t.get_row_count();
+          for (let i = 0; i < n; i++) {
+            if (String(t.get_user(i)?.sketch_id) !== String(id)) continue;
+            const cb = document.getElementById(`tbl_wnd_upload_manager_sketches_checkbox_${i}_0`)
+              || t.get_cell_dom?.(i, 0)?.querySelector('input[type=checkbox]');
+            if (!cb) return; // row there, checkbox not rendered yet — retry next tick
+            done = true;
+            cb.scrollIntoView({ block: 'center' });
+            if (!cb.checked) {
+              cb.checked = true;
+              cb.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return;
+          }
+        }
+
+        function install() {
+          setInterval(() => {
+            try { tick(); } catch (err) { console.error(`[${SCRIPT_NAME}] UploadAutoSelect:`, err); }
+          }, 1000);
         }
 
         return { install };
@@ -6040,14 +8077,18 @@ function buildSnapshot({ nodes, wires }) {
       SelectionInterceptor.install();
       DeleteInterceptor.install();
       MultiWireMode.install();
+      BulkEdit.install();
       RemoveConnectorsMode.install();
       GhostPasteMode.install();
       WireObserver.install();
+      VariableNames.installSelector();
       MoveObserver.install();
       SketchQuickOpen.install();
       AlarmHighlight.install();
+      VariableUsageHighlight.install();
       FormulaDialogHelper.install();
       SketchInfoWidget.install();
+      UploadAutoSelect.install();
       TypeColorMode.install();
 
     })();

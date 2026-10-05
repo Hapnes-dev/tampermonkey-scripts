@@ -2,7 +2,7 @@
 
 Adds **copy/paste (offset & cursor-placed), multi-wire, remove-connectors, drag-move undo, type colors, sketch quick-open, sketch save/deploy info, a formula-dialog editor, and alarm-to-block highlighting** to the IWMAC **VV Designer** (the visual function-block editor at `internal.iwmac.local/vv_fbx.qxs`). The host editor has no way to duplicate a chunk of logic, wire many pins at once, undo a drag, see types at a glance, or jump from an alarm to the block that raised it — this script fills those gaps by driving the designer's in-memory canvas directly.
 
-> Author: **Henrik Monge**. Packaged here with auto-update headers. Current version: **1.7.43**.
+> Author: **Henrik Monge**. Packaged here with auto-update headers. Current version: **1.7.79**.
 
 ## Install
 
