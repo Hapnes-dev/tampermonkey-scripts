@@ -10,6 +10,13 @@ By ØTS / MATS / Hapnes. Console tag: `[Supermarket Parameters POC]`, CSS/id pre
 > re-applied on top. Only the export UI is in English, matching the export's own
 > column names. The sections below still describe the pre-5.0 feature set; the
 > graphics-panel features the upstream added are not documented here yet.
+>
+> **v5.0.5.** The unit picker gains **Newest**/**Oldest** (sort by the unit's date in
+> the database, `row_date`) and **Recent** (the last 10 units picked on this plant);
+> `↑`/`↓` now switch unit straight away, with the list open or closed. A code glued
+> to a name (`Belimo_Energiventil_v4[0]`) is no longer read as a menu code, two
+> parameters sharing an alias no longer guess a driver ID, and deleting an override
+> redraws IWMAC's own list.
 
 ## Install
 
@@ -46,7 +53,7 @@ Floats as a fixed overlay aligned into the Kiona top bar's free space (ending ju
 A floating filter input above every column of both panes. Matching is case- and diacritic-insensitive; space-separated terms are AND-ed; `a++b` requires the parts to appear **in order**. `Esc`/`x` clears a field; active fields turn yellow and a `visible/total` counter appears. The **Unit** column filter doubles as a dropdown listing exactly the distinct units present in the table. Filters survive IWMAC's SPA redraws.
 
 ### Searchable unit selector
-The native unit `<select class="iwmac_dropdown">` is visually replaced by a searchable combo: filter by name or unit id, toggle **A-Z**/**Orig** sort, `↑`/`↓`/`Enter`/`Esc` navigation — and `↑`/`↓` step to the previous/next unit even while the list is closed. Selection is pushed back through the native select with real `input`/`change` events, so the SPA reloads normally.
+The native unit `<select class="iwmac_dropdown">` is visually replaced by a searchable combo: filter by name or unit id, toggle **A-Z**/**Orig** sort, **Newest**/**Oldest** by database date and **Recent** (last 10 picked) — `↑`/`↓` switch unit straight away, with the list open or closed (focus in the field), and `Enter`/`Esc` close it. Selection is pushed back through the native select with real `input`/`change` events, so the SPA reloads normally.
 
 ### Edit mode — move parameters between panes
 Select rows (click, `Shift`+click range, `Ctrl`+click toggle, `Ctrl`+`Shift`+`A` all visible, `Esc` clear) and drag them to the opposite pane. Moves are **pending** until saved: the row is shown as a ghost row under the target pane (green = will become `rw`/Setting, blue = will become `r`/Measurement) and can be dragged back to undo. **Save** resolves each row's `driver_id` (SQL lookup by alias + menu when the row doesn't carry one), writes both the main and override tables in one `batch_sql` transaction, then soft-refreshes the IWMAC list — no page reload.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      5.0
+// @version      5.0.5
 // @description  filters, move mode, graphics lookup and batch editing of driver parameters, with Excel export
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -20,7 +20,7 @@
     const POC_STYLE_ID = 'sm_params_poc_style';
     // MÅ følge @version: brukes som `__SM_POC_WATCHER_VERSION`-nøkkel. Lik verdi i to installerte
     // kopier ville fått den andre til å hoppe over hele watcher-oppsettet (ingen kontekstmeny).
-    const SCRIPT_VERSION = '5.0';
+    const SCRIPT_VERSION = '5.0.5';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -237,15 +237,22 @@
             }
             .sm-poc-unit-open,
             .sm-poc-unit-sort,
+            .sm-poc-unit-age,
+            .sm-poc-unit-recent,
             .sm-poc-unit-clear {
                 flex: 0 0 auto; border: 0; background: transparent; cursor: pointer;
                 color: #546e7a; font-size: 12px; padding: 2px 4px; border-radius: 3px;
             }
             .sm-poc-unit-open:hover,
             .sm-poc-unit-sort:hover,
+            .sm-poc-unit-age:hover,
+            .sm-poc-unit-recent:hover,
             .sm-poc-unit-clear:hover {
                 background: #eceff1; color: #1565c0;
             }
+            .sm-poc-unit-recent.sm-poc-unit-on,
+            .sm-poc-unit-age.sm-poc-unit-on { background: #e3f2fd; color: #1565c0; font-weight: 600; }
+            .sm-poc-unit-date { float: right; margin-left: 8px; color: #78909c; font-size: 11px; font-weight: normal; }
             .sm-poc-unit-panel {
                 display: none; position: absolute; left: 0; top: calc(100% + 2px);
                 width: 100%; z-index: 20; padding: 6px;
@@ -1378,7 +1385,8 @@
         [...parseSettingsParameterCsv(result.read, group, 'measurements'),
             ...parseSettingsParameterCsv(result.write, group, 'settings')].forEach((row) => {
             const alias = gfxNormAlias(row.aliasText);
-            if (alias && row.driverId) byAlias.set(alias, row.driverId);
+            // To ulike parametere med samme nøkkel: ikke gjett (før vant siste rad) — '' gir alias-oppslag
+            if (alias && row.driverId) byAlias.set(alias, byAlias.has(alias) && byAlias.get(alias) !== row.driverId ? '' : row.driverId);
         });
         nativeDriverIdCache = { key, byAlias };
         return byAlias;
@@ -1532,9 +1540,8 @@
     function gfxRowDataIsUsed(rowData) {
         if (!gfxStateIsCurrent()) return false;
         if (gfxPanelsForRow(rowData).length) return true;
-        const text = `${rowData.groupId || ''} ${rowData.groupName || ''} ${rowData.aliasText || ''}`;
-        const match = text.match(/\[([A-Za-z0-9][A-Za-z0-9_-]*)\]/);
-        return !!(match && gfxState.menus.has(match[1].trim()));
+        const menu = menuCodeOfRowData(rowData);
+        return !!menu && gfxState.menus.has(menu);
     }
 
     function allParamMatches(row) {
@@ -1978,11 +1985,16 @@
         menu.appendChild(separator);
     }
 
+    // "[kode]" først eller etter mellomrom. En klamme limt til navnet hører til navnet:
+    // "Belimo_Energiventil_v4[0].Data.X" ga ellers menykoden "0".
+    function menuCodeOfRowData(data) {
+        const text = `${data?.groupId || ''} ${data?.groupName || ''} ${data?.aliasText || ''}`;
+        const match = text.match(/(?:^|\s)\[([A-Za-z0-9][A-Za-z0-9_-]*)\]/);
+        return match ? match[1] : '';
+    }
+
     function getAllParamMenuFromRow(row) {
-        const data = row?.__smPocAllParam || {};
-        const text = `${data.groupId || ''} ${data.groupName || ''} ${data.aliasText || ''}`;
-        const match = text.match(/\[([A-Za-z0-9][A-Za-z0-9_-]*)\]/);
-        return match ? match[1].trim() : '';
+        return menuCodeOfRowData(row?.__smPocAllParam);
     }
 
     // ---- Highlight used_in_graphics + grafikk-paneler ----
@@ -1993,7 +2005,9 @@
         let text = String(value || '');
         const groupSep = text.indexOf(',-'); // bildets alias er "<gruppe>,-<tag>"
         if (groupSep > -1) text = text.slice(groupSep + 2);
-        return String(text).replace(/^\s*\[[^\]]*\]\s*/, '').split('[')[0].replace(/\s+/g, ' ').trim().toLowerCase();
+        // ponytail: bare " [ beskrivelse ]" (klamme etter mellomrom) kuttes; "[0]" limt til navnet
+        // (Belimo_Energiventil_v4[0].Data.X) hører til navnet. Kollapser to navn likevel, nekter driver-id-cachen å gjette.
+        return String(text).replace(/^\s*\[[^\]]*\]\s*/, '').split(/\s\[/)[0].replace(/\s+/g, ' ').trim().toLowerCase();
     }
 
     // driver_id er unik per parameter og brukes når raden har den (Vis alle parameter).
@@ -2429,7 +2443,9 @@
         }
         // Native rader mangler driver_id i DOM-en — hent den fra gruppe-svaret først,
         // så identifiseres parameteren på driver_id og ikke på alias-tekst.
-        if (!request.driver_id) {
+        // Bare fra innstillingssiden (uten unitIdArg): cachen gjelder enheten som er valgt der,
+        // ikke nødvendigvis enheten i grafikk-boksen.
+        if (!request.driver_id && !unitIdArg) {
             await ensureNativeDriverIds().catch((error) => console.log('[Supermarket Parameters POC] driver-id-cache:', error));
             request.driver_id = nativeDriverIdFor(request.alias_text);
         }
@@ -3071,6 +3087,9 @@
             if (allParamsActive) {
                 allParamsData = null;
                 activateAllParamsView(true);
+            } else {
+                // Som Save: be IWMAC tegne sin egen liste på nytt, ellers ble den stående med gamle verdier
+                requestNativeParameterRedraw('Override deleted. Updating IWMAC list...');
             }
         } catch (error) {
             console.log('[Supermarket Parameters POC] delete override error:', error);
@@ -3341,6 +3360,16 @@
         const alpha = combo.dataset.sortMode === 'alpha';
         sortBtn.textContent = alpha ? 'Orig' : 'A-Z';
         sortBtn.title = alpha ? 'Show original order' : 'Sort A-Z';
+        // Dato-knappen går i ring: Newest -> Oldest -> Orig (teksten sier hva neste trykk gjør, som A-Z/Orig)
+        const ageBtn = combo.querySelector('.sm-poc-unit-age');
+        const mode = combo.dataset.sortMode;
+        if (ageBtn) {
+            ageBtn.textContent = mode === 'newest' ? 'Oldest' : mode === 'oldest' ? 'Orig' : 'Newest';
+            ageBtn.title = mode === 'newest' ? 'Oldest units first (row_date)'
+                : mode === 'oldest' ? 'Back to IWMAC order' : 'Newest units first (row_date in the database)';
+            ageBtn.classList.toggle('sm-poc-unit-on', mode === 'newest' || mode === 'oldest');
+        }
+        combo.querySelector('.sm-poc-unit-recent')?.classList.toggle('sm-poc-unit-on', combo.dataset.recent === '1');
     }
 
     function renderUnitOptions(combo) {
@@ -3358,12 +3387,28 @@
         if (sortMode === 'alpha') {
             options = options.slice().sort((a, b) => a.text.localeCompare(b.text, 'nb', { sensitivity: 'base' }));
         }
+        // Newest/Oldest: row_date fra databasen (IWMACs egen rekkefølge er ikke etter dato). Uten dato sist.
+        const dates = sortMode === 'newest' || sortMode === 'oldest' ? unitDatesForPlant() : null;
+        if (dates) {
+            const dir = sortMode === 'newest' ? -1 : 1;
+            options = options.slice().sort((a, b) => {
+                const da = dates.get(a.value) || '';
+                const db = dates.get(b.value) || '';
+                if (!da || !db) return (da ? 0 : 1) - (db ? 0 : 1);
+                return da < db ? -dir : da > db ? dir : 0;
+            });
+        }
+        const recentOnly = combo.dataset.recent === '1';
+        if (recentOnly) {
+            // Sist valgte først (maks 10); sorteringen gjelder ikke her
+            options = getRecentUnits().map((value) => options.find((option) => option.value === value)).filter(Boolean);
+        }
 
         list.textContent = '';
         if (!options.length) {
             const empty = document.createElement('div');
             empty.className = 'sm-poc-unit-empty';
-            empty.textContent = 'Ingen treff';
+            empty.textContent = recentOnly && !query ? 'Ingen nylig valgte enheter ennå' : 'Ingen treff';
             list.appendChild(empty);
             return;
         }
@@ -3376,6 +3421,12 @@
             row.dataset.value = option.value;
             row.textContent = option.text;
             row.title = option.text;
+            if (dates) {
+                const date = document.createElement('span');
+                date.className = 'sm-poc-unit-date';
+                date.textContent = (dates.get(option.value) || '').slice(0, 10) || '–';
+                row.prepend(date); // float: right — først i raden, ellers havner den på neste linje
+            }
             row.classList.toggle('sm-poc-unit-selected', option.value === selectedValue);
             row.classList.toggle('sm-poc-unit-active', idx === (selectedIndex >= 0 ? selectedIndex : 0));
             row.addEventListener('mousedown', (ev) => {
@@ -3385,21 +3436,92 @@
             row.addEventListener('click', (ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
-                selectNativeUnit(option.value);
-                updateUnitComboLabel(combo, getUnitSelect());
-                setUnitComboOpen(combo, false);
+                pickUnitFromCombo(combo, option.value);
             });
             list.appendChild(row);
         });
     }
 
+    // Som den vanlige velgeren: ↑/↓ velger enheten med en gang, så man kan bla og se samme
+    // gruppe på enhet etter enhet. Lista blir stående åpen til Enter/Esc.
     function moveUnitComboActive(combo, direction) {
         const options = Array.from(combo.querySelectorAll('.sm-poc-unit-option'));
         if (!options.length) return;
         const current = options.findIndex((row) => row.classList.contains('sm-poc-unit-active'));
-        const next = Math.max(0, Math.min(options.length - 1, (current < 0 ? 0 : current) + direction));
+        // Står markeringen ikke på valgt enhet (f.eks. etter et søk), velges den markerte først
+        const next = current >= 0 && options[current].dataset.value !== getUnitSelect()?.value
+            ? current
+            : Math.max(0, Math.min(options.length - 1, (current < 0 ? 0 : current) + direction));
         options.forEach((row, idx) => row.classList.toggle('sm-poc-unit-active', idx === next));
         options[next].scrollIntoView({ block: 'nearest' });
+        const value = options[next].dataset.value;
+        if (selectNativeUnit(value)) {
+            options.forEach((row) => row.classList.toggle('sm-poc-unit-selected', row.dataset.value === value));
+            updateUnitComboLabel(combo, getUnitSelect());
+        }
+    }
+
+    function pickUnitFromCombo(combo, value) {
+        if (selectNativeUnit(value)) rememberRecentUnit(value);
+        updateUnitComboLabel(combo, getUnitSelect());
+        setUnitComboOpen(combo, false);
+        // Fokus tilbake på enhetsfeltet: da bytter ↑/↓ enhet videre uten at lista dekker verdiene
+        combo.querySelector('.sm-poc-unit-combo-control')?.focus();
+    }
+
+    // Sist valgte enheter per anlegg, nyeste først (maks 10). localStorage: skriptet kjører med @grant none.
+    const RECENT_UNITS_KEY = 'sm-poc-recent-units';
+
+    function readRecentUnitsStore() {
+        try {
+            const store = JSON.parse(localStorage.getItem(RECENT_UNITS_KEY) || '{}');
+            return store && typeof store === 'object' ? store : {};
+        } catch (error) {
+            return {};
+        }
+    }
+
+    function getRecentUnits() {
+        const list = readRecentUnitsStore()[getPlantId()];
+        return Array.isArray(list) ? list : [];
+    }
+
+    function rememberRecentUnit(value) {
+        const plantId = getPlantId();
+        if (!plantId || !value) return;
+        const store = readRecentUnitsStore();
+        store[plantId] = [value, ...getRecentUnits().filter((item) => item !== value)].slice(0, 10);
+        try {
+            localStorage.setItem(RECENT_UNITS_KEY, JSON.stringify(store));
+        } catch (error) { /* lagring blokkert: Recent forblir tom */ }
+    }
+
+    // unit_id -> row_date fra iw_sys_plant_units, hentet første gang Newest trykkes (én gang per anlegg)
+    let unitDatesCache = { plantId: '', byUnit: null };
+
+    function unitDatesForPlant() {
+        return unitDatesCache.plantId === getPlantId() ? unitDatesCache.byUnit : null;
+    }
+
+    async function loadUnitDates() {
+        const plantId = getPlantId();
+        if (!plantId) throw new Error('Fant ikke plant_id.');
+        if (unitDatesForPlant()) return unitDatesCache.byUnit;
+        const fd = new FormData();
+        fd.append('plant_id', plantId);
+        fd.append('sql_command', 'SELECT unit_id, row_date FROM iw_plant_server3.iw_sys_plant_units');
+        fd.append('_cache_bust', Date.now());
+        const response = await fetchWithTimeout('http://toolbox.iwmac.local/oets/api/index2.php', { method: 'POST', body: fd, cache: 'no-cache' });
+        const data = await response.json();
+        if (!data?.success) throw new Error(data?.error || 'Enhetsoppslag feilet');
+        const byUnit = new Map();
+        findRowsWithKey(data, 'unit_id').forEach((row) => {
+            const id = String(row.unit_id ?? '').trim();
+            const date = String(row.row_date || '');
+            if (id && date > (byUnit.get(id) || '')) byUnit.set(id, date); // flere rader per enhet: nyeste dato
+        });
+        unitDatesCache = { plantId, byUnit };
+        return byUnit;
     }
 
     function positionUnitComboHost() {
@@ -3442,6 +3564,8 @@
                         <input type="text" class="sm-poc-unit-search" autocomplete="off" spellcheck="false" placeholder="Search unit...">
                         <button type="button" class="sm-poc-unit-clear" title="Clear search">x</button>
                         <button type="button" class="sm-poc-unit-sort" title="Sort A-Z">A-Z</button>
+                        <button type="button" class="sm-poc-unit-age" title="Newest units first (row_date in the database)">Newest</button>
+                        <button type="button" class="sm-poc-unit-recent" title="Last 10 units picked on this plant">Recent</button>
                     </div>
                     <div class="sm-poc-unit-list"></div>
                 </div>
@@ -3452,6 +3576,8 @@
             const input = combo.querySelector('.sm-poc-unit-search');
             const clearBtn = combo.querySelector('.sm-poc-unit-clear');
             const sortBtn = combo.querySelector('.sm-poc-unit-sort');
+            const ageBtn = combo.querySelector('.sm-poc-unit-age');
+            const recentBtn = combo.querySelector('.sm-poc-unit-recent');
 
             combo.addEventListener('mousedown', (ev) => ev.stopPropagation());
             combo.addEventListener('click', (ev) => ev.stopPropagation());
@@ -3462,8 +3588,11 @@
             });
             combo.addEventListener('keydown', (ev) => {
                 if (combo.classList.contains('sm-poc-unit-opened')) return;
-                if (ev.shiftKey && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
+                // Lukket liste med fokus i feltet: ↑/↓ bytter enhet direkte, som den vanlige velgeren.
+                // stopPropagation: ellers tok den globale Shift+pil-snarveien ett steg til.
+                if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
                     ev.preventDefault();
+                    ev.stopPropagation();
                     navigateNativeUnit(ev.key === 'ArrowUp' ? -1 : 1);
                 }
             });
@@ -3499,15 +3628,14 @@
                     const active = combo.querySelector('.sm-poc-unit-option.sm-poc-unit-active');
                     if (active?.dataset.value) {
                         ev.preventDefault();
-                        selectNativeUnit(active.dataset.value);
-                        updateUnitComboLabel(combo, getUnitSelect());
-                        setUnitComboOpen(combo, false);
+                        pickUnitFromCombo(combo, active.dataset.value);
                     }
                     return;
                 }
                 if (ev.key === 'Escape') {
                     ev.preventDefault();
                     setUnitComboOpen(combo, false);
+                    combo.querySelector('.sm-poc-unit-combo-control')?.focus();
                 }
             });
 
@@ -3524,18 +3652,52 @@
                 ev.preventDefault();
                 ev.stopPropagation();
                 combo.dataset.sortMode = combo.dataset.sortMode === 'alpha' ? 'original' : 'alpha';
+                combo.dataset.recent = '';
                 updateUnitSortButton(combo);
                 setUnitComboOpen(combo, true);
                 renderUnitOptions(combo);
             });
+
+            ageBtn.addEventListener('click', async (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const mode = combo.dataset.sortMode;
+                const next = mode === 'newest' ? 'oldest' : mode === 'oldest' ? 'original' : 'newest';
+                if (next !== 'original' && !unitDatesForPlant()) {
+                    showHint('Henter enhetsdatoer...');
+                    try {
+                        await loadUnitDates();
+                        showHint('');
+                    } catch (error) {
+                        console.log('[Supermarket Parameters POC] enhetsdatoer:', error);
+                        showHint('Kunne ikke hente enhetsdatoer: ' + error.message);
+                        return;
+                    }
+                }
+                combo.dataset.sortMode = next;
+                combo.dataset.recent = '';
+                updateUnitSortButton(combo);
+                setUnitComboOpen(combo, true);
+            });
+
+            recentBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                combo.dataset.recent = combo.dataset.recent === '1' ? '' : '1';
+                updateUnitSortButton(combo);
+                setUnitComboOpen(combo, true);
+            });
         }
 
+        // Live-verdier gir refresh flere ganger i sekundet. Å bygge den åpne lista på nytt hver gang
+        // satte markeringen tilbake og scrollet til toppen, så piltastene virket døde — bare ved nye enheter.
+        const optionsChanged = combo.dataset.optionSignature !== signature;
         select.classList.add('sm-poc-unit-native-hidden');
         combo.dataset.optionSignature = signature;
         updateUnitSortButton(combo);
         updateUnitComboLabel(combo, select);
         positionUnitComboHost();
-        if (combo.classList.contains('sm-poc-unit-opened')) renderUnitOptions(combo);
+        if (optionsChanged && combo.classList.contains('sm-poc-unit-opened')) renderUnitOptions(combo);
     }
 
     function getSelectedGroupButton() {
@@ -5443,8 +5605,10 @@
                     <ul>
                         <li>Klikk feltet for å åpne, og skriv for å filtrere på enhetsnavn eller unit-id.</li>
                         <li><span class="sm-poc-help-btnref">A-Z</span>/<span class="sm-poc-help-btnref">Orig</span> bytter mellom alfabetisk og opprinnelig rekkefølge.</li>
-                        <li><kbd>↑</kbd>/<kbd>↓</kbd> for å navigere <strong>fra gjeldende enhet</strong>, <kbd>Enter</kbd> for å velge, <kbd>Esc</kbd> for å lukke.</li>
-                        <li><kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> bytter enhet direkte <strong>uten å åpne listen</strong> (forrige/neste i original rekkefølge).</li>
+                        <li><span class="sm-poc-help-btnref">Newest</span> → <span class="sm-poc-help-btnref">Oldest</span> → <span class="sm-poc-help-btnref">Orig</span> sorterer på datoen enheten har i databasen (<code>row_date</code> i <code>iw_sys_plant_units</code>), og viser datoen til høyre. Datoene hentes første gang du trykker, én gang per anlegg.</li>
+                        <li><span class="sm-poc-help-btnref">Recent</span> viser de 10 enhetene du sist valgte med klikk eller <kbd>Enter</kbd> på dette anlegget, nyeste først. Trykk igjen for hele listen.</li>
+                        <li><kbd>↑</kbd>/<kbd>↓</kbd> i åpen liste <strong>bytter enhet med en gang</strong> (som den vanlige velgeren), i listens rekkefølge – lista blir stående. <kbd>Enter</kbd>/<kbd>Esc</kbd> lukker.</li>
+                        <li>Etter et valg har enhetsfeltet fokus: <kbd>↑</kbd>/<kbd>↓</kbd> bytter da enhet <strong>uten å åpne listen</strong>. <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> gjør det samme fra hvor som helst på siden (forrige/neste i original rekkefølge).</li>
                         <li>Søket huskes nå mellom hver gang du åpner feltet – teksten markeres, så du kan skrive over for nytt søk eller la den stå.</li>
                     </ul>
 
@@ -5552,8 +5716,8 @@
                     <ul>
                         <li><strong>Endrings-modus:</strong> klikk = marker · <kbd>Shift</kbd>+klikk = område · <kbd>Ctrl</kbd>+klikk = legg til/fjern ·
                         <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> = marker alle synlige · <kbd>Esc</kbd> = fjern markering</li>
-                        <li><strong>Enhetsvelger (åpen):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> = naviger fra gjeldende · <kbd>Enter</kbd> = velg · <kbd>Esc</kbd> = lukk</li>
-                        <li><strong>Enhetsvelger (lukket):</strong> <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> = forrige/neste enhet i original rekkefølge</li>
+                        <li><strong>Enhetsvelger (åpen):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> = bytt enhet med en gang · <kbd>Enter</kbd>/<kbd>Esc</kbd> = lukk</li>
+                        <li><strong>Enhetsvelger (lukket):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> med fokus i feltet, ellers <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> = forrige/neste enhet i original rekkefølge</li>
                         <li><strong>Filterfelt:</strong> <kbd>Esc</kbd> = tøm filteret</li>
                     </ul>
                 </div>
@@ -5962,64 +6126,10 @@
             ]);
     }
 
-    function collectNativeExportRows(tbody, groupName, driverIdByAlias) {
-        if (!tbody) return [];
-        return getVisibleRows(tbody).map((row) => {
-            const name = normalizeExportText(row.cells[0]?.textContent);
-            return [
-                groupName,
-                name,
-                normalizeExportText(row.cells[1]?.textContent),
-                normalizeExportText(row.cells[2]?.textContent),
-                driverIdByAlias?.get(name) || ''
-            ];
-        });
-    }
-
-    // The native tables don't carry driver_ids in the DOM — re-fetch the
-    // selected group through the same settings.php RPC the page used and map
-    // alias text -> driver_id. Failures just leave the Driver ID column blank.
-    async function fetchNativeGroupDriverIds() {
-        const plantId = getPlantId();
-        const unitId = getUnitId();
-        const groupLabel = normalizeExportText(getSelectedGroupButton()?.textContent);
-        if (!plantId || !unitId || !groupLabel) return new Map();
-        const groups = await settingsRpc('get_groups', {
-            plant: Number(plantId),
-            unit_id: unitId,
-            preffered_group: ''
-        }) || [];
-        const group = groups.find((item) => normalizeExportText(item.alias_text) === groupLabel);
-        if (!group) return new Map();
-        const result = await settingsRpc('get_parameters', {
-            plant: Number(plantId),
-            unit_id: unitId,
-            group: group.id,
-            preffered_group: ''
-        }) || {};
-        const map = new Map();
-        [
-            ...parseSettingsParameterCsv(result.read, group, 'measurements'),
-            ...parseSettingsParameterCsv(result.write, group, 'settings')
-        ].forEach((row) => {
-            if (row.driverId) map.set(normalizeExportText(row.aliasText), row.driverId);
-        });
-        return map;
-    }
-
     async function exportParametersToExcel() {
-        let measurements;
-        let settings;
-        if (allParamsActive && document.getElementById(ALL_PARAMS_VIEW_ID)) {
-            measurements = collectAllParamsExportRows('measurements');
-            settings = collectAllParamsExportRows('settings');
-        } else {
-            const groupName = normalizeExportText(getSelectedGroupButton()?.textContent);
-            showHint('Fetching driver IDs for the export...');
-            const driverIdByAlias = await fetchNativeGroupDriverIds().catch(() => new Map());
-            measurements = collectNativeExportRows(measurementsTable, groupName, driverIdByAlias);
-            settings = collectNativeExportRows(settingsTable, groupName, driverIdByAlias);
-        }
+        // The only button for this sits in the Vis alle parameter toolbar, so the rows come from that view.
+        let measurements = collectAllParamsExportRows('measurements');
+        let settings = collectAllParamsExportRows('settings');
         if (!measurements.length && !settings.length) {
             showHint('No parameters to export.');
             return;
