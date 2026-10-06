@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.62.5
+// @version      1.63.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.5';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.63.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5978,7 +5978,7 @@
     // True between Repeat and Stop, so a pass can stay quiet about what the first
     // one already said.
     let repeating = false;
-    // The commands shown since Repeat was pressed (1.62.4): each shows once, as a
+    // The commands shown since Run was pressed (1.62.4; the Repeat button until 1.63): each shows once, as a
     // terminal shows modpoll's command once when it polls on its own.
     const repeatShown = new Set();
     // Printed reference -> the value seen on the previous poll, so a re-read can
@@ -6371,7 +6371,7 @@
         let shown = 0;
         let hidden = 0;
         for (const r of runs) {
-            // A run whose command was already shown since Repeat was pressed is a
+            // A run whose command was already shown since Run was pressed is a
             // later pass of the same poll: it shows as modpoll shows a poll when it
             // keeps polling on its own - the polling line and the answer - without
             // the command and its configuration block again (1.62.4).
@@ -8447,19 +8447,26 @@
             log('ERROR: ' + e.message, 'err');
         } finally {
             termState.busy = false;
-            ui.run.disabled = false;
+            ui.run.disabled = !!repeatTimer;   // Run stays down while it keeps polling
             ui.stop.disabled = !repeatTimer;
         }
     }
 
+    /**
+     * Run (1.63): poll now, and again every Every s seconds until Stop - modpoll
+     * without -1, but each pass a -1 command of its own. Pressed again, or Enter
+     * in a field, it starts over with what the form says now.
+     */
     function startRepeat() {
-        const every = Math.max(1, Number(ui.every.value) || 5) * 1000;
+        const every = Math.max(1, Number(ui.every.value) || 1) * 1000;
         if (repeatTimer) clearInterval(repeatTimer);
         repeating = true;
         repeatShown.clear();
         repeatTimer = setInterval(() => { if (!termState.busy) runOnce(); }, every);
         ui.stop.disabled = false;
-        log('Repeating every ' + (every / 1000) + ' s — the command shows once, then each poll as modpoll prints it when it keeps polling; the grid marks the values that move');
+        ui.run.disabled = true;
+        log('Polling every ' + (every / 1000) + ' s until Stop, as modpoll does without -1 — its configuration shows once, then each poll as modpoll prints it; the grid marks the values that move');
+        if (!termState.busy) runOnce();
     }
 
     function stopAll() {
@@ -8468,6 +8475,7 @@
         repeating = false;
         repeatShown.clear();
         ui.stop.disabled = true;
+        if (ui.run) ui.run.disabled = false;
         log('Stopped');
     }
 
@@ -8864,7 +8872,7 @@
         for (const input of [ui.host, ui.port, ui.slave, ui.start, ui.count]) {
             input.addEventListener('input', () => { ui.cmdDirty = false; refreshPreview(); });
             // Enter runs, the way a terminal would.
-            input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runOnce(); } });
+            input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); startRepeat(); } });
         }
         for (const sel of [ui.table, ui.base, ui.format, ui.baudrate, ui.parity, ui.databits, ui.stopbits, ui.bigEndian]) {
             sel.addEventListener('change', () => { ui.cmdDirty = false; refreshPreview(); });
@@ -8879,15 +8887,19 @@
         form.appendChild(ui.blockNote);
 
         // --- actions --------------------------------------------------------
-        ui.run = el('button', { className: 'w2ui-btn mpc-b pri', textContent: 'Run' });
-        ui.run.addEventListener('click', runOnce);
+        // Run polls again and again until Stop, as modpoll does without -1 (1.63):
+        // each pass is still a -1 command of its own, so the port is let go between
+        // passes and Stop ends it at once. Poll reads once, as modpoll -1 does.
+        ui.run = el('button', { className: 'w2ui-btn mpc-b pri', textContent: 'Run',
+            title: 'Poll every few seconds (Every s) until Stop, as modpoll does without -1' });
+        ui.run.addEventListener('click', startRepeat);
         ui.stop = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Stop', disabled: true });
         ui.stop.addEventListener('click', stopAll);
         // A second is what watching a value actually means; anything slower is a
         // decision, not a default.
         ui.every = el('input', { value: '1' });
-        const repeat = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Repeat', title: 'Run again on an interval' });
-        repeat.addEventListener('click', startRepeat);
+        const pollOnceBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Poll', title: 'Poll once, as modpoll -1 does' });
+        pollOnceBtn.addEventListener('click', runOnce);
         // The one export: everything known, as one file an agent can read — see
         // exportResult for what goes in. Splitting for a knowledge set is the
         // API's job, __modpoll.exportParts().
@@ -9025,7 +9037,7 @@
             }
         });
         form.appendChild(el('div', { className: 'mpc-actions' }, [
-            ui.run, ui.stop, repeat, field('Every s', ui.every, 2),
+            ui.run, ui.stop, pollOnceBtn, field('Every s', ui.every, 2),
             el('span', { className: 'mpc-spacer' }), scanBtn, rediscover, saveBtn, reconnectBtn,
         ]));
         ui.progressFill = el('div');
@@ -9311,7 +9323,7 @@
                 '__modpoll.card(table, ref)                open a register\'s card in the grid and read it; card() reads the open one',
                 'await __modpoll.useUnit(unitId)           pick a unit as the picker does: address, slave and serial settings, and its names',
                 '__modpoll.setForm({host, slave, table, start, count, format, base, mode, port, …})   fill the form, not run',
-                'await __modpoll.run()                     run what the form says, as the Run button does; returns state()',
+                'await __modpoll.run()                     poll once with what the form says, as the Poll button does; returns state()',
                 '',
                 'await __modpoll.devices()                 units from the plant database',
                 'await __modpoll.read({host, slave, table, start, count, base, mode, port})',
@@ -9413,7 +9425,7 @@
             refreshPreview();
             return { form: readForm(), command: ui.cmd.value };
         },
-        /** Run what the form says, as the Run button does, and return state() after it. */
+        /** Poll once with what the form says, as the Poll button does, and return state() after it. */
         async run() {
             if (!ui.run) throw new Error('The console is not built yet — __modpoll.open() first');
             if (termState.busy) throw new Error('Busy: a poll, scan or verification is running — __modpoll.stop() ends it');

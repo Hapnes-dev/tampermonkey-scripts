@@ -159,7 +159,7 @@ rebuilt.
   holding the most values, its densest run of them — small gaps bridged,
   empty stretches left out, since a strict device would refuse those block by
   block — at that width, word order, start and count, with the reasons in the
-  log, so *Run* is the next click and prints the numbers rather than the
+  log, so *Poll* or *Run* is the next click and prints the numbers rather than the
   halves of them. The grid shows the
   decoded 32-bit value beside each pair, and clicking a row in a 32-bit
   region aims the command at the pair, as a float or an integer.
@@ -209,9 +209,19 @@ rebuilt.
   each answer starts. *Clear* empties the log on screen. The log keeps its last
   4 000 lines, as a terminal keeps its scrollback.
 
-  *Repeat* reads as modpoll does when it keeps polling on its own (1.62.4).
-  modpoll's configuration block and the hairline show once, on the first pass.
-  Every pass after that adds only its polling line and its answer:
+- **Run polls until Stop; Poll reads once (1.63.0).** *Run* polls the way
+  modpoll does without `-1`: it reads now and again every *Every s* seconds (one
+  by default, modpoll's own poll rate) until *Stop*. Each pass is still a `-1`
+  command of its own, so the port is let go between passes and *Stop* ends it at
+  once. A modpoll left polling in Plant Term would hold the port until someone
+  pressed Ctrl-C there. *Run* stays down while it polls. Pressing it again, or
+  Enter in a field, starts over with what the form says now. *Poll*, the button
+  called *Repeat* until 1.63, reads once, as `modpoll -1` does. The register
+  card keeps both: *Poll this register* and *Watch*.
+
+  While Run polls, the log reads as modpoll's does when it keeps polling on its
+  own (1.62.4). modpoll's configuration block and the hairline show once, on the
+  first pass. Every pass after that adds only its polling line and its answer:
 
   ```
   ─────────────────────────────────────────────── 13:37:08
@@ -224,7 +234,7 @@ rebuilt.
   ```
 
   A pass that times out adds *Polling slave (Ctrl-C to stop) ...* and *Reply
-  time-out!*, as cmd shows it. Stop ends the repeat, and the next run starts
+  time-out!*, as cmd shows it. Stop ends it, and the next run starts
   at a hairline of its own again.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
