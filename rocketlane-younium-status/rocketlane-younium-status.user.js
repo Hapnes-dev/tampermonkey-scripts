@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.58.0
+// @version      1.59.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8478,17 +8478,16 @@
     { id: "651325", name: "Andreas Sandnes", short: "Andreas" },
   ];
   const RL_TL_GROUP = { key: "group:cooling", label: "Delivery Cooling" };
-  // One colour per roster position, used only in the team view. v1.58.0 (Thomas: violet
-  // "should be on today", the rest "like on this picture" — Paul Tol Muted / Bright,
-  // Okabe-Ito and IBM, the colour-blind-safe palettes). Violet now marks TODAY, so no
-  // person may use it. Every 6-set drawn from the pictured colours that reads as a dot on
-  // white (>= 2.2:1) and keeps >= 20 CIEDE2000 from the violet was scored on its worst
-  // pair under normal vision and simulated deuteranopia / protanopia: this one wins at
-  // 24.6 / 18.4 / 20.8. Its closest pair — dark forest green vs light teal, apart mostly
-  // in lightness — goes to the two people with the fewest projects.
-  // Matthias blue · Ivar black · Theophilus green · Thomas orange · Svein Olav teal · Andreas wine.
-  // Sources: #0072B2 #000000 #E69F00 Okabe-Ito; #117733 #44AA99 #882255 Paul Tol Muted.
-  const RL_TL_PALETTE = ["#0072b2", "#000000", "#117733", "#e69f00", "#44aa99", "#882255"];
+  // One colour per roster position, used only in the team view. v1.59.0: Thomas picked
+  // the six himself ("rest going to be these colours", six swatches cropped from the
+  // Tol / Okabe-Ito / IBM chart), in roster order. Values are the published ones, checked
+  // against the crops' own pixels — two of the chart's printed RGB labels belong to other
+  // swatches (the IBM orange is labelled 93,168,153, the magenta 51,117,56).
+  // Matthias light blue · Ivar green · Theophilus orange (IBM) · Thomas yellow (Okabe-Ito)
+  // · Svein Olav grey (Tol Bright) · Andreas magenta (IBM). Violet stays reserved for TODAY.
+  // Yellow, light blue and grey are pale on white (1.3–1.9:1), so every dot carries a thin
+  // dark outline (see .rltlDot / .rltlChip i) rather than any colour being changed.
+  const RL_TL_PALETTE = ["#94cbec", "#337538", "#fe6100", "#f0e442", "#bbbbbb", "#dc267f"];
 
   function rlTlRosterEntry(id) {
     const s = String(id || "");
@@ -8677,7 +8676,7 @@
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.58.0";
+  const RL_TL_STYLE_READY = "1.59.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8712,8 +8711,8 @@
 #${RL_TL_OVERLAY_ID} .rltlPlot{position:relative;width:100%;}
 #${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;height:3px;border-radius:2px;background:var(--rltl-line);z-index:0;}
 #${RL_TL_OVERLAY_ID} .rltlDot{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--rltl-accent);
-  transform:translate(-50%,-50%);cursor:pointer;box-shadow:0 0 0 4px var(--rltl-card);z-index:3;}
-#${RL_TL_OVERLAY_ID} .rltlDot:hover{box-shadow:0 0 0 4px var(--rltl-card),0 0 0 10px var(--rltl-accent-soft);}
+  transform:translate(-50%,-50%);cursor:pointer;box-shadow:inset 0 0 0 1.5px rgba(31,27,46,.32),0 0 0 4px var(--rltl-card);z-index:3;}
+#${RL_TL_OVERLAY_ID} .rltlDot:hover{box-shadow:inset 0 0 0 1.5px rgba(31,27,46,.32),0 0 0 4px var(--rltl-card),0 0 0 10px var(--rltl-accent-soft);}
 #${RL_TL_OVERLAY_ID} .rltlConn{position:absolute;width:2px;background:var(--rltl-line);transform:translateX(-50%);z-index:1;}
 #${RL_TL_OVERLAY_ID} .rltlLabel{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap;
   text-decoration:none;color:inherit;z-index:2;background:var(--rltl-card);padding:2px 10px;border-radius:8px;}
@@ -8750,7 +8749,8 @@
 #${RL_TL_OVERLAY_ID} .rltlChip{display:inline-flex;align-items:center;gap:8px;background:var(--rltl-card);border-radius:999px;
   padding:7px 14px;font-size:15px;color:var(--rltl-text);box-shadow:0 2px 8px rgba(108,74,182,.08);}
 #${RL_TL_OVERLAY_ID} .rltlChip.zero{color:var(--rltl-muted);}
-#${RL_TL_OVERLAY_ID} .rltlChip i,#${RL_TL_OVERLAY_ID} .rltlOwnerDot{display:inline-block;width:12px;height:12px;border-radius:50%;}
+#${RL_TL_OVERLAY_ID} .rltlChip i,#${RL_TL_OVERLAY_ID} .rltlOwnerDot{display:inline-block;width:12px;height:12px;border-radius:50%;
+  box-shadow:inset 0 0 0 1px rgba(31,27,46,.32);}
 #${RL_TL_OVERLAY_ID} .rltlOwnerDot{margin-right:8px;vertical-align:-1px;}
 #${RL_TL_OVERLAY_ID} .rltlRangeBtn{border:0;background:transparent;color:var(--rltl-muted);font:600 16px Inter,-apple-system,sans-serif;
   padding:10px 20px;border-radius:10px;cursor:pointer;white-space:nowrap;}
