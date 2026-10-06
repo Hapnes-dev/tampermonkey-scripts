@@ -190,6 +190,13 @@ rebuilt.
   left out (1.62.2). Nothing is indented, and the blank lines between its
   blocks are kept, a run of them as one.
 
+  The console chains several modpoll runs onto one command line, each after an
+  `echo #mpc:…` marker that tells it where that run's output starts: a long
+  read's blocks, and a scan's probes. Those markers are the console's plumbing,
+  not something anyone typed. Since 1.62.3 the log shows each chained run as a
+  command of its own, prompt and command as the terminal would show it,
+  followed by its own answer, and never the markers.
+
   The frame is light and quiet, a code block's grey in the terminal's
   monospace (the black of 1.62.0 was too heavy). Each command is a block: a
   band with the prompt dimmed, the command in full and the time it was sent at

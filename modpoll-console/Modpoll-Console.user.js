@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.62.2
+// @version      1.62.3
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.2';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.3';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -793,7 +793,10 @@
         };
         const readChunk = () => { harvest(); return collected; };
 
-        logCommand(command);
+        // The command as the terminal shows it; a chained line, run by run as its
+        // output arrives (mirrorTerminal), without the console's markers.
+        const chain = chainSegments(command);
+        if (!chain.length) logCommand(command);
         state.t.exec('echo ' + runTag + ' & ' + command);
         const deadline = Date.now() + options.timeoutMs;
         let lastLength = -1;
@@ -824,7 +827,7 @@
             // Knowing how many values were asked for turns the wait into a real
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
-            if (options.expect && countValueLines(chunk) >= options.expect) { mirrorTerminal(chunk); return chunk; }
+            if (options.expect && countValueLines(chunk) >= options.expect) { mirrorTerminal(chunk, chain); return chunk; }
             // This plant does not resolve a bare "modpoll": say so once, take the
             // full path, and run the same command again.
             if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
@@ -832,11 +835,11 @@
                 log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
                 return termRunInner(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
             }
-            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk); return chunk; }
-            if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk); return chunk; }
+            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk, chain); return chunk; }
+            if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk, chain); return chunk; }
         }
         const chunk = readChunk();
-        if (grew) { mirrorTerminal(chunk); return chunk; }
+        if (grew) { mirrorTerminal(chunk, chain); return chunk; }
         // A shell that answers nothing at all is usually a dead session rather
         // than a slow device — the page keeps its prompt either way, so silence
         // is the only symptom. Reload the frame once and try again.
@@ -6312,30 +6315,73 @@
     // A bare shell prompt: what the terminal prints when a command is done.
     const RE_PROMPT_LINE = /^[A-Za-z]:\\[^>]*>$/;
 
+    /**
+     * A command line as the runs it chains (1.62.3). The console puts several
+     * modpoll runs on one line, each after an "echo #mpc:…" marker that says
+     * where its output starts - chainBlocks for a long read, probeRefs for a
+     * scan. The markers are the console's plumbing, never something a person
+     * typed, so the log shows each run as a command of its own. [] for a line
+     * without markers, which the log shows as it is.
+     */
+    function chainSegments(command) {
+        const parts = String(command).split(/\s+&\s+/);
+        const markerOf = part => { const m = part.match(new RegExp('^echo (' + MARK + ':\\S+)$')); return m ? m[1] : null; };
+        if (!parts.some(markerOf)) return [];
+        const out = [];
+        let marker = null;
+        for (const part of parts) {
+            const m = markerOf(part);
+            if (m) { marker = m; continue; }
+            out.push({ marker, command: part });
+            marker = null;
+        }
+        return out;
+    }
+
     // Always on: what Plant Term printed is the evidence behind every row in the
     // grid, so there is no reading of a poll that is better off without it.
     // Shown as the terminal shows it (1.62): the lines as printed, nothing
     // indented, and the blank lines between modpoll's blocks kept, a run of them
     // as one. The prompt the shell prints when the command is done starts the
-    // next command's line, which logCommand writes.
-    function mirrorTerminal(chunk) {
+    // next command's line, which logCommand writes. A chained line (`chain`,
+    // from chainSegments) is shown run by run: where a run's marker is in the
+    // output, its command goes in as the terminal would show it, and its answer
+    // follows (1.62.3).
+    function mirrorTerminal(chunk, chain) {
         if (!ui.log) return;
-        const lines = [];
+        const commandAt = new Map((chain || []).filter(seg => seg.marker).map(seg => [seg.marker, seg.command]));
+        const runs = [];
+        let run = { command: null, lines: [] };
         for (const raw of String(chunk || '').split('\n')) {
             const line = raw.replace(/\s+$/, '');
-            if (line.trim().indexOf(MARK) === 0) continue;
+            const text = line.trim();
+            if (text.indexOf(MARK) === 0) {
+                if (commandAt.has(text)) { runs.push(run); run = { command: commandAt.get(text), lines: [] }; }
+                continue;
+            }
             // A repeat prints the same banner every pass, which says nothing the
             // first one did not. Only what is new to this pass is worth a line.
             if (repeating && RE_BANNER.test(line)) continue;
-            if (RE_MODPOLL_BANNER.test(line.trim())) continue;
-            if (!line.trim() && (!lines.length || !lines[lines.length - 1].trim())) continue;
-            lines.push(line);
+            if (RE_MODPOLL_BANNER.test(text)) continue;
+            if (!text && (!run.lines.length || !run.lines[run.lines.length - 1].trim())) continue;
+            run.lines.push(line);
         }
-        while (lines.length && (!lines[lines.length - 1].trim() || RE_PROMPT_LINE.test(lines[lines.length - 1].trim()))) lines.pop();
-        if (!lines.length) return;
-        // A blank line as a space, so it keeps a line's height as the terminal's does.
-        for (const line of lines.slice(0, MIRROR_LINE_CAP)) appendLogLine(mirrorLine(line || ' '));
-        if (lines.length > MIRROR_LINE_CAP) log('…' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
+        runs.push(run);
+        let shown = 0;
+        let hidden = 0;
+        for (const r of runs) {
+            const lines = r.lines;
+            while (lines.length && (!lines[lines.length - 1].trim() || RE_PROMPT_LINE.test(lines[lines.length - 1].trim()))) lines.pop();
+            if (shown >= MIRROR_LINE_CAP) { hidden += lines.length; continue; }
+            if (r.command) logCommand(r.command);
+            // A blank line as a space, so it keeps a line's height as the terminal's does.
+            for (const line of lines) {
+                if (shown >= MIRROR_LINE_CAP) { hidden++; continue; }
+                appendLogLine(mirrorLine(line || ' '));
+                shown++;
+            }
+        }
+        if (hidden) log('…' + hidden + ' further lines', 'mirror');
     }
 
     /**
