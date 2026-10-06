@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.63.0
+// @version      1.64.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5142,6 +5142,12 @@
   //     without a trace; the switch now says where to look and has a Test button.
   //     (2) A tab opened before an update keeps the old code and kept leading, so
   //     1.62's feed was never read; a tab with a newer version now takes the lead.
+  //
+  //     v1.64.0 — "gettings spammed": Tampermonkey 5.5 creates every notification
+  //     with requireInteraction, so each stayed on screen until closed. Every one
+  //     now has a timeout (20 s for chat, 6 s for a test or on/off), the switch
+  //     no longer sends a toast when clicked, the same notification is never shown
+  //     twice within 30 s in any tab, and a chat gets one toast per check.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlChatNotifyHelpers:start
   /** Sender's user id of a chat comment (`createdBy` is a number there, an object elsewhere). */
@@ -5260,6 +5266,31 @@
     return {
       title: who + " · " + String(project?.name || "") + (conv?.private ? " · Private chat" : ""),
       text: body.length > max ? body.slice(0, max - 1) + "…" : body,
+    };
+  }
+
+  /**
+   * One notification for a chat's new messages (pure, v1.64.0). Tampermonkey shows every
+   * notification until it is closed or times out, so a busy chat gets one toast, not one
+   * per message. A single message keeps rlCnMessageCard's form; several give the title
+   * "Project · N new messages[ · Private chat]" and one "Sender: message" line each,
+   * newest last, at most `maxLines` (the older ones counted on the first line).
+   */
+  function rlCnBurstCard(project, conv, msgs, maxLines) {
+    const list = Array.isArray(msgs) ? msgs : [];
+    if (list.length <= 1) return rlCnMessageCard(project, conv, list[0] || {});
+    const max = Math.max(1, maxLines || 4);
+    const shown = list.slice(-max);
+    const lines = shown.map((m) => {
+      const who = [m?.user?.firstName, m?.user?.lastName].filter(Boolean).join(" ").trim() || "Someone";
+      const body = rlCnHtmlToText(m?.content) || "(attachment)";
+      return who + ": " + (body.length > 160 ? body.slice(0, 159) + "…" : body);
+    });
+    const older = list.length - shown.length;
+    if (older > 0) lines.unshift("+" + older + " earlier");
+    return {
+      title: String(project?.name || "") + " · " + list.length + " new messages" + (conv?.private ? " · Private chat" : ""),
+      text: lines.join("\n"),
     };
   }
 
@@ -5415,7 +5446,14 @@
   // One message arrives twice (project channel and user channel); this makes it one check.
   // Only chat messages start the timer since v1.61.0, so it no longer waits out task-edit bursts.
   const RL_CN_EVENT_DELAY_MS = 600;
-  const RL_CN_PER_CHAT = 3;                          // notifications per chat per check; the rest is "+N more"
+  const RL_CN_PER_CHAT = 3;                          // messages a first-seen chat may announce (times 3)
+  // Tampermonkey 5.5 creates every notification with requireInteraction, so without a timeout
+  // each one stays on screen until it is closed — Thomas: "gettings spammed" (v1.64.0).
+  const RL_CN_CHAT_TIMEOUT_MS = 20 * 1000;           // a chat toast; the bell keeps the message anyway
+  const RL_CN_NOTE_TIMEOUT_MS = 6 * 1000;            // a test or an on/off confirmation
+  const RL_CN_REPEAT_MS = 30 * 1000;                 // the same notification never twice inside this
+  const RL_CN_BURST_LINES = 4;                       // message lines in one chat's toast
+  const RL_CN_GM_RECENT = "rlChatNotifyRecent";      // { [tag]: ms } — shown lately, shared by the tabs
   const RL_CN_TOGGLE_ID = "rlChatPushToggle";
   const RL_CN_BAR_ID = "rlChatPushBar";
   const RL_CN_TEST_ID = "rlChatPushTest";
@@ -5442,7 +5480,23 @@
   function rlCnChatUrl(projectId, conversationId) {
     return location.origin + "/projects/" + encodeURIComponent(String(projectId)) + "/chat/" + encodeURIComponent(String(conversationId));
   }
+  const rlCnRecentTags = new Map();   // tag → ms, this tab's half of the repeat guard
+  /** True when `tag` was shown within RL_CN_REPEAT_MS, in this tab or another; marks it shown. */
+  function rlCnRepeat(tag) {
+    if (!tag) return false;
+    const now = Date.now();
+    let shared = {};
+    try { shared = JSON.parse(GM_getValue(RL_CN_GM_RECENT, "") || "{}") || {}; } catch (_) {}
+    const last = Math.max(Number(shared[tag]) || 0, rlCnRecentTags.get(tag) || 0);
+    if (now - last < RL_CN_REPEAT_MS) return true;
+    rlCnRecentTags.set(tag, now);
+    shared[tag] = now;
+    for (const k of Object.keys(shared)) if (now - (Number(shared[k]) || 0) > 10 * RL_CN_REPEAT_MS) delete shared[k];
+    try { GM_setValue(RL_CN_GM_RECENT, JSON.stringify(shared)); } catch (_) {}
+    return false;
+  }
   function rlCnNotify(opts) {
+    if (rlCnRepeat(opts.tag)) return;
     try {
       GM_notification({
         title: opts.title,
@@ -5450,6 +5504,8 @@
         tag: opts.tag,
         image: rlFavicon("rocketlane.com"),
         silent: false,
+        // Tampermonkey makes every notification sticky; a timeout closes it (v1.64.0).
+        timeout: opts.timeout || RL_CN_CHAT_TIMEOUT_MS,
         onclick: () => {
           if (!opts.url) return;
           try { GM_openInTab(opts.url, { active: true, insert: true, setParent: true }); }
@@ -5513,22 +5569,16 @@
   function rlCnAnnounce(project, conv, fresh) {
     fresh = rlCnClaim(fresh);   // saved before notifying, like the chat state
     if (!fresh.length) return;
-    const chat = conv?.private ? "Private chat" : "General chat";
-    const url = rlCnChatUrl(project.id, conv.conversationId);
-    const shown = fresh.slice(-RL_CN_PER_CHAT);
-    const more = fresh.length - shown.length;
-    for (const m of shown) {
-      const card = rlCnMessageCard(project, conv, m);
-      rlCnNotify({ title: card.title, text: card.text, tag: "rl-chat-" + String(m?.commentId ?? m?.createdAt), url });
-    }
-    if (more > 0) {
-      rlCnNotify({
-        title: project.name + " — " + chat,
-        text: "+" + more + " more new message" + (more === 1 ? "" : "s"),
-        tag: "rl-chat-more-" + String(conv.conversationId) + "-" + String(fresh[fresh.length - 1]?.commentId ?? ""),
-        url,
-      });
-    }
+    // One toast per chat per check (v1.64.0), however many messages it brings.
+    const card = rlCnBurstCard(project, conv, fresh, RL_CN_BURST_LINES);
+    const last = fresh[fresh.length - 1];
+    rlCnNotify({
+      title: card.title,
+      text: card.text,
+      tag: "rl-chat-" + String(last?.commentId ?? last?.createdAt),
+      url: rlCnChatUrl(project.id, conv.conversationId),
+      timeout: RL_CN_CHAT_TIMEOUT_MS,
+    });
   }
 
   /** Check the chats of `projects`; `full` = all owned projects, which may also forget gone chats. */
@@ -5813,10 +5863,13 @@
       return j && Date.now() - (Number(j.at) || 0) < 90 * 1000 ? j : null;
     } catch (_) { return null; }
   }
-  function rlCnSetEnabled(next) {
+  /** Turn chat push on or off. `quiet` (the switch, which shows the state itself) sends no toast. */
+  function rlCnSetEnabled(next, quiet) {
     GM_setValue(RL_CN_GM_ENABLED, next);
     if (next) { try { GM_setValue(RL_CN_GM_LAST, 0); } catch (_) {} }
+    if (quiet) return;
     rlCnNotify({
+      timeout: RL_CN_NOTE_TIMEOUT_MS,
       title: "Rocketlane chat notifications are " + (next ? "on" : "off"),
       text: next
         ? "New messages in the Rocketlane chats you are in will show up here as they arrive."
@@ -5882,6 +5935,7 @@
     } else {
       lines.push("Not live right now — checked every minute.");
     }
+    lines.push("A pop-up closes by itself after " + Math.round(RL_CN_CHAT_TIMEOUT_MS / 1000) + " seconds; the bell keeps every message.");
     lines.push(RL_CN_WINDOWS_HINT);
     lines.push("Click to turn off.");
     return lines.join("\n");
@@ -5891,6 +5945,7 @@
   const RL_CN_WINDOWS_HINT = "Nothing pops up? In Windows Settings → System → Notifications, Google Chrome must be on.";
   function rlCnSendTest() {
     rlCnNotify({
+      timeout: RL_CN_NOTE_TIMEOUT_MS,
       title: "Rocketlane chat notifications" + (rlCnEnabled() ? "" : " (turned off)"),
       text: "Test — a new chat message will look like this. Clicking it opens the chat.",
       tag: "rl-chat-test",
@@ -5923,7 +5978,7 @@
       btn.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        rlCnSetEnabled(!rlCnEnabled());
+        rlCnSetEnabled(!rlCnEnabled(), true);
         rlCnPaintToggle(btn);
       });
       bar.append(test, btn);
