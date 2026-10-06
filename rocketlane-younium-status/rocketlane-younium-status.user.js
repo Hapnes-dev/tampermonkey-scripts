@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.57.0
+// @version      1.58.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8478,26 +8478,33 @@
     { id: "651325", name: "Andreas Sandnes", short: "Andreas" },
   ];
   const RL_TL_GROUP = { key: "group:cooling", label: "Delivery Cooling" };
-  // One colour per roster position, used only in the team view. v1.57.0 (Thomas: "some
-  // colours on name have too similar colours"): the 1.55 set paired violet with blue
-  // and teal with green, and under protanopia two of its colours were all but identical
-  // (worst CIEDE2000 pair 1.7). This set came out of an exhaustive search over 53
-  // colours, scored on the worst pair under normal vision AND simulated deuteranopia and
-  // protanopia, each kept ≥ 22 from the coral TODAY colour: worst pair 25.1 normal /
-  // 22.0 deutan / 21.4 protan. Its closest pair, brown/charcoal, belongs to the two
-  // people with the fewest projects, so it rarely shows side by side.
-  // Matthias violet · Ivar teal · Theophilus brown · Thomas sky · Svein Olav charcoal · Andreas gold.
-  const RL_TL_PALETTE = ["#6c4ab6", "#16a085", "#6d4c41", "#56b4e9", "#1f1b2e", "#a07800"];
+  // One colour per roster position, used only in the team view. v1.58.0 (Thomas: violet
+  // "should be on today", the rest "like on this picture" — Paul Tol Muted / Bright,
+  // Okabe-Ito and IBM, the colour-blind-safe palettes). Violet now marks TODAY, so no
+  // person may use it. Every 6-set drawn from the pictured colours that reads as a dot on
+  // white (>= 2.2:1) and keeps >= 20 CIEDE2000 from the violet was scored on its worst
+  // pair under normal vision and simulated deuteranopia / protanopia: this one wins at
+  // 24.6 / 18.4 / 20.8. Its closest pair — dark forest green vs light teal, apart mostly
+  // in lightness — goes to the two people with the fewest projects.
+  // Matthias blue · Ivar black · Theophilus green · Thomas orange · Svein Olav teal · Andreas wine.
+  // Sources: #0072B2 #000000 #E69F00 Okabe-Ito; #117733 #44AA99 #882255 Paul Tol Muted.
+  const RL_TL_PALETTE = ["#0072b2", "#000000", "#117733", "#e69f00", "#44aa99", "#882255"];
 
   function rlTlRosterEntry(id) {
     const s = String(id || "");
     return RL_TL_ROSTER.find((r) => r.id === s) || null;
   }
 
-  /** Colour for an owner in the team view; anyone off the roster gets the accent. */
+  // Neutral grey for an owner who is not on the roster. Until v1.58.0 the fallback was
+  // PALETTE[0] — the violet accent then, but Matthias's blue now, so an outsider would
+  // have been painted as Matthias. (The team fetch only returns roster owners; this is
+  // the guard for the day it does not.)
+  const RL_TL_OFF_ROSTER = "#8a8398";
+
+  /** Colour for an owner in the team view; anyone off the roster gets neutral grey. */
   function rlTlColorFor(id) {
     const i = RL_TL_ROSTER.findIndex((r) => r.id === String(id || ""));
-    return i >= 0 ? RL_TL_PALETTE[i % RL_TL_PALETTE.length] : RL_TL_PALETTE[0];
+    return i >= 0 ? RL_TL_PALETTE[i % RL_TL_PALETTE.length] : RL_TL_OFF_ROSTER;
   }
 
   /** A stored or chosen selection → a valid one; defaults to the viewer when on the roster. */
@@ -8560,6 +8567,29 @@
       .map((p) => [p.id, String(p.start || ""), String(p.status || ""), String(p.name || "")].join("|"))
       .sort()
       .join("\n");
+  }
+
+  /**
+   * Spread dots that would overlap (v1.58.0). `xs` are dot centres in pixels, in any
+   * order; the result keeps that order. Centres closer than `minGap` form a cluster,
+   * and each cluster is laid out `minGap` apart, centred on the cluster's mean — so a
+   * lone dot never moves and two same-day dots end up side by side, not stacked.
+   */
+  const RL_TL_DOT_SPREAD_PX = 22; // the dot is 20px; 22 leaves a hairline between two
+  function rlTlSpreadDots(xs, minGap) {
+    const gap = typeof minGap === "number" && minGap > 0 ? minGap : RL_TL_DOT_SPREAD_PX;
+    const order = (xs || []).map((x, i) => ({ x: Number(x) || 0, i })).sort((a, b) => a.x - b.x || a.i - b.i);
+    const out = new Array(order.length);
+    let k = 0;
+    while (k < order.length) {
+      let j = k;
+      while (j + 1 < order.length && order[j + 1].x - order[j].x < gap) j++;
+      const cluster = order.slice(k, j + 1);
+      const mean = cluster.reduce((s, c) => s + c.x, 0) / cluster.length;
+      cluster.forEach((c, n) => { out[c.i] = mean + (n - (cluster.length - 1) / 2) * gap; });
+      k = j + 1;
+    }
+    return out;
   }
 
   // @@rlTimelineHelpers:end
@@ -8647,7 +8677,7 @@
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.56.0";
+  const RL_TL_STYLE_READY = "1.58.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8665,7 +8695,7 @@
 #${RL_TL_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483600;background:rgba(31,27,46,.55);
   display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px;}
 #${RL_TL_OVERLAY_ID} .rltlPage{--rltl-bg:#f6f4fb;--rltl-card:#fff;--rltl-text:#1f1b2e;--rltl-muted:#8a8398;
-  --rltl-accent:#6c4ab6;--rltl-accent-soft:#ece6f9;--rltl-today:#eb6f4d;--rltl-line:#e2dcf0;--rltl-warn-soft:#fdeee8;
+  --rltl-accent:#6c4ab6;--rltl-accent-soft:#ece6f9;--rltl-today:#6c4ab6;--rltl-warn:#eb6f4d;--rltl-line:#e2dcf0;--rltl-warn-soft:#fdeee8;
   width:calc(100vw - 48px);min-height:calc(100vh - 48px);box-sizing:border-box;background:var(--rltl-bg);
   border-radius:24px;padding:56px 64px 64px;
   font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--rltl-text);position:relative;}
@@ -8674,7 +8704,7 @@
 #${RL_TL_OVERLAY_ID} .rltlClose:hover{background:var(--rltl-accent-soft);}
 #${RL_TL_OVERLAY_ID} .rltlEyebrow{color:var(--rltl-accent);font-weight:600;font-size:16px;letter-spacing:.08em;
   text-transform:uppercase;margin:0 0 10px;}
-#${RL_TL_OVERLAY_ID} .rltlEyebrow.warn{color:var(--rltl-today);}
+#${RL_TL_OVERLAY_ID} .rltlEyebrow.warn{color:var(--rltl-warn);}
 #${RL_TL_OVERLAY_ID} h1.rltlTitle{font-size:48px;font-weight:700;margin:0 0 8px;letter-spacing:-.015em;}
 #${RL_TL_OVERLAY_ID} .rltlSub{color:var(--rltl-muted);font-size:20px;margin:0 0 40px;}
 #${RL_TL_OVERLAY_ID} .rltlCard{background:var(--rltl-card);border-radius:24px;padding:48px 40px 28px;
@@ -9071,8 +9101,15 @@
     today.style.top = (spineY + 30) + "px";
     plot.appendChild(today);
 
+    // Two projects on the same day drew their dots on the same spot, and the last one
+    // painted hid the other (v1.58.0: Thomas's 12 Oct dot vanished under Matthias's).
+    // Dots closer than one dot-width are spread apart around their shared centre; each
+    // connector follows its own dot, so every project keeps a visible, clickable mark.
+    const dotPx = rlTlSpreadDots(made.map((m) => m.centerPx), RL_TL_DOT_SPREAD_PX);
+    made.forEach((m, i) => { m.dotPx = dotPx[i]; });
+
     for (const m of made) {
-      const x = m.centerPx;
+      const x = m.dotPx;
       const dist = (m.tier + 1) * rowH;
       const conn = document.createElement("div");
       conn.className = "rltlConn";
