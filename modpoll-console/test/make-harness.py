@@ -80,6 +80,10 @@ views = between("    /*\n     * \"View as\": a register shown as another datatyp
 # grid and card as shipped. Its methods reach the rest of the script only when
 # called; the ones under test need just the stubs below.
 bridge = between("    const api = {", "\n    Object.freeze(api);")
+# The terminal mirror and the banner it drops on a repeat (1.62), so the log's
+# terminal look is under test with modpoll's own lines in it.
+mirror = between("    const MIRROR_LINE_CAP = 200;", "\n    /**\n     * The progress strip")
+banner = between("    const RE_BANNER = ", "\n\n    function parseModpoll")
 
 # The doc comment that sits above EXPAND_RESERVE, kept for readability only.
 OUT.write_text(f"""<!doctype html>
@@ -114,6 +118,9 @@ let _unitsCache = null;
 // What state() asks of the shell and the repeat timer.
 const termState = {{ busy: false }};
 let repeatTimer = null;
+// The run tag and the repeat flag the terminal mirror reads.
+const MARK = '#mpc';
+let repeating = false;
 const REPORT_CHUNK_LIMIT = 30000;
 const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';
@@ -170,6 +177,10 @@ function el(tag, props, kids) {{
 {render_verification}
 
 {bridge}
+
+{banner}
+
+{mirror}
 // ---- end lifted code -----------------------------------------------------
 window.__api = api;
 

@@ -179,6 +179,21 @@ rebuilt.
   only rose. It says what is happening in words — *Reading discrete inputs
   (1xxxx) at 516 — 519 found · 83 commands · 1:11*, *Looking for where each
   table starts — probe 23 of 56, 9 answering*.
+- **The log looks like the terminal (1.62.0).** It reads as a cmd window does:
+  black, in the terminal's grey and its font. Every command sent appears as
+  Plant Term shows it, the shell's prompt and then the command
+  (`C:\iwmac\sys_tools\plant_term>modpoll -1 -m rtu …`), whatever sent it — a
+  poll, a block of a long one, a scan's probes or the API. modpoll's answer
+  follows exactly as printed: the banner, *Protocol opened successfully.*,
+  *Polling slave (Ctrl-C to stop) ...*, *Reply time-out!*. Nothing is indented,
+  and the blank lines between its blocks are kept, a run of them as one. The
+  console's own notes stand apart in the terminal's colours: cyan for a note,
+  yellow for a warning, red for an error, green for a success. Nothing the
+  console says can be taken for something the device said.
+
+  A repeat still drops the banner after the first pass. The log keeps its last
+  4 000 lines, as a terminal keeps its scrollback, so a long scan does not
+  weigh the page down.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.61.0
+// @version      1.62.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.61.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -793,6 +793,7 @@
         };
         const readChunk = () => { harvest(); return collected; };
 
+        logCommand(command);
         state.t.exec('echo ' + runTag + ' & ' + command);
         const deadline = Date.now() + options.timeoutMs;
         let lastLength = -1;
@@ -5923,12 +5924,19 @@
     #${PANEL_ID} .mpc-dnote.green{background:#e8f5e9;border-color:#c8e6c9;color:#2e7d32}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
+    /* The log looks like the terminal it mirrors (1.62): a cmd window's black, its
+       grey and its font. modpoll's output and the prompt and command before it are
+       the terminal's own grey, exactly as printed. This console's own notes are
+       the terminal's cyan, its warnings yellow, its errors red and a success
+       green, so they never read as something the device said. */
     #${PANEL_ID} .mpc-log{grid-column:span 12;height:220px;overflow-y:auto;overflow-x:hidden;
-        font:11.5px/1.5 Consolas,ui-monospace,monospace;background:#fafbfc;border:1px solid var(--line);border-radius:3px;
-        padding:6px 9px;white-space:pre-wrap;word-break:break-word;color:#3a3f4a}
-    #${PANEL_ID} .mpc-log .err{color:#c0392b}#${PANEL_ID} .mpc-log .warn{color:#b9770e}#${PANEL_ID} .mpc-log .ok{color:#1e7e34}
-    /* The terminal's own words, set apart from this console's reading of them. */
-    #${PANEL_ID} .mpc-log .mirror{color:#5a6070}
+        font:12px/1.4 Consolas,'Lucida Console','Courier New',monospace;background:#0c0c0c;border:1px solid #2b2b2b;
+        border-radius:3px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;color:#3a96dd;color-scheme:dark}
+    #${PANEL_ID} .mpc-log .err{color:#e74856}#${PANEL_ID} .mpc-log .warn{color:#f9f1a5}#${PANEL_ID} .mpc-log .ok{color:#16c60c}
+    #${PANEL_ID} .mpc-log .mirror,#${PANEL_ID} .mpc-log .cmd{color:#cccccc}
+    #${PANEL_ID} .mpc-log .cmd{margin-top:6px}
+    #${PANEL_ID} .mpc-log .cmdnote{color:#767676}
+    #${PANEL_ID} .mpc-log ::selection{background:#cccccc;color:#0c0c0c}
     /* Drag the strip under a pane to give it more room; double-click to toggle. */
     #${PANEL_ID} .mpc-grip{grid-column:span 12;height:11px;margin-top:-3px;cursor:ns-resize;
         display:flex;align-items:center;justify-content:center}
@@ -5964,13 +5972,38 @@
 
     function log(text, level) {
         if (!ui.log) return;
+        appendLogLine(el('div', { className: level || '', textContent: text }));
+    }
+
+    // Lines the log keeps, as a terminal keeps its scrollback: a scan sends
+    // hundreds of commands, each with its prompt and its output (1.62).
+    const LOG_LINE_CAP = 4000;
+
+    function appendLogLine(line) {
         // Follow the tail unless the reader has scrolled up to look at something.
         // A repeat adds a line a second, and yanking the view back down on each
         // one made the log unreadable for exactly as long as it was interesting.
         const following = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 4;
-        const line = el('div', { className: level || '', textContent: text });
         ui.log.appendChild(line);
+        if (ui.log.childElementCount > LOG_LINE_CAP) {
+            for (let k = ui.log.childElementCount - LOG_LINE_CAP + 500; k > 0 && ui.log.firstElementChild; k--) ui.log.firstElementChild.remove();
+        }
         if (following) ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    /**
+     * A command as the terminal shows it (1.62): the shell's prompt, then the
+     * command - what Plant Term would show, and what a cmd window shows - with
+     * an optional note after it, dimmer, that is not part of the command.
+     */
+    function logCommand(command, note) {
+        if (!ui.log) return;
+        let prompt = 'C:\\iwmac\\sys_tools\\plant_term>';
+        try {
+            const p = termState.t && termState.t.get_prompt && String(termState.t.get_prompt()).trim();
+            if (p && /^[A-Za-z]:\\.*>$/.test(p)) prompt = p;
+        } catch (e) { /* not connected yet: the prompt Plant Term shows once it is */ }
+        appendLogLine(el('div', { className: 'cmd' }, [prompt + command].concat(note ? [el('span', { className: 'cmdnote', textContent: '   ' + note })] : [])));
     }
 
     /**
@@ -6216,18 +6249,32 @@
     }
 
     const MIRROR_LINE_CAP = 200;
+    // A bare shell prompt: what the terminal prints when a command is done.
+    const RE_PROMPT_LINE = /^[A-Za-z]:\\[^>]*>$/;
+
     // Always on: what Plant Term printed is the evidence behind every row in the
     // grid, so there is no reading of a poll that is better off without it.
+    // Shown as the terminal shows it (1.62): the lines as printed, nothing
+    // indented, and the blank lines between modpoll's blocks kept, a run of them
+    // as one. The prompt the shell prints when the command is done starts the
+    // next command's line, which logCommand writes.
     function mirrorTerminal(chunk) {
         if (!ui.log) return;
-        const lines = String(chunk || '').split('\n')
-            .map(l => l.replace(/\s+$/, ''))
+        const lines = [];
+        for (const raw of String(chunk || '').split('\n')) {
+            const line = raw.replace(/\s+$/, '');
+            if (line.trim().indexOf(MARK) === 0) continue;
             // A repeat prints the same banner every pass, which says nothing the
             // first one did not. Only what is new to this pass is worth a line.
-            .filter(l => l.trim() && l.trim().indexOf(MARK) !== 0 && !(repeating && RE_BANNER.test(l)));
+            if (repeating && RE_BANNER.test(line)) continue;
+            if (!line.trim() && (!lines.length || !lines[lines.length - 1].trim())) continue;
+            lines.push(line);
+        }
+        while (lines.length && (!lines[lines.length - 1].trim() || RE_PROMPT_LINE.test(lines[lines.length - 1].trim()))) lines.pop();
         if (!lines.length) return;
-        for (const line of lines.slice(0, MIRROR_LINE_CAP)) log('  ' + line, 'mirror');
-        if (lines.length > MIRROR_LINE_CAP) log('  …' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
+        // A blank line as a space, so it keeps a line's height as the terminal's does.
+        for (const line of lines.slice(0, MIRROR_LINE_CAP)) log(line || ' ', 'mirror');
+        if (lines.length > MIRROR_LINE_CAP) log('…' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
     }
 
     /**
@@ -7814,7 +7861,7 @@
                 const command = wide
                     ? aimAtRegister({ table: r.table, ref: decoded.aligned ? r.ref : r.ref - 1, format: region.format === 'float32' ? 'float' : 'int', bigEndian: region.wordOrder === flagMeans })
                     : aimAtRegister({ table: r.table, ref: r.ref, format: '' });
-                log('> ' + command + '   ← ' + (r.name || 'reference ' + r.ref) + ', ready to run');
+                log('Ready to run: ' + command + '   ← ' + (r.name || 'reference ' + r.ref));
                 toggleDetailRow(tr, r.raw, pointForReading(r.table, '', r.ref), undefined, plantNamesFor(r.table, '', r.ref), r.table, r.ref, '', {
                     again: r.again, region: decoded.region, nextRaw: rawAt.get(r.table + '|' + (r.ref + 1)), flagMeans,
                     secondsAfter: report.reread ? report.reread.secondsAfterStart : null,
@@ -8215,7 +8262,6 @@
                 }
                 if (command !== typed) ui.cmd.value = command;
                 assertReadOnly(command);
-                log('> ' + command);
                 const raw = await termRun(command, { timeoutMs: readForm().timeoutMs, fullOutput: true });
                 const parsed = parseModpoll(raw);
                 if (!parsed.values.length && !parsed.diagnostics.length) {
@@ -8256,8 +8302,7 @@
                         : '';
                     if (p.blocks > 1) showProgress(p.block / p.blocks, 'Block ' + p.block + ' of ' + p.blocks + landing);
                     else if (p.recovering) showProgress(1, 'Re-asking for ' + p.recovering + ' gap' + (p.recovering === 1 ? '' : 's') + landing);
-                    if (p.partial || repeating) return;   // still the same command, or the command has not changed since the first pass
-                    log('> ' + p.command + (p.blocks ? '   [' + p.block + '/' + p.blocks + ']' : ''));
+                    // the command itself is shown where it is sent (logCommand), as the terminal shows it
                 });
                 hideProgress(1500);
             }
