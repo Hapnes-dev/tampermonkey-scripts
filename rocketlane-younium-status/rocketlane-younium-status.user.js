@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.59.0
+// @version      1.60.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8261,6 +8261,11 @@
   const RL_TL_DEFAULT_HORIZON = "3m";
   const RL_TL_TIER_STEP = 1;       // one tier = one extra connector step
   const RL_TL_LABEL_GAP_PX = 16;   // minimum horizontal gap between two labels
+  // Label rows per side of the spine (v1.60.0). Zoomed far out every name would stack
+  // into a tower thousands of pixels tall, with the axis off the bottom of the screen;
+  // past this many rows a project is shown as a dot only. Eight is what the busiest
+  // preset (the team, 6 months) needs, so no preset loses a name.
+  const RL_TL_MAX_TIERS = 8;
 
   /** "2026-10-05" → "05 Oct 2026". Empty for anything unparseable. */
   function rlTlFmtDate(iso) {
@@ -8407,9 +8412,12 @@
    * bug where tiers only ever escalated because the check compared against the
    * previous label instead of the per-tier occupancy, so each tier keeps its own
    * right edge here.
+   * With `maxTiers` (v1.60.0) an item that fits in none of the allowed rows gets -1
+   * and occupies nothing, so the items after it still drop into any gap below.
    */
-  function rlTlAssignTiers(items, gapPx) {
+  function rlTlAssignTiers(items, gapPx, maxTiers) {
     const gap = typeof gapPx === "number" ? gapPx : RL_TL_LABEL_GAP_PX;
+    const cap = Number.isFinite(maxTiers) && maxTiers > 0 ? maxTiers : Infinity;
     const tierRight = [];
     return (items || []).map((it) => {
       const half = (it && it.widthPx ? it.widthPx : 0) / 2;
@@ -8418,37 +8426,110 @@
       for (let t = 0; t < tierRight.length; t++) {
         if (left >= tierRight[t] + gap) { tierRight[t] = right; return t * RL_TL_TIER_STEP; }
       }
+      if (tierRight.length >= cap) return -1;
       tierRight.push(right);
       return (tierRight.length - 1) * RL_TL_TIER_STEP;
     });
   }
 
   /**
-   * Axis ticks across the window, aligned to the window start. Weekly by default,
-   * but the step widens to fit `maxTicks` — a real owner list spans months, not the
-   * prototype's five weeks, and 32 weekly ticks over seven months render as an
-   * illegible smear of overlapping dates.
+   * Axis ticks, ALIGNED TO THE CALENDAR (v1.60.0) — days at midnight, weeks on Mondays,
+   * months on the 1st, quarters/halves/years on their first month. Until 1.59 the ticks
+   * were counted from the window's left edge; now that the axis pans, edge-anchored ticks
+   * would slide along under the dates while dragging. The unit widens until the count fits
+   * `maxTicks`; without `maxTicks` it is weekly. 1- and 2-day units are kept for windows of
+   * three weeks or less, so a month-long view stays weekly rather than ticking every 2 days.
    */
-  const RL_TL_TICK_STEPS = [7, 14, 28, 56, 91, 182, 364];
-  // A window of three weeks or less (the 14-day horizon, v1.56.0) may tick daily:
-  // weekly steps would leave a 14-day axis with only three dates on it.
-  const RL_TL_SHORT_TICK_STEPS = [1, 2, 7];
-  const RL_TL_SHORT_WINDOW_DAYS = 21;
+  const RL_TL_TICK_UNITS = [
+    { days: 1, maxSpanDays: 21 },
+    { days: 2, maxSpanDays: 21 },
+    { days: 7 },
+    { days: 14 },
+    { months: 1 },
+    { months: 2 },
+    { months: 3 },
+    { months: 6 },
+    { months: 12 },
+  ];
+  const RL_TL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   function rlTlAxisTicks(range, maxTicks) {
     if (!range || range.end <= range.start) return [];
-    const days = Math.round((range.end - range.start) / 86400000);
-    let step = 7;
+    const spanDays = (range.end - range.start) / 86400000;
+    let unit = RL_TL_TICK_UNITS[2]; // weekly when nothing limits the count
     if (typeof maxTicks === "number" && maxTicks > 0) {
-      const ladder = days <= RL_TL_SHORT_WINDOW_DAYS ? RL_TL_SHORT_TICK_STEPS : RL_TL_TICK_STEPS;
-      for (const s of ladder) { step = s; if (Math.floor(days / s) + 1 <= maxTicks) break; }
+      unit = RL_TL_TICK_UNITS[RL_TL_TICK_UNITS.length - 1];
+      for (const u of RL_TL_TICK_UNITS) {
+        if (u.maxSpanDays && spanDays > u.maxSpanDays) continue;
+        const approx = u.days ? spanDays / u.days : spanDays / (30.44 * u.months);
+        if (Math.floor(approx) + 1 <= maxTicks) { unit = u; break; }
+      }
     }
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const epochDay = (d) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
     const out = [];
-    for (let ms = range.start; ms <= range.end; ms = rlTlAddDays(ms, step)) {
-      const d = new Date(ms);
-      out.push({ ms, label: String(d.getDate()).padStart(2, "0") + " " + months[d.getMonth()] });
+    if (unit.days) {
+      const s = new Date(range.start);
+      let d = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+      if (d.getTime() < range.start) d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+      if (unit.days >= 7) {
+        while (d.getDay() !== 1) d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1); // Monday
+        // Fortnights: every other Monday, by a parity that does not depend on the view.
+        if (unit.days === 14 && Math.floor((epochDay(d) - 4) / 7) % 2 !== 0) {
+          d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+        }
+      } else if (unit.days === 2 && epochDay(d) % 2 !== 0) {
+        d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+      }
+      for (; d.getTime() <= range.end; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + unit.days)) {
+        out.push({ ms: d.getTime(), label: String(d.getDate()).padStart(2, "0") + " " + RL_TL_MONTHS[d.getMonth()] });
+      }
+    } else {
+      const s = new Date(range.start);
+      let d = new Date(s.getFullYear(), s.getMonth(), 1);
+      if (d.getTime() < range.start) d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+      while (d.getMonth() % unit.months !== 0) d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+      for (; d.getTime() <= range.end; d = new Date(d.getFullYear(), d.getMonth() + unit.months, 1)) {
+        // The year rides on January and on the first tick, so a long view is never ambiguous.
+        const withYear = d.getMonth() === 0 || out.length === 0;
+        out.push({ ms: d.getTime(), label: RL_TL_MONTHS[d.getMonth()] + (withYear ? " " + d.getFullYear() : "") });
+      }
     }
     return out;
+  }
+
+  // ── Pan and zoom (v1.60.0, Thomas: "click and drag the graph to move through the
+  // timeline, and use the scroll wheel to zoom in and out", modelled on the IWMAC plant
+  // graph's zoom buttons). The view is a free [start, end] in ms; the range buttons are
+  // presets that reset it to today → today + N.
+  const RL_TL_MIN_SPAN_MS = 3 * 86400000;        // closest zoom: three days across the card
+  const RL_TL_MAX_SPAN_MS = 3 * 365 * 86400000;  // widest zoom: about three years
+  const RL_TL_ZOOM_STEP = 1.4;                   // one press of + / −
+  const RL_TL_WHEEL_RATE = 0.0015;               // zoom factor = e^(deltaY × rate): ~1.16× per mouse notch
+
+  /** Fraction across the view for a timestamp — NOT clamped, so off-view projects can be culled. */
+  function rlTlXFrac(ms, view) {
+    if (!view || !(view.end > view.start)) return 0;
+    return (ms - view.start) / (view.end - view.start);
+  }
+
+  /**
+   * Zoom by `factor` (> 1 zooms out, < 1 zooms in) around `anchorMs`, which keeps its place
+   * on screen — the date under the mouse stays under the mouse. The span is clamped to
+   * [RL_TL_MIN_SPAN_MS, RL_TL_MAX_SPAN_MS]; at a limit the view simply stops changing.
+   */
+  function rlTlZoomView(view, factor, anchorMs) {
+    const span = view.end - view.start;
+    const f = Number.isFinite(factor) && factor > 0 ? factor : 1;
+    const next = Math.min(RL_TL_MAX_SPAN_MS, Math.max(RL_TL_MIN_SPAN_MS, span * f));
+    const anchor = Number.isFinite(anchorMs) ? anchorMs : view.start + span / 2;
+    const frac = (anchor - view.start) / span;
+    const start = anchor - frac * next;
+    return { start, end: start + next };
+  }
+
+  /** Shift the view by `deltaMs` (positive moves later in time). */
+  function rlTlPanView(view, deltaMs) {
+    const d = Number.isFinite(deltaMs) ? deltaMs : 0;
+    return { start: view.start + d, end: view.end + d };
   }
 
   /** The "needs attention" bucket: owned projects whose start date has passed. */
@@ -8573,10 +8654,15 @@
    * order; the result keeps that order. Centres closer than `minGap` form a cluster,
    * and each cluster is laid out `minGap` apart, centred on the cluster's mean — so a
    * lone dot never moves and two same-day dots end up side by side, not stacked.
+   * With `maxShiftPx` (v1.60.0) no dot moves further than that from its own date.
+   * Zoomed out to years, a whole season of starts chains into one cluster, and laying
+   * it out 22 px apart pushed October's dots to where next spring is drawn. Past the
+   * limit the dots overlap instead, which is what a crowded season looks like.
    */
   const RL_TL_DOT_SPREAD_PX = 22; // the dot is 20px; 22 leaves a hairline between two
-  function rlTlSpreadDots(xs, minGap) {
+  function rlTlSpreadDots(xs, minGap, maxShiftPx) {
     const gap = typeof minGap === "number" && minGap > 0 ? minGap : RL_TL_DOT_SPREAD_PX;
+    const maxShift = Number.isFinite(maxShiftPx) && maxShiftPx >= 0 ? maxShiftPx : Infinity;
     const order = (xs || []).map((x, i) => ({ x: Number(x) || 0, i })).sort((a, b) => a.x - b.x || a.i - b.i);
     const out = new Array(order.length);
     let k = 0;
@@ -8585,7 +8671,10 @@
       while (j + 1 < order.length && order[j + 1].x - order[j].x < gap) j++;
       const cluster = order.slice(k, j + 1);
       const mean = cluster.reduce((s, c) => s + c.x, 0) / cluster.length;
-      cluster.forEach((c, n) => { out[c.i] = mean + (n - (cluster.length - 1) / 2) * gap; });
+      cluster.forEach((c, n) => {
+        const spread = mean + (n - (cluster.length - 1) / 2) * gap;
+        out[c.i] = Math.min(c.x + maxShift, Math.max(c.x - maxShift, spread));
+      });
       k = j + 1;
     }
     return out;
@@ -8676,7 +8765,7 @@
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.59.0";
+  const RL_TL_STYLE_READY = "1.60.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8708,7 +8797,18 @@
 #${RL_TL_OVERLAY_ID} .rltlSub{color:var(--rltl-muted);font-size:20px;margin:0 0 40px;}
 #${RL_TL_OVERLAY_ID} .rltlCard{background:var(--rltl-card);border-radius:24px;padding:48px 40px 28px;
   box-shadow:0 14px 40px rgba(108,74,182,.09);}
-#${RL_TL_OVERLAY_ID} .rltlPlot{position:relative;width:100%;}
+#${RL_TL_OVERLAY_ID} .rltlPlot{position:relative;width:100%;overflow:hidden;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
+#${RL_TL_OVERLAY_ID} .rltlPlot.dragging{cursor:grabbing;}
+#${RL_TL_OVERLAY_ID} .rltlPlot.dragging .rltlLabel,#${RL_TL_OVERLAY_ID} .rltlPlot.dragging .rltlDot{pointer-events:none;}
+#${RL_TL_OVERLAY_ID} .rltlZoomBar{display:flex;align-items:center;gap:8px;margin:-20px 0 14px;}
+#${RL_TL_OVERLAY_ID} .rltlZoomBtn{min-width:40px;height:40px;border:0;border-radius:12px;background:var(--rltl-bg);color:var(--rltl-text);
+  font:600 22px/1 Inter,-apple-system,sans-serif;cursor:pointer;padding:0 12px;}
+#${RL_TL_OVERLAY_ID} .rltlZoomBtn:hover{background:var(--rltl-accent-soft);color:var(--rltl-accent);}
+#${RL_TL_OVERLAY_ID} .rltlZoomBtn.today{font-size:15px;padding:0 16px;}
+#${RL_TL_OVERLAY_ID} .rltlZoomHint{margin-left:auto;color:var(--rltl-muted);font-size:13px;}
+#${RL_TL_OVERLAY_ID} .rltlUnnamed{margin-left:12px;color:var(--rltl-accent);font-size:13px;font-weight:600;}
+#${RL_TL_OVERLAY_ID} .rltlDot.past{opacity:.5;}
+#${RL_TL_OVERLAY_ID} .rltlLabel.past b,#${RL_TL_OVERLAY_ID} .rltlLabel.past span{opacity:.72;}
 #${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;height:3px;border-radius:2px;background:var(--rltl-line);z-index:0;}
 #${RL_TL_OVERLAY_ID} .rltlDot{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--rltl-accent);
   transform:translate(-50%,-50%);cursor:pointer;box-shadow:inset 0 0 0 1.5px rgba(31,27,46,.32),0 0 0 4px var(--rltl-card);z-index:3;}
@@ -8810,7 +8910,21 @@
   }
 
   function rlTlOnKeydown(ev) {
-    if (ev.key === "Escape") { ev.stopPropagation(); rlTlCloseOverlay(); }
+    if (ev.key === "Escape") { ev.stopPropagation(); rlTlCloseOverlay(); return; }
+    // Keyboard pan/zoom (v1.60.0), except while typing in the person picker.
+    const overlay = document.getElementById(RL_TL_OVERLAY_ID);
+    if (!overlay || !overlay._rltlView || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (ev.target && /^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName)) return;
+    const v = overlay._rltlView;
+    const span = v.end - v.start;
+    const mid = (v.start + v.end) / 2;
+    let next = null;
+    if (ev.key === "ArrowLeft") next = rlTlPanView(v, -span * 0.15);
+    else if (ev.key === "ArrowRight") next = rlTlPanView(v, span * 0.15);
+    else if (ev.key === "+" || ev.key === "=") next = rlTlZoomView(v, 1 / RL_TL_ZOOM_STEP, mid);
+    else if (ev.key === "-" || ev.key === "_") next = rlTlZoomView(v, RL_TL_ZOOM_STEP, mid);
+    else if (ev.key === "0" || ev.key === "Home") { ev.preventDefault(); rlTlResetView(overlay); return; }
+    if (next) { ev.preventDefault(); rlTlApplyView(overlay, next); }
   }
 
   function rlTlOpenOverlay() {
@@ -8841,6 +8955,8 @@
     // GM "rltlHorizon" holds a key since v1.56.0; the old "rltlHorizonMonths" number
     // is read once as a fallback so an existing choice of 1/3/6 months survives.
     overlay._rltlHorizon = rlTlNormalizeHorizon(GM_getValue("rltlHorizon", GM_getValue("rltlHorizonMonths", "")));
+    overlay._rltlView = null;   // set to the preset on first render; pan/zoom then move it
+    overlay._rltlCustom = false;
 
     // Person picker (v1.55.0): the whole team first, then the six names under a
     // "Delivery Cooling" heading, in Thomas's order. Defaults to whoever is signed
@@ -8935,68 +9051,41 @@
       });
   }
 
+  // The frame of the timeline: header, presets, legend host, zoom bar, plot, attention
+  // table. Built once per data change; pan and zoom only ever redraw the plot
+  // (rlTlDrawPlot), so a drag does not rebuild the table or re-wire the controls.
   function rlTlRender(overlay, projects) {
     overlay._rltlProjects = projects;
     const todayMs = rlTlDayMs(rlTlIsoOf(Date.now()));
-    const count = overlay.querySelector(".rltlCount");
-    const sub = overlay.querySelector(".rltlSub");
     const card = overlay.querySelector(".rltlCard");
     const attentionHost = overlay.querySelector(".rltlAttentionHost");
-
-    // Horizon buttons (v1.53.0): the axis is today → today + N months. The choice is
-    // remembered, and a click only re-renders from the projects already loaded.
     const horizon = rlTlNormalizeHorizon(overlay._rltlHorizon);
+    if (!overlay._rltlView) overlay._rltlView = rlTlHorizonRange(todayMs, horizon);
+
+    // Range buttons are PRESETS since v1.60.0: they reset the view to today → today + N.
+    // After a drag or zoom none of them is lit, because the view no longer is one.
     const rangeHost = overlay.querySelector(".rltlRange");
     if (rangeHost) {
       rangeHost.innerHTML = "";
       for (const h of RL_TL_HORIZONS) {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = "rltlRangeBtn" + (h.key === horizon ? " on" : "");
-        b.setAttribute("aria-pressed", h.key === horizon ? "true" : "false");
+        const on = !overlay._rltlCustom && h.key === horizon;
+        b.className = "rltlRangeBtn" + (on ? " on" : "");
+        b.setAttribute("aria-pressed", on ? "true" : "false");
         b.textContent = h.label;
         b.addEventListener("click", () => {
           overlay._rltlHorizon = h.key;
           try { GM_setValue("rltlHorizon", h.key); } catch (_) {}
-          rlTlRender(overlay, overlay._rltlProjects || []);
+          rlTlResetView(overlay);
         });
         rangeHost.appendChild(b);
       }
     }
 
-    // The spine holds only what starts inside the window; what already started goes
-    // to the attention table below (v1.52.0). The left edge is today.
-    const range = rlTlHorizonRange(todayMs, horizon);
-    const upcoming = rlTlInRange(projects, range);
-    const later = rlTlUpcoming(projects, todayMs).length - upcoming.length;
-    const late = rlTlStartedBeforeToday(projects, todayMs);
-    // Team view (v1.55.0): every owner's dots get their own colour, the label names
-    // the owner, a legend explains the colours and the table gains an Owner column.
     const sel = String(overlay._rltlSel || "");
     const team = sel === RL_TL_GROUP.key;
     const ownerShort = (p) => { const r = rlTlRosterEntry(p.ownerId); return r ? r.short : (p.owner || ""); };
-    if (count) {
-      count.textContent = rlTlSelectionLabel(sel).toUpperCase() + " · " +
-        projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") +
-        " · " + upcoming.length + " IN THE NEXT " + rlTlHorizonPhrase(horizon).toUpperCase() +
-        (later > 0 ? " · " + later + " LATER" : "");
-    }
-
-    const legend = overlay.querySelector(".rltlLegend");
-    if (legend) {
-      legend.replaceChildren();
-      if (team) {
-        for (const r of RL_TL_ROSTER) {
-          const n = upcoming.filter((p) => String(p.ownerId) === r.id).length;
-          const chip = document.createElement("span");
-          chip.className = "rltlChip" + (n ? "" : " zero");
-          const dot = document.createElement("i");
-          dot.style.background = rlTlColorFor(r.id);
-          chip.append(dot, document.createTextNode(r.name + " · " + n));
-          legend.appendChild(chip);
-        }
-      }
-    }
 
     // Footnote: the selection's projects that are not on the timeline at all, by name.
     const foot = overlay.querySelector(".rltlFoot");
@@ -9011,7 +9100,12 @@
     }
 
     if (!projects.length) {
+      const sub = overlay.querySelector(".rltlSub");
       if (sub) sub.textContent = "";
+      const count = overlay.querySelector(".rltlCount");
+      if (count) count.textContent = rlTlSelectionLabel(sel).toUpperCase() + " · NO PROJECTS";
+      const legend = overlay.querySelector(".rltlLegend");
+      if (legend) legend.replaceChildren();
       const empty = document.createElement("div");
       empty.className = "rltlState";
       empty.textContent = "No open projects with a start date are owned by " + rlTlSelectionLabel(sel) + " right now.";
@@ -9020,144 +9114,48 @@
       return;
     }
 
-    if (sub) sub.textContent = rlTlFmtDate(rlTlIsoOf(range.start)) + " – " + rlTlFmtDate(rlTlIsoOf(range.end));
+    // The zoom bar and plot outlive data refreshes. The cache paints first and the network
+    // answer lands a moment later, often while the user is already dragging — a new plot
+    // would drop the pointer capture and leave the drag stranded half-way.
+    if (!card.querySelector(":scope > .rltlPlot")) {
+      // Zoom bar — the IWMAC graph's magnifier buttons, plus a way back to today.
+      const bar = document.createElement("div");
+      bar.className = "rltlZoomBar";
+      const btn = (cls, text, title, fn) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "rltlZoomBtn " + cls;
+        b.textContent = text;
+        b.title = title;
+        b.addEventListener("click", fn);
+        return b;
+      };
+      const centre = () => { const v = overlay._rltlView; return (v.start + v.end) / 2; };
+      bar.append(
+        btn("in", "+", "Zoom in (+, or scroll up)", () => rlTlApplyView(overlay, rlTlZoomView(overlay._rltlView, 1 / RL_TL_ZOOM_STEP, centre()))),
+        btn("out", "−", "Zoom out (−, or scroll down)", () => rlTlApplyView(overlay, rlTlZoomView(overlay._rltlView, RL_TL_ZOOM_STEP, centre()))),
+        btn("today", "Today", "Back to today at the left edge, same zoom (0 or Home)", () => {
+          const t0 = rlTlDayMs(rlTlIsoOf(Date.now()));
+          const span = overlay._rltlView.end - overlay._rltlView.start;
+          rlTlApplyView(overlay, { start: t0, end: t0 + span });
+        }),
+      );
+      const unnamed = document.createElement("span");
+      unnamed.className = "rltlUnnamed";
+      const hint = document.createElement("span");
+      hint.className = "rltlZoomHint";
+      hint.textContent = "Drag to move · scroll to zoom · double-click to reset";
+      bar.append(unnamed, hint);
 
-    card.innerHTML = '<div class="rltlPlot"></div>';
-    const plot = card.querySelector(".rltlPlot");
-    const width = plot.clientWidth || 1200;
-    // Inset the spine so TODAY at the far left — and the first/last tick and dot —
-    // are not cut in half by the card edge. Every x below goes through xOf().
-    const pad = 56;
-    const usable = Math.max(1, width - 2 * pad);
-    const xOf = (iso) => pad + rlTlPosition(iso, range) * usable;
-
-    const rowH = 64;     // one tier = this much further from the spine
-    const labelH = 56;   // room for a two-line label at the larger type size
-    const { above, below } = rlTlSplitSides(upcoming);
-
-    // Labels are measured, not estimated: render them hidden, read the real width,
-    // then stack. The prototype had to guess at character widths server-side.
-    const made = [];
-    for (const side of ["above", "below"]) {
-      for (const entry of (side === "above" ? above : below)) {
-        const p = entry.project;
-        const a = document.createElement("a");
-        a.className = "rltlLabel";
-        a.href = p.href || ("/projects/" + encodeURIComponent(p.id) + "/plan");
-        a.innerHTML = "<b></b><span></span>";
-        a.querySelector("b").textContent = p.name;
-        a.querySelector("span").textContent = rlTlFmtDate(p.start) + (team ? " · " + ownerShort(p) : "");
-        a.style.visibility = "hidden";
-        a.style.left = "0px";
-        a.style.top = "0px";
-        plot.appendChild(a);
-        made.push({ side, p, el: a, centerPx: xOf(p.start) });
-      }
+      const plot = document.createElement("div");
+      plot.className = "rltlPlot";
+      card.replaceChildren(bar, plot);
+      rlTlWirePlot(overlay, plot);
     }
-    for (const side of ["above", "below"]) {
-      const group = made.filter((m) => m.side === side).sort((a, b) => a.centerPx - b.centerPx);
-      // Clamp BEFORE stacking. The first and last labels slide inward to stay in the
-      // card, and a tier assignment computed on the unclamped centres does not see
-      // that shift — the edge label then lands on top of its neighbour.
-      for (const m of group) {
-        const half = m.el.offsetWidth / 2;
-        m.labelPx = Math.min(Math.max(m.centerPx, half), Math.max(half, width - half));
-      }
-      const tiers = rlTlAssignTiers(group.map((m) => ({ centerPx: m.labelPx, widthPx: m.el.offsetWidth })));
-      group.forEach((m, i) => { m.tier = tiers[i]; m.height = m.el.offsetHeight; });
-    }
-
-    // Geometry: the spine sits between the two label stacks. With nothing above or
-    // below, that side still keeps one empty tier so the spine is not glued to the
-    // card edge.
-    const maxAbove = Math.max(0, ...made.filter((m) => m.side === "above").map((m) => m.tier));
-    const maxBelow = Math.max(0, ...made.filter((m) => m.side === "below").map((m) => m.tier));
-    const aboveH = (maxAbove + 1) * rowH + labelH;
-    const belowH = (maxBelow + 1) * rowH + labelH;
-    const spineY = aboveH;
-    const axisY = spineY + belowH + 36;
-    plot.style.height = (axisY + 32) + "px";
-
-    const spine = document.createElement("div");
-    spine.className = "rltlSpine";
-    spine.style.top = (spineY - 1) + "px";
-    spine.style.left = pad + "px";
-    spine.style.width = usable + "px";
-    plot.appendChild(spine);
-
-    // TODAY is the left edge by definition: a faint vertical rule through the spine
-    // and the label underneath it.
-    const todayX = xOf(rlTlIsoOf(todayMs));
-    const rule = document.createElement("div");
-    rule.className = "rltlTodayLine";
-    rule.style.left = todayX + "px";
-    rule.style.top = (spineY - 26) + "px";
-    rule.style.height = "52px";
-    plot.appendChild(rule);
-    const today = document.createElement("div");
-    today.className = "rltlToday";
-    today.textContent = "TODAY";
-    today.style.left = todayX + "px";
-    today.style.top = (spineY + 30) + "px";
-    plot.appendChild(today);
-
-    // Two projects on the same day drew their dots on the same spot, and the last one
-    // painted hid the other (v1.58.0: Thomas's 12 Oct dot vanished under Matthias's).
-    // Dots closer than one dot-width are spread apart around their shared centre; each
-    // connector follows its own dot, so every project keeps a visible, clickable mark.
-    const dotPx = rlTlSpreadDots(made.map((m) => m.centerPx), RL_TL_DOT_SPREAD_PX);
-    made.forEach((m, i) => { m.dotPx = dotPx[i]; });
-
-    for (const m of made) {
-      const x = m.dotPx;
-      const dist = (m.tier + 1) * rowH;
-      const conn = document.createElement("div");
-      conn.className = "rltlConn";
-      conn.style.left = x + "px";
-      conn.style.top = (m.side === "above" ? spineY - dist : spineY) + "px";
-      conn.style.height = dist + "px";
-      plot.appendChild(conn);
-
-      m.el.style.visibility = "";
-      // The label sits at its clamped position (inside the card) while the connector
-      // and the dot stay on the real date.
-      m.el.style.left = m.labelPx + "px";
-      m.el.style.top = (m.side === "above" ? spineY - dist - m.height : spineY + dist) + "px";
-
-      const dot = document.createElement("div");
-      dot.className = "rltlDot";
-      dot.style.left = x + "px";
-      dot.style.top = spineY + "px";
-      if (team) dot.style.background = rlTlColorFor(m.p.ownerId);
-      dot.title = m.p.name + " · " + rlTlFmtDate(m.p.start) + (team ? " · " + ownerShort(m.p) : "");
-      dot.addEventListener("click", () => { location.href = m.el.getAttribute("href"); });
-      plot.appendChild(dot);
-    }
-
-    if (!upcoming.length) {
-      const none = document.createElement("div");
-      none.className = "rltlState";
-      none.style.position = "absolute";
-      none.style.left = "0";
-      none.style.right = "0";
-      none.style.top = (spineY - 96) + "px";
-      none.style.textAlign = "center";
-      none.textContent = "No project starts in the next " + rlTlHorizonPhrase(horizon) +
-        (later > 0 ? " — " + later + " start" + (later === 1 ? "s" : "") + " later; try a longer range." : ".");
-      plot.appendChild(none);
-    }
-
-    // ~96px per tick keeps "dd MMM" labels apart at the larger axis type.
-    for (const tick of rlTlAxisTicks(range, Math.max(2, Math.floor(usable / 96)))) {
-      const el = document.createElement("div");
-      el.className = "rltlTick";
-      el.textContent = tick.label;
-      el.style.left = xOf(rlTlIsoOf(tick.ms)) + "px";
-      el.style.top = axisY + "px";
-      plot.appendChild(el);
-    }
+    rlTlDrawPlot(overlay);
 
     attentionHost.innerHTML = "";
+    const late = rlTlStartedBeforeToday(projects, todayMs);
     if (late.length) {
       const box = document.createElement("div");
       box.className = "rltlCard rltlAttention";
@@ -9192,6 +9190,297 @@
         tbody.appendChild(tr);
       }
       attentionHost.appendChild(box);
+    }
+  }
+
+  // ── View changes ──
+  // Every pan/zoom goes through here: store the view, un-light the presets (the view is
+  // no longer one of them), and redraw on the next animation frame. Redraws are coalesced,
+  // so a fast drag or a flick of the wheel costs one layout per frame, not one per event.
+  function rlTlApplyView(overlay, view) {
+    overlay._rltlView = view;
+    if (!overlay._rltlCustom) {
+      overlay._rltlCustom = true;
+      overlay.querySelectorAll(".rltlRangeBtn").forEach((b) => { b.classList.remove("on"); b.setAttribute("aria-pressed", "false"); });
+    }
+    rlTlNoteInteraction(overlay);
+    rlTlScheduleDraw(overlay);
+  }
+
+  function rlTlResetView(overlay) {
+    overlay._rltlView = rlTlHorizonRange(rlTlDayMs(rlTlIsoOf(Date.now())), rlTlNormalizeHorizon(overlay._rltlHorizon));
+    overlay._rltlCustom = false;
+    rlTlRender(overlay, overlay._rltlProjects || []);
+  }
+
+  function rlTlScheduleDraw(overlay) {
+    if (overlay._rltlRaf) return;
+    overlay._rltlRaf = requestAnimationFrame(() => {
+      overlay._rltlRaf = 0;
+      if (document.getElementById(RL_TL_OVERLAY_ID) === overlay) rlTlDrawPlot(overlay);
+    });
+  }
+
+  // While the user is dragging or wheeling, the plot never SHRINKS (labels on fewer
+  // tiers would otherwise make the spine and the whole page jump up and down under the
+  // pointer). Half a second after the last movement it settles to its natural height.
+  const RL_TL_SETTLE_MS = 450;
+  function rlTlNoteInteraction(overlay) {
+    overlay._rltlInteractUntil = Date.now() + RL_TL_SETTLE_MS;
+    clearTimeout(overlay._rltlSettleT);
+    overlay._rltlSettleT = setTimeout(() => rlTlScheduleDraw(overlay), RL_TL_SETTLE_MS + 50);
+  }
+
+  // Mouse, trackpad and touch on the plot. Pointer events, captured only once a drag has
+  // really started (4 px), so a plain click on a project name still opens it.
+  const RL_TL_PLOT_PAD = 56;
+  function rlTlWirePlot(overlay, plot) {
+    const usable = () => Math.max(1, plot.clientWidth - 2 * RL_TL_PLOT_PAD);
+    const msAt = (clientX) => {
+      const v = overlay._rltlView;
+      const r = plot.getBoundingClientRect();
+      return v.start + ((clientX - r.left - RL_TL_PLOT_PAD) / usable()) * (v.end - v.start);
+    };
+    let drag = null;
+    plot.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      drag = { x: ev.clientX, view: overlay._rltlView, id: ev.pointerId, moved: false };
+    });
+    plot.addEventListener("pointermove", (ev) => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      const dx = ev.clientX - drag.x;
+      if (!drag.moved) {
+        if (Math.abs(dx) < 4) return;
+        drag.moved = true;
+        try { plot.setPointerCapture(ev.pointerId); } catch (_) {}
+        plot.classList.add("dragging");
+        overlay._rltlDragging = true;
+      }
+      // Dragging right moves back in time, like pulling paper across a desk.
+      const span = drag.view.end - drag.view.start;
+      rlTlApplyView(overlay, rlTlPanView(drag.view, -dx * span / usable()));
+    });
+    const end = () => {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      plot.classList.remove("dragging");
+      overlay._rltlDragging = false;
+      if (moved) {
+        // The click that follows the release must not open the label the drag ended on.
+        overlay._rltlSuppressClick = true;
+        setTimeout(() => { overlay._rltlSuppressClick = false; }, 0);
+        rlTlNoteInteraction(overlay);
+      }
+    };
+    plot.addEventListener("pointerup", end);
+    plot.addEventListener("pointercancel", end);
+    plot.addEventListener("click", (ev) => {
+      if (overlay._rltlSuppressClick) { ev.preventDefault(); ev.stopPropagation(); }
+    }, true);
+    plot.addEventListener("wheel", (ev) => {
+      ev.preventDefault(); // the page must not scroll while the timeline zooms
+      const v = overlay._rltlView;
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) && !ev.ctrlKey) {
+        // A sideways two-finger swipe on a trackpad pans.
+        rlTlApplyView(overlay, rlTlPanView(v, ev.deltaX * (v.end - v.start) / usable()));
+        return;
+      }
+      // Lines / pages → pixels, so a mouse wheel, a trackpad and a pinch all feel alike.
+      const dy = ev.deltaMode === 1 ? ev.deltaY * 40 : ev.deltaMode === 2 ? ev.deltaY * 800 : ev.deltaY;
+      rlTlApplyView(overlay, rlTlZoomView(v, Math.exp(dy * RL_TL_WHEEL_RATE), msAt(ev.clientX)));
+    }, { passive: false });
+    plot.addEventListener("dblclick", (ev) => { ev.preventDefault(); rlTlResetView(overlay); });
+  }
+
+  // Everything that depends on the view: header counts, legend, ticks, today marker,
+  // dots, connectors and labels. Runs on every pan/zoom frame, so label sizes are measured
+  // once per project and cached — after the first frame no measurement forces a reflow.
+  function rlTlDrawPlot(overlay) {
+    const plot = overlay.querySelector(".rltlPlot");
+    if (!plot) return;
+    const projects = overlay._rltlProjects || [];
+    const view = overlay._rltlView;
+    const todayMs = rlTlDayMs(rlTlIsoOf(Date.now()));
+    const sel = String(overlay._rltlSel || "");
+    const team = sel === RL_TL_GROUP.key;
+    const ownerShort = (p) => { const r = rlTlRosterEntry(p.ownerId); return r ? r.short : (p.owner || ""); };
+
+    const width = plot.clientWidth || 1200;
+    const pad = RL_TL_PLOT_PAD;
+    const usable = Math.max(1, width - 2 * pad);
+    const xOfMs = (ms) => pad + rlTlXFrac(ms, view) * usable;
+
+    // Sides come from each project's place in the WHOLE list, not the visible slice, so a
+    // label never hops from above the spine to below it while the view slides past.
+    const sides = new Map();
+    const split = rlTlSplitSides(projects);
+    for (const e of split.above) sides.set(e.project, "above");
+    for (const e of split.below) sides.set(e.project, "below");
+    const visible = rlTlInRange(projects, view);
+
+    const count = overlay.querySelector(".rltlCount");
+    if (count) {
+      count.textContent = rlTlSelectionLabel(sel).toUpperCase() + " · " +
+        projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") + " · " + visible.length + " IN VIEW";
+    }
+    const sub = overlay.querySelector(".rltlSub");
+    if (sub) sub.textContent = rlTlFmtDate(rlTlIsoOf(view.start)) + " – " + rlTlFmtDate(rlTlIsoOf(view.end));
+    const legend = overlay.querySelector(".rltlLegend");
+    if (legend) {
+      legend.replaceChildren();
+      if (team) {
+        for (const r of RL_TL_ROSTER) {
+          const n = visible.filter((p) => String(p.ownerId) === r.id).length;
+          const chip = document.createElement("span");
+          chip.className = "rltlChip" + (n ? "" : " zero");
+          const dot = document.createElement("i");
+          dot.style.background = rlTlColorFor(r.id);
+          chip.append(dot, document.createTextNode(r.name + " · " + n));
+          legend.appendChild(chip);
+        }
+      }
+    }
+
+    plot.replaceChildren();
+    const sizes = overlay._rltlSizes || (overlay._rltlSizes = new Map());
+    const made = [];
+    const fresh = [];
+    for (const p of visible) {
+      const a = document.createElement("a");
+      a.className = "rltlLabel" + (rlTlDayMs(p.start) < todayMs ? " past" : "");
+      a.href = p.href || ("/projects/" + encodeURIComponent(p.id) + "/plan");
+      a.draggable = false;
+      a.innerHTML = "<b></b><span></span>";
+      a.querySelector("b").textContent = p.name;
+      a.querySelector("span").textContent = rlTlFmtDate(p.start) + (team ? " · " + ownerShort(p) : "");
+      a.style.visibility = "hidden";
+      a.style.left = "0px";
+      a.style.top = "0px";
+      plot.appendChild(a);
+      const key = p.id + "|" + p.start + "|" + (team ? "t" : "s");
+      const m = { side: sides.get(p) || "above", p, el: a, key, centerPx: xOfMs(rlTlDayMs(p.start)) };
+      const known = sizes.get(key);
+      if (known) { m.w = known.w; m.h = known.h; } else fresh.push(m);
+      made.push(m);
+    }
+    for (const m of fresh) { m.w = m.el.offsetWidth; m.h = m.el.offsetHeight; sizes.set(m.key, { w: m.w, h: m.h }); }
+
+    for (const side of ["above", "below"]) {
+      const group = made.filter((m) => m.side === side).sort((a, b) => a.centerPx - b.centerPx);
+      // Clamp BEFORE stacking — see v1.51.0: clamping afterwards slid edge labels onto
+      // their neighbours.
+      for (const m of group) {
+        const half = m.w / 2;
+        m.labelPx = Math.min(Math.max(m.centerPx, half), Math.max(half, width - half));
+      }
+      const tiers = rlTlAssignTiers(group.map((m) => ({ centerPx: m.labelPx, widthPx: m.w })), undefined, RL_TL_MAX_TIERS);
+      group.forEach((m, i) => { m.tier = tiers[i]; });
+    }
+    // A name that found no row is left out; its dot stays, with the name on hover.
+    const unnamed = made.filter((m) => m.tier < 0);
+    for (const m of unnamed) m.el.remove();
+    const note = overlay.querySelector(".rltlUnnamed");
+    if (note) {
+      note.textContent = unnamed.length
+        ? unnamed.length + (unnamed.length === 1 ? " name" : " names") + " hidden at this zoom — hover a dot or zoom in"
+        : "";
+    }
+
+    const rowH = 64;
+    const labelH = 56;
+    const maxAbove = Math.max(0, ...made.filter((m) => m.side === "above").map((m) => m.tier));
+    const maxBelow = Math.max(0, ...made.filter((m) => m.side === "below").map((m) => m.tier));
+    let aboveH = (maxAbove + 1) * rowH + labelH;
+    let belowH = (maxBelow + 1) * rowH + labelH;
+    const sticky = overlay._rltlDragging || Date.now() < (overlay._rltlInteractUntil || 0);
+    if (sticky) {
+      aboveH = Math.max(aboveH, overlay._rltlAboveH || 0);
+      belowH = Math.max(belowH, overlay._rltlBelowH || 0);
+    }
+    overlay._rltlAboveH = aboveH;
+    overlay._rltlBelowH = belowH;
+    const spineY = aboveH;
+    const axisY = spineY + belowH + 36;
+    plot.style.height = (axisY + 32) + "px";
+
+    const spine = document.createElement("div");
+    spine.className = "rltlSpine";
+    spine.style.top = (spineY - 1) + "px";
+    spine.style.left = pad + "px";
+    spine.style.width = usable + "px";
+    plot.appendChild(spine);
+
+    // TODAY wherever it falls; it is the left edge of every preset, but a drag can move it.
+    const tf = rlTlXFrac(todayMs, view);
+    if (tf >= 0 && tf <= 1) {
+      const todayX = xOfMs(todayMs);
+      const rule = document.createElement("div");
+      rule.className = "rltlTodayLine";
+      rule.style.left = todayX + "px";
+      rule.style.top = (spineY - 26) + "px";
+      rule.style.height = "52px";
+      plot.appendChild(rule);
+      const today = document.createElement("div");
+      today.className = "rltlToday";
+      today.textContent = "TODAY";
+      today.style.left = todayX + "px";
+      today.style.top = (spineY + 30) + "px";
+      plot.appendChild(today);
+    }
+
+    // Same-day dots side by side (v1.58.0), each connector following its own dot.
+    // A dot never strays more than two dot-widths from its date (v1.60.0, zoomed out).
+    const dotPx = rlTlSpreadDots(made.map((m) => m.centerPx), RL_TL_DOT_SPREAD_PX, 2 * RL_TL_DOT_SPREAD_PX);
+    made.forEach((m, i) => { m.dotPx = dotPx[i]; });
+
+    for (const m of made) {
+      const x = m.dotPx;
+      if (m.tier >= 0) {
+        const dist = (m.tier + 1) * rowH;
+        const conn = document.createElement("div");
+        conn.className = "rltlConn";
+        conn.style.left = x + "px";
+        conn.style.top = (m.side === "above" ? spineY - dist : spineY) + "px";
+        conn.style.height = dist + "px";
+        plot.appendChild(conn);
+
+        m.el.style.visibility = "";
+        m.el.style.left = m.labelPx + "px";
+        m.el.style.top = (m.side === "above" ? spineY - dist - m.h : spineY + dist) + "px";
+      }
+
+      const dot = document.createElement("div");
+      // Projects that already started are faded, so what is still ahead stands out.
+      dot.className = "rltlDot" + (rlTlDayMs(m.p.start) < todayMs ? " past" : "");
+      dot.style.left = x + "px";
+      dot.style.top = spineY + "px";
+      if (team) dot.style.background = rlTlColorFor(m.p.ownerId);
+      dot.title = m.p.name + " · " + rlTlFmtDate(m.p.start) + (team ? " · " + ownerShort(m.p) : "");
+      dot.addEventListener("click", () => { location.href = m.el.getAttribute("href"); });
+      plot.appendChild(dot);
+    }
+
+    if (!visible.length) {
+      const none = document.createElement("div");
+      none.className = "rltlState";
+      none.style.position = "absolute";
+      none.style.left = "0";
+      none.style.right = "0";
+      none.style.top = (spineY - 96) + "px";
+      none.style.textAlign = "center";
+      none.textContent = "No project starts in this range — drag or zoom out to find one.";
+      plot.appendChild(none);
+    }
+
+    // ~96px per tick keeps the labels apart at the larger axis type.
+    for (const tick of rlTlAxisTicks(view, Math.max(2, Math.floor(usable / 96)))) {
+      const el = document.createElement("div");
+      el.className = "rltlTick";
+      el.textContent = tick.label;
+      el.style.left = xOfMs(tick.ms) + "px";
+      el.style.top = axisY + "px";
+      plot.appendChild(el);
     }
   }
 
