@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.61.0
+// @version      1.62.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5128,6 +5128,14 @@
   //     listens on the user channel (private chats are for members only, so that
   //     is their likely road), and only a chat message from someone else starts a
   //     check — until 1.60 any task edit in any owned project did.
+  //
+  //     v1.62.0 — every chat the user is in, not only the owned projects' (a
+  //     message in Ivar's 10264 never showed). Rocketlane's own bell feed, GET
+  //     /notifications/groups, lists each chat message it notifies the user of,
+  //     with sender, text and project; a new entry is pushed on the user channel
+  //     as CREATE + NOTIFICATION, which reads the feed at once, and the feed is
+  //     read with every poll too. Its message ids are the chat API's commentIds,
+  //     so a message both roads see is shown once (GM rlChatNotifyAnnounced).
   // ════════════════════════════════════════════════════════════════════════
   // @@rlChatNotifyHelpers:start
   /** Sender's user id of a chat comment (`createdBy` is a number there, an object elsewhere). */
@@ -5280,11 +5288,21 @@
    * format change makes the notifier slower, never silent.
    */
   function rlCnEventVerdict(eventName, payload, userId) {
-    const no = { check: false, chat: false, projectId: "" };
+    const no = { check: false, chat: false, feed: false, projectId: "" };
     const ev = String(eventName || "");
     if (!ev || ev.startsWith("pusher")) return no;
     const p = payload && typeof payload === "object" ? payload : null;
-    if (!p || p.objectType == null) return { check: true, chat: false, projectId: "" };
+    if (!p || p.objectType == null) return { check: true, chat: false, feed: false, projectId: "" };
+    // v1.62.0: a new entry in the bell. `feed` = read the notification feed now. Entries
+    // that say what they are and are not chat (a task assigned, a status change) are skipped.
+    if (p.objectType === "NOTIFICATION") {
+      if (String(p.action || ev).toUpperCase() !== "CREATE") return no;
+      const meta = p.data && typeof p.data === "object" ? p.data.meta : null;
+      const kind = meta && meta.eventType;
+      const rule = String((p.data && p.data.systemRuleIdentifier) || "");
+      const isChat = kind === "MessageCreated" || /COMMENT_CONVERSATION/.test(rule);
+      return { ...no, chat: isChat, feed: !kind || isChat };
+    }
     if (p.objectType !== "CONVERSATION_COMMENT") return no;
     // Edits and deletes are never announced; only a new message is.
     if (String(p.action || ev).toUpperCase() !== "CREATE") return no;
@@ -5295,7 +5313,62 @@
     if (d.messageType && d.messageType !== "USER_MESSAGE") return no;
     const by = d.createdBy && typeof d.createdBy === "object" ? d.createdBy.userId : d.createdBy;
     const mine = by != null && String(by) === String(userId || "");
-    return { check: !mine, chat: true, projectId: p.projectId != null ? String(p.projectId) : "" };
+    return { check: !mine, chat: true, feed: !mine, projectId: p.projectId != null ? String(p.projectId) : "" };
+  }
+
+  /**
+   * Chat messages in Rocketlane's own notification feed (pure, v1.62.0) — the bell's
+   * GET /notifications/groups: [{ conversation: { conversationId, conversationName,
+   * project: { id, name } }, notifications: [{ id, timestamp, systemRuleIdentifier,
+   * meta: { eventType, by, message: { id, content } } }] }]. It holds every chat the user
+   * is in, whoever owns the project, and `message.id` is the chat API's commentId.
+   * Returns other people's messages, oldest first: [{ nid, ms, commentId, project, conv,
+   * by, content }].
+   */
+  function rlCnFeedMessages(groups, userId) {
+    const me = String(userId || "");
+    const out = [];
+    for (const g of Array.isArray(groups) ? groups : []) {
+      const c = g && g.conversation;
+      if (!c || c.conversationId == null || !c.project || c.project.id == null) continue;
+      for (const n of Array.isArray(g.notifications) ? g.notifications : []) {
+        const meta = n && n.meta;
+        if (!meta || !meta.message || meta.message.id == null) continue;
+        if (meta.eventType !== "MessageCreated" && !/COMMENT_CONVERSATION/.test(String(n.systemRuleIdentifier || ""))) continue;
+        if (me && meta.by && String(meta.by.userId) === me) continue;
+        const ms = Date.parse(n.timestamp);
+        out.push({
+          nid: String(n.id),
+          ms: Number.isFinite(ms) ? ms : 0,
+          commentId: String(meta.message.id),
+          project: { id: String(c.project.id), name: String(c.project.name || "") },
+          conv: { conversationId: c.conversationId, private: /^private chat\b/i.test(String(c.conversationName || "")) },
+          by: meta.by || null,
+          content: meta.message.content,
+        });
+      }
+    }
+    return out.sort((a, b) => a.ms - b.ms || (a.nid < b.nid ? -1 : a.nid > b.nid ? 1 : 0));
+  }
+
+  /**
+   * Which feed messages are new (pure, v1.62.0). `state` = { at, ids }: the newest entry
+   * time handled and the entry ids handled lately — two entries can share a millisecond,
+   * and one written late can land a little in the past, hence ids plus a grace window
+   * rather than the time alone. The first read only takes a baseline at `now`: what is
+   * in the bell already was seen there. Mutates `state`; returns the new ones, oldest first.
+   */
+  const RL_CN_FEED_GRACE_MS = 10 * 60 * 1000;
+  const RL_CN_FEED_IDS = 400;
+  function rlCnFeedFresh(state, messages, now) {
+    const list = Array.isArray(messages) ? messages : [];
+    const at = Number(state.at) || 0;
+    const seen = new Set(Array.isArray(state.ids) ? state.ids.map(String) : []);
+    const fresh = at ? list.filter((m) => !seen.has(m.nid) && m.ms > at - RL_CN_FEED_GRACE_MS) : [];
+    for (const m of list) seen.add(m.nid);
+    state.at = Math.max(at || Number(now) || 0, ...list.map((m) => m.ms));
+    state.ids = [...seen].slice(-RL_CN_FEED_IDS);
+    return fresh;
   }
   // @@rlChatNotifyHelpers:end
 
@@ -5306,6 +5379,8 @@
   const RL_CN_GM_CHANNELS = "rlChatNotifyChannels";  // { [projectId]: { name, at } }
   const RL_CN_GM_LIVE = "rlChatNotifyLive";          // { at, channels, of, user } — the leader's live state, for the switch
   const RL_CN_GM_HEARD = "rlChatNotifyHeard";        // when a chat message was last heard live (ms), for the switch
+  const RL_CN_GM_FEED = "rlChatNotifyFeed";          // { at, ids } — how far the bell's feed has been read
+  const RL_CN_GM_ANNOUNCED = "rlChatNotifyAnnounced"; // { [commentId]: ms } — shown already, by any road or tab
   const RL_CN_POLL_MS = 60 * 1000;                   // without a live connection
   const RL_CN_POLL_LIVE_MS = 5 * 60 * 1000;          // the safety net while live
   const RL_CN_TICK_MS = 15 * 1000;
@@ -5325,6 +5400,7 @@
   let rlCnForcePoll = false;
   let rlCnConnBound = null;
   let rlCnUserBound = null;        // { ch, fn } — our listener on the page's own user channel
+  let rlCnFeedTimer = 0;
   const rlCnLive = new Map();      // channel name → project id, the channels this tab listens on
   const rlCnPending = new Map();   // project id → timer of a queued check
 
@@ -5380,7 +5456,33 @@
     return out;
   }
 
+  /**
+   * The messages not shown yet, by commentId, marked as shown (v1.62.0). Both roads — the
+   * owned projects' chats and the bell's feed — see most messages, and either can run in
+   * whichever tab leads, so the record lives in GM: three days, at most 600.
+   */
+  function rlCnClaim(messages) {
+    let done = {};
+    try { done = JSON.parse(GM_getValue(RL_CN_GM_ANNOUNCED, "") || "{}") || {}; } catch (_) {}
+    const now = Date.now();
+    const out = [];
+    for (const m of messages) {
+      const id = String(m?.commentId ?? "");
+      if (id && done[id]) continue;
+      if (id) done[id] = now;
+      out.push(m);
+    }
+    const keep = Object.entries(done)
+      .filter(([, t]) => now - (Number(t) || 0) < 3 * 86400000)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 600);
+    try { GM_setValue(RL_CN_GM_ANNOUNCED, JSON.stringify(Object.fromEntries(keep))); } catch (_) {}
+    return out;
+  }
+
   function rlCnAnnounce(project, conv, fresh) {
+    fresh = rlCnClaim(fresh);   // saved before notifying, like the chat state
+    if (!fresh.length) return;
     const chat = conv?.private ? "Private chat" : "General chat";
     const url = rlCnChatUrl(project.id, conv.conversationId);
     const shown = fresh.slice(-RL_CN_PER_CHAT);
@@ -5450,6 +5552,39 @@
     rlCnWriteState(state);
   }
 
+  // ── Every chat the user is in: the bell's own feed (v1.62.0) ────────────
+  // Thomas: "like this i did not get notifications" — a General chat message in 10264,
+  // Ivar's project. The owned-projects road above never looks there; Rocketlane's own
+  // notification feed holds every chat the user is in, with sender, text and project.
+  async function rlCnFeedCheck() {
+    const userId = rlHpReadCurrentUserId();
+    if (!userId) return;
+    const r = await gmRocketlaneGet("/notifications/groups", {
+      status: "New", count: "30", start: String(Date.now() * 1000), groupSize: "10", filter: "All", exclusions: "",
+    });
+    const messages = rlCnFeedMessages(Array.isArray(r) ? r : r?.data, userId);
+    let state = {};
+    try { state = JSON.parse(GM_getValue(RL_CN_GM_FEED, "") || "{}") || {}; } catch (_) {}
+    const fresh = rlCnFeedFresh(state, messages, Date.now());
+    try { GM_setValue(RL_CN_GM_FEED, JSON.stringify(state)); } catch (_) {}
+    const byChat = new Map();
+    for (const m of fresh) {
+      const k = String(m.conv.conversationId);
+      if (!byChat.has(k)) byChat.set(k, { project: m.project, conv: m.conv, msgs: [] });
+      byChat.get(k).msgs.push({ commentId: m.commentId, createdAt: m.ms, user: m.by, content: m.content });
+    }
+    for (const x of byChat.values()) rlCnAnnounce(x.project, x.conv, x.msgs);
+  }
+  /** Read the feed a moment after a bell event; the message's two events become one read. */
+  function rlCnScheduleFeed() {
+    clearTimeout(rlCnFeedTimer);
+    rlCnFeedTimer = setTimeout(() => {
+      void rlCnSerial(() => rlCnFeedCheck()).catch((e) => {
+        console.warn("[Rocketlane improvements] chat notifications: feed check failed:", e?.message || e);
+      });
+    }, RL_CN_EVENT_DELAY_MS);
+  }
+
   // ── Live: Rocketlane's own Pusher connection ────────────────────────────
   function rlCnPusher() {
     try {
@@ -5511,10 +5646,12 @@
       if (v.check) rlCnOnEvent(project);
       return;
     }
-    if (!v.chat || !v.check) return;   // the user's channel: only someone else's chat message
+    // The user's own channel: a new bell entry or chat message reads the feed, which covers
+    // every chat the user is in (v1.62.0); an owned project's chat is also checked directly.
+    if (v.feed) rlCnScheduleFeed();
+    if (!v.chat || !v.check) return;
     const owned = v.projectId ? rlCnProjects.list.find((p) => p.id === v.projectId) : null;
     if (owned) rlCnOnEvent(owned);
-    else if (!v.projectId) rlCnForcePoll = true;   // no project id: the next tick checks them all
   }
   /**
    * Listen on the user's own channel (v1.61.0). Every Rocketlane page subscribes to it and
@@ -5621,6 +5758,9 @@
       rlCnForcePoll = false;
       GM_setValue(RL_CN_GM_LAST, Date.now());
       await rlCnSerial(() => rlCnCheck(projects, true));
+      // The bell's feed on the same schedule, so a missed event costs minutes, not the message.
+      try { await rlCnSerial(() => rlCnFeedCheck()); }
+      catch (e) { console.warn("[Rocketlane improvements] chat notifications: feed check failed:", e?.message || e); }
     } catch (e) {
       console.warn("[Rocketlane improvements] chat notifications: poll failed:", e?.message || e);
     } finally {
@@ -5641,7 +5781,7 @@
     rlCnNotify({
       title: "Rocketlane chat notifications are " + (next ? "on" : "off"),
       text: next
-        ? "New chat messages in the projects you own will show up here as they arrive."
+        ? "New messages in the Rocketlane chats you are in will show up here as they arrive."
         : "Turn them back on with the switch in the Notifications panel.",
       tag: "rl-chat-toggle",
     });
@@ -5677,7 +5817,7 @@
   }
   /** The switch's tooltip: what is live, when a message was last heard, how often the safety net runs. */
   function rlCnToggleTitle(live, isLive) {
-    const lines = ["Desktop notifications for new chat messages in the projects you own."];
+    const lines = ["Desktop notifications for new messages in every Rocketlane chat you are in."];
     if (isLive) {
       const where = [
         live.user ? "your own channel" : "",
