@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.5
+// @version      9.6
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -177,9 +177,9 @@
         return String(m.after.addr).padEnd(6) + ' ' + m.after.name + '  — ' + ch.join(', ');
     }
     const REG_GROUPS = [
-        { key: 'added',    title: 'Added',    sign: '+', color: '#34d399', line: regLine },
-        { key: 'modified', title: 'Modified', sign: '~', color: '#fbbf24', line: modLine },
-        { key: 'removed',  title: 'Removed',  sign: '−', color: '#f87171', line: regLine }
+        { key: 'added',    title: 'Added',    color: '#34d399', line: regLine },
+        { key: 'modified', title: 'Modified', color: '#fbbf24', line: modLine },
+        { key: 'removed',  title: 'Removed',  color: '#f87171', line: regLine }
     ];
     // Plain-text vertical list, grouped Added / Modified / Removed.
     function regChangeLines(ch) {
@@ -188,7 +188,7 @@
             const list = ch[g.key] || [];
             const total = ch[g.key + 'Count'] != null ? ch[g.key + 'Count'] : list.length;
             lines.push(g.title + ' (' + total + ')' + (total ? ':' : ''));
-            for (const d of list) lines.push('  ' + g.sign + ' ' + g.line(d));
+            for (const d of list) lines.push('  ' + g.line(d));
             if (total > list.length) lines.push('  … ' + (total - list.length) + ' more, see the log');
         }
         return lines;
@@ -703,7 +703,7 @@
             const total = ch[g.key + 'Count'] != null ? ch[g.key + 'Count'] : list.length;
             const head = '<div style="margin-top:8px;font-weight:700;color:' + g.color + ';">' +
                          esc(g.title) + ' (' + esc(total) + ')</div>';
-            if (!total) return head + '<div style="padding:2px 0 0 18px;color:#6b7280;">none</div>';
+            if (!total) return head + '<div style="padding:2px 0 0 4px;color:#6b7280;">none</div>';
             const rows = list.map((d) => {
                 const isMod = g.key === 'modified';
                 const cur = isMod ? d.after : d;
@@ -712,15 +712,14 @@
                     const bits = [];
                     if (d.before.name !== d.after.name) bits.push('was “' + esc(d.before.name) + '”');
                     if (d.before.code !== d.after.code) bits.push('type was ' + esc(d.before.code || '—'));
-                    detail += '<div style="padding-left:66px;color:#9ca3af;">' + bits.join(' · ') + '</div>';
+                    detail += '<div style="padding-left:56px;color:#9ca3af;">' + bits.join(' · ') + '</div>';
                 }
                 return '<div style="padding:2px 0 2px 4px;border-top:1px solid #1f2937;">' +
-                       '<span style="color:' + g.color + ';' + mono + 'display:inline-block;width:14px;">' + esc(g.sign) + '</span>' +
                        '<span style="' + mono + 'display:inline-block;min-width:48px;color:#d1d5db;">' + esc(cur.addr) + '</span> ' +
                        '<span style="font-weight:600;">' + esc(cur.name) + '</span>' + detail + '</div>';
             }).join('');
             const more = total > list.length
-                ? '<div style="padding:2px 0 0 18px;color:#9ca3af;">… ' + esc(total - list.length) + ' more, see the log</div>' : '';
+                ? '<div style="padding:2px 0 0 4px;color:#9ca3af;">… ' + esc(total - list.length) + ' more, see the log</div>' : '';
             return head + rows + more;
         }).join('');
         return '<div style="margin-top:14px;">' +
