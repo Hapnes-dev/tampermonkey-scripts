@@ -118,9 +118,11 @@ let _unitsCache = null;
 // What state() asks of the shell and the repeat timer.
 const termState = {{ busy: false }};
 let repeatTimer = null;
-// The run tag and the repeat flag the terminal mirror reads.
+// The run tag and the repeat flag the terminal mirror reads, and the commands a
+// repeat has shown.
 const MARK = '#mpc';
 let repeating = false;
+const repeatShown = new Set();
 const REPORT_CHUNK_LIMIT = 30000;
 const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';

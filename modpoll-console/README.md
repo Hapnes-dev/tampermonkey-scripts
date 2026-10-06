@@ -209,9 +209,26 @@ rebuilt.
   the device said.
 
   Over the log, *Copy* takes the transcript as text, each command as the
-  terminal shows it without its time. *Clear* empties the log on screen. A
-  repeat still drops the banner after the first pass. The log keeps its last
-  4 000 lines, as a terminal keeps its scrollback.
+  terminal shows it without its time. *Clear* empties the log on screen. The
+  log keeps its last 4 000 lines, as a terminal keeps its scrollback.
+
+  *Repeat* reads as modpoll does when it keeps polling on its own (1.62.4). The
+  command and modpoll's configuration block show once, on the first pass.
+  Every pass after that adds only its polling line and its answer:
+
+  ```
+  C:\iwmac\sys_tools\plant_term>modpoll -1 -m tcp -a 1 -t 3 -r 24 -c 1 192.168.10.100
+  Protocol configuration: MODBUS/TCP
+  …
+  -- Polling slave...
+  [24]: 5
+  -- Polling slave...
+  [24]: 6
+  ```
+
+  A pass that times out adds *Polling slave (Ctrl-C to stop) ...* and *Reply
+  time-out!*, as cmd shows it. Stop ends the repeat, and the next run shows
+  its command again.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both

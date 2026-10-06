@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.62.3
+// @version      1.62.4
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.3';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.4';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -796,7 +796,8 @@
         // The command as the terminal shows it; a chained line, run by run as its
         // output arrives (mirrorTerminal), without the console's markers.
         const chain = chainSegments(command);
-        if (!chain.length) logCommand(command);
+        // quiet: a later pass of a repeat, whose command is already on screen
+        const quiet = !chain.length && !logCommand(command);
         state.t.exec('echo ' + runTag + ' & ' + command);
         const deadline = Date.now() + options.timeoutMs;
         let lastLength = -1;
@@ -827,7 +828,7 @@
             // Knowing how many values were asked for turns the wait into a real
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
-            if (options.expect && countValueLines(chunk) >= options.expect) { mirrorTerminal(chunk, chain); return chunk; }
+            if (options.expect && countValueLines(chunk) >= options.expect) { mirrorTerminal(chunk, chain, quiet); return chunk; }
             // This plant does not resolve a bare "modpoll": say so once, take the
             // full path, and run the same command again.
             if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
@@ -835,11 +836,11 @@
                 log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
                 return termRunInner(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
             }
-            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk, chain); return chunk; }
-            if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk, chain); return chunk; }
+            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk, chain, quiet); return chunk; }
+            if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk, chain, quiet); return chunk; }
         }
         const chunk = readChunk();
-        if (grew) { mirrorTerminal(chunk, chain); return chunk; }
+        if (grew) { mirrorTerminal(chunk, chain, quiet); return chunk; }
         // A shell that answers nothing at all is usually a dead session rather
         // than a slow device — the page keeps its prompt either way, so silence
         // is the only symptom. Reload the frame once and try again.
@@ -5979,6 +5980,9 @@
     // True between Repeat and Stop, so a pass can stay quiet about what the first
     // one already said.
     let repeating = false;
+    // The commands shown since Repeat was pressed (1.62.4): each shows once, as a
+    // terminal shows modpoll's command once when it polls on its own.
+    const repeatShown = new Set();
     // Printed reference -> the value seen on the previous poll, so a re-read can
     // mark what moved. The delta is kept alongside rather than recomputed,
     // because the grid is also redrawn without a new poll — a filter toggle —
@@ -6017,7 +6021,11 @@
      * the time it was sent at the right (1.62.1).
      */
     function logCommand(command, note) {
-        if (!ui.log) return;
+        if (!ui.log) return false;
+        if (repeating) {
+            if (repeatShown.has(command)) return false;
+            repeatShown.add(command);
+        }
         let prompt = 'C:\\iwmac\\sys_tools\\plant_term>';
         try {
             const p = termState.t && termState.t.get_prompt && String(termState.t.get_prompt()).trim();
@@ -6030,6 +6038,7 @@
         // what Copy takes: the line as the terminal shows it, without the time
         line.dataset.text = prompt + command + (note ? '   ' + note : '');
         appendLogLine(line);
+        return true;
     }
 
     /** The strip over the log (1.62.1): its name, Copy - the transcript as text - and Clear. */
@@ -6298,6 +6307,9 @@
     // The FieldTalk banner is the same three lines on every run and is left out
     // (1.62.2): modpoll's name, its copyright and the Getopt library's.
     const RE_MODPOLL_BANNER = /^(modpoll\s+-\s+FieldTalk|Copyright \(c\)|Getopt Library)/i;
+    // The configuration block modpoll prints before it polls: a later pass of a
+    // repeat leaves it out, as modpoll prints it once when it polls on its own.
+    const RE_REPEAT_CONFIG = /^\s*(Protocol configuration|Slave configuration|start reference|Communication\.|Serial port configuration|TCP\/IP configuration|Data type|Protocol opened)/i;
     const RE_MIRROR_FAIL = /time-?out|error|exception|illegal|invalid|refused|not respond|failed|cannot/i;
     const RE_MIRROR_GOOD = /opened successfully/i;
 
@@ -6347,7 +6359,7 @@
     // from chainSegments) is shown run by run: where a run's marker is in the
     // output, its command goes in as the terminal would show it, and its answer
     // follows (1.62.3).
-    function mirrorTerminal(chunk, chain) {
+    function mirrorTerminal(chunk, chain, quiet) {
         if (!ui.log) return;
         const commandAt = new Map((chain || []).filter(seg => seg.marker).map(seg => [seg.marker, seg.command]));
         const runs = [];
@@ -6359,21 +6371,29 @@
                 if (commandAt.has(text)) { runs.push(run); run = { command: commandAt.get(text), lines: [] }; }
                 continue;
             }
-            // A repeat prints the same banner every pass, which says nothing the
-            // first one did not. Only what is new to this pass is worth a line.
-            if (repeating && RE_BANNER.test(line)) continue;
             if (RE_MODPOLL_BANNER.test(text)) continue;
-            if (!text && (!run.lines.length || !run.lines[run.lines.length - 1].trim())) continue;
             run.lines.push(line);
         }
         runs.push(run);
         let shown = 0;
         let hidden = 0;
         for (const r of runs) {
-            const lines = r.lines;
+            // A run whose command was already shown since Repeat was pressed is a
+            // later pass of the same poll: it shows as modpoll shows a poll when it
+            // keeps polling on its own - the polling line and the answer - without
+            // the command and its configuration block again (1.62.4).
+            const again = r.command ? repeating && repeatShown.has(r.command) : !!quiet;
+            const lines = [];
+            for (const line of r.lines) {
+                const text = line.trim();
+                if (again && RE_REPEAT_CONFIG.test(line)) continue;
+                // no blank to start with, and a run of blanks as one
+                if (!text && (!lines.length || !lines[lines.length - 1].trim())) continue;
+                lines.push(line);
+            }
             while (lines.length && (!lines[lines.length - 1].trim() || RE_PROMPT_LINE.test(lines[lines.length - 1].trim()))) lines.pop();
             if (shown >= MIRROR_LINE_CAP) { hidden += lines.length; continue; }
-            if (r.command) logCommand(r.command);
+            if (r.command) logCommand(r.command);   // shown unless this repeat already showed it
             // A blank line as a space, so it keeps a line's height as the terminal's does.
             for (const line of lines) {
                 if (shown >= MIRROR_LINE_CAP) { hidden++; continue; }
@@ -8446,15 +8466,17 @@
         const every = Math.max(1, Number(ui.every.value) || 5) * 1000;
         if (repeatTimer) clearInterval(repeatTimer);
         repeating = true;
+        repeatShown.clear();
         repeatTimer = setInterval(() => { if (!termState.busy) runOnce(); }, every);
         ui.stop.disabled = false;
-        log('Repeating every ' + (every / 1000) + ' s — only what changes is logged from here; the grid marks the values that move');
+        log('Repeating every ' + (every / 1000) + ' s — the command shows once, then each poll as modpoll prints it when it keeps polling; the grid marks the values that move');
     }
 
     function stopAll() {
         abortRequested = true;
         if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
         repeating = false;
+        repeatShown.clear();
         ui.stop.disabled = true;
         log('Stopped');
     }
