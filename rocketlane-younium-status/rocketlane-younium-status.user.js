@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.60.0
+// @version      1.61.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5121,6 +5121,13 @@
   //     on one triggers a check of that project's chats a second later. The poll
   //     drops to every 5 minutes while live, and runs at once after a reconnect.
   //     The switch "Chat push: On/Off" sits in the Notifications panel header.
+  //
+  //     v1.61.0 — what Rocketlane actually sends, read from its own chat code: a
+  //     new message is event CREATE with objectType CONVERSATION_COMMENT, on the
+  //     project channel and on each member's user channel. The leader now also
+  //     listens on the user channel (private chats are for members only, so that
+  //     is their likely road), and only a chat message from someone else starts a
+  //     check — until 1.60 any task edit in any owned project did.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlChatNotifyHelpers:start
   /** Sender's user id of a chat comment (`createdBy` is a number there, an object elsewhere). */
@@ -5250,6 +5257,46 @@
     if (acc == null || perm == null || pid == null) return "";
     return "private-accountId@" + acc + "-permissionId@" + perm + "-projectId@" + pid;
   }
+
+  /** True for the user's own Pusher channel, `private-accountId@<acc>-userId@<user>`. */
+  function rlCnIsUserChannel(name, userId) {
+    const id = String(userId || "");
+    return !!id && /^private-accountId@\d+-userId@\d+$/.test(String(name || "")) && String(name).endsWith("-userId@" + id);
+  }
+
+  /**
+   * What one Pusher event means for chat notifications (pure, v1.61.0). Rocketlane's
+   * own chat code (read 2026-10-06) sends a chat message as event CREATE with
+   * `objectType: "CONVERSATION_COMMENT"`, on the project's channel AND on each
+   * member's user channel, carrying `projectId`, `action` and the comment in `data`
+   * (commentId, createdBy, messageType, commentContext { id, type }). Until 1.60 every
+   * event on a project channel — a task edit, a field change — set off a chat check.
+   * Returns { check, chat, projectId }:
+   *   check     — worth checking that project's chats now (someone else wrote);
+   *   chat      — a new message in a project chat, the user's own included, so writing
+   *               one proves the live road (the switch shows when one was last heard);
+   *   projectId — from the payload, "" when it carries none.
+   * An event with no objectType at all, a shape this code has not seen, is checked: a
+   * format change makes the notifier slower, never silent.
+   */
+  function rlCnEventVerdict(eventName, payload, userId) {
+    const no = { check: false, chat: false, projectId: "" };
+    const ev = String(eventName || "");
+    if (!ev || ev.startsWith("pusher")) return no;
+    const p = payload && typeof payload === "object" ? payload : null;
+    if (!p || p.objectType == null) return { check: true, chat: false, projectId: "" };
+    if (p.objectType !== "CONVERSATION_COMMENT") return no;
+    // Edits and deletes are never announced; only a new message is.
+    if (String(p.action || ev).toUpperCase() !== "CREATE") return no;
+    const d = p.data && typeof p.data === "object" ? p.data : {};
+    // The same object type carries comments on tasks and documents; only project chats count.
+    const ctx = d.commentContext && d.commentContext.type;
+    if (ctx && ctx !== "PROJECT_CONVERSATIONS") return no;
+    if (d.messageType && d.messageType !== "USER_MESSAGE") return no;
+    const by = d.createdBy && typeof d.createdBy === "object" ? d.createdBy.userId : d.createdBy;
+    const mine = by != null && String(by) === String(userId || "");
+    return { check: !mine, chat: true, projectId: p.projectId != null ? String(p.projectId) : "" };
+  }
   // @@rlChatNotifyHelpers:end
 
   const RL_CN_GM_ENABLED = "rlChatNotifyEnabled";    // boolean, default true
@@ -5257,7 +5304,8 @@
   const RL_CN_GM_LEADER = "rlChatNotifyLeader";      // { id, at } — the tab that listens and polls
   const RL_CN_GM_LAST = "rlChatNotifyLastPoll";      // shared, so a new leader keeps the pace
   const RL_CN_GM_CHANNELS = "rlChatNotifyChannels";  // { [projectId]: { name, at } }
-  const RL_CN_GM_LIVE = "rlChatNotifyLive";          // { at, channels, of } — the leader's live state, for the switch
+  const RL_CN_GM_LIVE = "rlChatNotifyLive";          // { at, channels, of, user } — the leader's live state, for the switch
+  const RL_CN_GM_HEARD = "rlChatNotifyHeard";        // when a chat message was last heard live (ms), for the switch
   const RL_CN_POLL_MS = 60 * 1000;                   // without a live connection
   const RL_CN_POLL_LIVE_MS = 5 * 60 * 1000;          // the safety net while live
   const RL_CN_TICK_MS = 15 * 1000;
@@ -5265,7 +5313,9 @@
   const RL_CN_REFETCH_MS = 5 * 60 * 1000;
   const RL_CN_PROJECTS_MS = 10 * 60 * 1000;
   const RL_CN_CHANNEL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-  const RL_CN_EVENT_DELAY_MS = 1200;                 // a burst of events becomes one check
+  // One message arrives twice (project channel and user channel); this makes it one check.
+  // Only chat messages start the timer since v1.61.0, so it no longer waits out task-edit bursts.
+  const RL_CN_EVENT_DELAY_MS = 600;
   const RL_CN_PER_CHAT = 3;                          // notifications per chat per check; the rest is "+N more"
   const RL_CN_TOGGLE_ID = "rlChatPushToggle";
   const rlCnTabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -5274,6 +5324,7 @@
   let rlCnTicking = false;
   let rlCnForcePoll = false;
   let rlCnConnBound = null;
+  let rlCnUserBound = null;        // { ch, fn } — our listener on the page's own user channel
   const rlCnLive = new Map();      // channel name → project id, the channels this tab listens on
   const rlCnPending = new Map();   // project id → timer of a queued check
 
@@ -5446,6 +5497,48 @@
     }, RL_CN_EVENT_DELAY_MS));
   }
   /**
+   * One Pusher event on a channel we listen on — `project` for a project channel, null for
+   * the user's own channel (v1.61.0). Only a chat message from someone else starts a
+   * check; on a project channel an event of a shape never seen does too (rlCnEventVerdict).
+   * The user's channel also carries chats of projects the user does not own: those are
+   * outside this feature and are left alone.
+   */
+  function rlCnOnChannelEvent(event, data, project) {
+    if (!rlCnEnabled() || !rlCnIsLeaderNow()) return;
+    const v = rlCnEventVerdict(event, data, rlHpReadCurrentUserId());
+    if (v.chat) { try { GM_setValue(RL_CN_GM_HEARD, Date.now()); } catch (_) {} }
+    if (project) {
+      if (v.check) rlCnOnEvent(project);
+      return;
+    }
+    if (!v.chat || !v.check) return;   // the user's channel: only someone else's chat message
+    const owned = v.projectId ? rlCnProjects.list.find((p) => p.id === v.projectId) : null;
+    if (owned) rlCnOnEvent(owned);
+    else if (!v.projectId) rlCnForcePoll = true;   // no project id: the next tick checks them all
+  }
+  /**
+   * Listen on the user's own channel (v1.61.0). Every Rocketlane page subscribes to it and
+   * keeps it, and Rocketlane's chat code reads each member's new messages from it as well
+   * as from the project channel — the likely road for a private chat, which is for its
+   * members only. We only listen: the channel stays the page's and is never unsubscribed.
+   */
+  function rlCnBindUserChannel(inst) {
+    const me = rlHpReadCurrentUserId();
+    const all = inst.channels && typeof inst.channels.all === "function" ? inst.channels.all() : [];
+    const ch = all.find((c) => c && rlCnIsUserChannel(c.name, me));
+    if (!ch || typeof ch.bind_global !== "function") return;
+    if (rlCnUserBound && rlCnUserBound.ch === ch) return;
+    rlCnUnbindUserChannel();   // the page made a new channel object; the old one is gone
+    const fn = (event, data) => rlCnOnChannelEvent(event, data, null);
+    ch.bind_global(fn);
+    rlCnUserBound = { ch, fn };
+  }
+  function rlCnUnbindUserChannel() {
+    if (!rlCnUserBound) return;
+    try { rlCnUserBound.ch.unbind_global(rlCnUserBound.fn); } catch (_) {}
+    rlCnUserBound = null;
+  }
+  /**
    * Subscribe to every owned project's channel on the page's Pusher instance and
    * listen there. The page unsubscribes a project's channel when it leaves that
    * project, which drops our listener with it, so this runs every tick and binds
@@ -5459,6 +5552,7 @@
       inst.connection.bind("connected", () => { rlCnForcePoll = true; });
       rlCnConnBound = inst.connection;
     }
+    rlCnBindUserChannel(inst);
     const names = await rlCnChannelNames(projects);
     const wanted = new Map();
     for (const p of projects) { const n = names.get(p.id); if (n) wanted.set(n, p); }
@@ -5466,7 +5560,7 @@
       let ch = typeof inst.channel === "function" ? inst.channel(name) : null;
       if (!ch) ch = inst.subscribe(name);
       if (ch && !ch.__rlCnLive && typeof ch.bind_global === "function") {
-        ch.bind_global((event) => { if (!String(event || "").startsWith("pusher")) rlCnOnEvent(project); });
+        ch.bind_global((event, data) => rlCnOnChannelEvent(event, data, project));
         ch.__rlCnLive = true;
       }
       rlCnLive.set(name, project.id);
@@ -5478,10 +5572,12 @@
       if (!rlCnOnProjectPage(pid)) { try { inst.unsubscribe(name); } catch (_) {} }
     }
     const live = [...wanted.keys()].filter((n) => inst.channel?.(n)?.subscribed).length;
-    try { GM_setValue(RL_CN_GM_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size })); } catch (_) {}
+    const user = !!(rlCnUserBound && rlCnUserBound.ch.subscribed);
+    try { GM_setValue(RL_CN_GM_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size, user })); } catch (_) {}
     return live;
   }
   function rlCnStopLive() {
+    rlCnUnbindUserChannel();
     if (!rlCnLive.size) return;
     const inst = rlCnPusher();
     for (const [name, pid] of [...rlCnLive]) {
@@ -5572,16 +5668,33 @@
   function rlCnPaintToggle(btn) {
     const on = rlCnEnabled();
     const live = on ? rlCnLiveStatus() : null;
-    const isLive = !!(live && live.channels > 0);
+    const isLive = !!(live && (live.channels > 0 || live.user));
     btn.dataset.on = on ? "1" : "0";
     btn.dataset.live = isLive ? "1" : "0";
     btn.innerHTML = '<span class="rlCnDot"></span>';
     btn.appendChild(document.createTextNode((on ? "Chat push: On" : "Chat push: Off") + (isLive ? " · live" : "")));
-    btn.title = on
-      ? "Desktop notifications for new chat messages in the projects you own — " +
-        (isLive ? "live on " + live.channels + " project channel" + (live.channels === 1 ? "" : "s") + "." : "checked every minute.") +
-        " Click to turn off."
-      : "Chat notifications are off. Click to turn them on.";
+    btn.title = on ? rlCnToggleTitle(live, isLive) : "Chat notifications are off. Click to turn them on.";
+  }
+  /** The switch's tooltip: what is live, when a message was last heard, how often the safety net runs. */
+  function rlCnToggleTitle(live, isLive) {
+    const lines = ["Desktop notifications for new chat messages in the projects you own."];
+    if (isLive) {
+      const where = [
+        live.user ? "your own channel" : "",
+        live.channels ? live.channels + " project channel" + (live.channels === 1 ? "" : "s") : "",
+      ].filter(Boolean).join(" and ");
+      lines.push("Live on " + where + ".");
+      const heard = Number(GM_getValue(RL_CN_GM_HEARD, 0)) || 0;
+      const sameDay = heard && new Date(heard).toDateString() === new Date().toDateString();
+      lines.push(heard
+        ? "Last chat message heard live: " + (sameDay ? "" : rlTlFmtDate(rlTlIsoOf(heard)) + " ") + rlHpFmtClock(heard) + "."
+        : "No chat message heard live yet.");
+      lines.push("A full check also runs every " + (live.channels > 0 ? "5 minutes" : "minute") + ", in case one is missed.");
+    } else {
+      lines.push("Not live right now — checked every minute.");
+    }
+    lines.push("Click to turn off.");
+    return lines.join("\n");
   }
   function rlCnMountToggle() {
     if (!/notifications=show/.test(location.hash || "")) return;
