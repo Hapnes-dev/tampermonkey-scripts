@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.54.0
+// @version      1.55.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8352,9 +8352,7 @@
    * what made the first timeline a 3,5-year, 32 000px wall. Filter by owner id.
    */
   function rlTlMineOnly(projects, userId) {
-    const me = String(userId || "").trim();
-    if (!me) return [];
-    return (projects || []).filter((p) => p && String(p.ownerId || "").trim() === me);
+    return rlTlOwnedBy(projects, [userId]);
   }
 
   /**
@@ -8433,17 +8431,79 @@
   }
 
   /**
-   * Server-side filter for the timeline's own fetch (v1.54.0): not completed AND
-   * owned by this user. Measured on the live tenant against the home panel's
-   * tenant-wide scan: 1 request / 15 rows / 317 KB instead of 5 requests / 417 rows /
-   * 8.3 MB. `projectOwner` with `oneOf` is the same native field Rocketlane's own
-   * Projects page groups by.
+   * Person picker (v1.55.0, Thomas: "select person … Matthias Criel, Ivar Andreas
+   * Haga, Theophilus Arthur, Thomas Kvalvåg, Svein Olav Wahlberg, Andreas Sandnes …
+   * display in a group called Delivery Cooling"). Menu order is his. The ids are
+   * PINNED, resolved once against the tenant's /users list by kiona.com address —
+   * never by name: that list also holds a second "Thomas Kvalvåg" (a hotmail
+   * account), "Test Andreas Sandnes", "matthiascriel test", and "Ivar Andreas
+   * Opdahl", a PARTNER, which is exactly what "Ivar Andreas" would have matched.
    */
-  function rlTlOwnerFilter(userId) {
+  const RL_TL_ROSTER = [
+    { id: "468997", name: "Matthias Criel", short: "Matthias" },
+    { id: "265833", name: "Ivar Andreas Haga", short: "Ivar" },
+    { id: "328180", name: "Theophilus Arthur", short: "Theophilus" },
+    { id: "391021", name: "Thomas Kvalvåg", short: "Thomas" },
+    { id: "192062", name: "Svein Olav Wahlberg", short: "Svein Olav" },
+    { id: "651325", name: "Andreas Sandnes", short: "Andreas" },
+  ];
+  const RL_TL_GROUP = { key: "group:cooling", label: "Delivery Cooling" };
+  // One colour per roster position, used only in the team view.
+  const RL_TL_PALETTE = ["#6c4ab6", "#1f9e89", "#d48a00", "#3b7dd8", "#c2418a", "#4c9a2a"];
+
+  function rlTlRosterEntry(id) {
+    const s = String(id || "");
+    return RL_TL_ROSTER.find((r) => r.id === s) || null;
+  }
+
+  /** Colour for an owner in the team view; anyone off the roster gets the accent. */
+  function rlTlColorFor(id) {
+    const i = RL_TL_ROSTER.findIndex((r) => r.id === String(id || ""));
+    return i >= 0 ? RL_TL_PALETTE[i % RL_TL_PALETTE.length] : RL_TL_PALETTE[0];
+  }
+
+  /** A stored or chosen selection → a valid one; defaults to the viewer when on the roster. */
+  function rlTlNormalizeSelection(sel, viewerId) {
+    const s = String(sel == null ? "" : sel);
+    if (s === RL_TL_GROUP.key || rlTlRosterEntry(s)) return s;
+    return rlTlRosterEntry(viewerId) ? String(viewerId) : RL_TL_GROUP.key;
+  }
+
+  /** The owner ids a selection covers: the whole roster for the team, else one person. */
+  function rlTlSelectionIds(sel) {
+    if (String(sel) === RL_TL_GROUP.key) return RL_TL_ROSTER.map((r) => r.id);
+    const r = rlTlRosterEntry(sel);
+    return r ? [r.id] : [];
+  }
+
+  function rlTlSelectionLabel(sel) {
+    if (String(sel) === RL_TL_GROUP.key) return RL_TL_GROUP.label;
+    const r = rlTlRosterEntry(sel);
+    return r ? r.name : "";
+  }
+
+  /** Projects owned by any of `ids`. An empty id list yields nothing, never everything. */
+  function rlTlOwnedBy(projects, ids) {
+    const set = new Set((ids || []).map((x) => String(x || "").trim()).filter(Boolean));
+    if (!set.size) return [];
+    return (projects || []).filter((p) => p && set.has(String(p.ownerId || "").trim()));
+  }
+
+  /**
+   * Server-side filter for the timeline's own fetch (v1.54.0): not completed AND
+   * owned by one of `ids` (a single id still works). Measured on the live tenant
+   * against the home panel's tenant-wide scan: 1 request / 15 rows / 317 KB instead
+   * of 5 requests / 417 rows / 8.3 MB. `projectOwner` with `oneOf` is the native field
+   * Rocketlane's own Projects page groups by, and `oneOf` takes a comma-separated
+   * list — the same form his saved Projects view uses — so the whole team is still
+   * one request (v1.55.0).
+   */
+  function rlTlOwnerFilter(ids) {
+    const list = (Array.isArray(ids) ? ids : [ids]).map((x) => String(x == null ? "" : x).trim()).filter(Boolean);
     return {
       nativeFields: [
         { name: "status", operation: "isNot", value: "3", sourceType: "project" },
-        { name: "projectOwner", operation: "oneOf", value: String(userId || ""), sourceType: "project" },
+        { name: "projectOwner", operation: "oneOf", value: list.join(","), sourceType: "project" },
       ],
       customFields: [],
       match: "all",
@@ -8469,40 +8529,50 @@
   // ── Timeline loading (v1.54.0, Thomas: "is it possible to improve loading of projects?") ──
   // Two changes. (1) Cache first: the timeline paints at once from its own small
   // cache (memory, then GM storage — survives page loads, 24 h) and refreshes in the
-  // background, re-rendering only if something it draws changed. (2) Fetch only HIS
-  // projects: one owner-filtered lightV1 call instead of borrowing the home panel's
-  // tenant-wide scan (5 requests, 417 rows, 8.3 MB measured). If the filtered call
-  // ever fails, it falls back to that scan, which has always worked.
-  const RL_TL_GM_CACHE = "rltlMineCache";
+  // background, re-rendering only if something it draws changed. (2) Fetch only the
+  // selected owners' projects: one owner-filtered lightV1 call instead of borrowing
+  // the home panel's tenant-wide scan (5 requests, 417 rows, 8.3 MB measured). If the
+  // filtered call ever fails, it falls back to that scan, which has always worked.
+  // v1.55.0: keyed per selection (one person, or the whole Delivery Cooling team), so
+  // switching back to someone already viewed paints instantly too.
+  const RL_TL_GM_CACHE = "rltlCacheV2";
   const RL_TL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-  // A filtered owner list is a few dozen at most. A count this high means the server
-  // ignored the owner filter and returned the tenant — never trust that as "mine".
+  // A filtered owner list is a few dozen per person. A count this high means the
+  // server ignored the owner filter and returned the tenant — never trust that.
   const RL_TL_SANE_MAX = 300;
-  let rlTlMem = null;
-  let rlTlInflight = null;
+  const rlTlMem = new Map();      // selection key -> { at, projects }
+  const rlTlInflight = new Map(); // selection key -> promise
 
-  function rlTlPeekMine(userId) {
-    const me = String(userId || "");
-    if (!me) return null;
-    if (rlTlMem && rlTlMem.userId === me) return rlTlMem;
+  function rlTlReadStore() {
     try {
-      const raw = GM_getValue(RL_TL_GM_CACHE, "");
-      if (!raw) return null;
-      const j = JSON.parse(raw);
-      if (!j || j.v !== 1 || String(j.userId) !== me || !Array.isArray(j.projects)) return null;
-      if (!(Date.now() - Number(j.at || 0) < RL_TL_CACHE_MAX_AGE_MS)) return null;
-      rlTlMem = { at: Number(j.at), userId: me, projects: j.projects };
-      return rlTlMem;
-    } catch (_) { return null; }
+      const j = JSON.parse(GM_getValue(RL_TL_GM_CACHE, "") || "null");
+      if (j && j.v === 2 && j.viewer === String(rlHpReadCurrentUserId() || "") && j.entries && typeof j.entries === "object") return j;
+    } catch (_) {}
+    return { v: 2, viewer: String(rlHpReadCurrentUserId() || ""), entries: {} };
   }
 
-  function rlTlWriteMine(cache) {
-    rlTlMem = cache;
-    try { GM_setValue(RL_TL_GM_CACHE, JSON.stringify({ v: 1, at: cache.at, userId: cache.userId, projects: cache.projects })); } catch (_) {}
+  function rlTlPeek(selKey) {
+    const key = String(selKey || "");
+    if (!key) return null;
+    if (rlTlMem.has(key)) return rlTlMem.get(key);
+    const e = rlTlReadStore().entries[key];
+    if (!e || !Array.isArray(e.projects) || !(Date.now() - Number(e.at || 0) < RL_TL_CACHE_MAX_AGE_MS)) return null;
+    const hit = { at: Number(e.at), projects: e.projects };
+    rlTlMem.set(key, hit);
+    return hit;
   }
 
-  async function rlTlFetchMine(userId) {
-    const filter = rlTlOwnerFilter(userId);
+  function rlTlWrite(selKey, hit) {
+    rlTlMem.set(String(selKey), hit);
+    try {
+      const store = rlTlReadStore();
+      store.entries[String(selKey)] = hit;
+      GM_setValue(RL_TL_GM_CACHE, JSON.stringify(store));
+    } catch (_) {}
+  }
+
+  async function rlTlFetchOwned(ids) {
+    const filter = rlTlOwnerFilter(ids);
     const first = await rlHpFetchLightPage(0, RL_HP_PAGE_SIZE, filter);
     const rows = Array.isArray(first && first.data) ? first.data.slice() : [];
     const total = typeof (first && first.count) === "number" ? first.count : rows.length;
@@ -8513,31 +8583,33 @@
     }
     // Same keep → normalise → not-completed pipeline as the home panel's owner
     // bucket (drops "[Tracker] Workload Sync"), then the owner check once more.
-    return rlTlMineOnly(rlHpFilterNormalizeBucket(rows, userId, rlHpShouldKeepOwnerProject), userId);
+    return rlTlOwnedBy(rlHpFilterNormalizeBucket(rows, "", rlHpShouldKeepOwnerProject), ids);
   }
 
-  async function rlTlLoadMine() {
-    const userId = rlHpReadCurrentUserId();
-    if (!userId) throw new Error("No Rocketlane user id in __api_key yet — reload once logged in.");
-    if (rlTlInflight) return rlTlInflight;
-    rlTlInflight = (async () => {
+  async function rlTlLoad(selKey) {
+    const key = String(selKey || "");
+    const ids = rlTlSelectionIds(key);
+    if (!ids.length) throw new Error("Nobody selected.");
+    if (rlTlInflight.has(key)) return rlTlInflight.get(key);
+    const p = (async () => {
       let projects;
       try {
-        projects = await rlTlFetchMine(userId);
+        projects = await rlTlFetchOwned(ids);
       } catch (e) {
         console.warn("[Rocketlane improvements] timeline owner fetch failed, using the full scan:", (e && e.message) || e);
         const buckets = await rlHpLoadProjects({ revalidate: true });
-        projects = rlTlMineOnly(buckets && buckets.ownerProjects, userId);
+        projects = rlTlOwnedBy(buckets && buckets.ownerProjects, ids);
       }
-      rlTlWriteMine({ at: Date.now(), userId: String(userId), projects });
+      rlTlWrite(key, { at: Date.now(), projects });
       return projects;
     })();
-    try { return await rlTlInflight; } finally { rlTlInflight = null; }
+    rlTlInflight.set(key, p);
+    try { return await p; } finally { rlTlInflight.delete(key); }
   }
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.54.0";
+  const RL_TL_STYLE_READY = "1.55.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8570,13 +8642,13 @@
 #${RL_TL_OVERLAY_ID} .rltlCard{background:var(--rltl-card);border-radius:24px;padding:48px 40px 28px;
   box-shadow:0 14px 40px rgba(108,74,182,.09);}
 #${RL_TL_OVERLAY_ID} .rltlPlot{position:relative;width:100%;}
-#${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;height:3px;border-radius:2px;background:var(--rltl-line);}
+#${RL_TL_OVERLAY_ID} .rltlSpine{position:absolute;height:3px;border-radius:2px;background:var(--rltl-line);z-index:0;}
 #${RL_TL_OVERLAY_ID} .rltlDot{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--rltl-accent);
-  transform:translate(-50%,-50%);cursor:pointer;box-shadow:0 0 0 4px var(--rltl-card);}
+  transform:translate(-50%,-50%);cursor:pointer;box-shadow:0 0 0 4px var(--rltl-card);z-index:3;}
 #${RL_TL_OVERLAY_ID} .rltlDot:hover{box-shadow:0 0 0 4px var(--rltl-card),0 0 0 10px var(--rltl-accent-soft);}
-#${RL_TL_OVERLAY_ID} .rltlConn{position:absolute;width:2px;background:var(--rltl-line);transform:translateX(-50%);}
+#${RL_TL_OVERLAY_ID} .rltlConn{position:absolute;width:2px;background:var(--rltl-line);transform:translateX(-50%);z-index:1;}
 #${RL_TL_OVERLAY_ID} .rltlLabel{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap;
-  text-decoration:none;color:inherit;}
+  text-decoration:none;color:inherit;z-index:2;background:var(--rltl-card);padding:2px 10px;border-radius:8px;}
 #${RL_TL_OVERLAY_ID} .rltlLabel b{display:block;font-size:19px;font-weight:700;line-height:1.3;}
 #${RL_TL_OVERLAY_ID} .rltlLabel span{display:block;font-size:16px;color:var(--rltl-muted);line-height:1.4;}
 #${RL_TL_OVERLAY_ID} .rltlLabel:hover b{color:var(--rltl-accent);text-decoration:underline;}
@@ -8600,6 +8672,18 @@
 #${RL_TL_OVERLAY_ID} .rltlRange{display:inline-flex;background:var(--rltl-card);border-radius:14px;padding:5px;
   box-shadow:0 4px 16px rgba(108,74,182,.10);}
 #${RL_TL_OVERLAY_ID} .rltlSync{color:var(--rltl-muted);font-size:13px;min-height:16px;}
+#${RL_TL_OVERLAY_ID} .rltlControls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end;}
+#${RL_TL_OVERLAY_ID} .rltlWho{appearance:auto;border:0;border-radius:14px;background:var(--rltl-card);color:var(--rltl-text);
+  font:600 16px Inter,-apple-system,sans-serif;padding:14px 16px;box-shadow:0 4px 16px rgba(108,74,182,.10);cursor:pointer;
+  min-width:260px;}
+#${RL_TL_OVERLAY_ID} .rltlWho:focus{outline:2px solid var(--rltl-accent);outline-offset:2px;}
+#${RL_TL_OVERLAY_ID} .rltlLegend{display:flex;flex-wrap:wrap;gap:10px;margin:-16px 0 24px;}
+#${RL_TL_OVERLAY_ID} .rltlLegend:empty{display:none;}
+#${RL_TL_OVERLAY_ID} .rltlChip{display:inline-flex;align-items:center;gap:8px;background:var(--rltl-card);border-radius:999px;
+  padding:7px 14px;font-size:15px;color:var(--rltl-text);box-shadow:0 2px 8px rgba(108,74,182,.08);}
+#${RL_TL_OVERLAY_ID} .rltlChip.zero{color:var(--rltl-muted);}
+#${RL_TL_OVERLAY_ID} .rltlChip i,#${RL_TL_OVERLAY_ID} .rltlOwnerDot{display:inline-block;width:12px;height:12px;border-radius:50%;}
+#${RL_TL_OVERLAY_ID} .rltlOwnerDot{margin-right:8px;vertical-align:-1px;}
 #${RL_TL_OVERLAY_ID} .rltlRangeBtn{border:0;background:transparent;color:var(--rltl-muted);font:600 16px Inter,-apple-system,sans-serif;
   padding:10px 20px;border-radius:10px;cursor:pointer;white-space:nowrap;}
 #${RL_TL_OVERLAY_ID} .rltlRangeBtn:hover{color:var(--rltl-accent);background:var(--rltl-accent-soft);}
@@ -8673,9 +8757,12 @@
       '<div class="rltlHead"><div>' +
       '<h1 class="rltlTitle">Project Timeline</h1>' +
       '<p class="rltlSub"></p>' +
-      '</div><div class="rltlHeadRight"><div class="rltlRange" role="group" aria-label="How far ahead"></div>' +
+      '</div><div class="rltlHeadRight"><div class="rltlControls">' +
+      '<select class="rltlWho" aria-label="Whose projects"></select>' +
+      '<div class="rltlRange" role="group" aria-label="How far ahead"></div></div>' +
       '<div class="rltlSync"></div></div></div>' +
-      '<div class="rltlCard"><div class="rltlState">Reading your projects…</div></div>' +
+      '<div class="rltlLegend"></div>' +
+      '<div class="rltlCard"><div class="rltlState">Reading projects…</div></div>' +
       '<div class="rltlAttentionHost"></div>' +
       '<p class="rltlFoot"></p>' +
       "</div>";
@@ -8685,43 +8772,34 @@
     document.addEventListener("keydown", rlTlOnKeydown, true);
     overlay._rltlMonths = rlTlNormalizeHorizon(GM_getValue("rltlHorizonMonths", RL_TL_DEFAULT_MONTHS));
 
-    const sync = overlay.querySelector(".rltlSync");
-    const setSync = (text) => { if (sync) sync.textContent = text; };
-    const paint = (mine) => {
-      // Projects of his that cannot sit on a timeline (no start date) are named in a
-      // footnote, so the count never silently disagrees with Rocketlane's own list.
-      overlay._rltlUndated = (mine || []).filter((p) => p && Number.isNaN(rlTlDayMs(p.start)) &&
-        String(p.status || "") !== "completed");
-      rlTlRender(overlay, rlTlPickProjects(mine));
-    };
-
-    // Cache first: paint instantly from the last result, then refresh behind it.
-    const cached = rlTlPeekMine(rlHpReadCurrentUserId());
-    if (cached) {
-      paint(cached.projects);
-      setSync("Updated " + rlHpFmtClock(cached.at) + " · refreshing…");
+    // Person picker (v1.55.0): the whole team first, then the six names under a
+    // "Delivery Cooling" heading, in Thomas's order. Defaults to whoever is signed
+    // in when they are on the roster; the choice is remembered.
+    const viewer = rlHpReadCurrentUserId();
+    const who = overlay.querySelector(".rltlWho");
+    const optTeam = document.createElement("option");
+    optTeam.value = RL_TL_GROUP.key;
+    optTeam.textContent = RL_TL_GROUP.label + " — whole team";
+    who.appendChild(optTeam);
+    const grp = document.createElement("optgroup");
+    grp.label = RL_TL_GROUP.label;
+    for (const r of RL_TL_ROSTER) {
+      const o = document.createElement("option");
+      o.value = r.id;
+      o.textContent = r.name;
+      grp.appendChild(o);
     }
-    rlTlLoadMine()
-      .then((mine) => {
-        if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
-        // Re-render only when something the timeline draws actually changed.
-        if (!cached || rlTlSignature(mine) !== rlTlSignature(cached.projects)) paint(mine);
-        setSync("Updated " + rlHpFmtClock(Date.now()));
-      })
-      .catch((err) => {
-        if (!document.getElementById(RL_TL_OVERLAY_ID)) return;
-        if (cached) {
-          // Keep the cached view; just say it could not be refreshed.
-          setSync("Couldn't refresh — showing " + rlHpFmtClock(cached.at));
-          return;
-        }
-        const card = overlay.querySelector(".rltlCard");
-        if (card) card.innerHTML = '<div class="rltlState"></div>';
-        const state = overlay.querySelector(".rltlState");
-        if (state) state.textContent = "Couldn't load your projects: " + String((err && err.message) || err);
-        const count = overlay.querySelector(".rltlCount");
-        if (count) count.textContent = "PROJECT TIMELINE";
-      });
+    who.appendChild(grp);
+    overlay._rltlSel = rlTlNormalizeSelection(GM_getValue("rltlSelection", ""), viewer);
+    who.value = overlay._rltlSel;
+    who.addEventListener("change", () => {
+      overlay._rltlSel = rlTlNormalizeSelection(who.value, viewer);
+      try { GM_setValue("rltlSelection", overlay._rltlSel); } catch (_) {}
+      rlTlShow(overlay, overlay._rltlSel);
+    });
+
+    rlTlShow(overlay, overlay._rltlSel);
+
     // A resize changes every x position, and the label tiers are measured, so the
     // whole plot is rebuilt rather than scaled.
     const onResize = () => {
@@ -8730,6 +8808,61 @@
       if (el._rltlProjects) rlTlRender(el, el._rltlProjects);
     };
     window.addEventListener("resize", onResize);
+  }
+
+  // Paint one selection: instantly from its cache when there is one, then refresh
+  // behind it. `overlay._rltlSeq` guards against a slow answer for an earlier pick
+  // landing after the user has already switched to someone else.
+  function rlTlShow(overlay, selKey) {
+    const seq = (overlay._rltlSeq || 0) + 1;
+    overlay._rltlSeq = seq;
+    const live = () => document.getElementById(RL_TL_OVERLAY_ID) === overlay && overlay._rltlSeq === seq;
+    const sync = overlay.querySelector(".rltlSync");
+    const setSync = (text) => { if (sync) sync.textContent = text; };
+    const paint = (projects) => {
+      // Projects that cannot sit on a timeline (no start date) are named in a
+      // footnote, so the count never silently disagrees with Rocketlane's own list.
+      overlay._rltlUndated = (projects || []).filter((p) => p && Number.isNaN(rlTlDayMs(p.start)) &&
+        String(p.status || "") !== "completed");
+      rlTlRender(overlay, rlTlPickProjects(projects));
+    };
+
+    const cached = rlTlPeek(selKey);
+    if (cached) {
+      paint(cached.projects);
+      setSync("Updated " + rlHpFmtClock(cached.at) + " · refreshing…");
+    } else {
+      const card = overlay.querySelector(".rltlCard");
+      if (card) {
+        const state = document.createElement("div");
+        state.className = "rltlState";
+        state.textContent = "Reading " + rlTlSelectionLabel(selKey) + "'s projects…";
+        card.replaceChildren(state);
+      }
+      setSync("Loading…");
+    }
+    rlTlLoad(selKey)
+      .then((projects) => {
+        if (!live()) return;
+        // Re-render only when something the timeline draws actually changed.
+        if (!cached || rlTlSignature(projects) !== rlTlSignature(cached.projects)) paint(projects);
+        setSync("Updated " + rlHpFmtClock(Date.now()));
+      })
+      .catch((err) => {
+        if (!live()) return;
+        if (cached) {
+          // Keep the cached view; just say it could not be refreshed.
+          setSync("Couldn't refresh — showing " + rlHpFmtClock(cached.at));
+          return;
+        }
+        setSync("");
+        const card = overlay.querySelector(".rltlCard");
+        if (card) card.innerHTML = '<div class="rltlState"></div>';
+        const state = overlay.querySelector(".rltlState");
+        if (state) state.textContent = "Couldn't load the projects: " + String((err && err.message) || err);
+        const count = overlay.querySelector(".rltlCount");
+        if (count) count.textContent = "PROJECT TIMELINE";
+      });
   }
 
   function rlTlRender(overlay, projects) {
@@ -8767,26 +8900,52 @@
     const upcoming = rlTlInRange(projects, range);
     const later = rlTlUpcoming(projects, todayMs).length - upcoming.length;
     const late = rlTlStartedBeforeToday(projects, todayMs);
+    // Team view (v1.55.0): every owner's dots get their own colour, the label names
+    // the owner, a legend explains the colours and the table gains an Owner column.
+    const sel = String(overlay._rltlSel || "");
+    const team = sel === RL_TL_GROUP.key;
+    const ownerShort = (p) => { const r = rlTlRosterEntry(p.ownerId); return r ? r.short : (p.owner || ""); };
     if (count) {
-      count.textContent = projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") +
+      count.textContent = rlTlSelectionLabel(sel).toUpperCase() + " · " +
+        projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") +
         " · " + upcoming.length + " IN THE NEXT " + (months === 1 ? "MONTH" : months + " MONTHS") +
         (later > 0 ? " · " + later + " LATER" : "");
     }
 
-    // Footnote: his projects that are not on the timeline at all, by name.
+    const legend = overlay.querySelector(".rltlLegend");
+    if (legend) {
+      legend.replaceChildren();
+      if (team) {
+        for (const r of RL_TL_ROSTER) {
+          const n = upcoming.filter((p) => String(p.ownerId) === r.id).length;
+          const chip = document.createElement("span");
+          chip.className = "rltlChip" + (n ? "" : " zero");
+          const dot = document.createElement("i");
+          dot.style.background = rlTlColorFor(r.id);
+          chip.append(dot, document.createTextNode(r.name + " · " + n));
+          legend.appendChild(chip);
+        }
+      }
+    }
+
+    // Footnote: the selection's projects that are not on the timeline at all, by name.
     const foot = overlay.querySelector(".rltlFoot");
     const undated = overlay._rltlUndated || [];
     if (foot) {
       foot.textContent = undated.length
-        ? (undated.length === 1 ? "1 of your projects has" : undated.length + " of your projects have") +
-          " no start date and is not shown: " + undated.slice(0, 5).map((p) => p.name).join(", ") +
+        ? (undated.length === 1 ? "1 project has" : undated.length + " projects have") +
+          " no start date and is not shown: " +
+          undated.slice(0, 5).map((p) => p.name + (team ? " (" + ownerShort(p) + ")" : "")).join(", ") +
           (undated.length > 5 ? ", …" : "") + "."
         : "";
     }
 
     if (!projects.length) {
       if (sub) sub.textContent = "";
-      card.innerHTML = '<div class="rltlState">No projects with a start date are owned by you right now.</div>';
+      const empty = document.createElement("div");
+      empty.className = "rltlState";
+      empty.textContent = "No open projects with a start date are owned by " + rlTlSelectionLabel(sel) + " right now.";
+      card.replaceChildren(empty);
       attentionHost.innerHTML = "";
       return;
     }
@@ -8817,7 +8976,7 @@
         a.href = p.href || ("/projects/" + encodeURIComponent(p.id) + "/plan");
         a.innerHTML = "<b></b><span></span>";
         a.querySelector("b").textContent = p.name;
-        a.querySelector("span").textContent = rlTlFmtDate(p.start);
+        a.querySelector("span").textContent = rlTlFmtDate(p.start) + (team ? " · " + ownerShort(p) : "");
         a.style.visibility = "hidden";
         a.style.left = "0px";
         a.style.top = "0px";
@@ -8892,7 +9051,8 @@
       dot.className = "rltlDot";
       dot.style.left = x + "px";
       dot.style.top = spineY + "px";
-      dot.title = m.p.name + " · " + rlTlFmtDate(m.p.start);
+      if (team) dot.style.background = rlTlColorFor(m.p.ownerId);
+      dot.title = m.p.name + " · " + rlTlFmtDate(m.p.start) + (team ? " · " + ownerShort(m.p) : "");
       dot.addEventListener("click", () => { location.href = m.el.getAttribute("href"); });
       plot.appendChild(dot);
     }
@@ -8927,7 +9087,8 @@
       box.innerHTML =
         '<p class="rltlEyebrow warn">Needs attention</p>' +
         "<h2></h2>" +
-        '<table class="rltlTable"><thead><tr><th>Project</th><th>Start date</th><th>Status</th></tr></thead><tbody></tbody></table>';
+        '<table class="rltlTable"><thead><tr><th>Project</th>' + (team ? "<th>Owner</th>" : "") +
+        "<th>Start date</th><th>Status</th></tr></thead><tbody></tbody></table>";
       box.querySelector("h2").textContent = late.length + " project(s) started before today";
       const tbody = box.querySelector("tbody");
       for (const p of late) {
@@ -8941,7 +9102,16 @@
         tdStart.textContent = rlTlFmtDate(p.start);
         const tdStatus = document.createElement("td");
         tdStatus.textContent = p.statusLabel || "";
-        tr.append(tdName, tdStart, tdStatus);
+        if (team) {
+          const tdOwner = document.createElement("td");
+          const dot = document.createElement("i");
+          dot.className = "rltlOwnerDot";
+          dot.style.background = rlTlColorFor(p.ownerId);
+          tdOwner.append(dot, document.createTextNode(ownerShort(p)));
+          tr.append(tdName, tdOwner, tdStart, tdStatus);
+        } else {
+          tr.append(tdName, tdStart, tdStatus);
+        }
         tbody.appendChild(tr);
       }
       attentionHost.appendChild(box);
