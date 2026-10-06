@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.55.0
+// @version      1.56.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8248,10 +8248,17 @@
   // ──────────────────────────────────────────────────────────────────────────
   // @@rlTimelineHelpers:start
 
-  // Horizon buttons (v1.53.0, Thomas: "filter button … 1 month ahead, 3, 6, 12").
-  // The axis is today → today + N calendar months; N is remembered between opens.
-  const RL_TL_HORIZONS = [1, 3, 6, 12];
-  const RL_TL_DEFAULT_MONTHS = 3;
+  // Horizon buttons (v1.53.0, Thomas: "filter button … 1 month ahead, 3, 6, 12";
+  // v1.56.0: "replace 12 Months with 14 Days and place 14 days before 1 Month").
+  // The axis is today → today + the horizon, in DAYS or calendar MONTHS. Keys, not
+  // numbers, now that the two units mix; the choice is remembered between opens.
+  const RL_TL_HORIZONS = [
+    { key: "14d", label: "14 days", days: 14 },
+    { key: "1m", label: "1 month", months: 1 },
+    { key: "3m", label: "3 months", months: 3 },
+    { key: "6m", label: "6 months", months: 6 },
+  ];
+  const RL_TL_DEFAULT_HORIZON = "3m";
   const RL_TL_TIER_STEP = 1;       // one tier = one extra connector step
   const RL_TL_LABEL_GAP_PX = 16;   // minimum horizontal gap between two labels
 
@@ -8299,23 +8306,41 @@
     return new Date(first.getFullYear(), first.getMonth(), Math.min(d.getDate(), lastDay)).getTime();
   }
 
-  /** Any stored or clicked value → one of the offered horizons. */
-  function rlTlNormalizeHorizon(months) {
-    const n = Number(months);
-    return RL_TL_HORIZONS.indexOf(n) >= 0 ? n : RL_TL_DEFAULT_MONTHS;
+  /**
+   * Any stored or clicked value → the key of an offered horizon. 1.53–1.55 stored a
+   * bare month NUMBER (GM "rltlHorizonMonths"); 1 / 3 / 6 carry over as 1m / 3m / 6m,
+   * and 12 — no longer offered — falls to the default rather than to nothing.
+   */
+  function rlTlNormalizeHorizon(h) {
+    const s = String(h == null ? "" : h).trim();
+    if (RL_TL_HORIZONS.some((x) => x.key === s)) return s;
+    const legacy = RL_TL_HORIZONS.find((x) => x.months && String(x.months) === s);
+    return legacy ? legacy.key : RL_TL_DEFAULT_HORIZON;
+  }
+
+  function rlTlHorizonOf(h) {
+    const key = rlTlNormalizeHorizon(h);
+    return RL_TL_HORIZONS.find((x) => x.key === key);
+  }
+
+  /** "14 days" / "month" / "3 months" — the phrase after "in the next". */
+  function rlTlHorizonPhrase(h) {
+    const x = rlTlHorizonOf(h);
+    return x.months === 1 ? "month" : x.label;
   }
 
   /**
    * The axis window. LEFT EDGE IS ALWAYS TODAY (v1.52.0, Thomas: "all the way to the
-   * left should be todays date"); the right edge is today + the chosen horizon in
-   * calendar months (v1.53.0). This replaces 1.52.0's "two weeks past the last
-   * start" end: a horizon the user picks is predictable, a data-driven end is not.
-   * Projects that already started never stretch the window back — they live in the
-   * "needs attention" table, exactly as in the prototype's own mockup.
+   * left should be todays date"); the right edge is today + the chosen horizon
+   * (v1.53.0), in days or calendar months (v1.56.0). This replaced 1.52.0's "two
+   * weeks past the last start" end: a horizon the user picks is predictable, a
+   * data-driven end is not. Projects that already started never stretch the window
+   * back — they live in the "needs attention" table, as in the prototype's mockup.
    */
-  function rlTlHorizonRange(todayMs, months) {
+  function rlTlHorizonRange(todayMs, h) {
     const t0 = Number.isNaN(todayMs) || todayMs == null ? Date.now() : todayMs;
-    return { start: t0, end: rlTlAddMonths(t0, rlTlNormalizeHorizon(months)) };
+    const x = rlTlHorizonOf(h);
+    return { start: t0, end: x.days ? rlTlAddDays(t0, x.days) : rlTlAddMonths(t0, x.months) };
   }
 
   /** Projects whose start falls inside the window, edges included. */
@@ -8405,12 +8430,17 @@
    * illegible smear of overlapping dates.
    */
   const RL_TL_TICK_STEPS = [7, 14, 28, 56, 91, 182, 364];
+  // A window of three weeks or less (the 14-day horizon, v1.56.0) may tick daily:
+  // weekly steps would leave a 14-day axis with only three dates on it.
+  const RL_TL_SHORT_TICK_STEPS = [1, 2, 7];
+  const RL_TL_SHORT_WINDOW_DAYS = 21;
   function rlTlAxisTicks(range, maxTicks) {
     if (!range || range.end <= range.start) return [];
     const days = Math.round((range.end - range.start) / 86400000);
     let step = 7;
     if (typeof maxTicks === "number" && maxTicks > 0) {
-      for (const s of RL_TL_TICK_STEPS) { step = s; if (Math.floor(days / s) + 1 <= maxTicks) break; }
+      const ladder = days <= RL_TL_SHORT_WINDOW_DAYS ? RL_TL_SHORT_TICK_STEPS : RL_TL_TICK_STEPS;
+      for (const s of ladder) { step = s; if (Math.floor(days / s) + 1 <= maxTicks) break; }
     }
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const out = [];
@@ -8609,7 +8639,7 @@
 
   const RL_TL_OVERLAY_ID = "rlProjectTimelineOverlay";
   const RL_TL_NAV_ID = "rlProjectTimelineNavItem";
-  const RL_TL_STYLE_READY = "1.55.0";
+  const RL_TL_STYLE_READY = "1.56.0";
 
   function rlTlInjectStyles() {
     let style = document.getElementById("rlProjectTimelineStyles");
@@ -8770,7 +8800,9 @@
     overlay.querySelector(".rltlClose").addEventListener("click", rlTlCloseOverlay);
     overlay.addEventListener("mousedown", (ev) => { if (ev.target === overlay) rlTlCloseOverlay(); });
     document.addEventListener("keydown", rlTlOnKeydown, true);
-    overlay._rltlMonths = rlTlNormalizeHorizon(GM_getValue("rltlHorizonMonths", RL_TL_DEFAULT_MONTHS));
+    // GM "rltlHorizon" holds a key since v1.56.0; the old "rltlHorizonMonths" number
+    // is read once as a fallback so an existing choice of 1/3/6 months survives.
+    overlay._rltlHorizon = rlTlNormalizeHorizon(GM_getValue("rltlHorizon", GM_getValue("rltlHorizonMonths", "")));
 
     // Person picker (v1.55.0): the whole team first, then the six names under a
     // "Delivery Cooling" heading, in Thomas's order. Defaults to whoever is signed
@@ -8875,19 +8907,19 @@
 
     // Horizon buttons (v1.53.0): the axis is today → today + N months. The choice is
     // remembered, and a click only re-renders from the projects already loaded.
-    const months = rlTlNormalizeHorizon(overlay._rltlMonths);
+    const horizon = rlTlNormalizeHorizon(overlay._rltlHorizon);
     const rangeHost = overlay.querySelector(".rltlRange");
     if (rangeHost) {
       rangeHost.innerHTML = "";
-      for (const n of RL_TL_HORIZONS) {
+      for (const h of RL_TL_HORIZONS) {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = "rltlRangeBtn" + (n === months ? " on" : "");
-        b.setAttribute("aria-pressed", n === months ? "true" : "false");
-        b.textContent = n === 1 ? "1 month" : n + " months";
+        b.className = "rltlRangeBtn" + (h.key === horizon ? " on" : "");
+        b.setAttribute("aria-pressed", h.key === horizon ? "true" : "false");
+        b.textContent = h.label;
         b.addEventListener("click", () => {
-          overlay._rltlMonths = n;
-          try { GM_setValue("rltlHorizonMonths", n); } catch (_) {}
+          overlay._rltlHorizon = h.key;
+          try { GM_setValue("rltlHorizon", h.key); } catch (_) {}
           rlTlRender(overlay, overlay._rltlProjects || []);
         });
         rangeHost.appendChild(b);
@@ -8896,7 +8928,7 @@
 
     // The spine holds only what starts inside the window; what already started goes
     // to the attention table below (v1.52.0). The left edge is today.
-    const range = rlTlHorizonRange(todayMs, months);
+    const range = rlTlHorizonRange(todayMs, horizon);
     const upcoming = rlTlInRange(projects, range);
     const later = rlTlUpcoming(projects, todayMs).length - upcoming.length;
     const late = rlTlStartedBeforeToday(projects, todayMs);
@@ -8908,7 +8940,7 @@
     if (count) {
       count.textContent = rlTlSelectionLabel(sel).toUpperCase() + " · " +
         projects.length + (projects.length === 1 ? " PROJECT" : " PROJECTS") +
-        " · " + upcoming.length + " IN THE NEXT " + (months === 1 ? "MONTH" : months + " MONTHS") +
+        " · " + upcoming.length + " IN THE NEXT " + rlTlHorizonPhrase(horizon).toUpperCase() +
         (later > 0 ? " · " + later + " LATER" : "");
     }
 
@@ -9065,7 +9097,7 @@
       none.style.right = "0";
       none.style.top = (spineY - 96) + "px";
       none.style.textAlign = "center";
-      none.textContent = "No project starts in the next " + (months === 1 ? "month" : months + " months") +
+      none.textContent = "No project starts in the next " + rlTlHorizonPhrase(horizon) +
         (later > 0 ? " — " + later + " start" + (later === 1 ? "s" : "") + " later; try a longer range." : ".");
       plot.appendChild(none);
     }
