@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.62.0
+// @version      1.62.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5924,19 +5924,36 @@
     #${PANEL_ID} .mpc-dnote.green{background:#e8f5e9;border-color:#c8e6c9;color:#2e7d32}
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
-    /* The log looks like the terminal it mirrors (1.62): a cmd window's black, its
-       grey and its font. modpoll's output and the prompt and command before it are
-       the terminal's own grey, exactly as printed. This console's own notes are
-       the terminal's cyan, its warnings yellow, its errors red and a success
-       green, so they never read as something the device said. */
+    /* The log is a terminal transcript in a light, quiet frame (1.62.1): a code
+       block's grey, the terminal's own monospace, and each command a block - the
+       prompt dimmed, the command in full, the time it ran at the right - with
+       modpoll's answer under it exactly as printed. The banner is dimmed, a
+       register's value set apart from its reference, a time-out or an error red
+       and an opened port green. The console's own notes are blue, and its
+       warnings and errors sit on a tinted band with a bar at the left, so
+       nothing it says reads as something the device said. */
+    #${PANEL_ID} .mpc-loghead{grid-column:span 12;display:flex;align-items:center;gap:6px;margin-bottom:-5px;
+        font:bold 10.5px Arial,Helvetica,sans-serif;letter-spacing:.4px;text-transform:uppercase;color:#57606a}
+    #${PANEL_ID} .mpc-loghead .mpc-spacer{flex:1}
     #${PANEL_ID} .mpc-log{grid-column:span 12;height:220px;overflow-y:auto;overflow-x:hidden;
-        font:12px/1.4 Consolas,'Lucida Console','Courier New',monospace;background:#0c0c0c;border:1px solid #2b2b2b;
-        border-radius:3px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;color:#3a96dd;color-scheme:dark}
-    #${PANEL_ID} .mpc-log .err{color:#e74856}#${PANEL_ID} .mpc-log .warn{color:#f9f1a5}#${PANEL_ID} .mpc-log .ok{color:#16c60c}
-    #${PANEL_ID} .mpc-log .mirror,#${PANEL_ID} .mpc-log .cmd{color:#cccccc}
-    #${PANEL_ID} .mpc-log .cmd{margin-top:6px}
-    #${PANEL_ID} .mpc-log .cmdnote{color:#767676}
-    #${PANEL_ID} .mpc-log ::selection{background:#cccccc;color:#0c0c0c}
+        font:12px/1.5 Consolas,'Cascadia Mono','Lucida Console',monospace;background:#f6f8fa;border:1px solid #d0d7de;
+        border-radius:6px;padding:6px 10px 8px;white-space:pre-wrap;word-break:break-word;color:#0969da}
+    #${PANEL_ID} .mpc-log .cmd{display:flex;gap:12px;align-items:baseline;margin:8px -4px 2px;padding:2px 6px;
+        background:#eaeef2;border-radius:4px;color:#1f2328;font-weight:600}
+    #${PANEL_ID} .mpc-log .cmd:first-child{margin-top:0}
+    #${PANEL_ID} .mpc-log .cmd .cmdtext{flex:1;min-width:0}
+    #${PANEL_ID} .mpc-log .cmd .prompt{color:#6e7781;font-weight:400}
+    #${PANEL_ID} .mpc-log .cmd .time,#${PANEL_ID} .mpc-log .cmd .cmdnote{color:#8c959f;font-weight:400;font-size:11px;white-space:nowrap}
+    #${PANEL_ID} .mpc-log .mirror{color:#24292f}
+    #${PANEL_ID} .mpc-log .mirror.dim{color:#8c959f}
+    #${PANEL_ID} .mpc-log .mirror.fail{color:#cf222e}
+    #${PANEL_ID} .mpc-log .mirror.good{color:#1a7f37}
+    #${PANEL_ID} .mpc-log .mirror .ref{color:#6e7781}
+    #${PANEL_ID} .mpc-log .mirror .val{color:#0550ae;font-weight:600}
+    #${PANEL_ID} .mpc-log .ok{color:#1a7f37}
+    #${PANEL_ID} .mpc-log .warn,#${PANEL_ID} .mpc-log .err{margin:2px -4px;padding:1px 6px;border-left:3px solid;border-radius:0 4px 4px 0}
+    #${PANEL_ID} .mpc-log .warn{color:#7d4e00;background:#fff8c5;border-color:#d4a72c}
+    #${PANEL_ID} .mpc-log .err{color:#a40e26;background:#ffebe9;border-color:#cf222e}
     /* Drag the strip under a pane to give it more room; double-click to toggle. */
     #${PANEL_ID} .mpc-grip{grid-column:span 12;height:11px;margin-top:-3px;cursor:ns-resize;
         display:flex;align-items:center;justify-content:center}
@@ -5994,7 +6011,8 @@
     /**
      * A command as the terminal shows it (1.62): the shell's prompt, then the
      * command - what Plant Term would show, and what a cmd window shows - with
-     * an optional note after it, dimmer, that is not part of the command.
+     * an optional note after it, dimmer, that is not part of the command, and
+     * the time it was sent at the right (1.62.1).
      */
     function logCommand(command, note) {
         if (!ui.log) return;
@@ -6003,7 +6021,32 @@
             const p = termState.t && termState.t.get_prompt && String(termState.t.get_prompt()).trim();
             if (p && /^[A-Za-z]:\\.*>$/.test(p)) prompt = p;
         } catch (e) { /* not connected yet: the prompt Plant Term shows once it is */ }
-        appendLogLine(el('div', { className: 'cmd' }, [prompt + command].concat(note ? [el('span', { className: 'cmdnote', textContent: '   ' + note })] : [])));
+        const line = el('div', { className: 'cmd' }, [
+            el('span', { className: 'cmdtext' }, [el('span', { className: 'prompt', textContent: prompt }), command]),
+        ].concat(note ? [el('span', { className: 'cmdnote', textContent: note })] : [],
+            [el('span', { className: 'time', textContent: new Date().toTimeString().slice(0, 8), title: 'When it was sent' })]));
+        // what Copy takes: the line as the terminal shows it, without the time
+        line.dataset.text = prompt + command + (note ? '   ' + note : '');
+        appendLogLine(line);
+    }
+
+    /** The strip over the log (1.62.1): its name, Copy - the transcript as text - and Clear. */
+    function buildLogHead() {
+        const copy = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'Copy',
+            title: 'Copy the log as text: every command, modpoll\'s answers and the console\'s notes' });
+        copy.addEventListener('click', () => {
+            const done = ok => { copy.textContent = ok ? 'Copied' : 'Could not copy'; setTimeout(() => { copy.textContent = 'Copy'; }, 1500); };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(logText()).then(() => done(true), () => done(false));
+            else done(false);
+        });
+        const clear = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'Clear', title: 'Empty the log on screen. Nothing else is touched' });
+        clear.addEventListener('click', () => { if (ui.log) ui.log.textContent = ''; });
+        return el('div', { className: 'mpc-loghead' }, [el('span', { textContent: 'Terminal · Plant Term' }), el('span', { className: 'mpc-spacer' }), copy, clear]);
+    }
+
+    /** The log as plain text, a line each - a command as the terminal shows it, without its time. */
+    function logText() {
+        return ui.log ? [...ui.log.children].map(d => (d.dataset.text !== undefined ? d.dataset.text : d.textContent)).join('\n') : '';
     }
 
     /**
@@ -6249,6 +6292,22 @@
     }
 
     const MIRROR_LINE_CAP = 200;
+    // How a line of modpoll's answer is shown (1.62.1): its text never changes.
+    const RE_MIRROR_DIM = /^(modpoll\s+-\s+FieldTalk|Copyright|Getopt)/i;
+    const RE_MIRROR_FAIL = /time-?out|error|exception|illegal|invalid|refused|not respond|failed|cannot/i;
+    const RE_MIRROR_GOOD = /opened successfully/i;
+
+    /**
+     * One line of modpoll's answer, styled by what it says: a register's value
+     * set apart from its reference, the banner dimmed, a time-out or an error
+     * red, an opened port green, the rest as printed.
+     */
+    function mirrorLine(text) {
+        const value = text.match(/^(\s*\[-?\d+\]:)(\s*)(.*)$/);
+        if (value) return el('div', { className: 'mirror' }, [el('span', { className: 'ref', textContent: value[1] }), value[2], el('span', { className: 'val', textContent: value[3] })]);
+        const kind = RE_MIRROR_FAIL.test(text) ? ' fail' : (RE_MIRROR_DIM.test(text) ? ' dim' : (RE_MIRROR_GOOD.test(text) ? ' good' : ''));
+        return el('div', { className: 'mirror' + kind, textContent: text });
+    }
     // A bare shell prompt: what the terminal prints when a command is done.
     const RE_PROMPT_LINE = /^[A-Za-z]:\\[^>]*>$/;
 
@@ -6273,7 +6332,7 @@
         while (lines.length && (!lines[lines.length - 1].trim() || RE_PROMPT_LINE.test(lines[lines.length - 1].trim()))) lines.pop();
         if (!lines.length) return;
         // A blank line as a space, so it keeps a line's height as the terminal's does.
-        for (const line of lines.slice(0, MIRROR_LINE_CAP)) log(line || ' ', 'mirror');
+        for (const line of lines.slice(0, MIRROR_LINE_CAP)) appendLogLine(mirrorLine(line || ' '));
         if (lines.length > MIRROR_LINE_CAP) log('…' + (lines.length - MIRROR_LINE_CAP) + ' further lines', 'mirror');
     }
 
@@ -7770,7 +7829,7 @@
     /** The log's last lines, a warning or an error marked as such. */
     function logTail(n) {
         if (!ui.log) return [];
-        return [...ui.log.children].slice(-n).map(d => (d.className ? d.className + ': ' : '') + d.textContent);
+        return [...ui.log.children].slice(-n).map(d => (d.className ? d.className + ': ' : '') + (d.dataset.text !== undefined ? d.dataset.text : d.textContent));
     }
 
     function renderEmptyGrid(message) {
@@ -9086,6 +9145,7 @@
         form.appendChild(makeGrip(PANES.grid));
         renderEmptyGrid('No registers polled yet');
 
+        form.appendChild(buildLogHead());
         ui.log = el('div', { className: 'mpc-log' });
         ui.log.setAttribute('role', 'log');
         ui.log.setAttribute('aria-label', 'Modpoll log');

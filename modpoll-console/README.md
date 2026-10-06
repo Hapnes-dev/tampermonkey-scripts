@@ -179,21 +179,31 @@ rebuilt.
   only rose. It says what is happening in words — *Reading discrete inputs
   (1xxxx) at 516 — 519 found · 83 commands · 1:11*, *Looking for where each
   table starts — probe 23 of 56, 9 answering*.
-- **The log looks like the terminal (1.62.0).** It reads as a cmd window does:
-  black, in the terminal's grey and its font. Every command sent appears as
-  Plant Term shows it, the shell's prompt and then the command
-  (`C:\iwmac\sys_tools\plant_term>modpoll -1 -m rtu …`), whatever sent it — a
-  poll, a block of a long one, a scan's probes or the API. modpoll's answer
-  follows exactly as printed: the banner, *Protocol opened successfully.*,
-  *Polling slave (Ctrl-C to stop) ...*, *Reply time-out!*. Nothing is indented,
-  and the blank lines between its blocks are kept, a run of them as one. The
-  console's own notes stand apart in the terminal's colours: cyan for a note,
-  yellow for a warning, red for an error, green for a success. Nothing the
-  console says can be taken for something the device said.
+- **The log is a terminal transcript (1.62.0, restyled light in 1.62.1).** Every
+  command sent appears as Plant Term shows it, the shell's prompt and then the
+  command (`C:\iwmac\sys_tools\plant_term>modpoll -1 -m rtu …`), whatever sent
+  it: a poll, a block of a long one, a scan's probes or the API. modpoll's
+  answer follows exactly as printed: the banner, *Protocol opened
+  successfully.*, *Polling slave (Ctrl-C to stop) ...*, *Reply time-out!*.
+  Nothing is indented, and the blank lines between its blocks are kept, a run
+  of them as one.
 
-  A repeat still drops the banner after the first pass. The log keeps its last
-  4 000 lines, as a terminal keeps its scrollback, so a long scan does not
-  weigh the page down.
+  The frame is light and quiet, a code block's grey in the terminal's
+  monospace (the black of 1.62.0 was too heavy). Each command is a block: a
+  band with the prompt dimmed, the command in full and the time it was sent at
+  the right. In modpoll's answer:
+  - the banner is dimmed;
+  - a register's value is set apart from its reference (`[95]:` **207**);
+  - a time-out or an error is red, an opened port green.
+
+  The console's own notes are blue. Its warnings and errors sit on a tinted
+  band with a bar at the left, so nothing it says can be taken for something
+  the device said.
+
+  Over the log, *Copy* takes the transcript as text, each command as the
+  terminal shows it without its time. *Clear* empties the log on screen. A
+  repeat still drops the banner after the first pass. The log keeps its last
+  4 000 lines, as a terminal keeps its scrollback.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both
