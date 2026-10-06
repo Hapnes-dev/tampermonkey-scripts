@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AK3 Auto Scan
-// @version      9.4
+// @version      9.5
 // @description  Automate AK3 scanner setup workflow
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -126,17 +126,72 @@
     }
     // The Scan tab lists what the scanner has found so far, one <li> each:
     //   <li>0_5 - <em>K 1 Meririrom</em> ( 084B4083_017X )</li>
-    // Read before and after a scan, the difference is the new regulators.
-    // Returns [] when the page has no such list.
+    // Read before and after a scan; diffRegulators() turns the two lists into
+    // added / modified / removed. Returns [] when the page has no such list.
     function readScanDeviceList() {
         const out = [];
         document.querySelectorAll('#content li').forEach((li) => {
             const txt = (li.textContent || '').replace(/\s+/g, ' ').trim();
             const m = txt.match(/^(\S+)\s+-\s+(.+?)\s*\(\s*([^()]+?)\s*\)$/);
-            if (m) out.push({ key: m[1] + '|' + m[3], label: m[1] + ' ' + m[2] });
-            else if (/^\S+\s+-\s+\S/.test(txt)) out.push({ key: txt, label: txt });
+            if (m) out.push({ addr: m[1], name: m[2], code: m[3] });
+            else {
+                const m2 = txt.match(/^(\S+)\s+-\s+(\S.*)$/);
+                if (m2) out.push({ addr: m2[1], name: m2[2], code: '' });
+            }
         });
         return out;
+    }
+    // Regulators are matched by address (0_5): an address only after the scan
+    // is added, only before is removed, in both with a different name or code
+    // is modified. A repeated address is matched by its occurrence.
+    const REG_LIST_MAX = 500;
+    function diffRegulators(before, after) {
+        const keyed = (list) => {
+            const seen = {}, map = new Map();
+            for (const d of list) {
+                const n = seen[d.addr] = (seen[d.addr] || 0) + 1;
+                map.set(n > 1 ? d.addr + '#' + n : d.addr, d);
+            }
+            return map;
+        };
+        const b = keyed(before), a = keyed(after);
+        const added = [], removed = [], modified = [];
+        let unchanged = 0;
+        for (const [k, d] of a) {
+            const old = b.get(k);
+            if (!old) added.push(d);
+            else if (old.name !== d.name || old.code !== d.code) modified.push({ addr: d.addr, before: old, after: d });
+            else unchanged++;
+        }
+        for (const [k, d] of b) if (!a.has(k)) removed.push(d);
+        const byAddr = (x, y) => String(x.addr).localeCompare(String(y.addr), undefined, { numeric: true });
+        added.sort(byAddr); removed.sort(byAddr); modified.sort(byAddr);
+        return { added, modified, removed, unchanged };
+    }
+    // One human-readable line per regulator, for the card, the summary and the log.
+    const regLine = (d) => String(d.addr).padEnd(6) + ' ' + d.name + (d.code ? '  (' + d.code + ')' : '');
+    function modLine(m) {
+        const ch = [];
+        if (m.before.name !== m.after.name) ch.push('name "' + m.before.name + '" → "' + m.after.name + '"');
+        if (m.before.code !== m.after.code) ch.push('type ' + (m.before.code || '—') + ' → ' + (m.after.code || '—'));
+        return String(m.after.addr).padEnd(6) + ' ' + m.after.name + '  — ' + ch.join(', ');
+    }
+    const REG_GROUPS = [
+        { key: 'added',    title: 'Added',    sign: '+', color: '#34d399', line: regLine },
+        { key: 'modified', title: 'Modified', sign: '~', color: '#fbbf24', line: modLine },
+        { key: 'removed',  title: 'Removed',  sign: '−', color: '#f87171', line: regLine }
+    ];
+    // Plain-text vertical list, grouped Added / Modified / Removed.
+    function regChangeLines(ch) {
+        const lines = [];
+        for (const g of REG_GROUPS) {
+            const list = ch[g.key] || [];
+            const total = ch[g.key + 'Count'] != null ? ch[g.key + 'Count'] : list.length;
+            lines.push(g.title + ' (' + total + ')' + (total ? ':' : ''));
+            for (const d of list) lines.push('  ' + g.sign + ' ' + g.line(d));
+            if (total > list.length) lines.push('  … ' + (total - list.length) + ' more, see the log');
+        }
+        return lines;
     }
     function ts() {
         const d = new Date();
@@ -597,10 +652,12 @@
         } else if (step === 'scan') {
             if (st.scanStartedAt && st.scanEndedAt) parts.push('scanned in ' + fmtDur(st.scanEndedAt - st.scanStartedAt));
             if (typeof st.devicesAfter === 'number') {
-                const list = (n, arr) => (arr && arr.length ? ' (' + arr.join(', ') + (n > arr.length ? ', …' : '') + ')' : '');
+                // The regulators themselves are listed in the card's own section.
+                const c = st.changes || {};
                 parts.push(st.devicesAfter + ' regulator' + (st.devicesAfter === 1 ? '' : 's') + ' scanned');
-                parts.push(st.newCount > 0 ? st.newCount + ' new' + list(st.newCount, st.newDevices) : 'no new');
-                parts.push(st.goneCount > 0 ? st.goneCount + ' removed' + list(st.goneCount, st.removedDevices) : 'none removed');
+                parts.push((c.addedCount || 0) + ' added');
+                parts.push((c.modifiedCount || 0) + ' modified');
+                parts.push((c.removedCount || 0) + ' removed');
             } else {
                 parts.push(st.report || (st.lastPercent != null ? st.lastPercent + '%' : 'done'));
             }
@@ -629,7 +686,48 @@
             const dur = st && st.startedAt && st.endedAt ? fmtDur(st.endedAt - st.startedAt) : '?';
             lines.push('- ' + STEP_LABELS[step] + ': ' + dur + ' — ' + stepResult(step, st));
         }
+        const ch = ((s.steps || {}).scan || {}).changes;
+        if (ch) {
+            lines.push('');
+            lines.push('Regulator changes (' + (ch.unchanged || 0) + ' unchanged):');
+            lines.push(...regChangeLines(ch));
+        }
         return lines.join('\n');
+    }
+    // Card section: the same grouped list, one regulator per row.
+    function regChangesHtml(ch) {
+        if (!ch) return '';
+        const mono = 'font-family:ui-monospace,Consolas,monospace;';
+        const groups = REG_GROUPS.map((g) => {
+            const list = ch[g.key] || [];
+            const total = ch[g.key + 'Count'] != null ? ch[g.key + 'Count'] : list.length;
+            const head = '<div style="margin-top:8px;font-weight:700;color:' + g.color + ';">' +
+                         esc(g.title) + ' (' + esc(total) + ')</div>';
+            if (!total) return head + '<div style="padding:2px 0 0 18px;color:#6b7280;">none</div>';
+            const rows = list.map((d) => {
+                const isMod = g.key === 'modified';
+                const cur = isMod ? d.after : d;
+                let detail = cur.code ? '<span style="color:#9ca3af;"> (' + esc(cur.code) + ')</span>' : '';
+                if (isMod) {
+                    const bits = [];
+                    if (d.before.name !== d.after.name) bits.push('was “' + esc(d.before.name) + '”');
+                    if (d.before.code !== d.after.code) bits.push('type was ' + esc(d.before.code || '—'));
+                    detail += '<div style="padding-left:66px;color:#9ca3af;">' + bits.join(' · ') + '</div>';
+                }
+                return '<div style="padding:2px 0 2px 4px;border-top:1px solid #1f2937;">' +
+                       '<span style="color:' + g.color + ';' + mono + 'display:inline-block;width:14px;">' + esc(g.sign) + '</span>' +
+                       '<span style="' + mono + 'display:inline-block;min-width:48px;color:#d1d5db;">' + esc(cur.addr) + '</span> ' +
+                       '<span style="font-weight:600;">' + esc(cur.name) + '</span>' + detail + '</div>';
+            }).join('');
+            const more = total > list.length
+                ? '<div style="padding:2px 0 0 18px;color:#9ca3af;">… ' + esc(total - list.length) + ' more, see the log</div>' : '';
+            return head + rows + more;
+        }).join('');
+        return '<div style="margin-top:14px;">' +
+                 '<div style="font-weight:700;font-size:14px;">Regulator changes ' +
+                   '<span style="font-weight:400;color:#9ca3af;">· ' + esc(ch.unchanged || 0) + ' unchanged</span></div>' +
+                 '<div style="max-height:38vh;overflow:auto;padding-right:4px;">' + groups + '</div>' +
+               '</div>';
     }
     const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -701,6 +799,7 @@
                       '<thead><tr style="color:#9ca3af;text-align:left;"><th style="padding:4px 8px;font-weight:600;">Step</th>' +
                       '<th style="padding:4px 8px;font-weight:600;">Time</th><th style="padding:4px 8px;font-weight:600;">Result</th></tr></thead>' +
                       '<tbody>' + rows + '</tbody></table>' +
+                    regChangesHtml(((s.steps || {}).scan || {}).changes) +
                     '<pre id="ak3-complete-logview" style="display:none;margin:12px 0 0;padding:8px;max-height:40vh;overflow:auto;' +
                       'background:#0b1220;border:1px solid #374151;border-radius:6px;font:11px/1.4 monospace;white-space:pre-wrap;word-break:break-word;"></pre>' +
                   '</div>' +
@@ -1326,19 +1425,17 @@
                         devicesAfter = readScanDeviceList();
                     } catch (e) { log('Could not re-read the Scan tab device list: ' + e.message); }
                     if (devicesAfter.length || devicesBefore.length) {
-                        const beforeKeys = new Set(devicesBefore.map((d) => d.key));
-                        const afterKeys = new Set(devicesAfter.map((d) => d.key));
-                        const added = devicesAfter.filter((d) => !beforeKeys.has(d.key));
-                        const gone = devicesBefore.filter((d) => !afterKeys.has(d.key));
-                        const names = (list) => list.slice(0, 20).map((d) => d.label).join(', ') +
-                                                (list.length > 20 ? ' … +' + (list.length - 20) + ' more' : '');
-                        log('Scan result: ' + devicesAfter.length + ' regulators scanned, ' + added.length + ' new, ' +
-                            gone.length + ' removed');
-                        if (added.length) log('New: ' + names(added));
-                        if (gone.length) log('Removed: ' + names(gone));
-                        stepDone('scan', { devicesAfter: devicesAfter.length, newCount: added.length,
-                                           newDevices: added.slice(0, 12).map((d) => d.label),
-                                           goneCount: gone.length, removedDevices: gone.slice(0, 12).map((d) => d.label) });
+                        const d = diffRegulators(devicesBefore, devicesAfter);
+                        log('Scan result: ' + devicesAfter.length + ' regulators scanned, ' + d.added.length + ' added, ' +
+                            d.modified.length + ' modified, ' + d.removed.length + ' removed, ' + d.unchanged + ' unchanged');
+                        // Full lists in the log; the stored copy is capped so GM storage stays small.
+                        log('Regulator changes:\n' + regChangeLines(d).join('\n'));
+                        const changes = { unchanged: d.unchanged };
+                        for (const g of REG_GROUPS) {
+                            changes[g.key] = d[g.key].slice(0, REG_LIST_MAX);
+                            changes[g.key + 'Count'] = d[g.key].length;
+                        }
+                        stepDone('scan', { devicesAfter: devicesAfter.length, changes });
                     } else {
                         log('No regulator list found on the Scan tab — the card shows the scan window text instead');
                         stepDone('scan');

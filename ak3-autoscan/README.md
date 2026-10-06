@@ -73,7 +73,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 - Opens the **Scan** tab, clicks **"Scan anlegg"**
 - Polls an iframe for `#percent` reaching `100%` or `#done` containing `"Scan done"`; a finished result still shown from an earlier scan is ignored until the window resets
 - Logs progress every 10 %
-- Afterwards re-opens the Scan tab and diffs its "tidligere funnet" regulator list against the one read before the scan. Log: `Scan result: 27 regulators scanned, 2 new, 1 removed` plus `New:` / `Removed:` lines with names; the card's Scan row carries the same
+- Afterwards re-opens the Scan tab and diffs its "tidligere funnet" regulator list against the one read before the scan, matched by address (`0_5`): only after = **added**, only before = **removed**, same address with a different name or type code = **modified**. Log: `Scan result: 27 regulators scanned, 2 added, 1 modified, 1 removed, 23 unchanged` followed by a vertical `Regulator changes:` list, one regulator per line. The card's Scan row carries the counts, and the card has a **Regulator changes** section listing every regulator grouped Added / Modified / Removed (modified rows show the old name or type); Copy summary includes the same list as plain text. Stored lists are capped at 500 per group (`REG_LIST_MAX`); the log always has all of them
 - **Timeout: 2 hours** (7,200,000 ms)
 
 ### 4. `default_links`
@@ -89,7 +89,7 @@ Each step is persisted in GM storage so a reload pauses the run instead of losin
 ### 6. `activate`
 - Opens **"Aktiver anlegg"** tab, clicks **"Aktiver alle"**
 - Waits for `"Enheter aktivert"`
-- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, makes sure the Aktiver anlegg tab is showing, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, regulators found and new, the page's own confirmation lines), AK3 mode, run id, an amber "Remember to restart IWMAC Escape!" line (the page's "Husk å restart pc!" is dropped from the Copy row), Copy summary (`GM_setClipboard`, since the clipboard API is unavailable on `http://`), Show log (the full run log inside the card, with Copy log) and Close. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
+- Sets AK3 mode back to **StandardMode** (a failed revert is flagged on the card), clears state, makes sure the Aktiver anlegg tab is showing, shows the **completion card**: duration, per-step times and results (DB created or present, IPs used and HTTPS/HTTP, regulators scanned and added / modified / removed, a vertical Regulator changes list, the page's own confirmation lines), AK3 mode, run id, an amber "Remember to restart IWMAC Escape!" line (the page's "Husk å restart pc!" is dropped from the Copy row), Copy summary (`GM_setClipboard`, since the clipboard API is unavailable on `http://`), Show log (the full run log inside the card, with Copy log) and Close. The tab title gets a `✔ AK3 done` prefix and a desktop notification is sent (`GM_notification`)
 
 ## AK3 mode switching
 
@@ -121,7 +121,9 @@ Also logs `pma_local` via JSON-RPC to `http://tools.iwmac.local/services/pang/ac
 | `isOkStatus(txt)` | Whole-word `OK`, not negated |
 | `stepStarted` / `noteStep` / `stepDone` / `msgText` | Record the run summary per step |
 | `showCompletionCard(plantId, summary)` | Render the completion card; falls back to `alert()` if rendering throws |
-| `readScanDeviceList()` | Parse the Scan tab's regulator list (`0_5 - K 1 … ( serial )`) |
+| `readScanDeviceList()` | Parse the Scan tab's regulator list (`0_5 - K 1 … ( serial )`) into `{addr, name, code}` |
+| `diffRegulators(before, after)` | Added / modified / removed / unchanged, matched by address, sorted numerically |
+| `regChangeLines(changes)` / `regChangesHtml(changes)` | The vertical change list as text (log, Copy summary) and as the card section |
 | `copyText(text)` | `GM_setClipboard`, then `execCommand('copy')`, then the clipboard API |
 | `setInput(el, value)` | Sets value via property descriptor + fires input/change/keyup/blur |
 | `enableButton(el)` | Force-enables a disabled button |
