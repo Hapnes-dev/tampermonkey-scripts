@@ -219,6 +219,43 @@ rebuilt.
   called *Repeat* until 1.63, reads once, as `modpoll -1` does. The register
   card keeps both: *Poll this register* and *Watch*.
 
+  **Run keeps a tally (1.64.0)**, the counts the desktop ModpollTool keeps, on a
+  line under the buttons:
+
+  ```
+  ● Running 1:23 · 38 polls · 35 answered (92 %) · 2 time-outs · 1 checksum error · 0 exceptions · last 790 ms, average 859 ms
+  ```
+
+  Here is how the tally reads:
+  - An exception — the device refusing a register or a function — is an answer:
+    the device is talking. A checksum error is not.
+  - A port that does not open is counted as a connection error.
+  - The dot is the last poll: green when it was answered, yellow on a checksum
+    error, red on silence. The dot in the header follows the same rule on every
+    poll.
+  - The tally stays after Stop until the next Run. On an RS-485 line it tells a
+    quiet bus from a noisy one: time-outs mean no answer, and checksum errors
+    mean answers that arrived damaged, which points at termination, wiring or
+    noise.
+
+  While Run keeps polling, an error is said in the log once and again only when
+  it changes. The tally counts every one. `__modpoll.state().run` gives the
+  same counts.
+
+  **The COM port field offers the plant PC's own ports (1.64.0).** The desktop
+  ModpollTool also reads the registry for these. The first time the field is
+  used in RTU or ASCII mode, the console reads
+  `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM` on the plant PC through Plant Term. It
+  only reads, and quietly: nothing goes in the log but one line saying what it
+  found. Each port is offered with what it is and how many units the plant
+  database puts on it, for example *COM3 — NPort · \Device\Npdrv0 · 2 units in
+  the plant database*:
+  - the board's own (`\Device\Serial0`);
+  - an NPort's virtual port (`\Device\Npdrv…`), which pySerial alone can miss;
+  - a USB adapter.
+
+  `__modpoll.comPorts(true)` reads them again.
+
   While Run polls, the log reads as modpoll's does when it keeps polling on its
   own (1.62.4). modpoll's configuration block and the hairline show once, on the
   first pass. Every pass after that adds only its polling line and its answer:
@@ -1117,6 +1154,10 @@ quietly stop being the thing under test.
   - which scaling gives the number IWMAC shows (207 gives 20,7 under `x0.1` and no
     other);
   - the card's big number under a chosen scaling, with and without a datatype view.
+
+  Then the plant PC's COM ports as `reg query` lists them, in number order and
+  each with what it is. Last, how one poll counts in Run's tally: answered,
+  time-out, checksum error, exception (an answer) and connection error.
 
   Then a whole verification through the shipped `verifyPointList`
   against a map of those registers — every point read as 16-bit words, a `_W`

@@ -23,6 +23,8 @@ def lift(start, end):
 
 js = lift("    const IWMAC_WORD_ORDER = {", "\n    /*\n     * Two 16-bit registers read as one 32-bit value")
 js += lift("    function impliedScale(raw, shown) {", "\n    /**\n     * What a register and its neighbour decode to")
+# The COM ports the registry lists, and how one poll went (1.64).
+js += lift("    /**\n     * The COM ports Windows lists", "\n    function summarise(")
 js += lift("    const DATATYPE_EXCEPTIONS = {", "\n    /**\n     * Points become poll ranges")
 js += lift("    const VIEW_TYPES = [", "\n    /**\n     * The picker in a grid's type cell.")
 js += lift("    const SCALE_GROUPS = {", "\n    /**\n     * The picker in a grid's scaled cell.")
@@ -239,6 +241,29 @@ viewOverrides.clear();
 scaleOverrides.clear();
 check('nothing chosen, the card keeps its own big number', viewedHeadline('4', 95, 207, listPoint, null, undefined, { raw: 207 }) === null, '');
 
+
+// The plant PC's COM ports, as "reg query HKLM\HARDWARE\DEVICEMAP\SERIALCOMM" prints them (1.64).
+const regOut = 'HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\\SERIALCOMM\n    \\Device\\Npdrv1    REG_SZ    COM16\n' +
+    '    \\Device\\Serial0    REG_SZ    COM1\n    \\Device\\Npdrv0    REG_SZ    COM3\n    \\Device\\VCP0    REG_SZ    COM5\n\nC:\\iwmac\\sys_tools\\plant_term>';
+const ports = parseComPorts(regOut);
+check('reg query gives the ports in number order, COM16 after COM5', ports.map(c => c.port).join(' ') === 'COM1 COM3 COM5 COM16', show(ports));
+check('... each with what it is: the board\'s own, an NPort\'s virtual port, a USB adapter',
+    ports.map(c => c.kind).join(',') === 'on board,NPort,USB,NPort' && ports[1].device === '\\Device\\Npdrv0', show(ports));
+check('... and nothing from a shell that printed no ports', parseComPorts('ERROR: The system was unable to find the specified registry key or value.').length === 0, '');
+
+// How one poll went, for Run's tally (1.64).
+const out = r => passOutcome(r);
+const answered = out({ values: [{ i: 1, v: 5 }], diagnostics: [] });
+const silent = out({ values: [], diagnostics: [{ level: 'error', text: 'No response from device (timeout)' }] });
+const crc = out({ values: [], diagnostics: [{ level: 'error', text: 'Checksum error — data corruption on the bus' }] });
+const refused = out({ values: [], diagnostics: [{ level: 'warn', text: 'Illegal data address exception — device answered, register is outside its map' }] });
+const noPort = out({ values: [], diagnostics: [{ level: 'fatal', text: 'Port or socket open error — …' }] });
+check('a poll with values is answered, and nothing else', answered.responded && answered.answered && !answered.timeout && !answered.checksum, show(answered));
+check('a time-out is no answer', silent.timeout && !silent.responded, show(silent));
+check('a checksum error is counted as one, and as no answer', crc.checksum && !crc.responded, show(crc));
+check('an exception is the device answering, as ModpollTool counts it', refused.exception && refused.responded && !refused.answered, show(refused));
+check('a port that did not open is a connection error', noPort.connection && !noPort.responded, show(noPort));
+check('a refused block, with no exception line, is an exception too', out({ values: [], diagnostics: [], unreadable: [5] }).exception, '');
 console.log(failed ? failed + ' failed' : 'all passed');
 process.exit(failed ? 1 : 0);
 """

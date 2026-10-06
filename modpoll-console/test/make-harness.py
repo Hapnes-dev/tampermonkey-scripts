@@ -84,6 +84,10 @@ bridge = between("    const api = {", "\n    Object.freeze(api);")
 # terminal look is under test with modpoll's own lines in it.
 mirror = between("    const MIRROR_LINE_CAP = 200;", "\n    /**\n     * The progress strip")
 banner = between("    const RE_BANNER = ", "\n\n    function parseModpoll")
+# How a poll went, the COM ports the registry lists, Run's tally and the COM
+# port suggestions (1.64).
+outcome = between("    /**\n     * The COM ports Windows lists", "\n    function summarise(")
+tally = between("    /** One pass into Run's tally", "\n    /**\n     * Run (1.63)")
 
 # The doc comment that sits above EXPAND_RESERVE, kept for readability only.
 OUT.write_text(f"""<!doctype html>
@@ -123,6 +127,14 @@ let repeatTimer = null;
 const MARK = '#mpc';
 let repeating = false;
 const repeatShown = new Set();
+// Run's tally and the COM ports, and a shell that answers reg query as a plant PC
+// with an NPort does.
+let runStats = null;
+let comPortsCache = null;
+let comPortsLoading = null;
+const termRun = async () => 'HKEY_LOCAL_MACHINE\\\\HARDWARE\\\\DEVICEMAP\\\\SERIALCOMM\\n' +
+    '    \\\\Device\\\\Serial0    REG_SZ    COM1\\n    \\\\Device\\\\Npdrv0    REG_SZ    COM3\\n' +
+    '    \\\\Device\\\\Npdrv1    REG_SZ    COM4\\n';
 const REPORT_CHUNK_LIMIT = 30000;
 const resultFilename = () => 'modpoll_test.json';
 const aimAtRegister = () => '';
@@ -183,6 +195,10 @@ function el(tag, props, kids) {{
 {banner}
 
 {mirror}
+
+{outcome}
+
+{tally}
 // ---- end lifted code -----------------------------------------------------
 window.__api = api;
 

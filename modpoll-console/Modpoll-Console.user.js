@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.63.0
+// @version      1.64.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.63.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.64.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -542,6 +542,52 @@
         return { values, diagnostics, notes, fatal };
     }
 
+    /**
+     * The COM ports Windows lists under HKLM\HARDWARE\DEVICEMAP\SERIALCOMM, from
+     * what "reg query" prints (1.64): one line per port, the device then REG_SZ
+     * then the name - "\Device\Npdrv0    REG_SZ    COM3". The virtual ports an
+     * NPort's driver adds are there as well as the board's own, which is why
+     * ModpollTool reads the registry too. [{ port, device, kind }] by number.
+     */
+    function parseComPorts(raw) {
+        const ports = [];
+        for (const line of String(raw || '').split(/\r?\n/)) {
+            const m = line.match(/^\s*(\S+)\s+REG_SZ\s+(COM\d+)\s*$/i);
+            if (m && !ports.some(x => x.port === m[2].toUpperCase())) ports.push({ port: m[2].toUpperCase(), device: m[1], kind: comKind(m[1]) });
+        }
+        return ports.sort((a, b) => Number(a.port.slice(3)) - Number(b.port.slice(3)));
+    }
+
+    /** What a serial device's name says it is: an NPort's virtual port, the board's own, or a USB adapter. */
+    function comKind(device) {
+        const d = String(device || '');
+        if (/npdrv|nport|moxa/i.test(d)) return 'NPort';
+        if (/^\\Device\\Serial\d+$/i.test(d)) return 'on board';
+        if (/usb|vcp|silab|ftdi|prolific|ch34|cp210|cdc/i.test(d)) return 'USB';
+        return '';
+    }
+
+    /**
+     * How one poll went, for Run's tally (1.64), from what parseModpoll found in
+     * it: values back, a time-out, a checksum error, an exception - the device
+     * answering but refusing, which ModpollTool counts as responding too - or a
+     * connection that never opened.
+     */
+    function passOutcome(result) {
+        const diagnostics = (result && result.diagnostics) || [];
+        const has = re => diagnostics.some(d => re.test(d.text));
+        const answered = !!(result && result.values && result.values.length);
+        const exception = has(/exception/i) || !!(result && result.unreadable && result.unreadable.length);
+        return {
+            answered,
+            exception,
+            responded: answered || exception,
+            timeout: has(/timeout|time-out/i),
+            checksum: has(/^Checksum error/i),
+            connection: diagnostics.some(d => d.level === 'fatal'),
+        };
+    }
+
     function summarise(values, requested, elapsedMs, blocks) {
         const nums = values.map(v => v.v);
         return {
@@ -796,8 +842,11 @@
         // The command as the terminal shows it; a chained line, run by run as its
         // output arrives (mirrorTerminal), without the console's markers.
         const chain = chainSegments(command);
-        // quiet: a later pass of a repeat, whose command is already on screen
-        const quiet = !chain.length && !logCommand(command);
+        // quiet: a later pass of a repeat, whose command is already on screen. A
+        // silent run - the console's own housekeeping, such as reading the COM
+        // ports (1.64) - leaves the log alone altogether.
+        const quiet = options.silent || (!chain.length && !logCommand(command));
+        const mirror = text => { if (!options.silent) mirrorTerminal(text, chain, quiet); };
         state.t.exec('echo ' + runTag + ' & ' + command);
         const deadline = Date.now() + options.timeoutMs;
         let lastLength = -1;
@@ -828,7 +877,7 @@
             // Knowing how many values were asked for turns the wait into a real
             // completion signal: a poll answers in about 130 ms, so waiting out a
             // settle window is most of what a block used to cost.
-            if (options.expect && countValueLines(chunk) >= options.expect) { mirrorTerminal(chunk, chain, quiet); return chunk; }
+            if (options.expect && countValueLines(chunk) >= options.expect) { mirror(chunk); return chunk; }
             // This plant does not resolve a bare "modpoll": say so once, take the
             // full path, and run the same command again.
             if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
@@ -836,11 +885,11 @@
                 log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
                 return termRunInner(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
             }
-            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirrorTerminal(chunk, chain, quiet); return chunk; }
-            if (grew && Date.now() - stableSince > options.settleMs) { mirrorTerminal(chunk, chain, quiet); return chunk; }
+            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirror(chunk); return chunk; }
+            if (grew && Date.now() - stableSince > options.settleMs) { mirror(chunk); return chunk; }
         }
         const chunk = readChunk();
-        if (grew) { mirrorTerminal(chunk, chain, quiet); return chunk; }
+        if (grew) { mirror(chunk); return chunk; }
         // A shell that answers nothing at all is usually a dead session rather
         // than a slow device — the page keeps its prompt either way, so silence
         // is the only symptom. Reload the frame once and try again.
@@ -5725,6 +5774,16 @@
     #${PANEL_ID} .mpc-dot{width:9px;height:9px;border-radius:50%;background:#c3c7cf;margin-left:auto;flex:0 0 auto;
         border:1px solid rgba(0,0,0,.15)}
     #${PANEL_ID} .mpc-dot.ok{background:#4caf50}#${PANEL_ID} .mpc-dot.warn{background:#f0ad4e}#${PANEL_ID} .mpc-dot.err{background:#d9534f}
+    /* Run's tally (1.64): one line under the buttons, the last pass as a dot. */
+    #${PANEL_ID} .mpc-runstats{grid-column:span 12;display:flex;align-items:center;flex-wrap:wrap;gap:3px 7px;
+        font-size:11.5px;color:#57606a}
+    #${PANEL_ID} .mpc-runstats b{color:#24292f}
+    #${PANEL_ID} .mpc-runstats .sep{color:#afb8c1}
+    #${PANEL_ID} .mpc-runstats .good{color:#1a7f37;font-weight:600}
+    #${PANEL_ID} .mpc-runstats .warn{color:#9a6700;font-weight:600}
+    #${PANEL_ID} .mpc-runstats .bad{color:#cf222e;font-weight:600}
+    #${PANEL_ID} .mpc-rsdot{width:9px;height:9px;border-radius:50%;background:#c3c7cf;flex:0 0 auto}
+    #${PANEL_ID} .mpc-rsdot.ok{background:#2da44e}#${PANEL_ID} .mpc-rsdot.warn{background:#d4a72c}#${PANEL_ID} .mpc-rsdot.err{background:#cf222e}
     /* The table's own corner control, past the last column heading. The zone is
        only there to give it something to be pinned to: absolute inside the
        scrolling table would scroll away with the rows. The right offset is set
@@ -5981,6 +6040,14 @@
     // The commands shown since Run was pressed (1.62.4; the Repeat button until 1.63): each shows once, as a
     // terminal shows modpoll's command once when it polls on its own.
     const repeatShown = new Set();
+    // Run's tally (1.64): every pass since Run was pressed, by how it went - the
+    // counts ModpollTool keeps, for telling a quiet bus from a noisy one. And the
+    // last pass's diagnostics, so a repeat says an error once, not every second.
+    let runStats = null;
+    let lastDiagKey = null;
+    // The plant PC's COM ports, once read (1.64).
+    let comPortsCache = null;
+    let comPortsLoading = null;
     // Printed reference -> the value seen on the previous poll, so a re-read can
     // mark what moved. The delta is kept alongside rather than recomputed,
     // because the grid is also redrawn without a new poll — a filter toggle —
@@ -6523,6 +6590,7 @@
         ui.hostWrap.className = 'mpc-f ' + (serial ? 'mpc-span8' : 'mpc-span6');
         ui.hostLabel.textContent = serial ? 'COM port' : 'IP address';
         ui.host.setAttribute('aria-label', ui.hostLabel.textContent);
+        if (serial) ui.host.setAttribute('list', 'mpc-com-ports'); else ui.host.removeAttribute('list');
         ui.host.placeholder = serial ? 'COM3' : '10.0.0.5';
     }
 
@@ -8360,6 +8428,7 @@
     async function runOnce() {
         if (termState.busy) return;
         termState.busy = true;
+        const passStarted = performance.now();
         abortRequested = false;
         ui.run.disabled = true;
         ui.stop.disabled = false;
@@ -8431,7 +8500,13 @@
                 const match = unitAtForm(_unitsCache || [], readForm());
                 if (match) { await loadNamesFor(match.unit_id, true); renderGrid(result); }
             }
-            for (const d of result.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : (d.level === 'fatal' || d.level === 'error' ? 'err' : ''));
+            // While Run keeps polling an error is said once, and again only when it
+            // changes; the tally counts every pass (1.64).
+            const diagKey = result.diagnostics.map(d => d.text).join('|');
+            if (!repeating || diagKey !== lastDiagKey) {
+                for (const d of result.diagnostics) log(d.level.toUpperCase() + ': ' + d.text, d.level === 'warn' ? 'warn' : (d.level === 'fatal' || d.level === 'error' ? 'err' : ''));
+            }
+            if (repeating) lastDiagKey = diagKey;
             // Nothing came back and nothing explained it: show what the shell
             // actually printed, rather than leaving an empty grid to interpret.
             if (!result.values.length && !result.diagnostics.length) {
@@ -8440,15 +8515,108 @@
                 else log('The command printed nothing at all. If a modpoll without -1 was started earlier it is still ' +
                     'polling and holding the port — Reconnect clears it.', 'warn');
             }
-            if (result.ok) { setDot('ok'); if (!repeating) log('OK — ' + result.summary.returned + ' registers', 'ok'); }
-            else setDot('err');
+            // The dot as ModpollTool's: green for an answer, yellow for a checksum
+            // error, red for silence or a port that did not open.
+            const outcome = passOutcome(result);
+            setDot(outcome.checksum ? 'warn' : (outcome.responded ? 'ok' : 'err'));
+            if (result.ok && !repeating) log('OK — ' + result.summary.returned + ' registers', 'ok');
+            if (repeating) tallyPass(result, performance.now() - passStarted);
         } catch (e) {
             setDot('err');
             log('ERROR: ' + e.message, 'err');
+            if (repeating) tallyPass({ values: [], diagnostics: [{ level: 'fatal', text: e.message }] }, performance.now() - passStarted);
         } finally {
             termState.busy = false;
             ui.run.disabled = !!repeatTimer;   // Run stays down while it keeps polling
             ui.stop.disabled = !repeatTimer;
+        }
+    }
+
+    /** One pass into Run's tally, and the tally onto the strip under the buttons. */
+    function tallyPass(result, ms) {
+        const t = runStats;
+        if (!t) return;
+        const o = passOutcome(result);
+        t.polls++;
+        if (o.responded) t.responded++;
+        if (o.answered) t.answered++;
+        if (o.timeout) t.timeouts++;
+        if (o.checksum) t.checksum++;
+        if (o.exception) t.exceptions++;
+        if (o.connection) t.connection++;
+        t.lastMs = Math.round(ms);
+        t.totalMs += ms;
+        t.last = o.checksum ? 'warn' : (o.responded ? 'ok' : 'err');
+        renderRunStats();
+    }
+
+    /**
+     * Run's tally, as ModpollTool keeps it (1.64): how long it has run, the
+     * polls, how many the device answered - an exception is an answer too - the
+     * time-outs, the checksum errors and the exceptions, and how long a pass
+     * takes. The dot is the last pass: green, yellow for a checksum error, red
+     * for silence. It stays after Stop until the next Run.
+     */
+    function renderRunStats() {
+        if (!ui.runStats) return;
+        const t = runStats;
+        ui.runStats.classList.toggle('mpc-hidden', !t);
+        if (!t) return;
+        const secs = Math.max(0, Math.round(((t.stopped || Date.now()) - t.started) / 1000));
+        const clock = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+        const count = (n, one, many, tone) => el('span', { className: n && tone ? tone : '', textContent: n + ' ' + (n === 1 ? one : many) });
+        const pct = t.polls ? Math.round(100 * t.responded / t.polls) : 0;
+        const parts = [
+            el('span', { className: 'mpc-rsdot ' + (t.last || ''), title: t.last === 'ok' ? 'The last poll was answered' :
+                (t.last === 'warn' ? 'The last poll had a checksum error' : (t.last === 'err' ? 'The last poll got no answer' : 'No poll yet')) }),
+            el('b', { textContent: (t.stopped ? 'Run stopped after ' : 'Running ') + clock }),
+            count(t.polls, 'poll', 'polls'),
+            el('span', { className: t.polls ? (pct === 100 ? 'good' : (pct >= 90 ? 'warn' : 'bad')) : '', textContent: t.responded + ' answered (' + pct + ' %)' }),
+            count(t.timeouts, 'time-out', 'time-outs', 'bad'),
+            count(t.checksum, 'checksum error', 'checksum errors', 'warn'),
+            count(t.exceptions, 'exception', 'exceptions', 'warn'),
+        ];
+        if (t.connection) parts.push(count(t.connection, 'connection error', 'connection errors', 'bad'));
+        if (t.lastMs !== null) parts.push(el('span', { textContent: 'last ' + t.lastMs + ' ms, average ' + Math.round(t.totalMs / t.polls) + ' ms' }));
+        ui.runStats.textContent = '';
+        parts.forEach((part, i) => { if (i > 1) ui.runStats.appendChild(el('span', { className: 'sep', textContent: '·' })); ui.runStats.appendChild(part); });
+    }
+
+    /** The plant PC's COM ports, read once through Plant Term, quietly, and offered in the COM port field. */
+    async function loadComPorts(force) {
+        if (comPortsCache && !force) return comPortsCache;
+        if (comPortsLoading) return comPortsLoading;
+        if (termState.busy) return comPortsCache || [];   // never between a poll's commands
+        comPortsLoading = (async () => {
+            termState.busy = true;
+            try {
+                const raw = await termRun('reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM', { timeoutMs: 10000, fullOutput: true, silent: true });
+                comPortsCache = parseComPorts(raw);
+                fillComList(comPortsCache);
+                log(comPortsCache.length
+                    ? 'COM ports on the plant PC: ' + comPortsCache.map(c => c.port + (c.kind ? ' (' + c.kind + ')' : '')).join(', ')
+                    : 'The plant PC lists no COM ports');
+                return comPortsCache;
+            } catch (e) {
+                log('Could not read the plant PC\'s COM ports: ' + e.message, 'warn');
+                return [];
+            } finally {
+                termState.busy = false;
+                comPortsLoading = null;
+            }
+        })();
+        return comPortsLoading;
+    }
+
+    /** The COM port field's suggestions: each port with what it is and how many units the plant database puts on it. */
+    function fillComList(ports) {
+        if (!ui.comList) return;
+        const comOf = v => { const m = String(v || '').match(/COM\d+/i); return m ? m[0].toUpperCase() : ''; };
+        ui.comList.textContent = '';
+        for (const c of ports) {
+            const units = (_unitsCache || []).filter(u => comOf(u.host) === c.port || (u.bus && comOf(u.bus.com) === c.port)).length;
+            const label = [c.kind, c.device, units ? units + ' unit' + (units === 1 ? '' : 's') + ' in the plant database' : ''].filter(Boolean).join(' · ');
+            ui.comList.appendChild(el('option', { value: c.port, label }));
         }
     }
 
@@ -8462,6 +8630,10 @@
         if (repeatTimer) clearInterval(repeatTimer);
         repeating = true;
         repeatShown.clear();
+        lastDiagKey = null;
+        runStats = { started: Date.now(), stopped: null, polls: 0, responded: 0, answered: 0, timeouts: 0, checksum: 0,
+            exceptions: 0, connection: 0, lastMs: null, totalMs: 0, last: null };
+        renderRunStats();
         repeatTimer = setInterval(() => { if (!termState.busy) runOnce(); }, every);
         ui.stop.disabled = false;
         ui.run.disabled = true;
@@ -8474,6 +8646,7 @@
         if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
         repeating = false;
         repeatShown.clear();
+        if (runStats && !runStats.stopped) { runStats.stopped = Date.now(); renderRunStats(); }
         ui.stop.disabled = true;
         if (ui.run) ui.run.disabled = false;
         log('Stopped');
@@ -8824,7 +8997,12 @@
             el('option', { value: v, textContent: v.toUpperCase(), title: v === 'enc' ? 'RTU framing over TCP, for a serial gateway' : v.toUpperCase() })));
         ui.mode.addEventListener('change', () => { toggleSerial(); ui.cmdDirty = false; refreshPreview(); });
         ui.host = el('input', { placeholder: '10.0.0.5' });
+        // In serial mode the field offers the plant PC's COM ports, read the first
+        // time it is used (1.64).
+        ui.comList = el('datalist', { id: 'mpc-com-ports' });
+        ui.host.addEventListener('focus', () => { if (isSerialMode(ui.mode.value)) loadComPorts(false); });
         ui.hostWrap = field('IP address', ui.host, 6);
+        ui.hostWrap.appendChild(ui.comList);
         ui.hostLabel = ui.hostWrap.querySelector('label');
         ui.port = el('input', { value: '502' });
         ui.portWrap = field('TCP port', ui.port, 2);
@@ -9040,6 +9218,10 @@
             ui.run, ui.stop, pollOnceBtn, field('Every s', ui.every, 2),
             el('span', { className: 'mpc-spacer' }), scanBtn, rediscover, saveBtn, reconnectBtn,
         ]));
+        // Run's tally, under the buttons (1.64)
+        ui.runStats = el('div', { className: 'mpc-runstats mpc-hidden' });
+        ui.runStats.setAttribute('role', 'status');
+        form.appendChild(ui.runStats);
         ui.progressFill = el('div');
         ui.progressText = el('span', { className: 'mpc-ptext' });
         ui.progress = el('div', { className: 'mpc-progress mpc-hidden' }, [
@@ -9326,6 +9508,7 @@
                 'await __modpoll.run()                     poll once with what the form says, as the Poll button does; returns state()',
                 '',
                 'await __modpoll.devices()                 units from the plant database',
+                'await __modpoll.comPorts(refresh)         the plant PC\'s COM ports from its registry, NPort\'s virtual ones included',
                 'await __modpoll.read({host, slave, table, start, count, base, mode, port})',
                 '                                          table: 4 holding, 3 input, 1 discrete, 0 coil',
                 '                                          base:  "printed" (default, -r as given) | "protocol" (adds 1)',
@@ -9382,6 +9565,7 @@
                 grid: gridState(n),
                 card: cardState(),
                 views: api.views(),
+                run: runStats ? Object.assign({}, runStats) : null,
                 results: {
                     poll: lastResult ? { at: lastResult.at, ok: lastResult.ok, spec: lastResult.spec, summary: lastResult.summary } : null,
                     scan: lastScan ? { at: lastScan.at || null, tables: Object.keys(lastScan.tables || {}) } : null,
@@ -9432,6 +9616,8 @@
             await runOnce();
             return api.state();
         },
+        /** The plant PC's COM ports from its registry, NPort's virtual ones included; refresh reads them again. */
+        comPorts(refresh) { return loadComPorts(!!refresh); },
         ready() { return !!(pageWin.w2ui && pageWin.w2ui.sidebar); },
         devices(opts) { return fetchUnits(!!(opts && opts.refresh)); },
         async read(spec) {
