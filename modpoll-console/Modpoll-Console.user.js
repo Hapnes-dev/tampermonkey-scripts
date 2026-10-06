@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.62.1
+// @version      1.62.2
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.2';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5927,8 +5927,8 @@
     /* The log is a terminal transcript in a light, quiet frame (1.62.1): a code
        block's grey, the terminal's own monospace, and each command a block - the
        prompt dimmed, the command in full, the time it ran at the right - with
-       modpoll's answer under it exactly as printed. The banner is dimmed, a
-       register's value set apart from its reference, a time-out or an error red
+       modpoll's answer under it exactly as printed, its banner left out. A
+       register's value is set apart from its reference, a time-out or an error red
        and an opened port green. The console's own notes are blue, and its
        warnings and errors sit on a tinted band with a bar at the left, so
        nothing it says reads as something the device said. */
@@ -5945,7 +5945,6 @@
     #${PANEL_ID} .mpc-log .cmd .prompt{color:#6e7781;font-weight:400}
     #${PANEL_ID} .mpc-log .cmd .time,#${PANEL_ID} .mpc-log .cmd .cmdnote{color:#8c959f;font-weight:400;font-size:11px;white-space:nowrap}
     #${PANEL_ID} .mpc-log .mirror{color:#24292f}
-    #${PANEL_ID} .mpc-log .mirror.dim{color:#8c959f}
     #${PANEL_ID} .mpc-log .mirror.fail{color:#cf222e}
     #${PANEL_ID} .mpc-log .mirror.good{color:#1a7f37}
     #${PANEL_ID} .mpc-log .mirror .ref{color:#6e7781}
@@ -6293,19 +6292,21 @@
 
     const MIRROR_LINE_CAP = 200;
     // How a line of modpoll's answer is shown (1.62.1): its text never changes.
-    const RE_MIRROR_DIM = /^(modpoll\s+-\s+FieldTalk|Copyright|Getopt)/i;
+    // The FieldTalk banner is the same three lines on every run and is left out
+    // (1.62.2): modpoll's name, its copyright and the Getopt library's.
+    const RE_MODPOLL_BANNER = /^(modpoll\s+-\s+FieldTalk|Copyright \(c\)|Getopt Library)/i;
     const RE_MIRROR_FAIL = /time-?out|error|exception|illegal|invalid|refused|not respond|failed|cannot/i;
     const RE_MIRROR_GOOD = /opened successfully/i;
 
     /**
      * One line of modpoll's answer, styled by what it says: a register's value
-     * set apart from its reference, the banner dimmed, a time-out or an error
-     * red, an opened port green, the rest as printed.
+     * set apart from its reference, a time-out or an error red, an opened port
+     * green, the rest as printed.
      */
     function mirrorLine(text) {
         const value = text.match(/^(\s*\[-?\d+\]:)(\s*)(.*)$/);
         if (value) return el('div', { className: 'mirror' }, [el('span', { className: 'ref', textContent: value[1] }), value[2], el('span', { className: 'val', textContent: value[3] })]);
-        const kind = RE_MIRROR_FAIL.test(text) ? ' fail' : (RE_MIRROR_DIM.test(text) ? ' dim' : (RE_MIRROR_GOOD.test(text) ? ' good' : ''));
+        const kind = RE_MIRROR_FAIL.test(text) ? ' fail' : (RE_MIRROR_GOOD.test(text) ? ' good' : '');
         return el('div', { className: 'mirror' + kind, textContent: text });
     }
     // A bare shell prompt: what the terminal prints when a command is done.
@@ -6326,6 +6327,7 @@
             // A repeat prints the same banner every pass, which says nothing the
             // first one did not. Only what is new to this pass is worth a line.
             if (repeating && RE_BANNER.test(line)) continue;
+            if (RE_MODPOLL_BANNER.test(line.trim())) continue;
             if (!line.trim() && (!lines.length || !lines[lines.length - 1].trim())) continue;
             lines.push(line);
         }

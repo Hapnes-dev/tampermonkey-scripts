@@ -183,16 +183,17 @@ rebuilt.
   command sent appears as Plant Term shows it, the shell's prompt and then the
   command (`C:\iwmac\sys_tools\plant_term>modpoll -1 -m rtu …`), whatever sent
   it: a poll, a block of a long one, a scan's probes or the API. modpoll's
-  answer follows exactly as printed: the banner, *Protocol opened
-  successfully.*, *Polling slave (Ctrl-C to stop) ...*, *Reply time-out!*.
-  Nothing is indented, and the blank lines between its blocks are kept, a run
-  of them as one.
+  answer follows exactly as printed — *Protocol configuration …*, *Protocol
+  opened successfully.*, *Polling slave (Ctrl-C to stop) ...*, *Reply
+  time-out!*. The one exception is the FieldTalk banner, the same three lines on
+  every run (modpoll's name, its copyright and the Getopt library's), which is
+  left out (1.62.2). Nothing is indented, and the blank lines between its
+  blocks are kept, a run of them as one.
 
   The frame is light and quiet, a code block's grey in the terminal's
   monospace (the black of 1.62.0 was too heavy). Each command is a block: a
   band with the prompt dimmed, the command in full and the time it was sent at
   the right. In modpoll's answer:
-  - the banner is dimmed;
   - a register's value is set apart from its reference (`[95]:` **207**);
   - a time-out or an error is red, an opened port green.
 
