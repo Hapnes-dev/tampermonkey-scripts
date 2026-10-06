@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.62.4
+// @version      1.62.5
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.4';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.62.5';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -5929,9 +5929,10 @@
     #${PANEL_ID} table.mpc-grid td.mpc-empty{text-align:center;padding:16px;color:#9aa0ac;font:12px Arial,Helvetica,sans-serif}
     #${PANEL_ID} .mpc-sum{grid-column:span 12;font-size:11.5px;color:#4a4f5a;min-height:16px}
     /* The log is a terminal transcript in a light, quiet frame (1.62.1): a code
-       block's grey, the terminal's own monospace, and each command a block - the
-       prompt dimmed, the command in full, the time it ran at the right - with
-       modpoll's answer under it exactly as printed, its banner left out. A
+       block's grey, the terminal's own monospace, and each run starting at a
+       hairline with the time it ran at the right (the command itself is not
+       written out since 1.62.5) - with modpoll's answer under it exactly as
+       printed, its banner left out. A
        register's value is set apart from its reference, a time-out or an error red
        and an opened port green. The console's own notes are blue, and its
        warnings and errors sit on a tinted band with a bar at the left, so
@@ -5942,12 +5943,9 @@
     #${PANEL_ID} .mpc-log{grid-column:span 12;height:220px;overflow-y:auto;overflow-x:hidden;
         font:12px/1.5 Consolas,'Cascadia Mono','Lucida Console',monospace;background:#f6f8fa;border:1px solid #d0d7de;
         border-radius:6px;padding:6px 10px 8px;white-space:pre-wrap;word-break:break-word;color:#0969da}
-    #${PANEL_ID} .mpc-log .cmd{display:flex;gap:12px;align-items:baseline;margin:8px -4px 2px;padding:2px 6px;
-        background:#eaeef2;border-radius:4px;color:#1f2328;font-weight:600}
-    #${PANEL_ID} .mpc-log .cmd:first-child{margin-top:0}
-    #${PANEL_ID} .mpc-log .cmd .cmdtext{flex:1;min-width:0}
-    #${PANEL_ID} .mpc-log .cmd .prompt{color:#6e7781;font-weight:400}
-    #${PANEL_ID} .mpc-log .cmd .time,#${PANEL_ID} .mpc-log .cmd .cmdnote{color:#8c959f;font-weight:400;font-size:11px;white-space:nowrap}
+    #${PANEL_ID} .mpc-log .run{display:flex;align-items:center;gap:8px;margin:8px 0 3px;color:#8c959f;font-size:10.5px;line-height:1}
+    #${PANEL_ID} .mpc-log .run::before{content:'';flex:1;border-top:1px solid #d8dee4}
+    #${PANEL_ID} .mpc-log .run:first-child{margin-top:2px}
     #${PANEL_ID} .mpc-log .mirror{color:#24292f}
     #${PANEL_ID} .mpc-log .mirror.fail{color:#cf222e}
     #${PANEL_ID} .mpc-log .mirror.good{color:#1a7f37}
@@ -6015,28 +6013,23 @@
     }
 
     /**
-     * A command as the terminal shows it (1.62): the shell's prompt, then the
-     * command - what Plant Term would show, and what a cmd window shows - with
-     * an optional note after it, dimmer, that is not part of the command, and
-     * the time it was sent at the right (1.62.1).
+     * Where a command's answer starts in the log (1.62.5): a hairline with the
+     * time it was sent at the right. Thomas asked for the command not to be
+     * shown - it is in the Command box, and the prompt and command written out
+     * in the log read as something he had typed into Plant Term - so the line
+     * only marks where one run ends and the next begins; hovering it gives the
+     * command. Within a repeat it is drawn once, on the first pass. Says
+     * whether it drew it.
      */
-    function logCommand(command, note) {
+    function logCommand(command) {
         if (!ui.log) return false;
         if (repeating) {
             if (repeatShown.has(command)) return false;
             repeatShown.add(command);
         }
-        let prompt = 'C:\\iwmac\\sys_tools\\plant_term>';
-        try {
-            const p = termState.t && termState.t.get_prompt && String(termState.t.get_prompt()).trim();
-            if (p && /^[A-Za-z]:\\.*>$/.test(p)) prompt = p;
-        } catch (e) { /* not connected yet: the prompt Plant Term shows once it is */ }
-        const line = el('div', { className: 'cmd' }, [
-            el('span', { className: 'cmdtext' }, [el('span', { className: 'prompt', textContent: prompt }), command]),
-        ].concat(note ? [el('span', { className: 'cmdnote', textContent: note })] : [],
-            [el('span', { className: 'time', textContent: new Date().toTimeString().slice(0, 8), title: 'When it was sent' })]));
-        // what Copy takes: the line as the terminal shows it, without the time
-        line.dataset.text = prompt + command + (note ? '   ' + note : '');
+        const time = new Date().toTimeString().slice(0, 8);
+        const line = el('div', { className: 'run', title: command }, [el('span', { className: 'time', textContent: time })]);
+        line.dataset.text = '';   // Copy: a blank line between runs
         appendLogLine(line);
         return true;
     }
@@ -6044,7 +6037,7 @@
     /** The strip over the log (1.62.1): its name, Copy - the transcript as text - and Clear. */
     function buildLogHead() {
         const copy = el('button', { className: 'w2ui-btn mpc-b mpc-mini', textContent: 'Copy',
-            title: 'Copy the log as text: every command, modpoll\'s answers and the console\'s notes' });
+            title: 'Copy the log as text: modpoll\'s answers and the console\'s notes, a blank line between runs' });
         copy.addEventListener('click', () => {
             const done = ok => { copy.textContent = ok ? 'Copied' : 'Could not copy'; setTimeout(() => { copy.textContent = 'Copy'; }, 1500); };
             if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(logText()).then(() => done(true), () => done(false));
@@ -6055,7 +6048,7 @@
         return el('div', { className: 'mpc-loghead' }, [el('span', { textContent: 'Terminal · Plant Term' }), el('span', { className: 'mpc-spacer' }), copy, clear]);
     }
 
-    /** The log as plain text, a line each - a command as the terminal shows it, without its time. */
+    /** The log as plain text, a line each, a blank line where a run starts. */
     function logText() {
         return ui.log ? [...ui.log.children].map(d => (d.dataset.text !== undefined ? d.dataset.text : d.textContent)).join('\n') : '';
     }
@@ -8391,9 +8384,6 @@
                 assertReadOnly(command);
                 const raw = await termRun(command, { timeoutMs: readForm().timeoutMs, fullOutput: true });
                 const parsed = parseModpoll(raw);
-                if (!parsed.values.length && !parsed.diagnostics.length) {
-                    for (const line of parsed.notes.slice(0, 3)) log('  ' + line);
-                }
                 // What the typed command asked for, read off its own tokens, so the
                 // grid, the detail view and the export take the table and the
                 // width from the command instead of assuming a 16-bit holding

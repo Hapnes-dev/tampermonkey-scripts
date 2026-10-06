@@ -179,28 +179,25 @@ rebuilt.
   only rose. It says what is happening in words — *Reading discrete inputs
   (1xxxx) at 516 — 519 found · 83 commands · 1:11*, *Looking for where each
   table starts — probe 23 of 56, 9 answering*.
-- **The log is a terminal transcript (1.62.0, restyled light in 1.62.1).** Every
-  command sent appears as Plant Term shows it, the shell's prompt and then the
-  command (`C:\iwmac\sys_tools\plant_term>modpoll -1 -m rtu …`), whatever sent
-  it: a poll, a block of a long one, a scan's probes or the API. modpoll's
-  answer follows exactly as printed — *Protocol configuration …*, *Protocol
-  opened successfully.*, *Polling slave (Ctrl-C to stop) ...*, *Reply
-  time-out!*. The one exception is the FieldTalk banner, the same three lines on
-  every run (modpoll's name, its copyright and the Getopt library's), which is
-  left out (1.62.2). Nothing is indented, and the blank lines between its
-  blocks are kept, a run of them as one.
-
-  The console chains several modpoll runs onto one command line, each after an
-  `echo #mpc:…` marker that tells it where that run's output starts: a long
-  read's blocks, and a scan's probes. Those markers are the console's plumbing,
-  not something anyone typed. Since 1.62.3 the log shows each chained run as a
-  command of its own, prompt and command as the terminal would show it,
-  followed by its own answer, and never the markers.
+- **The log is a terminal transcript (1.62.0, restyled light in 1.62.1).** It
+  holds modpoll's answer to every command sent, whatever sent it: a poll, a block
+  of a long one, a scan's probes or the API. The answer is shown exactly as
+  printed — *Protocol configuration …*, *Protocol opened successfully.*,
+  *Polling slave (Ctrl-C to stop) ...*, *Reply time-out!*. Nothing is indented,
+  and the blank lines between its blocks are kept, a run of them as one. Three
+  things are left out:
+  - The FieldTalk banner (1.62.2), the same three lines on every run: modpoll's
+    name, its copyright and the Getopt library's.
+  - The command itself (1.62.5). It is in the Command box above, and written out
+    with the shell's prompt in front it read as something typed into Plant
+    Term. A hairline with the time the command was sent marks where each
+    answer starts. Hovering the line shows the command.
+  - The `echo #mpc:…` markers (1.62.3). The console chains several modpoll runs
+    onto one command line, each after a marker that tells it where that run's
+    output starts. Each chained run gets its own hairline and its own answer.
 
   The frame is light and quiet, a code block's grey in the terminal's
-  monospace (the black of 1.62.0 was too heavy). Each command is a block: a
-  band with the prompt dimmed, the command in full and the time it was sent at
-  the right. In modpoll's answer:
+  monospace (the black of 1.62.0 was too heavy). In modpoll's answer:
   - a register's value is set apart from its reference (`[95]:` **207**);
   - a time-out or an error is red, an opened port green.
 
@@ -208,16 +205,16 @@ rebuilt.
   band with a bar at the left, so nothing it says can be taken for something
   the device said.
 
-  Over the log, *Copy* takes the transcript as text, each command as the
-  terminal shows it without its time. *Clear* empties the log on screen. The
-  log keeps its last 4 000 lines, as a terminal keeps its scrollback.
+  Over the log, *Copy* takes the transcript as text, with a blank line where
+  each answer starts. *Clear* empties the log on screen. The log keeps its last
+  4 000 lines, as a terminal keeps its scrollback.
 
-  *Repeat* reads as modpoll does when it keeps polling on its own (1.62.4). The
-  command and modpoll's configuration block show once, on the first pass.
+  *Repeat* reads as modpoll does when it keeps polling on its own (1.62.4).
+  modpoll's configuration block and the hairline show once, on the first pass.
   Every pass after that adds only its polling line and its answer:
 
   ```
-  C:\iwmac\sys_tools\plant_term>modpoll -1 -m tcp -a 1 -t 3 -r 24 -c 1 192.168.10.100
+  ─────────────────────────────────────────────── 13:37:08
   Protocol configuration: MODBUS/TCP
   …
   -- Polling slave...
@@ -227,8 +224,8 @@ rebuilt.
   ```
 
   A pass that times out adds *Polling slave (Ctrl-C to stop) ...* and *Reply
-  time-out!*, as cmd shows it. Stop ends the repeat, and the next run shows
-  its command again.
+  time-out!*, as cmd shows it. Stop ends the repeat, and the next run starts
+  at a hairline of its own again.
 - **One export, written for an agent.** *Save JSON* writes everything the
   console knows, as files a Copilot agent can be handed cold to check or correct
   a modbusgen list. Per register: the answer now and the answer before, both
