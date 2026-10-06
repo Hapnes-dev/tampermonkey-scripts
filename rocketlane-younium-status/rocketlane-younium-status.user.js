@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.56.0
+// @version      1.57.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8478,8 +8478,16 @@
     { id: "651325", name: "Andreas Sandnes", short: "Andreas" },
   ];
   const RL_TL_GROUP = { key: "group:cooling", label: "Delivery Cooling" };
-  // One colour per roster position, used only in the team view.
-  const RL_TL_PALETTE = ["#6c4ab6", "#1f9e89", "#d48a00", "#3b7dd8", "#c2418a", "#4c9a2a"];
+  // One colour per roster position, used only in the team view. v1.57.0 (Thomas: "some
+  // colours on name have too similar colours"): the 1.55 set paired violet with blue
+  // and teal with green, and under protanopia two of its colours were all but identical
+  // (worst CIEDE2000 pair 1.7). This set came out of an exhaustive search over 53
+  // colours, scored on the worst pair under normal vision AND simulated deuteranopia and
+  // protanopia, each kept ≥ 22 from the coral TODAY colour: worst pair 25.1 normal /
+  // 22.0 deutan / 21.4 protan. Its closest pair, brown/charcoal, belongs to the two
+  // people with the fewest projects, so it rarely shows side by side.
+  // Matthias violet · Ivar teal · Theophilus brown · Thomas sky · Svein Olav charcoal · Andreas gold.
+  const RL_TL_PALETTE = ["#6c4ab6", "#16a085", "#6d4c41", "#56b4e9", "#1f1b2e", "#a07800"];
 
   function rlTlRosterEntry(id) {
     const s = String(id || "");
