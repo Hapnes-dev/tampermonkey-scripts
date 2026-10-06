@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.62.0
+// @version      1.63.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -5136,6 +5136,12 @@
   //     as CREATE + NOTIFICATION, which reads the feed at once, and the feed is
   //     read with every poll too. Its message ids are the chat API's commentIds,
   //     so a message both roads see is shown once (GM rlChatNotifyAnnounced).
+  //
+  //     v1.63.0 — two silent failures found on Thomas's machine. (1) Windows had
+  //     notifications for Google Chrome turned off, which drops every one of these
+  //     without a trace; the switch now says where to look and has a Test button.
+  //     (2) A tab opened before an update keeps the old code and kept leading, so
+  //     1.62's feed was never read; a tab with a newer version now takes the lead.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlChatNotifyHelpers:start
   /** Sender's user id of a chat comment (`createdBy` is a number there, an object elsewhere). */
@@ -5358,6 +5364,24 @@
    * rather than the time alone. The first read only takes a baseline at `now`: what is
    * in the bell already was seen there. Mutates `state`; returns the new ones, oldest first.
    */
+  /**
+   * True when script version `a` is newer than `b` (pure, v1.63.0) — "1.63.0" > "1.62.9" >
+   * "1.62". A leader record without a version comes from before 1.63, so it is older; an
+   * unreadable `a` is never newer, so a broken GM_info cannot steal the lead.
+   */
+  function rlCnVersionNewer(a, b) {
+    const pa = String(a || "").split(".").map((x) => parseInt(x, 10));
+    if (!pa.length || pa.some((x) => !Number.isFinite(x))) return false;
+    if (!b) return true;
+    const pb = String(b).split(".").map((x) => parseInt(x, 10));
+    if (pb.some((x) => !Number.isFinite(x))) return true;
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return d > 0;
+    }
+    return false;
+  }
+
   const RL_CN_FEED_GRACE_MS = 10 * 60 * 1000;
   const RL_CN_FEED_IDS = 400;
   function rlCnFeedFresh(state, messages, now) {
@@ -5393,7 +5417,13 @@
   const RL_CN_EVENT_DELAY_MS = 600;
   const RL_CN_PER_CHAT = 3;                          // notifications per chat per check; the rest is "+N more"
   const RL_CN_TOGGLE_ID = "rlChatPushToggle";
+  const RL_CN_BAR_ID = "rlChatPushBar";
+  const RL_CN_TEST_ID = "rlChatPushTest";
   const rlCnTabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // The running script's version (v1.63.0): a tab with a newer one takes the lead (rlCnHoldsLead).
+  const RL_CN_VERSION = (() => {
+    try { return String((GM_info && GM_info.script && GM_info.script.version) || ""); } catch (_) { return ""; }
+  })();
   let rlCnProjects = { at: 0, userId: "", list: [] };
   let rlCnChain = Promise.resolve();
   let rlCnTicking = false;
@@ -5710,7 +5740,7 @@
     }
     const live = [...wanted.keys()].filter((n) => inst.channel?.(n)?.subscribed).length;
     const user = !!(rlCnUserBound && rlCnUserBound.ch.subscribed);
-    try { GM_setValue(RL_CN_GM_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size, user })); } catch (_) {}
+    try { GM_setValue(RL_CN_GM_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size, user, v: RL_CN_VERSION })); } catch (_) {}
     return live;
   }
   function rlCnStopLive() {
@@ -5726,16 +5756,24 @@
   function rlCnReadLeader() {
     try { return JSON.parse(GM_getValue(RL_CN_GM_LEADER, "") || "null"); } catch (_) { return null; }
   }
-  /** True when this tab listens and polls. A stale leader is replaced by claiming; the claim is confirmed one tick later. */
+  /**
+   * True when this tab listens and polls. A stale leader is replaced by claiming; the claim
+   * is confirmed one tick later. Since v1.63.0 a tab running a NEWER version of the script
+   * claims from a live leader too: a tab opened before an update keeps the old code until it
+   * is reloaded, and while such a tab led, 1.62's feed was never read at all (2026-10-06).
+   * The old tab sees another id at its next tick and stands down — every version does that.
+   */
   function rlCnHoldsLead() {
     const lead = rlCnReadLeader();
     const now = Date.now();
+    const mine = JSON.stringify({ id: rlCnTabId, at: now, v: RL_CN_VERSION });
     if (lead && lead.id === rlCnTabId) {
-      try { GM_setValue(RL_CN_GM_LEADER, JSON.stringify({ id: rlCnTabId, at: now })); } catch (_) {}
+      try { GM_setValue(RL_CN_GM_LEADER, mine); } catch (_) {}
       return true;
     }
-    if (lead && now - (Number(lead.at) || 0) < RL_CN_LEADER_STALE_MS) return false;
-    try { GM_setValue(RL_CN_GM_LEADER, JSON.stringify({ id: rlCnTabId, at: now })); } catch (_) {}
+    const fresh = lead && now - (Number(lead.at) || 0) < RL_CN_LEADER_STALE_MS;
+    if (fresh && !rlCnVersionNewer(RL_CN_VERSION, lead.v)) return false;
+    try { GM_setValue(RL_CN_GM_LEADER, mine); } catch (_) {}
     return false;
   }
   function rlCnReleaseLead() {
@@ -5792,12 +5830,20 @@
     st.id = "rlChatPushToggleStyles";
     st.textContent = `
       .ant-drawer-header.rlCnHdr { position: relative; }
-      #${RL_CN_TOGGLE_ID} {
+      #${RL_CN_BAR_ID} {
         position: absolute; right: 60px; top: 50%; transform: translateY(-50%); z-index: 2;
+        display: inline-flex; align-items: center; gap: 6px;
+      }
+      #${RL_CN_TOGGLE_ID} {
         display: inline-flex; align-items: center; gap: 6px;
         padding: 4px 12px; border-radius: 999px; border: 1px solid #cbd5e1;
         background: #f1f5f9; color: #334155; font: 600 12px/18px inherit; cursor: pointer; white-space: nowrap;
       }
+      #${RL_CN_TEST_ID} {
+        padding: 4px 10px; border-radius: 999px; border: 1px solid #cbd5e1;
+        background: #fff; color: #475569; font: 600 12px/18px inherit; cursor: pointer; white-space: nowrap;
+      }
+      #${RL_CN_TEST_ID}:hover { background: #f1f5f9; }
       #${RL_CN_TOGGLE_ID}:hover { filter: brightness(0.97); }
       #${RL_CN_TOGGLE_ID}[data-on="1"] { background: #dcfce7; border-color: #86efac; color: #166534; }
       #${RL_CN_TOGGLE_ID} .rlCnDot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .35; }
@@ -5830,11 +5876,25 @@
         ? "Last chat message heard live: " + (sameDay ? "" : rlTlFmtDate(rlTlIsoOf(heard)) + " ") + rlHpFmtClock(heard) + "."
         : "No chat message heard live yet.");
       lines.push("A full check also runs every " + (live.channels > 0 ? "5 minutes" : "minute") + ", in case one is missed.");
+      lines.push(!live.v || rlCnVersionNewer(RL_CN_VERSION, live.v)
+        ? "The listening tab runs an older version" + (live.v ? " (" + live.v + ")" : "") + "; this one takes over within a minute."
+        : "Listening in a tab running version " + live.v + ".");
     } else {
       lines.push("Not live right now — checked every minute.");
     }
+    lines.push(RL_CN_WINDOWS_HINT);
     lines.push("Click to turn off.");
     return lines.join("\n");
+  }
+  // Found 2026-10-06: Windows had Google Chrome's notifications off, which silently drops
+  // every one of these — Chrome and Tampermonkey cannot tell, so the switch says where to look.
+  const RL_CN_WINDOWS_HINT = "Nothing pops up? In Windows Settings → System → Notifications, Google Chrome must be on.";
+  function rlCnSendTest() {
+    rlCnNotify({
+      title: "Rocketlane chat notifications" + (rlCnEnabled() ? "" : " (turned off)"),
+      text: "Test — a new chat message will look like this. Clicking it opens the chat.",
+      tag: "rl-chat-test",
+    });
   }
   function rlCnMountToggle() {
     if (!/notifications=show/.test(location.hash || "")) return;
@@ -5844,6 +5904,19 @@
     let btn = hdr.querySelector("#" + RL_CN_TOGGLE_ID);
     if (!btn) {
       rlCnInjectToggleStyles();
+      const bar = document.createElement("div");
+      bar.id = RL_CN_BAR_ID;
+      // A test one click away (v1.63.0) — it was only in the Tampermonkey menu.
+      const test = document.createElement("button");
+      test.type = "button";
+      test.id = RL_CN_TEST_ID;
+      test.textContent = "Test";
+      test.title = "Send a test notification now.\n" + RL_CN_WINDOWS_HINT;
+      test.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        rlCnSendTest();
+      });
       btn = document.createElement("button");
       btn.type = "button";
       btn.id = RL_CN_TOGGLE_ID;
@@ -5853,8 +5926,9 @@
         rlCnSetEnabled(!rlCnEnabled());
         rlCnPaintToggle(btn);
       });
+      bar.append(test, btn);
       hdr.classList.add("rlCnHdr");
-      hdr.appendChild(btn);
+      hdr.appendChild(bar);
     }
     rlCnPaintToggle(btn);
   }
@@ -5864,13 +5938,7 @@
     if (window.top !== window.self) return;
     try {
       GM_registerMenuCommand("Chat notifications on/off", () => rlCnSetEnabled(!rlCnEnabled()));
-      GM_registerMenuCommand("Chat notifications: send a test", () => {
-        rlCnNotify({
-          title: "Rocketlane chat notifications" + (rlCnEnabled() ? "" : " (turned off)"),
-          text: "Test — a new chat message will look like this. Clicking it opens the chat.",
-          tag: "rl-chat-test",
-        });
-      });
+      GM_registerMenuCommand("Chat notifications: send a test", rlCnSendTest);
     } catch (_) {}
     window.addEventListener("pagehide", () => { rlCnStopLive(); rlCnReleaseLead(); });
     setTimeout(() => void rlCnTick(), 4000);
