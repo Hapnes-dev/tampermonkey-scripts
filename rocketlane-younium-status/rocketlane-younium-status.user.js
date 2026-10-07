@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.65.0
+// @version      1.66.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -87,8 +87,9 @@
  *     connection, with a poll as the safety net. On/off switch in the
  *     Notifications panel header and in the Tampermonkey menu.
  *  1g. Chat macros (section 5d++, v1.65.0). Typing "/" in a chat message box
- *     lists ready-made messages (/Request_Feedback, /Project_Closed) with a
- *     preview of each; Enter, Tab or a click fills the box. Nothing is sent.
+ *     lists ready-made messages (/Project_Start, /Request_Feedback,
+ *     /Project_Closed) with a preview of each; Enter, Tab or a click fills
+ *     the box. Nothing is sent.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -6023,7 +6024,17 @@
   //     Enter in an open list must never send "/Request_Feedback" as a message.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlChatMacroHelpers:start
+  // In the order they come in a project: start, rating, close.
   const RL_CHAT_MACROS = [
+    {
+      name: "Project_Start",
+      title: "Start-up date and documentation",
+      paragraphs: [
+        "Hei,",
+        "Gi oss gjerne beskjed dersom anlegget settes i drift på et annet tidspunkt enn det som er registrert i avtalen.",
+        "Dersom underlaget ikke allerede er sendt inn, ber vi om at det lastes opp i dette prosjektet, enten via chatten eller under \"All files\".",
+      ],
+    },
     {
       name: "Request_Feedback",
       title: "Ask for a rating of the delivery",
