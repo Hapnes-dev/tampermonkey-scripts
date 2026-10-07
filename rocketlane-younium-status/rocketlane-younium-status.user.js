@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.66.0
+// @version      1.66.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -12925,16 +12925,19 @@
   // @@rlMatchRuntime:end
 
 
-  // The task that carries the "Attach links:" block. Newer projects call it
-  // "URL's for checking and invoicing"; older ones "Internal Quality control and
-  // notes". A project has one or the other, never both (checked across
-  // 1458650, 1426801, 1189195 and 1206343), so the first match wins and the
-  // order only decides which name is preferred when a project somehow has both.
+  // @@rlLinkTaskHelpers:start
+  // The task that carries the "Attach links:" block is "URL's for checking and
+  // invoicing". Older projects only have "Internal Quality control and notes",
+  // which carries it there instead. Newer projects have both — 1485323 has
+  // "URL's for checking and invoicing" (45520142) and "Internal quality
+  // control" (45520150) — and up to 1.66.0 the QC task was tried first, so
+  // Save URLs wrote the links into it. The URL task now wins whenever it
+  // exists; the QC task is only the fallback for projects without one.
   const RL_LINK_TASK_PATTERNS = [
-    /\binternal\s+(?:quality\s+control|qc)\b/i,
     /\burl'?s?\b[\s\S]{0,40}\binvoic/i,
+    /\binternal\s+(?:quality\s+control|qc)\b/i,
   ];
-  const RL_LINK_TASK_NAMES = '"Internal Quality control and notes" or "URL\'s for checking and invoicing"';
+  const RL_LINK_TASK_NAMES = '"URL\'s for checking and invoicing" (older projects: "Internal Quality control and notes")';
   function rlFindLinkTask(list) {
     for (const re of RL_LINK_TASK_PATTERNS) {
       const hit = (list || []).find((t) => re.test(String(t?.taskName || t?.name || "").trim()));
@@ -12942,6 +12945,21 @@
     }
     return null;
   }
+  /**
+   * The slots whose URL is not in the saved task description (pure). A 2xx
+   * from the tenant API is not proof the write did what was asked, so Save
+   * reads the task back and checks every link it wrote — raw or as the
+   * escaped href it is written as.
+   */
+  function rlLinksMissingFromHtml(html, links, keys) {
+    const s = String(html || "");
+    const esc = (u) => u.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return (Array.isArray(keys) ? keys : []).filter((k) => {
+      const url = String(links?.[k] || "").trim();
+      return url && !s.includes(url) && !s.includes(esc(url));
+    });
+  }
+  // @@rlLinkTaskHelpers:end
 
   async function rlFetchIqcTask(rlProjectId) {
     const empty = {
@@ -12983,6 +13001,14 @@
     });
     const verify = await rlFetchIqcTask(pid);
     if (!verify.found) throw new Error("The links task vanished after saving — nothing was confirmed.");
+    // Read back and check: every link written must be in the task now.
+    const missing = rlLinksMissingFromHtml(verify.descriptionHtml, links, rlIqcAttachLinkSlots().map((s) => s.key));
+    if (verify.taskId !== fresh.taskId || missing.length) {
+      const label = (k) => rlIqcAttachLinkSlots().find((s) => s.key === k)?.label || k;
+      throw new Error("Saved to “" + (fresh.taskName || "the links task") + "”, but " +
+        (missing.length ? missing.map(label).join(", ") + " did not come back from it" : "a different task came back") +
+        ". Check the task and save again.");
+    }
     rlProjectLinksCache.delete(pid);
     rlProjectLinksInflight.delete(pid);
     return verify;
@@ -14758,8 +14784,10 @@
         rlPatchActionBar(bar, refreshed, ctx);
       }
       if (meta) {
-        meta.textContent = "Saved on “" + (verify.taskName || "IQC") + "” · task " + verify.taskId + ".";
+        meta.textContent = "Saved in “" + (verify.taskName || "the links task") + "” · task " + verify.taskId + ".";
       }
+      // The dialog closes, so say where the links went where it stays visible.
+      rlCatToast("Links saved in “" + (verify.taskName || "the links task") + "”.");
       try { dlg.close(); } catch (_) {}
     } catch (e) {
       if (meta) meta.textContent = "Save failed: " + (e?.message ?? e);
@@ -14826,13 +14854,13 @@
       const n = rlCountFilledLinks(merged);
       if (meta) {
         meta.textContent = (iqc.found
-          ? ("IQC task “" + (iqc.taskName || "Internal QC") + "” · id " + iqc.taskId + ". ")
-          : "No IQC task found yet — Save will fail until it exists. ") +
+          ? ("Links task “" + (iqc.taskName || "URL's for checking and invoicing") + "” · id " + iqc.taskId + ". ")
+          : "No links task found (" + RL_LINK_TASK_NAMES + ") — Save will fail until it exists. ") +
           "Prefill: " + n + " link(s) from the project. Looking every slot up now — a filled slot is never overwritten unless you pick.";
       }
       if (btn) {
         btn.title = n
-          ? ("Chooser open — " + n + " link(s) discovered. Save writes Attach links on the IQC task.")
+          ? ("Chooser open — " + n + " link(s) discovered. Save writes Attach links on the links task.")
           : "Chooser open — no links discovered yet. Use Find or paste, then Save.";
       }
       // Look every slot up straight away: an empty slot fills itself when the
