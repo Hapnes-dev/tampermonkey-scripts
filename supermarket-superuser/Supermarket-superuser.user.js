@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      5.0.5
+// @version      5.1.0
 // @description  filters, move mode, graphics lookup and batch editing of driver parameters, with Excel export
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -20,7 +20,7 @@
     const POC_STYLE_ID = 'sm_params_poc_style';
     // MÅ følge @version: brukes som `__SM_POC_WATCHER_VERSION`-nøkkel. Lik verdi i to installerte
     // kopier ville fått den andre til å hoppe over hele watcher-oppsettet (ingen kontekstmeny).
-    const SCRIPT_VERSION = '5.0.5';
+    const SCRIPT_VERSION = '5.1.0';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -2014,10 +2014,15 @@
     // IWMACs native rader har ingen driver_id — der brukes EKSAKT alias mot bildets alias_text,
     // ikke lenger delstreng-søk i hele json-blobben (det var kilden til feiltreff).
     function gfxPanelsForRow(rowData) {
+        return gfxPanelsMatching(gfxState.panels, rowData);
+    }
+
+    // Same match against any panel list (the Excel export looks up units that are not on screen).
+    function gfxPanelsMatching(panels, rowData) {
         const driverId = String(rowData?.driverId || '').trim();
         const alias = gfxNormAlias(rowData?.aliasText);
         if (driverId.length < 4 && !alias) return [];
-        return gfxState.panels.filter((p) => (
+        return (panels || []).filter((p) => (
             p.elements.some((el) => (driverId.length > 3 && el.driverId === driverId)
                 || (!!alias && gfxNormAlias(el.alias) === alias))
             || (p.raw && driverId.length > 3 && p.raw.includes(driverId))
@@ -2383,6 +2388,47 @@
         return applyGfxStateToAllRows();
     }
 
+    // used_in_graphics: menu codes ([X]) the unit's graphics refer to.
+    async function fetchUnitMenuList(unitId, plantId) {
+        const url = `http://toolbox.iwmac.local/oets/supermarket/get_unit_menu.php?enhetsid=${encodeURIComponent(unitId)}&plant_id=${encodeURIComponent(plantId)}`;
+        const response = await fetchWithTimeout(url, { cache: 'no-cache' });
+        const data = await response.json();
+        if (!data?.success || !Array.isArray(data.menu_list)) {
+            throw new Error(data?.error || 'Ukjent API-feil');
+        }
+        return data.menu_list;
+    }
+
+    // Graphics usage for one unit, for the Excel export. Reuses what the
+    // highlight already loaded for that unit; otherwise fetches the same two
+    // sources without touching the on-screen highlight. The panel lookup is the
+    // precise one, so only its failure counts as "unknown" (throws).
+    async function graphicsLookupForUnit(plantId, unitId) {
+        if (gfxState.loaded && gfxState.key === `${plantId}|${unitId}`) {
+            return { menus: gfxState.menus, panels: gfxState.panels };
+        }
+        let menus = new Set();
+        try {
+            const menuList = await fetchUnitMenuList(unitId, plantId);
+            menus = new Set(menuList.map((item) => String(item || '').trim()).filter(Boolean));
+        } catch (error) {
+            console.log('[Supermarket Parameters POC] export used_in_graphics lookup failed:', error);
+        }
+        const panels = await fetchGraphicsPanelsForUnit(unitId, plantId);
+        return { menus, panels };
+    }
+
+    // The "In graphics" cell: picture names the parameter is placed in, "Yes"
+    // when only its [menu] code is listed as used, "No" when neither, and blank
+    // when the lookup failed (unknown, not "No").
+    function graphicsUsageText(lookup, rowData) {
+        if (!lookup) return '';
+        const names = [...new Set(gfxPanelsMatching(lookup.panels, rowData))];
+        if (names.length) return names.join('; ');
+        const menu = menuCodeOfRowData(rowData);
+        return menu && lookup.menus.has(menu) ? 'Yes' : 'No';
+    }
+
     async function highlightUsedInGraphicsFromAllParams() {
         const unitId = getUnitId();
         const plantId = getPlantId();
@@ -2397,15 +2443,10 @@
             return;
         }
 
-        const url = `http://toolbox.iwmac.local/oets/supermarket/get_unit_menu.php?enhetsid=${encodeURIComponent(unitId)}&plant_id=${encodeURIComponent(plantId)}`;
         try {
-            const response = await fetchWithTimeout(url, { cache: 'no-cache' });
-            const data = await response.json();
-            if (!data?.success || !Array.isArray(data.menu_list)) {
-                throw new Error(data?.error || 'Ukjent API-feil');
-            }
+            const menuList = await fetchUnitMenuList(unitId, plantId);
             gfxState.panels = [];
-            const count = highlightAllParamsUsedInGraphics(data.menu_list);
+            const count = highlightAllParamsUsedInGraphics(menuList);
             showHint(`Highlight used_in_graphics: ${count} rad(er) markert. Henter grafikk-paneler...`);
         } catch (error) {
             console.log('[Supermarket Parameters POC] used_in_graphics error:', error);
@@ -5645,10 +5686,10 @@
                         progress is shown at the bottom, and units that fail are skipped and counted in the final message.
                         The <em>All units</em> sheet has a collapsible block per unit with the group blocks inside — use Excel's
                         <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> outline buttons (top-left corner) to collapse the whole plant to unit rows.
-                        Columns: Unit ID, Unit name, Group, Alias text, Value, Eng unit, Access, Allowed values, Type, Application, Driver ID.</li>
+                        Columns: Unit ID, Unit name, Group, Alias text, Value, Eng unit, Access, Allowed values, Type, Application, Driver ID, In graphics.</li>
                         <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Vis alle parameter) – downloads the open
                         unit only, as one <em>Parameters</em> sheet (columns Group, Unit ID, Unit name, Alias text, Value, Eng unit, Access,
-                        Allowed values, Type, Application, Driver ID), with the writable rows first within each group. Column filters are
+                        Allowed values, Type, Application, Driver ID, In graphics), with the writable rows first within each group. Column filters are
                         respected — filter first to export just those rows.</li>
                     </ul>
                     <p>Both files are real <code>.xlsx</code> workbooks:</p>
@@ -5663,6 +5704,9 @@
                         <li><strong>Unit ID, Unit name, Type, Application</strong> – the same columns the IWMAC Designer parameter export
                         shows, read straight from the driver-parameter table at export time, so the two files line up side by side.
                         (Designer's <em>Tag</em> and <em>SGR</em> are not available on the plant and are left out.)</li>
+                        <li><strong>In graphics</strong> – the graphics pictures the parameter is placed in (same matching as the
+                        green highlight). <code>Yes</code> = only its [menu] code is used in graphics, <code>No</code> = not used,
+                        blank = the lookup failed for that unit. Sort or filter on it to see what is shown in the pictures.</li>
                         <li>Numeric values are real Excel numbers (sortable/summable), and the final message tells you how many of the
                         exported parameters are writable.</li>
                     </ul>
@@ -5935,8 +5979,9 @@
     // Allowed values. Tag and SGR are deliberately absent — they live in the
     // Designer's own paramgrid on legacy.iwmac.local, not in the plant's
     // iw_gen_driver_parameters, so there is nothing to read them from here.
-    const EXPORT_HEADER = ['Group', 'Unit ID', 'Unit name', 'Alias text', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Type', 'Application', 'Driver ID'];
-    const EXPORT_COL_WIDTHS = [24, 18, 30, 46, 14, 10, 16, 34, 12, 16, 38];
+    // In graphics comes last so the Designer's own column order is untouched.
+    const EXPORT_HEADER = ['Group', 'Unit ID', 'Unit name', 'Alias text', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Type', 'Application', 'Driver ID', 'In graphics'];
+    const EXPORT_COL_WIDTHS = [24, 18, 30, 46, 14, 10, 16, 34, 12, 16, 38, 36];
 
     // ONE sheet for everything: one collapsible block per parameter group (a
     // styled band row with the +/- outline button, parameters at outlineLevel
@@ -5963,8 +6008,8 @@
         return rows;
     }
 
-    const ALL_UNITS_EXPORT_HEADER = ['Unit ID', 'Unit name', 'Group', 'Alias text', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Type', 'Application', 'Driver ID'];
-    const ALL_UNITS_COL_WIDTHS = [18, 30, 22, 46, 14, 10, 16, 32, 12, 16, 34];
+    const ALL_UNITS_EXPORT_HEADER = ['Unit ID', 'Unit name', 'Group', 'Alias text', 'Value', 'Eng unit', 'Access', 'Allowed values', 'Type', 'Application', 'Driver ID', 'In graphics'];
+    const ALL_UNITS_COL_WIDTHS = [18, 30, 22, 46, 14, 10, 16, 32, 12, 16, 34, 36];
 
     // A single-unit row is [Group, Unit ID, Unit name, ...rest]; the all-units
     // sheet leads with the unit instead, so the first three swap around.
@@ -6072,8 +6117,9 @@
     // exported driver_id, turning the collected [group, alias, value, engUnit,
     // driverId] rows into full EXPORT_HEADER rows. Failures degrade to
     // side-based Access, the caller's unit fallback and blank Allowed
-    // values/Type/Application columns.
-    async function enrichExportRowsWithAccess(sheets, fallback = {}) {
+    // values/Type/Application columns. `graphics` is the unit's
+    // graphicsLookupForUnit result (null = lookup failed, column left blank).
+    async function enrichExportRowsWithAccess(sheets, fallback = {}, graphics = null) {
         const ids = [...new Set(sheets.flatMap(({ rows }) => rows.map((row) => row[4])).filter(Boolean))];
         const plantId = getPlantId();
         let byId = new Map();
@@ -6103,7 +6149,8 @@
                 allowedValuesText(dbRow),
                 normalizeExportText(dbRow?.parameter_type),
                 normalizeExportText(dbRow?.application),
-                row[4]
+                row[4],
+                graphicsUsageText(graphics, { groupName: row[0], aliasText: row[1], driverId: row[4] })
             ];
         }));
     }
@@ -6135,10 +6182,15 @@
             return;
         }
         const unitId = getUnitId() || '';
+        showHint('Checking which parameters are used in graphics...');
+        const graphics = await graphicsLookupForUnit(getPlantId(), unitId).catch((error) => {
+            console.log('[Supermarket Parameters POC] export graphics lookup failed:', error);
+            return null;
+        });
         [measurements, settings] = await enrichExportRowsWithAccess([
             { rows: measurements, side: 'measurements' },
             { rows: settings, side: 'settings' }
-        ], { unitId, unitName: unitLabelFor(unitId) });
+        ], { unitId, unitName: unitLabelFor(unitId) }, graphics);
         try {
             const blob = buildXlsxBlob([
                 { name: 'Parameters', rows: buildCombinedExportRows(measurements, settings) }
@@ -6149,7 +6201,10 @@
             const writableNote = writableCount
                 ? ` (${writableCount} writable)`
                 : ' (no writable parameters on this unit)';
-            showHint(`Exported ${measurements.length + settings.length} parameters to Excel${writableNote}.`);
+            const usedCount = [...measurements, ...settings]
+                .filter((row) => !/^(No)?$/.test(String(row[11] || ''))).length;
+            const graphicsNote = graphics ? `, ${usedCount} used in graphics` : ', graphics lookup failed';
+            showHint(`Exported ${measurements.length + settings.length} parameters to Excel${writableNote}${graphicsNote}.`);
         } catch (error) {
             console.log('[Supermarket Parameters POC] Excel export error:', error);
             alert('Could not export to Excel: ' + error.message);
@@ -6171,7 +6226,8 @@
             '',
             'This fetches every parameter from every unit and can take several',
             'minutes on large plants. The file gets one collapsible block per',
-            'unit (group blocks inside), plus Access and Allowed values.',
+            'unit (group blocks inside), plus Access, Allowed values and',
+            'which graphics each parameter is used in.',
             '',
             'Continue?'
         ].join('\n'));
@@ -6179,6 +6235,7 @@
 
         const blocks = [];
         const failedUnits = [];
+        const graphicsFailedUnits = [];
         for (let i = 0; i < units.length; i++) {
             const unit = units[i];
             const label = `Unit ${i + 1}/${units.length} (${unit.text})`;
@@ -6191,10 +6248,16 @@
                 let measurements = exportRowsFromFetchedParams(data.measurements);
                 let settings = exportRowsFromFetchedParams(data.settings);
                 if (!measurements.length && !settings.length) continue;
+                showHint(`${label}: checking graphics usage...`);
+                const graphics = await graphicsLookupForUnit(plantId, unit.value).catch((error) => {
+                    console.log('[Supermarket Parameters POC] all-units export graphics lookup failed for unit:', unit.text, error);
+                    graphicsFailedUnits.push(unit.text);
+                    return null;
+                });
                 [measurements, settings] = await enrichExportRowsWithAccess([
                     { rows: measurements, side: 'measurements' },
                     { rows: settings, side: 'settings' }
-                ], { unitId: unit.value, unitName: normalizeExportText(unit.text) });
+                ], { unitId: unit.value, unitName: normalizeExportText(unit.text) }, graphics);
                 blocks.push({ unitText: unit.text, unitId: unit.value, measurements, settings });
             } catch (error) {
                 console.log('[Supermarket Parameters POC] all-units export failed for unit:', unit.text, error);
@@ -6218,7 +6281,8 @@
             const writable = blocks.reduce((sum, block) => (
                 sum + [...block.measurements, ...block.settings].filter((row) => /write/i.test(String(row[6] || ''))).length
             ), 0);
-            const failNote = failedUnits.length ? `, ${failedUnits.length} unit(s) failed` : '';
+            const failNote = (failedUnits.length ? `, ${failedUnits.length} unit(s) failed` : '')
+                + (graphicsFailedUnits.length ? `, graphics lookup failed for ${graphicsFailedUnits.length} unit(s)` : '');
             showHint(`Exported ${total} parameters from ${blocks.length} units (${writable} writable${failNote}).`);
         } catch (error) {
             console.log('[Supermarket Parameters POC] all-units export error:', error);

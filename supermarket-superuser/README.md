@@ -11,6 +11,9 @@ By ØTS / MATS / Hapnes. Console tag: `[Supermarket Parameters POC]`, CSS/id pre
 > column names. The sections below still describe the pre-5.0 feature set; the
 > graphics-panel features the upstream added are not documented here yet.
 >
+> **v5.1.0.** Both Excel exports gain an **In graphics** column: the pictures each
+> parameter is placed in, so the sheet can be sorted and filtered by graphics use.
+>
 > **v5.0.5.** The unit picker gains **Newest**/**Oldest** (sort by the unit's date in
 > the database, `row_date`) and **Recent** (the last 10 units picked on this plant);
 > `↑`/`↓` now switch unit straight away, with the list open or closed. A code glued
@@ -76,8 +79,8 @@ Every batch write is **verified**: the rows are re-selected from the DB afterwar
 ### Excel export
 A genuine `.xlsx` is built from scratch in the page (store-only ZIP + CRC32 + minimal SpreadsheetML + styles — the script runs `@grant none`, so no GM APIs or libraries). Two scopes (v4.13):
 
-- **Export all units** (toolbar) — after a `window.confirm` warning, fetches every unit on the plant sequentially and builds one **`All units`** sheet with a *two-level* collapsible outline: a gray-blue **unit band** per unit (id in column A, name + count in column B), header-blue group bands inside, parameters at the innermost level. Columns **Unit ID / Unit name / Group / Alias text / Value / Eng unit / Access / Allowed values / Type / Application / Driver ID** (v4.16), filename `parameters_<plant>_all-units_<stamp>.xlsx`. Failed units are skipped and counted in the final hint; Excel's `1 2 3` outline buttons collapse the whole plant to unit rows.
-- **Export unit** (inside Show all parameters) — the open unit only: one combined **`Parameters`** sheet, every row marked `Read` or `Read/write`, writable rows first within each group; columns **Group / Unit ID / Unit name / Alias text / Value / Eng unit / Access / Allowed values / Type / Application / Driver ID** (v4.16), filename `parameters_<plant>_<unit>_<stamp>.xlsx`. Respects the active column filters.
+- **Export all units** (toolbar) — after a `window.confirm` warning, fetches every unit on the plant sequentially and builds one **`All units`** sheet with a *two-level* collapsible outline: a gray-blue **unit band** per unit (id in column A, name + count in column B), header-blue group bands inside, parameters at the innermost level. Columns **Unit ID / Unit name / Group / Alias text / Value / Eng unit / Access / Allowed values / Type / Application / Driver ID / In graphics** (v4.16, v5.1), filename `parameters_<plant>_all-units_<stamp>.xlsx`. Failed units are skipped and counted in the final hint; Excel's `1 2 3` outline buttons collapse the whole plant to unit rows.
+- **Export unit** (inside Show all parameters) — the open unit only: one combined **`Parameters`** sheet, every row marked `Read` or `Read/write`, writable rows first within each group; columns **Group / Unit ID / Unit name / Alias text / Value / Eng unit / Access / Allowed values / Type / Application / Driver ID / In graphics** (v4.16, v5.1), filename `parameters_<plant>_<unit>_<stamp>.xlsx`. Respects the active column filters.
 
 Both column sets are the **IWMAC Designer parameter export's** columns, under the same names, plus the two this script alone can fill (live `Value` and `Allowed values`) — so a Designer export and a Supermarket export of the same unit line up side by side. Designer's `Tag` and `SGR` are the only columns left out: they exist in the Designer's own paramgrid on `legacy.iwmac.local`, not in the plant's `iw_gen_driver_parameters`, so there is nothing on the plant to read them from (v4.16).
 
@@ -90,6 +93,7 @@ Both workbooks are styled and interactive (v4.7–4.13):
 - Every row gets **Allowed values** when the parameter defines them: the enum options from `format_extra` (`0 = OFF / 1 = ON`, `0 = Not used / 1 = High priority / …`) or the `range_min`–`range_max` limits (`-60.0 to 50.0`). For writable rows that's what you can change the value to; for read-only rows it describes the possible states/range (v4.12).
 - **Unit ID / Unit name / Type / Application** come from the same per-driver_id lookup as Access (`p.unit_id`, `p.unit_name`, `p.parameter_type`, `p.application`); if the lookup fails the unit columns fall back to the unit dropdown and Type/Application stay blank (v4.16).
 - **Driver ID** comes straight from the RPC data (the all-units export never touches the DOM); the legacy single-group path fetches ids through the same `settings.php` RPC the page itself uses (left blank if that fails).
+- **In graphics** (v5.1, last column so the Designer column order is untouched) lists the graphics pictures the parameter is placed in (`360.601 - Romsoner; Oversikt`), using the same lookup and matching as the green *used in graphics* highlight: picture objects matched by driver_id or exact alias, scoped to the unit. `Yes` means only the parameter's `[menu]` code is listed as used in graphics, `No` means neither, and a blank cell means the lookup failed for that unit (unknown, not no). The single-unit export reuses an already-loaded highlight; the all-units export does one extra lookup per unit, and the final hint counts units whose lookup failed.
 
 ## How it works (short)
 
