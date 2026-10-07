@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.66.1
+// @version      1.67.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -7974,6 +7974,16 @@
   ];
 
   /** Dialog choice order: order-info first, then template, custom, then presets. */
+  /**
+   * "YYYY-MM-DD" of `date` (default now) in local time. toISOString() gives the
+   * UTC day, which in Norway is still yesterday until 01:00/02:00.
+   */
+  function rlCatLocalDateStr(date) {
+    const d = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
   function rlCatDialogChoices() {
     return [
       { value: "__orderinfo__", label: "From order info / HubSpot line items", kind: "orderinfo" },
@@ -12070,7 +12080,7 @@
     if (e.key === "Escape") rlCatCloseDialog();
   }
 
-  function rlCatOpenAddCategoryDialog(projectId) {
+  function rlCatOpenAddCategoryDialog(projectId, dialogOpts) {
     rlCatInjectStyles();
     rlCatCloseDialog();
     const pid = String(projectId || getOneflowContext()?.rlProjectId || "").trim();
@@ -12086,7 +12096,7 @@
 
     const title = document.createElement("div");
     title.className = "rlCatTitle";
-    title.textContent = "Add category";
+    title.textContent = (dialogOpts && dialogOpts.title) || "Add category";
     card.appendChild(title);
 
     const mkField = (labelText) => {
@@ -12121,8 +12131,8 @@
     nameField.appendChild(nameInput);
     card.appendChild(nameField);
 
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const dateField = mkField("Date (start → due)");
+    const todayStr = rlCatLocalDateStr();
+    const dateField = mkField("Date for the new categories and their tasks (start → due)");
     const dateRow = document.createElement("div");
     dateRow.className = "rlCatTypeRow";
     const startInput = document.createElement("input");
@@ -12251,7 +12261,8 @@
     overlay.appendChild(card);
     document.body.appendChild(overlay);
     setTimeout(() => {
-      if (presetSel.value === "__orderinfo__") createBtn.focus();
+      if (dialogOpts && dialogOpts.focusDate) startInput.focus();
+      else if (presetSel.value === "__orderinfo__") createBtn.focus();
       else nameInput.focus();
     }, 30);
   }
@@ -12307,8 +12318,10 @@
     }
     rlCatCloseChooseTemplatesDialog();
     const pid = String(getOneflowContext()?.rlProjectId || "").trim();
+    // Ask for the date first (v1.67.0): this used to insert at once, so every
+    // new category and task landed on today.
     setTimeout(() => {
-      void rlCatImportFromOrderInfo(pid, {});
+      rlCatOpenAddCategoryDialog(pid, { title: "Insert from order info", focusDate: true });
     }, 120);
   }
 
@@ -12387,7 +12400,7 @@
       ev.preventDefault();
       ev.stopPropagation();
       const pid = String(getOneflowContext()?.rlProjectId || "").trim();
-      void rlCatImportFromOrderInfo(pid, {});
+      rlCatOpenAddCategoryDialog(pid, { title: "Insert from order info", focusDate: true });
     });
     chooseBtn.parentNode.insertBefore(btn, chooseBtn);
   }
